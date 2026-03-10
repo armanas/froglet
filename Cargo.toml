@@ -1,0 +1,48 @@
+[package]
+name = "froglet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Async Runtime & Web Framework
+tokio = { version = "1.37", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+axum = { version = "0.7", features = ["macros", "tokio"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "set-header"] }
+tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1.0", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization & Deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Tor anonymity network (100% Rust)
+arti-client = { version = "0.18", features = ["onion-service-service", "onion-service-client"] }
+tor-hsservice = "0.18"
+tor-rtcompat = "0.18"
+tor-cell = "0.18"
+tor-config = "0.18.0"
+
+# Cryptography
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+hex = "0.4"
+sha2 = "0.10"
+
+# Security Sandbox (WASM / Lua)
+wasmtime = "20.0"
+mlua = { version = "0.9", features = ["lua54", "vendored"] }
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Logging and errors
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+
+# Payments
+cashu = "0.15.1"
