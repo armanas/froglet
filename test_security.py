@@ -6,7 +6,13 @@ from io import BytesIO
 import aiohttp
 import nacl.signing
 
-from test_support import FrogletAsyncTestCase, PUBKEY_HEX, SIGNING_KEY, create_signed_event
+from test_support import (
+    FrogletAsyncTestCase,
+    PUBKEY_HEX,
+    SIGNING_KEY,
+    canonical_event_signing_bytes,
+    create_signed_event,
+)
 
 ATTACKER_KEY = nacl.signing.SigningKey.generate()
 ATTACKER_PUBKEY = ATTACKER_KEY.verify_key.encode().hex()
@@ -29,7 +35,6 @@ class SecurityApiTests(FrogletAsyncTestCase):
     async def test_rejects_spoofed_pubkey(self) -> None:
         node = await self.start_node()
         content = "impersonation attack"
-        signed = VICTIM_KEY.sign(content.encode("utf-8"))
         event = {
             "id": __import__("hashlib").sha256(content.encode("utf-8")).hexdigest(),
             "pubkey": ATTACKER_PUBKEY,
@@ -37,8 +42,8 @@ class SecurityApiTests(FrogletAsyncTestCase):
             "kind": "market.listing",
             "tags": [["t", "test"]],
             "content": content,
-            "sig": signed.signature.hex(),
         }
+        event["sig"] = VICTIM_KEY.sign(canonical_event_signing_bytes(event)).signature.hex()
 
         async with aiohttp.ClientSession() as session:
             async with session.post(node.url("/v1/node/events/publish"), json={"event": event}) as resp:

@@ -18,8 +18,9 @@ This repository now contains two binaries:
 - Central marketplace publishing with signed register and heartbeat flows
 - Signed reclaim flow for bringing a node identity back online
 - Static endpoint pricing for `events.query`, `execute.lua`, and `execute.wasm`
-- Cashu token parsing and local replay guard for paid endpoints
+- Cashu token parsing with local reservation/commit flow and execution receipts
 - Sandboxed Lua and WASM execution
+- Async job API with persisted state, polling, and idempotency keys
 - SQLite state under `./data/node.db`
 - SQLite tuned with WAL mode and busy timeout for better write/read behavior
  - Async-friendly SQLite access via a small `DbPool` wrapper
@@ -143,6 +144,23 @@ Requests to `/v1/node/events/query` now require a payment object:
 
 If payment is missing, Froglet returns `402 Payment Required`.
 
+### Async FaaS-style job submission
+
+```json
+POST /v1/node/jobs
+{
+  "kind": "lua",
+  "script": "return input.greeting .. ', ' .. input.target",
+  "input": {
+    "greeting": "hello",
+    "target": "world"
+  },
+  "idempotency_key": "hello-world-job"
+}
+```
+
+Froglet returns a persisted job record immediately and clients can poll `GET /v1/node/jobs/:job_id` until the status changes to `succeeded` or `failed`.
+
 ## API Surface
 
 ### Node routes
@@ -154,6 +172,8 @@ If payment is missing, Froglet returns `402 Payment Required`.
 - `POST /v1/node/events/query`
 - `POST /v1/node/execute/lua`
 - `POST /v1/node/execute/wasm`
+- `POST /v1/node/jobs`
+- `GET /v1/node/jobs/:job_id`
 - `POST /v1/node/pay/ecash`
 
 ### Marketplace routes
@@ -191,6 +211,12 @@ If payment is missing, Froglet returns `402 Payment Required`.
       "price_sats": 10,
       "payment_required": true
     }
+  },
+  "faas": {
+    "jobs_api": true,
+    "async_jobs": true,
+    "idempotency_keys": true,
+    "runtimes": ["lua", "wasm"]
   }
 }
 ```
@@ -200,7 +226,10 @@ If payment is missing, Froglet returns `402 Payment Required`.
 Paid endpoint enforcement currently does two things:
 
 - validates Cashu token structure and amount
-- prevents local replay by storing a token hash in SQLite
+- reserves the token locally before execution and only commits it on success
+- returns a local payment receipt containing the service, amount, and token hash
+
+If execution fails, Froglet releases the local reservation so the token is not consumed by a failed request.
 
 It does **not** redeem tokens against a mint or wallet backend. Replay protection is strictly **local to a single node**: the token hash is only compared against the node's own `payment_redemptions` table, and a token could in principle be reused at other nodes that do not share this table.
 
@@ -216,7 +245,8 @@ The verifier is isolated behind a dedicated module so a stronger backend (for ex
   - basic rate limiting and explicit body size limits on publish/execute routes.
 - Payments:
   - Cashu tokens are parsed and checked for amount.
-  - A local replay guard prevents the same token from being used twice **on the same node**.
+  - A local reservation/commit flow prevents a successful token from being used twice **on the same node**.
+  - Failed executions release their reservation and do not intentionally consume the token.
   - There is no global double-spend protection without an external mint/wallet integration.
 - Storage and identities:
   - Identity seeds, database files, and Tor state/cache directories are created with strict `0o600/0o700` permissions on Unix.

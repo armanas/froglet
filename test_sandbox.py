@@ -19,6 +19,22 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(payload["result"], "4200")
 
+    async def test_lua_can_read_json_input(self) -> None:
+        node = await self.start_node()
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/execute/lua"),
+                json={
+                    "script": "return input.greeting .. ', ' .. input.target",
+                    "input": {"greeting": "hello", "target": "froglet"},
+                },
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(payload["result"], "hello, froglet")
+
     async def test_lua_io_is_not_available(self) -> None:
         node = await self.start_node()
 

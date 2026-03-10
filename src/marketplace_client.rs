@@ -1,4 +1,5 @@
 use crate::{
+    jobs::FaaSDescriptor,
     marketplace::{
         HeartbeatRequest, NodeDescriptor, ReclaimChallengeRequest, ReclaimCompleteRequest,
         RegisterRequest, TransportDescriptor, descriptor_digest_hex, heartbeat_signing_payload,
@@ -40,7 +41,7 @@ pub async fn run_sync_loop(state: Arc<AppState>, mut last_descriptor_hash: Strin
             backoff.min(heartbeat_interval * 16)
         };
 
-        tokio::time::sleep(Duration::from_secs(heartbeat_interval)).await;
+        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
 
         let descriptor = match build_descriptor(state.as_ref()).await {
             Ok(descriptor) => descriptor,
@@ -92,6 +93,7 @@ pub async fn build_descriptor(state: &AppState) -> Result<NodeDescriptor, String
             tor_status: transport_status.tor_status,
         },
         services: state.pricing.services(),
+        faas: FaaSDescriptor::standard(),
         updated_at: current_unix_timestamp(),
     })
 }

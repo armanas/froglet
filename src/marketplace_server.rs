@@ -19,6 +19,12 @@ use serde::Deserialize;
 use std::{path::Path as FsPath, sync::Arc};
 use tokio::sync::Mutex;
 
+const MAX_REQUEST_AGE_SECS: i64 = 120;
+
+fn request_is_stale(request_timestamp: i64, now: i64) -> bool {
+    (now - request_timestamp).abs() > MAX_REQUEST_AGE_SECS
+}
+
 #[derive(Clone)]
 pub struct MarketplaceAppState {
     pub db: Arc<Mutex<Connection>>,
@@ -28,6 +34,8 @@ pub struct MarketplaceAppState {
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub include_inactive: Option<bool>,
 }
 
 pub fn initialize_marketplace_db(path: &FsPath) -> rusqlite::Result<Connection> {
@@ -97,6 +105,9 @@ async fn register(
     }
 
     let now = current_unix_timestamp();
+    if request_is_stale(payload.timestamp, now) {
+        return bad_request("request timestamp is too old or too far in the future");
+    }
     let conn = state.db.lock().await;
     match fetch_node_status(&conn, &payload.descriptor.node_id) {
         Ok(Some(existing))
@@ -145,7 +156,9 @@ async fn heartbeat(
 ) -> impl IntoResponse {
     let message = heartbeat_signing_payload(&payload.node_id, payload.timestamp);
     let now = current_unix_timestamp();
-
+    if request_is_stale(payload.timestamp, now) {
+        return bad_request("request timestamp is too old or too far in the future");
+    }
     let conn = state.db.lock().await;
     let row = match fetch_node_status(&conn, &payload.node_id) {
         Ok(row) => row,
@@ -294,12 +307,17 @@ async fn search_nodes(
     Query(query): Query<SearchQuery>,
 ) -> impl IntoResponse {
     let limit = query.limit.unwrap_or(50).min(200) as i64;
+    let include_inactive = query.include_inactive.unwrap_or(false);
     let now = current_unix_timestamp();
     let conn = state.db.lock().await;
-    let mut stmt = match conn.prepare(
+    let sql = if include_inactive {
         "SELECT node_id, descriptor_json, status, registered_at, updated_at, last_seen_at
-         FROM nodes ORDER BY last_seen_at DESC LIMIT ?1",
-    ) {
+         FROM nodes ORDER BY last_seen_at DESC LIMIT ?1"
+    } else {
+        "SELECT node_id, descriptor_json, status, registered_at, updated_at, last_seen_at
+         FROM nodes WHERE status = 'active' ORDER BY last_seen_at DESC LIMIT ?1"
+    };
+    let mut stmt = match conn.prepare(sql) {
         Ok(stmt) => stmt,
         Err(e) => return database_error(e),
     };
@@ -330,7 +348,12 @@ async fn search_nodes(
     let mut nodes = Vec::new();
     for row in rows {
         match row {
-            Ok(node) => nodes.push(node),
+            Ok(node) => {
+                if !include_inactive && node.status == "inactive" {
+                    continue;
+                }
+                nodes.push(node);
+            }
             Err(e) => return database_error(e),
         }
     }
@@ -449,8 +472,9 @@ fn not_found(message: &str) -> (StatusCode, Json<serde_json::Value>) {
 }
 
 fn database_error(error: rusqlite::Error) -> (StatusCode, Json<serde_json::Value>) {
+    tracing::error!("Database error: {error}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": format!("database error: {error}") })),
+        Json(serde_json::json!({ "error": "internal database error" })),
     )
 }

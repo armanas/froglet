@@ -16,14 +16,22 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 fn in_memory_state() -> AppState {
-    let temp_dir = std::env::temp_dir().join(format!("froglet-test-{}", std::process::id()));
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_dir =
+        std::env::temp_dir().join(format!("froglet-test-{}-{unique}", std::process::id()));
     let db_path = temp_dir.join("node.db");
+    std::fs::create_dir_all(&temp_dir).expect("temp dir");
 
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
         listen_addr: "127.0.0.1:0".to_string(),
         discovery_mode: DiscoveryMode::None,
-        identity: IdentityConfig { auto_generate: true },
+        identity: IdentityConfig {
+            auto_generate: true,
+        },
         marketplace: Some(MarketplaceConfig {
             url: "http://localhost".to_string(),
             publish: true,
@@ -49,8 +57,7 @@ fn in_memory_state() -> AppState {
     let pool = DbPool::new(conn);
 
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
-    let identity =
-        froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
+    let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
 
     AppState {
         db: pool,
@@ -86,15 +93,15 @@ fn marketplace_signing_payloads_are_stable() {
     let reclaim_msg = reclaim_signing_payload(state.identity.node_id(), "challenge", "nonce", ts);
 
     assert!(
-        register_msg.starts_with("froglet-register\n"),
+        register_msg.starts_with(b"froglet-register\n"),
         "register payload prefix changed"
     );
     assert!(
-        heartbeat_msg.starts_with("froglet-heartbeat\n"),
+        heartbeat_msg.starts_with(b"froglet-heartbeat\n"),
         "heartbeat payload prefix changed"
     );
     assert!(
-        reclaim_msg.starts_with("froglet-reclaim\n"),
+        reclaim_msg.starts_with(b"froglet-reclaim\n"),
         "reclaim payload prefix changed"
     );
 }
@@ -107,38 +114,49 @@ fn payments_enforce_all_error_paths() {
     // Backend unavailable when backend is None and price > 0.
     state.config.payment_backend = PaymentBackend::None;
     let err = rt
-        .block_on(payments::enforce_payment(
+        .block_on(payments::prepare_payment(
             &state,
             ServiceId::EventsQuery,
             None,
+            Some("req-backend-none".to_string()),
         ))
         .unwrap_err();
-    assert!(matches!(err, payments::PaymentError::BackendUnavailable { .. }));
+    assert!(matches!(
+        err,
+        payments::PaymentError::BackendUnavailable { .. }
+    ));
 
     // Reset backend for further tests.
     state.config.payment_backend = PaymentBackend::Cashu;
 
     // Payment required when missing.
     let err = rt
-        .block_on(payments::enforce_payment(
+        .block_on(payments::prepare_payment(
             &state,
             ServiceId::EventsQuery,
             None,
+            Some("req-missing".to_string()),
         ))
         .unwrap_err();
-    assert!(matches!(err, payments::PaymentError::PaymentRequired { .. }));
+    assert!(matches!(
+        err,
+        payments::PaymentError::PaymentRequired { .. }
+    ));
 
     // Unsupported kind.
     let err = rt
-        .block_on(payments::enforce_payment(
+        .block_on(payments::prepare_payment(
             &state,
             ServiceId::EventsQuery,
             Some(ProvidedPayment {
                 kind: "other".to_string(),
                 token: "x".to_string(),
             }),
+            Some("req-kind".to_string()),
         ))
         .unwrap_err();
-    assert!(matches!(err, payments::PaymentError::UnsupportedKind { .. }));
+    assert!(matches!(
+        err,
+        payments::PaymentError::UnsupportedKind { .. }
+    ));
 }
-

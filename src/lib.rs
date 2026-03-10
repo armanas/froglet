@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod db;
 pub mod ecash;
 pub mod identity;
+pub mod jobs;
 pub mod marketplace;
 pub mod marketplace_client;
 pub mod marketplace_server;

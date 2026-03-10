@@ -1,4 +1,4 @@
-use crate::{crypto, pricing::ServicePriceInfo};
+use crate::{crypto, jobs::FaaSDescriptor, pricing::ServicePriceInfo};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -17,6 +17,8 @@ pub struct NodeDescriptor {
     pub discovery_mode: String,
     pub transports: TransportDescriptor,
     pub services: Vec<ServicePriceInfo>,
+    #[serde(default)]
+    pub faas: FaaSDescriptor,
     pub updated_at: i64,
 }
 

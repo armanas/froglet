@@ -13,12 +13,13 @@ class PrivacyAndOpsecTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.get(node.url("/health")) as resp:
                 headers = resp.headers
-                body = await resp.text()
+                body = await resp.json()
 
         self.assertEqual(resp.status, 200)
         self.assertEqual(headers.get("Server"), "nginx/1.18.0")
         self.assertEqual(headers.get("Date"), "Thu, 01 Jan 1970 00:00:00 GMT")
-        self.assertIn("Froglet", body)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["service"], "froglet")
 
     async def test_data_at_rest_permissions_are_restricted(self) -> None:
         node = await self.start_node()

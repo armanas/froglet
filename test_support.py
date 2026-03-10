@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -207,18 +208,33 @@ PUBKEY_HEX = VERIFY_KEY.encode().hex()
 
 def create_signed_event(content: str, *, kind: str = "market.listing", tags: Optional[list[list[str]]] = None) -> dict:
     content_bytes = content.encode("utf-8")
-    signature = SIGNING_KEY.sign(content_bytes).signature.hex()
     created_at = int(time.time())
     event_id = __import__("hashlib").sha256(content_bytes).hexdigest()
-    return {
+    event = {
         "id": event_id,
         "pubkey": PUBKEY_HEX,
         "created_at": created_at,
         "kind": kind,
         "tags": tags or [["t", "test"]],
         "content": content,
-        "sig": signature,
     }
+    signature = SIGNING_KEY.sign(canonical_event_signing_bytes(event)).signature.hex()
+    event["sig"] = signature
+    return event
+
+
+def canonical_event_signing_bytes(event: dict) -> bytes:
+    return json.dumps(
+        [
+            event["id"],
+            event["pubkey"],
+            event["created_at"],
+            event["kind"],
+            event["tags"],
+            event["content"],
+        ],
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
@@ -235,3 +251,16 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         marketplace = await start_marketplace(**kwargs)
         self.addAsyncCleanup(marketplace.stop)
         return marketplace
+
+    async def wait_for_job(self, node: FrogletNode, job_id: str, timeout: float = 15.0) -> dict:
+        deadline = time.monotonic() + timeout
+
+        async with aiohttp.ClientSession() as session:
+            while time.monotonic() < deadline:
+                async with session.get(node.url(f"/v1/node/jobs/{job_id}")) as resp:
+                    payload = await resp.json()
+                if payload["status"] in {"succeeded", "failed"}:
+                    return payload
+                await asyncio.sleep(0.2)
+
+        raise RuntimeError(f"Timed out waiting for job {job_id}")

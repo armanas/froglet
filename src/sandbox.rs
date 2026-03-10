@@ -1,21 +1,26 @@
-use mlua::{Lua, Result as LuaResult, StdLib};
+use mlua::{HookTriggers, Lua, LuaSerdeExt, Result as LuaResult, StdLib, Value as LuaValue};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{info, warn};
-use wasmtime::{Config, Engine, Linker, Module, Store};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 use once_cell::sync::Lazy;
 use tokio::sync::Semaphore;
 
 static LUA_CONCURRENCY_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(32));
 static WASM_CONCURRENCY_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(16));
+const LUA_MAX_INSTRUCTIONS: u32 = 50_000_000;
+const LUA_HOOK_GRANULARITY: u32 = 10_000;
+const LUA_MAX_HOOK_TICKS: usize = (LUA_MAX_INSTRUCTIONS / LUA_HOOK_GRANULARITY) as usize;
+const WASM_FUEL_LIMIT: u64 = 50_000_000;
+const WASM_MAX_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Initializes and tests the sandbox engines locally to ensure they load properly.
 pub fn initialize_engine() {
     info!("Initializing WebAssembly & Lua Sandboxing Engines...");
 
     // Quick Lua engine self-test
-    if let Ok(_) = execute_lua_script("return 1 + 1") {
+    if let Ok(_) = execute_lua_script("return 1 + 1", None) {
         info!(" ✅ Lua Sandbox engine initialized successfully.");
     } else {
         warn!(" ❌ Lua Sandbox failed to initialize.");
@@ -33,7 +38,10 @@ pub fn initialize_engine() {
 
 /// Executes an arbitrary Lua script in a highly restricted sandbox environment.
 /// We intentionally omit the IO, OS, and Package standard libraries.
-pub fn execute_lua_script(script: &str) -> LuaResult<String> {
+pub fn execute_lua_script(
+    script: &str,
+    input: Option<&serde_json::Value>,
+) -> LuaResult<serde_json::Value> {
     let _permit = LUA_CONCURRENCY_SEMAPHORE
         .try_acquire()
         .map_err(|_| mlua::Error::RuntimeError("Lua concurrency limit reached".to_string()))?;
@@ -43,21 +51,27 @@ pub fn execute_lua_script(script: &str) -> LuaResult<String> {
         mlua::LuaOptions::new(),
     )?;
 
-    // Set a basic execution constraint (prevents infinite loops by hooking into standard instruction execution counts)
-    // 100,000 instructions is roughly a few milliseconds.
+    if let Some(input) = input {
+        lua.globals().set("input", lua.to_value(input)?)?;
+    }
+
+    // Count real VM instructions instead of source lines to make loop limits meaningful.
     let instructions = Arc::new(AtomicUsize::new(0));
     let inst_clone = Arc::clone(&instructions);
-    lua.set_hook(mlua::HookTriggers::EVERY_LINE, move |_, _| {
-        if inst_clone.fetch_add(1, Ordering::Relaxed) > 100_000 {
-            return Err(mlua::Error::RuntimeError(
-                "Lua script execution limit exceeded".to_string(),
-            ));
-        }
-        Ok(())
-    });
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(LUA_HOOK_GRANULARITY),
+        move |_, _| {
+            if inst_clone.fetch_add(1, Ordering::Relaxed) >= LUA_MAX_HOOK_TICKS {
+                return Err(mlua::Error::RuntimeError(
+                    "Lua script execution limit exceeded".to_string(),
+                ));
+            }
+            Ok(())
+        },
+    );
 
-    let result: String = lua.load(script).eval()?;
-    Ok(result)
+    let result: LuaValue = lua.load(script).eval()?;
+    lua.from_value(result)
 }
 
 /// Executes a WebAssembly boundary function natively.
@@ -73,8 +87,17 @@ pub fn execute_wasm_module(
     let engine = Engine::new(&config)?;
     let module = Module::new(&engine, wasm_bytes)?;
 
-    let mut store = Store::new(&engine, ());
-    store.set_fuel(1_000_000)?; // 1M instructions is a reasonable default for micro-tasks
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(WASM_MAX_MEMORY_BYTES)
+        .instances(1)
+        .tables(1)
+        .memories(1)
+        .trap_on_grow_failure(true)
+        .build();
+
+    let mut store = Store::new(&engine, limits);
+    store.limiter(|limits| limits);
+    store.set_fuel(WASM_FUEL_LIMIT)?;
 
     let linker = Linker::new(&engine);
     let instance = linker.instantiate(&mut store, &module)?;

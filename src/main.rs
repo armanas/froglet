@@ -3,7 +3,7 @@ use froglet::{
     config::NodeConfig,
     db::{self, DbPool},
     identity::NodeIdentity,
-    marketplace_client,
+    marketplace_client, payments,
     pricing::PricingTable,
     sandbox,
     state::{AppState, MarketplaceStatus, TransportStatus},
@@ -11,7 +11,6 @@ use froglet::{
 };
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use std::sync::Mutex;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex as TokioMutex;
 use tower::Service;
@@ -53,6 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let conn =
         db::initialize_db(&node_config.storage.db_path).expect("Failed to initialize SQLite DB");
+    db::recover_runtime_state(&conn, payments::current_unix_timestamp())
+        .expect("Failed to recover pending runtime state");
     set_mode(&node_config.storage.db_path, 0o600)?;
 
     let state = Arc::new(AppState {

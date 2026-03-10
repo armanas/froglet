@@ -1,6 +1,6 @@
 use crate::{config::NodeConfig, db::DbPool, identity::NodeIdentity, pricing::PricingTable};
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Debug, Clone, Serialize)]

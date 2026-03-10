@@ -1,8 +1,14 @@
-use crate::{config::PaymentBackend, db, ecash, pricing::ServiceId, state::AppState};
+use crate::{
+    config::PaymentBackend,
+    db::{self, ReservePaymentTokenOutcome},
+    ecash,
+    pricing::ServiceId,
+    state::AppState,
+};
 use axum::http::StatusCode;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::task;
 
 pub const CASHU_VERIFIER_MODE: &str = "format_and_replay_guard";
 
@@ -13,10 +19,28 @@ pub struct ProvidedPayment {
 }
 
 #[derive(Debug, Clone)]
+pub struct PaymentReservation {
+    pub request_id: String,
+    pub service_id: ServiceId,
+    pub amount_sats: u64,
+    pub token_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentReceipt {
     pub service_id: String,
     pub amount_sats: u64,
     pub token_hash: String,
+}
+
+impl PaymentReservation {
+    pub fn receipt(&self) -> PaymentReceipt {
+        PaymentReceipt {
+            service_id: self.service_id.as_str().to_string(),
+            amount_sats: self.amount_sats,
+            token_hash: self.token_hash.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -43,6 +67,11 @@ pub enum PaymentError {
         price_sats: u64,
         amount_sats: u64,
     },
+    #[error("payment token is already reserved by another request")]
+    InUse {
+        service_id: String,
+        token_hash: String,
+    },
     #[error("payment token has already been redeemed")]
     Replay {
         service_id: String,
@@ -60,6 +89,7 @@ impl PaymentError {
             PaymentError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             PaymentError::InvalidToken { .. } => StatusCode::BAD_REQUEST,
             PaymentError::Underpaid { .. } => StatusCode::PAYMENT_REQUIRED,
+            PaymentError::InUse { .. } => StatusCode::CONFLICT,
             PaymentError::Replay { .. } => StatusCode::CONFLICT,
             PaymentError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -116,6 +146,15 @@ impl PaymentError {
                 "amount_sats": amount_sats,
                 "payment_kind": "cashu"
             }),
+            PaymentError::InUse {
+                service_id,
+                token_hash,
+            } => serde_json::json!({
+                "error": "payment token is already reserved by another request",
+                "service_id": service_id,
+                "token_hash": token_hash,
+                "payment_kind": "cashu"
+            }),
             PaymentError::Replay {
                 service_id,
                 token_hash,
@@ -132,11 +171,12 @@ impl PaymentError {
     }
 }
 
-pub async fn enforce_payment(
+pub async fn prepare_payment(
     state: &AppState,
     service_id: ServiceId,
     payment: Option<ProvidedPayment>,
-) -> Result<Option<PaymentReceipt>, PaymentError> {
+    request_id: Option<String>,
+) -> Result<Option<PaymentReservation>, PaymentError> {
     let price_sats = state.pricing.price_for(service_id);
     if price_sats == 0 {
         return Ok(None);
@@ -177,34 +217,78 @@ pub async fn enforce_payment(
         });
     }
 
+    let request_id = request_id.unwrap_or_else(new_request_id);
     let token_hash = token_info.token_hash.clone();
-    let amount_satoshis = token_info.amount_satoshis;
-    let inserted = state
+    let amount_sats = token_info.amount_satoshis;
+    let reserve_request_id = request_id.clone();
+    let reserve_token_hash = token_hash.clone();
+    let outcome = state
         .db
         .with_conn(move |conn| {
-            db::try_record_payment_redemption(
+            db::reserve_payment_token(
                 conn,
-                &token_hash,
+                &reserve_token_hash,
                 service_id,
-                amount_satoshis,
+                amount_sats,
+                &reserve_request_id,
                 current_unix_timestamp(),
             )
         })
         .await
         .map_err(PaymentError::Database)?;
 
-    if !inserted {
-        return Err(PaymentError::Replay {
+    match outcome {
+        ReservePaymentTokenOutcome::Reserved => Ok(Some(PaymentReservation {
+            request_id,
+            service_id,
+            amount_sats,
+            token_hash,
+        })),
+        ReservePaymentTokenOutcome::InUse => Err(PaymentError::InUse {
             service_id: service_id.as_str().to_string(),
-            token_hash: token_info.token_hash,
-        });
+            token_hash,
+        }),
+        ReservePaymentTokenOutcome::Replay => Err(PaymentError::Replay {
+            service_id: service_id.as_str().to_string(),
+            token_hash,
+        }),
+    }
+}
+
+pub async fn commit_payment(
+    state: &AppState,
+    reservation: PaymentReservation,
+) -> Result<PaymentReceipt, PaymentError> {
+    let token_hash = reservation.token_hash.clone();
+    let request_id = reservation.request_id.clone();
+    let committed = state
+        .db
+        .with_conn(move |conn| {
+            db::commit_payment_token(conn, &token_hash, &request_id, current_unix_timestamp())
+        })
+        .await
+        .map_err(PaymentError::Database)?;
+
+    if !committed {
+        return Err(PaymentError::Database(
+            "payment reservation could not be committed".to_string(),
+        ));
     }
 
-    Ok(Some(PaymentReceipt {
-        service_id: service_id.as_str().to_string(),
-        amount_sats: token_info.amount_satoshis,
-        token_hash: token_info.token_hash,
-    }))
+    Ok(reservation.receipt())
+}
+
+pub async fn release_payment(
+    state: &AppState,
+    reservation: &PaymentReservation,
+) -> Result<(), String> {
+    let token_hash = reservation.token_hash.clone();
+    let request_id = reservation.request_id.clone();
+    state
+        .db
+        .with_conn(move |conn| db::release_payment_token(conn, &token_hash, &request_id))
+        .await?;
+    Ok(())
 }
 
 pub fn current_unix_timestamp() -> i64 {
@@ -212,4 +296,10 @@ pub fn current_unix_timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn new_request_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }

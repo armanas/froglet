@@ -22,24 +22,22 @@ pub async fn start_hidden_service(app: Router, tor_dir: PathBuf) -> Result<Strin
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::metadata(&state_dir)
-            .map_err(|e| format!("failed to read metadata for Tor state directory {state_dir:?}: {e}"))?;
+        let metadata = std::fs::metadata(&state_dir).map_err(|e| {
+            format!("failed to read metadata for Tor state directory {state_dir:?}: {e}")
+        })?;
         let mut perms = metadata.permissions();
         perms.set_mode(0o700);
         std::fs::set_permissions(&state_dir, perms).map_err(|e| {
-            format!(
-                "failed to set permissions on Tor state directory {state_dir:?} to 0o700: {e}"
-            )
+            format!("failed to set permissions on Tor state directory {state_dir:?} to 0o700: {e}")
         })?;
 
-        let metadata = std::fs::metadata(&cache_dir)
-            .map_err(|e| format!("failed to read metadata for Tor cache directory {cache_dir:?}: {e}"))?;
+        let metadata = std::fs::metadata(&cache_dir).map_err(|e| {
+            format!("failed to read metadata for Tor cache directory {cache_dir:?}: {e}")
+        })?;
         let mut perms = metadata.permissions();
         perms.set_mode(0o700);
         std::fs::set_permissions(&cache_dir, perms).map_err(|e| {
-            format!(
-                "failed to set permissions on Tor cache directory {cache_dir:?} to 0o700: {e}"
-            )
+            format!("failed to set permissions on Tor cache directory {cache_dir:?} to 0o700: {e}")
         })?;
     }
 

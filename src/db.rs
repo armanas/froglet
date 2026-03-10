@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -6,9 +6,16 @@ use std::{
 };
 use tokio::task;
 
-use crate::{api::NodeEventEnvelope, pricing::ServiceId};
+use crate::{api::NodeEventEnvelope, jobs, pricing::ServiceId};
 
-fn configure_connection(conn: &Connection) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservePaymentTokenOutcome {
+    Reserved,
+    InUse,
+    Replay,
+}
+
+fn configure_connection(conn: &Connection) -> SqlResult<()> {
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -33,18 +40,44 @@ fn configure_connection(conn: &Connection) -> Result<()> {
             amount_sats INTEGER NOT NULL,
             redeemed_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS payment_tokens (
+            token_hash TEXT PRIMARY KEY,
+            service_id TEXT NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_payment_tokens_state_updated_at ON payment_tokens (state, updated_at);
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            idempotency_key TEXT UNIQUE,
+            request_hash TEXT NOT NULL,
+            service_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            error TEXT,
+            payment_token_hash TEXT,
+            payment_amount_sats INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_updated_at ON jobs (status, updated_at DESC);
         COMMIT;",
     )?;
     Ok(())
 }
 
-pub fn initialize_db(db_path: &Path) -> Result<Connection> {
+pub fn initialize_db(db_path: &Path) -> SqlResult<Connection> {
     let conn = Connection::open(db_path)?;
     configure_connection(&conn)?;
     Ok(conn)
 }
 
-pub fn initialize_db_for_connection(conn: &Connection) -> Result<()> {
+pub fn initialize_db_for_connection(conn: &Connection) -> SqlResult<()> {
     configure_connection(conn)
 }
 
@@ -60,10 +93,11 @@ impl DbPool {
         }
     }
 
-    pub async fn with_conn<F, R>(&self, f: F) -> Result<R, String>
+    pub async fn with_conn<F, R, E>(&self, f: F) -> Result<R, String>
     where
-        F: FnOnce(&Connection) -> Result<R> + Send + 'static,
+        F: FnOnce(&Connection) -> std::result::Result<R, E> + Send + 'static,
         R: Send + 'static,
+        E: ToString + Send + 'static,
     {
         let inner = self.inner.clone();
         task::spawn_blocking(move || {
@@ -77,7 +111,7 @@ impl DbPool {
     }
 }
 
-pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> Result<()> {
+pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> SqlResult<()> {
     let tags_json = serde_json::to_string(&event.tags).unwrap_or_else(|_| "[]".to_string());
 
     conn.execute(
@@ -101,7 +135,7 @@ pub fn query_events_by_kind(
     conn: &Connection,
     kinds: &[String],
     limit: Option<usize>,
-) -> Result<Vec<NodeEventEnvelope>> {
+) -> SqlResult<Vec<NodeEventEnvelope>> {
     if kinds.is_empty() {
         return Ok(vec![]);
     }
@@ -153,7 +187,7 @@ pub fn try_record_payment_redemption(
     service_id: ServiceId,
     amount_sats: u64,
     redeemed_at: i64,
-) -> Result<bool> {
+) -> SqlResult<bool> {
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO payment_redemptions (token_hash, service_id, amount_sats, redeemed_at)
          VALUES (?1, ?2, ?3, ?4)",
@@ -166,4 +200,112 @@ pub fn try_record_payment_redemption(
     )?;
 
     Ok(inserted > 0)
+}
+
+pub fn reserve_payment_token(
+    conn: &Connection,
+    token_hash: &str,
+    service_id: ServiceId,
+    amount_sats: u64,
+    request_id: &str,
+    now: i64,
+) -> Result<ReservePaymentTokenOutcome, String> {
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO payment_tokens (
+                token_hash,
+                service_id,
+                amount_sats,
+                state,
+                request_id,
+                created_at,
+                updated_at
+             ) VALUES (?1, ?2, ?3, 'reserved', ?4, ?5, ?5)",
+            params![
+                token_hash,
+                service_id.as_str(),
+                amount_sats as i64,
+                request_id,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if inserted > 0 {
+        return Ok(ReservePaymentTokenOutcome::Reserved);
+    }
+
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
+            params![token_hash],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    match row {
+        Some((state, existing_request_id))
+            if state == "reserved" && existing_request_id == request_id =>
+        {
+            Ok(ReservePaymentTokenOutcome::Reserved)
+        }
+        Some((state, _)) if state == "reserved" => Ok(ReservePaymentTokenOutcome::InUse),
+        Some(_) => Ok(ReservePaymentTokenOutcome::Replay),
+        None => Err("payment token disappeared during reservation".to_string()),
+    }
+}
+
+pub fn commit_payment_token(
+    conn: &Connection,
+    token_hash: &str,
+    request_id: &str,
+    committed_at: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE payment_tokens
+             SET state = 'committed', updated_at = ?3
+             WHERE token_hash = ?1 AND request_id = ?2 AND state = 'reserved'",
+            params![token_hash, request_id, committed_at],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO payment_redemptions (token_hash, service_id, amount_sats, redeemed_at)
+         SELECT token_hash, service_id, amount_sats, ?2
+         FROM payment_tokens
+         WHERE token_hash = ?1",
+        params![token_hash, committed_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
+pub fn release_payment_token(
+    conn: &Connection,
+    token_hash: &str,
+    request_id: &str,
+) -> Result<bool, String> {
+    let deleted = conn
+        .execute(
+            "DELETE FROM payment_tokens
+             WHERE token_hash = ?1 AND request_id = ?2 AND state = 'reserved'",
+            params![token_hash, request_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(deleted > 0)
+}
+
+pub fn recover_runtime_state(conn: &Connection, now: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM payment_tokens WHERE state = 'reserved'", [])
+        .map_err(|e| e.to_string())?;
+    jobs::fail_incomplete_jobs(conn, "node restarted before job completion", now)?;
+    Ok(())
 }

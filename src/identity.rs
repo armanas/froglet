@@ -68,9 +68,34 @@ fn load_signing_key(path: &Path) -> Result<SigningKey, String> {
 }
 
 fn persist_signing_key(path: &Path, signing_key: &SigningKey) -> Result<(), String> {
-    fs::write(path, hex::encode(signing_key.to_bytes()))
-        .map_err(|e| format!("Failed to write node identity seed {}: {e}", path.display()))?;
-    set_mode(path, 0o600)
+    let seed_hex = hex::encode(signing_key.to_bytes());
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| {
+                format!(
+                    "Failed to create identity seed file {}: {e}",
+                    path.display()
+                )
+            })?;
+        file.write_all(seed_hex.as_bytes())
+            .map_err(|e| format!("Failed to write identity seed {}: {e}", path.display()))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(path, seed_hex)
+            .map_err(|e| format!("Failed to write node identity seed {}: {e}", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn ensure_dir(path: &Path, mode: u32) -> Result<(), String> {

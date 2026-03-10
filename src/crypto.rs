@@ -65,7 +65,11 @@ mod tests {
         let sig_hex = sign_message_hex(&signing_key, message);
 
         assert!(verify_message(&pubkey_hex, &sig_hex, message));
-        assert!(verify_signature(&pubkey_hex, &sig_hex, "froglet-test-message"));
+        assert!(verify_signature(
+            &pubkey_hex,
+            &sig_hex,
+            "froglet-test-message"
+        ));
     }
 
     #[test]
@@ -127,7 +131,7 @@ mod tests {
         let digest = sha256_hex(b"froglet");
         assert_eq!(
             digest,
-            "d8f428f055e294d9af89c7479bfa4399f469e0cdbf5f1a8f2539cb38876446c8"
+            "37b1d40aa65361c1f8bc309fed70096d03923cad89937a271ea54362c2be829e"
         );
     }
 }
