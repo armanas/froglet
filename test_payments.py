@@ -19,7 +19,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
         self.assertEqual(resp.status, 402)
         self.assertEqual(payload["service_id"], "events.query")
         self.assertEqual(payload["price_sats"], 10)
-        self.assertEqual(payload["payment_kind"], "cashu")
+        self.assertEqual(payload["accepted_payment_methods"], ["cashu"])
 
     async def test_priced_query_accepts_valid_payment(self) -> None:
         node = await self.start_node(extra_env={"FROGLET_PRICE_EVENTS_QUERY": "10"})
@@ -37,6 +37,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
 
         self.assertEqual(resp.status, 200)
         self.assertIn("events", payload)
+        self.assertEqual(payload["payment_receipt"]["settlement_status"], "committed")
 
     async def test_replayed_payment_token_is_rejected(self) -> None:
         node = await self.start_node(extra_env={"FROGLET_PRICE_EVENTS_QUERY": "10"})

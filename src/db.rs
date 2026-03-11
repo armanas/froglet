@@ -6,13 +6,29 @@ use std::{
 };
 use tokio::task;
 
-use crate::{api::NodeEventEnvelope, jobs, pricing::ServiceId};
+use crate::{api::NodeEventEnvelope, deals, jobs, pricing::ServiceId};
+
+const PAYMENT_TOKEN_STATE_RESERVED: &str = "reserved";
+const PAYMENT_TOKEN_STATE_COMMITTED: &str = "committed";
+const PAYMENT_TOKEN_STATE_RELEASED: &str = "released";
+const PAYMENT_TOKEN_STATE_EXPIRED: &str = "expired";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReservePaymentTokenOutcome {
     Reserved,
     InUse,
     Replay,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LedgerArtifact {
+    pub cursor: i64,
+    pub hash: String,
+    pub payload_hash: String,
+    pub kind: String,
+    pub actor_id: String,
+    pub created_at: i64,
+    pub document: serde_json::Value,
 }
 
 fn configure_connection(conn: &Connection) -> SqlResult<()> {
@@ -66,6 +82,52 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             updated_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_jobs_status_updated_at ON jobs (status, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS artifacts (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            artifact_hash TEXT NOT NULL UNIQUE,
+            payload_hash TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            document_json TEXT NOT NULL,
+            UNIQUE (actor_id, artifact_kind, payload_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_artifacts_sequence ON artifacts (sequence ASC);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_actor_kind_created_at ON artifacts (actor_id, artifact_kind, created_at DESC);
+        CREATE TABLE IF NOT EXISTS quotes (
+            quote_id TEXT PRIMARY KEY,
+            artifact_hash TEXT NOT NULL UNIQUE,
+            offer_id TEXT NOT NULL,
+            service_id TEXT NOT NULL,
+            workload_hash TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            price_sats INTEGER NOT NULL,
+            quote_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_quotes_offer_expires_at ON quotes (offer_id, expires_at DESC);
+        CREATE TABLE IF NOT EXISTS deals (
+            deal_id TEXT PRIMARY KEY,
+            idempotency_key TEXT UNIQUE,
+            quote_id TEXT NOT NULL,
+            quote_hash TEXT NOT NULL,
+            offer_id TEXT NOT NULL,
+            service_id TEXT NOT NULL,
+            workload_hash TEXT NOT NULL,
+            spec_json TEXT NOT NULL,
+            quote_json TEXT NOT NULL,
+            deal_artifact_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            result_hash TEXT,
+            error TEXT,
+            payment_token_hash TEXT,
+            payment_amount_sats INTEGER,
+            receipt_artifact_json TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_deals_status_updated_at ON deals (status, updated_at DESC);
         COMMIT;",
     )?;
     Ok(())
@@ -235,6 +297,32 @@ pub fn reserve_payment_token(
         return Ok(ReservePaymentTokenOutcome::Reserved);
     }
 
+    let reclaimed = conn
+        .execute(
+            "UPDATE payment_tokens
+             SET service_id = ?2,
+                 amount_sats = ?3,
+                 state = ?4,
+                 request_id = ?5,
+                 updated_at = ?6
+             WHERE token_hash = ?1 AND state IN (?7, ?8)",
+            params![
+                token_hash,
+                service_id.as_str(),
+                amount_sats as i64,
+                PAYMENT_TOKEN_STATE_RESERVED,
+                request_id,
+                now,
+                PAYMENT_TOKEN_STATE_RELEASED,
+                PAYMENT_TOKEN_STATE_EXPIRED,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if reclaimed > 0 {
+        return Ok(ReservePaymentTokenOutcome::Reserved);
+    }
+
     let row: Option<(String, String)> = conn
         .query_row(
             "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
@@ -246,11 +334,13 @@ pub fn reserve_payment_token(
 
     match row {
         Some((state, existing_request_id))
-            if state == "reserved" && existing_request_id == request_id =>
+            if state == PAYMENT_TOKEN_STATE_RESERVED && existing_request_id == request_id =>
         {
             Ok(ReservePaymentTokenOutcome::Reserved)
         }
-        Some((state, _)) if state == "reserved" => Ok(ReservePaymentTokenOutcome::InUse),
+        Some((state, _)) if state == PAYMENT_TOKEN_STATE_RESERVED => {
+            Ok(ReservePaymentTokenOutcome::InUse)
+        }
         Some(_) => Ok(ReservePaymentTokenOutcome::Replay),
         None => Err("payment token disappeared during reservation".to_string()),
     }
@@ -265,9 +355,15 @@ pub fn commit_payment_token(
     let updated = conn
         .execute(
             "UPDATE payment_tokens
-             SET state = 'committed', updated_at = ?3
-             WHERE token_hash = ?1 AND request_id = ?2 AND state = 'reserved'",
-            params![token_hash, request_id, committed_at],
+             SET state = ?3, updated_at = ?4
+             WHERE token_hash = ?1 AND request_id = ?2 AND state = ?5",
+            params![
+                token_hash,
+                request_id,
+                PAYMENT_TOKEN_STATE_COMMITTED,
+                committed_at,
+                PAYMENT_TOKEN_STATE_RESERVED
+            ],
         )
         .map_err(|e| e.to_string())?;
 
@@ -291,21 +387,179 @@ pub fn release_payment_token(
     conn: &Connection,
     token_hash: &str,
     request_id: &str,
+    released_at: i64,
 ) -> Result<bool, String> {
-    let deleted = conn
+    let updated = conn
         .execute(
-            "DELETE FROM payment_tokens
-             WHERE token_hash = ?1 AND request_id = ?2 AND state = 'reserved'",
-            params![token_hash, request_id],
+            "UPDATE payment_tokens
+             SET state = ?3, updated_at = ?4
+             WHERE token_hash = ?1 AND request_id = ?2 AND state = ?5",
+            params![
+                token_hash,
+                request_id,
+                PAYMENT_TOKEN_STATE_RELEASED,
+                released_at,
+                PAYMENT_TOKEN_STATE_RESERVED
+            ],
         )
         .map_err(|e| e.to_string())?;
 
-    Ok(deleted > 0)
+    Ok(updated > 0)
+}
+
+pub fn expire_reserved_payment_tokens(conn: &Connection, expired_at: i64) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE payment_tokens
+         SET state = ?1, updated_at = ?2
+         WHERE state = ?3",
+        params![
+            PAYMENT_TOKEN_STATE_EXPIRED,
+            expired_at,
+            PAYMENT_TOKEN_STATE_RESERVED
+        ],
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn recover_runtime_state(conn: &Connection, now: i64) -> Result<(), String> {
-    conn.execute("DELETE FROM payment_tokens WHERE state = 'reserved'", [])
-        .map_err(|e| e.to_string())?;
+    let _ = expire_reserved_payment_tokens(conn, now)?;
     jobs::fail_incomplete_jobs(conn, "node restarted before job completion", now)?;
+    deals::fail_incomplete_deals(conn, "node restarted before deal completion", now)?;
     Ok(())
+}
+
+pub fn insert_artifact_document(
+    conn: &Connection,
+    artifact_hash: &str,
+    payload_hash: &str,
+    kind: &str,
+    actor_id: &str,
+    created_at: i64,
+    document_json: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO artifacts (
+            artifact_hash,
+            payload_hash,
+            artifact_kind,
+            actor_id,
+            created_at,
+            document_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            artifact_hash,
+            payload_hash,
+            kind,
+            actor_id,
+            created_at,
+            document_json
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub fn get_artifact_by_actor_kind_payload(
+    conn: &Connection,
+    actor_id: &str,
+    kind: &str,
+    payload_hash: &str,
+) -> Result<Option<LedgerArtifact>, String> {
+    conn.query_row(
+        "SELECT
+            sequence,
+            artifact_hash,
+            payload_hash,
+            artifact_kind,
+            actor_id,
+            created_at,
+            document_json
+         FROM artifacts
+         WHERE actor_id = ?1 AND artifact_kind = ?2 AND payload_hash = ?3",
+        params![actor_id, kind, payload_hash],
+        decode_artifact_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_artifact_by_hash(
+    conn: &Connection,
+    artifact_hash: &str,
+) -> Result<Option<LedgerArtifact>, String> {
+    conn.query_row(
+        "SELECT
+            sequence,
+            artifact_hash,
+            payload_hash,
+            artifact_kind,
+            actor_id,
+            created_at,
+            document_json
+         FROM artifacts
+         WHERE artifact_hash = ?1",
+        params![artifact_hash],
+        decode_artifact_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn list_artifacts(
+    conn: &Connection,
+    cursor: Option<i64>,
+    limit: usize,
+) -> Result<(Vec<LedgerArtifact>, bool), String> {
+    let limit = limit.min(100).max(1) as i64;
+    let cursor = cursor.unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                sequence,
+                artifact_hash,
+                payload_hash,
+                artifact_kind,
+                actor_id,
+                created_at,
+                document_json
+             FROM artifacts
+             WHERE sequence > ?1
+             ORDER BY sequence ASC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![cursor, limit + 1], decode_artifact_row)
+        .map_err(|e| e.to_string())?;
+
+    let mut artifacts = Vec::new();
+    for row in rows {
+        artifacts.push(row.map_err(|e| e.to_string())?);
+    }
+
+    let has_more = artifacts.len() as i64 > limit;
+    if has_more {
+        artifacts.truncate(limit as usize);
+    }
+
+    Ok((artifacts, has_more))
+}
+
+fn decode_artifact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LedgerArtifact> {
+    let document_json: String = row.get(6)?;
+    let document = serde_json::from_str(&document_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+
+    Ok(LedgerArtifact {
+        cursor: row.get(0)?,
+        hash: row.get(1)?,
+        payload_hash: row.get(2)?,
+        kind: row.get(3)?,
+        actor_id: row.get(4)?,
+        created_at: row.get(5)?,
+        document,
+    })
 }

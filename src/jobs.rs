@@ -1,4 +1,4 @@
-use crate::{crypto, pricing::ServiceId};
+use crate::{canonical_json, crypto, pricing::ServiceId, protocol::SettlementStatus};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ impl JobSpec {
     }
 
     pub fn request_hash(&self) -> Result<String, String> {
-        let encoded = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
         Ok(crypto::sha256_hex(encoded))
     }
 }
@@ -77,6 +77,7 @@ pub struct JobPaymentReceipt {
     pub service_id: String,
     pub amount_sats: u64,
     pub token_hash: String,
+    pub settlement_status: SettlementStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +137,7 @@ impl StoredJob {
                     service_id: self.service_id.clone(),
                     amount_sats,
                     token_hash: token_hash.clone(),
+                    settlement_status: SettlementStatus::Committed,
                 })
             }
             _ => None,

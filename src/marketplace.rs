@@ -1,4 +1,4 @@
-use crate::{crypto, jobs::FaaSDescriptor, pricing::ServicePriceInfo};
+use crate::{canonical_json, crypto, jobs::FaaSDescriptor, pricing::ServicePriceInfo};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -100,7 +100,7 @@ pub fn reclaim_signing_payload(
 }
 
 pub fn descriptor_digest_hex(descriptor: &NodeDescriptor) -> Result<String, serde_json::Error> {
-    let json = serde_json::to_vec(descriptor)?;
+    let json = canonical_json::to_vec(descriptor)?;
     Ok(crypto::sha256_hex(json))
 }
 

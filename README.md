@@ -1,29 +1,38 @@
 # Froglet
 
-Froglet is a Rust edge node with three core primitives:
+Froglet is a Rust node for small economic coordination between agents.
 
-- Tor and clearnet transport modes
-- persistent node identity backed by a local ed25519 key
-- static per-endpoint pricing with Cashu token verification and replay protection
+Its core primitive is a signed local ledger of:
+
+- identity and transport descriptors
+- priced offers
+- short-lived quotes
+- accepted deals
+- terminal receipts
+
+Execution, marketplaces, and brokers sit on top of that primitive rather than replacing it.
 
 This repository now contains two binaries:
 
 - `froglet`: the node runtime
-- `marketplace`: the centralized discovery service
+- `marketplace`: a reference discovery service built alongside the node
 
 ## Features
 
 - Native Tor hidden service support through Arti
 - Stable node identity stored under `./data/identity/ed25519.seed`
+- Signed descriptor, offer, quote, deal, and receipt artifacts
+- Append-only local artifact feed backed by SQLite
+- Quote-based pricing for `events.query`, `execute.lua`, and `execute.wasm`
+- Deal execution with signed success, failure, or rejection receipts
 - Central marketplace publishing with signed register and heartbeat flows
 - Signed reclaim flow for bringing a node identity back online
-- Static endpoint pricing for `events.query`, `execute.lua`, and `execute.wasm`
-- Cashu token parsing with local reservation/commit flow and execution receipts
+- Cashu token parsing with local reservation/commit flow and settlement-aware execution receipts
 - Sandboxed Lua and WASM execution
-- Async job API with persisted state, polling, and idempotency keys
+- Async job API with persisted state, polling, and idempotency keys as a compatibility layer
 - SQLite state under `./data/node.db`
 - SQLite tuned with WAL mode and busy timeout for better write/read behavior
- - Async-friendly SQLite access via a small `DbPool` wrapper
+- Async-friendly SQLite access via a small `DbPool` wrapper
 
 ## Binaries
 
@@ -69,8 +78,16 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 - `FROGLET_PRICE_EXEC_LUA=0`
 - `FROGLET_PRICE_EXEC_WASM=0`
 - `FROGLET_PAYMENT_BACKEND=none|cashu`
+- `FROGLET_EXECUTION_TIMEOUT_SECS=10`
+- `FROGLET_CASHU_MINT_ALLOWLIST=https://mint.example,https://mint2.example`
+- `FROGLET_CASHU_REMOTE_CHECKSTATE=true|false`
+- `FROGLET_CASHU_REQUEST_TIMEOUT_SECS=5`
 
 If any price is greater than zero and `FROGLET_PAYMENT_BACKEND` is not set, Froglet defaults to `cashu`.
+
+`FROGLET_EXECUTION_TIMEOUT_SECS` is enforced by the Lua and Wasm sandbox adapters and is also published in offer constraints.
+
+When `FROGLET_CASHU_MINT_ALLOWLIST` is set, only tokens from those mints are accepted. If `FROGLET_CASHU_REMOTE_CHECKSTATE=true`, Froglet additionally calls the mint's NUT-07 `/v1/checkstate` endpoint before reserving the token. Remote checkstate requires a non-empty mint allowlist.
 
 ## Marketplace Configuration
 
@@ -82,13 +99,15 @@ If a published node stays offline longer than the stale threshold, the marketpla
 
 ## Architecture Overview
 
-At a high level, clients talk HTTP/JSON to the node API, which enforces pricing and payments, stores events in SQLite, optionally executes code in sandboxes, and (optionally) publishes its descriptor to the marketplace:
+At a high level, clients talk HTTP/JSON to a small protocol surface that issues quotes, accepts deals, persists signed artifacts, optionally executes workloads, and can publish into external discovery systems:
 
 ```mermaid
 flowchart TD
   client[Client] -->|HTTP JSON| nodeApi[NodeAPI]
-  nodeApi --> payments[PaymentsAndPricing]
+  nodeApi --> protocol[Descriptor Offer Quote Deal Receipt]
+  nodeApi --> payments[PaymentsAndSettlement]
   nodeApi --> sandbox[LuaWasmSandbox]
+  nodeApi --> ledger[SQLiteArtifactLedger]
   nodeApi --> eventsDB[EventsDB]
   nodeApi --> marketplaceClient[MarketplaceClient]
   marketplaceClient --> marketplaceServer[MarketplaceServer]
@@ -96,7 +115,7 @@ flowchart TD
   transport --> client
 ```
 
-Security and performance-critical paths sit at the `payments` and `sandbox` layers: paid endpoints are enforced before entering the sandboxes, and the database is always accessed behind an async wrapper to avoid blocking the reactor.
+Security and performance-critical paths sit at the `payments`, `sandbox`, and `ledger` layers: quoted prices are enforced before execution, terminal receipts are signed, and the database is always accessed behind an async wrapper to avoid blocking the reactor.
 
 ## Example Flows
 
@@ -144,6 +163,43 @@ Requests to `/v1/node/events/query` now require a payment object:
 
 If payment is missing, Froglet returns `402 Payment Required`.
 
+### Quote and deal flow
+
+```json
+POST /v1/quotes
+{
+  "offer_id": "execute.lua",
+  "kind": "lua",
+  "script": "return input.greeting .. ' ' .. input.target",
+  "input": {
+    "greeting": "hello",
+    "target": "world"
+  }
+}
+```
+
+The node responds with a signed quote artifact. The client can then open a deal against that quote:
+
+```json
+POST /v1/deals
+{
+  "quote": { "...": "signed quote artifact" },
+  "kind": "lua",
+  "script": "return input.greeting .. ' ' .. input.target",
+  "input": {
+    "greeting": "hello",
+    "target": "world"
+  },
+  "payment": {
+    "kind": "cashu",
+    "token": "cashuA..."
+  }
+}
+```
+
+Froglet persists the accepted deal immediately, executes it asynchronously, and returns a signed receipt when the deal reaches `succeeded`, `failed`, or `rejected`.
+If compute capacity is exhausted before execution begins, the provider emits a signed terminal rejection receipt and releases any local payment reservation.
+
 ### Async FaaS-style job submission
 
 ```json
@@ -166,6 +222,14 @@ Froglet returns a persisted job record immediately and clients can poll `GET /v1
 ### Node routes
 
 - `GET /health`
+- `GET /v1/descriptor`
+- `GET /v1/offers`
+- `GET /v1/feed`
+- `GET /v1/artifacts/:artifact_hash`
+- `POST /v1/quotes`
+- `POST /v1/deals`
+- `GET /v1/deals/:deal_id`
+- `POST /v1/receipts/verify`
 - `GET /v1/node/capabilities`
 - `GET /v1/node/identity`
 - `POST /v1/node/events/publish`
@@ -175,6 +239,10 @@ Froglet returns a persisted job record immediately and clients can poll `GET /v1
 - `POST /v1/node/jobs`
 - `GET /v1/node/jobs/:job_id`
 - `POST /v1/node/pay/ecash`
+
+`GET /v1/feed` uses an exclusive cursor over the local artifact sequence.
+Pass `?cursor=<last_seen_cursor>&limit=<n>` to continue replication from the last artifact you processed.
+Use `GET /v1/artifacts/:artifact_hash` to resolve a specific content-addressed artifact by hash.
 
 ### Marketplace routes
 
@@ -226,12 +294,17 @@ Froglet returns a persisted job record immediately and clients can poll `GET /v1
 Paid endpoint enforcement currently does two things:
 
 - validates Cashu token structure and amount
+- optionally enforces a mint allowlist and checks proof state against the mint via NUT-07
 - reserves the token locally before execution and only commits it on success
-- returns a local payment receipt containing the service, amount, and token hash
+- records explicit local settlement outcomes as `reserved`, `committed`, `released`, or `expired`
+- binds deal execution to the quoted price, not just the current endpoint default
+- returns signed terminal receipts that can be verified offline, including reserved-versus-committed settlement amounts
 
-If execution fails, Froglet releases the local reservation so the token is not consumed by a failed request.
+If execution fails, Froglet marks the local reservation as `released` so the token is not consumed by a failed request and can be presented again later.
 
-It does **not** redeem tokens against a mint or wallet backend. Replay protection is strictly **local to a single node**: the token hash is only compared against the node's own `payment_redemptions` table, and a token could in principle be reused at other nodes that do not share this table.
+If the node restarts while a deal is still accepted or running, Froglet marks the local reservation as `expired` and emits a signed terminal failure receipt for that interrupted deal during startup recovery.
+
+It does **not** redeem tokens against a mint or wallet backend. Replay protection is strictly **local to a single node**: the token hash is only compared against the node's own settlement state tables, and a token could in principle be reused at other nodes that do not share this state.
 
 The verifier is isolated behind a dedicated module so a stronger backend (for example, a real mint/wallet or remote verifier) can replace the current implementation without changing the API surface.
 
@@ -245,8 +318,9 @@ The verifier is isolated behind a dedicated module so a stronger backend (for ex
   - basic rate limiting and explicit body size limits on publish/execute routes.
 - Payments:
   - Cashu tokens are parsed and checked for amount.
-  - A local reservation/commit flow prevents a successful token from being used twice **on the same node**.
-  - Failed executions release their reservation and do not intentionally consume the token.
+  - Optional mint allowlists and NUT-07 checkstate verification can reject tokens before reservation.
+  - A local `reserved -> committed|released|expired` lifecycle prevents a successful token from being used twice **on the same node** while still preserving local failure state.
+  - Failed executions mark their reservation as `released` and do not intentionally consume the token.
   - There is no global double-spend protection without an external mint/wallet integration.
 - Storage and identities:
   - Identity seeds, database files, and Tor state/cache directories are created with strict `0o600/0o700` permissions on Unix.

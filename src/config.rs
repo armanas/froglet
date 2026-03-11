@@ -127,11 +127,20 @@ impl PricingConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct CashuConfig {
+    pub mint_allowlist: Vec<String>,
+    pub remote_checkstate: bool,
+    pub request_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct StorageConfig {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
     pub identity_dir: PathBuf,
     pub identity_seed_path: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub runtime_auth_token_path: PathBuf,
     pub tor_dir: PathBuf,
 }
 
@@ -144,6 +153,8 @@ pub struct NodeConfig {
     pub marketplace: Option<MarketplaceConfig>,
     pub pricing: PricingConfig,
     pub payment_backend: PaymentBackend,
+    pub execution_timeout_secs: u64,
+    pub cashu: CashuConfig,
     pub storage: StorageConfig,
 }
 
@@ -211,10 +222,28 @@ impl NodeConfig {
             );
         }
 
+        let execution_timeout_secs = env_u64("FROGLET_EXECUTION_TIMEOUT_SECS", 10)?.clamp(1, 300);
+        let mint_allowlist = env_csv("FROGLET_CASHU_MINT_ALLOWLIST");
+        let remote_checkstate = env_bool("FROGLET_CASHU_REMOTE_CHECKSTATE", false)?;
+        if remote_checkstate && mint_allowlist.is_empty() {
+            return Err(
+                "FROGLET_CASHU_REMOTE_CHECKSTATE=true requires FROGLET_CASHU_MINT_ALLOWLIST to avoid untrusted mint callbacks"
+                    .into(),
+            );
+        }
+        let cashu = CashuConfig {
+            mint_allowlist,
+            remote_checkstate,
+            request_timeout_secs: env_u64("FROGLET_CASHU_REQUEST_TIMEOUT_SECS", 5)?
+                .clamp(1, 30),
+        };
+
         let data_dir =
             PathBuf::from(env::var("FROGLET_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
         let identity_dir = data_dir.join("identity");
         let identity_seed_path = identity_dir.join("ed25519.seed");
+        let runtime_dir = data_dir.join("runtime");
+        let runtime_auth_token_path = runtime_dir.join("auth.token");
         let tor_dir = data_dir.join("tor");
         let db_path = data_dir.join("node.db");
 
@@ -228,11 +257,15 @@ impl NodeConfig {
             marketplace,
             pricing,
             payment_backend,
+            execution_timeout_secs,
+            cashu,
             storage: StorageConfig {
                 data_dir,
                 db_path,
                 identity_dir,
                 identity_seed_path,
+                runtime_dir,
+                runtime_auth_token_path,
                 tor_dir,
             },
         })
@@ -249,6 +282,18 @@ fn env_bool(name: &str, default: bool) -> Result<bool, String> {
             )),
         },
         Err(_) => Ok(default),
+    }
+}
+
+fn env_csv(name: &str) -> Vec<String> {
+    match env::var(name) {
+        Ok(value) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        Err(_) => Vec::new(),
     }
 }
 

@@ -61,6 +61,7 @@ class JobApiTests(FrogletAsyncTestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn("events", query_payload)
         self.assertIsNotNone(query_payload["payment_receipt"])
+        self.assertEqual(query_payload["payment_receipt"]["settlement_status"], "committed")
 
 
 if __name__ == "__main__":

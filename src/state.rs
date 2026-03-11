@@ -1,6 +1,6 @@
 use crate::{config::NodeConfig, db::DbPool, identity::NodeIdentity, pricing::PricingTable};
 use serde::Serialize;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,4 +64,6 @@ pub struct AppState {
     pub identity: Arc<NodeIdentity>,
     pub pricing: PricingTable,
     pub http_client: reqwest::Client,
+    pub runtime_auth_token: String,
+    pub runtime_auth_token_path: PathBuf,
 }

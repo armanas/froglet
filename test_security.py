@@ -122,7 +122,10 @@ class SecurityApiTests(FrogletAsyncTestCase):
                 self.assertIn(resp.status, [400, 413])
                 self.assertTrue(body)
             except aiohttp.ClientOSError as exc:
-                self.assertIn("Broken pipe", str(exc))
+                self.assertRegex(
+                    str(exc),
+                    r"Broken pipe|Connection reset by peer",
+                )
 
     async def test_absurd_query_limit_is_clamped_without_crash(self) -> None:
         node = await self.start_node()

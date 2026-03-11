@@ -18,6 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Serialization & Deserialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_json_canonicalizer = "0.3.2"
 
 # Tor anonymity network (100% Rust)
 arti-client = { version = "0.18", features = ["onion-service-service", "onion-service-client"] }

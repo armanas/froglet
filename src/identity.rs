@@ -123,8 +123,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::{
-        DiscoveryMode, IdentityConfig, NetworkMode, NodeConfig, PaymentBackend, PricingConfig,
-        StorageConfig,
+        CashuConfig, DiscoveryMode, IdentityConfig, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig,
     };
     use std::path::PathBuf;
 
@@ -145,11 +145,19 @@ mod tests {
                 execute_wasm: 0,
             },
             payment_backend: PaymentBackend::None,
+            execution_timeout_secs: 10,
+            cashu: CashuConfig {
+                mint_allowlist: Vec::new(),
+                remote_checkstate: false,
+                request_timeout_secs: 5,
+            },
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: temp_dir.join("node.db"),
                 identity_dir: temp_dir.join("identity"),
                 identity_seed_path: temp_dir.join("identity/ed25519.seed"),
+                runtime_dir: temp_dir.join("runtime"),
+                runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 tor_dir: temp_dir.join("tor"),
             },
         };

@@ -1,7 +1,7 @@
 use froglet::{
     config::{
-        DiscoveryMode, IdentityConfig, MarketplaceConfig, NetworkMode, NodeConfig, PaymentBackend,
-        PricingConfig, StorageConfig,
+        CashuConfig, DiscoveryMode, IdentityConfig, MarketplaceConfig, NetworkMode, NodeConfig,
+        PaymentBackend, PricingConfig, StorageConfig,
     },
     db::{self, DbPool},
     marketplace::{
@@ -10,8 +10,10 @@ use froglet::{
     },
     payments::{self, ProvidedPayment},
     pricing::ServiceId,
+    settlement,
     state::{AppState, MarketplaceStatus, TransportStatus},
 };
+use rusqlite::params;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -44,11 +46,19 @@ fn in_memory_state() -> AppState {
             execute_wasm: 30,
         },
         payment_backend: PaymentBackend::Cashu,
+        execution_timeout_secs: 10,
+        cashu: CashuConfig {
+            mint_allowlist: Vec::new(),
+            remote_checkstate: false,
+            request_timeout_secs: 5,
+        },
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
             identity_dir: temp_dir.join("identity"),
             identity_seed_path: temp_dir.join("identity/ed25519.seed"),
+            runtime_dir: temp_dir.join("runtime"),
+            runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
             tor_dir: temp_dir.join("tor"),
         },
     };
@@ -71,6 +81,8 @@ fn in_memory_state() -> AppState {
         identity: Arc::new(identity),
         pricing,
         http_client: reqwest::Client::new(),
+        runtime_auth_token: "test-runtime-token".to_string(),
+        runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
     }
 }
 
@@ -159,4 +171,161 @@ fn payments_enforce_all_error_paths() {
         err,
         payments::PaymentError::UnsupportedKind { .. }
     ));
+}
+
+#[test]
+fn settlement_driver_reports_capabilities_consistently() {
+    let rt = Runtime::new().unwrap();
+    let mut state = in_memory_state();
+
+    let cashu_descriptor = settlement::driver_descriptor(&state);
+    assert_eq!(cashu_descriptor.backend, "cashu");
+    assert_eq!(cashu_descriptor.mode, settlement::CASHU_VERIFIER_MODE);
+    assert_eq!(cashu_descriptor.accepted_payment_methods, vec!["cashu"]);
+    assert!(cashu_descriptor.accepted_mints.is_empty());
+    assert_eq!(
+        cashu_descriptor.capabilities,
+        vec!["token_format_verification", "local_replay_guard"]
+    );
+    assert!(cashu_descriptor.reservations);
+    assert!(cashu_descriptor.receipts);
+
+    let cashu_wallet = rt
+        .block_on(settlement::wallet_balance_snapshot(&state))
+        .expect("wallet snapshot");
+    assert_eq!(cashu_wallet.backend, "cashu");
+    assert_eq!(cashu_wallet.mode, settlement::CASHU_VERIFIER_MODE);
+    assert!(!cashu_wallet.balance_known);
+    assert_eq!(cashu_wallet.accepted_payment_methods, vec!["cashu"]);
+    assert!(cashu_wallet.accepted_mints.is_empty());
+    assert_eq!(
+        cashu_wallet.capabilities,
+        vec!["token_format_verification", "local_replay_guard"]
+    );
+
+    state.config.payment_backend = PaymentBackend::None;
+    let none_descriptor = settlement::driver_descriptor(&state);
+    assert_eq!(none_descriptor.backend, "none");
+    assert_eq!(none_descriptor.mode, "disabled");
+    assert!(none_descriptor.accepted_payment_methods.is_empty());
+    assert!(none_descriptor.accepted_mints.is_empty());
+    assert!(none_descriptor.capabilities.is_empty());
+    assert!(!none_descriptor.reservations);
+    assert!(!none_descriptor.receipts);
+
+    let none_wallet = rt
+        .block_on(settlement::wallet_balance_snapshot(&state))
+        .expect("wallet snapshot");
+    assert_eq!(none_wallet.backend, "none");
+    assert_eq!(none_wallet.mode, "disabled");
+    assert!(none_wallet.accepted_payment_methods.is_empty());
+    assert!(none_wallet.accepted_mints.is_empty());
+    assert!(none_wallet.capabilities.is_empty());
+}
+
+#[test]
+fn settlement_descriptor_reports_mint_policy_capabilities() {
+    let mut configured = in_memory_state();
+    configured.config.cashu = CashuConfig {
+        mint_allowlist: vec!["https://mint.example".to_string()],
+        remote_checkstate: true,
+        request_timeout_secs: 2,
+    };
+
+    let descriptor = settlement::driver_descriptor(&configured);
+    assert_eq!(descriptor.accepted_mints, vec!["https://mint.example"]);
+    assert_eq!(
+        descriptor.capabilities,
+        vec![
+            "token_format_verification",
+            "local_replay_guard",
+            "mint_allowlist",
+            "nut07_checkstate",
+        ]
+    );
+}
+
+#[test]
+fn payment_token_storage_tracks_release_and_expiry_without_deletion() {
+    let rt = Runtime::new().unwrap();
+    let state = in_memory_state();
+
+    let reserve = rt
+        .block_on(state.db.with_conn(|conn| {
+            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-1", 100)
+        }))
+        .expect("reserve");
+    assert!(matches!(reserve, db::ReservePaymentTokenOutcome::Reserved));
+
+    let released = rt
+        .block_on(state.db.with_conn(|conn| {
+            db::release_payment_token(conn, "token-a", "req-1", 110)
+        }))
+        .expect("release");
+    assert!(released);
+
+    let released_state = rt
+        .block_on(state.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
+                params!["token-a"],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|e| e.to_string())
+        }))
+        .expect("load released state");
+    assert_eq!(released_state.0, "released");
+    assert_eq!(released_state.1, "req-1");
+
+    let reclaimed = rt
+        .block_on(state.db.with_conn(|conn| {
+            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-2", 120)
+        }))
+        .expect("re-reserve released token");
+    assert!(matches!(reclaimed, db::ReservePaymentTokenOutcome::Reserved));
+
+    let _ = rt
+        .block_on(
+            state
+                .db
+                .with_conn(|conn| db::expire_reserved_payment_tokens(conn, 130)),
+        )
+        .expect("expire reserved");
+
+    let expired_state = rt
+        .block_on(state.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
+                params!["token-a"],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|e| e.to_string())
+        }))
+        .expect("load expired state");
+    assert_eq!(expired_state.0, "expired");
+    assert_eq!(expired_state.1, "req-2");
+
+    let reclaimed_after_expiry = rt
+        .block_on(state.db.with_conn(|conn| {
+            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-3", 140)
+        }))
+        .expect("re-reserve expired token");
+    assert!(matches!(
+        reclaimed_after_expiry,
+        db::ReservePaymentTokenOutcome::Reserved
+    ));
+
+    let committed = rt
+        .block_on(state.db.with_conn(|conn| {
+            db::commit_payment_token(conn, "token-a", "req-3", 150)
+        }))
+        .expect("commit");
+    assert!(committed);
+
+    let replay = rt
+        .block_on(state.db.with_conn(|conn| {
+            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-4", 160)
+        }))
+        .expect("replay check");
+    assert!(matches!(replay, db::ReservePaymentTokenOutcome::Replay));
 }

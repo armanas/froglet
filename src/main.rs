@@ -3,9 +3,9 @@ use froglet::{
     config::NodeConfig,
     db::{self, DbPool},
     identity::NodeIdentity,
-    marketplace_client, payments,
+    marketplace_client,
     pricing::PricingTable,
-    sandbox,
+    runtime_auth, sandbox,
     state::{AppState, MarketplaceStatus, TransportStatus},
     tor,
 };
@@ -39,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sandbox::initialize_engine();
 
     ensure_dir(&node_config.storage.data_dir)?;
+    ensure_dir(&node_config.storage.runtime_dir)?;
     ensure_dir(&node_config.storage.tor_dir)?;
 
     let identity = match NodeIdentity::load_or_create(&node_config) {
@@ -50,10 +51,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     info!("Node identity: {}", identity.node_id());
 
+    let runtime_auth = match runtime_auth::load_or_create_local_runtime_auth(&node_config) {
+        Ok(runtime_auth) => runtime_auth,
+        Err(e) => {
+            error!("{e}");
+            std::process::exit(1);
+        }
+    };
+    info!(
+        "Runtime auth token file: {}",
+        node_config.storage.runtime_auth_token_path.display()
+    );
+
     let conn =
         db::initialize_db(&node_config.storage.db_path).expect("Failed to initialize SQLite DB");
-    db::recover_runtime_state(&conn, payments::current_unix_timestamp())
-        .expect("Failed to recover pending runtime state");
     set_mode(&node_config.storage.db_path, 0o600)?;
 
     let state = Arc::new(AppState {
@@ -66,7 +77,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         identity,
         config: node_config.clone(),
         http_client: reqwest::Client::new(),
+        runtime_auth_token: runtime_auth.token,
+        runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
     });
+
+    api::recover_runtime_state(state.clone())
+        .await
+        .expect("Failed to recover pending runtime state");
 
     let app = api::router(state.clone());
 

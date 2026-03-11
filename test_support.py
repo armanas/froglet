@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import shutil
 import signal
@@ -237,6 +238,49 @@ def canonical_event_signing_bytes(event: dict) -> bytes:
     ).encode("utf-8")
 
 
+def canonical_artifact_signing_bytes(artifact: dict) -> bytes:
+    return canonical_json_bytes(
+        [
+            artifact["kind"],
+            artifact["actor_id"],
+            artifact["created_at"],
+            artifact["payload_hash"],
+            artifact["payload"],
+        ]
+    )
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def verify_signed_artifact(artifact: dict) -> bool:
+    payload_bytes = canonical_json_bytes(artifact["payload"])
+    if sha256_hex(payload_bytes) != artifact["payload_hash"]:
+        return False
+
+    signing_bytes = canonical_artifact_signing_bytes(artifact)
+    if sha256_hex(signing_bytes) != artifact["hash"]:
+        return False
+
+    try:
+        verify_key = nacl.signing.VerifyKey(bytes.fromhex(artifact["actor_id"]))
+        verify_key.verify(signing_bytes, bytes.fromhex(artifact["signature"]))
+        return True
+    except Exception:
+        return False
+
+
 class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         await asyncio.to_thread(ensure_binaries)
@@ -264,3 +308,16 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.2)
 
         raise RuntimeError(f"Timed out waiting for job {job_id}")
+
+    async def wait_for_deal(self, node: FrogletNode, deal_id: str, timeout: float = 15.0) -> dict:
+        deadline = time.monotonic() + timeout
+
+        async with aiohttp.ClientSession() as session:
+            while time.monotonic() < deadline:
+                async with session.get(node.url(f"/v1/deals/{deal_id}")) as resp:
+                    payload = await resp.json()
+                if payload["status"] in {"succeeded", "failed", "rejected"}:
+                    return payload
+                await asyncio.sleep(0.2)
+
+        raise RuntimeError(f"Timed out waiting for deal {deal_id}")
