@@ -23,12 +23,12 @@ This repository now contains two binaries:
 - Stable node identity stored under `./data/identity/ed25519.seed`
 - Signed descriptor, offer, quote, deal, and receipt artifacts
 - Append-only local artifact feed backed by SQLite
-- Quote-based pricing for `events.query`, `execute.lua`, and `execute.wasm`
+- Quote-based pricing for `events.query` and `execute.wasm`
 - Deal execution with signed success, failure, or rejection receipts
 - Central marketplace publishing with signed register and heartbeat flows
 - Signed reclaim flow for bringing a node identity back online
 - Cashu token parsing with local reservation/commit flow and settlement-aware execution receipts
-- Sandboxed Lua and WASM execution
+- Sandboxed Wasm execution
 - Async job API with persisted state, polling, and idempotency keys as a compatibility layer
 - SQLite state under `./data/node.db`
 - SQLite tuned with WAL mode and busy timeout for better write/read behavior
@@ -75,7 +75,6 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 ### Pricing and payments
 
 - `FROGLET_PRICE_EVENTS_QUERY=0`
-- `FROGLET_PRICE_EXEC_LUA=0`
 - `FROGLET_PRICE_EXEC_WASM=0`
 - `FROGLET_PAYMENT_BACKEND=none|cashu`
 - `FROGLET_EXECUTION_TIMEOUT_SECS=10`
@@ -85,7 +84,7 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 
 If any price is greater than zero and `FROGLET_PAYMENT_BACKEND` is not set, Froglet defaults to `cashu`.
 
-`FROGLET_EXECUTION_TIMEOUT_SECS` is enforced by the Lua and Wasm sandbox adapters and is also published in offer constraints.
+`FROGLET_EXECUTION_TIMEOUT_SECS` is enforced by the Wasm sandbox adapter and is also published in offer constraints.
 
 When `FROGLET_CASHU_MINT_ALLOWLIST` is set, only tokens from those mints are accepted. If `FROGLET_CASHU_REMOTE_CHECKSTATE=true`, Froglet additionally calls the mint's NUT-07 `/v1/checkstate` endpoint before reserving the token. Remote checkstate requires a non-empty mint allowlist.
 
@@ -106,7 +105,7 @@ flowchart TD
   client[Client] -->|HTTP JSON| nodeApi[NodeAPI]
   nodeApi --> protocol[Descriptor Offer Quote Deal Receipt]
   nodeApi --> payments[PaymentsAndSettlement]
-  nodeApi --> sandbox[LuaWasmSandbox]
+  nodeApi --> sandbox[WasmSandbox]
   nodeApi --> ledger[SQLiteArtifactLedger]
   nodeApi --> eventsDB[EventsDB]
   nodeApi --> marketplaceClient[MarketplaceClient]
@@ -168,12 +167,23 @@ If payment is missing, Froglet returns `402 Payment Required`.
 ```json
 POST /v1/quotes
 {
-  "offer_id": "execute.lua",
-  "kind": "lua",
-  "script": "return input.greeting .. ' ' .. input.target",
-  "input": {
-    "greeting": "hello",
-    "target": "world"
+  "offer_id": "execute.wasm",
+  "kind": "wasm",
+  "submission": {
+    "schema_version": "froglet/v1",
+    "submission_type": "wasm_submission",
+    "workload": {
+      "schema_version": "froglet/v1",
+      "workload_kind": "compute.wasm.v1",
+      "abi_version": "froglet.wasm.run_json.v1",
+      "module_format": "application/wasm",
+      "module_hash": "<sha256 of raw wasm bytes>",
+      "input_format": "application/json+jcs",
+      "input_hash": "<sha256 of canonical JSON input>",
+      "requested_capabilities": []
+    },
+    "module_bytes_hex": "0061736d...",
+    "input": null
   }
 }
 ```
@@ -184,11 +194,9 @@ The node responds with a signed quote artifact. The client can then open a deal 
 POST /v1/deals
 {
   "quote": { "...": "signed quote artifact" },
-  "kind": "lua",
-  "script": "return input.greeting .. ' ' .. input.target",
-  "input": {
-    "greeting": "hello",
-    "target": "world"
+  "kind": "wasm",
+  "submission": {
+    "...": "same wasm_submission used for quoting"
   },
   "payment": {
     "kind": "cashu",
@@ -205,11 +213,9 @@ If compute capacity is exhausted before execution begins, the provider emits a s
 ```json
 POST /v1/node/jobs
 {
-  "kind": "lua",
-  "script": "return input.greeting .. ', ' .. input.target",
-  "input": {
-    "greeting": "hello",
-    "target": "world"
+  "kind": "wasm",
+  "submission": {
+    "...": "wasm_submission"
   },
   "idempotency_key": "hello-world-job"
 }
@@ -234,7 +240,6 @@ Froglet returns a persisted job record immediately and clients can poll `GET /v1
 - `GET /v1/node/identity`
 - `POST /v1/node/events/publish`
 - `POST /v1/node/events/query`
-- `POST /v1/node/execute/lua`
 - `POST /v1/node/execute/wasm`
 - `POST /v1/node/jobs`
 - `GET /v1/node/jobs/:job_id`
@@ -284,7 +289,7 @@ Use `GET /v1/artifacts/:artifact_hash` to resolve a specific content-addressed a
     "jobs_api": true,
     "async_jobs": true,
     "idempotency_keys": true,
-    "runtimes": ["lua", "wasm"]
+    "runtimes": ["wasm"]
   }
 }
 ```
@@ -314,7 +319,7 @@ The verifier is isolated behind a dedicated module so a stronger backend (for ex
 - API routes are unauthenticated by default; protection is based on:
   - static pricing and payment verification for sensitive endpoints,
   - input validation,
-  - sandboxing of Lua and WASM with instruction/fuel caps and global concurrency limits,
+  - sandboxing of Wasm with fuel caps, memory caps, and global concurrency limits,
   - basic rate limiting and explicit body size limits on publish/execute routes.
 - Payments:
   - Cashu tokens are parsed and checked for amount.

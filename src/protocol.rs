@@ -1,4 +1,4 @@
-use crate::{canonical_json, crypto, jobs::JobSpec, pricing::ServiceId};
+use crate::{canonical_json, crypto, jobs::JobSpec, pricing::ServiceId, wasm::WasmSubmission};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -173,13 +173,8 @@ pub struct ReceiptPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkloadSpec {
-    Lua {
-        script: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        input: Option<Value>,
-    },
     Wasm {
-        wasm_hex: String,
+        submission: WasmSubmission,
     },
     EventsQuery {
         kinds: Vec<String>,
@@ -191,15 +186,20 @@ pub enum WorkloadSpec {
 impl WorkloadSpec {
     pub fn kind(&self) -> &'static str {
         match self {
-            WorkloadSpec::Lua { .. } => "lua",
             WorkloadSpec::Wasm { .. } => "wasm",
+            WorkloadSpec::EventsQuery { .. } => "events_query",
+        }
+    }
+
+    pub fn workload_kind(&self) -> &'static str {
+        match self {
+            WorkloadSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
             WorkloadSpec::EventsQuery { .. } => "events_query",
         }
     }
 
     pub fn service_id(&self) -> ServiceId {
         match self {
-            WorkloadSpec::Lua { .. } => ServiceId::ExecuteLua,
             WorkloadSpec::Wasm { .. } => ServiceId::ExecuteWasm,
             WorkloadSpec::EventsQuery { .. } => ServiceId::EventsQuery,
         }
@@ -208,29 +208,32 @@ impl WorkloadSpec {
     pub fn resource_kind(&self) -> &'static str {
         match self {
             WorkloadSpec::EventsQuery { .. } => "data",
-            WorkloadSpec::Lua { .. } | WorkloadSpec::Wasm { .. } => "compute",
+            WorkloadSpec::Wasm { .. } => "compute",
         }
     }
 
     pub fn runtime(&self) -> Option<&'static str> {
         match self {
-            WorkloadSpec::Lua { .. } => Some("lua"),
             WorkloadSpec::Wasm { .. } => Some("wasm"),
             WorkloadSpec::EventsQuery { .. } => None,
         }
     }
 
     pub fn request_hash(&self) -> Result<String, String> {
-        let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
-        Ok(crypto::sha256_hex(encoded))
+        match self {
+            WorkloadSpec::Wasm { submission } => submission.workload_hash(),
+            WorkloadSpec::EventsQuery { .. } => {
+                let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
+                Ok(crypto::sha256_hex(encoded))
+            }
+        }
     }
 }
 
 impl From<JobSpec> for WorkloadSpec {
     fn from(value: JobSpec) -> Self {
         match value {
-            JobSpec::Lua { script, input } => WorkloadSpec::Lua { script, input },
-            JobSpec::Wasm { wasm_hex } => WorkloadSpec::Wasm { wasm_hex },
+            JobSpec::Wasm { submission } => WorkloadSpec::Wasm { submission },
         }
     }
 }
@@ -376,6 +379,7 @@ mod tests {
     use crate::crypto;
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
+    use serde::Serialize;
 
     #[test]
     fn signed_artifact_roundtrip_verifies() {
@@ -388,9 +392,9 @@ mod tests {
             123,
             QuotePayload {
                 quote_id: "q1".to_string(),
-                offer_id: "execute.lua".to_string(),
-                service_id: "execute.lua".to_string(),
-                workload_kind: "lua".to_string(),
+                offer_id: "execute.wasm".to_string(),
+                service_id: "execute.wasm".to_string(),
+                workload_kind: "wasm".to_string(),
                 workload_hash: "abc".to_string(),
                 price_sats: 5,
                 payment_method: Some("cashu".to_string()),
@@ -404,24 +408,27 @@ mod tests {
 
     #[test]
     fn workload_hash_is_stable_across_object_key_order() {
-        let first = WorkloadSpec::Lua {
-            script: "return input.answer".to_string(),
-            input: Some(json!({
+        #[derive(Serialize)]
+        struct CanonicalPayload {
+            config: Value,
+        }
+
+        let first = CanonicalPayload {
+            config: json!({
                 "b": 2,
                 "a": 1
-            })),
+            }),
         };
-        let second = WorkloadSpec::Lua {
-            script: "return input.answer".to_string(),
-            input: Some(json!({
+        let second = CanonicalPayload {
+            config: json!({
                 "a": 1,
                 "b": 2
-            })),
+            }),
         };
 
         assert_eq!(
-            first.request_hash().unwrap(),
-            second.request_hash().unwrap()
+            payload_hash(&first).unwrap(),
+            payload_hash(&second).unwrap()
         );
     }
 
@@ -431,9 +438,9 @@ mod tests {
         let actor_id = crypto::public_key_hex(&signing_key);
         let payload = QuotePayload {
             quote_id: "q1".to_string(),
-            offer_id: "execute.lua".to_string(),
-            service_id: "execute.lua".to_string(),
-            workload_kind: "lua".to_string(),
+            offer_id: "execute.wasm".to_string(),
+            service_id: "execute.wasm".to_string(),
+            workload_kind: "wasm".to_string(),
             workload_hash: "abc".to_string(),
             price_sats: 5,
             payment_method: Some("cashu".to_string()),

@@ -1,119 +1,97 @@
 # Froglet Implementation Checklist
 
-Froglet is a bot-specific primitive for creating, discovering, buying, and operating valuable online services across a distributed network. Its job is to give AI agents a small, solid economic and cryptographic core for offers, quotes, deals, receipts, and local ledgers, plus a higher-level bot runtime that makes those primitives easy to use.
+This checklist is reset around the narrowed version 1 direction.
+Prototype features outside that path are not treated as roadmap anchors.
 
-Core principles:
-
-- Canonical economic state lives in signed Froglet artifacts and local ledgers, not external discovery networks.
-- The core stays small, auditable, and stable; adapters handle discovery, transport, settlement, and runtimes.
-- Settlement must be explicit and stronger than local replay protection.
-- Bot-facing workflows should be simple and opinionated, but must map cleanly onto the core protocol.
-- Metering is adapter-specific and must not be confused with money itself.
+Froglet version 1 should be a small, solid economic primitive for AI agents: signed artifacts, Lightning-backed conditional settlement, a Wasm-first public execution surface, optional Tor transport, and optional Nostr publication.
 
 Status legend:
 
 - [x] done
+- [~] current focus
 - [ ] pending
-- [~] in progress
 
-## Phase 1: Core Foundation
+## Guiding Constraints
 
-- [x] Define signed core artifacts: descriptor, offer, quote, deal, receipt
-- [x] Persist artifacts, quotes, deals, and receipts in the local SQLite ledger
-- [x] Expose core HTTP endpoints for descriptor, offers, feed, quotes, deals, and receipt verification
-- [ ] Define normative artifact field requirements from `SPEC.md`
-- [ ] Define and enforce the normative deal and settlement state machines from `SPEC.md`
-- [ ] Define ledger archival, pruning, and storage invariants independent of SQLite
-- [x] Replace ad hoc JSON hashing and signing bytes with RFC 8785 JCS canonicalization
-- [x] Add content-addressed artifact fetch by hash
-- [x] Add explicit replication cursor semantics and pagination guarantees
-- [x] Define and implement a signed rejection form for deal admission or capacity failures
+- Keep the hard core small enough to audit.
+- Keep settlement, identity, discovery, and execution cleanly separated.
+- Optimize for short-lived, bounded jobs before broader market features.
+- Prefer one obvious happy path for agent clients over feature breadth.
+- Keep adapters optional unless they strengthen the hard core directly.
 
-## Phase 2: Bot Runtime Surface
+## Phase 1: Freeze the Version 1 Protocol Surface
 
-- [x] Create a bot-facing implementation plan and track it in this checklist
-- [x] Add local runtime authentication for localhost control endpoints
-- [x] Add basic bot-runtime provider snapshot endpoints for status/start/publish
-- [ ] Separate `provider/start` lifecycle behavior from `services/publish` advertisement behavior
-- [x] Add high-level service-buy workflow that wraps quote plus deal plus optional wait
-- [ ] Add bot-runtime search workflow over configured discovery adapters
-- [x] Add local wallet status surface for settlement drivers
-- [ ] Extend the current driver-backed wallet endpoint with real balance retrieval once wallet-backed settlement exists
+- [x] Reset `SPEC.md` and this checklist around the narrowed v1 direction
+- [x] Freeze the normative artifact fields for `Descriptor`, `Offer`, `Quote`, `Deal`, and `Receipt`
+- [x] Freeze RFC 8785 JCS plus domain-separated signing payload rules
+- [x] Freeze hash-chaining rules for quote, deal, and receipt verification
+- [x] Define separate deal, execution, and settlement state machines normatively
+- [x] Define receipt requirements for `result_hash`, executor metadata, and settlement references
+- [x] Define signed rejection artifacts for admission or capacity failures
+- [x] Define storage and archival invariants independent of SQLite
 
-## Phase 3: Settlement Hardening
+## Phase 2: Identity and Trust Bindings
 
-- [x] Introduce a settlement-driver abstraction beyond local token replay protection
-- [~] Add stronger Cashu driver semantics for reservation, commit, cancel, and verification
-- [x] Model first-class settlement lifecycle states for `reserved`, `committed`, `released`, and `expired`
-- [x] Add support for mint allowlists and driver capability reporting
-- [ ] Model claim-first semantics explicitly where supported
-- [ ] Include settlement references in signed receipts
-- [x] Record reserved and committed settlement amounts distinctly in receipts when they differ
+- [x] Specify `Descriptor` linkage proofs between Froglet application identity and Lightning settlement identity
+- [x] Decide and freeze the v1 Froglet application signature scheme
+- [x] Specify optional Nostr identity linkage without making Nostr authoritative
+- [x] Define endpoint rotation rules for HTTPS and onion endpoints
+- [x] Define signed curated-list format for bootstrap discovery
 
-## Phase 4: Runtime and Sandbox Adapters
+## Phase 3: Lightning Settlement Core
 
-- [ ] Add executor adapter abstraction separate from protocol nouns
-- [ ] Add richer result models for adapters that expose stdout/stderr
-- [x] Add per-deal wall-clock execution timeout enforcement to long-running deal execution
-- [ ] Add metered offer model for adapter-specific usage metrics
-- [ ] Extend metered receipts with `units_used`, `unit_price`, `max_reserved_amount`, `committed_amount`, and `meter_version`
-- [ ] Add Python-in-Wasm and JavaScript-in-Wasm adapter planning and interfaces
+- [x] Remove Cashu from the mainline v1 design direction
+- [~] Design the Lightning settlement driver around normal invoices plus hold invoices
+- [x] Define `base_fee_plus_success_fee` quote fields and validation rules
+- [ ] Implement requester-supplied `payment_hash` flow for the success-fee hold invoice
+- [ ] Validate returned invoice material against quote and deal commitments before payment
+- [ ] Persist invoice identifiers, destination pubkey, payment hash, expiry, CLTV data, and settlement state
+- [ ] Implement automatic cancel, expiry, and restart-recovery behavior
+- [ ] Emit Lightning settlement references in signed receipts
+- [ ] Define conservative maximum job duration and chunking guidance for longer work
+- [ ] Add adversarial tests for requester preimage withholding and provider cancel failures
 
-## Phase 5: Discovery and Marketplace
+## Phase 4: Wasm-First Execution Core
 
-- [ ] Keep the existing marketplace path working while decoupling it from core assumptions
-- [ ] Add discovery-adapter abstraction in the runtime
-- [ ] Add Nostr discovery adapter that publishes descriptor and offer summaries or hashes
-- [ ] Define Froglet-native indexer and broker roles over artifact feeds
-- [ ] Define Froglet-native catalog and reputation service roles over artifact feeds
-- [ ] Add requester-side artifact persistence and export for reputation/indexing workflows
+- [x] Collapse the public remote execution surface to Wasm only
+- [x] Remove Lua from the v1 code and protocol surface
+- [x] Define the v1 Wasm ABI and canonical workload object
+- [x] Align API request/response shapes with `compute.wasm.v1` and `wasm_submission`
+- [ ] Enforce memory, fuel, epoch, output-size, and wall-clock limits
+- [ ] Make host calls explicit, capability-scoped, and time-bounded
+- [ ] Emit executor metadata in receipts
+- [ ] Add determinism guidance for clocks, RNG, filesystem, and network access
+- [ ] Add abuse tests for infinite loops, memory pressure, and blocking host calls
 
-## Phase 6: Local Security and Ops
+## Phase 5: Transport and Discovery Edges
 
-- [x] Require auth for all privileged localhost runtime endpoints
-- [x] Persist local auth material with strict filesystem permissions
-- [ ] Add OS-scoped IPC options or document the future interface boundary
-- [ ] Expand runtime and core observability around deals, receipts, and adapter failures
-- [ ] Align marketplace health and operational responses with the node's JSON API conventions
+- [ ] Keep HTTPS as the baseline direct transport
+- [ ] Keep Tor as an optional transport with identical protocol semantics
+- [ ] Advertise clearnet and onion endpoints through `Descriptor` without coupling them to identity
+- [ ] Define Nostr publication adapter for descriptor, offer, and receipt hashes or summaries
+- [ ] Keep Nostr out of the deal execution and settlement critical path
+- [ ] Define direct-peer and signed curated-list discovery flows before broker or indexer work
 
-## Phase 7: Specification Convergence
+## Phase 6: Bot Runtime and OpenClaw Usability
 
-- [ ] Promote `SPEC.md` from draft to a normative v0.2 protocol and localhost runtime document
-- [ ] Align runtime endpoint docs with the implemented localhost API
-- [ ] Align implementation docs and examples for non-compute workload hashing
-- [ ] Revisit crate boundaries for `froglet-core`, `froglet-node`, and runtime adapters
+- [ ] Reduce the bot-facing flow to `search -> quote -> deal -> wait -> accept/reject -> receipt`
+- [ ] Keep local auth mandatory for all privileged runtime endpoints
+- [ ] Add wallet-facing abstractions around Lightning settlement instead of raw invoice plumbing
+- [ ] Add agent-friendly client SDK helpers for quote, deal, and receipt flows
+- [ ] Ensure the happy path hides relay, transport, and invoice details unless requested
+- [ ] Plan for eventual full remote agent execution on top of the same deal primitive without widening v1
 
-## Recent Milestones
+## Phase 7: Marketplace on Froglet
 
-- [x] Land the first authenticated bot-runtime endpoints on top of the existing core
-- [x] Add integration tests for runtime auth and `services/buy`
-- [x] Move artifact and workload hashing onto RFC 8785 JCS canonicalization
-- [x] Introduce the settlement-driver boundary and move the current Cashu verifier flow behind it
-- [x] Route node capability and runtime wallet metadata through settlement-driver descriptors
-- [x] Add artifact fetch-by-hash and explicit feed cursor semantics for replication
-- [x] Emit signed terminal rejection receipts for capacity admission failures
-- [x] Add explicit receipt settlement fields for reserved and committed amounts
-- [x] Add Cashu mint allowlists, capability reporting, and optional NUT-07 checkstate verification
-- [x] Enforce configurable wall-clock execution timeouts for Lua and Wasm workloads
-- [x] Emit signed restart-recovery receipts for interrupted deals
-- [x] Preserve explicit `released` and `expired` settlement states instead of deleting reservations
+- [ ] Keep the marketplace out of the core trust model
+- [ ] Define indexer role over artifact feeds
+- [ ] Define broker role over quote aggregation and routing
+- [ ] Define catalog and reputation roles as separate Froglet services
+- [ ] Treat signed curated lists as the first bootstrap marketplace primitive
+- [ ] Delay open adversarial marketplace mechanics until the deal primitive is proven
 
-## Confirmed Gaps
+## Immediate Next Steps
 
-- [ ] Wallet balance endpoint is driver-backed now, but still reports `balance_known = false` for the current Cashu verifier driver
-- [ ] Cashu handling now supports mint allowlists and optional mint state checks, but still lacks mint-backed commit/cancel semantics and wallet-backed balance reporting
-- [ ] Runtime discovery/search flow is not implemented yet
-- [ ] Provider snapshot endpoints are present, but provider lifecycle and publish semantics are still conflated
-- [ ] The implementation is still SQLite-specific; storage invariants and archival policy are not yet explicit beyond the current DB module
-- [ ] Marketplace `/health` still returns plain text instead of the JSON shape used by the node API
-- [ ] Restart recovery still marks interrupted jobs failed without signed terminal receipts
-- [ ] Metered receipt fields described in `SPEC.md` are not implemented yet
-- [ ] Catalog and reputation marketplace roles are represented in the plan, but not implemented yet
-
-## Next Execution Order
-
-- [~] Tighten Cashu settlement from local verifier mode to wallet or mint-backed driver semantics, including commit/cancel proofs and settlement references
-- [ ] Emit signed recovery receipts for interrupted jobs or collapse the compatibility job API fully onto deals
-- [ ] Separate `provider/start` lifecycle behavior from `services/publish` advertisement behavior
-- [ ] Add runtime-side discovery abstraction and a first search endpoint shape
-- [ ] Promote `SPEC.md` into the normative protocol and localhost runtime spec
+1. Align the current storage layout with the logical artifact store, feed log, and evidence-retention invariants frozen in the spec.
+2. Start the identity/signature migration from Ed25519 to BIP340 so the implementation matches the frozen v1 trust model.
+3. Replace the settlement implementation with the Lightning-first invoice bundle and hold-invoice flow frozen in the spec.

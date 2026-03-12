@@ -4,7 +4,10 @@ import aiohttp
 
 from test_support import (
     FrogletAsyncTestCase,
+    LONG_RUNNING_WASM_HEX,
     VALID_CASHU_TOKEN,
+    VALID_WASM_HEX,
+    build_wasm_request,
     create_signed_event,
     verify_signed_artifact,
 )
@@ -54,11 +57,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertEqual(descriptor["payload"]["feeds"]["max_page_size"], 100)
 
         offers = offers_payload["offers"]
-        self.assertEqual(len(offers), 3)
+        self.assertEqual(len(offers), 2)
         self.assertTrue(all(verify_signed_artifact(offer) for offer in offers))
         self.assertEqual(
             {offer["payload"]["offer_id"] for offer in offers},
-            {"events.query", "execute.lua", "execute.wasm"},
+            {"events.query", "execute.wasm"},
         )
 
         self.assertEqual(first_page["cursor_type"], "artifact_sequence")
@@ -80,17 +83,12 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
     async def test_compute_quote_deal_and_receipt_flow(self) -> None:
         node = await self.start_node(
             extra_env={
-                "FROGLET_PRICE_EXEC_LUA": "10",
+                "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "cashu",
             }
         )
 
-        quote_request = {
-            "offer_id": "execute.lua",
-            "kind": "lua",
-            "script": "return input.greeting .. ' ' .. input.target",
-            "input": {"greeting": "hello", "target": "froglet"},
-        }
+        quote_request = {"offer_id": "execute.wasm", **build_wasm_request(VALID_WASM_HEX)}
 
         async with aiohttp.ClientSession() as session:
             async with session.post(node.url("/v1/quotes"), json=quote_request) as resp:
@@ -99,14 +97,13 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
 
             self.assertTrue(verify_signed_artifact(quote))
             self.assertEqual(quote["payload"]["price_sats"], 10)
+            self.assertEqual(quote["payload"]["workload_kind"], "compute.wasm.v1")
 
             async with session.post(
                 node.url("/v1/deals"),
                 json={
                     "quote": quote,
-                    "kind": "lua",
-                    "script": quote_request["script"],
-                    "input": quote_request["input"],
+                    **build_wasm_request(VALID_WASM_HEX),
                     "idempotency_key": "protocol-compute-deal",
                     "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
                 },
@@ -128,7 +125,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 feed = await resp.json()
 
         self.assertEqual(terminal["status"], "succeeded")
-        self.assertEqual(terminal["result"], "hello froglet")
+        self.assertEqual(terminal["result"], 42)
         self.assertTrue(verify_signed_artifact(terminal["receipt"]))
         self.assertEqual(terminal["receipt"]["payload"]["status"], "succeeded")
         self.assertEqual(
@@ -193,28 +190,20 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
 
     async def test_deal_rejection_emits_signed_terminal_receipt(self) -> None:
         node = await self.start_node(
-            extra_env={"FROGLET_LUA_CONCURRENCY_LIMIT": "1"}
+            extra_env={"FROGLET_WASM_CONCURRENCY_LIMIT": "1"}
         )
-
-        long_running_script = """
-local total = 0
-for i = 1, 40000000 do
-  total = total + i
-end
-return total
-"""
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 node.url("/v1/quotes"),
-                json={"offer_id": "execute.lua", "kind": "lua", "script": long_running_script},
+                json={"offer_id": "execute.wasm", **build_wasm_request(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 self.assertEqual(resp.status, 201)
                 first_quote = await resp.json()
 
             async with session.post(
                 node.url("/v1/deals"),
-                json={"quote": first_quote, "kind": "lua", "script": long_running_script},
+                json={"quote": first_quote, **build_wasm_request(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 self.assertEqual(resp.status, 202)
                 first_deal = await resp.json()
@@ -233,14 +222,14 @@ return total
 
             async with session.post(
                 node.url("/v1/quotes"),
-                json={"offer_id": "execute.lua", "kind": "lua", "script": "return 7"},
+                json={"offer_id": "execute.wasm", **build_wasm_request(VALID_WASM_HEX)},
             ) as resp:
                 self.assertEqual(resp.status, 201)
                 second_quote = await resp.json()
 
             async with session.post(
                 node.url("/v1/deals"),
-                json={"quote": second_quote, "kind": "lua", "script": "return 7"},
+                json={"quote": second_quote, **build_wasm_request(VALID_WASM_HEX)},
             ) as resp:
                 self.assertEqual(resp.status, 202)
                 second_deal = await resp.json()

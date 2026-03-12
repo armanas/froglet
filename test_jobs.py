@@ -2,18 +2,20 @@ import unittest
 
 import aiohttp
 
-from test_support import FrogletAsyncTestCase, VALID_CASHU_TOKEN
+from test_support import (
+    FrogletAsyncTestCase,
+    TRAPPING_WASM_HEX,
+    VALID_CASHU_TOKEN,
+    VALID_WASM_HEX,
+    build_wasm_request,
+)
 
 
 class JobApiTests(FrogletAsyncTestCase):
-    async def test_lua_job_executes_and_idempotency_reuses_same_job(self) -> None:
+    async def test_wasm_job_executes_and_idempotency_reuses_same_job(self) -> None:
         node = await self.start_node()
-        request = {
-            "kind": "lua",
-            "script": "return input.greeting .. ', ' .. input.target",
-            "input": {"greeting": "hello", "target": "jobs"},
-            "idempotency_key": "lua-hello-jobs",
-        }
+        request = build_wasm_request(VALID_WASM_HEX)
+        request["idempotency_key"] = "wasm-hello-jobs"
 
         async with aiohttp.ClientSession() as session:
             async with session.post(node.url("/v1/node/jobs"), json=request) as resp:
@@ -25,12 +27,12 @@ class JobApiTests(FrogletAsyncTestCase):
         self.assertIn(first_payload["status"], {"queued", "running"})
         completed = await self.wait_for_job(node, first_payload["job_id"])
         self.assertEqual(completed["status"], "succeeded")
-        self.assertEqual(completed["result"], "hello, jobs")
+        self.assertEqual(completed["result"], 42)
 
     async def test_failed_paid_job_releases_payment_reservation(self) -> None:
         node = await self.start_node(
             extra_env={
-                "FROGLET_PRICE_EXEC_LUA": "10",
+                "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PRICE_EVENTS_QUERY": "10",
             }
         )
@@ -39,8 +41,7 @@ class JobApiTests(FrogletAsyncTestCase):
             async with session.post(
                 node.url("/v1/node/jobs"),
                 json={
-                    "kind": "lua",
-                    "script": "return io.open('/etc/passwd', 'r')",
+                    **build_wasm_request(TRAPPING_WASM_HEX),
                     "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
                 },
             ) as resp:

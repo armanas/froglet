@@ -1,4 +1,4 @@
-use crate::{canonical_json, crypto, pricing::ServiceId, protocol::SettlementStatus};
+use crate::{pricing::ServiceId, protocol::SettlementStatus, wasm::WasmSubmission};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ impl FaaSDescriptor {
         Self {
             jobs_api: true,
             idempotency_keys: true,
-            runtimes: vec!["lua".to_string(), "wasm".to_string()],
+            runtimes: vec!["wasm".to_string()],
         }
     }
 }
@@ -29,34 +29,32 @@ impl FaaSDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobSpec {
-    Lua {
-        script: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        input: Option<Value>,
-    },
-    Wasm {
-        wasm_hex: String,
-    },
+    Wasm { submission: WasmSubmission },
 }
 
 impl JobSpec {
     pub fn service_id(&self) -> ServiceId {
         match self {
-            JobSpec::Lua { .. } => ServiceId::ExecuteLua,
             JobSpec::Wasm { .. } => ServiceId::ExecuteWasm,
         }
     }
 
     pub fn kind(&self) -> &'static str {
         match self {
-            JobSpec::Lua { .. } => "lua",
             JobSpec::Wasm { .. } => "wasm",
         }
     }
 
+    pub fn workload_kind(&self) -> &'static str {
+        match self {
+            JobSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
+        }
+    }
+
     pub fn request_hash(&self) -> Result<String, String> {
-        let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
-        Ok(crypto::sha256_hex(encoded))
+        match self {
+            JobSpec::Wasm { submission } => submission.workload_hash(),
+        }
     }
 }
 

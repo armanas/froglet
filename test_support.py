@@ -21,7 +21,18 @@ TARGET_DIR = REPO_ROOT / "target" / "debug"
 FROGLET_BIN = TARGET_DIR / "froglet"
 MARKETPLACE_BIN = TARGET_DIR / "marketplace"
 VALID_CASHU_TOKEN = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91IHZlcnkgbXVjaC4ifQ=="
-VALID_WASM_HEX = "0061736d010000000105016000017f030201000707010372756e00000a06010400412a0b"
+VALID_WASM_HEX = (
+    "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
+    "020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432"
+)
+TRAPPING_WASM_HEX = (
+    "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
+    "020005616c6c6f6300000372756e00010a0a02040041100b0300000b"
+)
+LONG_RUNNING_WASM_HEX = (
+    "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
+    "020005616c6c6f6300000372756e00010a0f02040041100b080003400c000b000b"
+)
 
 _BUILD_DONE = False
 
@@ -262,6 +273,34 @@ def canonical_json_bytes(value: object) -> bytes:
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def build_wasm_submission(module_hex: str, *, input: object = None) -> dict:
+    input_value = input if input is not None else None
+    module_bytes = bytes.fromhex(module_hex)
+    return {
+        "schema_version": "froglet/v1",
+        "submission_type": "wasm_submission",
+        "workload": {
+            "schema_version": "froglet/v1",
+            "workload_kind": "compute.wasm.v1",
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_format": "application/wasm",
+            "module_hash": sha256_hex(module_bytes),
+            "input_format": "application/json+jcs",
+            "input_hash": sha256_hex(canonical_json_bytes(input_value)),
+            "requested_capabilities": [],
+        },
+        "module_bytes_hex": module_hex,
+        "input": input_value,
+    }
+
+
+def build_wasm_request(module_hex: str, *, input: object = None) -> dict:
+    return {
+        "kind": "wasm",
+        "submission": build_wasm_submission(module_hex, input=input),
+    }
 
 
 def verify_signed_artifact(artifact: dict) -> bool:

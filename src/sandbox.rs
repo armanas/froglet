@@ -1,32 +1,21 @@
-use mlua::{HookTriggers, Lua, LuaSerdeExt, Result as LuaResult, StdLib, Value as LuaValue};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{
-    env,
-    io,
-    sync::Arc,
-    time::{Duration, Instant},
+use std::{env, io, sync::Arc, time::Duration};
+use tracing::info;
+use wasmtime::{
+    Config, Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Trap,
 };
-use tracing::{info, warn};
-use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 use once_cell::sync::Lazy;
+use serde_json::Value;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-static LUA_CONCURRENCY_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
-    Arc::new(Semaphore::new(concurrency_limit(
-        "FROGLET_LUA_CONCURRENCY_LIMIT",
-        32,
-    )))
-});
+use crate::canonical_json;
+
 static WASM_CONCURRENCY_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
     Arc::new(Semaphore::new(concurrency_limit(
         "FROGLET_WASM_CONCURRENCY_LIMIT",
         16,
     )))
 });
-const LUA_MAX_INSTRUCTIONS: u32 = 50_000_000;
-const LUA_HOOK_GRANULARITY: u32 = 10_000;
-const LUA_MAX_HOOK_TICKS: usize = (LUA_MAX_INSTRUCTIONS / LUA_HOOK_GRANULARITY) as usize;
 const WASM_FUEL_LIMIT: u64 = 50_000_000;
 const WASM_MAX_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const WASM_EPOCH_TICK_MILLIS: u64 = 10;
@@ -41,32 +30,22 @@ static WASM_EPOCH_TICKER: Lazy<()> = Lazy::new(|| {
     let engine = WASM_ENGINE.clone();
     std::thread::Builder::new()
         .name("froglet-wasm-epoch".to_string())
-        .spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(WASM_EPOCH_TICK_MILLIS));
-            engine.increment_epoch();
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(WASM_EPOCH_TICK_MILLIS));
+                engine.increment_epoch();
+            }
         })
         .expect("failed to start Wasm epoch ticker");
 });
 
-pub enum ExecutionPermit {
-    Lua(OwnedSemaphorePermit),
-    Wasm(OwnedSemaphorePermit),
-}
+pub struct ExecutionPermit(OwnedSemaphorePermit);
 
-/// Initializes and tests the sandbox engines locally to ensure they load properly.
+/// Initializes and tests the sandbox engine locally to ensure it loads properly.
 pub fn initialize_engine() {
-    info!("Initializing WebAssembly & Lua Sandboxing Engines...");
-
-    // Quick Lua engine self-test
-    if let Ok(_) = execute_lua_script("return 1 + 1", None, Duration::from_secs(1)) {
-        info!(" ✅ Lua Sandbox engine initialized successfully.");
-    } else {
-        warn!(" ❌ Lua Sandbox failed to initialize.");
-    }
-
     // Touch the shared engine so the JIT and epoch ticker are initialized eagerly.
     let _ = wasm_engine();
-    info!(" ✅ Wasmtime JIT compiler initialized successfully.");
+    info!("Initialized Wasmtime JIT compiler.");
 }
 
 fn concurrency_limit(name: &str, default: usize) -> usize {
@@ -80,106 +59,33 @@ fn concurrency_limit(name: &str, default: usize) -> usize {
     }
 }
 
-pub fn try_acquire_lua_execution_permit() -> Result<ExecutionPermit, String> {
-    LUA_CONCURRENCY_SEMAPHORE
-        .clone()
-        .try_acquire_owned()
-        .map(ExecutionPermit::Lua)
-        .map_err(|_| "Lua concurrency limit reached".to_string())
-}
-
 pub fn try_acquire_wasm_execution_permit() -> Result<ExecutionPermit, String> {
     WASM_CONCURRENCY_SEMAPHORE
         .clone()
         .try_acquire_owned()
-        .map(ExecutionPermit::Wasm)
+        .map(ExecutionPermit)
         .map_err(|_| "Wasm concurrency limit reached".to_string())
-}
-
-/// Executes an arbitrary Lua script in a highly restricted sandbox environment.
-/// We intentionally omit the IO, OS, and Package standard libraries.
-pub fn execute_lua_script(
-    script: &str,
-    input: Option<&serde_json::Value>,
-    timeout: Duration,
-) -> LuaResult<serde_json::Value> {
-    let permit = try_acquire_lua_execution_permit()
-        .map_err(|error| mlua::Error::RuntimeError(error.to_string()))?;
-    execute_lua_script_with_permit(script, input, permit, timeout)
-}
-
-pub fn execute_lua_script_with_permit(
-    script: &str,
-    input: Option<&serde_json::Value>,
-    permit: ExecutionPermit,
-    timeout: Duration,
-) -> LuaResult<serde_json::Value> {
-    let _permit = match permit {
-        ExecutionPermit::Lua(permit) => permit,
-        ExecutionPermit::Wasm(_) => {
-            return Err(mlua::Error::RuntimeError(
-                "mismatched execution permit for Lua workload".to_string(),
-            ));
-        }
-    };
-    // Only load the safest standard libraries
-    let lua = Lua::new_with(
-        StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
-        mlua::LuaOptions::new(),
-    )?;
-
-    if let Some(input) = input {
-        lua.globals().set("input", lua.to_value(input)?)?;
-    }
-
-    // Count real VM instructions instead of source lines to make loop limits meaningful.
-    let instructions = Arc::new(AtomicUsize::new(0));
-    let inst_clone = Arc::clone(&instructions);
-    let started_at = Instant::now();
-    lua.set_hook(
-        HookTriggers::new().every_nth_instruction(LUA_HOOK_GRANULARITY),
-        move |_, _| {
-            if started_at.elapsed() >= timeout {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "Lua script wall-clock timeout exceeded after {}s",
-                    timeout.as_secs()
-                )));
-            }
-            if inst_clone.fetch_add(1, Ordering::Relaxed) >= LUA_MAX_HOOK_TICKS {
-                return Err(mlua::Error::RuntimeError(
-                    "Lua script execution limit exceeded".to_string(),
-                ));
-            }
-            Ok(())
-        },
-    );
-
-    let result: LuaValue = lua.load(script).eval()?;
-    lua.from_value(result)
 }
 
 /// Executes a WebAssembly boundary function natively.
 /// Absolute memory segregation is intrinsically enforced by Wasmtime.
 pub fn execute_wasm_module(
     wasm_bytes: &[u8],
+    input: &Value,
     timeout: Duration,
-) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     let permit = try_acquire_wasm_execution_permit()
         .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
-    execute_wasm_module_with_permit(wasm_bytes, permit, timeout)
+    execute_wasm_module_with_permit(wasm_bytes, input, permit, timeout)
 }
 
 pub fn execute_wasm_module_with_permit(
     wasm_bytes: &[u8],
+    input: &Value,
     permit: ExecutionPermit,
     timeout: Duration,
-) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
-    let _permit = match permit {
-        ExecutionPermit::Wasm(permit) => permit,
-        ExecutionPermit::Lua(_) => {
-            return Err("mismatched execution permit for Wasm workload".into());
-        }
-    };
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let _permit = permit.0;
     let engine = wasm_engine();
     let module = Module::new(&engine, wasm_bytes)?;
 
@@ -199,25 +105,62 @@ pub fn execute_wasm_module_with_permit(
 
     let linker = Linker::new(&engine);
     let instance = linker.instantiate(&mut store, &module)?;
-
-    // Try finding the default start function, or a function named "run".
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| boxed_message("Wasm module must export memory".to_string()))?;
+    let alloc_func = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc")
+        .map_err(|error| normalize_wasm_error(error, timeout))?;
     let run_func = instance
-        .get_typed_func::<(), i32>(&mut store, "run")
-        .or_else(|_| instance.get_typed_func::<(), i32>(&mut store, "main"))?;
+        .get_typed_func::<(i32, i32), i64>(&mut store, "run")
+        .map_err(|error| normalize_wasm_error(error, timeout))?;
+    let dealloc_func = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
+        .ok();
 
-    let outcome = run_func.call(&mut store, ()).map_err(|error| {
-        let message = error.to_string();
-        if is_wasm_timeout_message(&message) {
-            boxed_message(format!(
-                "Wasm module wall-clock timeout exceeded after {}s",
-                timeout.as_secs()
-            ))
-        } else {
-            boxed_message(message)
+    let input_bytes =
+        canonical_json::to_vec(input).map_err(|error| boxed_message(error.to_string()))?;
+    let input_len_i32 = i32::try_from(input_bytes.len())
+        .map_err(|_| boxed_message("Wasm input too large".to_string()))?;
+    let input_ptr = alloc_func
+        .call(&mut store, input_len_i32)
+        .map_err(|error| normalize_wasm_error(error, timeout))?;
+
+    if input_ptr < 0 {
+        return Err(boxed_message(
+            "Wasm alloc returned a negative pointer".to_string(),
+        ));
+    }
+
+    write_memory(&memory, &mut store, input_ptr as usize, &input_bytes)?;
+
+    let packed = run_func
+        .call(&mut store, (input_ptr, input_len_i32))
+        .map_err(|error| normalize_wasm_error(error, timeout))?;
+
+    if let Some(dealloc_func) = &dealloc_func {
+        let _ = dealloc_func.call(&mut store, (input_ptr, input_len_i32));
+    }
+
+    let packed = packed as u64;
+    let result_ptr = (packed >> 32) as usize;
+    let result_len = (packed & 0xffff_ffff) as usize;
+    let result_bytes = read_memory(&memory, &mut store, result_ptr, result_len)?;
+
+    if let Some(dealloc_func) = &dealloc_func {
+        if let (Ok(result_ptr_i32), Ok(result_len_i32)) =
+            (i32::try_from(result_ptr), i32::try_from(result_len))
+        {
+            let _ = dealloc_func.call(&mut store, (result_ptr_i32, result_len_i32));
         }
-    })?;
+    }
 
-    Ok(outcome)
+    let result_text = String::from_utf8(result_bytes)
+        .map_err(|_| boxed_message("Wasm result is not valid UTF-8 JSON".to_string()))?;
+    let result =
+        serde_json::from_str(&result_text).map_err(|error| boxed_message(error.to_string()))?;
+
+    Ok(result)
 }
 
 fn wasm_engine() -> &'static Engine {
@@ -237,6 +180,61 @@ fn is_wasm_timeout_message(message: &str) -> bool {
         || normalized.contains("deadline exceeded")
 }
 
+fn normalize_wasm_error(
+    error: wasmtime::Error,
+    timeout: Duration,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    let message = error.to_string();
+    let debug_message = format!("{error:?}");
+    let trap = error.downcast_ref::<Trap>().copied();
+    if matches!(trap, Some(Trap::Interrupt))
+        || is_wasm_timeout_message(&message)
+        || is_wasm_timeout_message(&debug_message)
+    {
+        boxed_message(format!(
+            "Wasm module wall-clock timeout exceeded after {}s",
+            timeout.as_secs()
+        ))
+    } else if matches!(trap, Some(Trap::OutOfFuel)) {
+        boxed_message("Wasm module execution limit exceeded".to_string())
+    } else {
+        boxed_message(message)
+    }
+}
+
+fn write_memory(
+    memory: &Memory,
+    store: &mut Store<StoreLimits>,
+    ptr: usize,
+    bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let data = memory.data_mut(store);
+    let end = ptr
+        .checked_add(bytes.len())
+        .ok_or_else(|| boxed_message("Wasm memory write overflow".to_string()))?;
+    let target = data
+        .get_mut(ptr..end)
+        .ok_or_else(|| boxed_message("Wasm alloc returned out-of-bounds pointer".to_string()))?;
+    target.copy_from_slice(bytes);
+    Ok(())
+}
+
+fn read_memory(
+    memory: &Memory,
+    store: &mut Store<StoreLimits>,
+    ptr: usize,
+    len: usize,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let data = memory.data(store);
+    let end = ptr
+        .checked_add(len)
+        .ok_or_else(|| boxed_message("Wasm memory read overflow".to_string()))?;
+    let slice = data
+        .get(ptr..end)
+        .ok_or_else(|| boxed_message("Wasm result pointer is out of bounds".to_string()))?;
+    Ok(slice.to_vec())
+}
+
 fn boxed_message(message: String) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(io::Error::other(message))
 }
@@ -244,17 +242,27 @@ fn boxed_message(message: String) -> Box<dyn std::error::Error + Send + Sync> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
+    const INFINITE_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0f02040041100b080003400c000b000b";
 
     #[test]
-    fn lua_wall_clock_timeout_is_reported() {
-        let error = execute_lua_script("while true do end", None, Duration::ZERO)
+    fn wasm_wall_clock_timeout_is_reported() {
+        let wasm_bytes = hex::decode(INFINITE_WASM_HEX).unwrap();
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::ZERO)
             .expect_err("expected timeout");
         assert!(
-            error
-                .to_string()
-                .to_ascii_lowercase()
-                .contains("timeout"),
+            error.to_string().to_ascii_lowercase().contains("timeout"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn wasm_json_abi_returns_json_value() {
+        let wasm_bytes = hex::decode(VALID_WASM_HEX).unwrap();
+        let result =
+            execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1)).unwrap();
+        assert_eq!(result, Value::from(42));
     }
 }

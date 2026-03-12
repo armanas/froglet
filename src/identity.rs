@@ -141,7 +141,6 @@ mod tests {
             marketplace: None,
             pricing: PricingConfig {
                 events_query: 0,
-                execute_lua: 0,
                 execute_wasm: 0,
             },
             payment_backend: PaymentBackend::None,

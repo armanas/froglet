@@ -42,7 +42,6 @@ fn in_memory_state() -> AppState {
         }),
         pricing: PricingConfig {
             events_query: 10,
-            execute_lua: 20,
             execute_wasm: 30,
         },
         payment_backend: PaymentBackend::Cashu,
@@ -258,9 +257,11 @@ fn payment_token_storage_tracks_release_and_expiry_without_deletion() {
     assert!(matches!(reserve, db::ReservePaymentTokenOutcome::Reserved));
 
     let released = rt
-        .block_on(state.db.with_conn(|conn| {
-            db::release_payment_token(conn, "token-a", "req-1", 110)
-        }))
+        .block_on(
+            state
+                .db
+                .with_conn(|conn| db::release_payment_token(conn, "token-a", "req-1", 110)),
+        )
         .expect("release");
     assert!(released);
 
@@ -282,7 +283,10 @@ fn payment_token_storage_tracks_release_and_expiry_without_deletion() {
             db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-2", 120)
         }))
         .expect("re-reserve released token");
-    assert!(matches!(reclaimed, db::ReservePaymentTokenOutcome::Reserved));
+    assert!(matches!(
+        reclaimed,
+        db::ReservePaymentTokenOutcome::Reserved
+    ));
 
     let _ = rt
         .block_on(
@@ -316,9 +320,11 @@ fn payment_token_storage_tracks_release_and_expiry_without_deletion() {
     ));
 
     let committed = rt
-        .block_on(state.db.with_conn(|conn| {
-            db::commit_payment_token(conn, "token-a", "req-3", 150)
-        }))
+        .block_on(
+            state
+                .db
+                .with_conn(|conn| db::commit_payment_token(conn, "token-a", "req-3", 150)),
+        )
         .expect("commit");
     assert!(committed);
 

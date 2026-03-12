@@ -18,3 +18,4 @@ pub mod sandbox;
 pub mod settlement;
 pub mod state;
 pub mod tor;
+pub mod wasm;

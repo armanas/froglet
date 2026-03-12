@@ -434,7 +434,9 @@ async fn verify_cashu_checkstate(
         })
         .send()
         .await
-        .map_err(|e| invalid_cashu_token(request, format!("mint checkstate request failed: {e}")))?;
+        .map_err(|e| {
+            invalid_cashu_token(request, format!("mint checkstate request failed: {e}"))
+        })?;
 
     if !response.status().is_success() {
         return Err(invalid_cashu_token(
@@ -501,7 +503,11 @@ impl SettlementDriver for NoSettlementDriver {
         &'a self,
         state: &'a AppState,
     ) -> BoxFuture<'a, Result<WalletBalanceSnapshot, PaymentError>> {
-        Box::pin(async move { Ok(WalletBalanceSnapshot::from_descriptor(self.descriptor(state))) })
+        Box::pin(async move {
+            Ok(WalletBalanceSnapshot::from_descriptor(
+                self.descriptor(state),
+            ))
+        })
     }
 
     fn prepare<'a>(
@@ -596,14 +602,15 @@ impl SettlementDriver for CashuVerifierDriver {
                 return Ok(None);
             }
 
-            let payment = request
-                .payment
-                .as_ref()
-                .ok_or_else(|| PaymentError::PaymentRequired {
-                    service_id: request.service_id.as_str().to_string(),
-                    price_sats: request.price_sats,
-                    accepted_payment_methods: accepted_payment_methods.clone(),
-                })?;
+            let payment =
+                request
+                    .payment
+                    .as_ref()
+                    .ok_or_else(|| PaymentError::PaymentRequired {
+                        service_id: request.service_id.as_str().to_string(),
+                        price_sats: request.price_sats,
+                        accepted_payment_methods: accepted_payment_methods.clone(),
+                    })?;
 
             if payment.kind.to_lowercase() != "cashu" {
                 return Err(PaymentError::UnsupportedKind {

@@ -3,7 +3,13 @@ import stat
 
 import aiohttp
 
-from test_support import FrogletAsyncTestCase, VALID_CASHU_TOKEN, verify_signed_artifact
+from test_support import (
+    FrogletAsyncTestCase,
+    VALID_CASHU_TOKEN,
+    VALID_WASM_HEX,
+    build_wasm_request,
+    verify_signed_artifact,
+)
 
 
 def runtime_auth_headers(node) -> dict[str, str]:
@@ -43,22 +49,20 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertTrue(verify_signed_artifact(snapshot["descriptor"]))
         self.assertEqual(snapshot["runtime_auth"]["scheme"], "bearer")
         self.assertEqual(snapshot["runtime_auth"]["token_path"], str(token_path))
-        self.assertEqual(len(snapshot["offers"]), 3)
+        self.assertEqual(len(snapshot["offers"]), 2)
         self.assertTrue(all(verify_signed_artifact(offer) for offer in snapshot["offers"]))
 
     async def test_runtime_services_buy_waits_and_reuses_idempotent_deal(self) -> None:
         node = await self.start_node(
             extra_env={
-                "FROGLET_PRICE_EXEC_LUA": "10",
+                "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "cashu",
             }
         )
         headers = runtime_auth_headers(node)
         request = {
-            "offer_id": "execute.lua",
-            "kind": "lua",
-            "script": "return input.greeting .. ' ' .. input.target",
-            "input": {"greeting": "hello", "target": "runtime"},
+            "offer_id": "execute.wasm",
+            **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-service-buy-1",
             "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
             "wait_for_receipt": True,
@@ -77,10 +81,8 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
                 json={
-                    "offer_id": "execute.lua",
-                    "kind": "lua",
-                    "script": request["script"],
-                    "input": request["input"],
+                    "offer_id": "execute.wasm",
+                    **build_wasm_request(VALID_WASM_HEX),
                     "idempotency_key": request["idempotency_key"],
                     "wait_for_receipt": True,
                 },
@@ -90,11 +92,11 @@ class RuntimeApiTests(FrogletAsyncTestCase):
 
         self.assertTrue(first["terminal"])
         self.assertEqual(first["deal"]["status"], "succeeded")
-        self.assertEqual(first["deal"]["result"], "hello runtime")
+        self.assertEqual(first["deal"]["result"], 42)
         self.assertTrue(verify_signed_artifact(first["quote"]))
         self.assertTrue(verify_signed_artifact(first["deal"]["receipt"]))
 
         self.assertTrue(second["terminal"])
         self.assertEqual(second["deal"]["deal_id"], first["deal"]["deal_id"])
         self.assertEqual(second["quote"]["hash"], first["quote"]["hash"])
-        self.assertEqual(second["deal"]["result"], "hello runtime")
+        self.assertEqual(second["deal"]["result"], 42)

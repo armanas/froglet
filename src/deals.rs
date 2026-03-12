@@ -75,7 +75,7 @@ impl StoredDeal {
             deal_id: self.deal_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             status: self.status.clone(),
-            workload_kind: self.spec.kind().to_string(),
+            workload_kind: self.spec.workload_kind().to_string(),
             deal: self.artifact.clone(),
             quote: self.quote.clone(),
             result: self.result.clone(),

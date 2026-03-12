@@ -29,6 +29,7 @@ use crate::{
     },
     sandbox, settlement,
     state::AppState,
+    wasm::WasmSubmission,
 };
 
 #[derive(Debug, Serialize)]
@@ -95,15 +96,7 @@ pub struct TorInfo {
 
 #[derive(Debug, Serialize)]
 pub struct ExecutionInfo {
-    pub lua: LuaInfo,
     pub wasm: WasmInfo,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LuaInfo {
-    pub enabled: bool,
-    pub instruction_limit: u32,
-    pub supports_json_input: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,8 +111,8 @@ pub struct LimitsInfo {
     pub events_query_limit_default: usize,
     pub events_query_limit_max: usize,
     pub body_limit_bytes: usize,
-    pub lua_script_limit_bytes: usize,
     pub wasm_hex_limit_bytes: usize,
+    pub wasm_input_limit_bytes: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,17 +135,8 @@ pub struct FaaSInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ExecuteLuaRequest {
-    pub script: String,
-    #[serde(default)]
-    pub input: Option<Value>,
-    #[serde(default)]
-    pub payment: Option<ProvidedPayment>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct ExecuteWasmRequest {
-    pub wasm_hex: String,
+    pub submission: WasmSubmission,
     #[serde(default)]
     pub payment: Option<ProvidedPayment>,
 }
@@ -309,8 +293,8 @@ pub struct RuntimeBuyServiceResponse {
 
 const MAX_BODY_BYTES: usize = 1_048_576;
 const MAX_EVENT_CONTENT_BYTES: usize = 64 * 1024;
-const MAX_LUA_SCRIPT_BYTES: usize = 16 * 1024;
 const MAX_WASM_HEX_BYTES: usize = 512 * 1024;
+const MAX_WASM_INPUT_BYTES: usize = 128 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 type ApiFailure = (StatusCode, serde_json::Value);
 
@@ -320,7 +304,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route_layer(ConcurrencyLimitLayer::new(32));
 
     let exec_routes = Router::new()
-        .route("/v1/node/execute/lua", post(execute_lua))
         .route("/v1/node/execute/wasm", post(execute_wasm))
         .route("/v1/node/jobs", post(create_job))
         .route("/v1/node/jobs/:job_id", get(get_job_status))
@@ -421,23 +404,18 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
             },
         },
         execution: ExecutionInfo {
-            lua: LuaInfo {
-                enabled: true,
-                instruction_limit: 50_000_000,
-                supports_json_input: true,
-            },
             wasm: WasmInfo {
                 enabled: true,
                 fuel_limit: 50_000_000,
-                entrypoints: vec!["run".to_string(), "main".to_string()],
+                entrypoints: vec!["alloc".to_string(), "run".to_string()],
             },
         },
         limits: LimitsInfo {
             events_query_limit_default: 100,
             events_query_limit_max: 500,
             body_limit_bytes: MAX_BODY_BYTES,
-            lua_script_limit_bytes: MAX_LUA_SCRIPT_BYTES,
             wasm_hex_limit_bytes: MAX_WASM_HEX_BYTES,
+            wasm_input_limit_bytes: MAX_WASM_INPUT_BYTES,
         },
         pricing: state.pricing.info().clone(),
         payments: PaymentsInfo {
@@ -453,7 +431,7 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
             jobs_api: true,
             async_jobs: true,
             idempotency_keys: true,
-            runtimes: vec!["lua".to_string(), "wasm".to_string()],
+            runtimes: vec!["wasm".to_string()],
         },
     };
 
@@ -534,6 +512,10 @@ pub async fn runtime_services_buy(
 
     let wait_for_receipt = payload.wait_for_receipt;
     let wait_timeout_secs = payload.wait_timeout_secs.unwrap_or(15).clamp(1, 60);
+
+    if let Err(response) = validate_workload_spec(&payload.spec) {
+        return response;
+    }
 
     if let Some(existing) =
         match find_existing_deal(state.as_ref(), payload.idempotency_key.clone()).await {
@@ -899,78 +881,14 @@ pub async fn query_events(
     response
 }
 
-pub async fn execute_lua(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<ExecuteLuaRequest>,
-) -> impl IntoResponse {
-    if payload.script.as_bytes().len() > MAX_LUA_SCRIPT_BYTES {
-        return error_json(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            json!({ "error": "lua script too large" }),
-        );
-    }
-
-    tracing::info!("Received Lua Execution Request");
-
-    let reservation = match payments::prepare_payment(
-        state.as_ref(),
-        ServiceId::ExecuteLua,
-        payload.payment,
-        None,
-    )
-    .await
-    {
-        Ok(reservation) => reservation,
-        Err(error) => return error_json(error.status_code(), error.details()),
-    };
-
-    match run_job_spec_now(state.as_ref(), JobSpec::Lua {
-        script: payload.script,
-        input: payload.input,
-    })
-    .await
-    {
-        Ok(result) => {
-            let receipt = match finalize_payment(state.as_ref(), reservation).await {
-                Ok(receipt) => receipt,
-                Err(response) => return response,
-            };
-
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "status": "success",
-                    "result": result,
-                    "payment_receipt": receipt
-                })),
-            )
-        }
-        Err(error_message) => {
-            let _ = release_payment(state.as_ref(), reservation).await;
-            tracing::error!("Lua Execution Failed: {}", error_message);
-            error_json(StatusCode::BAD_REQUEST, json!({ "error": error_message }))
-        }
-    }
-}
-
 pub async fn execute_wasm(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ExecuteWasmRequest>,
 ) -> impl IntoResponse {
     tracing::info!("Received Wasm Execution Request");
 
-    if payload.wasm_hex.as_bytes().len() > MAX_WASM_HEX_BYTES {
-        return error_json(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            json!({ "error": "wasm module too large" }),
-        );
-    }
-
-    if hex::decode(&payload.wasm_hex).is_err() {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "invalid hex encoding" }),
-        );
+    if let Err(response) = validate_wasm_submission(&payload.submission) {
+        return response;
     }
 
     let reservation = match payments::prepare_payment(
@@ -985,9 +903,12 @@ pub async fn execute_wasm(
         Err(error) => return error_json(error.status_code(), error.details()),
     };
 
-    match run_job_spec_now(state.as_ref(), JobSpec::Wasm {
-        wasm_hex: payload.wasm_hex,
-    })
+    match run_job_spec_now(
+        state.as_ref(),
+        JobSpec::Wasm {
+            submission: payload.submission,
+        },
+    )
     .await
     {
         Ok(result) => {
@@ -1234,7 +1155,7 @@ async fn current_descriptor_artifact(
                     ARTIFACT_KIND_RECEIPT.to_string(),
                 ],
             },
-            runtimes: vec!["lua".to_string(), "wasm".to_string()],
+            runtimes: vec!["wasm".to_string()],
         },
     )
     .await
@@ -1293,16 +1214,6 @@ fn current_offer_payloads(state: &AppState) -> Vec<OfferPayload> {
             OfferConstraints {
                 max_body_bytes: Some(MAX_BODY_BYTES),
                 max_query_limit: Some(500),
-                timeout_secs: Some(execution_timeout_secs),
-            },
-        ),
-        priced_offer(
-            ServiceId::ExecuteLua,
-            "compute",
-            Some("lua"),
-            OfferConstraints {
-                max_body_bytes: Some(MAX_LUA_SCRIPT_BYTES),
-                max_query_limit: None,
                 timeout_secs: Some(execution_timeout_secs),
             },
         ),
@@ -1564,7 +1475,7 @@ async fn create_quote_record(
             quote_id: protocol::new_artifact_id(),
             offer_id: offer.payload.offer_id.clone(),
             service_id: offer.payload.service_id.clone(),
-            workload_kind: payload.spec.kind().to_string(),
+            workload_kind: payload.spec.workload_kind().to_string(),
             workload_hash,
             price_sats: offer.payload.price_sats,
             payment_method: offer
@@ -1906,46 +1817,35 @@ async fn wait_for_terminal_deal(
 
 fn validate_job_spec(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match spec {
-        JobSpec::Lua { script, .. } if script.as_bytes().len() > MAX_LUA_SCRIPT_BYTES => {
-            Err(error_json(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                json!({ "error": "lua script too large" }),
-            ))
-        }
-        JobSpec::Wasm { wasm_hex } if wasm_hex.as_bytes().len() > MAX_WASM_HEX_BYTES => {
-            Err(error_json(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                json!({ "error": "wasm module too large" }),
-            ))
-        }
-        JobSpec::Wasm { wasm_hex } if hex::decode(wasm_hex).is_err() => Err(error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "invalid hex encoding" }),
-        )),
-        _ => Ok(()),
+        JobSpec::Wasm { submission } => validate_wasm_submission(submission),
     }
+}
+
+fn validate_wasm_submission(
+    submission: &WasmSubmission,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if let Err(error) = submission.validate_limits(MAX_WASM_HEX_BYTES, MAX_WASM_INPUT_BYTES) {
+        return Err(error_json(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            json!({ "error": error }),
+        ));
+    }
+
+    if let Err(error) = submission.verify() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error }),
+        ));
+    }
+
+    Ok(())
 }
 
 fn validate_workload_spec(
     spec: &WorkloadSpec,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match spec {
-        WorkloadSpec::Lua { script, .. } if script.as_bytes().len() > MAX_LUA_SCRIPT_BYTES => {
-            Err(error_json(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                json!({ "error": "lua script too large" }),
-            ))
-        }
-        WorkloadSpec::Wasm { wasm_hex } if wasm_hex.as_bytes().len() > MAX_WASM_HEX_BYTES => {
-            Err(error_json(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                json!({ "error": "wasm module too large" }),
-            ))
-        }
-        WorkloadSpec::Wasm { wasm_hex } if hex::decode(wasm_hex).is_err() => Err(error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "invalid hex encoding" }),
-        )),
+        WorkloadSpec::Wasm { submission } => validate_wasm_submission(submission),
         WorkloadSpec::EventsQuery { kinds, limit } if kinds.is_empty() => Err(error_json(
             StatusCode::BAD_REQUEST,
             json!({ "error": "events query must include at least one kind" }),
@@ -2033,10 +1933,7 @@ fn receipt_failure(code: &str, message: impl Into<String>) -> ReceiptFailure {
 }
 
 pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
-    let incomplete_deals = state
-        .db
-        .with_conn(deals::list_incomplete_deals)
-        .await?;
+    let incomplete_deals = state.db.with_conn(deals::list_incomplete_deals).await?;
     let completed_at = payments::current_unix_timestamp();
     let deal_recovery_message = "node restarted before deal completion".to_string();
     let recovery_receipts = incomplete_deals
@@ -2067,7 +1964,11 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             let operation = (|| -> Result<(), String> {
                 let _ = db::expire_reserved_payment_tokens(conn, completed_at)?;
-                jobs::fail_incomplete_jobs(conn, "node restarted before job completion", completed_at)?;
+                jobs::fail_incomplete_jobs(
+                    conn,
+                    "node restarted before job completion",
+                    completed_at,
+                )?;
 
                 for (deal, receipt, receipt_json) in &recovery_receipts {
                     deals::complete_deal_failure(
@@ -2104,23 +2005,14 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
 async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, String> {
     let timeout = execution_timeout(state);
     match spec {
-        JobSpec::Lua { script, input } => {
+        JobSpec::Wasm { submission } => {
+            let verified = submission.verify()?;
             let result = tokio::task::spawn_blocking(move || {
-                sandbox::execute_lua_script(&script, input.as_ref(), timeout)
+                sandbox::execute_wasm_module(&verified.module_bytes, &verified.input, timeout)
             })
             .await
             .map_err(|e| format!("execution thread panicked: {e}"))?;
             result.map_err(|e| e.to_string())
-        }
-        JobSpec::Wasm { wasm_hex } => {
-            let wasm_bytes =
-                hex::decode(&wasm_hex).map_err(|_| "invalid hex encoding".to_string())?;
-            let result = tokio::task::spawn_blocking(move || {
-                sandbox::execute_wasm_module(&wasm_bytes, timeout)
-            })
-            .await
-            .map_err(|e| format!("execution thread panicked: {e}"))?;
-            result.map(|value| json!(value)).map_err(|e| e.to_string())
         }
     }
 }
@@ -2132,29 +2024,22 @@ async fn run_workload_spec_with_admission(
 ) -> Result<Value, String> {
     let timeout = execution_timeout(state);
     match (spec, permit) {
-        (WorkloadSpec::Lua { script, input }, Some(permit)) => {
+        (WorkloadSpec::Wasm { submission }, Some(permit)) => {
+            let verified = submission.verify()?;
             let result = tokio::task::spawn_blocking(move || {
-                sandbox::execute_lua_script_with_permit(&script, input.as_ref(), permit, timeout)
+                sandbox::execute_wasm_module_with_permit(
+                    &verified.module_bytes,
+                    &verified.input,
+                    permit,
+                    timeout,
+                )
             })
             .await
             .map_err(|e| format!("execution thread panicked: {e}"))?;
             result.map_err(|e| e.to_string())
         }
-        (WorkloadSpec::Lua { script, input }, None) => {
-            run_job_spec_now(state, JobSpec::Lua { script, input }).await
-        }
-        (WorkloadSpec::Wasm { wasm_hex }, Some(permit)) => {
-            let wasm_bytes =
-                hex::decode(&wasm_hex).map_err(|_| "invalid hex encoding".to_string())?;
-            let result = tokio::task::spawn_blocking(move || {
-                sandbox::execute_wasm_module_with_permit(&wasm_bytes, permit, timeout)
-            })
-            .await
-            .map_err(|e| format!("execution thread panicked: {e}"))?;
-            result.map(|value| json!(value)).map_err(|e| e.to_string())
-        }
-        (WorkloadSpec::Wasm { wasm_hex }, None) => {
-            run_job_spec_now(state, JobSpec::Wasm { wasm_hex }).await
+        (WorkloadSpec::Wasm { submission }, None) => {
+            run_job_spec_now(state, JobSpec::Wasm { submission }).await
         }
         (WorkloadSpec::EventsQuery { kinds, limit }, None) => {
             let events = query_events_db(state, kinds, limit).await?;
@@ -2300,10 +2185,9 @@ fn sign_deal_receipt(
     result_hash: Option<String>,
     failure: Option<ReceiptFailure>,
 ) -> Result<SignedArtifact<ReceiptPayload>, String> {
-    let settlement = settlement_status
-        .and_then(|settlement_status| {
-            receipt_settlement_from_deal(deal, settlement_status, committed_amount_sats, None)
-        });
+    let settlement = settlement_status.and_then(|settlement_status| {
+        receipt_settlement_from_deal(deal, settlement_status, committed_amount_sats, None)
+    });
     let payment_lock = deal.payment_lock();
     let error = failure.as_ref().map(|details| details.message.clone());
 
@@ -2431,13 +2315,6 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
     };
 
     let execution_permit = match &deal.spec {
-        WorkloadSpec::Lua { .. } => match sandbox::try_acquire_lua_execution_permit() {
-            Ok(permit) => Some(permit),
-            Err(error_message) => {
-                reject_deal_admission(&state, &deal, error_message).await;
-                return;
-            }
-        },
         WorkloadSpec::Wasm { .. } => match sandbox::try_acquire_wasm_execution_permit() {
             Ok(permit) => Some(permit),
             Err(error_message) => {

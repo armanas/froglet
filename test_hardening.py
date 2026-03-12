@@ -9,7 +9,16 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-from test_support import FrogletAsyncTestCase, VALID_CASHU_TOKEN, reserve_tcp_port, verify_signed_artifact
+from test_support import (
+    FrogletAsyncTestCase,
+    LONG_RUNNING_WASM_HEX,
+    VALID_CASHU_TOKEN,
+    VALID_WASM_HEX,
+    build_wasm_request,
+    build_wasm_submission,
+    reserve_tcp_port,
+    verify_signed_artifact,
+)
 
 
 def rewrite_cashu_token_mint(token: str, mint_url: str) -> str:
@@ -52,7 +61,7 @@ async def start_fake_checkstate_mint(state: str) -> tuple[str, list[dict], web.A
 
 
 class HardeningTests(FrogletAsyncTestCase):
-    async def test_execute_lua_enforces_wall_clock_timeout(self) -> None:
+    async def test_execute_wasm_enforces_wall_clock_timeout(self) -> None:
         node = await self.start_node(
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "1",
@@ -63,14 +72,16 @@ class HardeningTests(FrogletAsyncTestCase):
             async with session.get(node.url("/v1/offers")) as resp:
                 offers = await resp.json()
             self.assertEqual(resp.status, 200)
-            lua_offer = next(
-                offer for offer in offers["offers"] if offer["payload"]["offer_id"] == "execute.lua"
+            wasm_offer = next(
+                offer
+                for offer in offers["offers"]
+                if offer["payload"]["offer_id"] == "execute.wasm"
             )
-            self.assertEqual(lua_offer["payload"]["constraints"]["timeout_secs"], 1)
+            self.assertEqual(wasm_offer["payload"]["constraints"]["timeout_secs"], 1)
 
             async with session.post(
-                node.url("/v1/node/execute/lua"),
-                json={"script": "while true do end"},
+                node.url("/v1/node/execute/wasm"),
+                json={"submission": build_wasm_submission(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
 
@@ -84,16 +95,16 @@ class HardeningTests(FrogletAsyncTestCase):
         node = await self.start_node(
             extra_env={
                 "FROGLET_PAYMENT_BACKEND": "cashu",
-                "FROGLET_PRICE_EXEC_LUA": "1",
+                "FROGLET_PRICE_EXEC_WASM": "1",
                 "FROGLET_CASHU_MINT_ALLOWLIST": "https://mint.example",
             }
         )
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/lua"),
+                node.url("/v1/node/execute/wasm"),
                 json={
-                    "script": "return 7",
+                    "submission": build_wasm_submission(VALID_WASM_HEX),
                     "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
                 },
             ) as resp:
@@ -110,7 +121,7 @@ class HardeningTests(FrogletAsyncTestCase):
         node = await self.start_node(
             extra_env={
                 "FROGLET_PAYMENT_BACKEND": "cashu",
-                "FROGLET_PRICE_EXEC_LUA": "1",
+                "FROGLET_PRICE_EXEC_WASM": "1",
                 "FROGLET_CASHU_MINT_ALLOWLIST": mint_url,
                 "FROGLET_CASHU_REMOTE_CHECKSTATE": "true",
                 "FROGLET_CASHU_REQUEST_TIMEOUT_SECS": "2",
@@ -119,9 +130,9 @@ class HardeningTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/lua"),
+                node.url("/v1/node/execute/wasm"),
                 json={
-                    "script": "return 1",
+                    "submission": build_wasm_submission(VALID_WASM_HEX),
                     "payment": {"kind": "cashu", "token": token},
                 },
             ) as resp:
@@ -141,18 +152,14 @@ class HardeningTests(FrogletAsyncTestCase):
             data_dir=data_root,
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "30",
-                "FROGLET_PRICE_EXEC_LUA": "10",
+                "FROGLET_PRICE_EXEC_WASM": "10",
             },
         )
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 node.url("/v1/quotes"),
-                json={
-                    "offer_id": "execute.lua",
-                    "kind": "lua",
-                    "script": "while true do end",
-                },
+                json={"offer_id": "execute.wasm", **build_wasm_request(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 quote = await resp.json()
             self.assertEqual(resp.status, 201)
@@ -161,8 +168,7 @@ class HardeningTests(FrogletAsyncTestCase):
                 node.url("/v1/deals"),
                 json={
                     "quote": quote,
-                    "kind": "lua",
-                    "script": "while true do end",
+                    **build_wasm_request(LONG_RUNNING_WASM_HEX),
                     "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
                 },
             ) as resp:
@@ -186,7 +192,7 @@ class HardeningTests(FrogletAsyncTestCase):
             data_dir=data_root,
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "30",
-                "FROGLET_PRICE_EXEC_LUA": "10",
+                "FROGLET_PRICE_EXEC_WASM": "10",
             },
         )
 
@@ -201,3 +207,18 @@ class HardeningTests(FrogletAsyncTestCase):
         self.assertEqual(recovered["receipt"]["payload"]["failure"]["code"], "node_restarted")
         self.assertEqual(recovered["receipt"]["payload"]["status"], "failed")
         self.assertEqual(recovered["receipt"]["payload"]["settlement"]["status"], "expired")
+
+    async def test_execute_wasm_rejects_module_hash_mismatch(self) -> None:
+        node = await self.start_node()
+        submission = build_wasm_submission(VALID_WASM_HEX)
+        submission["workload"]["module_hash"] = "00" * 32
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/execute/wasm"),
+                json={"submission": submission},
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("module hash", payload["error"].lower())

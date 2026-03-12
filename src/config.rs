@@ -116,13 +116,12 @@ pub struct MarketplaceConfig {
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct PricingConfig {
     pub events_query: u64,
-    pub execute_lua: u64,
     pub execute_wasm: u64,
 }
 
 impl PricingConfig {
     pub fn has_paid_services(&self) -> bool {
-        self.events_query > 0 || self.execute_lua > 0 || self.execute_wasm > 0
+        self.events_query > 0 || self.execute_wasm > 0
     }
 }
 
@@ -170,7 +169,6 @@ impl NodeConfig {
 
         let pricing = PricingConfig {
             events_query: env_u64("FROGLET_PRICE_EVENTS_QUERY", 0)?,
-            execute_lua: env_u64("FROGLET_PRICE_EXEC_LUA", 0)?,
             execute_wasm: env_u64("FROGLET_PRICE_EXEC_WASM", 0)?,
         };
 
@@ -234,8 +232,7 @@ impl NodeConfig {
         let cashu = CashuConfig {
             mint_allowlist,
             remote_checkstate,
-            request_timeout_secs: env_u64("FROGLET_CASHU_REQUEST_TIMEOUT_SECS", 5)?
-                .clamp(1, 30),
+            request_timeout_secs: env_u64("FROGLET_CASHU_REQUEST_TIMEOUT_SECS", 5)?.clamp(1, 30),
         };
 
         let data_dir =
@@ -335,8 +332,13 @@ mod tests {
     fn test_paid_services_detection() {
         let pricing = PricingConfig {
             events_query: 0,
-            execute_lua: 10,
             execute_wasm: 0,
+        };
+        assert!(!pricing.has_paid_services());
+
+        let pricing = PricingConfig {
+            events_query: 0,
+            execute_wasm: 10,
         };
         assert!(pricing.has_paid_services());
     }
