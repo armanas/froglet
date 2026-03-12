@@ -218,4 +218,64 @@ mod tests {
 
         assert!(submission.verify().is_err());
     }
+
+    #[test]
+    fn submission_verification_rejects_unsupported_abi_version() {
+        let module_bytes = hex::decode(VALID_WASM_HEX).unwrap();
+        let input = json!({"answer": 42});
+        let mut submission = WasmSubmission {
+            schema_version: FROGLET_SCHEMA_V1.to_string(),
+            submission_type: WASM_SUBMISSION_TYPE_V1.to_string(),
+            workload: ComputeWasmWorkload::new(&module_bytes, &input).unwrap(),
+            module_bytes_hex: VALID_WASM_HEX.to_string(),
+            input,
+        };
+        submission.workload.abi_version = "froglet.wasm.run_json.v0".to_string();
+
+        let error = submission
+            .verify()
+            .expect_err("expected abi validation failure");
+        assert!(error.contains("abi_version"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn submission_verification_rejects_requested_capabilities() {
+        let module_bytes = hex::decode(VALID_WASM_HEX).unwrap();
+        let input = json!({"answer": 42});
+        let mut submission = WasmSubmission {
+            schema_version: FROGLET_SCHEMA_V1.to_string(),
+            submission_type: WASM_SUBMISSION_TYPE_V1.to_string(),
+            workload: ComputeWasmWorkload::new(&module_bytes, &input).unwrap(),
+            module_bytes_hex: VALID_WASM_HEX.to_string(),
+            input,
+        };
+        submission.workload.requested_capabilities = vec!["net.outbound".to_string()];
+
+        let error = submission
+            .verify()
+            .expect_err("expected capability validation failure");
+        assert!(
+            error.contains("requested_capabilities"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn submission_verification_rejects_input_hash_mismatch() {
+        let module_bytes = hex::decode(VALID_WASM_HEX).unwrap();
+        let input = json!({"answer": 42});
+        let mut submission = WasmSubmission {
+            schema_version: FROGLET_SCHEMA_V1.to_string(),
+            submission_type: WASM_SUBMISSION_TYPE_V1.to_string(),
+            workload: ComputeWasmWorkload::new(&module_bytes, &input).unwrap(),
+            module_bytes_hex: VALID_WASM_HEX.to_string(),
+            input,
+        };
+        submission.workload.input_hash = "22".repeat(32);
+
+        let error = submission
+            .verify()
+            .expect_err("expected input hash validation failure");
+        assert!(error.contains("input hash"), "unexpected error: {error}");
+    }
 }

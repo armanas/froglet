@@ -58,6 +58,36 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertEqual(resp.status, 400)
         self.assertIn("invalid hex", payload["error"])
 
+    async def test_execute_wasm_rejects_unsupported_abi_version(self) -> None:
+        node = await self.start_node()
+        submission = build_wasm_submission(VALID_WASM_HEX)
+        submission["workload"]["abi_version"] = "froglet.wasm.run_json.v0"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/execute/wasm"),
+                json={"submission": submission},
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("abi_version", payload["error"])
+
+    async def test_execute_wasm_rejects_requested_capabilities(self) -> None:
+        node = await self.start_node()
+        submission = build_wasm_submission(VALID_WASM_HEX)
+        submission["workload"]["requested_capabilities"] = ["net.outbound"]
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/execute/wasm"),
+                json={"submission": submission},
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("requested_capabilities", payload["error"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

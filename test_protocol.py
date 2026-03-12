@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import aiohttp
 
@@ -9,7 +10,9 @@ from test_support import (
     VALID_WASM_HEX,
     build_wasm_request,
     create_signed_event,
+    read_db_row,
     verify_signed_artifact,
+    workload_hash_from_submission,
 )
 
 
@@ -252,3 +255,82 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
         self.assertIsNone(terminal["receipt"]["payload"].get("result_hash"))
         self.assertTrue(verify_response["valid"])
+
+    async def test_quote_workload_hash_is_stable_across_canonical_input_key_order(self) -> None:
+        node = await self.start_node()
+        first_request = build_wasm_request(VALID_WASM_HEX, input={"b": 2, "a": 1})
+        second_request = build_wasm_request(VALID_WASM_HEX, input={"a": 1, "b": 2})
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/quotes"),
+                json={"offer_id": "execute.wasm", **first_request},
+            ) as resp:
+                first_quote = await resp.json()
+            self.assertEqual(resp.status, 201)
+
+            async with session.post(
+                node.url("/v1/quotes"),
+                json={"offer_id": "execute.wasm", **second_request},
+            ) as resp:
+                second_quote = await resp.json()
+            self.assertEqual(resp.status, 201)
+
+        self.assertEqual(
+            first_quote["payload"]["workload_hash"],
+            second_quote["payload"]["workload_hash"],
+        )
+        self.assertEqual(
+            first_quote["payload"]["workload_hash"],
+            workload_hash_from_submission(first_request["submission"]),
+        )
+
+    async def test_deal_persistence_keeps_submission_evidence_and_quote_hash(self) -> None:
+        node = await self.start_node()
+        request = build_wasm_request(VALID_WASM_HEX, input={"job": "deal-persist"})
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/quotes"),
+                json={"offer_id": "execute.wasm", **request},
+            ) as resp:
+                quote = await resp.json()
+            self.assertEqual(resp.status, 201)
+
+            async with session.post(
+                node.url("/v1/deals"),
+                json={"quote": quote, **request, "idempotency_key": "persisted-deal-evidence"},
+            ) as resp:
+                deal = await resp.json()
+            self.assertEqual(resp.status, 202)
+
+        terminal = await self.wait_for_deal(node, deal["deal_id"])
+        self.assertEqual(terminal["status"], "succeeded")
+
+        workload_hash, spec_json, quote_json = read_db_row(
+            node.data_dir / "node.db",
+            "SELECT workload_hash, spec_json, quote_json FROM deals WHERE deal_id = ?",
+            (deal["deal_id"],),
+        )
+        stored_spec = json.loads(spec_json)
+        stored_quote = json.loads(quote_json)
+
+        self.assertEqual(workload_hash, workload_hash_from_submission(request["submission"]))
+        self.assertEqual(stored_spec["kind"], "wasm")
+        self.assertEqual(stored_spec["submission"]["submission_type"], "wasm_submission")
+        self.assertEqual(stored_quote["hash"], quote["hash"])
+
+    async def test_quote_rejects_unsupported_wasm_abi_version(self) -> None:
+        node = await self.start_node()
+        request = build_wasm_request(VALID_WASM_HEX)
+        request["submission"]["workload"]["abi_version"] = "froglet.wasm.run_json.v0"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/quotes"),
+                json={"offer_id": "execute.wasm", **request},
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("abi_version", payload["error"])

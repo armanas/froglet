@@ -243,6 +243,7 @@ fn boxed_message(message: String) -> Box<dyn std::error::Error + Send + Sync> {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use wat::parse_str as wat2wasm;
 
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
     const INFINITE_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0f02040041100b080003400c000b000b";
@@ -264,5 +265,91 @@ mod tests {
         let result =
             execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1)).unwrap();
         assert_eq!(result, Value::from(42));
+    }
+
+    #[test]
+    fn wasm_requires_memory_export() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (func (export "alloc") (param i32) (result i32)
+                    local.get 0
+                    drop
+                    i32.const 0)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 0))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected missing memory export");
+        assert!(
+            error.to_string().contains("export memory"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_negative_alloc_pointer() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const -1)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 0))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected negative alloc pointer failure");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("negative pointer"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_non_utf8_json_output() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 1)
+                (data (i32.const 0) "\ff"))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected invalid utf-8 failure");
+        assert!(
+            error.to_string().to_ascii_lowercase().contains("utf-8"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_non_json_output() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 4)
+                (data (i32.const 0) "nope"))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected invalid json failure");
+        assert!(
+            error.to_string().to_ascii_lowercase().contains("expected"),
+            "unexpected error: {error}"
+        );
     }
 }

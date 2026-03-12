@@ -4,6 +4,7 @@ import os
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -301,6 +302,21 @@ def build_wasm_request(module_hex: str, *, input: object = None) -> dict:
         "kind": "wasm",
         "submission": build_wasm_submission(module_hex, input=input),
     }
+
+
+def workload_hash_from_submission(submission: dict) -> str:
+    return sha256_hex(canonical_json_bytes(submission["workload"]))
+
+
+def read_db_row(db_path: Path, query: str, params: tuple[object, ...]) -> tuple:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(query, params).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise AssertionError(f"no row returned for query: {query}")
+    return row
 
 
 def verify_signed_artifact(artifact: dict) -> bool:
