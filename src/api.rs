@@ -14,7 +14,9 @@ use std::time::Duration;
 use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
 use crate::{
-    canonical_json, crypto, db,
+    canonical_json,
+    config::PaymentBackend,
+    crypto, db,
     deals::{self, NewDeal},
     ecash,
     jobs::{self, JobPaymentReceipt, JobSpec, NewJob},
@@ -23,13 +25,14 @@ use crate::{
     protocol::{
         self, ARTIFACT_KIND_DEAL, ARTIFACT_KIND_DESCRIPTOR, ARTIFACT_KIND_OFFER,
         ARTIFACT_KIND_QUOTE, ARTIFACT_KIND_RECEIPT, DealPayload, DescriptorPayload, FeedDescriptor,
-        OfferConstraints, OfferPayload, QuotePayload, ReceiptFailure, ReceiptPayload,
-        ReceiptSettlement, SettlementDescriptor, SettlementStatus, SignedArtifact,
+        InvoiceBundleLegState, InvoiceBundlePayload, OfferConstraints, OfferPayload, QuotePayload,
+        QuoteSettlementTerms, ReceiptExecutor, ReceiptFailure, ReceiptLimitsApplied,
+        ReceiptPayload, ReceiptSettlement, SettlementDescriptor, SettlementStatus, SignedArtifact,
         TransportEndpoints, WorkloadSpec,
     },
     sandbox, settlement,
     state::AppState,
-    wasm::WasmSubmission,
+    wasm::{self, WasmSubmission},
 };
 
 #[derive(Debug, Serialize)]
@@ -214,6 +217,10 @@ pub struct CreateDealRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub payment: Option<ProvidedPayment>,
+    #[serde(default)]
+    pub requester_id: Option<String>,
+    #[serde(default)]
+    pub success_payment_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,6 +246,26 @@ pub struct FeedResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VerifyReceiptRequest {
     pub receipt: SignedArtifact<ReceiptPayload>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VerifyInvoiceBundleRequest {
+    pub bundle: SignedArtifact<InvoiceBundlePayload>,
+    pub quote: SignedArtifact<QuotePayload>,
+    pub deal: SignedArtifact<DealPayload>,
+    #[serde(default)]
+    pub requester_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifyInvoiceBundleResponse {
+    pub valid: bool,
+    pub bundle_hash: String,
+    pub quote_hash: String,
+    pub deal_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_requester_id: Option<String>,
+    pub issues: Vec<settlement::InvoiceBundleValidationIssue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -279,6 +306,10 @@ pub struct RuntimeBuyServiceRequest {
     #[serde(default)]
     pub payment: Option<ProvidedPayment>,
     #[serde(default)]
+    pub requester_id: Option<String>,
+    #[serde(default)]
+    pub success_payment_hash: Option<String>,
+    #[serde(default)]
     pub wait_for_receipt: bool,
     #[serde(default)]
     pub wait_timeout_secs: Option<u64>,
@@ -289,6 +320,25 @@ pub struct RuntimeBuyServiceResponse {
     pub quote: SignedArtifact<QuotePayload>,
     pub deal: deals::DealRecord,
     pub terminal: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateLightningInvoiceBundleStateRequest {
+    pub base_state: InvoiceBundleLegState,
+    pub success_state: InvoiceBundleLegState,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeArchiveExportResponse {
+    pub schema_version: String,
+    pub export_type: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub exported_at: i64,
+    pub artifact_documents: Vec<db::ArtifactDocumentRecord>,
+    pub artifact_feed: Vec<db::ArtifactFeedEntryRecord>,
+    pub execution_evidence: Vec<db::ExecutionEvidenceRecord>,
+    pub lightning_invoice_bundles: Vec<db::LightningInvoiceBundleRecord>,
 }
 
 const MAX_BODY_BYTES: usize = 1_048_576;
@@ -317,6 +367,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/quotes", post(create_quote))
         .route("/v1/deals", post(create_deal))
         .route("/v1/deals/:deal_id", get(get_deal_status))
+        .route(
+            "/v1/deals/:deal_id/invoice-bundle",
+            get(get_deal_invoice_bundle),
+        )
+        .route("/v1/invoice-bundles/verify", post(verify_invoice_bundle))
         .route("/v1/receipts/verify", post(verify_receipt))
         .route_layer(ConcurrencyLimitLayer::new(16));
 
@@ -328,6 +383,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(runtime_services_publish),
         )
         .route("/v1/runtime/services/buy", post(runtime_services_buy))
+        .route(
+            "/v1/runtime/archive/:subject_kind/:subject_id",
+            get(runtime_archive_subject),
+        )
+        .route(
+            "/v1/runtime/lightning/invoice-bundles/:session_id/state",
+            post(runtime_update_lightning_bundle_state),
+        )
         .route_layer(ConcurrencyLimitLayer::new(16));
 
     Router::new()
@@ -547,7 +610,7 @@ pub async fn runtime_services_buy(
             deal.status.as_str(),
             deals::DEAL_STATUS_SUCCEEDED | deals::DEAL_STATUS_FAILED | deals::DEAL_STATUS_REJECTED
         );
-        if wait_for_receipt && !terminal {
+        if wait_for_receipt && !terminal && deal.status != deals::DEAL_STATUS_PAYMENT_PENDING {
             match wait_for_terminal_deal(state.clone(), &deal.deal_id, wait_timeout_secs).await {
                 Ok(terminal_deal) => {
                     deal = terminal_deal;
@@ -588,6 +651,8 @@ pub async fn runtime_services_buy(
             spec: payload.spec,
             idempotency_key: payload.idempotency_key,
             payment: payload.payment,
+            requester_id: payload.requester_id,
+            success_payment_hash: payload.success_payment_hash,
         },
     )
     .await
@@ -597,7 +662,7 @@ pub async fn runtime_services_buy(
     };
 
     let mut terminal = false;
-    if wait_for_receipt {
+    if wait_for_receipt && deal.status != deals::DEAL_STATUS_PAYMENT_PENDING {
         match wait_for_terminal_deal(state.clone(), &deal.deal_id, wait_timeout_secs).await {
             Ok(terminal_deal) => {
                 deal = terminal_deal;
@@ -615,6 +680,127 @@ pub async fn runtime_services_buy(
             terminal,
         })),
     )
+}
+
+pub async fn runtime_update_lightning_bundle_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<UpdateLightningInvoiceBundleStateRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+
+    let updated = match settlement::update_lightning_invoice_bundle_states(
+        state.as_ref(),
+        &session_id,
+        payload.base_state.clone(),
+        payload.success_state.clone(),
+    )
+    .await
+    {
+        Ok(Some(updated)) => updated,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "invoice bundle not found", "session_id": session_id }),
+            );
+        }
+        Err(error) => {
+            tracing::error!("Failed to update invoice bundle {session_id}: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to update invoice bundle" }),
+            );
+        }
+    };
+
+    if payload.base_state == InvoiceBundleLegState::Settled
+        && matches!(
+            payload.success_state,
+            InvoiceBundleLegState::Accepted | InvoiceBundleLegState::Settled
+        )
+    {
+        let deal_hash = updated.bundle.payload.deal_hash.clone();
+        match state
+            .db
+            .with_conn(move |conn| deals::get_deal_by_artifact_hash(conn, &deal_hash))
+            .await
+        {
+            Ok(Some(deal)) => {
+                let deal_id = deal.deal_id.clone();
+                let deal_id_for_update = deal_id.clone();
+                let promoted = state
+                    .db
+                    .with_conn(move |conn| {
+                        deals::try_mark_deal_accepted_from_payment_pending(
+                            conn,
+                            &deal_id_for_update,
+                            payments::current_unix_timestamp(),
+                        )
+                    })
+                    .await;
+
+                match promoted {
+                    Ok(true) => {
+                        tokio::spawn(process_deal(state.clone(), deal_id));
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::error!(
+                            "Failed to promote Lightning deal {} after invoice update: {error}",
+                            deal.deal_id
+                        );
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::error!(
+                    "Failed to load deal for Lightning invoice bundle {}: {error}",
+                    updated.session_id
+                );
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(json!(updated)))
+}
+
+pub async fn runtime_archive_subject(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((subject_kind, subject_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+
+    match build_runtime_archive_export(state.as_ref(), &subject_kind, &subject_id).await {
+        Ok(Some(export)) => (StatusCode::OK, Json(json!(export))),
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({
+                "error": "archive subject not found",
+                "subject_kind": subject_kind,
+                "subject_id": subject_id,
+            }),
+        ),
+        Err(error) => {
+            let status = if error.contains("unsupported archive subject kind") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            tracing::error!(
+                "Failed to build archive export for {} {}: {error}",
+                subject_kind,
+                subject_id
+            );
+            error_json(status, json!({ "error": error }))
+        }
+    }
 }
 
 pub async fn protocol_descriptor(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -782,6 +968,64 @@ pub async fn get_deal_status(
     }
 }
 
+pub async fn get_deal_invoice_bundle(
+    State(state): State<Arc<AppState>>,
+    Path(deal_id): Path<String>,
+) -> impl IntoResponse {
+    let lookup_deal_id = deal_id.clone();
+    let deal = match state
+        .db
+        .with_conn(move |conn| deals::get_deal(conn, &lookup_deal_id))
+        .await
+    {
+        Ok(Some(deal)) => deal,
+        Ok(None) => {
+            return error_json(StatusCode::NOT_FOUND, json!({ "error": "deal not found" }));
+        }
+        Err(error) => {
+            tracing::error!("Failed to fetch deal {deal_id}: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "database error" }),
+            );
+        }
+    };
+
+    match deal_lightning_invoice_bundle(state.as_ref(), &deal).await {
+        Ok(Some(bundle)) => {
+            let report = settlement::validate_lightning_invoice_bundle(
+                &bundle.bundle,
+                &deal.quote,
+                &deal.artifact,
+                None,
+            );
+            if !report.valid {
+                return error_json(
+                    StatusCode::CONFLICT,
+                    json!({
+                        "error": "stored lightning invoice bundle failed commitment validation",
+                        "deal_id": deal_id,
+                        "validation": report,
+                    }),
+                );
+            }
+
+            (StatusCode::OK, Json(json!(bundle)))
+        }
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "lightning invoice bundle not found", "deal_id": deal_id }),
+        ),
+        Err(error) => {
+            tracing::error!("Failed to fetch invoice bundle for deal {deal_id}: {error}");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "database error" }),
+            )
+        }
+    }
+}
+
 pub async fn verify_receipt(Json(payload): Json<VerifyReceiptRequest>) -> impl IntoResponse {
     let valid = protocol::verify_artifact(&payload.receipt);
     (
@@ -790,6 +1034,37 @@ pub async fn verify_receipt(Json(payload): Json<VerifyReceiptRequest>) -> impl I
             "valid": valid,
             "receipt_hash": payload.receipt.hash,
             "status": payload.receipt.payload.status
+        })),
+    )
+}
+
+pub async fn verify_invoice_bundle(
+    Json(payload): Json<VerifyInvoiceBundleRequest>,
+) -> impl IntoResponse {
+    let expected_requester_id = match payload.requester_id {
+        Some(requester_id) => match normalize_hex_value("requester_id", requester_id, 64) {
+            Ok(requester_id) => Some(requester_id),
+            Err(error) => return error_json(StatusCode::BAD_REQUEST, error),
+        },
+        None => None,
+    };
+
+    let report = settlement::validate_lightning_invoice_bundle(
+        &payload.bundle,
+        &payload.quote,
+        &payload.deal,
+        expected_requester_id.as_deref(),
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!(VerifyInvoiceBundleResponse {
+            valid: report.valid,
+            bundle_hash: report.bundle_hash,
+            quote_hash: report.quote_hash,
+            deal_hash: report.deal_hash,
+            expected_requester_id: report.expected_requester_id,
+            issues: report.issues,
         })),
     )
 }
@@ -840,6 +1115,14 @@ pub async fn query_events(
 ) -> impl IntoResponse {
     tracing::info!("Received Event Query for Kinds: {:?}", payload.kinds);
 
+    if let Some(response) = legacy_paid_endpoint_requires_protocol_deal(
+        state.as_ref(),
+        ServiceId::EventsQuery,
+        "/v1/node/events/query",
+    ) {
+        return response;
+    }
+
     let reservation = match payments::prepare_payment(
         state.as_ref(),
         ServiceId::EventsQuery,
@@ -888,6 +1171,14 @@ pub async fn execute_wasm(
     tracing::info!("Received Wasm Execution Request");
 
     if let Err(response) = validate_wasm_submission(&payload.submission) {
+        return response;
+    }
+
+    if let Some(response) = legacy_paid_endpoint_requires_protocol_deal(
+        state.as_ref(),
+        ServiceId::ExecuteWasm,
+        "/v1/node/execute/wasm",
+    ) {
         return response;
     }
 
@@ -966,6 +1257,14 @@ pub async fn create_job(
         return response;
     }
 
+    if let Some(response) = legacy_paid_endpoint_requires_protocol_deal(
+        state.as_ref(),
+        payload.spec.service_id(),
+        "/v1/node/jobs",
+    ) {
+        return response;
+    }
+
     let idempotency_key = match normalize_idempotency_key(payload.idempotency_key) {
         Ok(value) => value,
         Err(response) => return response,
@@ -1025,7 +1324,40 @@ pub async fn create_job(
 
     let insert_outcome = match state
         .db
-        .with_conn(move |conn| jobs::insert_or_get_job(conn, new_job))
+        .with_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| e.to_string())?;
+            let operation = (|| -> Result<jobs::InsertJobOutcome, String> {
+                let insert_outcome = jobs::insert_or_get_job(conn, new_job)?;
+                if insert_outcome.created {
+                    let evidence_hash = db::insert_execution_evidence(
+                        conn,
+                        "job",
+                        &insert_outcome.job.job_id,
+                        "workload_spec",
+                        &insert_outcome.job.spec,
+                        insert_outcome.job.created_at,
+                    )?;
+                    jobs::set_job_workload_evidence_hash(
+                        conn,
+                        &insert_outcome.job.job_id,
+                        &evidence_hash,
+                    )?;
+                }
+                Ok(insert_outcome)
+            })();
+
+            let result = match operation {
+                Ok(result) => result,
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(error);
+                }
+            };
+
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            Ok(result)
+        })
         .await
     {
         Ok(outcome) => outcome,
@@ -1082,6 +1414,34 @@ fn error_json(
     body: serde_json::Value,
 ) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(body))
+}
+
+fn legacy_paid_endpoint_requires_protocol_deal(
+    state: &AppState,
+    service_id: ServiceId,
+    endpoint_path: &str,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    let price_sats = state.pricing.price_for(service_id);
+    if state.config.payment_backend != PaymentBackend::Lightning || price_sats == 0 {
+        return None;
+    }
+
+    Some(error_json(
+        StatusCode::CONFLICT,
+        json!({
+            "error": format!(
+                "priced {} requests must use /v1/quotes and /v1/deals when the lightning backend is active",
+                service_id.as_str()
+            ),
+            "service_id": service_id.as_str(),
+            "price_sats": price_sats,
+            "payment_backend": "lightning",
+            "legacy_endpoint": endpoint_path,
+            "quote_path": "/v1/quotes",
+            "deal_path": "/v1/deals",
+            "requires_protocol_deal": true
+        }),
+    ))
 }
 
 async fn handle_timeout_error(_: BoxError) -> impl IntoResponse {
@@ -1232,6 +1592,14 @@ fn current_offer_payloads(state: &AppState) -> Vec<OfferPayload> {
 
 fn accepted_payment_methods(state: &AppState) -> Vec<String> {
     settlement::accepted_payment_methods(state)
+}
+
+fn quoted_settlement_terms(state: &AppState, price_sats: u64) -> Option<QuoteSettlementTerms> {
+    settlement::quoted_lightning_settlement_terms(state, price_sats)
+}
+
+fn settlement_quote_expires_at(state: &AppState, created_at: i64, price_sats: u64) -> i64 {
+    settlement::lightning_quote_expires_at(state, created_at, price_sats)
 }
 
 fn sign_node_artifact<T: Serialize + Clone>(
@@ -1467,6 +1835,9 @@ async fn create_quote_record(
         )
     })?;
     let created_at = payments::current_unix_timestamp();
+    let settlement_terms = quoted_settlement_terms(state.as_ref(), offer.payload.price_sats);
+    let quote_expires_at =
+        settlement_quote_expires_at(state.as_ref(), created_at, offer.payload.price_sats);
     let quote = sign_node_artifact(
         state.as_ref(),
         ARTIFACT_KIND_QUOTE,
@@ -1483,7 +1854,8 @@ async fn create_quote_record(
                 .payment_required
                 .then(|| offer.payload.payment_methods.first().cloned())
                 .flatten(),
-            expires_at: created_at + 60,
+            settlement_terms,
+            expires_at: quote_expires_at,
         },
     )
     .map_err(|error| {
@@ -1557,7 +1929,7 @@ async fn create_deal_record(
         return Err((response.0, response.1.0));
     }
 
-    let idempotency_key = normalize_idempotency_key(payload.idempotency_key)
+    let idempotency_key = normalize_idempotency_key(payload.idempotency_key.clone())
         .map_err(|response| (response.0, response.1.0))?;
     let workload_hash = payload.spec.request_hash().map_err(|error| {
         (
@@ -1627,24 +1999,96 @@ async fn create_deal_record(
         return Ok((existing.public_record(), StatusCode::OK));
     }
 
-    let deal_id = protocol::new_artifact_id();
-    let reservation = payments::prepare_payment_for_amount(
-        state.as_ref(),
-        service_id,
-        payload.quote.payload.price_sats,
-        payload.payment,
-        Some(deal_id.clone()),
-    )
-    .await
-    .map_err(|error| (error.status_code(), error.details()))?;
+    let uses_lightning_bundle = state.config.payment_backend == PaymentBackend::Lightning
+        && payload.quote.payload.price_sats > 0;
+    let lightning_terms = if uses_lightning_bundle {
+        if payload.quote.payload.payment_method.as_deref() != Some("lightning") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "lightning-backed quotes must advertise payment_method=lightning" }),
+            ));
+        }
+        match payload.quote.payload.settlement_terms.clone() {
+            Some(terms) => Some(terms),
+            None => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "lightning-backed quotes must include settlement_terms" }),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if uses_lightning_bundle && payload.payment.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "lightning-backed deals use invoice bundles instead of inline payment tokens"
+            }),
+        ));
+    }
 
-    let payment_lock = reservation
-        .as_ref()
-        .map(|reservation| protocol::PaymentLock {
-            kind: reservation.method.clone(),
-            token_hash: reservation.token_hash.clone(),
-            amount_sats: reservation.amount_sats,
-        });
+    let requester_id = if uses_lightning_bundle {
+        let requester_id = payload.requester_id.clone().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "requester_id is required for lightning-backed deals" }),
+            )
+        })?;
+        Some(
+            normalize_hex_field("requester_id", requester_id, 64)
+                .map_err(|response| (response.0, response.1.0))?,
+        )
+    } else {
+        None
+    };
+    let success_payment_hash = if uses_lightning_bundle {
+        let success_payment_hash = payload.success_payment_hash.clone().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "success_payment_hash is required for lightning-backed deals" }),
+            )
+        })?;
+        Some(
+            normalize_hex_field("success_payment_hash", success_payment_hash, 64)
+                .map_err(|response| (response.0, response.1.0))?,
+        )
+    } else {
+        None
+    };
+
+    let deal_id = protocol::new_artifact_id();
+    let reservation = if uses_lightning_bundle {
+        None
+    } else {
+        payments::prepare_payment_for_amount(
+            state.as_ref(),
+            service_id,
+            payload.quote.payload.price_sats,
+            payload.payment.clone(),
+            Some(deal_id.clone()),
+        )
+        .await
+        .map_err(|error| (error.status_code(), error.details()))?
+    };
+
+    let payment_lock = if let Some(success_payment_hash) = success_payment_hash.as_ref() {
+        Some(protocol::PaymentLock {
+            kind: "lightning".to_string(),
+            token_hash: success_payment_hash.clone(),
+            amount_sats: payload.quote.payload.price_sats,
+        })
+    } else {
+        reservation
+            .as_ref()
+            .map(|reservation| protocol::PaymentLock {
+                kind: reservation.method.clone(),
+                token_hash: reservation.token_hash.clone(),
+                amount_sats: reservation.amount_sats,
+            })
+    };
+
     let deal_artifact = sign_node_artifact(
         state.as_ref(),
         ARTIFACT_KIND_DEAL,
@@ -1667,6 +2111,40 @@ async fn create_deal_record(
         )
     })?;
 
+    let invoice_bundle_session = if uses_lightning_bundle {
+        Some(
+            settlement::build_lightning_invoice_bundle(
+                state.as_ref(),
+                settlement::BuildLightningInvoiceBundleRequest {
+                    session_id: None,
+                    requester_id: requester_id.clone().expect("validated requester_id"),
+                    quote_hash: payload.quote.hash.clone(),
+                    deal_hash: deal_artifact.hash.clone(),
+                    success_payment_hash: success_payment_hash
+                        .clone()
+                        .expect("validated success_payment_hash"),
+                    base_fee_msat: lightning_terms
+                        .as_ref()
+                        .expect("validated lightning terms")
+                        .base_fee_msat,
+                    success_fee_msat: lightning_terms
+                        .as_ref()
+                        .expect("validated lightning terms")
+                        .success_fee_msat,
+                    created_at: now,
+                },
+            )
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to build lightning invoice bundle: {error}") }),
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+
     let deal_json = serde_json::to_string(&deal_artifact).map_err(|error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1686,20 +2164,41 @@ async fn create_deal_record(
         quote: payload.quote.clone(),
         spec: payload.spec.clone(),
         artifact: deal_artifact.clone(),
-        payment_token_hash: reservation
-            .as_ref()
-            .map(|payment| payment.token_hash.clone()),
-        payment_amount_sats: reservation.as_ref().map(|payment| payment.amount_sats),
+        payment_method: if uses_lightning_bundle {
+            Some("lightning".to_string())
+        } else {
+            reservation.as_ref().map(|payment| payment.method.clone())
+        },
+        payment_token_hash: success_payment_hash.clone().or_else(|| {
+            reservation
+                .as_ref()
+                .map(|payment| payment.token_hash.clone())
+        }),
+        payment_amount_sats: if uses_lightning_bundle {
+            Some(payload.quote.payload.price_sats)
+        } else {
+            reservation.as_ref().map(|payment| payment.amount_sats)
+        },
+        initial_status: if uses_lightning_bundle {
+            deals::DEAL_STATUS_PAYMENT_PENDING.to_string()
+        } else {
+            deals::DEAL_STATUS_ACCEPTED.to_string()
+        },
         created_at: now,
     };
 
     let deal_hash = deal_artifact.hash.clone();
     let deal_payload_hash = deal_artifact.payload_hash.clone();
     let deal_actor_id = deal_artifact.actor_id.clone();
+    let deal_artifact_hash = deal_artifact.hash.clone();
     let quote_hash = payload.quote.hash.clone();
     let quote_payload_hash = payload.quote.payload_hash.clone();
     let quote_actor_id = payload.quote.actor_id.clone();
     let quote_id = payload.quote.payload.quote_id.clone();
+    let spec_for_evidence = payload.spec.clone();
+    let quote_artifact_ref = json!({ "artifact_hash": quote_hash.clone() });
+    let deal_artifact_ref = json!({ "artifact_hash": deal_hash.clone() });
+    let invoice_bundle_session_for_db = invoice_bundle_session.clone();
     let insert_result = state
         .db
         .with_conn(move |conn| {
@@ -1734,7 +2233,62 @@ async fn create_deal_record(
                     &deal_json,
                 )?;
 
-                deals::insert_or_get_deal(conn, deal_for_db.clone())
+                let insert_outcome = deals::insert_or_get_deal(conn, deal_for_db.clone())?;
+                if insert_outcome.created {
+                    let workload_evidence_hash = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &insert_outcome.deal.deal_id,
+                        "workload_spec",
+                        &spec_for_evidence,
+                        now,
+                    )?;
+                    let _ = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &insert_outcome.deal.deal_id,
+                        "quote_artifact_ref",
+                        &quote_artifact_ref,
+                        now,
+                    )?;
+                    let _ = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &insert_outcome.deal.deal_id,
+                        "deal_artifact_ref",
+                        &deal_artifact_ref,
+                        now,
+                    )?;
+                    deals::set_deal_storage_refs(
+                        conn,
+                        &insert_outcome.deal.deal_id,
+                        &workload_evidence_hash,
+                        &deal_artifact_hash,
+                    )?;
+                    if let Some(invoice_bundle_session) = invoice_bundle_session_for_db.as_ref() {
+                        db::insert_lightning_invoice_bundle(
+                            conn,
+                            &invoice_bundle_session.session_id,
+                            &invoice_bundle_session.bundle,
+                            invoice_bundle_session.base_state.clone(),
+                            invoice_bundle_session.success_state.clone(),
+                            invoice_bundle_session.created_at,
+                        )?;
+                        let _ = db::insert_execution_evidence(
+                            conn,
+                            "deal",
+                            &insert_outcome.deal.deal_id,
+                            "lightning_invoice_bundle_ref",
+                            &json!({
+                                "session_id": invoice_bundle_session.session_id,
+                                "bundle_hash": invoice_bundle_session.bundle.hash,
+                            }),
+                            now,
+                        )?;
+                    }
+                }
+
+                Ok(insert_outcome)
             })();
 
             let result = match operation {
@@ -1768,7 +2322,9 @@ async fn create_deal_record(
         return Ok((insert_result.deal.public_record(), StatusCode::OK));
     }
 
-    tokio::spawn(process_deal(state, deal_id));
+    if !uses_lightning_bundle {
+        tokio::spawn(process_deal(state, deal_id));
+    }
     Ok((insert_result.deal.public_record(), StatusCode::ACCEPTED))
 }
 
@@ -1876,6 +2432,209 @@ fn normalize_idempotency_key(
     }
 }
 
+fn normalize_hex_field(
+    field_name: &str,
+    value: String,
+    expected_len: usize,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    normalize_hex_value(field_name, value, expected_len)
+        .map_err(|error| error_json(StatusCode::BAD_REQUEST, error))
+}
+
+fn normalize_hex_value(
+    field_name: &str,
+    value: String,
+    expected_len: usize,
+) -> Result<String, serde_json::Value> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.len() != expected_len
+        || !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(json!({
+            "error": format!("{field_name} must be {expected_len} lowercase hex characters"),
+            "field": field_name,
+        }));
+    }
+
+    Ok(normalized)
+}
+
+async fn deal_lightning_invoice_bundle(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+) -> Result<Option<settlement::LightningInvoiceBundleSession>, String> {
+    if deal.payment_method.as_deref() != Some("lightning") {
+        return Ok(None);
+    }
+
+    settlement::get_lightning_invoice_bundle_by_deal_hash(state, &deal.artifact.hash).await
+}
+
+async fn update_deal_lightning_bundle_state(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+    success_state: InvoiceBundleLegState,
+) -> Result<Option<settlement::LightningInvoiceBundleSession>, String> {
+    let Some(bundle) = deal_lightning_invoice_bundle(state, deal).await? else {
+        return Ok(None);
+    };
+
+    settlement::update_lightning_invoice_bundle_states(
+        state,
+        &bundle.session_id,
+        bundle.base_state,
+        success_state,
+    )
+    .await
+}
+
+fn collect_archive_artifact_hashes_for_deal(deal: &deals::StoredDeal) -> Vec<String> {
+    let mut hashes = vec![deal.quote.hash.clone(), deal.artifact.hash.clone()];
+    if let Some(receipt) = deal.receipt.as_ref() {
+        hashes.push(receipt.hash.clone());
+    }
+    hashes.sort();
+    hashes.dedup();
+    hashes
+}
+
+async fn build_runtime_archive_export(
+    state: &AppState,
+    subject_kind: &str,
+    subject_id: &str,
+) -> Result<Option<RuntimeArchiveExportResponse>, String> {
+    enum ArchiveSubject {
+        Deal {
+            artifact_hashes: Vec<String>,
+            deal_hash: String,
+        },
+        Job,
+    }
+
+    let subject_kind_owned = subject_kind.to_string();
+    let subject_id_owned = subject_id.to_string();
+    let subject = state
+        .db
+        .with_conn(move |conn| match subject_kind_owned.as_str() {
+            "deal" => {
+                let Some(deal) = deals::get_deal(conn, &subject_id_owned)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ArchiveSubject::Deal {
+                    artifact_hashes: collect_archive_artifact_hashes_for_deal(&deal),
+                    deal_hash: deal.artifact.hash,
+                }))
+            }
+            "job" => {
+                if jobs::get_job(conn, &subject_id_owned)?.is_none() {
+                    return Ok(None);
+                }
+                Ok(Some(ArchiveSubject::Job))
+            }
+            _ => Err(format!(
+                "unsupported archive subject kind: {subject_kind_owned}"
+            )),
+        })
+        .await?;
+
+    let Some(subject) = subject else {
+        return Ok(None);
+    };
+
+    let mut artifact_documents = Vec::new();
+    let mut artifact_feed = Vec::new();
+    let mut lightning_invoice_bundles = Vec::new();
+
+    match subject {
+        ArchiveSubject::Deal {
+            artifact_hashes,
+            deal_hash,
+        } => {
+            let artifact_hashes_for_lookup = artifact_hashes.clone();
+            let artifacts = state
+                .db
+                .with_conn(
+                    move |conn| -> Result<
+                        (
+                            Vec<db::ArtifactDocumentRecord>,
+                            Vec<db::ArtifactFeedEntryRecord>,
+                        ),
+                        String,
+                    > {
+                        let mut documents = Vec::new();
+                        let mut feed_entries = Vec::new();
+                        for artifact_hash in artifact_hashes_for_lookup {
+                            if let Some(document) =
+                                db::get_artifact_document_by_hash(conn, &artifact_hash)?
+                            {
+                                documents.push(document);
+                            }
+                            if let Some(feed_entry) =
+                                db::get_artifact_feed_entry_by_hash(conn, &artifact_hash)?
+                            {
+                                feed_entries.push(feed_entry);
+                            }
+                        }
+                        feed_entries.sort_by_key(|entry| entry.sequence);
+                        let sequence_by_hash = feed_entries
+                            .iter()
+                            .map(|entry| (entry.artifact_hash.clone(), entry.sequence))
+                            .collect::<std::collections::HashMap<_, _>>();
+                        documents.sort_by_key(|document| {
+                            sequence_by_hash
+                                .get(&document.artifact_hash)
+                                .copied()
+                                .unwrap_or(i64::MAX)
+                        });
+                        Ok((documents, feed_entries))
+                    },
+                )
+                .await?;
+            artifact_documents = artifacts.0;
+            artifact_feed = artifacts.1;
+
+            let deal_hash_for_bundle = deal_hash.clone();
+            let bundle = state
+                .db
+                .with_conn(move |conn| {
+                    db::get_lightning_invoice_bundle_by_deal_hash(conn, &deal_hash_for_bundle)
+                })
+                .await?;
+            if let Some(bundle) = bundle {
+                lightning_invoice_bundles.push(bundle);
+            }
+        }
+        ArchiveSubject::Job => {}
+    }
+
+    let subject_kind_for_evidence = subject_kind.to_string();
+    let subject_id_for_evidence = subject_id.to_string();
+    let execution_evidence = state
+        .db
+        .with_conn(move |conn| {
+            db::list_execution_evidence_for_subject(
+                conn,
+                &subject_kind_for_evidence,
+                &subject_id_for_evidence,
+            )
+        })
+        .await?;
+
+    Ok(Some(RuntimeArchiveExportResponse {
+        schema_version: "froglet/v1".to_string(),
+        export_type: "runtime_archive_bundle".to_string(),
+        subject_kind: subject_kind.to_string(),
+        subject_id: subject_id.to_string(),
+        exported_at: payments::current_unix_timestamp(),
+        artifact_documents,
+        artifact_feed,
+        execution_evidence,
+        lightning_invoice_bundles,
+    }))
+}
+
 async fn finalize_payment(
     state: &AppState,
     reservation: Option<payments::PaymentReservation>,
@@ -1909,6 +2668,48 @@ fn execution_timeout(state: &AppState) -> Duration {
     Duration::from_secs(state.config.execution_timeout_secs)
 }
 
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn receipt_executor_for_spec(spec: &WorkloadSpec) -> ReceiptExecutor {
+    match spec {
+        WorkloadSpec::Wasm { submission } => ReceiptExecutor {
+            runtime: "wasm".to_string(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            abi_version: Some(submission.workload.abi_version.clone()),
+            module_hash: Some(submission.workload.module_hash.clone()),
+            capabilities_granted: Vec::new(),
+        },
+        WorkloadSpec::EventsQuery { .. } => ReceiptExecutor {
+            runtime: "builtin.events_query".to_string(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            abi_version: None,
+            module_hash: None,
+            capabilities_granted: Vec::new(),
+        },
+    }
+}
+
+fn receipt_limits_for_spec(state: &AppState, spec: &WorkloadSpec) -> ReceiptLimitsApplied {
+    match spec {
+        WorkloadSpec::Wasm { .. } => ReceiptLimitsApplied {
+            max_input_bytes: Some(MAX_WASM_INPUT_BYTES),
+            max_runtime_ms: Some(duration_millis_u64(execution_timeout(state))),
+            max_memory_bytes: Some(sandbox::WASM_MAX_MEMORY_BYTES),
+            max_output_bytes: Some(sandbox::WASM_MAX_OUTPUT_BYTES),
+            fuel_limit: Some(sandbox::WASM_FUEL_LIMIT),
+        },
+        WorkloadSpec::EventsQuery { .. } => ReceiptLimitsApplied {
+            max_input_bytes: None,
+            max_runtime_ms: Some(duration_millis_u64(execution_timeout(state))),
+            max_memory_bytes: None,
+            max_output_bytes: None,
+            fuel_limit: None,
+        },
+    }
+}
+
 fn receipt_settlement_from_deal(
     deal: &deals::StoredDeal,
     settlement_status: SettlementStatus,
@@ -1936,26 +2737,36 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
     let incomplete_deals = state.db.with_conn(deals::list_incomplete_deals).await?;
     let completed_at = payments::current_unix_timestamp();
     let deal_recovery_message = "node restarted before deal completion".to_string();
-    let recovery_receipts = incomplete_deals
-        .into_iter()
-        .map(|deal| {
-            let receipt = sign_deal_receipt(
-                state.as_ref(),
-                &deal,
-                completed_at,
-                deals::DEAL_STATUS_FAILED,
-                Some(SettlementStatus::Expired),
-                0,
-                None,
-                Some(receipt_failure(
-                    "node_restarted",
-                    deal_recovery_message.clone(),
-                )),
-            )?;
-            let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
-            Ok((deal, receipt, receipt_json))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let mut recovery_receipts = Vec::new();
+    for deal in incomplete_deals {
+        let settlement_reference = match update_deal_lightning_bundle_state(
+            state.as_ref(),
+            &deal,
+            InvoiceBundleLegState::Expired,
+        )
+        .await?
+        {
+            Some(bundle) => Some(bundle.session_id),
+            None => None,
+        };
+
+        let receipt = sign_deal_receipt(
+            state.as_ref(),
+            &deal,
+            completed_at,
+            deals::DEAL_STATUS_FAILED,
+            Some(SettlementStatus::Expired),
+            0,
+            settlement_reference,
+            None,
+            Some(receipt_failure(
+                "node_restarted",
+                deal_recovery_message.clone(),
+            )),
+        )?;
+        let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+        recovery_receipts.push((deal, receipt, receipt_json));
+    }
 
     state
         .db
@@ -1971,11 +2782,24 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
                 )?;
 
                 for (deal, receipt, receipt_json) in &recovery_receipts {
+                    let failure_evidence_hash = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &deal.deal_id,
+                        "execution_failure",
+                        &json!({
+                            "code": "node_restarted",
+                            "message": deal_recovery_message.clone(),
+                        }),
+                        completed_at,
+                    )?;
                     deals::complete_deal_failure(
                         conn,
                         &deal.deal_id,
                         &deal_recovery_message,
                         receipt,
+                        Some(&failure_evidence_hash),
+                        Some(&receipt.hash),
                         completed_at,
                     )?;
                     db::insert_artifact_document(
@@ -1986,6 +2810,14 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
                         &receipt.actor_id,
                         receipt.created_at,
                         receipt_json,
+                    )?;
+                    let _ = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &deal.deal_id,
+                        "receipt_artifact_ref",
+                        &json!({ "artifact_hash": receipt.hash }),
+                        completed_at,
                     )?;
                 }
                 Ok(())
@@ -2100,12 +2932,21 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
                     } else {
                         None
                     };
+                    let result_evidence_hash = db::insert_execution_evidence(
+                        conn,
+                        "job",
+                        &job_for_commit.job_id,
+                        "execution_result",
+                        &result,
+                        payments::current_unix_timestamp(),
+                    )?;
 
                     jobs::complete_job_success(
                         conn,
                         &job_for_commit.job_id,
                         &result,
                         payment_receipt.as_ref(),
+                        Some(&result_evidence_hash),
                         payments::current_unix_timestamp(),
                     )
                 })
@@ -2121,6 +2962,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
                             conn,
                             &job_id,
                             "job completed but result could not be persisted",
+                            None,
                             payments::current_unix_timestamp(),
                         )
                     })
@@ -2142,10 +2984,19 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
                         )?;
                     }
 
+                    let failure_evidence_hash = db::insert_execution_evidence(
+                        conn,
+                        "job",
+                        &job_id,
+                        "execution_failure",
+                        &json!({ "message": error_message }),
+                        payments::current_unix_timestamp(),
+                    )?;
                     jobs::complete_job_failure(
                         conn,
                         &job_id,
                         &error_message,
+                        Some(&failure_evidence_hash),
                         payments::current_unix_timestamp(),
                     )
                 })
@@ -2182,14 +3033,25 @@ fn sign_deal_receipt(
     status: &str,
     settlement_status: Option<SettlementStatus>,
     committed_amount_sats: u64,
+    settlement_reference: Option<String>,
     result_hash: Option<String>,
     failure: Option<ReceiptFailure>,
 ) -> Result<SignedArtifact<ReceiptPayload>, String> {
     let settlement = settlement_status.and_then(|settlement_status| {
-        receipt_settlement_from_deal(deal, settlement_status, committed_amount_sats, None)
+        receipt_settlement_from_deal(
+            deal,
+            settlement_status,
+            committed_amount_sats,
+            settlement_reference,
+        )
     });
     let payment_lock = deal.payment_lock();
     let error = failure.as_ref().map(|details| details.message.clone());
+    let result_format = result_hash
+        .as_ref()
+        .map(|_| wasm::JCS_JSON_FORMAT.to_string());
+    let executor = Some(receipt_executor_for_spec(&deal.spec));
+    let limits_applied = Some(receipt_limits_for_spec(state, &deal.spec));
 
     sign_node_artifact(
         state,
@@ -2198,6 +3060,7 @@ fn sign_deal_receipt(
         ReceiptPayload {
             receipt_id: protocol::new_artifact_id(),
             deal_id: deal.deal_id.clone(),
+            deal_hash: Some(deal.artifact.hash.clone()),
             quote_id: deal.quote.payload.quote_id.clone(),
             offer_id: deal.artifact.payload.offer_id.clone(),
             service_id: deal.artifact.payload.service_id.clone(),
@@ -2207,6 +3070,9 @@ fn sign_deal_receipt(
             payment_lock,
             settlement,
             result_hash,
+            result_format,
+            executor,
+            limits_applied,
             failure,
             error,
             completed_at,
@@ -2221,6 +3087,20 @@ async fn reject_deal_admission(
 ) {
     let completed_at = payments::current_unix_timestamp();
     let failure = receipt_failure("capacity_exhausted", error_message.clone());
+    let settlement_reference = match update_deal_lightning_bundle_state(
+        state.as_ref(),
+        deal,
+        InvoiceBundleLegState::Canceled,
+    )
+    .await
+    {
+        Ok(Some(bundle)) => Some(bundle.session_id),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::error!("Failed to update Lightning bundle for rejected deal: {error}");
+            None
+        }
+    };
     let receipt = match sign_deal_receipt(
         state.as_ref(),
         deal,
@@ -2228,8 +3108,9 @@ async fn reject_deal_admission(
         deals::DEAL_STATUS_REJECTED,
         Some(SettlementStatus::Released),
         0,
+        settlement_reference,
         None,
-        Some(failure),
+        Some(failure.clone()),
     ) {
         Ok(receipt) => receipt,
         Err(error) => {
@@ -2247,6 +3128,7 @@ async fn reject_deal_admission(
 
     let deal_id = deal.deal_id.clone();
     let token_hash = deal.payment_token_hash.clone();
+    let payment_method = deal.payment_method.clone();
     let receipt_for_db = receipt.clone();
     let persisted = state
         .db
@@ -2254,15 +3136,28 @@ async fn reject_deal_admission(
             conn.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|e| e.to_string())?;
             let operation = (|| -> Result<(), String> {
-                if let Some(token_hash) = token_hash {
-                    let _ = db::release_payment_token(conn, &token_hash, &deal_id, completed_at)?;
+                if payment_method.as_deref() == Some("cashu") {
+                    if let Some(token_hash) = token_hash {
+                        let _ =
+                            db::release_payment_token(conn, &token_hash, &deal_id, completed_at)?;
+                    }
                 }
+                let failure_evidence_hash = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "execution_failure",
+                    &failure,
+                    completed_at,
+                )?;
 
                 let rejected = deals::reject_deal_admission(
                     conn,
                     &deal_id,
                     &error_message,
                     &receipt_for_db,
+                    Some(&failure_evidence_hash),
+                    Some(&receipt_for_db.hash),
                     completed_at,
                 )?;
 
@@ -2278,6 +3173,14 @@ async fn reject_deal_admission(
                     &receipt_for_db.actor_id,
                     receipt_for_db.created_at,
                     &receipt_json,
+                )?;
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "receipt_artifact_ref",
+                    &json!({ "artifact_hash": receipt_for_db.hash }),
+                    completed_at,
                 )?;
                 Ok(())
             })();
@@ -2351,6 +3254,23 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
         Ok(result) => {
             let completed_at = payments::current_unix_timestamp();
             let committed_amount_sats = deal.payment_amount_sats.unwrap_or_default();
+            let settlement_reference = match update_deal_lightning_bundle_state(
+                state.as_ref(),
+                &deal,
+                InvoiceBundleLegState::Settled,
+            )
+            .await
+            {
+                Ok(Some(bundle)) => Some(bundle.session_id),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to update Lightning bundle for successful deal {}: {error}",
+                        deal.deal_id
+                    );
+                    None
+                }
+            };
             let receipt = match sign_deal_receipt(
                 state.as_ref(),
                 &deal,
@@ -2358,6 +3278,7 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
                 deals::DEAL_STATUS_SUCCEEDED,
                 Some(SettlementStatus::Committed),
                 committed_amount_sats,
+                settlement_reference,
                 Some(canonical_result_hash(&result)),
                 None,
             ) {
@@ -2385,26 +3306,28 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
                     conn.execute_batch("BEGIN IMMEDIATE")
                         .map_err(|e| e.to_string())?;
                     let operation = (|| -> Result<(), String> {
-                        if let Some(token_hash) = deal_for_commit.payment_token_hash.clone() {
-                            let committed = db::commit_payment_token(
-                                conn,
-                                &token_hash,
-                                &deal_for_commit.deal_id,
-                                completed_at,
-                            )?;
+                        if deal_for_commit.payment_method.as_deref() == Some("cashu") {
+                            if let Some(token_hash) = deal_for_commit.payment_token_hash.clone() {
+                                let committed = db::commit_payment_token(
+                                    conn,
+                                    &token_hash,
+                                    &deal_for_commit.deal_id,
+                                    completed_at,
+                                )?;
 
-                            if !committed {
-                                return Err(
-                                    "payment reservation could not be committed".to_string()
-                                );
+                                if !committed {
+                                    return Err(
+                                        "payment reservation could not be committed".to_string()
+                                    );
+                                }
                             }
                         }
-
-                        deals::complete_deal_success(
+                        let result_evidence_hash = db::insert_execution_evidence(
                             conn,
+                            "deal",
                             &deal_for_commit.deal_id,
+                            "execution_result",
                             &result_for_db,
-                            &receipt_for_db,
                             completed_at,
                         )?;
                         db::insert_artifact_document(
@@ -2415,6 +3338,24 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
                             &receipt_for_db.actor_id,
                             receipt_for_db.created_at,
                             &receipt_json,
+                        )?;
+                        let _ = db::insert_execution_evidence(
+                            conn,
+                            "deal",
+                            &deal_for_commit.deal_id,
+                            "receipt_artifact_ref",
+                            &json!({ "artifact_hash": receipt_for_db.hash }),
+                            completed_at,
+                        )?;
+
+                        deals::complete_deal_success(
+                            conn,
+                            &deal_for_commit.deal_id,
+                            &result_for_db,
+                            &receipt_for_db,
+                            Some(&result_evidence_hash),
+                            Some(&receipt_for_db.hash),
+                            completed_at,
                         )?;
                         Ok(())
                     })();
@@ -2435,6 +3376,27 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
         }
         Err(error_message) => {
             let completed_at = payments::current_unix_timestamp();
+            let failure = receipt_failure(
+                classify_execution_failure(&error_message),
+                error_message.clone(),
+            );
+            let settlement_reference = match update_deal_lightning_bundle_state(
+                state.as_ref(),
+                &deal,
+                InvoiceBundleLegState::Canceled,
+            )
+            .await
+            {
+                Ok(Some(bundle)) => Some(bundle.session_id),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to update Lightning bundle for failed deal {}: {error}",
+                        deal.deal_id
+                    );
+                    None
+                }
+            };
             let receipt = match sign_deal_receipt(
                 state.as_ref(),
                 &deal,
@@ -2442,11 +3404,9 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
                 deals::DEAL_STATUS_FAILED,
                 Some(SettlementStatus::Released),
                 0,
+                settlement_reference,
                 None,
-                Some(receipt_failure(
-                    classify_execution_failure(&error_message),
-                    error_message.clone(),
-                )),
+                Some(failure.clone()),
             ) {
                 Ok(receipt) => receipt,
                 Err(error) => {
@@ -2465,6 +3425,7 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
 
             let deal_id = deal.deal_id.clone();
             let token_hash = deal.payment_token_hash.clone();
+            let payment_method = deal.payment_method.clone();
             let receipt_for_db = receipt.clone();
             let persisted = state
                 .db
@@ -2472,20 +3433,22 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
                     conn.execute_batch("BEGIN IMMEDIATE")
                         .map_err(|e| e.to_string())?;
                     let operation = (|| -> Result<(), String> {
-                        if let Some(token_hash) = token_hash {
-                            let _ = db::release_payment_token(
-                                conn,
-                                &token_hash,
-                                &deal_id,
-                                completed_at,
-                            )?;
+                        if payment_method.as_deref() == Some("cashu") {
+                            if let Some(token_hash) = token_hash {
+                                let _ = db::release_payment_token(
+                                    conn,
+                                    &token_hash,
+                                    &deal_id,
+                                    completed_at,
+                                )?;
+                            }
                         }
-
-                        deals::complete_deal_failure(
+                        let failure_evidence_hash = db::insert_execution_evidence(
                             conn,
+                            "deal",
                             &deal_id,
-                            &error_message,
-                            &receipt_for_db,
+                            "execution_failure",
+                            &failure,
                             completed_at,
                         )?;
                         db::insert_artifact_document(
@@ -2496,6 +3459,24 @@ async fn process_deal(state: Arc<AppState>, deal_id: String) {
                             &receipt_for_db.actor_id,
                             receipt_for_db.created_at,
                             &receipt_json,
+                        )?;
+                        let _ = db::insert_execution_evidence(
+                            conn,
+                            "deal",
+                            &deal_id,
+                            "receipt_artifact_ref",
+                            &json!({ "artifact_hash": receipt_for_db.hash }),
+                            completed_at,
+                        )?;
+
+                        deals::complete_deal_failure(
+                            conn,
+                            &deal_id,
+                            &error_message,
+                            &receipt_for_db,
+                            Some(&failure_evidence_hash),
+                            Some(&receipt_for_db.hash),
+                            completed_at,
                         )?;
                         Ok(())
                     })();

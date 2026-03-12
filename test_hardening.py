@@ -153,6 +153,7 @@ class HardeningTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "30",
                 "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "cashu",
             },
         )
 
@@ -193,6 +194,7 @@ class HardeningTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "30",
                 "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "cashu",
             },
         )
 
@@ -206,7 +208,12 @@ class HardeningTests(FrogletAsyncTestCase):
         self.assertTrue(verify_signed_artifact(recovered["receipt"]))
         self.assertEqual(recovered["receipt"]["payload"]["failure"]["code"], "node_restarted")
         self.assertEqual(recovered["receipt"]["payload"]["status"], "failed")
+        self.assertEqual(recovered["receipt"]["payload"]["deal_hash"], recovered["deal"]["hash"])
         self.assertEqual(recovered["receipt"]["payload"]["settlement"]["status"], "expired")
+        self.assertEqual(recovered["receipt"]["payload"]["executor"]["runtime"], "wasm")
+        self.assertEqual(
+            recovered["receipt"]["payload"]["limits_applied"]["max_output_bytes"], 131072
+        )
 
     async def test_execute_wasm_rejects_module_hash_mismatch(self) -> None:
         node = await self.start_node()

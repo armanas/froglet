@@ -10,7 +10,9 @@ from test_support import (
     VALID_WASM_HEX,
     build_wasm_request,
     build_wasm_submission,
+    execute_db,
     read_db_row,
+    read_db_rows,
     workload_hash_from_submission,
 )
 
@@ -83,6 +85,41 @@ class JobApiTests(FrogletAsyncTestCase):
             stored_payload["submission"]["workload"]["module_hash"],
             submission["workload"]["module_hash"],
         )
+        evidence_kinds = {
+            row[0]
+            for row in read_db_rows(
+                node.data_dir / "node.db",
+                "SELECT evidence_kind FROM execution_evidence WHERE subject_kind = 'job' AND subject_id = ? ORDER BY evidence_id ASC",
+                (created["job_id"],),
+            )
+        }
+        self.assertEqual(evidence_kinds, {"execution_result", "workload_spec"})
+
+    async def test_job_reads_from_evidence_when_cache_columns_are_corrupted(self) -> None:
+        node = await self.start_node()
+        request = build_wasm_request(VALID_WASM_HEX, input={"task": "cache-corruption"})
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(node.url("/v1/node/jobs"), json=request) as resp:
+                created = await resp.json()
+
+        completed = await self.wait_for_job(node, created["job_id"])
+        self.assertEqual(completed["status"], "succeeded")
+
+        execute_db(
+            node.data_dir / "node.db",
+            "UPDATE jobs SET payload_json = ?, result_json = ? WHERE job_id = ?",
+            ("{", "{", created["job_id"]),
+        )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(node.url(f"/v1/node/jobs/{created['job_id']}")) as resp:
+                reread = await resp.json()
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(reread["status"], "succeeded")
+        self.assertEqual(reread["kind"], "wasm")
+        self.assertEqual(reread["result"], 42)
 
     async def test_job_rejects_input_hash_mismatch(self) -> None:
         node = await self.start_node()
@@ -104,6 +141,7 @@ class JobApiTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PRICE_EVENTS_QUERY": "10",
+                "FROGLET_PAYMENT_BACKEND": "cashu",
             }
         )
 
@@ -133,6 +171,16 @@ class JobApiTests(FrogletAsyncTestCase):
         self.assertIn("events", query_payload)
         self.assertIsNotNone(query_payload["payment_receipt"])
         self.assertEqual(query_payload["payment_receipt"]["settlement_status"], "committed")
+        evidence_kinds = {
+            row[0]
+            for row in read_db_rows(
+                node.data_dir / "node.db",
+                "SELECT evidence_kind FROM execution_evidence WHERE subject_kind = 'job' AND subject_id = ? ORDER BY evidence_id ASC",
+                (failed_job["job_id"],),
+            )
+        }
+        self.assertIn("workload_spec", evidence_kinds)
+        self.assertIn("execution_failure", evidence_kinds)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ class PrivacyAndOpsecTests(FrogletAsyncTestCase):
         node = await self.start_node()
         db_path = node.data_dir / "node.db"
         identity_dir = node.data_dir / "identity"
-        seed_path = identity_dir / "ed25519.seed"
+        seed_path = identity_dir / "secp256k1.seed"
 
         self.assertTrue(db_path.exists(), db_path)
         self.assertTrue(identity_dir.exists(), identity_dir)

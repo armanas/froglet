@@ -16,8 +16,9 @@ static WASM_CONCURRENCY_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
         16,
     )))
 });
-const WASM_FUEL_LIMIT: u64 = 50_000_000;
-const WASM_MAX_MEMORY_BYTES: usize = 8 * 1024 * 1024;
+pub const WASM_FUEL_LIMIT: u64 = 50_000_000;
+pub const WASM_MAX_MEMORY_BYTES: usize = 8 * 1024 * 1024;
+pub const WASM_MAX_OUTPUT_BYTES: usize = 128 * 1024;
 const WASM_EPOCH_TICK_MILLIS: u64 = 10;
 
 static WASM_ENGINE: Lazy<Engine> = Lazy::new(|| {
@@ -145,6 +146,11 @@ pub fn execute_wasm_module_with_permit(
     let packed = packed as u64;
     let result_ptr = (packed >> 32) as usize;
     let result_len = (packed & 0xffff_ffff) as usize;
+    if result_len > WASM_MAX_OUTPUT_BYTES {
+        return Err(boxed_message(
+            "Wasm module output size limit exceeded".to_string(),
+        ));
+    }
     let result_bytes = read_memory(&memory, &mut store, result_ptr, result_len)?;
 
     if let Some(dealloc_func) = &dealloc_func {
@@ -349,6 +355,36 @@ mod tests {
             .expect_err("expected invalid json failure");
         assert!(
             error.to_string().to_ascii_lowercase().contains("expected"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_output_that_exceeds_limit() {
+        let oversized_json = format!("\"{}\"", "a".repeat(WASM_MAX_OUTPUT_BYTES));
+        let payload = oversized_json.replace('\\', "\\\\").replace('"', "\\\"");
+        let memory_pages = oversized_json.len().div_ceil(65_536);
+        let wasm_bytes = wat2wasm(&format!(
+            r#"(module
+                (memory (export "memory") {memory_pages})
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const {result_len})
+                (data (i32.const 0) "{payload}"))"#,
+            memory_pages = memory_pages.max(1),
+            result_len = oversized_json.len(),
+            payload = payload,
+        ))
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected oversized output failure");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("limit exceeded"),
             "unexpected error: {error}"
         );
     }

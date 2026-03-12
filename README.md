@@ -20,14 +20,15 @@ This repository now contains two binaries:
 ## Features
 
 - Native Tor hidden service support through Arti
-- Stable node identity stored under `./data/identity/ed25519.seed`
+- Stable secp256k1 node identity stored under `./data/identity/secp256k1.seed`
 - Signed descriptor, offer, quote, deal, and receipt artifacts
 - Append-only local artifact feed backed by SQLite
 - Quote-based pricing for `events.query` and `execute.wasm`
 - Deal execution with signed success, failure, or rejection receipts
 - Central marketplace publishing with signed register and heartbeat flows
 - Signed reclaim flow for bringing a node identity back online
-- Cashu token parsing with local reservation/commit flow and settlement-aware execution receipts
+- Lightning-first invoice-bundle settlement for priced deals
+- Optional legacy Cashu verifier compatibility for inline-payment helpers
 - Sandboxed Wasm execution
 - Async job API with persisted state, polling, and idempotency keys as a compatibility layer
 - SQLite state under `./data/node.db`
@@ -76,13 +77,16 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 
 - `FROGLET_PRICE_EVENTS_QUERY=0`
 - `FROGLET_PRICE_EXEC_WASM=0`
-- `FROGLET_PAYMENT_BACKEND=none|cashu`
+- `FROGLET_PAYMENT_BACKEND=none|cashu|lightning`
 - `FROGLET_EXECUTION_TIMEOUT_SECS=10`
 - `FROGLET_CASHU_MINT_ALLOWLIST=https://mint.example,https://mint2.example`
 - `FROGLET_CASHU_REMOTE_CHECKSTATE=true|false`
 - `FROGLET_CASHU_REQUEST_TIMEOUT_SECS=5`
+- `FROGLET_LIGHTNING_MODE=mock`
 
-If any price is greater than zero and `FROGLET_PAYMENT_BACKEND` is not set, Froglet defaults to `cashu`.
+If any price is greater than zero and `FROGLET_PAYMENT_BACKEND` is not set, Froglet defaults to `lightning`.
+The mainline priced v1 flow is `quote -> deal -> receipt`.
+The older inline-payment query and job helpers remain available only as explicit legacy compatibility when `FROGLET_PAYMENT_BACKEND=cashu`.
 
 `FROGLET_EXECUTION_TIMEOUT_SECS` is enforced by the Wasm sandbox adapter and is also published in offer constraints.
 
@@ -141,13 +145,15 @@ FROGLET_MARKETPLACE_PUBLISH=true \
 cargo run --bin froglet
 ```
 
-### Paid query endpoint
+### Legacy paid query endpoint
 
 ```bash
-FROGLET_PRICE_EVENTS_QUERY=10 cargo run --bin froglet
+FROGLET_PRICE_EVENTS_QUERY=10 \
+FROGLET_PAYMENT_BACKEND=cashu \
+cargo run --bin froglet
 ```
 
-Requests to `/v1/node/events/query` now require a payment object:
+Requests to `/v1/node/events/query` require a payment object only in the legacy Cashu compatibility mode:
 
 ```json
 {
@@ -161,6 +167,7 @@ Requests to `/v1/node/events/query` now require a payment object:
 ```
 
 If payment is missing, Froglet returns `402 Payment Required`.
+When `FROGLET_PAYMENT_BACKEND=lightning`, priced `events.query` requests must go through `/v1/quotes` and `/v1/deals` instead of this helper endpoint.
 
 ### Quote and deal flow
 
@@ -188,7 +195,8 @@ POST /v1/quotes
 }
 ```
 
-The node responds with a signed quote artifact. The client can then open a deal against that quote:
+The node responds with a signed quote artifact. The client can then open a deal against that quote.
+In legacy Cashu compatibility mode, the deal can still carry an inline payment token:
 
 ```json
 POST /v1/deals
@@ -206,7 +214,26 @@ POST /v1/deals
 ```
 
 Froglet persists the accepted deal immediately, executes it asynchronously, and returns a signed receipt when the deal reaches `succeeded`, `failed`, or `rejected`.
+New receipts include the signed deal hash, result format metadata, executor/runtime metadata, and the applied runtime limit profile for the workload.
 If compute capacity is exhausted before execution begins, the provider emits a signed terminal rejection receipt and releases any local payment reservation.
+
+With `FROGLET_PAYMENT_BACKEND=lightning`, priced deals use a pending-admission flow:
+
+```json
+POST /v1/deals
+{
+  "quote": { "...": "signed quote artifact" },
+  "kind": "wasm",
+  "submission": {
+    "...": "same wasm_submission used for quoting"
+  },
+  "requester_id": "<32-byte x-only pubkey hex>",
+  "success_payment_hash": "<sha256(secret) hex>"
+}
+```
+
+The deal is persisted as `payment_pending`. The requester then fetches the signed bundle from `GET /v1/deals/:deal_id/invoice-bundle`. In mock Lightning mode, local tests can advance bundle state through `POST /v1/runtime/lightning/invoice-bundles/:session_id/state` until the deal is admitted and executed.
+Before either Lightning leg is paid, Froglet can verify the returned bundle against the signed quote and deal via `POST /v1/invoice-bundles/verify`.
 
 ### Async FaaS-style job submission
 
@@ -222,6 +249,7 @@ POST /v1/node/jobs
 ```
 
 Froglet returns a persisted job record immediately and clients can poll `GET /v1/node/jobs/:job_id` until the status changes to `succeeded` or `failed`.
+If `execute.wasm` is priced and the Lightning backend is active, `POST /v1/node/jobs` is intentionally demoted from the v1 economic path and returns an error instructing callers to use `/v1/quotes` and `/v1/deals`.
 
 ## API Surface
 
@@ -235,19 +263,32 @@ Froglet returns a persisted job record immediately and clients can poll `GET /v1
 - `POST /v1/quotes`
 - `POST /v1/deals`
 - `GET /v1/deals/:deal_id`
+- `GET /v1/deals/:deal_id/invoice-bundle`
+- `POST /v1/invoice-bundles/verify`
 - `POST /v1/receipts/verify`
 - `GET /v1/node/capabilities`
 - `GET /v1/node/identity`
 - `POST /v1/node/events/publish`
-- `POST /v1/node/events/query`
-- `POST /v1/node/execute/wasm`
-- `POST /v1/node/jobs`
+- `POST /v1/node/events/query` for free queries or explicit legacy Cashu mode
+- `POST /v1/node/execute/wasm` for free execution only
+- `POST /v1/node/jobs` for free execution only
 - `GET /v1/node/jobs/:job_id`
 - `POST /v1/node/pay/ecash`
+
+### Runtime routes
+
+- `GET /v1/runtime/wallet/balance`
+- `POST /v1/runtime/provider/start`
+- `POST /v1/runtime/services/publish`
+- `POST /v1/runtime/services/buy`
+- `GET /v1/runtime/archive/:subject_kind/:subject_id`
+- `POST /v1/runtime/lightning/invoice-bundles/:session_id/state`
 
 `GET /v1/feed` uses an exclusive cursor over the local artifact sequence.
 Pass `?cursor=<last_seen_cursor>&limit=<n>` to continue replication from the last artifact you processed.
 Use `GET /v1/artifacts/:artifact_hash` to resolve a specific content-addressed artifact by hash.
+
+`GET /v1/runtime/archive/:subject_kind/:subject_id` is a privileged export surface for retained local evidence. It returns an engine-neutral archive bundle containing the subject's retained artifact documents, local feed entries, execution evidence, and any retained Lightning invoice-bundle material.
 
 ### Marketplace routes
 
@@ -335,7 +376,7 @@ If you deploy Froglet on the public internet, you should still front it with add
 
 ### Operational Notes
 
-- **Rotate identity**: stop the node, delete `./data/identity/ed25519.seed`, and restart with `FROGLET_IDENTITY_AUTO_GENERATE=true` to mint a fresh node identity.
+- **Rotate identity**: stop the node, delete `./data/identity/secp256k1.seed`, and restart with `FROGLET_IDENTITY_AUTO_GENERATE=true` to mint a fresh node identity.
 - **Migrate DB**: stop the node, copy `./data/node.db` (and `./data/marketplace.db` if running the marketplace) to the new location, update `FROGLET_DATA_DIR`, and restart.
 - **Toggle Tor/clearnet**:
   - Use `FROGLET_NETWORK_MODE=clearnet|tor|dual` to control which transports are enabled.

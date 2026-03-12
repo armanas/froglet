@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const DEAL_STATUS_ACCEPTED: &str = "accepted";
+pub const DEAL_STATUS_PAYMENT_PENDING: &str = "payment_pending";
 pub const DEAL_STATUS_RUNNING: &str = "running";
 pub const DEAL_STATUS_SUCCEEDED: &str = "succeeded";
 pub const DEAL_STATUS_FAILED: &str = "failed";
@@ -25,8 +26,10 @@ pub struct NewDeal {
     pub quote: SignedArtifact<QuotePayload>,
     pub spec: WorkloadSpec,
     pub artifact: SignedArtifact<DealPayload>,
+    pub payment_method: Option<String>,
     pub payment_token_hash: Option<String>,
     pub payment_amount_sats: Option<u64>,
+    pub initial_status: String,
     pub created_at: i64,
 }
 
@@ -62,6 +65,7 @@ pub struct StoredDeal {
     pub result: Option<Value>,
     pub result_hash: Option<String>,
     pub error: Option<String>,
+    pub payment_method: Option<String>,
     pub payment_token_hash: Option<String>,
     pub payment_amount_sats: Option<u64>,
     pub receipt: Option<SignedArtifact<ReceiptPayload>>,
@@ -90,7 +94,10 @@ impl StoredDeal {
     pub fn payment_lock(&self) -> Option<crate::protocol::PaymentLock> {
         match (&self.payment_token_hash, self.payment_amount_sats) {
             (Some(token_hash), Some(amount_sats)) => Some(crate::protocol::PaymentLock {
-                kind: "cashu".to_string(),
+                kind: self
+                    .payment_method
+                    .clone()
+                    .unwrap_or_else(|| "cashu".to_string()),
                 token_hash: token_hash.clone(),
                 amount_sats,
             }),
@@ -137,13 +144,18 @@ pub fn insert_quote(conn: &Connection, quote: &SignedArtifact<QuotePayload>) -> 
 
 pub fn get_quote(conn: &Connection, quote_id: &str) -> Result<Option<StoredQuote>, String> {
     conn.query_row(
-        "SELECT quote_json, created_at
+        "SELECT
+            quote_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = quotes.artifact_hash LIMIT 1),
+            created_at
          FROM quotes
          WHERE quote_id = ?1",
         params![quote_id],
         |row| {
             let quote_json: String = row.get(0)?;
-            let artifact = serde_json::from_str(&quote_json).map_err(|err| {
+            let artifact_document_json: Option<String> = row.get(1)?;
+            let artifact_source = artifact_document_json.as_deref().unwrap_or(&quote_json);
+            let artifact = serde_json::from_str(artifact_source).map_err(|err| {
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
@@ -153,7 +165,7 @@ pub fn get_quote(conn: &Connection, quote_id: &str) -> Result<Option<StoredQuote
 
             Ok(StoredQuote {
                 artifact,
-                created_at: row.get(1)?,
+                created_at: row.get(2)?,
             })
         },
     )
@@ -171,8 +183,10 @@ pub fn insert_or_get_deal(
         quote,
         spec,
         artifact,
+        payment_method,
         payment_token_hash,
         payment_amount_sats,
+        initial_status,
         created_at,
     } = new_deal;
 
@@ -196,12 +210,18 @@ pub fn insert_or_get_deal(
             result_json,
             result_hash,
             error,
+            payment_method,
             payment_token_hash,
             payment_amount_sats,
             receipt_artifact_json,
+            workload_evidence_hash,
+            deal_artifact_hash,
+            result_evidence_hash,
+            failure_evidence_hash,
+            receipt_artifact_hash,
             created_at,
             updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL, NULL, ?12, ?13, NULL, ?14, ?14)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL, NULL, ?12, ?13, ?14, NULL, NULL, NULL, NULL, NULL, NULL, ?15, ?15)",
         params![
             &deal_id,
             idempotency_key.as_deref(),
@@ -213,7 +233,8 @@ pub fn insert_or_get_deal(
             &spec_json,
             &quote_json,
             &artifact_json,
-            DEAL_STATUS_ACCEPTED,
+            &initial_status,
+            payment_method.as_deref(),
             payment_token_hash.as_deref(),
             payment_amount_sats.map(|value| value as i64),
             created_at,
@@ -251,21 +272,45 @@ pub fn insert_or_get_deal(
     }
 }
 
+pub fn set_deal_storage_refs(
+    conn: &Connection,
+    deal_id: &str,
+    workload_evidence_hash: &str,
+    deal_artifact_hash: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE deals
+         SET workload_evidence_hash = ?2,
+             deal_artifact_hash = ?3
+         WHERE deal_id = ?1",
+        params![deal_id, workload_evidence_hash, deal_artifact_hash],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 pub fn get_deal(conn: &Connection, deal_id: &str) -> Result<Option<StoredDeal>, String> {
     conn.query_row(
         "SELECT
             deal_id,
             idempotency_key,
             quote_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
             spec_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
             deal_artifact_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
             status,
             result_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
             result_hash,
             error,
+            payment_method,
             payment_token_hash,
             payment_amount_sats,
             receipt_artifact_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
             created_at,
             updated_at
          FROM deals
@@ -286,20 +331,61 @@ pub fn find_deal_by_idempotency_key(
             deal_id,
             idempotency_key,
             quote_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
             spec_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
             deal_artifact_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
             status,
             result_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
             result_hash,
             error,
+            payment_method,
             payment_token_hash,
             payment_amount_sats,
             receipt_artifact_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
             created_at,
             updated_at
          FROM deals
          WHERE idempotency_key = ?1",
         params![idempotency_key],
+        decode_deal_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_deal_by_artifact_hash(
+    conn: &Connection,
+    deal_artifact_hash: &str,
+) -> Result<Option<StoredDeal>, String> {
+    conn.query_row(
+        "SELECT
+            deal_id,
+            idempotency_key,
+            quote_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
+            spec_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
+            deal_artifact_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
+            status,
+            result_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
+            result_hash,
+            error,
+            payment_method,
+            payment_token_hash,
+            payment_amount_sats,
+            receipt_artifact_json,
+            (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
+            created_at,
+            updated_at
+         FROM deals
+         WHERE deal_artifact_hash = ?1",
+        params![deal_artifact_hash],
         decode_deal_row,
     )
     .optional()
@@ -319,11 +405,35 @@ pub fn try_mark_deal_running(conn: &Connection, deal_id: &str, now: i64) -> Resu
     Ok(updated > 0)
 }
 
+pub fn try_mark_deal_accepted_from_payment_pending(
+    conn: &Connection,
+    deal_id: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2, updated_at = ?3
+             WHERE deal_id = ?1 AND status = ?4",
+            params![
+                deal_id,
+                DEAL_STATUS_ACCEPTED,
+                now,
+                DEAL_STATUS_PAYMENT_PENDING
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
 pub fn complete_deal_success(
     conn: &Connection,
     deal_id: &str,
     result: &Value,
     receipt: &SignedArtifact<ReceiptPayload>,
+    result_evidence_hash: Option<&str>,
+    receipt_artifact_hash: Option<&str>,
     now: i64,
 ) -> Result<(), String> {
     let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
@@ -338,7 +448,10 @@ pub fn complete_deal_success(
              result_hash = ?4,
              error = NULL,
              receipt_artifact_json = ?5,
-             updated_at = ?6
+             result_evidence_hash = COALESCE(?6, result_evidence_hash),
+             failure_evidence_hash = NULL,
+             receipt_artifact_hash = COALESCE(?7, receipt_artifact_hash),
+             updated_at = ?8
          WHERE deal_id = ?1",
         params![
             deal_id,
@@ -346,6 +459,8 @@ pub fn complete_deal_success(
             result_json,
             result_hash,
             receipt_json,
+            result_evidence_hash,
+            receipt_artifact_hash,
             now,
         ],
     )
@@ -359,6 +474,8 @@ pub fn reject_deal_admission(
     deal_id: &str,
     error: &str,
     receipt: &SignedArtifact<ReceiptPayload>,
+    failure_evidence_hash: Option<&str>,
+    receipt_artifact_hash: Option<&str>,
     now: i64,
 ) -> Result<bool, String> {
     let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
@@ -369,13 +486,18 @@ pub fn reject_deal_admission(
              SET status = ?2,
                  error = ?3,
                  receipt_artifact_json = ?4,
-                 updated_at = ?5
-             WHERE deal_id = ?1 AND status = ?6",
+                 result_evidence_hash = NULL,
+                 failure_evidence_hash = COALESCE(?5, failure_evidence_hash),
+                 receipt_artifact_hash = COALESCE(?6, receipt_artifact_hash),
+                 updated_at = ?7
+             WHERE deal_id = ?1 AND status = ?8",
             params![
                 deal_id,
                 DEAL_STATUS_REJECTED,
                 error,
                 receipt_json,
+                failure_evidence_hash,
+                receipt_artifact_hash,
                 now,
                 DEAL_STATUS_ACCEPTED,
             ],
@@ -390,6 +512,8 @@ pub fn complete_deal_failure(
     deal_id: &str,
     error: &str,
     receipt: &SignedArtifact<ReceiptPayload>,
+    failure_evidence_hash: Option<&str>,
+    receipt_artifact_hash: Option<&str>,
     now: i64,
 ) -> Result<(), String> {
     let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
@@ -399,9 +523,20 @@ pub fn complete_deal_failure(
          SET status = ?2,
              error = ?3,
              receipt_artifact_json = ?4,
-             updated_at = ?5
+             result_evidence_hash = NULL,
+             failure_evidence_hash = COALESCE(?5, failure_evidence_hash),
+             receipt_artifact_hash = COALESCE(?6, receipt_artifact_hash),
+             updated_at = ?7
          WHERE deal_id = ?1",
-        params![deal_id, DEAL_STATUS_FAILED, error, receipt_json, now],
+        params![
+            deal_id,
+            DEAL_STATUS_FAILED,
+            error,
+            receipt_json,
+            failure_evidence_hash,
+            receipt_artifact_hash,
+            now,
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -414,11 +549,12 @@ pub fn fail_incomplete_deals(conn: &Connection, message: &str, now: i64) -> Resu
          SET status = ?1,
              error = ?2,
              updated_at = ?3
-         WHERE status IN (?4, ?5)",
+         WHERE status IN (?4, ?5, ?6)",
         params![
             DEAL_STATUS_FAILED,
             message,
             now,
+            DEAL_STATUS_PAYMENT_PENDING,
             DEAL_STATUS_ACCEPTED,
             DEAL_STATUS_RUNNING
         ],
@@ -435,26 +571,36 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
                 deal_id,
                 idempotency_key,
                 quote_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
                 spec_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
                 deal_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
                 status,
                 result_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
                 result_hash,
                 error,
+                payment_method,
                 payment_token_hash,
                 payment_amount_sats,
                 receipt_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
                 created_at,
                 updated_at
              FROM deals
-             WHERE status IN (?1, ?2)
+             WHERE status IN (?1, ?2, ?3)
              ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
         .query_map(
-            params![DEAL_STATUS_ACCEPTED, DEAL_STATUS_RUNNING],
+            params![
+                DEAL_STATUS_PAYMENT_PENDING,
+                DEAL_STATUS_ACCEPTED,
+                DEAL_STATUS_RUNNING
+            ],
             decode_deal_row,
         )
         .map_err(|e| e.to_string())?;
@@ -469,33 +615,43 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
 
 fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
     let quote_json: String = row.get(2)?;
-    let quote = serde_json::from_str(&quote_json).map_err(|err| {
+    let quote_document_json: Option<String> = row.get(3)?;
+    let quote_source = quote_document_json.as_deref().unwrap_or(&quote_json);
+    let quote = serde_json::from_str(quote_source).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
     })?;
 
-    let spec_json: String = row.get(3)?;
-    let spec = serde_json::from_str(&spec_json).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(err))
-    })?;
-
-    let artifact_json: String = row.get(4)?;
-    let artifact = serde_json::from_str(&artifact_json).map_err(|err| {
+    let spec_json: String = row.get(4)?;
+    let workload_evidence_json: Option<String> = row.get(5)?;
+    let spec_source = workload_evidence_json.as_deref().unwrap_or(&spec_json);
+    let spec = serde_json::from_str(spec_source).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(err))
     })?;
 
-    let result_json: Option<String> = row.get(6)?;
-    let result = match result_json {
+    let artifact_json: String = row.get(6)?;
+    let deal_document_json: Option<String> = row.get(7)?;
+    let artifact_source = deal_document_json.as_deref().unwrap_or(&artifact_json);
+    let artifact = serde_json::from_str(artifact_source).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+
+    let result_json: Option<String> = row.get(9)?;
+    let result_evidence_json: Option<String> = row.get(10)?;
+    let result_source = result_evidence_json.as_deref().or(result_json.as_deref());
+    let result = match result_source {
         Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+            rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(err))
         })?),
         None => None,
     };
 
-    let receipt_json: Option<String> = row.get(11)?;
-    let receipt = match receipt_json {
+    let receipt_json: Option<String> = row.get(16)?;
+    let receipt_document_json: Option<String> = row.get(17)?;
+    let receipt_source = receipt_document_json.as_deref().or(receipt_json.as_deref());
+    let receipt = match receipt_source {
         Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
             rusqlite::Error::FromSqlConversionFailure(
-                11,
+                16,
                 rusqlite::types::Type::Text,
                 Box::new(err),
             )
@@ -503,7 +659,7 @@ fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
         None => None,
     };
 
-    let payment_amount_sats: Option<i64> = row.get(10)?;
+    let payment_amount_sats: Option<i64> = row.get(15)?;
 
     Ok(StoredDeal {
         deal_id: row.get(0)?,
@@ -511,14 +667,15 @@ fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
         quote,
         spec,
         artifact,
-        status: row.get(5)?,
+        status: row.get(8)?,
         result,
-        result_hash: row.get(7)?,
-        error: row.get(8)?,
-        payment_token_hash: row.get(9)?,
+        result_hash: row.get(11)?,
+        error: row.get(12)?,
+        payment_method: row.get(13)?,
+        payment_token_hash: row.get(14)?,
         payment_amount_sats: payment_amount_sats.map(|value| value as u64),
         receipt,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
     })
 }

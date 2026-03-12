@@ -1551,11 +1551,11 @@ dependencies = [
  "arti-client",
  "axum",
  "cashu",
- "ed25519-dalek",
  "futures",
  "hex",
  "hyper",
  "hyper-util",
+ "k256",
  "once_cell",
  "rand 0.8.5",
  "reqwest",
@@ -2365,6 +2365,20 @@ checksum = "f4dc5fdb62af2f520116927304f15d25b3c2667b4817b90efdc045194c912c54"
 dependencies = [
  "digest",
  "sha3",
+]
+
+[[package]]
+name = "k256"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
+dependencies = [
+ "cfg-if",
+ "ecdsa",
+ "elliptic-curve",
+ "once_cell",
+ "sha2",
+ "signature",
 ]
 
 [[package]]

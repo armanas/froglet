@@ -1,5 +1,11 @@
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use k256::schnorr::{
+    Signature as SchnorrSignature, SigningKey, VerifyingKey,
+    signature::{Signer, Verifier},
+};
+use k256::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
+
+pub use k256::schnorr::SigningKey as NodeSigningKey;
 
 pub fn verify_signature(pubkey_hex: &str, sig_hex: &str, content: &str) -> bool {
     verify_message(pubkey_hex, sig_hex, content.as_bytes())
@@ -11,36 +17,51 @@ pub fn verify_message(pubkey_hex: &str, sig_hex: &str, message: &[u8]) -> bool {
         _ => return false,
     };
 
-    let pubkey_array: [u8; 32] = match pubkey_bytes.as_slice().try_into() {
-        Ok(arr) => arr,
-        Err(_) => return false,
-    };
-
     let sig_bytes: Vec<u8> = match hex::decode(sig_hex) {
         Ok(b) if b.len() == 64 => b,
         _ => return false,
     };
 
-    let vk = match VerifyingKey::from_bytes(&pubkey_array) {
+    let verifying_key = match VerifyingKey::from_bytes(pubkey_bytes.as_slice()) {
         Ok(key) => key,
         Err(_) => return false,
     };
 
-    let sig = match Signature::from_slice(sig_bytes.as_slice()) {
-        Ok(s) => s,
+    let signature = match SchnorrSignature::try_from(sig_bytes.as_slice()) {
+        Ok(signature) => signature,
         Err(_) => return false,
     };
 
-    vk.verify(message, &sig).is_ok()
+    verifying_key.verify(message, &signature).is_ok()
 }
 
-pub fn public_key_hex(signing_key: &SigningKey) -> String {
+pub fn generate_signing_key() -> NodeSigningKey {
+    SigningKey::random(&mut rand::rngs::OsRng)
+}
+
+pub fn signing_key_from_seed_bytes(seed: &[u8; 32]) -> Result<NodeSigningKey, String> {
+    let secret_key =
+        SecretKey::from_slice(seed).map_err(|e| format!("invalid secp256k1 seed: {e}"))?;
+    Ok(SigningKey::from(secret_key))
+}
+
+pub fn signing_key_seed_bytes(signing_key: &NodeSigningKey) -> [u8; 32] {
+    signing_key.to_bytes().into()
+}
+
+pub fn public_key_hex(signing_key: &NodeSigningKey) -> String {
     hex::encode(signing_key.verifying_key().to_bytes())
 }
 
-pub fn sign_message_hex(signing_key: &SigningKey, message: &[u8]) -> String {
-    let sig = signing_key.sign(message);
-    hex::encode(sig.to_bytes())
+pub fn compressed_public_key_hex(signing_key: &NodeSigningKey) -> String {
+    let verifying_key = signing_key.verifying_key();
+    let public_key: PublicKey = (*verifying_key).into();
+    hex::encode(public_key.to_sec1_bytes())
+}
+
+pub fn sign_message_hex(signing_key: &NodeSigningKey, message: &[u8]) -> String {
+    let signature: SchnorrSignature = signing_key.sign(message);
+    hex::encode(signature.to_bytes())
 }
 
 pub fn sha256_hex(input: impl AsRef<[u8]>) -> String {
@@ -52,14 +73,10 @@ pub fn sha256_hex(input: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
 
     #[test]
     fn sign_and_verify_roundtrip_succeeds() {
-        let mut rng = OsRng;
-        let signing_key: SigningKey = SigningKey::generate(&mut rng);
-
+        let signing_key = generate_signing_key();
         let message = b"froglet-test-message";
         let pubkey_hex = public_key_hex(&signing_key);
         let sig_hex = sign_message_hex(&signing_key, message);
@@ -74,14 +91,12 @@ mod tests {
 
     #[test]
     fn verify_fails_for_wrong_length_pubkey_or_sig() {
-        let mut rng = OsRng;
-        let signing_key: SigningKey = SigningKey::generate(&mut rng);
+        let signing_key = generate_signing_key();
         let message = b"froglet-test-message";
 
         let pubkey_hex = public_key_hex(&signing_key);
         let sig_hex = sign_message_hex(&signing_key, message);
 
-        // Truncate hex so that decoded length is wrong.
         let short_pubkey = &pubkey_hex[..60];
         let short_sig = &sig_hex[..120];
 
@@ -101,20 +116,16 @@ mod tests {
 
     #[test]
     fn verify_fails_for_tampered_message_or_sig() {
-        let mut rng = OsRng;
-        let signing_key: SigningKey = SigningKey::generate(&mut rng);
+        let signing_key = generate_signing_key();
         let message = b"froglet-test-message";
         let other_message = b"froglet-other-message";
 
         let pubkey_hex = public_key_hex(&signing_key);
         let sig_hex = sign_message_hex(&signing_key, message);
 
-        // Different message should not verify with same signature.
         assert!(!verify_message(&pubkey_hex, &sig_hex, other_message));
 
-        // Tamper with signature hex.
         let mut tampered_sig = sig_hex.clone();
-        // Flip a nibble if long enough.
         if let Some(c) = tampered_sig.get_mut(0..1) {
             if c == "0" {
                 tampered_sig.replace_range(0..1, "1");
@@ -124,6 +135,15 @@ mod tests {
         }
 
         assert!(!verify_message(&pubkey_hex, &tampered_sig, message));
+    }
+
+    #[test]
+    fn signing_key_seed_roundtrip_succeeds() {
+        let signing_key = generate_signing_key();
+        let seed = signing_key_seed_bytes(&signing_key);
+        let restored = signing_key_from_seed_bytes(&seed).expect("seed should restore key");
+
+        assert_eq!(public_key_hex(&signing_key), public_key_hex(&restored));
     }
 
     #[test]

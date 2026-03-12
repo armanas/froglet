@@ -1,4 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
+use serde::Serialize;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -6,7 +7,12 @@ use std::{
 };
 use tokio::task;
 
-use crate::{api::NodeEventEnvelope, deals, jobs, pricing::ServiceId};
+use crate::{
+    api::NodeEventEnvelope,
+    canonical_json, crypto, deals, jobs,
+    pricing::ServiceId,
+    protocol::{InvoiceBundleLegState, InvoiceBundlePayload, SignedArtifact},
+};
 
 const PAYMENT_TOKEN_STATE_RESERVED: &str = "reserved";
 const PAYMENT_TOKEN_STATE_COMMITTED: &str = "committed";
@@ -29,6 +35,44 @@ pub struct LedgerArtifact {
     pub actor_id: String,
     pub created_at: i64,
     pub document: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactDocumentRecord {
+    pub artifact_hash: String,
+    pub payload_hash: String,
+    pub artifact_kind: String,
+    pub actor_id: String,
+    pub created_at: i64,
+    pub document: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactFeedEntryRecord {
+    pub sequence: i64,
+    pub artifact_hash: String,
+    pub observed_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExecutionEvidenceRecord {
+    pub evidence_id: i64,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub evidence_kind: String,
+    pub content_hash: String,
+    pub created_at: i64,
+    pub content: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LightningInvoiceBundleRecord {
+    pub session_id: String,
+    pub bundle: SignedArtifact<InvoiceBundlePayload>,
+    pub base_state: InvoiceBundleLegState,
+    pub success_state: InvoiceBundleLegState,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 fn configure_connection(conn: &Connection) -> SqlResult<()> {
@@ -94,6 +138,55 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_artifacts_sequence ON artifacts (sequence ASC);
         CREATE INDEX IF NOT EXISTS idx_artifacts_actor_kind_created_at ON artifacts (actor_id, artifact_kind, created_at DESC);
+        CREATE TABLE IF NOT EXISTS artifact_documents (
+            artifact_hash TEXT PRIMARY KEY,
+            payload_hash TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            document_json TEXT NOT NULL,
+            UNIQUE (actor_id, artifact_kind, payload_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_artifact_documents_actor_kind_created_at ON artifact_documents (actor_id, artifact_kind, created_at DESC);
+        CREATE TABLE IF NOT EXISTS artifact_feed (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            artifact_hash TEXT NOT NULL UNIQUE,
+            observed_at INTEGER NOT NULL,
+            FOREIGN KEY (artifact_hash) REFERENCES artifact_documents(artifact_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_artifact_feed_sequence ON artifact_feed (sequence ASC);
+        CREATE TABLE IF NOT EXISTS execution_evidence (
+            evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_kind TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            evidence_kind TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE (subject_kind, subject_id, evidence_kind, content_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_evidence_subject ON execution_evidence (subject_kind, subject_id, evidence_id ASC);
+        CREATE TABLE IF NOT EXISTS lightning_invoice_bundles (
+            session_id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            requester_id TEXT NOT NULL,
+            quote_hash TEXT NOT NULL,
+            deal_hash TEXT NOT NULL,
+            destination_identity TEXT NOT NULL,
+            base_invoice_hash TEXT NOT NULL,
+            base_payment_hash TEXT NOT NULL,
+            base_fee_msat INTEGER NOT NULL,
+            base_state TEXT NOT NULL,
+            success_invoice_hash TEXT NOT NULL,
+            success_payment_hash TEXT NOT NULL,
+            success_fee_msat INTEGER NOT NULL,
+            success_state TEXT NOT NULL,
+            bundle_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lightning_invoice_bundles_quote_hash ON lightning_invoice_bundles (quote_hash);
+        CREATE INDEX IF NOT EXISTS idx_lightning_invoice_bundles_deal_hash ON lightning_invoice_bundles (deal_hash);
         CREATE TABLE IF NOT EXISTS quotes (
             quote_id TEXT PRIMARY KEY,
             artifact_hash TEXT NOT NULL UNIQUE,
@@ -121,6 +214,7 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             result_json TEXT,
             result_hash TEXT,
             error TEXT,
+            payment_method TEXT,
             payment_token_hash TEXT,
             payment_amount_sats INTEGER,
             receipt_artifact_json TEXT,
@@ -130,6 +224,16 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         CREATE INDEX IF NOT EXISTS idx_deals_status_updated_at ON deals (status, updated_at DESC);
         COMMIT;",
     )?;
+    ensure_column(&conn, "jobs", "workload_evidence_hash", "TEXT")?;
+    ensure_column(&conn, "jobs", "result_evidence_hash", "TEXT")?;
+    ensure_column(&conn, "jobs", "failure_evidence_hash", "TEXT")?;
+    ensure_column(&conn, "deals", "workload_evidence_hash", "TEXT")?;
+    ensure_column(&conn, "deals", "deal_artifact_hash", "TEXT")?;
+    ensure_column(&conn, "deals", "result_evidence_hash", "TEXT")?;
+    ensure_column(&conn, "deals", "failure_evidence_hash", "TEXT")?;
+    ensure_column(&conn, "deals", "receipt_artifact_hash", "TEXT")?;
+    ensure_column(&conn, "deals", "payment_method", "TEXT")?;
+    migrate_legacy_artifacts(&conn)?;
     Ok(())
 }
 
@@ -428,6 +532,60 @@ pub fn recover_runtime_state(conn: &Connection, now: i64) -> Result<(), String> 
     Ok(())
 }
 
+fn ensure_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_definition: &str,
+) -> SqlResult<()> {
+    let pragma = format!("PRAGMA table_info({table_name})");
+    let mut stmt = conn.prepare(&pragma)?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == column_name {
+            return Ok(());
+        }
+    }
+
+    let alter = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}");
+    conn.execute(&alter, [])?;
+    Ok(())
+}
+
+fn migrate_legacy_artifacts(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO artifact_documents (
+            artifact_hash,
+            payload_hash,
+            artifact_kind,
+            actor_id,
+            created_at,
+            document_json
+         )
+         SELECT
+            artifact_hash,
+            payload_hash,
+            artifact_kind,
+            actor_id,
+            created_at,
+            document_json
+         FROM artifacts;
+
+         INSERT OR IGNORE INTO artifact_feed (
+            sequence,
+            artifact_hash,
+            observed_at
+         )
+         SELECT
+            sequence,
+            artifact_hash,
+            created_at
+         FROM artifacts
+         ORDER BY sequence ASC;",
+    )?;
+    Ok(())
+}
+
 pub fn insert_artifact_document(
     conn: &Connection,
     artifact_hash: &str,
@@ -437,8 +595,10 @@ pub fn insert_artifact_document(
     created_at: i64,
     document_json: &str,
 ) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR IGNORE INTO artifacts (
+    let mut stored_artifact_hash = artifact_hash.to_string();
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO artifact_documents (
             artifact_hash,
             payload_hash,
             artifact_kind,
@@ -446,14 +606,58 @@ pub fn insert_artifact_document(
             created_at,
             document_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
+            params![
+                artifact_hash,
+                payload_hash,
+                kind,
+                actor_id,
+                created_at,
+                document_json
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if inserted == 0 {
+        let existing_hash: Option<String> = conn
+            .query_row(
+                "SELECT artifact_hash
+                 FROM artifact_documents
+                 WHERE actor_id = ?1 AND artifact_kind = ?2 AND payload_hash = ?3",
+                params![actor_id, kind, payload_hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        match existing_hash {
+            Some(existing_hash) if existing_hash == artifact_hash => {}
+            Some(existing_hash) => {
+                stored_artifact_hash = existing_hash;
+            }
+            None => {
+                let by_hash: Option<String> = conn
+                    .query_row(
+                        "SELECT artifact_hash
+                         FROM artifact_documents
+                         WHERE artifact_hash = ?1",
+                        params![artifact_hash],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                if by_hash.is_none() {
+                    return Err("artifact document insert was ignored unexpectedly".to_string());
+                }
+            }
+        }
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO artifact_feed (
             artifact_hash,
-            payload_hash,
-            kind,
-            actor_id,
-            created_at,
-            document_json
-        ],
+            observed_at
+         ) VALUES (?1, ?2)",
+        params![stored_artifact_hash, created_at],
     )
     .map_err(|e| e.to_string())?;
 
@@ -468,15 +672,16 @@ pub fn get_artifact_by_actor_kind_payload(
 ) -> Result<Option<LedgerArtifact>, String> {
     conn.query_row(
         "SELECT
-            sequence,
-            artifact_hash,
-            payload_hash,
-            artifact_kind,
-            actor_id,
-            created_at,
-            document_json
-         FROM artifacts
-         WHERE actor_id = ?1 AND artifact_kind = ?2 AND payload_hash = ?3",
+            f.sequence,
+            d.artifact_hash,
+            d.payload_hash,
+            d.artifact_kind,
+            d.actor_id,
+            d.created_at,
+            d.document_json
+         FROM artifact_documents d
+         JOIN artifact_feed f ON f.artifact_hash = d.artifact_hash
+         WHERE d.actor_id = ?1 AND d.artifact_kind = ?2 AND d.payload_hash = ?3",
         params![actor_id, kind, payload_hash],
         decode_artifact_row,
     )
@@ -490,17 +695,60 @@ pub fn get_artifact_by_hash(
 ) -> Result<Option<LedgerArtifact>, String> {
     conn.query_row(
         "SELECT
-            sequence,
+            f.sequence,
+            d.artifact_hash,
+            d.payload_hash,
+            d.artifact_kind,
+            d.actor_id,
+            d.created_at,
+            d.document_json
+         FROM artifact_documents d
+         JOIN artifact_feed f ON f.artifact_hash = d.artifact_hash
+         WHERE d.artifact_hash = ?1",
+        params![artifact_hash],
+        decode_artifact_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_artifact_document_by_hash(
+    conn: &Connection,
+    artifact_hash: &str,
+) -> Result<Option<ArtifactDocumentRecord>, String> {
+    conn.query_row(
+        "SELECT
             artifact_hash,
             payload_hash,
             artifact_kind,
             actor_id,
             created_at,
             document_json
-         FROM artifacts
+         FROM artifact_documents
          WHERE artifact_hash = ?1",
         params![artifact_hash],
-        decode_artifact_row,
+        decode_artifact_document_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_artifact_feed_entry_by_hash(
+    conn: &Connection,
+    artifact_hash: &str,
+) -> Result<Option<ArtifactFeedEntryRecord>, String> {
+    conn.query_row(
+        "SELECT sequence, artifact_hash, observed_at
+         FROM artifact_feed
+         WHERE artifact_hash = ?1",
+        params![artifact_hash],
+        |row| {
+            Ok(ArtifactFeedEntryRecord {
+                sequence: row.get(0)?,
+                artifact_hash: row.get(1)?,
+                observed_at: row.get(2)?,
+            })
+        },
     )
     .optional()
     .map_err(|e| e.to_string())
@@ -516,16 +764,17 @@ pub fn list_artifacts(
     let mut stmt = conn
         .prepare(
             "SELECT
-                sequence,
-                artifact_hash,
-                payload_hash,
-                artifact_kind,
-                actor_id,
-                created_at,
-                document_json
-             FROM artifacts
-             WHERE sequence > ?1
-             ORDER BY sequence ASC
+                f.sequence,
+                d.artifact_hash,
+                d.payload_hash,
+                d.artifact_kind,
+                d.actor_id,
+                d.created_at,
+                d.document_json
+             FROM artifact_feed f
+             JOIN artifact_documents d ON d.artifact_hash = f.artifact_hash
+             WHERE f.sequence > ?1
+             ORDER BY f.sequence ASC
              LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
@@ -562,4 +811,265 @@ fn decode_artifact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LedgerArtifa
         created_at: row.get(5)?,
         document,
     })
+}
+
+fn decode_artifact_document_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ArtifactDocumentRecord> {
+    let document_json: String = row.get(5)?;
+    let document = serde_json::from_str(&document_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+
+    Ok(ArtifactDocumentRecord {
+        artifact_hash: row.get(0)?,
+        payload_hash: row.get(1)?,
+        artifact_kind: row.get(2)?,
+        actor_id: row.get(3)?,
+        created_at: row.get(4)?,
+        document,
+    })
+}
+
+pub fn insert_lightning_invoice_bundle(
+    conn: &Connection,
+    session_id: &str,
+    bundle: &SignedArtifact<InvoiceBundlePayload>,
+    base_state: InvoiceBundleLegState,
+    success_state: InvoiceBundleLegState,
+    created_at: i64,
+) -> Result<(), String> {
+    let bundle_json = serde_json::to_string(bundle).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO lightning_invoice_bundles (
+            session_id,
+            provider_id,
+            requester_id,
+            quote_hash,
+            deal_hash,
+            destination_identity,
+            base_invoice_hash,
+            base_payment_hash,
+            base_fee_msat,
+            base_state,
+            success_invoice_hash,
+            success_payment_hash,
+            success_fee_msat,
+            success_state,
+            bundle_json,
+            created_at,
+            updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
+        params![
+            session_id,
+            &bundle.payload.provider_id,
+            &bundle.payload.requester_id,
+            &bundle.payload.quote_hash,
+            &bundle.payload.deal_hash,
+            &bundle.payload.destination_identity,
+            &bundle.payload.base_invoice.invoice_hash,
+            &bundle.payload.base_invoice.payment_hash,
+            bundle.payload.base_invoice.amount_msat as i64,
+            invoice_leg_state_str(base_state),
+            &bundle.payload.success_hold_invoice.invoice_hash,
+            &bundle.payload.success_hold_invoice.payment_hash,
+            bundle.payload.success_hold_invoice.amount_msat as i64,
+            invoice_leg_state_str(success_state),
+            &bundle_json,
+            created_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub fn get_lightning_invoice_bundle(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<LightningInvoiceBundleRecord>, String> {
+    conn.query_row(
+        "SELECT session_id, bundle_json, base_state, success_state, created_at, updated_at
+         FROM lightning_invoice_bundles
+         WHERE session_id = ?1",
+        params![session_id],
+        decode_lightning_invoice_bundle_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_lightning_invoice_bundle_by_deal_hash(
+    conn: &Connection,
+    deal_hash: &str,
+) -> Result<Option<LightningInvoiceBundleRecord>, String> {
+    conn.query_row(
+        "SELECT session_id, bundle_json, base_state, success_state, created_at, updated_at
+         FROM lightning_invoice_bundles
+         WHERE deal_hash = ?1",
+        params![deal_hash],
+        decode_lightning_invoice_bundle_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn update_lightning_invoice_bundle_states(
+    conn: &Connection,
+    session_id: &str,
+    base_state: InvoiceBundleLegState,
+    success_state: InvoiceBundleLegState,
+    updated_at: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE lightning_invoice_bundles
+             SET base_state = ?2,
+                 success_state = ?3,
+                 updated_at = ?4
+             WHERE session_id = ?1",
+            params![
+                session_id,
+                invoice_leg_state_str(base_state),
+                invoice_leg_state_str(success_state),
+                updated_at
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
+fn invoice_leg_state_str(state: InvoiceBundleLegState) -> &'static str {
+    match state {
+        InvoiceBundleLegState::Open => "open",
+        InvoiceBundleLegState::Accepted => "accepted",
+        InvoiceBundleLegState::Settled => "settled",
+        InvoiceBundleLegState::Canceled => "canceled",
+        InvoiceBundleLegState::Expired => "expired",
+    }
+}
+
+fn parse_invoice_leg_state(value: &str, column: usize) -> rusqlite::Result<InvoiceBundleLegState> {
+    match value {
+        "open" => Ok(InvoiceBundleLegState::Open),
+        "accepted" => Ok(InvoiceBundleLegState::Accepted),
+        "settled" => Ok(InvoiceBundleLegState::Settled),
+        "canceled" => Ok(InvoiceBundleLegState::Canceled),
+        "expired" => Ok(InvoiceBundleLegState::Expired),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            format!("invalid invoice leg state: {value}").into(),
+        )),
+    }
+}
+
+fn decode_lightning_invoice_bundle_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<LightningInvoiceBundleRecord> {
+    let bundle_json: String = row.get(1)?;
+    let bundle: SignedArtifact<InvoiceBundlePayload> =
+        serde_json::from_str(&bundle_json).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
+        })?;
+    let base_state: String = row.get(2)?;
+    let success_state: String = row.get(3)?;
+    let parsed_base_state = parse_invoice_leg_state(&base_state, 2)?;
+    let parsed_success_state = parse_invoice_leg_state(&success_state, 3)?;
+
+    Ok(LightningInvoiceBundleRecord {
+        session_id: row.get(0)?,
+        bundle,
+        base_state: parsed_base_state,
+        success_state: parsed_success_state,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+pub fn insert_execution_evidence<T: Serialize>(
+    conn: &Connection,
+    subject_kind: &str,
+    subject_id: &str,
+    evidence_kind: &str,
+    content: &T,
+    created_at: i64,
+) -> Result<String, String> {
+    let content_json = canonical_json::to_string(content).map_err(|e| e.to_string())?;
+    let content_hash = crypto::sha256_hex(content_json.as_bytes());
+
+    conn.execute(
+        "INSERT OR IGNORE INTO execution_evidence (
+            subject_kind,
+            subject_id,
+            evidence_kind,
+            content_hash,
+            content_json,
+            created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            subject_kind,
+            subject_id,
+            evidence_kind,
+            &content_hash,
+            &content_json,
+            created_at
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(content_hash)
+}
+
+pub fn list_execution_evidence_for_subject(
+    conn: &Connection,
+    subject_kind: &str,
+    subject_id: &str,
+) -> Result<Vec<ExecutionEvidenceRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                evidence_id,
+                subject_kind,
+                subject_id,
+                evidence_kind,
+                content_hash,
+                created_at,
+                content_json
+             FROM execution_evidence
+             WHERE subject_kind = ?1 AND subject_id = ?2
+             ORDER BY evidence_id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![subject_kind, subject_id], |row| {
+            let content_json: String = row.get(6)?;
+            let content = serde_json::from_str(&content_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
+
+            Ok(ExecutionEvidenceRecord {
+                evidence_id: row.get(0)?,
+                subject_kind: row.get(1)?,
+                subject_id: row.get(2)?,
+                evidence_kind: row.get(3)?,
+                content_hash: row.get(4)?,
+                created_at: row.get(5)?,
+                content,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut evidence = Vec::new();
+    for row in rows {
+        evidence.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(evidence)
 }

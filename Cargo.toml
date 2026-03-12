@@ -28,7 +28,7 @@ tor-cell = "0.18"
 tor-config = "0.18.0"
 
 # Cryptography
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+k256 = { version = "0.13", features = ["schnorr"] }
 rand = "0.8"
 hex = "0.4"
 sha2 = "0.10"

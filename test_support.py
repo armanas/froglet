@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import aiohttp
-import nacl.signing
+from ecdsa import curves, ellipticcurve
 
 REPO_ROOT = Path(__file__).resolve().parent
 TARGET_DIR = REPO_ROOT / "target" / "debug"
@@ -214,9 +214,124 @@ async def start_node(
     return node
 
 
-SIGNING_KEY = nacl.signing.SigningKey.generate()
-VERIFY_KEY = SIGNING_KEY.verify_key
-PUBKEY_HEX = VERIFY_KEY.encode().hex()
+SECP256K1 = curves.SECP256k1
+FIELD_PRIME = SECP256K1.curve.p()
+GROUP_ORDER = SECP256K1.order
+GENERATOR = SECP256K1.generator
+
+
+def tagged_hash(tag: str, data: bytes) -> bytes:
+    tag_hash = hashlib.sha256(tag.encode("utf-8")).digest()
+    return hashlib.sha256(tag_hash + tag_hash + data).digest()
+
+
+def int_from_bytes(data: bytes) -> int:
+    return int.from_bytes(data, "big")
+
+
+def int_to_bytes(value: int) -> bytes:
+    return value.to_bytes(32, "big")
+
+
+def xor_bytes(left: bytes, right: bytes) -> bytes:
+    return bytes(a ^ b for a, b in zip(left, right))
+
+
+def has_even_y(point: ellipticcurve.Point) -> bool:
+    return point.y() % 2 == 0
+
+
+def lift_x(pubkey_bytes: bytes) -> Optional[ellipticcurve.Point]:
+    x = int_from_bytes(pubkey_bytes)
+    if x >= FIELD_PRIME:
+        return None
+
+    y_sq = (pow(x, 3, FIELD_PRIME) + 7) % FIELD_PRIME
+    y = pow(y_sq, (FIELD_PRIME + 1) // 4, FIELD_PRIME)
+    if pow(y, 2, FIELD_PRIME) != y_sq:
+        return None
+    if y % 2 == 1:
+        y = FIELD_PRIME - y
+
+    return ellipticcurve.Point(SECP256K1.curve, x, y, GROUP_ORDER)
+
+
+def generate_schnorr_signing_key() -> bytes:
+    while True:
+        candidate = os.urandom(32)
+        secret = int_from_bytes(candidate)
+        if 1 <= secret < GROUP_ORDER:
+            return candidate
+
+
+def schnorr_pubkey_hex(secret_key: bytes) -> str:
+    secret = int_from_bytes(secret_key)
+    point = secret * GENERATOR
+    return int_to_bytes(point.x()).hex()
+
+
+def schnorr_sign_message(secret_key: bytes, message: bytes) -> str:
+    secret = int_from_bytes(secret_key)
+    if not 1 <= secret < GROUP_ORDER:
+        raise ValueError("invalid secp256k1 secret key")
+
+    message_digest = hashlib.sha256(message).digest()
+    point = secret * GENERATOR
+    secret_scalar = secret if has_even_y(point) else GROUP_ORDER - secret
+    pubkey_bytes = int_to_bytes(point.x())
+
+    aux = bytes(32)
+    t = xor_bytes(int_to_bytes(secret_scalar), tagged_hash("BIP0340/aux", aux))
+    nonce = int_from_bytes(
+        tagged_hash("BIP0340/nonce", t + pubkey_bytes + message_digest)
+    ) % GROUP_ORDER
+    if nonce == 0:
+        raise ValueError("derived invalid Schnorr nonce")
+
+    nonce_point = nonce * GENERATOR
+    signing_nonce = nonce if has_even_y(nonce_point) else GROUP_ORDER - nonce
+    nonce_x = int_to_bytes(nonce_point.x())
+    challenge = int_from_bytes(
+        tagged_hash("BIP0340/challenge", nonce_x + pubkey_bytes + message_digest)
+    ) % GROUP_ORDER
+    signature = nonce_x + int_to_bytes(
+        (signing_nonce + challenge * secret_scalar) % GROUP_ORDER
+    )
+    return signature.hex()
+
+
+def schnorr_verify_message(pubkey_hex: str, signature_hex: str, message: bytes) -> bool:
+    try:
+        pubkey_bytes = bytes.fromhex(pubkey_hex)
+        signature = bytes.fromhex(signature_hex)
+    except ValueError:
+        return False
+
+    if len(pubkey_bytes) != 32 or len(signature) != 64:
+        return False
+
+    message_digest = hashlib.sha256(message).digest()
+    point = lift_x(pubkey_bytes)
+    if point is None:
+        return False
+
+    r = int_from_bytes(signature[:32])
+    s = int_from_bytes(signature[32:])
+    if r >= FIELD_PRIME or s >= GROUP_ORDER:
+        return False
+
+    challenge = int_from_bytes(
+        tagged_hash("BIP0340/challenge", signature[:32] + pubkey_bytes + message_digest)
+    ) % GROUP_ORDER
+    candidate = s * GENERATOR + ((GROUP_ORDER - challenge) % GROUP_ORDER) * point
+    if candidate == ellipticcurve.INFINITY or not has_even_y(candidate):
+        return False
+
+    return candidate.x() == r
+
+
+SIGNING_KEY = generate_schnorr_signing_key()
+PUBKEY_HEX = schnorr_pubkey_hex(SIGNING_KEY)
 
 
 def create_signed_event(content: str, *, kind: str = "market.listing", tags: Optional[list[list[str]]] = None) -> dict:
@@ -231,7 +346,7 @@ def create_signed_event(content: str, *, kind: str = "market.listing", tags: Opt
         "tags": tags or [["t", "test"]],
         "content": content,
     }
-    signature = SIGNING_KEY.sign(canonical_event_signing_bytes(event)).signature.hex()
+    signature = schnorr_sign_message(SIGNING_KEY, canonical_event_signing_bytes(event))
     event["sig"] = signature
     return event
 
@@ -319,6 +434,24 @@ def read_db_row(db_path: Path, query: str, params: tuple[object, ...]) -> tuple:
     return row
 
 
+def read_db_rows(db_path: Path, query: str, params: tuple[object, ...]) -> list[tuple]:
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+    return rows
+
+
+def execute_db(db_path: Path, query: str, params: tuple[object, ...]) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(query, params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def verify_signed_artifact(artifact: dict) -> bool:
     payload_bytes = canonical_json_bytes(artifact["payload"])
     if sha256_hex(payload_bytes) != artifact["payload_hash"]:
@@ -328,12 +461,11 @@ def verify_signed_artifact(artifact: dict) -> bool:
     if sha256_hex(signing_bytes) != artifact["hash"]:
         return False
 
-    try:
-        verify_key = nacl.signing.VerifyKey(bytes.fromhex(artifact["actor_id"]))
-        verify_key.verify(signing_bytes, bytes.fromhex(artifact["signature"]))
-        return True
-    except Exception:
-        return False
+    return schnorr_verify_message(
+        artifact["actor_id"],
+        artifact["signature"],
+        signing_bytes,
+    )
 
 
 class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):

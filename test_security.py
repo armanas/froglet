@@ -4,19 +4,20 @@ import unittest
 from io import BytesIO
 
 import aiohttp
-import nacl.signing
 
 from test_support import (
     FrogletAsyncTestCase,
     PUBKEY_HEX,
-    SIGNING_KEY,
     canonical_event_signing_bytes,
     create_signed_event,
+    generate_schnorr_signing_key,
+    schnorr_pubkey_hex,
+    schnorr_sign_message,
 )
 
-ATTACKER_KEY = nacl.signing.SigningKey.generate()
-ATTACKER_PUBKEY = ATTACKER_KEY.verify_key.encode().hex()
-VICTIM_KEY = nacl.signing.SigningKey.generate()
+ATTACKER_KEY = generate_schnorr_signing_key()
+ATTACKER_PUBKEY = schnorr_pubkey_hex(ATTACKER_KEY)
+VICTIM_KEY = generate_schnorr_signing_key()
 
 
 class SecurityApiTests(FrogletAsyncTestCase):
@@ -43,7 +44,7 @@ class SecurityApiTests(FrogletAsyncTestCase):
             "tags": [["t", "test"]],
             "content": content,
         }
-        event["sig"] = VICTIM_KEY.sign(canonical_event_signing_bytes(event)).signature.hex()
+        event["sig"] = schnorr_sign_message(VICTIM_KEY, canonical_event_signing_bytes(event))
 
         async with aiohttp.ClientSession() as session:
             async with session.post(node.url("/v1/node/events/publish"), json={"event": event}) as resp:

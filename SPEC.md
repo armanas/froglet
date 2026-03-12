@@ -296,8 +296,8 @@ It should not be stored as a mutable in-band field that could create hashing amb
   - `destination_identity`: linked Lightning settlement identity expected on returned invoices
   - `base_fee_msat`
   - `success_fee_msat`
-  - `base_invoice_expiry_secs`
-  - `success_hold_expiry_secs`
+  - `max_base_invoice_expiry_secs`
+  - `max_success_hold_expiry_secs`
   - `min_final_cltv_expiry`
 - `execution_limits`: object with:
   - `max_input_bytes`
@@ -441,6 +441,62 @@ The required invariants are:
 SQLite, Postgres, flat files, object storage, or replicated logs are all acceptable if these invariants hold.
 The storage engine is an implementation detail.
 The invariants above are part of the protocol contract.
+
+### 5.8 Reference SQLite storage profile
+
+Version 1 does not require SQLite, but the reference implementation may use a SQLite layout that maps the logical invariants above into three explicit storage classes:
+
+- `artifact_documents`
+  - immutable signed artifact envelopes keyed by `artifact_hash`
+  - retains enough canonical JSON material to recompute `payload_hash`, signing bytes, and `artifact_hash`
+- `artifact_feed`
+  - strictly increasing local feed sequence keyed to `artifact_hash`
+  - records first local observation order independently of parsed query views
+- `execution_evidence`
+  - retained non-artifact accountability material keyed by `(subject_kind, subject_id, evidence_kind, content_hash)`
+  - used for workload specs, execution results, execution failures, receipt references, and later settlement references such as invoice bundles
+
+The same reference implementation may still keep mutable convenience tables such as `jobs`, `quotes`, `deals`, `payment_tokens`, and `events`, but those are derived query state, not the canonical evidence layer.
+
+The required mapping for the reference layout is:
+
+- `jobs`
+  - convenience row for async polling and idempotency
+  - must retain the submitted workload shape for compatibility, but should reference retained evidence for workload and result/failure material
+- `quotes`
+  - convenience index over quote artifacts
+  - quote verification must still be possible from `artifact_documents`
+- `deals`
+  - convenience row for deal/execution lifecycle and polling
+  - should reference:
+    - the retained workload evidence
+    - the quote artifact hash
+    - the deal artifact hash
+    - the result or failure evidence
+    - the receipt artifact hash
+- `payment_tokens`
+  - mutable settlement working state
+  - must not be the only retained evidence for a completed transaction if the receipt references settlement state derived from it
+
+The reference implementation may duplicate JSON blobs inside convenience tables for operational simplicity, but those duplicates are cache-like copies.
+Reference-based reconstruction from `artifact_documents` and `execution_evidence` is authoritative; cached JSON copies in convenience tables must not be required to read or verify a quote, job, or deal view.
+The durable evidence model is:
+
+- signed artifacts in `artifact_documents`
+- local ordering in `artifact_feed`
+- non-artifact execution/settlement accountability material in `execution_evidence`
+
+Any future archival/export format should therefore be able to export those three classes directly.
+
+Reference implementations may expose an authenticated subject-scoped archive bundle for local accountability and migration.
+Such an export should bundle, at minimum:
+
+- retained artifact documents relevant to the subject
+- the corresponding local `artifact_feed` entries for those artifacts
+- `execution_evidence` rows for the subject
+- any retained settlement transport material, such as `invoice_bundle` records
+
+That export surface is an implementation adapter, not a new canonical protocol artifact.
 
 ## 6. Canonical State Model
 
@@ -649,6 +705,18 @@ At minimum, the requester must reject the bundle if:
 - the Froglet signature over the bundle is invalid
 
 The requester should also verify that the decoded BOLT11 invoices are internally consistent with the bundle fields before any payment is attempted.
+
+Reference implementations may expose a stateless verifier endpoint that accepts `Quote`, `Deal`, `invoice_bundle`, and an optional expected `requester_id`, then returns a machine-readable validation report.
+This verifier is a convenience surface for requesters; it must not weaken the normative requirement that the requester validates the bundle before payment.
+
+Reference implementations may expose a non-production mock Lightning mode for local development and persistence testing.
+Such a mode may synthesize invoice strings and state transitions, but it must not be represented as production settlement finality.
+
+Reference implementations may also expose an explicit pre-admission deal state while payment is still pending.
+A `payment_pending` deal has been persisted and bound to a signed `invoice_bundle`, but execution must not begin until the provider has observed the required Lightning leg states.
+
+In mock mode, implementations may expose privileged test-only endpoints to advance invoice-bundle state for local testing.
+Such endpoints are development adapters, not part of the portable economic protocol.
 
 ### 8.4 Requester-controlled success-fee release
 
@@ -932,6 +1000,10 @@ The runtime should hide transport, invoice, and discovery details on the happy p
 
 The localhost runtime must require local authentication for all privileged requests.
 Binding to localhost is not a sufficient trust boundary.
+
+Reference implementations may retain compatibility helpers such as direct `events.query`, `execute.wasm`, or async job endpoints.
+Those helpers are not the priced version 1 primitive.
+When Lightning is the active settlement backend and a workload has a non-zero price, compatibility helpers that would otherwise accept inline payment material must reject the request and direct the caller to the `Quote -> Deal -> Receipt` flow instead.
 
 The runtime may expose:
 

@@ -8,6 +8,7 @@ pub const ARTIFACT_KIND_OFFER: &str = "offer";
 pub const ARTIFACT_KIND_QUOTE: &str = "quote";
 pub const ARTIFACT_KIND_DEAL: &str = "deal";
 pub const ARTIFACT_KIND_RECEIPT: &str = "receipt";
+pub const TRANSPORT_KIND_INVOICE_BUNDLE: &str = "invoice_bundle";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedArtifact<T> {
@@ -95,7 +96,54 @@ pub struct QuotePayload {
     pub price_sats: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_terms: Option<QuoteSettlementTerms>,
     pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuoteSettlementTerms {
+    pub destination_identity: String,
+    pub base_fee_msat: u64,
+    pub success_fee_msat: u64,
+    pub max_base_invoice_expiry_secs: u64,
+    pub max_success_hold_expiry_secs: u64,
+    pub min_final_cltv_expiry: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceBundleLegState {
+    Open,
+    Accepted,
+    Settled,
+    Canceled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvoiceBundleLeg {
+    pub amount_msat: u64,
+    pub invoice_bolt11: String,
+    pub invoice_hash: String,
+    pub payment_hash: String,
+    pub state: InvoiceBundleLegState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvoiceBundlePayload {
+    pub schema_version: String,
+    pub bundle_type: String,
+    pub provider_id: String,
+    pub requester_id: String,
+    pub quote_hash: String,
+    pub deal_hash: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub destination_identity: String,
+    pub base_invoice: InvoiceBundleLeg,
+    pub success_hold_invoice: InvoiceBundleLeg,
+    pub min_final_cltv_expiry: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +181,32 @@ pub struct ReceiptFailure {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptExecutor {
+    pub runtime: String,
+    pub runtime_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abi_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities_granted: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptLimitsApplied {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_runtime_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_memory_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fuel_limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DealPayload {
     pub deal_id: String,
     pub quote_id: String,
@@ -150,6 +224,8 @@ pub struct DealPayload {
 pub struct ReceiptPayload {
     pub receipt_id: String,
     pub deal_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deal_hash: Option<String>,
     pub quote_id: String,
     pub offer_id: String,
     pub service_id: String,
@@ -163,6 +239,12 @@ pub struct ReceiptPayload {
     pub settlement: Option<ReceiptSettlement>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ReceiptExecutor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits_applied: Option<ReceiptLimitsApplied>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<ReceiptFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -377,13 +459,11 @@ pub fn new_artifact_id() -> String {
 mod tests {
     use super::*;
     use crate::crypto;
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
     use serde::Serialize;
 
     #[test]
     fn signed_artifact_roundtrip_verifies() {
-        let signing_key = SigningKey::generate(&mut OsRng);
+        let signing_key = crypto::generate_signing_key();
         let actor_id = crypto::public_key_hex(&signing_key);
         let artifact = sign_artifact(
             &actor_id,
@@ -398,6 +478,7 @@ mod tests {
                 workload_hash: "abc".to_string(),
                 price_sats: 5,
                 payment_method: Some("cashu".to_string()),
+                settlement_terms: None,
                 expires_at: 456,
             },
         )
@@ -434,7 +515,7 @@ mod tests {
 
     #[test]
     fn legacy_signed_artifacts_still_verify() {
-        let signing_key = SigningKey::generate(&mut OsRng);
+        let signing_key = crypto::generate_signing_key();
         let actor_id = crypto::public_key_hex(&signing_key);
         let payload = QuotePayload {
             quote_id: "q1".to_string(),
@@ -444,6 +525,7 @@ mod tests {
             workload_hash: "abc".to_string(),
             price_sats: 5,
             payment_method: Some("cashu".to_string()),
+            settlement_terms: None,
             expires_at: 456,
         };
         let payload_hash = legacy_payload_hash(&payload).unwrap();

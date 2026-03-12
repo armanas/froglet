@@ -1,9 +1,14 @@
 use crate::{
-    config::PaymentBackend,
-    db::{self, ReservePaymentTokenOutcome},
+    config::{LightningMode, PaymentBackend},
+    crypto,
+    db::{self, LightningInvoiceBundleRecord, ReservePaymentTokenOutcome},
     ecash,
     pricing::ServiceId,
-    protocol::SettlementStatus,
+    protocol::{
+        InvoiceBundleLeg, InvoiceBundleLegState, InvoiceBundlePayload, QuotePayload,
+        QuoteSettlementTerms, SettlementStatus, SignedArtifact, TRANSPORT_KIND_INVOICE_BUNDLE,
+        sign_artifact, verify_artifact,
+    },
     state::AppState,
 };
 use axum::http::StatusCode;
@@ -18,6 +23,7 @@ use std::{collections::BTreeSet, str::FromStr, time::Duration};
 use thiserror::Error;
 
 pub const CASHU_VERIFIER_MODE: &str = "format_and_replay_guard";
+pub const LIGHTNING_MOCK_MODE: &str = "mock_hold_invoice";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidedPayment {
@@ -44,6 +50,45 @@ pub struct PaymentReceipt {
     pub token_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settlement_reference: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildLightningInvoiceBundleRequest {
+    pub session_id: Option<String>,
+    pub requester_id: String,
+    pub quote_hash: String,
+    pub deal_hash: String,
+    pub success_payment_hash: String,
+    pub base_fee_msat: u64,
+    pub success_fee_msat: u64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightningInvoiceBundleSession {
+    pub session_id: String,
+    pub bundle: SignedArtifact<InvoiceBundlePayload>,
+    pub base_state: InvoiceBundleLegState,
+    pub success_state: InvoiceBundleLegState,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvoiceBundleValidationIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvoiceBundleValidationReport {
+    pub valid: bool,
+    pub bundle_hash: String,
+    pub quote_hash: String,
+    pub deal_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_requester_id: Option<String>,
+    pub issues: Vec<InvoiceBundleValidationIssue>,
 }
 
 impl PaymentReservation {
@@ -353,6 +398,7 @@ fn selected_driver(state: &AppState) -> &'static dyn SettlementDriver {
     match state.config.payment_backend {
         PaymentBackend::None => &NO_SETTLEMENT_DRIVER,
         PaymentBackend::Cashu => &CASHU_VERIFIER_DRIVER,
+        PaymentBackend::Lightning => &LIGHTNING_MOCK_DRIVER,
     }
 }
 
@@ -360,6 +406,536 @@ fn new_request_id() -> String {
     let mut bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+pub async fn create_lightning_invoice_bundle(
+    state: &AppState,
+    request: BuildLightningInvoiceBundleRequest,
+) -> Result<LightningInvoiceBundleSession, String> {
+    let session = build_lightning_invoice_bundle(state, request)?;
+    let session_id_for_db = session.session_id.clone();
+    let bundle_for_db = session.bundle.clone();
+    let created_at = session.created_at;
+    state
+        .db
+        .with_conn(move |conn| {
+            db::insert_lightning_invoice_bundle(
+                conn,
+                &session_id_for_db,
+                &bundle_for_db,
+                InvoiceBundleLegState::Open,
+                InvoiceBundleLegState::Open,
+                created_at,
+            )
+        })
+        .await?;
+    Ok(session)
+}
+
+pub async fn get_lightning_invoice_bundle(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<LightningInvoiceBundleSession>, String> {
+    let session_id = session_id.to_string();
+    state
+        .db
+        .with_conn(move |conn| {
+            db::get_lightning_invoice_bundle(conn, &session_id)
+                .map(|record| record.map(map_lightning_bundle_record))
+        })
+        .await
+}
+
+pub async fn get_lightning_invoice_bundle_by_deal_hash(
+    state: &AppState,
+    deal_hash: &str,
+) -> Result<Option<LightningInvoiceBundleSession>, String> {
+    let deal_hash = deal_hash.to_string();
+    state
+        .db
+        .with_conn(move |conn| {
+            db::get_lightning_invoice_bundle_by_deal_hash(conn, &deal_hash)
+                .map(|record| record.map(map_lightning_bundle_record))
+        })
+        .await
+}
+
+pub async fn update_lightning_invoice_bundle_states(
+    state: &AppState,
+    session_id: &str,
+    base_state: InvoiceBundleLegState,
+    success_state: InvoiceBundleLegState,
+) -> Result<Option<LightningInvoiceBundleSession>, String> {
+    let session_id_for_update = session_id.to_string();
+    let session_id_for_read = session_id.to_string();
+    let now = current_unix_timestamp();
+    state
+        .db
+        .with_conn(move |conn| {
+            if !db::update_lightning_invoice_bundle_states(
+                conn,
+                &session_id_for_update,
+                base_state.clone(),
+                success_state.clone(),
+                now,
+            )? {
+                return Ok(None);
+            }
+
+            db::get_lightning_invoice_bundle(conn, &session_id_for_read)
+                .map(|record| record.map(map_lightning_bundle_record))
+        })
+        .await
+}
+
+fn map_lightning_bundle_record(
+    record: LightningInvoiceBundleRecord,
+) -> LightningInvoiceBundleSession {
+    LightningInvoiceBundleSession {
+        session_id: record.session_id,
+        bundle: record.bundle,
+        base_state: record.base_state,
+        success_state: record.success_state,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+pub fn lightning_destination_identity(state: &AppState) -> String {
+    state
+        .config
+        .lightning
+        .destination_identity
+        .clone()
+        .unwrap_or_else(|| state.identity.compressed_public_key_hex().to_string())
+}
+
+fn mock_bolt11(prefix: &str, amount_msat: u64, payment_hash: &str, expires_at: i64) -> String {
+    format!("lnmock-{prefix}-{amount_msat}-{payment_hash}-{expires_at}")
+}
+
+pub fn quoted_lightning_settlement_terms(
+    state: &AppState,
+    price_sats: u64,
+) -> Option<QuoteSettlementTerms> {
+    if state.config.payment_backend != PaymentBackend::Lightning || price_sats == 0 {
+        return None;
+    }
+
+    Some(QuoteSettlementTerms {
+        destination_identity: lightning_destination_identity(state),
+        base_fee_msat: 0,
+        success_fee_msat: price_sats.saturating_mul(1_000),
+        max_base_invoice_expiry_secs: state.config.lightning.base_invoice_expiry_secs,
+        max_success_hold_expiry_secs: state.config.lightning.success_hold_expiry_secs,
+        min_final_cltv_expiry: state.config.lightning.min_final_cltv_expiry,
+    })
+}
+
+pub fn lightning_quote_expires_at(state: &AppState, created_at: i64, price_sats: u64) -> i64 {
+    match quoted_lightning_settlement_terms(state, price_sats) {
+        Some(terms) => {
+            created_at
+                + terms
+                    .max_base_invoice_expiry_secs
+                    .max(terms.max_success_hold_expiry_secs) as i64
+        }
+        None => created_at + 60,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MockBolt11Fields {
+    prefix: String,
+    amount_msat: u64,
+    payment_hash: String,
+    expires_at: i64,
+}
+
+fn parse_mock_bolt11(invoice: &str) -> Result<MockBolt11Fields, String> {
+    let Some(rest) = invoice.strip_prefix("lnmock-") else {
+        return Err("invoice is not in Froglet mock Lightning format".to_string());
+    };
+    let mut parts = rest.splitn(4, '-');
+    let prefix = parts
+        .next()
+        .ok_or_else(|| "missing invoice prefix".to_string())?;
+    let amount_msat = parts
+        .next()
+        .ok_or_else(|| "missing invoice amount".to_string())?
+        .parse::<u64>()
+        .map_err(|_| "invalid invoice amount".to_string())?;
+    let payment_hash = parts
+        .next()
+        .ok_or_else(|| "missing invoice payment hash".to_string())?
+        .to_string();
+    let expires_at = parts
+        .next()
+        .ok_or_else(|| "missing invoice expiry".to_string())?
+        .parse::<i64>()
+        .map_err(|_| "invalid invoice expiry".to_string())?;
+
+    Ok(MockBolt11Fields {
+        prefix: prefix.to_string(),
+        amount_msat,
+        payment_hash,
+        expires_at,
+    })
+}
+
+fn push_bundle_issue(
+    issues: &mut Vec<InvoiceBundleValidationIssue>,
+    code: &str,
+    message: impl Into<String>,
+) {
+    issues.push(InvoiceBundleValidationIssue {
+        code: code.to_string(),
+        message: message.into(),
+    });
+}
+
+pub fn validate_lightning_invoice_bundle(
+    bundle: &SignedArtifact<InvoiceBundlePayload>,
+    quote: &SignedArtifact<QuotePayload>,
+    deal: &SignedArtifact<crate::protocol::DealPayload>,
+    expected_requester_id: Option<&str>,
+) -> InvoiceBundleValidationReport {
+    let mut issues = Vec::new();
+
+    if !verify_artifact(bundle) {
+        push_bundle_issue(
+            &mut issues,
+            "invalid_bundle_signature",
+            "invoice bundle signature is invalid",
+        );
+    }
+    if !verify_artifact(quote) {
+        push_bundle_issue(
+            &mut issues,
+            "invalid_quote_signature",
+            "quote signature is invalid",
+        );
+    }
+    if !verify_artifact(deal) {
+        push_bundle_issue(
+            &mut issues,
+            "invalid_deal_signature",
+            "deal signature is invalid",
+        );
+    }
+
+    if bundle.kind != TRANSPORT_KIND_INVOICE_BUNDLE {
+        push_bundle_issue(
+            &mut issues,
+            "bundle_kind_mismatch",
+            format!("expected bundle kind '{TRANSPORT_KIND_INVOICE_BUNDLE}'"),
+        );
+    }
+    if bundle.payload.provider_id != quote.actor_id || bundle.actor_id != quote.actor_id {
+        push_bundle_issue(
+            &mut issues,
+            "provider_identity_mismatch",
+            "invoice bundle provider identity does not match the quoted provider",
+        );
+    }
+    if deal.actor_id != quote.actor_id {
+        push_bundle_issue(
+            &mut issues,
+            "deal_provider_mismatch",
+            "deal was not issued by the same provider as the quote",
+        );
+    }
+    if bundle.payload.quote_hash != quote.hash {
+        push_bundle_issue(
+            &mut issues,
+            "quote_hash_mismatch",
+            "invoice bundle quote_hash does not match the quote artifact hash",
+        );
+    }
+    if bundle.payload.deal_hash != deal.hash {
+        push_bundle_issue(
+            &mut issues,
+            "deal_hash_mismatch",
+            "invoice bundle deal_hash does not match the deal artifact hash",
+        );
+    }
+    if let Some(expected_requester_id) = expected_requester_id {
+        if bundle.payload.requester_id != expected_requester_id {
+            push_bundle_issue(
+                &mut issues,
+                "requester_id_mismatch",
+                "invoice bundle requester_id does not match the expected requester",
+            );
+        }
+    }
+
+    if quote.payload.payment_method.as_deref() != Some("lightning") {
+        push_bundle_issue(
+            &mut issues,
+            "quote_payment_method_mismatch",
+            "quote does not advertise lightning settlement",
+        );
+    }
+
+    let Some(settlement_terms) = quote.payload.settlement_terms.as_ref() else {
+        push_bundle_issue(
+            &mut issues,
+            "missing_settlement_terms",
+            "quote does not include committed lightning settlement terms",
+        );
+        return InvoiceBundleValidationReport {
+            valid: issues.is_empty(),
+            bundle_hash: bundle.hash.clone(),
+            quote_hash: quote.hash.clone(),
+            deal_hash: deal.hash.clone(),
+            expected_requester_id: expected_requester_id.map(str::to_string),
+            issues,
+        };
+    };
+
+    if deal.payload.quote_id != quote.payload.quote_id
+        || deal.payload.offer_id != quote.payload.offer_id
+        || deal.payload.service_id != quote.payload.service_id
+        || deal.payload.workload_hash != quote.payload.workload_hash
+    {
+        push_bundle_issue(
+            &mut issues,
+            "deal_quote_binding_mismatch",
+            "deal artifact does not match the quoted workload commitment",
+        );
+    }
+
+    if settlement_terms.base_fee_msat + settlement_terms.success_fee_msat
+        != quote.payload.price_sats.saturating_mul(1_000)
+    {
+        push_bundle_issue(
+            &mut issues,
+            "quoted_fee_total_mismatch",
+            "quote settlement terms do not add up to the quoted price",
+        );
+    }
+
+    if bundle.payload.destination_identity != settlement_terms.destination_identity {
+        push_bundle_issue(
+            &mut issues,
+            "destination_identity_mismatch",
+            "invoice bundle destination identity does not match the quoted settlement destination",
+        );
+    }
+    if bundle.payload.base_invoice.amount_msat != settlement_terms.base_fee_msat {
+        push_bundle_issue(
+            &mut issues,
+            "base_fee_mismatch",
+            "invoice bundle base fee does not match the quote settlement terms",
+        );
+    }
+    if bundle.payload.success_hold_invoice.amount_msat != settlement_terms.success_fee_msat {
+        push_bundle_issue(
+            &mut issues,
+            "success_fee_mismatch",
+            "invoice bundle success fee does not match the quote settlement terms",
+        );
+    }
+    if bundle.payload.min_final_cltv_expiry != settlement_terms.min_final_cltv_expiry {
+        push_bundle_issue(
+            &mut issues,
+            "min_final_cltv_mismatch",
+            "invoice bundle CLTV requirement does not match the quote settlement terms",
+        );
+    }
+    if bundle.payload.expires_at > quote.payload.expires_at {
+        push_bundle_issue(
+            &mut issues,
+            "bundle_expiry_exceeds_quote",
+            "invoice bundle expires after the quote deadline",
+        );
+    }
+
+    let Some(payment_lock) = deal.payload.payment_lock.as_ref() else {
+        push_bundle_issue(
+            &mut issues,
+            "missing_payment_lock",
+            "deal does not include a payment lock for the success-fee leg",
+        );
+        return InvoiceBundleValidationReport {
+            valid: issues.is_empty(),
+            bundle_hash: bundle.hash.clone(),
+            quote_hash: quote.hash.clone(),
+            deal_hash: deal.hash.clone(),
+            expected_requester_id: expected_requester_id.map(str::to_string),
+            issues,
+        };
+    };
+
+    if payment_lock.kind != "lightning" {
+        push_bundle_issue(
+            &mut issues,
+            "payment_lock_kind_mismatch",
+            "deal payment lock is not marked as lightning",
+        );
+    }
+    if payment_lock.token_hash != bundle.payload.success_hold_invoice.payment_hash {
+        push_bundle_issue(
+            &mut issues,
+            "success_payment_hash_mismatch",
+            "invoice bundle success payment hash does not match the deal payment lock",
+        );
+    }
+    if payment_lock.amount_sats.saturating_mul(1_000) != settlement_terms.success_fee_msat {
+        push_bundle_issue(
+            &mut issues,
+            "payment_lock_amount_mismatch",
+            "deal payment lock amount does not match the quoted success-fee leg",
+        );
+    }
+
+    for (expected_prefix, leg, max_expiry_secs, leg_name) in [
+        (
+            "base",
+            &bundle.payload.base_invoice,
+            settlement_terms.max_base_invoice_expiry_secs,
+            "base_invoice",
+        ),
+        (
+            "hold",
+            &bundle.payload.success_hold_invoice,
+            settlement_terms.max_success_hold_expiry_secs,
+            "success_hold_invoice",
+        ),
+    ] {
+        let expected_invoice_hash = crypto::sha256_hex(leg.invoice_bolt11.as_bytes());
+        if leg.invoice_hash != expected_invoice_hash {
+            push_bundle_issue(
+                &mut issues,
+                "invoice_hash_mismatch",
+                format!("{leg_name} invoice_hash does not match the encoded invoice"),
+            );
+        }
+
+        match parse_mock_bolt11(&leg.invoice_bolt11) {
+            Ok(mock) => {
+                if mock.prefix != expected_prefix {
+                    push_bundle_issue(
+                        &mut issues,
+                        "invoice_prefix_mismatch",
+                        format!("{leg_name} invoice prefix does not match the expected leg type"),
+                    );
+                }
+                if mock.amount_msat != leg.amount_msat {
+                    push_bundle_issue(
+                        &mut issues,
+                        "invoice_amount_mismatch",
+                        format!("{leg_name} invoice amount does not match the signed bundle"),
+                    );
+                }
+                if mock.payment_hash != leg.payment_hash {
+                    push_bundle_issue(
+                        &mut issues,
+                        "invoice_payment_hash_mismatch",
+                        format!("{leg_name} invoice payment hash does not match the signed bundle"),
+                    );
+                }
+                if mock.expires_at > bundle.payload.created_at + max_expiry_secs as i64 {
+                    push_bundle_issue(
+                        &mut issues,
+                        "invoice_expiry_exceeds_terms",
+                        format!(
+                            "{leg_name} invoice expiry exceeds the quoted settlement constraints"
+                        ),
+                    );
+                }
+                if mock.expires_at > quote.payload.expires_at {
+                    push_bundle_issue(
+                        &mut issues,
+                        "invoice_expiry_exceeds_quote",
+                        format!("{leg_name} invoice expiry exceeds the quote deadline"),
+                    );
+                }
+            }
+            Err(error) => push_bundle_issue(
+                &mut issues,
+                "invalid_mock_invoice_encoding",
+                format!("{leg_name}: {error}"),
+            ),
+        }
+    }
+
+    InvoiceBundleValidationReport {
+        valid: issues.is_empty(),
+        bundle_hash: bundle.hash.clone(),
+        quote_hash: quote.hash.clone(),
+        deal_hash: deal.hash.clone(),
+        expected_requester_id: expected_requester_id.map(str::to_string),
+        issues,
+    }
+}
+
+pub fn build_lightning_invoice_bundle(
+    state: &AppState,
+    request: BuildLightningInvoiceBundleRequest,
+) -> Result<LightningInvoiceBundleSession, String> {
+    let session_id = request.session_id.unwrap_or_else(new_request_id);
+    let provider_id = state.identity.node_id().to_string();
+    let destination_identity = lightning_destination_identity(state);
+    let base_payment_hash = crypto::sha256_hex(format!("lightning-base:{session_id}").as_bytes());
+    let base_expires_at =
+        request.created_at + state.config.lightning.base_invoice_expiry_secs as i64;
+    let success_expires_at =
+        request.created_at + state.config.lightning.success_hold_expiry_secs as i64;
+    let bundle_expires_at = base_expires_at.max(success_expires_at);
+    let base_invoice_bolt11 = mock_bolt11(
+        "base",
+        request.base_fee_msat,
+        &base_payment_hash,
+        base_expires_at,
+    );
+    let success_hold_invoice_bolt11 = mock_bolt11(
+        "hold",
+        request.success_fee_msat,
+        &request.success_payment_hash,
+        success_expires_at,
+    );
+    let bundle = sign_artifact(
+        &provider_id,
+        |message| state.identity.sign_message_hex(message),
+        TRANSPORT_KIND_INVOICE_BUNDLE,
+        request.created_at,
+        InvoiceBundlePayload {
+            schema_version: "froglet/v1".to_string(),
+            bundle_type: "invoice_bundle".to_string(),
+            provider_id: provider_id.clone(),
+            requester_id: request.requester_id.clone(),
+            quote_hash: request.quote_hash.clone(),
+            deal_hash: request.deal_hash.clone(),
+            created_at: request.created_at,
+            expires_at: bundle_expires_at,
+            destination_identity,
+            base_invoice: InvoiceBundleLeg {
+                amount_msat: request.base_fee_msat,
+                invoice_bolt11: base_invoice_bolt11.clone(),
+                invoice_hash: crypto::sha256_hex(base_invoice_bolt11.as_bytes()),
+                payment_hash: base_payment_hash,
+                state: InvoiceBundleLegState::Open,
+            },
+            success_hold_invoice: InvoiceBundleLeg {
+                amount_msat: request.success_fee_msat,
+                invoice_bolt11: success_hold_invoice_bolt11.clone(),
+                invoice_hash: crypto::sha256_hex(success_hold_invoice_bolt11.as_bytes()),
+                payment_hash: request.success_payment_hash.clone(),
+                state: InvoiceBundleLegState::Open,
+            },
+            min_final_cltv_expiry: state.config.lightning.min_final_cltv_expiry,
+        },
+    )?;
+
+    Ok(LightningInvoiceBundleSession {
+        session_id,
+        bundle,
+        base_state: InvoiceBundleLegState::Open,
+        success_state: InvoiceBundleLegState::Open,
+        created_at: request.created_at,
+        updated_at: request.created_at,
+    })
 }
 
 fn invalid_cashu_token(
@@ -734,5 +1310,83 @@ impl SettlementDriver for CashuVerifierDriver {
     }
 }
 
+struct LightningMockDriver;
+
+impl LightningMockDriver {
+    fn descriptor_inner(&self, state: &AppState) -> SettlementDriverDescriptor {
+        let mode = match state.config.lightning.mode {
+            LightningMode::Mock => LIGHTNING_MOCK_MODE,
+        };
+        SettlementDriverDescriptor {
+            backend: PaymentBackend::Lightning.to_string(),
+            mode: mode.to_string(),
+            accepted_payment_methods: vec!["lightning".to_string()],
+            accepted_mints: Vec::new(),
+            capabilities: vec![
+                "invoice_bundles".to_string(),
+                "hold_invoices".to_string(),
+                "mock_mode".to_string(),
+            ],
+            reservations: true,
+            receipts: true,
+        }
+    }
+}
+
+impl SettlementDriver for LightningMockDriver {
+    fn descriptor(&self, state: &AppState) -> SettlementDriverDescriptor {
+        self.descriptor_inner(state)
+    }
+
+    fn wallet_balance<'a>(
+        &'a self,
+        state: &'a AppState,
+    ) -> BoxFuture<'a, Result<WalletBalanceSnapshot, PaymentError>> {
+        let descriptor = self.descriptor_inner(state);
+        Box::pin(async move { Ok(WalletBalanceSnapshot::from_descriptor(descriptor)) })
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        _state: &'a AppState,
+        request: PreparePaymentRequest,
+    ) -> BoxFuture<'a, Result<Option<PaymentReservation>, PaymentError>> {
+        Box::pin(async move {
+            if request.price_sats == 0 {
+                return Ok(None);
+            }
+
+            Err(PaymentError::BackendUnavailable {
+                service_id: request.service_id.as_str().to_string(),
+                price_sats: request.price_sats,
+                backend: PaymentBackend::Lightning.to_string(),
+            })
+        })
+    }
+
+    fn commit<'a>(
+        &'a self,
+        _state: &'a AppState,
+        reservation: PaymentReservation,
+    ) -> BoxFuture<'a, Result<PaymentReceipt, PaymentError>> {
+        Box::pin(async move {
+            Err(PaymentError::BackendUnavailable {
+                service_id: reservation.service_id.as_str().to_string(),
+                price_sats: reservation.amount_sats,
+                backend: PaymentBackend::Lightning.to_string(),
+            })
+        })
+    }
+
+    fn release<'a>(
+        &'a self,
+        _state: &'a AppState,
+        _reservation: &'a PaymentReservation,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
 static NO_SETTLEMENT_DRIVER: NoSettlementDriver = NoSettlementDriver;
 static CASHU_VERIFIER_DRIVER: CashuVerifierDriver = CashuVerifierDriver;
+static LIGHTNING_MOCK_DRIVER: LightningMockDriver = LightningMockDriver;

@@ -181,9 +181,12 @@ pub fn insert_or_get_job(conn: &Connection, new_job: NewJob) -> Result<InsertJob
             error,
             payment_token_hash,
             payment_amount_sats,
+            workload_evidence_hash,
+            result_evidence_hash,
+            failure_evidence_hash,
             created_at,
             updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, ?10, ?10)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, NULL, NULL, NULL, ?10, ?10)",
         params![
             &job_id,
             idempotency_key.as_deref(),
@@ -224,6 +227,22 @@ pub fn insert_or_get_job(conn: &Connection, new_job: NewJob) -> Result<InsertJob
     }
 }
 
+pub fn set_job_workload_evidence_hash(
+    conn: &Connection,
+    job_id: &str,
+    workload_evidence_hash: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE jobs
+         SET workload_evidence_hash = ?2
+         WHERE job_id = ?1",
+        params![job_id, workload_evidence_hash],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 pub fn get_job(conn: &Connection, job_id: &str) -> Result<Option<StoredJob>, String> {
     conn.query_row(
         "SELECT
@@ -232,8 +251,10 @@ pub fn get_job(conn: &Connection, job_id: &str) -> Result<Option<StoredJob>, Str
             request_hash,
             service_id,
             payload_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.workload_evidence_hash LIMIT 1),
             status,
             result_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.result_evidence_hash LIMIT 1),
             error,
             payment_token_hash,
             payment_amount_sats,
@@ -274,6 +295,7 @@ pub fn complete_job_success(
     job_id: &str,
     result: &Value,
     payment_receipt: Option<&JobPaymentReceipt>,
+    result_evidence_hash: Option<&str>,
     now: i64,
 ) -> Result<(), String> {
     let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
@@ -284,7 +306,9 @@ pub fn complete_job_success(
              error = NULL,
              payment_token_hash = COALESCE(?4, payment_token_hash),
              payment_amount_sats = COALESCE(?5, payment_amount_sats),
-             updated_at = ?6
+             result_evidence_hash = COALESCE(?6, result_evidence_hash),
+             failure_evidence_hash = NULL,
+             updated_at = ?7
          WHERE job_id = ?1",
         params![
             job_id,
@@ -292,6 +316,7 @@ pub fn complete_job_success(
             result_json,
             payment_receipt.map(|receipt| receipt.token_hash.as_str()),
             payment_receipt.map(|receipt| receipt.amount_sats as i64),
+            result_evidence_hash,
             now,
         ],
     )
@@ -304,15 +329,18 @@ pub fn complete_job_failure(
     conn: &Connection,
     job_id: &str,
     error: &str,
+    failure_evidence_hash: Option<&str>,
     now: i64,
 ) -> Result<(), String> {
     conn.execute(
         "UPDATE jobs
          SET status = ?2,
              error = ?3,
-             updated_at = ?4
+             result_evidence_hash = NULL,
+             failure_evidence_hash = COALESCE(?4, failure_evidence_hash),
+             updated_at = ?5
          WHERE job_id = ?1",
-        params![job_id, JOB_STATUS_FAILED, error, now],
+        params![job_id, JOB_STATUS_FAILED, error, failure_evidence_hash, now],
     )
     .map_err(|e| e.to_string())?;
 
@@ -350,8 +378,10 @@ pub fn find_job_by_idempotency_key(
             request_hash,
             service_id,
             payload_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.workload_evidence_hash LIMIT 1),
             status,
             result_json,
+            (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.result_evidence_hash LIMIT 1),
             error,
             payment_token_hash,
             payment_amount_sats,
@@ -368,19 +398,23 @@ pub fn find_job_by_idempotency_key(
 
 fn decode_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredJob> {
     let payload_json: String = row.get(4)?;
-    let spec = serde_json::from_str(&payload_json).map_err(|err| {
+    let workload_evidence_json: Option<String> = row.get(5)?;
+    let spec_source = workload_evidence_json.as_deref().unwrap_or(&payload_json);
+    let spec = serde_json::from_str(spec_source).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(err))
     })?;
 
-    let result_json: Option<String> = row.get(6)?;
-    let result = match result_json {
-        Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+    let result_json: Option<String> = row.get(7)?;
+    let result_evidence_json: Option<String> = row.get(8)?;
+    let result_source = result_evidence_json.as_deref().or(result_json.as_deref());
+    let result = match result_source {
+        Some(json) => Some(serde_json::from_str(json).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(err))
         })?),
         None => None,
     };
 
-    let payment_amount_sats: Option<i64> = row.get(9)?;
+    let payment_amount_sats: Option<i64> = row.get(11)?;
 
     Ok(StoredJob {
         job_id: row.get(0)?,
@@ -388,12 +422,12 @@ fn decode_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredJob> {
         request_hash: row.get(2)?,
         service_id: row.get(3)?,
         spec,
-        status: row.get(5)?,
+        status: row.get(6)?,
         result,
-        error: row.get(7)?,
-        payment_token_hash: row.get(8)?,
+        error: row.get(9)?,
+        payment_token_hash: row.get(10)?,
         payment_amount_sats: payment_amount_sats.map(|value| value as u64),
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
     })
 }

@@ -1,12 +1,11 @@
 use crate::{config::NodeConfig, crypto};
-use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
 use std::{fs, path::Path};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NodeIdentity {
-    signing_key: SigningKey,
+    signing_key: crypto::NodeSigningKey,
     public_key_hex: String,
+    compressed_public_key_hex: String,
 }
 
 impl NodeIdentity {
@@ -17,7 +16,7 @@ impl NodeIdentity {
         let signing_key = if config.storage.identity_seed_path.exists() {
             load_signing_key(&config.storage.identity_seed_path)?
         } else if config.identity.auto_generate {
-            let signing_key = SigningKey::generate(&mut OsRng);
+            let signing_key = crypto::generate_signing_key();
             persist_signing_key(&config.storage.identity_seed_path, &signing_key)?;
             signing_key
         } else {
@@ -28,10 +27,12 @@ impl NodeIdentity {
         };
 
         let public_key_hex = crypto::public_key_hex(&signing_key);
+        let compressed_public_key_hex = crypto::compressed_public_key_hex(&signing_key);
 
         Ok(Self {
             signing_key,
             public_key_hex,
+            compressed_public_key_hex,
         })
     }
 
@@ -43,12 +44,16 @@ impl NodeIdentity {
         &self.public_key_hex
     }
 
+    pub fn compressed_public_key_hex(&self) -> &str {
+        &self.compressed_public_key_hex
+    }
+
     pub fn sign_message_hex(&self, message: &[u8]) -> String {
         crypto::sign_message_hex(&self.signing_key, message)
     }
 }
 
-fn load_signing_key(path: &Path) -> Result<SigningKey, String> {
+fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
     let seed_hex = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read node identity seed {}: {e}", path.display()))?;
     let seed_hex = seed_hex.trim();
@@ -64,11 +69,11 @@ fn load_signing_key(path: &Path) -> Result<SigningKey, String> {
     }
 
     let seed: [u8; 32] = bytes.try_into().unwrap();
-    Ok(SigningKey::from_bytes(&seed))
+    crypto::signing_key_from_seed_bytes(&seed)
 }
 
-fn persist_signing_key(path: &Path, signing_key: &SigningKey) -> Result<(), String> {
-    let seed_hex = hex::encode(signing_key.to_bytes());
+fn persist_signing_key(path: &Path, signing_key: &crypto::NodeSigningKey) -> Result<(), String> {
+    let seed_hex = hex::encode(crypto::signing_key_seed_bytes(signing_key));
 
     #[cfg(unix)]
     {
@@ -123,8 +128,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::{
-        CashuConfig, DiscoveryMode, IdentityConfig, NetworkMode, NodeConfig, PaymentBackend,
-        PricingConfig, StorageConfig,
+        CashuConfig, DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode,
+        NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
     };
     use std::path::PathBuf;
 
@@ -150,11 +155,18 @@ mod tests {
                 remote_checkstate: false,
                 request_timeout_secs: 5,
             },
+            lightning: LightningConfig {
+                mode: LightningMode::Mock,
+                destination_identity: None,
+                base_invoice_expiry_secs: 300,
+                success_hold_expiry_secs: 300,
+                min_final_cltv_expiry: 18,
+            },
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: temp_dir.join("node.db"),
                 identity_dir: temp_dir.join("identity"),
-                identity_seed_path: temp_dir.join("identity/ed25519.seed"),
+                identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 tor_dir: temp_dir.join("tor"),

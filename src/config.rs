@@ -77,6 +77,7 @@ impl DiscoveryMode {
 pub enum PaymentBackend {
     None,
     Cashu,
+    Lightning,
 }
 
 impl fmt::Display for PaymentBackend {
@@ -84,6 +85,7 @@ impl fmt::Display for PaymentBackend {
         match self {
             PaymentBackend::None => write!(f, "none"),
             PaymentBackend::Cashu => write!(f, "cashu"),
+            PaymentBackend::Lightning => write!(f, "lightning"),
         }
     }
 }
@@ -93,8 +95,34 @@ impl PaymentBackend {
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
             "cashu" => Ok(Self::Cashu),
+            "lightning" => Ok(Self::Lightning),
             _ => Err(format!(
-                "Invalid FROGLET_PAYMENT_BACKEND value: '{s}'. Allowed values: none, cashu"
+                "Invalid FROGLET_PAYMENT_BACKEND value: '{s}'. Allowed values: none, cashu, lightning"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LightningMode {
+    Mock,
+}
+
+impl fmt::Display for LightningMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LightningMode::Mock => write!(f, "mock"),
+        }
+    }
+}
+
+impl LightningMode {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "mock" => Ok(Self::Mock),
+            _ => Err(format!(
+                "Invalid FROGLET_LIGHTNING_MODE value: '{s}'. Allowed values: mock"
             )),
         }
     }
@@ -133,6 +161,15 @@ pub struct CashuConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct LightningConfig {
+    pub mode: LightningMode,
+    pub destination_identity: Option<String>,
+    pub base_invoice_expiry_secs: u64,
+    pub success_hold_expiry_secs: u64,
+    pub min_final_cltv_expiry: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct StorageConfig {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
@@ -154,6 +191,7 @@ pub struct NodeConfig {
     pub payment_backend: PaymentBackend,
     pub execution_timeout_secs: u64,
     pub cashu: CashuConfig,
+    pub lightning: LightningConfig,
     pub storage: StorageConfig,
 }
 
@@ -209,13 +247,13 @@ impl NodeConfig {
 
         let payment_backend = match env::var("FROGLET_PAYMENT_BACKEND") {
             Ok(val) => PaymentBackend::parse(&val)?,
-            Err(_) if pricing.has_paid_services() => PaymentBackend::Cashu,
+            Err(_) if pricing.has_paid_services() => PaymentBackend::Lightning,
             Err(_) => PaymentBackend::None,
         };
 
         if pricing.has_paid_services() && matches!(payment_backend, PaymentBackend::None) {
             return Err(
-                "Paid services require FROGLET_PAYMENT_BACKEND to be set to a verifier such as 'cashu'"
+                "Paid services require FROGLET_PAYMENT_BACKEND to be set to 'lightning' or an explicitly enabled legacy backend such as 'cashu'"
                     .into(),
             );
         }
@@ -234,11 +272,24 @@ impl NodeConfig {
             remote_checkstate,
             request_timeout_secs: env_u64("FROGLET_CASHU_REQUEST_TIMEOUT_SECS", 5)?.clamp(1, 30),
         };
+        let lightning = LightningConfig {
+            mode: match env::var("FROGLET_LIGHTNING_MODE") {
+                Ok(val) => LightningMode::parse(&val)?,
+                Err(_) => LightningMode::Mock,
+            },
+            destination_identity: env::var("FROGLET_LIGHTNING_DESTINATION_IDENTITY").ok(),
+            base_invoice_expiry_secs: env_u64("FROGLET_LIGHTNING_BASE_INVOICE_EXPIRY_SECS", 300)?
+                .clamp(60, 3600),
+            success_hold_expiry_secs: env_u64("FROGLET_LIGHTNING_SUCCESS_HOLD_EXPIRY_SECS", 300)?
+                .clamp(60, 3600),
+            min_final_cltv_expiry: env_u64("FROGLET_LIGHTNING_MIN_FINAL_CLTV_EXPIRY", 18)?
+                .clamp(1, 144) as u32,
+        };
 
         let data_dir =
             PathBuf::from(env::var("FROGLET_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
         let identity_dir = data_dir.join("identity");
-        let identity_seed_path = identity_dir.join("ed25519.seed");
+        let identity_seed_path = identity_dir.join("secp256k1.seed");
         let runtime_dir = data_dir.join("runtime");
         let runtime_auth_token_path = runtime_dir.join("auth.token");
         let tor_dir = data_dir.join("tor");
@@ -256,6 +307,7 @@ impl NodeConfig {
             payment_backend,
             execution_timeout_secs,
             cashu,
+            lightning,
             storage: StorageConfig {
                 data_dir,
                 db_path,
