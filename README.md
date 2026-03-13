@@ -17,6 +17,15 @@ This repository now contains two binaries:
 - `froglet`: the node runtime
 - `marketplace`: a reference discovery service built alongside the node
 
+## Repository Docs
+
+- [SPEC.md](SPEC.md): frozen v1 economic kernel
+- [BOT_RUNTIME_ALPHA.md](BOT_RUNTIME_ALPHA.md): supported bot-facing alpha runtime surface
+- [OPERATOR.md](OPERATOR.md): operator guidance for wallet setup, auth, archive export, and recovery
+- [RUNTIME.md](RUNTIME.md): non-normative runtime design notes
+- [REMOTE_AGENT_LAYER.md](REMOTE_AGENT_LAYER.md): planned long-running remote-agent layer above the v1 primitive
+- [examples/README.md](examples/README.md): runnable Python example integrations
+
 ## Features
 
 - Native Tor hidden service support through Arti
@@ -29,6 +38,7 @@ This repository now contains two binaries:
 - Signed reclaim flow for bringing a node identity back online
 - Lightning-first invoice-bundle settlement for priced deals
 - Optional legacy Cashu verifier compatibility for inline-payment helpers
+- LND REST client boundary for future real hold-invoice settlement
 - Sandboxed Wasm execution
 - Async job API with persisted state, polling, and idempotency keys as a compatibility layer
 - SQLite state under `./data/node.db`
@@ -82,13 +92,24 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 - `FROGLET_CASHU_MINT_ALLOWLIST=https://mint.example,https://mint2.example`
 - `FROGLET_CASHU_REMOTE_CHECKSTATE=true|false`
 - `FROGLET_CASHU_REQUEST_TIMEOUT_SECS=5`
-- `FROGLET_LIGHTNING_MODE=mock`
+- `FROGLET_LIGHTNING_MODE=mock|lnd_rest`
+- `FROGLET_LIGHTNING_REST_URL=https://127.0.0.1:8080`
+- `FROGLET_LIGHTNING_TLS_CERT_PATH=/path/to/tls.cert`
+- `FROGLET_LIGHTNING_MACAROON_PATH=/path/to/admin.macaroon`
+- `FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS=5`
+- `FROGLET_LIGHTNING_SYNC_INTERVAL_MS=1000`
 
 If any price is greater than zero and `FROGLET_PAYMENT_BACKEND` is not set, Froglet defaults to `lightning`.
 The mainline priced v1 flow is `quote -> deal -> receipt`.
 The older inline-payment query and job helpers remain available only as explicit legacy compatibility when `FROGLET_PAYMENT_BACKEND=cashu`.
+`FROGLET_LIGHTNING_MODE=lnd_rest` now provides the real LND REST boundary for invoice creation, lookup, cancel, and settle operations. Froglet still uses the same explicit requester preimage-release step for the success-fee hold leg, and the background Lightning watcher reconciles `payment_pending` and `result_ready` deals on a fixed interval.
+When `FROGLET_LIGHTNING_REST_URL` is HTTPS, `FROGLET_LIGHTNING_TLS_CERT_PATH` is treated as a pinned LND server certificate rather than as a generic WebPKI CA bundle. This matches the way local LND admin endpoints typically expose self-signed TLS material.
+The test suite now covers both a synthetic LND REST backend that emits real BOLT11 invoices and an env-gated Dockerized regtest topology with real LND nodes, hold invoices, settlement, cancellation, and watcher-driven restart recovery.
+The repo also now ships a small async Python helper in `froglet_client.py` so local agents can search, quote, open deals, wait on state transitions, and accept results without hardcoding route names or parsing payment-intent details on the default path.
+There is also an env-gated Tor integration test, enabled with `FROGLET_RUN_TOR_INTEGRATION=1`, that boots `dual` transport mode and verifies descriptor/capability parity once the onion endpoint comes up.
 
 `FROGLET_EXECUTION_TIMEOUT_SECS` is enforced by the Wasm sandbox adapter and is also published in offer constraints.
+For Lightning-priced `execute.wasm`, Froglet clamps the advertised and enforced runtime to at most 30 seconds, or less if `FROGLET_EXECUTION_TIMEOUT_SECS` is already lower.
 
 When `FROGLET_CASHU_MINT_ALLOWLIST` is set, only tokens from those mints are accepted. If `FROGLET_CASHU_REMOTE_CHECKSTATE=true`, Froglet additionally calls the mint's NUT-07 `/v1/checkstate` endpoint before reserving the token. Remote checkstate requires a non-empty mint allowlist.
 
@@ -196,6 +217,8 @@ POST /v1/quotes
 ```
 
 The node responds with a signed quote artifact. The client can then open a deal against that quote.
+For public `compute.wasm.v1` workloads, Froglet rejects any module that declares host imports, shared memories, 64-bit memories, or memory bounds above the published v1 limit before execution begins.
+The interoperable v1 determinism profile is intentionally narrow: module, input, and result identity are all hash-based, and the public ABI exposes no ambient filesystem, network, clock, or randomness capabilities.
 In legacy Cashu compatibility mode, the deal can still carry an inline payment token:
 
 ```json
@@ -232,7 +255,12 @@ POST /v1/deals
 }
 ```
 
-The deal is persisted as `payment_pending`. The requester then fetches the signed bundle from `GET /v1/deals/:deal_id/invoice-bundle`. In mock Lightning mode, local tests can advance bundle state through `POST /v1/runtime/lightning/invoice-bundles/:session_id/state` until the deal is admitted and executed.
+The deal is persisted as `payment_pending`. The requester can still fetch the signed transport bundle from `GET /v1/deals/:deal_id/invoice-bundle`, but the local runtime now exposes a wallet-facing `payment_intent` on `POST /v1/runtime/services/buy` and `GET /v1/runtime/deals/:deal_id/payment-intent` so agents do not need to parse raw invoice-bundle legs on the happy path. Once the base leg is settled and the success hold is accepted, Froglet admits the deal, executes it, and stages the completed result as `result_ready`.
+The deal does not become terminal at that point. The requester must explicitly accept the success-fee leg by calling `POST /v1/deals/:deal_id/release-preimage` with the original 32-byte secret whose hash was committed as `success_payment_hash`. Only after that release does Froglet settle the hold and emit the final signed receipt.
+When a bundle is issued, Froglet clamps each Lightning leg's expiry to the remaining lifetime of the accepted quote so the returned invoices cannot outlive the quoted commitment window.
+For the same reason, Froglet also clamps Lightning-priced Wasm execution to a short wall-clock window of 30 seconds or less. Longer work should be split into multiple deals rather than stretched across one hold-invoice session.
+Lightning-backed deals are also reconciled in the background, so `payment_pending` and `result_ready` deals can progress or fail after restart without requiring a status-polling request to trigger sync.
+In mock Lightning mode, local tests can advance bundle state through `POST /v1/runtime/lightning/invoice-bundles/:session_id/state` until the deal is admitted and executed.
 Before either Lightning leg is paid, Froglet can verify the returned bundle against the signed quote and deal via `POST /v1/invoice-bundles/verify`.
 
 ### Async FaaS-style job submission
@@ -263,8 +291,11 @@ If `execute.wasm` is priced and the Lightning backend is active, `POST /v1/node/
 - `POST /v1/quotes`
 - `POST /v1/deals`
 - `GET /v1/deals/:deal_id`
+- `POST /v1/deals/:deal_id/release-preimage`
 - `GET /v1/deals/:deal_id/invoice-bundle`
 - `POST /v1/invoice-bundles/verify`
+- `POST /v1/curated-lists/verify`
+- `POST /v1/nostr/events/verify`
 - `POST /v1/receipts/verify`
 - `GET /v1/node/capabilities`
 - `GET /v1/node/identity`
@@ -275,12 +306,35 @@ If `execute.wasm` is priced and the Lightning backend is active, `POST /v1/node/
 - `GET /v1/node/jobs/:job_id`
 - `POST /v1/node/pay/ecash`
 
+## Agent Helper
+
+`froglet_client.py` provides three small async helpers:
+
+- `MarketplaceClient` for `search` and node lookup
+- `ProviderClient` for `quote -> deal -> wait -> accept -> receipt`
+- `RuntimeClient` for authenticated local bot flows, curated-list issuance, and optional payment-intent inspection
+
+The runtime helper defaults to compact deal handles and omits raw `payment_intent` details unless `include_payment_intent=True` is requested.
+It also exposes Nostr summary publication helpers for the current provider surface and terminal deal receipts without requiring relay access.
+Requester-side convenience helpers are also provided so local bots can generate a seed and construct `requester_id`, `requester_seed_hex`, and `success_payment_hash` fields without depending on `test_support.py`:
+
+- `generate_requester_seed()`
+- `requester_id_from_seed(seed)`
+- `runtime_requester_fields(seed, success_preimage)`
+
+For the intended supported product path, see [BOT_RUNTIME_ALPHA.md](BOT_RUNTIME_ALPHA.md).
+For runnable integrations, see [examples/README.md](examples/README.md).
+
 ### Runtime routes
 
 - `GET /v1/runtime/wallet/balance`
 - `POST /v1/runtime/provider/start`
 - `POST /v1/runtime/services/publish`
 - `POST /v1/runtime/services/buy`
+- `POST /v1/runtime/discovery/curated-lists/issue`
+- `GET /v1/runtime/nostr/publications/provider`
+- `GET /v1/runtime/nostr/publications/deals/:deal_id/receipt`
+- `GET /v1/runtime/deals/:deal_id/payment-intent`
 - `GET /v1/runtime/archive/:subject_kind/:subject_id`
 - `POST /v1/runtime/lightning/invoice-bundles/:session_id/state`
 
@@ -288,7 +342,36 @@ If `execute.wasm` is priced and the Lightning backend is active, `POST /v1/node/
 Pass `?cursor=<last_seen_cursor>&limit=<n>` to continue replication from the last artifact you processed.
 Use `GET /v1/artifacts/:artifact_hash` to resolve a specific content-addressed artifact by hash.
 
+For Lightning-priced deals, the runtime buy flow returns a verified `payment_intent` summary and a stable `payment_intent_path`. That summary contains the payable BOLT11 invoice strings, current invoice-leg states, and, once the result is staged, the exact `release-preimage` path plus expected `result_hash`.
+
 `GET /v1/runtime/archive/:subject_kind/:subject_id` is a privileged export surface for retained local evidence. It returns an engine-neutral archive bundle containing the subject's retained artifact documents, local feed entries, execution evidence, and any retained Lightning invoice-bundle material.
+
+`GET /v1/runtime/nostr/publications/provider` returns signed Nostr summary events for the current descriptor and current offers. `GET /v1/runtime/nostr/publications/deals/:deal_id/receipt` returns a signed Nostr summary event for a terminal deal receipt. These are publication intents only; relays remain optional and external to the core node. The summary events are signed with a distinct linked Nostr publication key, and the current descriptor publishes that linkage.
+
+`froglet_nostr_adapter.py` is the external relay bridge for those publication intents. It fetches the local descriptor/offer/receipt summaries from the runtime surface, publishes them to one or more relays over websocket, and can query summaries back from relays without moving relay policy or relay auth into the node.
+
+The adapter supports two relay-selection modes:
+
+- `--relay <ws-url>` for a simple all-read/all-write relay list
+- `--relay-config <path>` for a JSON relay allowlist with explicit `read` and `write` roles plus retry/backoff policy
+
+When a relay sends an `AUTH` challenge, pass `--auth-seed-file ./data/identity/nostr-publication.secp256k1.seed` so the adapter can answer the challenge with the same linked Nostr publication key that signed the Froglet summary events. This keeps relay auth outside the core node while still allowing NIP-42-style challenge handling in the external bridge.
+
+Example relay policy file:
+
+```json
+{
+  "relays": [
+    {"url": "wss://relay-write.example", "read": false, "write": true},
+    {"url": "wss://relay-read.example", "read": true, "write": false}
+  ],
+  "retry": {
+    "max_attempts": 3,
+    "initial_backoff_secs": 0.25,
+    "max_backoff_secs": 2.0
+  }
+}
+```
 
 ### Marketplace routes
 
@@ -392,4 +475,11 @@ Build and test:
 ```bash
 cargo check
 cargo test --lib --bins
+python3 -m unittest -v
+```
+
+Run the real Dockerized LND regtest path explicitly:
+
+```bash
+FROGLET_RUN_LND_REGTEST=1 python3 -m unittest -v test_lnd_regtest
 ```

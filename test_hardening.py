@@ -14,8 +14,11 @@ from test_support import (
     LONG_RUNNING_WASM_HEX,
     VALID_CASHU_TOKEN,
     VALID_WASM_HEX,
+    create_protocol_deal,
+    create_protocol_quote,
     build_wasm_request,
     build_wasm_submission,
+    generate_schnorr_signing_key,
     reserve_tcp_port,
     verify_signed_artifact,
 )
@@ -61,6 +64,29 @@ async def start_fake_checkstate_mint(state: str) -> tuple[str, list[dict], web.A
 
 
 class HardeningTests(FrogletAsyncTestCase):
+    async def test_execute_wasm_offer_exposes_execution_profile_timeout(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_EXECUTION_TIMEOUT_SECS": "120",
+            }
+        )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(node.url("/v1/offers")) as resp:
+                offers = await resp.json()
+
+        self.assertEqual(resp.status, 200)
+        wasm_offer = next(
+            offer
+            for offer in offers["offers"]
+            if offer["payload"]["offer_id"] == "execute.wasm"
+        )
+        self.assertEqual(
+            wasm_offer["payload"]["execution_profile"]["max_runtime_ms"], 120_000
+        )
+
     async def test_execute_wasm_enforces_wall_clock_timeout(self) -> None:
         node = await self.start_node(
             extra_env={
@@ -77,7 +103,9 @@ class HardeningTests(FrogletAsyncTestCase):
                 for offer in offers["offers"]
                 if offer["payload"]["offer_id"] == "execute.wasm"
             )
-            self.assertEqual(wasm_offer["payload"]["constraints"]["timeout_secs"], 1)
+            self.assertEqual(
+                wasm_offer["payload"]["execution_profile"]["max_runtime_ms"], 1_000
+            )
 
             async with session.post(
                 node.url("/v1/node/execute/wasm"),
@@ -158,23 +186,21 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **build_wasm_request(LONG_RUNNING_WASM_HEX)},
-            ) as resp:
-                quote = await resp.json()
-            self.assertEqual(resp.status, 201)
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": quote,
-                    **build_wasm_request(LONG_RUNNING_WASM_HEX),
-                    "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
-                },
-            ) as resp:
-                deal = await resp.json()
-            self.assertEqual(resp.status, 202)
+            requester_key = generate_schnorr_signing_key()
+            quote = await create_protocol_quote(
+                session,
+                node,
+                offer_id="execute.wasm",
+                request=build_wasm_request(LONG_RUNNING_WASM_HEX),
+                requester_secret_key=requester_key,
+            )
+            deal = await create_protocol_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(LONG_RUNNING_WASM_HEX),
+                requester_secret_key=requester_key,
+            )
 
             deadline = time.monotonic() + 5.0
             current = deal
@@ -206,10 +232,10 @@ class HardeningTests(FrogletAsyncTestCase):
         self.assertEqual(recovered["status"], "failed")
         self.assertEqual(recovered["error"], "node restarted before deal completion")
         self.assertTrue(verify_signed_artifact(recovered["receipt"]))
-        self.assertEqual(recovered["receipt"]["payload"]["failure"]["code"], "node_restarted")
-        self.assertEqual(recovered["receipt"]["payload"]["status"], "failed")
+        self.assertEqual(recovered["receipt"]["payload"]["failure_code"], "node_restarted")
+        self.assertEqual(recovered["receipt"]["payload"]["deal_state"], "failed")
         self.assertEqual(recovered["receipt"]["payload"]["deal_hash"], recovered["deal"]["hash"])
-        self.assertEqual(recovered["receipt"]["payload"]["settlement"]["status"], "expired")
+        self.assertEqual(recovered["receipt"]["payload"]["settlement_state"], "none")
         self.assertEqual(recovered["receipt"]["payload"]["executor"]["runtime"], "wasm")
         self.assertEqual(
             recovered["receipt"]["payload"]["limits_applied"]["max_output_bytes"], 131072

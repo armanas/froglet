@@ -107,12 +107,14 @@ impl PaymentBackend {
 #[serde(rename_all = "snake_case")]
 pub enum LightningMode {
     Mock,
+    LndRest,
 }
 
 impl fmt::Display for LightningMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LightningMode::Mock => write!(f, "mock"),
+            LightningMode::LndRest => write!(f, "lnd_rest"),
         }
     }
 }
@@ -121,8 +123,9 @@ impl LightningMode {
     fn parse(s: &str) -> Result<Self, String> {
         match s.to_lowercase().as_str() {
             "mock" => Ok(Self::Mock),
+            "lnd_rest" => Ok(Self::LndRest),
             _ => Err(format!(
-                "Invalid FROGLET_LIGHTNING_MODE value: '{s}'. Allowed values: mock"
+                "Invalid FROGLET_LIGHTNING_MODE value: '{s}'. Allowed values: mock, lnd_rest"
             )),
         }
     }
@@ -167,6 +170,16 @@ pub struct LightningConfig {
     pub base_invoice_expiry_secs: u64,
     pub success_hold_expiry_secs: u64,
     pub min_final_cltv_expiry: u32,
+    pub sync_interval_ms: u64,
+    pub lnd_rest: Option<LightningLndRestConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LightningLndRestConfig {
+    pub rest_url: String,
+    pub tls_cert_path: Option<PathBuf>,
+    pub macaroon_path: PathBuf,
+    pub request_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +188,7 @@ pub struct StorageConfig {
     pub db_path: PathBuf,
     pub identity_dir: PathBuf,
     pub identity_seed_path: PathBuf,
+    pub nostr_publication_seed_path: PathBuf,
     pub runtime_dir: PathBuf,
     pub runtime_auth_token_path: PathBuf,
     pub tor_dir: PathBuf,
@@ -272,11 +286,42 @@ impl NodeConfig {
             remote_checkstate,
             request_timeout_secs: env_u64("FROGLET_CASHU_REQUEST_TIMEOUT_SECS", 5)?.clamp(1, 30),
         };
+        let lightning_mode = match env::var("FROGLET_LIGHTNING_MODE") {
+            Ok(val) => LightningMode::parse(&val)?,
+            Err(_) => LightningMode::Mock,
+        };
+        let lnd_rest_url = env::var("FROGLET_LIGHTNING_REST_URL").ok();
+        let lnd_tls_cert_path = env::var("FROGLET_LIGHTNING_TLS_CERT_PATH")
+            .ok()
+            .map(PathBuf::from);
+        let lnd_macaroon_path = env::var("FROGLET_LIGHTNING_MACAROON_PATH")
+            .ok()
+            .map(PathBuf::from);
+        let lnd_request_timeout_secs =
+            env_u64("FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS", 5)?.clamp(1, 30);
+
+        if matches!(lightning_mode, LightningMode::LndRest) {
+            let Some(rest_url) = lnd_rest_url.as_ref() else {
+                return Err(
+                    "FROGLET_LIGHTNING_MODE=lnd_rest requires FROGLET_LIGHTNING_REST_URL".into(),
+                );
+            };
+            if rest_url.starts_with("https://") && lnd_tls_cert_path.is_none() {
+                return Err(
+                    "FROGLET_LIGHTNING_TLS_CERT_PATH is required for https LND REST endpoints"
+                        .into(),
+                );
+            }
+            if lnd_macaroon_path.is_none() {
+                return Err(
+                    "FROGLET_LIGHTNING_MODE=lnd_rest requires FROGLET_LIGHTNING_MACAROON_PATH"
+                        .into(),
+                );
+            }
+        }
+
         let lightning = LightningConfig {
-            mode: match env::var("FROGLET_LIGHTNING_MODE") {
-                Ok(val) => LightningMode::parse(&val)?,
-                Err(_) => LightningMode::Mock,
-            },
+            mode: lightning_mode,
             destination_identity: env::var("FROGLET_LIGHTNING_DESTINATION_IDENTITY").ok(),
             base_invoice_expiry_secs: env_u64("FROGLET_LIGHTNING_BASE_INVOICE_EXPIRY_SECS", 300)?
                 .clamp(60, 3600),
@@ -284,12 +329,23 @@ impl NodeConfig {
                 .clamp(60, 3600),
             min_final_cltv_expiry: env_u64("FROGLET_LIGHTNING_MIN_FINAL_CLTV_EXPIRY", 18)?
                 .clamp(1, 144) as u32,
+            sync_interval_ms: env_u64("FROGLET_LIGHTNING_SYNC_INTERVAL_MS", 1_000)?
+                .clamp(100, 60_000),
+            lnd_rest: matches!(lightning_mode, LightningMode::LndRest).then(|| {
+                LightningLndRestConfig {
+                    rest_url: lnd_rest_url.expect("validated lnd rest url"),
+                    tls_cert_path: lnd_tls_cert_path,
+                    macaroon_path: lnd_macaroon_path.expect("validated lnd macaroon path"),
+                    request_timeout_secs: lnd_request_timeout_secs,
+                }
+            }),
         };
 
         let data_dir =
             PathBuf::from(env::var("FROGLET_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
         let identity_dir = data_dir.join("identity");
         let identity_seed_path = identity_dir.join("secp256k1.seed");
+        let nostr_publication_seed_path = identity_dir.join("nostr-publication.secp256k1.seed");
         let runtime_dir = data_dir.join("runtime");
         let runtime_auth_token_path = runtime_dir.join("auth.token");
         let tor_dir = data_dir.join("tor");
@@ -313,6 +369,7 @@ impl NodeConfig {
                 db_path,
                 identity_dir,
                 identity_seed_path,
+                nostr_publication_seed_path,
                 runtime_dir,
                 runtime_auth_token_path,
                 tor_dir,
@@ -378,6 +435,18 @@ mod tests {
         assert!(NetworkMode::parse("invalid").is_err());
         assert!(DiscoveryMode::parse("relay").is_err());
         assert!(PaymentBackend::parse("wallet").is_err());
+    }
+
+    #[test]
+    fn test_parse_lnd_rest_lightning_mode() {
+        assert_eq!(
+            LightningMode::parse("lnd_rest").unwrap(),
+            LightningMode::LndRest
+        );
+        assert_eq!(
+            LightningMode::parse("LND_REST").unwrap(),
+            LightningMode::LndRest
+        );
     }
 
     #[test]

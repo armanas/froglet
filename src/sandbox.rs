@@ -1,7 +1,8 @@
 use std::{env, io, sync::Arc, time::Duration};
 use tracing::info;
 use wasmtime::{
-    Config, Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Trap,
+    Config, Engine, ExternType, Linker, Memory, MemoryType, Module, Store, StoreLimits,
+    StoreLimitsBuilder, Trap,
 };
 
 use once_cell::sync::Lazy;
@@ -20,6 +21,8 @@ pub const WASM_FUEL_LIMIT: u64 = 50_000_000;
 pub const WASM_MAX_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 pub const WASM_MAX_OUTPUT_BYTES: usize = 128 * 1024;
 const WASM_EPOCH_TICK_MILLIS: u64 = 10;
+const WASM_PAGE_BYTES: u64 = 64 * 1024;
+const WASM_MAX_MEMORY_PAGES: u64 = (WASM_MAX_MEMORY_BYTES as u64) / WASM_PAGE_BYTES;
 
 static WASM_ENGINE: Lazy<Engine> = Lazy::new(|| {
     let mut config = Config::new();
@@ -60,6 +63,10 @@ fn concurrency_limit(name: &str, default: usize) -> usize {
     }
 }
 
+pub fn wasm_concurrency_limit() -> usize {
+    concurrency_limit("FROGLET_WASM_CONCURRENCY_LIMIT", 16)
+}
+
 pub fn try_acquire_wasm_execution_permit() -> Result<ExecutionPermit, String> {
     WASM_CONCURRENCY_SEMAPHORE
         .clone()
@@ -89,6 +96,7 @@ pub fn execute_wasm_module_with_permit(
     let _permit = permit.0;
     let engine = wasm_engine();
     let module = Module::new(&engine, wasm_bytes)?;
+    validate_module_policy(&module)?;
 
     let limits: StoreLimits = StoreLimitsBuilder::new()
         .memory_size(WASM_MAX_MEMORY_BYTES)
@@ -172,6 +180,93 @@ pub fn execute_wasm_module_with_permit(
 fn wasm_engine() -> &'static Engine {
     Lazy::force(&WASM_EPOCH_TICKER);
     &WASM_ENGINE
+}
+
+fn validate_module_policy(module: &Module) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let imports: Vec<String> = module
+        .imports()
+        .map(|import| {
+            format!(
+                "{}::{} ({})",
+                import.module(),
+                import.name(),
+                extern_type_name(&import.ty())
+            )
+        })
+        .collect();
+    if !imports.is_empty() {
+        return Err(boxed_message(format!(
+            "Wasm host imports are not permitted in froglet.wasm.run_json.v1: {}",
+            imports.join(", ")
+        )));
+    }
+
+    let exported_memories: Vec<(String, MemoryType)> = module
+        .exports()
+        .filter_map(|export| {
+            export
+                .ty()
+                .memory()
+                .cloned()
+                .map(|memory| (export.name().to_string(), memory))
+        })
+        .collect();
+    if exported_memories.len() > 1 {
+        return Err(boxed_message(
+            "Wasm module must not export more than one memory".to_string(),
+        ));
+    }
+    if let Some((name, memory)) = exported_memories.first() {
+        if name != "memory" {
+            return Err(boxed_message(
+                "Wasm module must export its linear memory as \"memory\"".to_string(),
+            ));
+        }
+        validate_memory_type(memory)?;
+    }
+
+    Ok(())
+}
+
+fn validate_memory_type(
+    memory: &MemoryType,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if memory.is_64() {
+        return Err(boxed_message(
+            "64-bit Wasm memories are not permitted in froglet.wasm.run_json.v1".to_string(),
+        ));
+    }
+    if memory.is_shared() {
+        return Err(boxed_message(
+            "shared Wasm memories are not permitted in froglet.wasm.run_json.v1".to_string(),
+        ));
+    }
+    if memory.minimum() > WASM_MAX_MEMORY_PAGES {
+        return Err(boxed_message(format!(
+            "Wasm module initial memory limit exceeded: {} pages > {} pages",
+            memory.minimum(),
+            WASM_MAX_MEMORY_PAGES
+        )));
+    }
+    if let Some(maximum) = memory.maximum() {
+        if maximum > WASM_MAX_MEMORY_PAGES {
+            return Err(boxed_message(format!(
+                "Wasm module declared memory maximum exceeds v1 limit: {} pages > {} pages",
+                maximum, WASM_MAX_MEMORY_PAGES
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn extern_type_name(ty: &ExternType) -> &'static str {
+    match ty {
+        ExternType::Func(_) => "func",
+        ExternType::Global(_) => "global",
+        ExternType::Table(_) => "table",
+        ExternType::Memory(_) => "memory",
+    }
 }
 
 fn timeout_to_epoch_ticks(timeout: Duration) -> u64 {
@@ -385,6 +480,76 @@ mod tests {
                 .to_string()
                 .to_ascii_lowercase()
                 .contains("limit exceeded"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_host_imports() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (import "env" "sleep_ms" (func $sleep_ms (param i32)))
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 0))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected host import rejection");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("host imports are not permitted"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_initial_memory_above_limit() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (memory (export "memory") 129)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 0))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected oversized initial memory rejection");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("initial memory limit exceeded"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_declared_memory_maximum_above_limit() {
+        let wasm_bytes = wat2wasm(
+            r#"(module
+                (memory (export "memory") 1 256)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 0))"#,
+        )
+        .unwrap();
+
+        let error = execute_wasm_module(&wasm_bytes, &Value::Null, Duration::from_secs(1))
+            .expect_err("expected oversized maximum memory rejection");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("declared memory maximum exceeds"),
             "unexpected error: {error}"
         );
     }

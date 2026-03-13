@@ -689,6 +689,32 @@ pub fn get_artifact_by_actor_kind_payload(
     .map_err(|e| e.to_string())
 }
 
+pub fn get_latest_artifact_by_actor_kind(
+    conn: &Connection,
+    actor_id: &str,
+    kind: &str,
+) -> Result<Option<LedgerArtifact>, String> {
+    conn.query_row(
+        "SELECT
+            f.sequence,
+            d.artifact_hash,
+            d.payload_hash,
+            d.artifact_kind,
+            d.actor_id,
+            d.created_at,
+            d.document_json
+         FROM artifact_documents d
+         JOIN artifact_feed f ON f.artifact_hash = d.artifact_hash
+         WHERE d.actor_id = ?1 AND d.artifact_kind = ?2
+         ORDER BY d.created_at DESC, f.sequence DESC
+         LIMIT 1",
+        params![actor_id, kind],
+        decode_artifact_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
 pub fn get_artifact_by_hash(
     conn: &Connection,
     artifact_hash: &str,
@@ -867,13 +893,13 @@ pub fn insert_lightning_invoice_bundle(
             &bundle.payload.quote_hash,
             &bundle.payload.deal_hash,
             &bundle.payload.destination_identity,
-            &bundle.payload.base_invoice.invoice_hash,
-            &bundle.payload.base_invoice.payment_hash,
-            bundle.payload.base_invoice.amount_msat as i64,
+            &bundle.payload.base_fee.invoice_hash,
+            &bundle.payload.base_fee.payment_hash,
+            bundle.payload.base_fee.amount_msat as i64,
             invoice_leg_state_str(base_state),
-            &bundle.payload.success_hold_invoice.invoice_hash,
-            &bundle.payload.success_hold_invoice.payment_hash,
-            bundle.payload.success_hold_invoice.amount_msat as i64,
+            &bundle.payload.success_fee.invoice_hash,
+            &bundle.payload.success_fee.payment_hash,
+            bundle.payload.success_fee.amount_msat as i64,
             invoice_leg_state_str(success_state),
             &bundle_json,
             created_at,

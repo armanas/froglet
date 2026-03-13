@@ -1,11 +1,14 @@
 use crate::{config::NodeConfig, crypto};
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::UNIX_EPOCH};
 
 #[derive(Clone)]
 pub struct NodeIdentity {
     signing_key: crypto::NodeSigningKey,
     public_key_hex: String,
     compressed_public_key_hex: String,
+    nostr_publication_signing_key: crypto::NodeSigningKey,
+    nostr_publication_public_key_hex: String,
+    nostr_publication_created_at: i64,
 }
 
 impl NodeIdentity {
@@ -13,26 +16,31 @@ impl NodeIdentity {
         ensure_dir(&config.storage.data_dir, 0o700)?;
         ensure_dir(&config.storage.identity_dir, 0o700)?;
 
-        let signing_key = if config.storage.identity_seed_path.exists() {
-            load_signing_key(&config.storage.identity_seed_path)?
-        } else if config.identity.auto_generate {
-            let signing_key = crypto::generate_signing_key();
-            persist_signing_key(&config.storage.identity_seed_path, &signing_key)?;
-            signing_key
-        } else {
-            return Err(format!(
-                "Node identity is required but {} does not exist",
-                config.storage.identity_seed_path.display()
-            ));
-        };
+        let signing_key = load_or_create_signing_key(
+            &config.storage.identity_seed_path,
+            config.identity.auto_generate,
+            "node identity",
+        )?;
+        let nostr_publication_signing_key = load_or_create_signing_key(
+            &config.storage.nostr_publication_seed_path,
+            config.identity.auto_generate,
+            "Nostr publication identity",
+        )?;
 
         let public_key_hex = crypto::public_key_hex(&signing_key);
         let compressed_public_key_hex = crypto::compressed_public_key_hex(&signing_key);
+        let nostr_publication_public_key_hex =
+            crypto::public_key_hex(&nostr_publication_signing_key);
+        let nostr_publication_created_at =
+            file_modified_timestamp_secs(&config.storage.nostr_publication_seed_path)?;
 
         Ok(Self {
             signing_key,
             public_key_hex,
             compressed_public_key_hex,
+            nostr_publication_signing_key,
+            nostr_publication_public_key_hex,
+            nostr_publication_created_at,
         })
     }
 
@@ -50,6 +58,18 @@ impl NodeIdentity {
 
     pub fn sign_message_hex(&self, message: &[u8]) -> String {
         crypto::sign_message_hex(&self.signing_key, message)
+    }
+
+    pub fn nostr_publication_key_hex(&self) -> &str {
+        &self.nostr_publication_public_key_hex
+    }
+
+    pub fn nostr_publication_created_at(&self) -> i64 {
+        self.nostr_publication_created_at
+    }
+
+    pub fn sign_nostr_publication_message_hex(&self, message: &[u8]) -> String {
+        crypto::sign_message_hex(&self.nostr_publication_signing_key, message)
     }
 }
 
@@ -101,6 +121,37 @@ fn persist_signing_key(path: &Path, signing_key: &crypto::NodeSigningKey) -> Res
     }
 
     Ok(())
+}
+
+fn load_or_create_signing_key(
+    path: &Path,
+    auto_generate: bool,
+    label: &str,
+) -> Result<crypto::NodeSigningKey, String> {
+    if path.exists() {
+        load_signing_key(path)
+    } else if auto_generate {
+        let signing_key = crypto::generate_signing_key();
+        persist_signing_key(path, &signing_key)?;
+        Ok(signing_key)
+    } else {
+        Err(format!(
+            "{label} is required but {} does not exist",
+            path.display()
+        ))
+    }
+}
+
+fn file_modified_timestamp_secs(path: &Path) -> Result<i64, String> {
+    let modified = fs::metadata(path)
+        .map_err(|e| format!("Failed to read metadata for {}: {e}", path.display()))?
+        .modified()
+        .map_err(|e| format!("Failed to read modified time for {}: {e}", path.display()))?;
+    let duration = modified
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("Invalid modified time for {}: {e}", path.display()))?;
+    i64::try_from(duration.as_secs())
+        .map_err(|_| format!("Modified time overflow for {}", path.display()))
 }
 
 fn ensure_dir(path: &Path, mode: u32) -> Result<(), String> {
@@ -161,12 +212,16 @@ mod tests {
                 base_invoice_expiry_secs: 300,
                 success_hold_expiry_secs: 300,
                 min_final_cltv_expiry: 18,
+                sync_interval_ms: 1_000,
+                lnd_rest: None,
             },
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: temp_dir.join("node.db"),
                 identity_dir: temp_dir.join("identity"),
                 identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+                nostr_publication_seed_path: temp_dir
+                    .join("identity/nostr-publication.secp256k1.seed"),
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 tor_dir: temp_dir.join("tor"),
@@ -176,6 +231,11 @@ mod tests {
         let identity = NodeIdentity::load_or_create(&config).unwrap();
         let reloaded = NodeIdentity::load_or_create(&config).unwrap();
         assert_eq!(identity.node_id(), reloaded.node_id());
+        assert_eq!(
+            identity.nostr_publication_key_hex(),
+            reloaded.nostr_publication_key_hex()
+        );
+        assert_ne!(identity.node_id(), identity.nostr_publication_key_hex());
 
         let _ = std::fs::remove_dir_all(PathBuf::from(temp_dir));
     }

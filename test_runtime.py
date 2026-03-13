@@ -6,7 +6,6 @@ import aiohttp
 
 from test_support import (
     FrogletAsyncTestCase,
-    VALID_CASHU_TOKEN,
     VALID_WASM_HEX,
     build_wasm_request,
     generate_schnorr_signing_key,
@@ -20,6 +19,14 @@ def runtime_auth_headers(node) -> dict[str, str]:
     token_path = node.data_dir / "runtime" / "auth.token"
     token = token_path.read_text().strip()
     return {"Authorization": f"Bearer {token}"}
+
+
+def runtime_requester_fields(secret_key: bytes, success_payment_hash: str) -> dict[str, str]:
+    return {
+        "requester_id": schnorr_pubkey_hex(secret_key),
+        "requester_seed_hex": secret_key.hex(),
+        "success_payment_hash": success_payment_hash,
+    }
 
 
 class RuntimeApiTests(FrogletAsyncTestCase):
@@ -56,19 +63,191 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertEqual(len(snapshot["offers"]), 2)
         self.assertTrue(all(verify_signed_artifact(offer) for offer in snapshot["offers"]))
 
-    async def test_runtime_services_buy_waits_and_reuses_idempotent_deal(self) -> None:
+    async def test_all_privileged_runtime_routes_require_local_auth(self) -> None:
         node = await self.start_node(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PAYMENT_BACKEND": "cashu",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
             }
         )
         headers = runtime_auth_headers(node)
+        requester_key = generate_schnorr_signing_key()
+        request = {
+            "offer_id": "execute.wasm",
+            **build_wasm_request(VALID_WASM_HEX),
+            "idempotency_key": "runtime-auth-lightning-deal",
+            **runtime_requester_fields(
+                requester_key, sha256_hex(b"runtime-auth-success")
+            ),
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/runtime/services/buy"),
+                headers=headers,
+                json=request,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                authorized = await resp.json()
+
+            deal_id = authorized["deal"]["deal_id"]
+            session_id = authorized["payment_intent"]["session_id"]
+
+            routes = [
+                ("get", "/v1/runtime/wallet/balance", None),
+                ("post", "/v1/runtime/provider/start", None),
+                ("post", "/v1/runtime/services/publish", None),
+                ("post", "/v1/runtime/services/buy", request),
+                (
+                    "post",
+                    "/v1/runtime/discovery/curated-lists/issue",
+                    {
+                        "expires_at": 4_102_444_800,
+                        "entries": [
+                            {
+                                "provider_id": authorized["deal"]["deal"]["payload"][
+                                    "provider_id"
+                                ],
+                                "descriptor_hash": authorized["quote"]["hash"],
+                            }
+                        ],
+                    },
+                ),
+                ("get", "/v1/runtime/nostr/publications/provider", None),
+                ("get", f"/v1/runtime/deals/{deal_id}/payment-intent", None),
+                ("get", f"/v1/runtime/archive/deal/{deal_id}", None),
+                ("get", f"/v1/runtime/nostr/publications/deals/{deal_id}/receipt", None),
+                (
+                    "post",
+                    f"/v1/runtime/lightning/invoice-bundles/{session_id}/state",
+                    {"base_state": "open", "success_state": "open"},
+                ),
+            ]
+
+            for method, path, payload in routes:
+                async with getattr(session, method)(
+                    node.url(path),
+                    json=payload,
+                ) as resp:
+                    self.assertEqual(resp.status, 401, path)
+
+                async with getattr(session, method)(
+                    node.url(path),
+                    headers={"Authorization": "Bearer wrong-token"},
+                    json=payload,
+                ) as resp:
+                    self.assertEqual(resp.status, 401, path)
+
+    async def test_runtime_nostr_publication_surfaces_build_signed_summary_events(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        headers = runtime_auth_headers(node)
+        success_preimage = "aa" * 32
+        requester_key = generate_schnorr_signing_key()
+        request = {
+            "offer_id": "execute.wasm",
+            **build_wasm_request(VALID_WASM_HEX),
+            "idempotency_key": "runtime-nostr-summary-1",
+            **runtime_requester_fields(
+                requester_key, sha256_hex(bytes.fromhex(success_preimage))
+            ),
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(node.url("/v1/descriptor")) as resp:
+                self.assertEqual(resp.status, 200)
+                descriptor = await resp.json()
+
+            async with session.get(
+                node.url("/v1/runtime/nostr/publications/provider"),
+                headers=headers,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                provider_publications = await resp.json()
+
+            async with session.post(
+                node.url("/v1/nostr/events/verify"),
+                json={"event": provider_publications["descriptor_summary"]},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                descriptor_verification = await resp.json()
+
+            async with session.post(
+                node.url("/v1/runtime/services/buy"),
+                headers=headers,
+                json=request,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                response = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{response['payment_intent']['session_id']}/state"
+                ),
+                headers=headers,
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            result_ready = await self.wait_for_deal_status(
+                node, response["deal"]["deal_id"], {"result_ready"}
+            )
+
+            async with session.post(
+                node.url(f"/v1/deals/{response['deal']['deal_id']}/release-preimage"),
+                json={
+                    "success_preimage": success_preimage,
+                    "expected_result_hash": result_ready["result_hash"],
+                },
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            async with session.get(
+                node.url(
+                    f"/v1/runtime/nostr/publications/deals/{response['deal']['deal_id']}/receipt"
+                ),
+                headers=headers,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                receipt_publication = await resp.json()
+
+            async with session.post(
+                node.url("/v1/nostr/events/verify"),
+                json={"event": receipt_publication["receipt_summary"]},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                receipt_verification = await resp.json()
+
+        publication_identity = descriptor["payload"]["linked_identities"][0]["identity"]
+        self.assertEqual(
+            provider_publications["descriptor_summary"]["pubkey"],
+            publication_identity,
+        )
+        self.assertNotEqual(publication_identity, descriptor["signer"])
+        self.assertTrue(descriptor_verification["valid"])
+        self.assertGreaterEqual(len(provider_publications["offer_summaries"]), 1)
+        self.assertTrue(receipt_verification["valid"])
+        self.assertEqual(receipt_publication["receipt_summary"]["kind"], 1390)
+        self.assertEqual(receipt_publication["receipt_summary"]["pubkey"], publication_identity)
+
+    async def test_runtime_services_buy_waits_and_reuses_idempotent_deal(self) -> None:
+        node = await self.start_node(
+            extra_env={"FROGLET_PRICE_EXEC_WASM": "0"}
+        )
+        headers = runtime_auth_headers(node)
+        requester_key = generate_schnorr_signing_key()
         request = {
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-service-buy-1",
-            "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
+            **runtime_requester_fields(
+                requester_key, sha256_hex(b"runtime-service-buy-1")
+            ),
             "wait_for_receipt": True,
         }
 
@@ -88,6 +267,9 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                     "offer_id": "execute.wasm",
                     **build_wasm_request(VALID_WASM_HEX),
                     "idempotency_key": request["idempotency_key"],
+                    **runtime_requester_fields(
+                        requester_key, request["success_payment_hash"]
+                    ),
                     "wait_for_receipt": True,
                 },
             ) as resp:
@@ -113,12 +295,14 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             }
         )
         headers = runtime_auth_headers(node)
+        requester_key = generate_schnorr_signing_key()
         request = {
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-service-buy-lightning-1",
-            "requester_id": schnorr_pubkey_hex(generate_schnorr_signing_key()),
-            "success_payment_hash": sha256_hex(b"runtime-lightning-success"),
+            **runtime_requester_fields(
+                requester_key, sha256_hex(b"runtime-lightning-success")
+            ),
             "wait_for_receipt": True,
         }
 
@@ -134,6 +318,117 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertFalse(response["terminal"])
         self.assertEqual(response["deal"]["status"], "payment_pending")
         self.assertTrue(verify_signed_artifact(response["quote"]))
+        self.assertEqual(
+            response["payment_intent_path"],
+            f"/v1/runtime/deals/{response['deal']['deal_id']}/payment-intent",
+        )
+        intent = response["payment_intent"]
+        self.assertEqual(intent["backend"], "lightning")
+        self.assertEqual(intent["deal_id"], response["deal"]["deal_id"])
+        self.assertEqual(intent["deal_status"], "payment_pending")
+        self.assertFalse(intent["admission_ready"])
+        self.assertFalse(intent["result_ready"])
+        self.assertFalse(intent["can_release_preimage"])
+        self.assertIsNone(intent.get("release_action"))
+        self.assertEqual(len(intent["payment_requests"]), 1)
+        self.assertEqual(intent["payment_requests"][0]["role"], "success_fee_hold")
+        self.assertEqual(
+            intent["payment_requests"][0]["payment_hash"],
+            request["success_payment_hash"],
+        )
+        self.assertTrue(
+            intent["payment_requests"][0]["invoice"].startswith("lnmock-")
+        )
+
+    async def test_runtime_payment_intent_tracks_lightning_release_flow(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        headers = runtime_auth_headers(node)
+        success_preimage = "9b" * 32
+        requester_key = generate_schnorr_signing_key()
+        request = {
+            "offer_id": "execute.wasm",
+            **build_wasm_request(VALID_WASM_HEX),
+            "idempotency_key": "runtime-service-buy-lightning-2",
+            **runtime_requester_fields(
+                requester_key, sha256_hex(bytes.fromhex(success_preimage))
+            ),
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/runtime/services/buy"),
+                headers=headers,
+                json=request,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                initial = await resp.json()
+
+            session_id = initial["payment_intent"]["session_id"]
+            deal_id = initial["deal"]["deal_id"]
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{session_id}/state"
+                ),
+                headers=headers,
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            result_ready = await self.wait_for_deal_status(
+                node, deal_id, {"result_ready"}
+            )
+
+            async with session.get(
+                node.url(f"/v1/runtime/deals/{deal_id}/payment-intent"),
+                headers=headers,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                current = await resp.json()
+
+            intent = current["payment_intent"]
+            self.assertEqual(intent["deal_status"], "result_ready")
+            self.assertTrue(intent["admission_ready"])
+            self.assertTrue(intent["result_ready"])
+            self.assertTrue(intent["can_release_preimage"])
+            self.assertEqual(intent["payment_requests"][0]["state"], "accepted")
+            self.assertEqual(
+                intent["release_action"]["expected_result_hash"],
+                result_ready["result_hash"],
+            )
+            self.assertEqual(
+                intent["release_action"]["endpoint_path"],
+                f"/v1/deals/{deal_id}/release-preimage",
+            )
+
+            async with session.post(
+                node.url(intent["release_action"]["endpoint_path"]),
+                json={
+                    "success_preimage": success_preimage,
+                    "expected_result_hash": intent["release_action"]["expected_result_hash"],
+                },
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                terminal = await resp.json()
+
+            async with session.get(
+                node.url(f"/v1/runtime/deals/{deal_id}/payment-intent"),
+                headers=headers,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                final = await resp.json()
+
+        self.assertEqual(terminal["status"], "succeeded")
+        self.assertEqual(final["payment_intent"]["deal_status"], "succeeded")
+        self.assertFalse(final["payment_intent"]["can_release_preimage"])
+        self.assertIsNone(final["payment_intent"].get("release_action"))
+        self.assertEqual(final["payment_intent"]["payment_requests"][0]["state"], "settled")
 
     async def test_runtime_archive_exports_lightning_deal_material(self) -> None:
         node = await self.start_node(
@@ -143,12 +438,15 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             }
         )
         headers = runtime_auth_headers(node)
+        success_preimage = "78" * 32
+        requester_key = generate_schnorr_signing_key()
         request = {
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-archive-lightning-deal-1",
-            "requester_id": schnorr_pubkey_hex(generate_schnorr_signing_key()),
-            "success_payment_hash": sha256_hex(b"runtime-archive-lightning-success"),
+            **runtime_requester_fields(
+                requester_key, sha256_hex(bytes.fromhex(success_preimage))
+            ),
         }
 
         async with aiohttp.ClientSession() as session:
@@ -161,21 +459,39 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 response = await resp.json()
 
             deal_id = response["deal"]["deal_id"]
-
-            async with session.get(node.url(f"/v1/deals/{deal_id}/invoice-bundle")) as resp:
-                self.assertEqual(resp.status, 200)
-                bundle = await resp.json()
+            payment_intent = response["payment_intent"]
 
             async with session.post(
                 node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                    f"/v1/runtime/lightning/invoice-bundles/{payment_intent['session_id']}/state"
                 ),
                 headers=headers,
                 json={"base_state": "settled", "success_state": "accepted"},
             ) as resp:
                 self.assertEqual(resp.status, 200)
 
-            await self.wait_for_deal(node, deal_id)
+            result_ready = await self.wait_for_deal_status(
+                node, deal_id, {"result_ready"}
+            )
+
+            async with session.get(
+                node.url(f"/v1/runtime/deals/{deal_id}/payment-intent"),
+                headers=headers,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                current_intent = await resp.json()
+
+            async with session.post(
+                node.url(current_intent["payment_intent"]["release_action"]["endpoint_path"]),
+                json={
+                    "success_preimage": success_preimage,
+                    "expected_result_hash": current_intent["payment_intent"]["release_action"][
+                        "expected_result_hash"
+                    ],
+                },
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                terminal = await resp.json()
 
             async with session.get(
                 node.url(f"/v1/runtime/archive/deal/{deal_id}"),
@@ -184,6 +500,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 self.assertEqual(resp.status, 200)
                 archive = await resp.json()
 
+        self.assertEqual(terminal["status"], "succeeded")
         self.assertEqual(archive["schema_version"], "froglet/v1")
         self.assertEqual(archive["export_type"], "runtime_archive_bundle")
         self.assertEqual(archive["subject_kind"], "deal")
@@ -198,7 +515,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         )
         self.assertEqual(len(archive["lightning_invoice_bundles"]), 1)
         self.assertEqual(
-            archive["lightning_invoice_bundles"][0]["session_id"], bundle["session_id"]
+            archive["lightning_invoice_bundles"][0]["session_id"], payment_intent["session_id"]
         )
         self.assertEqual(
             archive["lightning_invoice_bundles"][0]["success_state"], "settled"

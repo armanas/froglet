@@ -9,6 +9,7 @@ use serde_json::Value;
 pub const DEAL_STATUS_ACCEPTED: &str = "accepted";
 pub const DEAL_STATUS_PAYMENT_PENDING: &str = "payment_pending";
 pub const DEAL_STATUS_RUNNING: &str = "running";
+pub const DEAL_STATUS_RESULT_READY: &str = "result_ready";
 pub const DEAL_STATUS_SUCCEEDED: &str = "succeeded";
 pub const DEAL_STATUS_FAILED: &str = "failed";
 pub const DEAL_STATUS_REJECTED: &str = "rejected";
@@ -113,6 +114,9 @@ pub struct InsertDealOutcome {
 
 pub fn insert_quote(conn: &Connection, quote: &SignedArtifact<QuotePayload>) -> Result<(), String> {
     let quote_json = serde_json::to_string(quote).map_err(|e| e.to_string())?;
+    let quoted_total_sats = (quote.payload.settlement_terms.base_fee_msat
+        + quote.payload.settlement_terms.success_fee_msat)
+        / 1_000;
     conn.execute(
         "INSERT INTO quotes (
             quote_id,
@@ -126,13 +130,13 @@ pub fn insert_quote(conn: &Connection, quote: &SignedArtifact<QuotePayload>) -> 
             created_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
-            quote.payload.quote_id,
+            &quote.hash,
             quote.hash,
-            quote.payload.offer_id,
-            quote.payload.service_id,
+            quote.payload.offer_hash,
+            quote.payload.workload_kind,
             quote.payload.workload_hash,
             quote.payload.expires_at,
-            quote.payload.price_sats as i64,
+            quoted_total_sats as i64,
             quote_json,
             quote.created_at
         ],
@@ -225,10 +229,10 @@ pub fn insert_or_get_deal(
         params![
             &deal_id,
             idempotency_key.as_deref(),
-            &quote.payload.quote_id,
             &quote.hash,
-            &artifact.payload.offer_id,
-            &artifact.payload.service_id,
+            &quote.hash,
+            &quote.payload.offer_hash,
+            &quote.payload.workload_kind,
             &artifact.payload.workload_hash,
             &spec_json,
             &quote_json,
@@ -469,9 +473,94 @@ pub fn complete_deal_success(
     Ok(())
 }
 
-pub fn reject_deal_admission(
+pub fn complete_deal_success_if_status(
     conn: &Connection,
     deal_id: &str,
+    expected_status: &str,
+    result: &Value,
+    receipt: &SignedArtifact<ReceiptPayload>,
+    result_evidence_hash: Option<&str>,
+    receipt_artifact_hash: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
+    let result_hash =
+        crypto::sha256_hex(canonical_json::to_vec(result).map_err(|e| e.to_string())?);
+    let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2,
+                 result_json = ?3,
+                 result_hash = ?4,
+                 error = NULL,
+                 receipt_artifact_json = ?5,
+                 result_evidence_hash = COALESCE(?6, result_evidence_hash),
+                 failure_evidence_hash = NULL,
+                 receipt_artifact_hash = COALESCE(?7, receipt_artifact_hash),
+                 updated_at = ?8
+             WHERE deal_id = ?1 AND status = ?9",
+            params![
+                deal_id,
+                DEAL_STATUS_SUCCEEDED,
+                result_json,
+                result_hash,
+                receipt_json,
+                result_evidence_hash,
+                receipt_artifact_hash,
+                now,
+                expected_status,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
+pub fn stage_deal_result_ready(
+    conn: &Connection,
+    deal_id: &str,
+    result: &Value,
+    result_evidence_hash: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
+    let result_hash =
+        crypto::sha256_hex(canonical_json::to_vec(result).map_err(|e| e.to_string())?);
+
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2,
+                 result_json = ?3,
+                 result_hash = ?4,
+                 error = NULL,
+                 receipt_artifact_json = NULL,
+                 result_evidence_hash = COALESCE(?5, result_evidence_hash),
+                 failure_evidence_hash = NULL,
+                 receipt_artifact_hash = NULL,
+                 updated_at = ?6
+             WHERE deal_id = ?1 AND status = ?7",
+            params![
+                deal_id,
+                DEAL_STATUS_RESULT_READY,
+                result_json,
+                result_hash,
+                result_evidence_hash,
+                now,
+                DEAL_STATUS_RUNNING,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
+pub fn reject_deal_if_status(
+    conn: &Connection,
+    deal_id: &str,
+    expected_status: &str,
     error: &str,
     receipt: &SignedArtifact<ReceiptPayload>,
     failure_evidence_hash: Option<&str>,
@@ -499,12 +588,33 @@ pub fn reject_deal_admission(
                 failure_evidence_hash,
                 receipt_artifact_hash,
                 now,
-                DEAL_STATUS_ACCEPTED,
+                expected_status,
             ],
         )
         .map_err(|e| e.to_string())?;
 
     Ok(updated > 0)
+}
+
+pub fn reject_deal_admission(
+    conn: &Connection,
+    deal_id: &str,
+    error: &str,
+    receipt: &SignedArtifact<ReceiptPayload>,
+    failure_evidence_hash: Option<&str>,
+    receipt_artifact_hash: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    reject_deal_if_status(
+        conn,
+        deal_id,
+        DEAL_STATUS_ACCEPTED,
+        error,
+        receipt,
+        failure_evidence_hash,
+        receipt_artifact_hash,
+        now,
+    )
 }
 
 pub fn complete_deal_failure(
@@ -543,18 +653,55 @@ pub fn complete_deal_failure(
     Ok(())
 }
 
+pub fn complete_deal_failure_if_status(
+    conn: &Connection,
+    deal_id: &str,
+    expected_status: &str,
+    error: &str,
+    receipt: &SignedArtifact<ReceiptPayload>,
+    failure_evidence_hash: Option<&str>,
+    receipt_artifact_hash: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2,
+                 error = ?3,
+                 receipt_artifact_json = ?4,
+                 failure_evidence_hash = COALESCE(?5, failure_evidence_hash),
+                 receipt_artifact_hash = COALESCE(?6, receipt_artifact_hash),
+                 updated_at = ?7
+             WHERE deal_id = ?1 AND status = ?8",
+            params![
+                deal_id,
+                DEAL_STATUS_FAILED,
+                error,
+                receipt_json,
+                failure_evidence_hash,
+                receipt_artifact_hash,
+                now,
+                expected_status,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
 pub fn fail_incomplete_deals(conn: &Connection, message: &str, now: i64) -> Result<(), String> {
     conn.execute(
         "UPDATE deals
          SET status = ?1,
              error = ?2,
              updated_at = ?3
-         WHERE status IN (?4, ?5, ?6)",
+         WHERE status IN (?4, ?5)",
         params![
             DEAL_STATUS_FAILED,
             message,
             now,
-            DEAL_STATUS_PAYMENT_PENDING,
             DEAL_STATUS_ACCEPTED,
             DEAL_STATUS_RUNNING
         ],
@@ -589,7 +736,52 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
                 created_at,
                 updated_at
              FROM deals
-             WHERE status IN (?1, ?2, ?3)
+             WHERE status IN (?1, ?2)
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(
+            params![DEAL_STATUS_ACCEPTED, DEAL_STATUS_RUNNING],
+            decode_deal_row,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut deals = Vec::new();
+    for row in rows {
+        deals.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(deals)
+}
+
+pub fn list_lightning_watch_deals(conn: &Connection) -> Result<Vec<StoredDeal>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                deal_id,
+                idempotency_key,
+                quote_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
+                spec_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
+                deal_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
+                status,
+                result_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
+                result_hash,
+                error,
+                payment_method,
+                payment_token_hash,
+                payment_amount_sats,
+                receipt_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
+                created_at,
+                updated_at
+             FROM deals
+             WHERE payment_method = ?1 AND status IN (?2, ?3)
              ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -597,9 +789,9 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
     let rows = stmt
         .query_map(
             params![
+                "lightning",
                 DEAL_STATUS_PAYMENT_PENDING,
-                DEAL_STATUS_ACCEPTED,
-                DEAL_STATUS_RUNNING
+                DEAL_STATUS_RESULT_READY
             ],
             decode_deal_row,
         )

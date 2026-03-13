@@ -11,22 +11,30 @@ use froglet::{
     payments::{self, ProvidedPayment},
     pricing::ServiceId,
     protocol::{
-        self, DealPayload, InvoiceBundleLegState, PaymentLock, QuotePayload, verify_artifact,
+        self, DealPayload, ExecutionLimits, InvoiceBundleLegState, QuotePayload, verify_artifact,
     },
     settlement,
     state::{AppState, MarketplaceStatus, TransportStatus},
 };
 use rusqlite::params;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::runtime::Runtime;
+
+static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn in_memory_state() -> AppState {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_dir =
-        std::env::temp_dir().join(format!("froglet-test-{}-{unique}", std::process::id()));
+    let counter = TEST_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "froglet-test-{}-{unique}-{counter}",
+        std::process::id()
+    ));
     let db_path = temp_dir.join("node.db");
     std::fs::create_dir_all(&temp_dir).expect("temp dir");
 
@@ -60,12 +68,15 @@ fn in_memory_state() -> AppState {
             base_invoice_expiry_secs: 300,
             success_hold_expiry_secs: 300,
             min_final_cltv_expiry: 18,
+            sync_interval_ms: 1_000,
+            lnd_rest: None,
         },
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
             identity_dir: temp_dir.join("identity"),
             identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
             runtime_dir: temp_dir.join("runtime"),
             runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
             tor_dir: temp_dir.join("tor"),
@@ -283,6 +294,28 @@ fn settlement_driver_reports_capabilities_consistently() {
         vec!["invoice_bundles", "hold_invoices", "mock_mode"]
     );
 
+    state.config.lightning.mode = LightningMode::LndRest;
+    state.config.lightning.lnd_rest = Some(froglet::config::LightningLndRestConfig {
+        rest_url: "http://127.0.0.1:8080".to_string(),
+        tls_cert_path: None,
+        macaroon_path: std::env::temp_dir().join("froglet-test.macaroon"),
+        request_timeout_secs: 5,
+    });
+
+    let lnd_descriptor = settlement::driver_descriptor(&state);
+    assert_eq!(lnd_descriptor.backend, "lightning");
+    assert_eq!(lnd_descriptor.mode, settlement::LIGHTNING_LND_REST_MODE);
+    assert_eq!(lnd_descriptor.accepted_payment_methods, vec!["lightning"]);
+    assert_eq!(
+        lnd_descriptor.capabilities,
+        vec![
+            "invoice_bundles",
+            "hold_invoices",
+            "lnd_rest",
+            "node_getinfo",
+        ]
+    );
+
     state.config.payment_backend = PaymentBackend::None;
     let none_descriptor = settlement::driver_descriptor(&state);
     assert_eq!(none_descriptor.backend, "none");
@@ -339,10 +372,11 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
                 requester_id: "requester-1".to_string(),
                 quote_hash: "quote-hash-1".to_string(),
                 deal_hash: "deal-hash-1".to_string(),
+                quote_expires_at: None,
                 success_payment_hash: "11".repeat(32),
                 base_fee_msat: 1_500,
                 success_fee_msat: 9_000,
-                created_at: 1_700_000_000,
+                created_at: settlement::current_unix_timestamp(),
             },
         ))
         .expect("lightning bundle");
@@ -350,16 +384,16 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
     assert_eq!(created.session_id, "ln-session-1");
     assert_eq!(created.base_state, InvoiceBundleLegState::Open);
     assert_eq!(created.success_state, InvoiceBundleLegState::Open);
-    assert_eq!(created.bundle.kind, "invoice_bundle");
+    assert_eq!(created.bundle.artifact_type, "invoice_bundle");
     assert!(verify_artifact(&created.bundle));
     assert_eq!(created.bundle.payload.destination_identity.len(), 66);
-    assert_eq!(created.bundle.payload.base_invoice.amount_msat, 1_500);
+    assert_eq!(created.bundle.payload.base_fee.amount_msat, 1_500);
     assert_eq!(
-        created.bundle.payload.success_hold_invoice.amount_msat,
+        created.bundle.payload.success_fee.amount_msat,
         9_000
     );
     assert_eq!(
-        created.bundle.payload.success_hold_invoice.payment_hash,
+        created.bundle.payload.success_fee.payment_hash,
         "11".repeat(32)
     );
 
@@ -390,48 +424,55 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
 
 #[test]
 fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
+    let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
     state.config.payment_backend = PaymentBackend::Lightning;
 
     let now = 1_700_000_000;
-    let settlement_terms = settlement::quoted_lightning_settlement_terms(&state, 9)
+    let settlement_terms = rt
+        .block_on(settlement::quoted_lightning_settlement_terms(&state, 9))
+        .expect("settlement terms")
         .expect("lightning settlement terms");
+    let requester_signing_key = froglet::crypto::generate_signing_key();
+    let requester_id = froglet::crypto::public_key_hex(&requester_signing_key);
     let quote = protocol::sign_artifact(
         state.identity.node_id(),
         |message| state.identity.sign_message_hex(message),
         protocol::ARTIFACT_KIND_QUOTE,
         now,
         QuotePayload {
-            quote_id: "quote-1".to_string(),
-            offer_id: "execute.wasm".to_string(),
-            service_id: "execute.wasm".to_string(),
+            provider_id: state.identity.node_id().to_string(),
+            requester_id: requester_id.clone(),
+            descriptor_hash: "descriptor-hash-1".to_string(),
+            offer_hash: "offer-hash-1".to_string(),
+            expires_at: settlement::lightning_quote_expires_at(&state, now, 9),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
-            price_sats: 9,
-            payment_method: Some("lightning".to_string()),
-            settlement_terms: Some(settlement_terms.clone()),
-            expires_at: settlement::lightning_quote_expires_at(&state, now, 9),
+            settlement_terms: settlement_terms.clone(),
+            execution_limits: ExecutionLimits {
+                max_input_bytes: 128 * 1024,
+                max_runtime_ms: 30_000,
+                max_memory_bytes: 8 * 1024 * 1024,
+                max_output_bytes: 128 * 1024,
+                fuel_limit: 50_000_000,
+            },
         },
     )
     .expect("quote");
     let deal = protocol::sign_artifact(
-        state.identity.node_id(),
-        |message| state.identity.sign_message_hex(message),
+        &requester_id,
+        |message| froglet::crypto::sign_message_hex(&requester_signing_key, message),
         protocol::ARTIFACT_KIND_DEAL,
         now,
         DealPayload {
-            deal_id: "deal-1".to_string(),
-            quote_id: quote.payload.quote_id.clone(),
-            offer_id: quote.payload.offer_id.clone(),
-            service_id: quote.payload.service_id.clone(),
+            requester_id: requester_id.clone(),
+            provider_id: quote.payload.provider_id.clone(),
+            quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
-            payment_lock: Some(PaymentLock {
-                kind: "lightning".to_string(),
-                token_hash: "11".repeat(32),
-                amount_sats: 9,
-            }),
-            idempotency_key: None,
-            deadline: quote.payload.expires_at,
+            success_payment_hash: "11".repeat(32),
+            admission_deadline: quote.payload.expires_at,
+            completion_deadline: quote.payload.expires_at + 30,
+            acceptance_deadline: quote.payload.expires_at + 60,
         },
     )
     .expect("deal");
@@ -440,9 +481,10 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
         &state,
         settlement::BuildLightningInvoiceBundleRequest {
             session_id: Some("valid-session".to_string()),
-            requester_id: "22".repeat(32),
+            requester_id: requester_id.clone(),
             quote_hash: quote.hash.clone(),
             deal_hash: deal.hash.clone(),
+            quote_expires_at: Some(quote.payload.expires_at),
             success_payment_hash: "11".repeat(32),
             base_fee_msat: settlement_terms.base_fee_msat,
             success_fee_msat: settlement_terms.success_fee_msat,
@@ -455,7 +497,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
         &valid_bundle.bundle,
         &quote,
         &deal,
-        Some(&"22".repeat(32)),
+        Some(&requester_id),
     );
     assert!(report.valid, "unexpected issues: {:?}", report.issues);
 
@@ -463,9 +505,10 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
         &state,
         settlement::BuildLightningInvoiceBundleRequest {
             session_id: Some("invalid-session".to_string()),
-            requester_id: "22".repeat(32),
+            requester_id: requester_id.clone(),
             quote_hash: quote.hash.clone(),
             deal_hash: deal.hash.clone(),
+            quote_expires_at: Some(quote.payload.expires_at),
             success_payment_hash: "33".repeat(32),
             base_fee_msat: settlement_terms.base_fee_msat,
             success_fee_msat: settlement_terms.success_fee_msat,
@@ -478,7 +521,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
         &invalid_bundle.bundle,
         &quote,
         &deal,
-        Some(&"22".repeat(32)),
+        Some(&requester_id),
     );
     assert!(!invalid_report.valid);
     assert!(

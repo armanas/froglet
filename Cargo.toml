@@ -14,6 +14,7 @@ hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # Serialization & Deserialization
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +33,8 @@ k256 = { version = "0.13", features = ["schnorr"] }
 rand = "0.8"
 hex = "0.4"
 sha2 = "0.10"
+base64 = "0.22"
+lightning-invoice = "0.34"
 
 # Security Sandbox (WASM)
 wasmtime = "20.0"
@@ -51,4 +54,5 @@ cashu = "0.15.1"
 once_cell = "1"
 
 [dev-dependencies]
+bitcoin = "0.32.8"
 wat = "1"

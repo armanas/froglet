@@ -5,6 +5,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import ssl
 import subprocess
 import tempfile
 import time
@@ -126,6 +127,431 @@ class MarketplaceServer(ManagedProcess):
 
     def url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+
+@dataclass
+class RegtestLndNode:
+    name: str
+    alias: str
+    rest_port: int
+    rpc_port: int
+    data_dir: Path
+
+    @property
+    def tls_cert_path(self) -> Path:
+        return self.data_dir / "tls.cert"
+
+    @property
+    def admin_macaroon_path(self) -> Path:
+        return self.data_dir / "data" / "chain" / "bitcoin" / "regtest" / "admin.macaroon"
+
+
+class LndRegtestCluster:
+    def __init__(
+        self,
+        *,
+        temp_root: Path,
+        network_name: str,
+        bitcoind_name: str,
+        nodes: dict[str, RegtestLndNode],
+    ) -> None:
+        self.temp_root = temp_root
+        self.network_name = network_name
+        self.bitcoind_name = bitcoind_name
+        self.nodes = nodes
+        self._payment_processes: list[subprocess.Popen[str]] = []
+
+    async def stop(self) -> None:
+        for proc in self._payment_processes:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    await asyncio.to_thread(proc.wait, 5)
+                except Exception:
+                    proc.kill()
+
+        for node in self.nodes.values():
+            await self._docker("rm", "-f", node.name, check=False)
+        await self._docker("rm", "-f", self.bitcoind_name, check=False)
+        await self._docker("network", "rm", self.network_name, check=False)
+        shutil.rmtree(self.temp_root, ignore_errors=True)
+
+    def lightning_env(self, node_key: str) -> dict[str, str]:
+        node = self.nodes[node_key]
+        return {
+            "FROGLET_PAYMENT_BACKEND": "lightning",
+            "FROGLET_LIGHTNING_MODE": "lnd_rest",
+            "FROGLET_LIGHTNING_REST_URL": f"https://127.0.0.1:{node.rest_port}",
+            "FROGLET_LIGHTNING_TLS_CERT_PATH": str(node.tls_cert_path),
+            "FROGLET_LIGHTNING_MACAROON_PATH": str(node.admin_macaroon_path),
+            "FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS": "10",
+            "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+        }
+
+    async def pay_invoice(self, payer_key: str, invoice: str, *, timeout: str = "60s") -> str:
+        return await self._lncli(
+            payer_key,
+            "payinvoice",
+            "--force",
+            "--timeout",
+            timeout,
+            invoice,
+        )
+
+    def pay_invoice_async(
+        self, payer_key: str, invoice: str, *, timeout: str = "60s"
+    ) -> subprocess.Popen[str]:
+        node = self.nodes[payer_key]
+        proc = subprocess.Popen(
+            [
+                "docker",
+                "exec",
+                node.name,
+                "lncli",
+                "--network",
+                "regtest",
+                "payinvoice",
+                "--force",
+                "--timeout",
+                timeout,
+                invoice,
+            ],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self._payment_processes.append(proc)
+        return proc
+
+    async def wait_payment_process(
+        self, proc: subprocess.Popen[str], timeout: float = 30.0
+    ) -> tuple[int, str, str]:
+        def communicate() -> tuple[int, str, str]:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return proc.returncode, stdout, stderr
+
+        try:
+            return await asyncio.to_thread(communicate)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise RuntimeError(
+                f"Timed out waiting for lncli payinvoice process: stdout={stdout}\nstderr={stderr}"
+            ) from exc
+
+    async def settle_hold_invoice(self, node_key: str, preimage_hex: str) -> None:
+        await self._lncli(node_key, "settleinvoice", preimage_hex)
+
+    async def cancel_hold_invoice(self, node_key: str, payment_hash_hex: str) -> None:
+        await self._lncli(node_key, "cancelinvoice", payment_hash_hex)
+
+    async def wait_invoice_state(
+        self,
+        node_key: str,
+        payment_hash_hex: str,
+        expected_state: str,
+        timeout: float = 30.0,
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            invoice = await self.lookup_invoice(node_key, payment_hash_hex)
+            if invoice.get("state") == expected_state:
+                return invoice
+            await asyncio.sleep(0.5)
+        raise RuntimeError(
+            f"Timed out waiting for invoice {payment_hash_hex} to reach {expected_state}"
+        )
+
+    async def lookup_invoice(self, node_key: str, payment_hash_hex: str) -> dict:
+        output = await self._lncli(node_key, "lookupinvoice", payment_hash_hex)
+        return json.loads(output)
+
+    async def _run(
+        self,
+        args: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            args,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if check and proc.returncode != 0:
+            raise RuntimeError(
+                f"Command failed ({proc.returncode}): {' '.join(args)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            )
+        return proc
+
+    async def _docker(self, *args: str, check: bool = True) -> str:
+        proc = await self._run(["docker", *args], check=check)
+        return proc.stdout.strip()
+
+    async def _bitcoin_cli(self, *args: str, wallet: Optional[str] = None) -> str:
+        cmd = [
+            "docker",
+            "exec",
+            self.bitcoind_name,
+            "bitcoin-cli",
+            "-regtest",
+            "-rpcuser=user",
+            "-rpcpassword=pass",
+        ]
+        if wallet:
+            cmd.append(f"-rpcwallet={wallet}")
+        cmd.extend(args)
+        proc = await self._run(cmd)
+        return proc.stdout.strip()
+
+    async def _lncli(self, node_key: str, *args: str) -> str:
+        node = self.nodes[node_key]
+        proc = await self._run(
+            ["docker", "exec", node.name, "lncli", "--network", "regtest", *args]
+        )
+        return proc.stdout.strip()
+
+
+async def start_lnd_regtest_cluster() -> LndRegtestCluster:
+    temp_root = Path(tempfile.mkdtemp(prefix="froglet-lnd-regtest-"))
+    network_name = f"froglet-lnd-regtest-{os.getpid()}-{int(time.time() * 1000)}"
+    bitcoind_name = f"{network_name}-bitcoind"
+    nodes = {
+        "alice": RegtestLndNode(
+            name=f"{network_name}-alice",
+            alias="alice",
+            rest_port=reserve_tcp_port(),
+            rpc_port=reserve_tcp_port(),
+            data_dir=temp_root / "alice",
+        ),
+        "bob": RegtestLndNode(
+            name=f"{network_name}-bob",
+            alias="bob",
+            rest_port=reserve_tcp_port(),
+            rpc_port=reserve_tcp_port(),
+            data_dir=temp_root / "bob",
+        ),
+    }
+    for node in nodes.values():
+        node.data_dir.mkdir(parents=True, exist_ok=True)
+
+    cluster = LndRegtestCluster(
+        temp_root=temp_root,
+        network_name=network_name,
+        bitcoind_name=bitcoind_name,
+        nodes=nodes,
+    )
+
+    try:
+        await cluster._docker("network", "create", network_name)
+        await cluster._docker(
+            "run",
+            "-d",
+            "--name",
+            bitcoind_name,
+            "--network",
+            network_name,
+            "-v",
+            f"{temp_root / 'bitcoind'}:/home/bitcoin/.bitcoin",
+            "ruimarinho/bitcoin-core:24",
+            "-regtest=1",
+            "-server=1",
+            "-txindex=1",
+            "-fallbackfee=0.0002",
+            "-rpcbind=0.0.0.0",
+            "-rpcallowip=0.0.0.0/0",
+            "-rpcuser=user",
+            "-rpcpassword=pass",
+            "-zmqpubrawblock=tcp://0.0.0.0:28332",
+            "-zmqpubrawtx=tcp://0.0.0.0:28333",
+        )
+        await _wait_for(
+            lambda: cluster._bitcoin_cli("getblockchaininfo"),
+            timeout=30.0,
+            description="bitcoind RPC",
+        )
+        await cluster._bitcoin_cli("createwallet", "miner")
+
+        for node in nodes.values():
+            await cluster._docker(
+                "run",
+                "-d",
+                "--name",
+                node.name,
+                "--network",
+                network_name,
+                "-p",
+                f"127.0.0.1:{node.rest_port}:8080",
+                "-p",
+                f"127.0.0.1:{node.rpc_port}:10009",
+                "-v",
+                f"{node.data_dir}:/root/.lnd",
+                "lightninglabs/lnd:v0.20.0-beta",
+                "--noseedbackup",
+                "--trickledelay=50",
+                "--bitcoin.active",
+                "--bitcoin.regtest",
+                "--bitcoin.node=bitcoind",
+                f"--bitcoind.rpchost={bitcoind_name}",
+                "--bitcoind.rpcuser=user",
+                "--bitcoind.rpcpass=pass",
+                f"--bitcoind.zmqpubrawblock=tcp://{bitcoind_name}:28332",
+                f"--bitcoind.zmqpubrawtx=tcp://{bitcoind_name}:28333",
+                "--rpclisten=0.0.0.0:10009",
+                "--restlisten=0.0.0.0:8080",
+                "--listen=0.0.0.0:9735",
+                "--tlsextradomain=localhost",
+                "--tlsextraip=127.0.0.1",
+            )
+
+        for node_key in nodes:
+            await _wait_for(
+                lambda node_key=node_key: cluster._lncli(node_key, "getinfo"),
+                timeout=45.0,
+                description=f"{node_key} lncli",
+            )
+            await _wait_for_path(
+                nodes[node_key].admin_macaroon_path,
+                timeout=45.0,
+                description=f"{node_key} admin macaroon",
+            )
+
+        alice_address = json.loads(await cluster._lncli("alice", "newaddress", "p2wkh"))[
+            "address"
+        ]
+        await cluster._bitcoin_cli("generatetoaddress", "110", alice_address, wallet="miner")
+
+        await _wait_for_chain_sync(cluster, "alice", min_height=110)
+        await _wait_for_chain_sync(cluster, "bob", min_height=110)
+
+        bob_info = json.loads(await cluster._lncli("bob", "getinfo"))
+        await _wait_for(
+            lambda: _connect_lnd_peer(cluster, bob_info["identity_pubkey"], nodes["bob"].name),
+            timeout=45.0,
+            description="alice connects to bob",
+        )
+        await _wait_for(
+            lambda: _open_lnd_channel(cluster, bob_info["identity_pubkey"]),
+            timeout=45.0,
+            description="alice opens channel to bob",
+        )
+
+        miner_address = await cluster._bitcoin_cli("getnewaddress", wallet="miner")
+        await cluster._bitcoin_cli("generatetoaddress", "6", miner_address, wallet="miner")
+        await _wait_for_active_channel(cluster, "alice")
+        await _wait_for_active_channel(cluster, "bob")
+        for node_key in nodes:
+            await _wait_for_lnd_rest_ready(cluster, node_key)
+        return cluster
+    except Exception:
+        await cluster.stop()
+        raise
+
+
+async def _wait_for(
+    operation,
+    *,
+    timeout: float,
+    description: str,
+) -> str:
+    deadline = time.monotonic() + timeout
+    last_error: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        try:
+            return await operation()
+        except Exception as exc:  # pragma: no cover - startup race path
+            last_error = exc
+        await asyncio.sleep(0.5)
+    raise RuntimeError(f"Timed out waiting for {description}: {last_error}")
+
+
+async def _wait_for_path(path: Path, *, timeout: float, description: str) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        await asyncio.sleep(0.5)
+    raise RuntimeError(f"Timed out waiting for {description} at {path}")
+
+
+async def _wait_for_chain_sync(
+    cluster: LndRegtestCluster, node_key: str, *, min_height: int, timeout: float = 60.0
+) -> None:
+    async def op() -> str:
+        info = json.loads(await cluster._lncli(node_key, "getinfo"))
+        if info.get("synced_to_chain") and int(info.get("block_height", 0)) >= min_height:
+            return "ok"
+        raise RuntimeError(f"not yet synced: {info}")
+
+    await _wait_for(op, timeout=timeout, description=f"{node_key} chain sync")
+
+
+async def _wait_for_active_channel(
+    cluster: LndRegtestCluster, node_key: str, timeout: float = 60.0
+) -> None:
+    async def op() -> str:
+        channels = json.loads(await cluster._lncli(node_key, "listchannels"))
+        if channels.get("channels") and all(ch.get("active") for ch in channels["channels"]):
+            return "ok"
+        raise RuntimeError(f"channels not active yet: {channels}")
+
+    await _wait_for(op, timeout=timeout, description=f"{node_key} active channel")
+
+
+async def _connect_lnd_peer(
+    cluster: LndRegtestCluster, identity_pubkey: str, host_name: str
+) -> str:
+    try:
+        return await cluster._lncli(
+            "alice",
+            "connect",
+            f"{identity_pubkey}@{host_name}:9735",
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "already connected to peer" in message.lower():
+            return "already connected"
+        raise
+
+
+async def _open_lnd_channel(cluster: LndRegtestCluster, identity_pubkey: str) -> str:
+    try:
+        return await cluster._lncli("alice", "openchannel", identity_pubkey, "1000000")
+    except RuntimeError as exc:
+        message = str(exc)
+        if "server is still in the process of starting" in message.lower():
+            raise
+        if "channel with peer already exists" in message.lower():
+            return "already open"
+        raise
+
+
+async def _wait_for_lnd_rest_ready(
+    cluster: LndRegtestCluster, node_key: str, timeout: float = 45.0
+) -> None:
+    node = cluster.nodes[node_key]
+    macaroon_hex = node.admin_macaroon_path.read_bytes().hex()
+    ssl_context = ssl.create_default_context(cafile=str(node.tls_cert_path))
+
+    async def op() -> str:
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(ssl=ssl_context)
+        ) as session:
+            async with session.get(
+                f"https://127.0.0.1:{node.rest_port}/v1/getinfo",
+                headers={"Grpc-Metadata-macaroon": macaroon_hex},
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    raise RuntimeError(f"unexpected status {resp.status}: {body}")
+                payload = await resp.json()
+                if payload.get("identity_pubkey"):
+                    return "ok"
+                raise RuntimeError(f"missing identity_pubkey in payload: {payload}")
+
+    await _wait_for(op, timeout=timeout, description=f"{node_key} lnd rest")
 
 
 async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> MarketplaceServer:
@@ -368,8 +794,9 @@ def canonical_event_signing_bytes(event: dict) -> bytes:
 def canonical_artifact_signing_bytes(artifact: dict) -> bytes:
     return canonical_json_bytes(
         [
-            artifact["kind"],
-            artifact["actor_id"],
+            artifact["schema_version"],
+            artifact["artifact_type"],
+            artifact["signer"],
             artifact["created_at"],
             artifact["payload_hash"],
             artifact["payload"],
@@ -423,6 +850,127 @@ def workload_hash_from_submission(submission: dict) -> str:
     return sha256_hex(canonical_json_bytes(submission["workload"]))
 
 
+def sign_artifact(
+    artifact_type: str,
+    payload: dict,
+    *,
+    secret_key: bytes = SIGNING_KEY,
+    created_at: Optional[int] = None,
+) -> dict:
+    signer = schnorr_pubkey_hex(secret_key)
+    issued_at = created_at if created_at is not None else int(time.time())
+    payload_hash = sha256_hex(canonical_json_bytes(payload))
+    artifact = {
+        "artifact_type": artifact_type,
+        "schema_version": "froglet/v1",
+        "signer": signer,
+        "created_at": issued_at,
+        "payload_hash": payload_hash,
+        "payload": payload,
+    }
+    signing_bytes = canonical_artifact_signing_bytes(artifact)
+    artifact["hash"] = sha256_hex(signing_bytes)
+    artifact["signature"] = schnorr_sign_message(secret_key, signing_bytes)
+    return artifact
+
+
+def sign_deal_artifact_from_quote(
+    quote: dict,
+    requester_secret_key: bytes,
+    *,
+    success_payment_hash: str,
+    created_at: Optional[int] = None,
+) -> dict:
+    issued_at = created_at if created_at is not None else int(time.time())
+    runtime_ms = int(quote["payload"]["execution_limits"]["max_runtime_ms"])
+    execution_window_secs = max(1, (runtime_ms + 999) // 1000)
+    admission_deadline = int(quote["payload"]["expires_at"])
+    completion_deadline = admission_deadline + execution_window_secs
+    acceptance_deadline = completion_deadline + int(
+        quote["payload"]["settlement_terms"]["max_success_hold_expiry_secs"]
+    )
+    payload = {
+        "requester_id": schnorr_pubkey_hex(requester_secret_key),
+        "provider_id": quote["payload"]["provider_id"],
+        "quote_hash": quote["hash"],
+        "workload_hash": quote["payload"]["workload_hash"],
+        "success_payment_hash": success_payment_hash,
+        "admission_deadline": admission_deadline,
+        "completion_deadline": completion_deadline,
+        "acceptance_deadline": acceptance_deadline,
+    }
+    return sign_artifact(
+        "deal",
+        payload,
+        secret_key=requester_secret_key,
+        created_at=issued_at,
+    )
+
+
+def default_success_payment_hash(label: str) -> str:
+    return sha256_hex(label.encode("utf-8"))
+
+
+async def create_protocol_quote(
+    session: aiohttp.ClientSession,
+    node: FrogletNode,
+    *,
+    offer_id: str,
+    request: dict,
+    requester_secret_key: bytes,
+    max_price_sats: Optional[int] = None,
+) -> dict:
+    payload = {
+        "offer_id": offer_id,
+        "requester_id": schnorr_pubkey_hex(requester_secret_key),
+        **request,
+    }
+    if max_price_sats is not None:
+        payload["max_price_sats"] = max_price_sats
+    async with session.post(node.url("/v1/quotes"), json=payload) as resp:
+        quote = await resp.json()
+    if resp.status != 201:
+        raise AssertionError(f"expected 201 from /v1/quotes, got {resp.status}: {quote}")
+    return quote
+
+
+async def create_protocol_deal(
+    session: aiohttp.ClientSession,
+    node: FrogletNode,
+    *,
+    quote: dict,
+    request: dict,
+    requester_secret_key: bytes,
+    idempotency_key: Optional[str] = None,
+    payment: Optional[dict] = None,
+    success_payment_hash: Optional[str] = None,
+    expected_statuses: tuple[int, ...] = (200, 202),
+) -> dict:
+    deal = sign_deal_artifact_from_quote(
+        quote,
+        requester_secret_key,
+        success_payment_hash=success_payment_hash
+        or default_success_payment_hash(idempotency_key or quote["hash"]),
+    )
+    payload = {
+        "quote": quote,
+        "deal": deal,
+        **request,
+    }
+    if idempotency_key is not None:
+        payload["idempotency_key"] = idempotency_key
+    if payment is not None:
+        payload["payment"] = payment
+
+    async with session.post(node.url("/v1/deals"), json=payload) as resp:
+        created = await resp.json()
+    if resp.status not in expected_statuses:
+        raise AssertionError(
+            f"expected {expected_statuses} from /v1/deals, got {resp.status}: {created}"
+        )
+    return created
+
+
 def read_db_row(db_path: Path, query: str, params: tuple[object, ...]) -> tuple:
     conn = sqlite3.connect(db_path)
     try:
@@ -462,7 +1010,7 @@ def verify_signed_artifact(artifact: dict) -> bool:
         return False
 
     return schnorr_verify_message(
-        artifact["actor_id"],
+        artifact["signer"],
         artifact["signature"],
         signing_bytes,
     )
@@ -508,3 +1056,46 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.2)
 
         raise RuntimeError(f"Timed out waiting for deal {deal_id}")
+
+    async def wait_for_deal_status(
+        self,
+        node: FrogletNode,
+        deal_id: str,
+        statuses: set[str] | frozenset[str],
+        timeout: float = 15.0,
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+
+        async with aiohttp.ClientSession() as session:
+            while time.monotonic() < deadline:
+                async with session.get(node.url(f"/v1/deals/{deal_id}")) as resp:
+                    payload = await resp.json()
+                if payload["status"] in statuses:
+                    return payload
+                await asyncio.sleep(0.2)
+
+        raise RuntimeError(f"Timed out waiting for deal {deal_id} to reach one of {statuses}")
+
+    async def wait_for_deal_status_in_db(
+        self,
+        node: FrogletNode,
+        deal_id: str,
+        statuses: set[str] | frozenset[str],
+        timeout: float = 15.0,
+    ) -> str:
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            row = read_db_row(
+                node.data_dir / "node.db",
+                "SELECT status FROM deals WHERE deal_id = ?",
+                (deal_id,),
+            )
+            status = row[0]
+            if status in statuses:
+                return status
+            await asyncio.sleep(0.2)
+
+        raise RuntimeError(
+            f"Timed out waiting for deal {deal_id} in DB to reach one of {statuses}"
+        )

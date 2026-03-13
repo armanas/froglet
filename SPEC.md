@@ -1,136 +1,128 @@
-# Froglet Economic Core and Bot Runtime Specification
+# Froglet v1 Economic Kernel Specification
 
-Status: draft v0.2 direction
+Status: draft v1 kernel freeze
 
-## 1. Goal
+This document is normative for the irreversible Froglet kernel only.
 
-Froglet is a small economic primitive for AI agents to exchange valuable compute and data across a distributed network.
+It freezes:
 
-Version 1 is intentionally narrow. It optimizes for short-lived, bounded, fixed-price deals backed by Lightning settlement, a very small signed artifact model, and a Wasm-first public execution surface. Optional discovery and transport adapters may exist, but the core must remain small, auditable, and stable.
+- the signed artifact envelope
+- canonical hashing and signing bytes
+- the Descriptor, Offer, Quote, Deal, and Receipt payloads
+- the hash-chain and verification rules between those artifacts
+- the canonical deal, execution, and settlement states
+- the Lightning settlement binding rules that a receipt relies on
+- the canonical `compute.wasm.v1` workload object and `froglet.wasm.run_json.v1` ABI
 
-OpenClaw can be one client of this system, but Froglet is not OpenClaw-specific.
+The following are intentionally moved out of the kernel and are defined in companion docs:
 
-## 2. Design Principles
+- layered product architecture: `ARCHITECTURE.md`
+- transport and discovery adapters: `ADAPTERS.md`
+- bot-facing localhost runtime: `RUNTIME.md`
+- Nostr publication behavior: `NOSTR.md`
+- storage and archival profiles: `STORAGE_PROFILE.md`
 
-- One hard core, many optional edges.
-- Canonical economic state lives in signed Froglet artifacts and local ledgers.
-- Identity, discovery, transport, execution, and settlement are distinct concerns.
-- Version 1 optimizes for safety, auditability, and restart recovery over flexibility.
-- Settlement must be stronger than local replay protection and must be modeled explicitly.
-- The public network execution surface should be as small as possible.
-- Discovery networks are adapters, not the source of truth.
-- The bot runtime may automate flows, but it must not invent economic state that is not representable in the core.
-- Froglet does not claim perfect fair exchange for arbitrary off-chain compute or data delivery. It provides signed deal semantics plus conditional settlement.
+## 1. Scope
 
-## 3. Layered Architecture
+Froglet version 1 is a small economic primitive for short-lived, bounded, fixed-price deals.
 
-### Layer A: Froglet Core
+The kernel defines a signed evidence chain:
 
-The core protocol is defined around five signed artifact types:
+- `Descriptor`
+- `Offer`
+- `Quote`
+- `Deal`
+- `Receipt`
 
-- Descriptor: who the provider is, how it can be reached, which protocol version it speaks, and which subordinate identities and adapters it binds.
-- Offer: what resource is being sold, under what constraints, and with which settlement and transport options.
-- Quote: a short-lived signed commitment to price and terms for a specific workload shape.
-- Deal: an accepted quote plus workload hash, settlement lock reference, deadlines, and requester acceptance parameters.
-- Receipt: the terminal signed result of the deal, including success or failure, result hashes, execution metadata, and settlement references.
+The kernel also normatively defines one signed transport object because terminal receipt verification depends on it:
 
-The core also maintains:
+- `invoice_bundle`
 
-- a local logical append-only ledger of emitted and accepted artifacts
-- content-addressed artifact retrieval by hash
-- feed and replication surfaces for other Froglet services
-- explicit deal, execution, and settlement state machines
-- receipt verification independent of any external marketplace
+Everything else is an adapter or product surface layered on top of that evidence chain.
 
-The public remote execution target for version 1 is raw Wasm only.
-Other local or experimental adapters may exist, but they are not part of the public v1 economic promise.
+## 2. Canonical Encodings and Identities
 
-### Layer B: Froglet Bot Runtime
+### 2.1 Global constants
 
-Bots do not need to speak low-level protocol terms unless they want to.
+- `schema_version` is always `froglet/v1` for this specification
+- all hashes are lowercase hex SHA-256 digests
+- all timestamps are Unix seconds
+- canonical JSON serialization is RFC 8785 JCS
+- Froglet application identities are 32-byte secp256k1 x-only public keys encoded as lowercase hex
+- Froglet signatures are 64-byte lowercase hex BIP340 Schnorr signatures
 
-The bot runtime is a localhost sidecar that:
+For Lightning settlement identities in this kernel:
 
-- manages wallet access
-- manages discovery adapters
-- manages transport adapters
-- exposes simple buy and sell workflows
-- translates high-level bot requests into quote, deal, and receipt operations on the core
+- `destination_identity` is the 33-byte compressed secp256k1 public key encoded as lowercase hex
 
-The bot runtime is the primary product surface for agent developers.
+### 2.2 Signed envelope
 
-## 4. Identity Model
+All five core artifacts and the `invoice_bundle` transport object use the same signed envelope:
 
-Every economic artifact is signed by a stable Froglet application identity.
+- `artifact_type`: one of `descriptor`, `offer`, `quote`, `deal`, `receipt`, or `invoice_bundle`
+- `schema_version`: always `froglet/v1`
+- `signer`: Froglet application identity of the signer
+- `created_at`: Unix timestamp in seconds
+- `payload_hash`: lowercase hex SHA-256 of `JCS(payload)`
+- `payload`: the canonical JSON payload for the artifact type
+- `signature`: BIP340 Schnorr signature by `signer` over the exact `artifact_bytes` defined below
 
-That application identity is not the same thing as:
-
-- a Lightning node identity
-- a Nostr identity
-- a TLS certificate
-- a Tor onion address
-
-Version 1 requires explicit binding, in `Descriptor`, between the Froglet application identity and:
-
-- one or more settlement identities, such as a Lightning node public key or invoice destination identity
-- zero or more Nostr publication identities
-- one or more transport endpoints, such as HTTPS URLs or onion endpoints
-
-The purpose of this separation is stability.
-A provider must be able to rotate transport infrastructure or settlement plumbing without changing the meaning of previously signed Froglet artifacts, as long as the current descriptor publishes the new linkage.
-
-Version 1 freezes the Froglet application identity to `secp256k1` x-only public keys with BIP340 Schnorr signatures.
-
-The Froglet application identity encoding rules are:
-
-- `provider_id`, `requester_id`, and `signing.signer` are 32-byte x-only public keys encoded as lowercase hex
-- `signing.algorithm` for Froglet-signed artifacts is always `secp256k1_schnorr_bip340`
-- Froglet Schnorr signatures are 64-byte lowercase hex values
-
-What is mandatory in version 1 is:
-
-- deterministic canonical serialization before hashing and signing
-- explicit domain separation for every signed artifact type
-- explicit linkage proofs between Froglet identity and subordinate identities
-
-For Froglet-signed artifacts, the exact signing procedure is:
-
-1. Canonicalize the artifact payload with RFC 8785 JCS.
-2. Compute `payload_hash = SHA256(JCS(payload))`.
-3. Build the signing message bytes as:
+The exact signing and artifact-hash preimage is:
 
 ```text
-<schema_version>
-<domain>
-<payload_hash>
+artifact_bytes = JCS([
+  schema_version,
+  artifact_type,
+  signer,
+  created_at,
+  payload_hash,
+  payload
+])
 ```
 
-4. Compute `message_digest = SHA256(signing_message_bytes)`.
-5. Sign `message_digest` with BIP340 Schnorr using the Froglet application key.
+The exact derived values are:
 
-Verification uses the same digest derivation and BIP340 verification.
+- `payload_hash = SHA256(JCS(payload))`
+- `artifact_hash = SHA256(artifact_bytes)`
 
-The reason for freezing this scheme in version 1 is straightforward:
+The combination of `schema_version` and `artifact_type` is the domain separator.
+There is no separate mutable domain field inside the envelope.
 
-- native alignment with Bitcoin and Lightning key material
-- straightforward optional interop with Nostr publication identities
-- one compact, well-understood application signature format across all core artifacts
+Validation order is:
 
-### 4.1 Linked identity proof format
+1. Verify that `schema_version` is `froglet/v1`.
+2. Recompute `payload_hash` from `payload`.
+3. Recompute `artifact_bytes` exactly as above.
+4. Recompute `artifact_hash = SHA256(artifact_bytes)`.
+5. Verify `signature` as a BIP340 Schnorr signature by `signer` over the raw `artifact_bytes`.
 
-For identities that can sign messages, version 1 uses an explicit linkage object inside `Descriptor`.
+`artifact_hash` is a derived content address.
+It is not part of the in-band signed envelope.
+Transport surfaces may include it as out-of-band metadata for lookup and indexing.
 
-`linked_identities[]` entries must contain:
+### 2.3 Linked publication identities
 
-- `identity_kind`: `lightning_node` or `nostr`
-- `identity`: serialized public identity string for that ecosystem
-- `scope`: array of strings describing allowed use, such as `settlement.receive` or `publication.nostr`
-- `created_at`: unix timestamp in seconds
-- `expires_at`: unix timestamp in seconds or `null`
-- `signature_algorithm`: algorithm identifier understood for that linked identity
-- `linked_signature`: signature by the linked identity over the linkage challenge
+`Descriptor.payload.linked_identities[]` is how a provider links optional publication identities to the Froglet application identity.
 
-The linkage challenge bytes are:
+The v1 kernel only normatively defines `identity_kind = nostr`.
+Other linked identity kinds are adapter-level extensions and are outside this specification.
+
+A linked identity entry has these fields:
+
+- `identity_kind`: currently only `nostr`
+- `identity`: linked public identity string
+- `scope`: array of scope strings
+- `created_at`: Unix timestamp in seconds
+- `expires_at`: Unix timestamp in seconds or `null`
+- `signature_algorithm`: for v1 Nostr linkage this must be `secp256k1_schnorr_bip340`
+- `linked_signature`: signature by the linked identity over the exact challenge bytes below
+
+For `identity_kind = nostr`:
+
+- `identity` must be a 32-byte x-only public key encoded as lowercase hex
+- `scope` must contain only publication scopes, such as `publication.nostr`
+
+The exact linkage challenge bytes are:
 
 ```text
 froglet:identity_link:v1
@@ -144,156 +136,82 @@ froglet:identity_link:v1
 
 Where:
 
-- `provider_id` is the Froglet application identity published by the descriptor
-- `scope_hash` is the lowercase hex SHA-256 of `JCS(scope)`
+- `provider_id` is `Descriptor.payload.provider_id`
+- `scope_hash = SHA256(JCS(scope))`
 - `expires_at_or_dash` is the decimal expiry timestamp or `-`
 
-The enclosing descriptor signature is the Froglet-side authorization for the binding.
-The `linked_signature` is the subordinate identity's acknowledgement of that binding.
+For v1 Nostr linkage, `linked_signature` is a BIP340 Schnorr signature over the raw UTF-8 challenge bytes above.
 
-Identity-specific encoding rules are:
+## 3. Artifact Payloads
 
-- for `identity_kind = nostr`, `identity` must be the 32-byte x-only public key encoded as lowercase hex
-- for `identity_kind = lightning_node`, `identity` must be the 33-byte compressed secp256k1 public key encoded as lowercase hex
-
-For `identity_kind = nostr`, `signature_algorithm` should be `secp256k1_schnorr_bip340` unless a future protocol version explicitly allows another scheme.
-For `identity_kind = lightning_node`, `signature_algorithm` is provider-implementation-specific for version 1 and must be named explicitly in the linkage object.
-
-### 4.2 Transport endpoint binding format
-
-Transport endpoints are bound by the enclosing descriptor signature.
-They do not carry their own signatures.
-
-`transport_endpoints[]` entries must contain:
-
-- `transport`: `https` or `tor`
-- `uri`: canonical endpoint URI
-- `created_at`: unix timestamp in seconds
-- `expires_at`: unix timestamp in seconds or `null`
-- `priority`: lower values are preferred first
-- `features`: array of transport feature strings, such as `quote_http`, `artifact_fetch`, or `receipt_poll`
-
-## 5. Artifact, Hashing, and Ledger Rules
-
-Version 1 uses JSON artifacts canonically serialized with RFC 8785 JCS before hashing and signing.
-
-Every signed payload must be domain-separated, for example with stable prefixes such as:
-
-- `froglet:descriptor:v1`
-- `froglet:offer:v1`
-- `froglet:quote:v1`
-- `froglet:deal:v1`
-- `froglet:receipt:v1`
-
-Artifacts must be hash-chained:
-
-- `Quote` commits to `OfferHash` and `RequestHash`.
-- `Deal` commits to `QuoteHash`, `WorkloadHash`, and the settlement lock reference.
-- `Receipt` commits to `DealHash`, `ResultHash`, and settlement proof references.
-
-### 5.1 Signed artifact envelope
-
-All five core artifacts use the same signed envelope:
-
-- `artifact_type`: `descriptor`, `offer`, `quote`, `deal`, or `receipt`
-- `schema_version`: version string, initially `froglet/v1`
-- `payload`: canonical JSON payload for that artifact type
-- `payload_hash`: lowercase hex SHA-256 of `JCS(payload)`
-- `signing`: object with:
-  - `domain`: artifact domain string, such as `froglet:quote:v1`
-  - `algorithm`: must be `secp256k1_schnorr_bip340` in version 1
-  - `signer`: Froglet application public identity of the signer
-  - `signature`: signature over the signing message
-
-The signing message is the UTF-8 bytes of:
-
-```text
-<schema_version>
-<domain>
-<payload_hash>
-```
-
-Validation order is:
-
-1. Canonicalize `payload` with RFC 8785 JCS.
-2. Recompute `payload_hash`.
-3. Verify that `schema_version` is understood and that `signing.domain` matches `artifact_type`.
-4. Compute `message_digest = SHA256(signing_message_bytes)`.
-5. Verify `signing.signature` as a BIP340 Schnorr signature over `message_digest`.
-6. Compute `artifact_hash = SHA256(JCS(envelope_without_artifact_hash_field))`.
-
-`artifact_hash` is the content address.
-It should not be stored as a mutable in-band field that could create hashing ambiguity.
-
-### 5.2 Descriptor payload
+### 3.1 Descriptor payload
 
 `Descriptor.payload` must contain:
 
-- `provider_id`: Froglet application identity of the provider; must equal `signing.signer`
+- `provider_id`: Froglet application identity of the provider; must equal `signer`
 - `descriptor_seq`: monotonically increasing unsigned integer per provider
-- `created_at`: unix timestamp in seconds
-- `expires_at`: unix timestamp in seconds or `null`
-- `protocol_version`: currently `froglet/v1`
-- `linked_identities`: array of linkage objects from section 4.1
-- `transport_endpoints`: array of transport endpoint bindings from section 4.2
+- `protocol_version`: must be `froglet/v1`
+- `expires_at`: Unix timestamp in seconds or `null`
+- `linked_identities`: array of linked publication identities
+- `transport_endpoints`: array of transport endpoint objects
 - `capabilities`: object with:
-  - `service_kinds`: array such as `compute.wasm.v1` or bounded data-service kinds
-  - `execution_runtimes`: array; version 1 public remote execution should only advertise `wasm`
+  - `service_kinds`: array such as `compute.wasm.v1`
+  - `execution_runtimes`: array; public v1 remote execution should only advertise `wasm`
   - `max_concurrent_deals`: integer or `null`
-- `feed_endpoints`: object with:
-  - `feed_url`: artifact feed URL
-  - `artifact_base_url`: base URL for artifact fetch by hash
 
-`Descriptor.payload` may additionally contain:
+Each `transport_endpoints[]` entry must contain:
 
-- `display_name`: optional human label
-- `metadata`: optional display-only map
+- `transport`: `https` or `tor`
+- `uri`: canonical endpoint URI
+- `created_at`: Unix timestamp in seconds
+- `expires_at`: Unix timestamp in seconds or `null`
+- `priority`: lower values are preferred first
+- `features`: array of feature strings such as `quote_http`, `artifact_fetch`, or `receipt_poll`
 
-### 5.3 Offer payload
+`Descriptor` is the root artifact for provider identity, transport reachability, and optional publication-key linkage.
+
+### 3.2 Offer payload
 
 `Offer.payload` must contain:
 
-- `provider_id`: Froglet application identity of the provider; must equal `signing.signer`
-- `descriptor_hash`: content hash of the descriptor the offer is published under
-- `created_at`: unix timestamp in seconds
-- `expires_at`: unix timestamp in seconds or `null`
-- `offer_kind`: service kind identifier, such as `compute.wasm.v1`
-- `pricing_model`: must be `fixed` in version 1
-- `settlement_method`: must be `lightning.base_fee_plus_success_fee.v1` in version 1
-- `request_schema_hash`: hash of the canonical request schema or request-shape definition
-- `quote_ttl_secs`: maximum quote lifetime the provider will issue from this offer
+- `provider_id`: Froglet application identity of the provider; must equal `signer`
+- `offer_id`: stable provider-chosen identifier for the offer
+- `descriptor_hash`: `artifact_hash` of the descriptor the offer is published under
+- `expires_at`: Unix timestamp in seconds or `null`
+- `offer_kind`: service kind identifier; public v1 remote compute uses `compute.wasm.v1`
+- `settlement_method`: must be `lightning.base_fee_plus_success_fee.v1` for v1 paid remote execution
+- `quote_ttl_secs`: maximum lifetime of quotes issued from this offer
 - `execution_profile`: object with:
-  - `runtime`: must be `wasm` for public version 1 compute offers
-  - `abi_version`: must be `froglet.wasm.run_json.v1` for public version 1 compute offers
-  - `capabilities`: array of capability strings; must be empty for `froglet.wasm.run_json.v1`
-  - `max_input_bytes`: upper bound provider is willing to quote
-  - `max_runtime_ms`: upper bound provider is willing to quote
-  - `max_memory_bytes`: upper bound provider is willing to quote
-  - `max_output_bytes`: upper bound provider is willing to quote
+  - `runtime`: must be `wasm` for public v1 remote compute
+  - `abi_version`: must be `froglet.wasm.run_json.v1` for public v1 remote compute
+  - `capabilities`: array of capability strings; must be empty for public v1 remote compute
+  - `max_input_bytes`
+  - `max_runtime_ms`
+  - `max_memory_bytes`
+  - `max_output_bytes`
+  - `fuel_limit`
 - `price_schedule`: object with:
   - `base_fee_msat`
   - `success_fee_msat`
 
 `Offer.payload` may additionally contain:
 
-- `result_schema_hash`: hash of an advertised result schema
-- `terms_hash`: hash of additional policy text or machine-readable policy
+- `terms_hash`: hash of additional machine-readable or human-readable policy text
 
-### 5.4 Quote payload
+### 3.3 Quote payload
 
 `Quote.payload` must contain:
 
-- `provider_id`: Froglet application identity of the provider; must equal `signing.signer`
+- `provider_id`: Froglet application identity of the provider; must equal `signer`
 - `requester_id`: Froglet application identity of the intended requester
 - `descriptor_hash`: descriptor hash used when the quote was issued
-- `offer_hash`: content hash of the referenced offer
-- `quote_id`: provider-generated unique identifier
-- `request_hash`: hash of the canonical quote request object
-- `created_at`: unix timestamp in seconds
-- `expires_at`: unix timestamp in seconds
-- `payment_mode`: must be `base_fee_plus_success_fee` in version 1
+- `offer_hash`: `artifact_hash` of the referenced offer
+- `expires_at`: Unix timestamp in seconds
+- `workload_kind`: workload kind identifier; public v1 remote compute uses `compute.wasm.v1`
+- `workload_hash`: hash of the canonical workload object
 - `settlement_terms`: object with:
-  - `destination_identity`: linked Lightning settlement identity expected on returned invoices
+  - `method`: must be `lightning.base_fee_plus_success_fee.v1`
+  - `destination_identity`
   - `base_fee_msat`
   - `success_fee_msat`
   - `max_base_invoice_expiry_secs`
@@ -305,46 +223,55 @@ It should not be stored as a mutable in-band field that could create hashing amb
   - `max_memory_bytes`
   - `max_output_bytes`
   - `fuel_limit`
-- `completion_criteria_hash`: hash of the canonical completion-criteria object
 
-### 5.5 Deal payload
+Quote validation rules:
+
+- `provider_id` must match the referenced offer and descriptor
+- `expires_at` must be no later than `created_at + Offer.quote_ttl_secs`
+- `workload_kind` must be compatible with `Offer.offer_kind`
+- `execution_limits` must be less than or equal to the maxima advertised in `Offer.execution_profile`
+- `settlement_terms.method` must equal `Offer.settlement_method`
+- `settlement_terms.base_fee_msat` and `settlement_terms.success_fee_msat` must equal `Offer.price_schedule`
+
+### 3.4 Deal payload
 
 `Deal.payload` must contain:
 
-- `deal_id`: requester-generated unique identifier
-- `requester_id`: Froglet application identity of the requester; must equal `signing.signer`
+- `requester_id`: Froglet application identity of the requester; must equal `signer`
 - `provider_id`: Froglet application identity of the quoted provider
-- `quote_hash`: content hash of the accepted quote
-- `workload_hash`: hash of the canonical workload object to be executed or served
-- `payment_hash`: lowercase hex SHA-256 of the requester-chosen success-fee secret
-- `created_at`: unix timestamp in seconds
+- `quote_hash`: `artifact_hash` of the accepted quote
+- `workload_hash`: hash of the canonical workload object to be executed
+- `success_payment_hash`: lowercase hex SHA-256 of the requester-chosen success-fee preimage
 - `admission_deadline`: latest time the provider may admit or reject the deal
 - `completion_deadline`: latest time the provider may finish the work
-- `acceptance_deadline`: latest time the requester may release the success-fee secret
+- `acceptance_deadline`: latest time the requester may release the success-fee preimage
 
-`Deal.payload` may additionally contain:
+Deal validation rules:
 
-- `client_reference`: requester-local idempotency or trace identifier
-- `result_delivery`: optional result-delivery hint object
+- `provider_id` must match `Quote.payload.provider_id`
+- `requester_id` must match `Quote.payload.requester_id`
+- `workload_hash` must match `Quote.payload.workload_hash`
+- `admission_deadline` must be less than or equal to `Quote.payload.expires_at`
+- `completion_deadline` must be strictly greater than `admission_deadline`
+- `acceptance_deadline` must be greater than or equal to `completion_deadline`
 
-### 5.6 Receipt payload
+### 3.5 Receipt payload
 
 `Receipt.payload` must contain:
 
-- `provider_id`: Froglet application identity of the provider; must equal `signing.signer`
+- `provider_id`: Froglet application identity of the provider; must equal `signer`
 - `requester_id`: Froglet application identity of the requester from the deal
-- `deal_hash`: content hash of the referenced deal
-- `quote_hash`: content hash of the referenced quote
-- `created_at`: unix timestamp in seconds
-- `started_at`: unix timestamp in seconds or `null`
-- `finished_at`: unix timestamp in seconds
-- `deal_outcome`: exactly one of `succeeded`, `failed`, `rejected`, or `canceled`
-- `execution_state`: exactly one of `not_started`, `succeeded`, or `failed`
-- `settlement_state`: exactly one of `none`, `settled`, `canceled`, or `expired`
+- `deal_hash`: `artifact_hash` of the referenced deal
+- `quote_hash`: `artifact_hash` of the referenced quote
+- `started_at`: Unix timestamp in seconds or `null`
+- `finished_at`: Unix timestamp in seconds
+- `deal_state`: terminal deal state; one of `rejected`, `succeeded`, `failed`, or `canceled`
+- `execution_state`: terminal execution state; one of `not_started`, `succeeded`, or `failed`
+- `settlement_state`: terminal settlement state; one of `none`, `settled`, `canceled`, or `expired`
 - `result_hash`: hash of the canonical result object or `null`
 - `result_format`: result format identifier or `null`
 - `executor`: object with:
-  - `runtime`: `wasm` or another local-only adapter name
+  - `runtime`
   - `runtime_version`
   - `abi_version`
   - `module_hash`
@@ -357,154 +284,37 @@ It should not be stored as a mutable in-band field that could create hashing amb
   - `fuel_limit`
 - `settlement_refs`: object with:
   - `method`
+  - `bundle_hash`: `artifact_hash` of the `invoice_bundle`, or `null` when settlement was not used
   - `destination_identity`
   - `base_fee`: object with `amount_msat`, `invoice_hash`, `payment_hash`, and `state`
   - `success_fee`: object with `amount_msat`, `invoice_hash`, `payment_hash`, and `state`
 
 `Receipt.payload` may additionally contain:
 
-- `failure_code`: machine-readable failure code
-- `failure_message`: human-readable failure message
-- `result_ref`: content-addressed pointer or encrypted payload pointer
-- `settlement_finalized_at`: unix timestamp in seconds or `null`
+- `failure_code`
+- `failure_message`
+- `result_ref`
 
-Admission refusal is represented as a receipt with `deal_outcome = rejected` and `execution_state = not_started`.
-Requester or provider abort is represented as a receipt with `deal_outcome = canceled`.
+Receipt validation rules:
 
-Artifacts should be content-addressed and retrievable by hash.
-Requesters must persist the quote, deal, and receipt artifacts relevant to their own transactions so a provider disappearing later does not erase the cryptographic evidence of the interaction.
+- `provider_id` must equal the quote provider and the receipt signer
+- `requester_id` must equal the deal requester
+- `quote_hash` must equal `Deal.payload.quote_hash`
+- `finished_at` must be greater than or equal to `started_at` when `started_at` is present
+- `result_hash` and `result_format` must both be present if and only if `execution_state = succeeded`
+- if `deal_state = rejected`, then `execution_state` must be `not_started`
+- if `deal_state = succeeded`, then `execution_state` must be `succeeded` and `settlement_state` must be `settled`
+- if `deal_state = failed`, then `execution_state` must be `failed`
+- if `deal_state = canceled`, then `execution_state` may be `not_started` or `succeeded`
 
-Append-only is a logical property, not a storage-engine mandate.
-Implementations may compact or archive terminal records, but they must preserve enough material to reproduce hashes, signatures, and required audit chains.
-Open deals, unsettled payment records, and accountability evidence must not be pruned away.
+`Receipt` is the authoritative terminal artifact.
+For requester-controlled success-fee release, the success preimage is not evidence by itself because the requester knew it before payment.
 
-### 5.7 Storage and archival invariants
+## 4. Canonical State Model
 
-Version 1 does not mandate SQLite or any other storage engine.
-It does mandate the logical properties that storage must preserve.
+### 4.1 Deal state
 
-Every Froglet implementation must preserve four logical classes of data:
-
-- immutable artifact documents
-- an append-only local feed log
-- mutable query indexes derived from those records
-- settlement and execution evidence needed to justify terminal receipts
-
-The required invariants are:
-
-- **Artifact immutability**
-  - once an `artifact_hash` is associated with a signed artifact envelope, that mapping must never change
-  - implementations may store parsed fields alongside raw content, but they must retain enough canonical material to recompute `payload_hash`, signing bytes, and `artifact_hash`
-  - if a stored artifact cannot be revalidated against its hash and signature after restart, it must be treated as corrupted evidence
-
-- **Durability before acknowledgment**
-  - a node must not acknowledge creation, acceptance, or publication of an artifact until the artifact document and the minimal related state transition are durably recorded
-  - a node must not expose an artifact through `/v1/feed` or `/v1/artifacts/:hash` before that durability condition is met
-
-- **Logical append-only feed**
-  - every first local observation of an artifact must receive a strictly increasing local feed sequence
-  - feed cursors are local, monotonic, and exclusive-after; once assigned, a feed sequence number must never be reused or renumbered
-  - compaction may move older feed entries to colder storage, but it must not change cursor semantics for retained history
-
-- **Derived-index rebuildability**
-  - mutable query tables, caches, and search indexes are not canonical state
-  - deal views, provider views, and discovery indexes must be rebuildable from retained artifact documents plus retained settlement and execution evidence
-  - implementations may optimize query paths however they want, but they must not make verification depend on opaque mutable rows that cannot be reconstructed
-
-- **Receipt accountability preservation**
-  - for every locally opened or locally served deal, the implementation must retain the associated quote, deal, and terminal receipt artifacts
-  - if a receipt references non-core transport evidence, such as an `invoice_bundle`, result package, or external settlement identifier, the implementation must retain either that evidence itself or enough canonical material to verify the referenced hashes and identifiers later
-  - restart recovery must never destroy the evidence required to explain why a receipt ended in `succeeded`, `failed`, `rejected`, `canceled`, `settled`, `expired`, or `canceled`
-
-- **Pruning and archival safety**
-  - implementations must not prune:
-    - non-terminal deals
-    - unsettled or not-yet-expired payment records
-    - the latest valid descriptor chain needed to interpret active offers and active endpoints
-    - the only retained copy of a quote, deal, receipt, or settlement record for a transaction the node participated in
-  - implementations may archive:
-    - superseded descriptors
-    - expired offers and quotes
-    - terminal deals and receipts whose evidence is already sealed
-    - old feed segments
-  - archival is only valid if offline verification of retained hashes, signatures, hash chains, and terminal receipt claims remains possible
-
-- **Export independence**
-  - an implementation should be able to export its retained evidence into an engine-neutral archive form
-  - that archive form must preserve enough information to reconstruct:
-    - artifact documents by hash
-    - local feed order for retained entries
-    - quote -> deal -> receipt hash chains
-    - settlement references and final settlement states
-    - timestamps relevant to accountability and expiry
-
-SQLite, Postgres, flat files, object storage, or replicated logs are all acceptable if these invariants hold.
-The storage engine is an implementation detail.
-The invariants above are part of the protocol contract.
-
-### 5.8 Reference SQLite storage profile
-
-Version 1 does not require SQLite, but the reference implementation may use a SQLite layout that maps the logical invariants above into three explicit storage classes:
-
-- `artifact_documents`
-  - immutable signed artifact envelopes keyed by `artifact_hash`
-  - retains enough canonical JSON material to recompute `payload_hash`, signing bytes, and `artifact_hash`
-- `artifact_feed`
-  - strictly increasing local feed sequence keyed to `artifact_hash`
-  - records first local observation order independently of parsed query views
-- `execution_evidence`
-  - retained non-artifact accountability material keyed by `(subject_kind, subject_id, evidence_kind, content_hash)`
-  - used for workload specs, execution results, execution failures, receipt references, and later settlement references such as invoice bundles
-
-The same reference implementation may still keep mutable convenience tables such as `jobs`, `quotes`, `deals`, `payment_tokens`, and `events`, but those are derived query state, not the canonical evidence layer.
-
-The required mapping for the reference layout is:
-
-- `jobs`
-  - convenience row for async polling and idempotency
-  - must retain the submitted workload shape for compatibility, but should reference retained evidence for workload and result/failure material
-- `quotes`
-  - convenience index over quote artifacts
-  - quote verification must still be possible from `artifact_documents`
-- `deals`
-  - convenience row for deal/execution lifecycle and polling
-  - should reference:
-    - the retained workload evidence
-    - the quote artifact hash
-    - the deal artifact hash
-    - the result or failure evidence
-    - the receipt artifact hash
-- `payment_tokens`
-  - mutable settlement working state
-  - must not be the only retained evidence for a completed transaction if the receipt references settlement state derived from it
-
-The reference implementation may duplicate JSON blobs inside convenience tables for operational simplicity, but those duplicates are cache-like copies.
-Reference-based reconstruction from `artifact_documents` and `execution_evidence` is authoritative; cached JSON copies in convenience tables must not be required to read or verify a quote, job, or deal view.
-The durable evidence model is:
-
-- signed artifacts in `artifact_documents`
-- local ordering in `artifact_feed`
-- non-artifact execution/settlement accountability material in `execution_evidence`
-
-Any future archival/export format should therefore be able to export those three classes directly.
-
-Reference implementations may expose an authenticated subject-scoped archive bundle for local accountability and migration.
-Such an export should bundle, at minimum:
-
-- retained artifact documents relevant to the subject
-- the corresponding local `artifact_feed` entries for those artifacts
-- `execution_evidence` rows for the subject
-- any retained settlement transport material, such as `invoice_bundle` records
-
-That export surface is an implementation adapter, not a new canonical protocol artifact.
-
-## 6. Canonical State Model
-
-Core implementations must model deal state, execution state, and settlement state separately.
-
-### 6.1 Deal state
-
-Canonical deal states for version 1 are:
+Canonical deal states are:
 
 - `opened`
 - `admitted`
@@ -522,21 +332,29 @@ Allowed transitions are:
 - `admitted -> failed`
 - `admitted -> canceled`
 
-### 6.2 Execution state
+Semantics:
 
-Canonical execution states for version 1 are:
+- `opened`: the requester has emitted a signed `Deal`, but the provider has not yet admitted it
+- `admitted`: the provider has observed the required settlement preconditions and accepted the work
+- `rejected`: the provider refused admission before execution began
+- `succeeded`: execution completed successfully and the success-dependent settlement leg reached `settled`
+- `failed`: execution failed after admission
+- `canceled`: the interaction ended non-successfully for a non-execution reason, including requester/provider aborts and requester refusal or failure to release the success fee after result staging
+
+### 4.2 Execution state
+
+Canonical execution states are:
 
 - `not_started`
 - `running`
 - `succeeded`
 - `failed`
 
-Execution state is only relevant for deals that were admitted.
-Rejected or canceled deals should not enter `running`.
+Rejected deals must not enter `running`.
 
-### 6.3 Settlement state
+### 4.3 Settlement state
 
-Canonical settlement states for version 1 are:
+Canonical settlement states are:
 
 - `none`
 - `invoice_open`
@@ -545,261 +363,167 @@ Canonical settlement states for version 1 are:
 - `canceled`
 - `expired`
 
-Settlement progression is not inferred from deal state alone.
-A requester may lock funds for a deal that later fails, and a provider may emit a failure receipt while the settlement leg is later canceled or expired.
+For `lightning.base_fee_plus_success_fee.v1`, the meanings are:
 
-A terminal receipt must include enough information to determine:
+- `none`: no settlement bundle exists for the deal
+- `invoice_open`: an `invoice_bundle` exists, but the success-fee leg is still open and the provider must not execute
+- `funds_locked`: the base-fee leg is settled and the success-fee hold leg is accepted
+- `settled`: the success-fee leg is settled
+- `canceled`: the success-fee leg is canceled
+- `expired`: the success-fee leg expired
 
-- the final deal outcome
-- the final execution outcome
-- the final settlement outcome or outcomes relevant to the deal
+The provider must not begin execution until settlement is at least `funds_locked`.
 
-## 7. Transport and Discovery
+### 4.4 Runtime-local states are not canonical protocol states
 
-### 7.1 Transport
+Implementations may expose runtime-local deal statuses such as `payment_pending` or `result_ready`.
 
-Version 1 keeps direct HTTPS as the baseline transport and Tor as an optional transport.
+Those are projections over canonical state and are not part of the signed protocol surface.
 
-Transport choice must not change protocol semantics.
-A `Quote`, `Deal`, or `Receipt` must mean the same thing whether it moved over clearnet HTTPS or an onion service.
+For v1:
 
-Transport endpoints belong in `Descriptor`.
-They are hints about reachability, not identity.
-A provider identity must not be derived from an IP address, DNS record, or onion address.
+- `payment_pending` projects to canonical `deal_state = opened`
+- `result_ready` projects to canonical `deal_state = admitted`, `execution_state = succeeded`, and `settlement_state = funds_locked`
 
-### 7.2 Direct peers and curated lists
+Only canonical states belong in signed receipts.
 
-The version 1 discovery baseline is deliberately simple:
+## 5. Hash Chains and Cross-Artifact Validation
 
-- direct peer configuration
-- local allowlists
-- signed curated lists
-- private brokers or private catalogs
+The core commitment chain is:
 
-This keeps discovery out of the core trust model while still making the network usable.
+- `Offer` commits to `descriptor_hash`
+- `Quote` commits to `descriptor_hash`, `offer_hash`, and `workload_hash`
+- `Deal` commits to `quote_hash`, `workload_hash`, and `success_payment_hash`
+- `Receipt` commits to `deal_hash`, `quote_hash`, `result_hash`, and settlement references
 
-### 7.3 Nostr publication and discovery
+A verifier checking a full paid interaction must validate, in order:
 
-Nostr remains valuable as an optional dissemination and discovery layer.
+1. `Descriptor`
+2. `Offer`
+3. `Quote`
+4. `Deal`
+5. `invoice_bundle`
+6. `Receipt`
 
-It may be used to publish:
+The full chain is valid only if:
 
-- descriptor summaries
-- offer summaries
-- artifact hashes
-- transport endpoint hints
-- receipt hashes or reputation references
-- signed curated peer lists
+- every envelope verifies independently
+- every hash reference resolves to the expected prior artifact
+- actor identities line up across the chain
+- the workload hash is unchanged from quote to deal
+- the success payment hash is unchanged from deal to `invoice_bundle` and receipt
+- the settlement destination and fee amounts are unchanged from quote to `invoice_bundle` and receipt
 
-Nostr must not be treated as canonical economic state.
-It is an optional publication and indexing fabric, not a required execution or settlement dependency.
+## 6. Lightning Settlement Binding
 
-If a provider uses a Nostr identity, that identity must be explicitly linked from the provider descriptor.
+### 6.1 Settlement method
 
-### 7.4 Endpoint rotation rules
+The v1 paid settlement method is:
 
-Endpoint rotation must not invalidate provider identity or previously signed economic artifacts.
+- `lightning.base_fee_plus_success_fee.v1`
 
-Version 1 endpoint rotation rules are:
+It has two Lightning legs:
 
-- `Descriptor.descriptor_seq` must increase monotonically for a given `provider_id`
-- requesters should prefer the valid descriptor with the highest `descriptor_seq`, breaking ties by `created_at`
-- a transport endpoint is considered active only while both the enclosing descriptor and the endpoint binding itself are unexpired
-- removing an endpoint from a newer descriptor is the canonical way to deprecate it
-- rotating transport endpoints must not require rotating the Froglet application identity
-- rotating settlement or publication identities requires new linkage proofs in the new descriptor
+- `base_fee`: normal invoice, intended to settle immediately
+- `success_fee`: hold invoice, released only after requester acceptance
 
-Older descriptors may remain useful for audit, but requesters should not initiate fresh deals against expired descriptors or expired endpoint bindings.
+### 6.2 Signed `invoice_bundle`
 
-### 7.5 Signed curated-list bootstrap format
+`invoice_bundle` is not a sixth core artifact type.
+It is a signed transport object that uses the same envelope defined in section 2.2 with `artifact_type = invoice_bundle`.
 
-Signed curated lists are bootstrap discovery objects, not canonical economic state.
-They are intended for direct peers, private networks, and early marketplace bootstrapping.
+`invoice_bundle.payload` must contain:
 
-A `curated_list` object must contain:
-
-- `schema_version`: `froglet/v1`
-- `list_type`: `curated_list`
-- `curator_id`: Froglet identity of the curator
-- `list_id`: curator-generated unique identifier
-- `created_at`: unix timestamp in seconds
-- `expires_at`: unix timestamp in seconds
-- `entries`: array of objects with:
-  - `provider_id`
-  - `descriptor_hash`
-  - `tags`: optional array of short discovery labels
-  - `note`: optional display-only string
-- `signing`: same signature fields and signing procedure as Froglet-signed artifacts, but with `domain = froglet:curated_list:v1`
-
-Consumers of a curated list must treat it as a signed recommendation set, not as proof that the listed providers are online, honest, or currently reachable.
-
-## 8. Settlement Model
-
-Version 1 settlement is Lightning-first.
-Cashu and other settlement drivers are intentionally out of the mainline v1 path.
-Future settlement drivers may exist, but they must not shape the hard core until the Lightning path is solid.
-
-### 8.1 Lightning as the version 1 settlement rail
-
-The version 1 settlement rail is built around two Lightning payment legs:
-
-- `base_fee`: a normal immediately settled invoice used to compensate admission and anti-griefing cost
-- `success_fee`: a hold-invoice-backed conditional payment leg used for the main result-dependent settlement
-
-Offers and quotes should default to `base_fee_plus_success_fee`.
-In trusted or private environments, `base_fee` may be zero, but open marketplaces should assume providers need a non-zero base fee.
-
-### 8.2 Quote and deal binding
-
-A `Quote` must commit to the settlement terms required to safely validate any returned invoice material, including:
-
-- settlement destination identity, such as Lightning node public key
-- `base_fee_msat`
-- `success_fee_msat`
-- invoice expiry constraints
-- final-hop CLTV constraints when relevant
-- `payment_mode`
-- maximum job duration
-
-A `Deal` must commit to:
-
-- `QuoteHash`
-- `WorkloadHash`
-- `payment_hash` for the success fee leg
-- request and acceptance deadlines
-
-### 8.3 Invoice bundle binding
-
-After a provider accepts a deal, it must return invoice material through a signed transport object called an `invoice_bundle`.
-An `invoice_bundle` is not a new core artifact type.
-It is a transport-level signed object that binds Lightning invoices to the already-signed `Quote` and `Deal`.
-
-`invoice_bundle` must contain:
-
-- `schema_version`: `froglet/v1`
-- `bundle_type`: `invoice_bundle`
-- `provider_id`
-- `requester_id`
+- `provider_id`: Froglet application identity of the provider; must equal `signer`
+- `requester_id`: Froglet application identity of the requester
 - `quote_hash`
 - `deal_hash`
-- `created_at`
-- `expires_at`
+- `expires_at`: Unix timestamp in seconds
 - `destination_identity`
-- `base_invoice_bolt11`
-- `base_invoice_payment_hash`
-- `base_fee_msat`
-- `success_hold_invoice_bolt11`
-- `success_payment_hash`
-- `success_fee_msat`
+- `base_fee`: object with:
+  - `amount_msat`
+  - `invoice_bolt11`
+  - `invoice_hash`
+  - `payment_hash`
+  - `state`
+- `success_fee`: object with:
+  - `amount_msat`
+  - `invoice_bolt11`
+  - `invoice_hash`
+  - `payment_hash`
+  - `state`
 - `min_final_cltv_expiry`
-- `signing`: same signature fields and signing procedure as Froglet-signed artifacts, but with `domain = froglet:invoice_bundle:v1`
 
-The requester must validate the returned `invoice_bundle` before paying either invoice.
-At minimum, the requester must reject the bundle if:
+Leg `state` values are:
 
-- `provider_id`, `requester_id`, `quote_hash`, or `deal_hash` do not match the current interaction
-- `destination_identity` does not match `Quote.settlement_terms.destination_identity`
-- `base_fee_msat` or `success_fee_msat` do not match the quote
-- `success_payment_hash` does not equal `Deal.payment_hash`
-- `expires_at` exceeds the quote lifetime or the encoded invoice expiries exceed the quoted constraints
-- the Froglet signature over the bundle is invalid
+- `open`
+- `accepted`
+- `settled`
+- `canceled`
+- `expired`
 
-The requester should also verify that the decoded BOLT11 invoices are internally consistent with the bundle fields before any payment is attempted.
+At issuance time both legs must be `open`.
 
-Reference implementations may expose a stateless verifier endpoint that accepts `Quote`, `Deal`, `invoice_bundle`, and an optional expected `requester_id`, then returns a machine-readable validation report.
-This verifier is a convenience surface for requesters; it must not weaken the normative requirement that the requester validates the bundle before payment.
+### 6.3 Requester-side `invoice_bundle` validation
 
-Reference implementations may expose a non-production mock Lightning mode for local development and persistence testing.
-Such a mode may synthesize invoice strings and state transitions, but it must not be represented as production settlement finality.
+Before paying either invoice, the requester must reject the bundle unless all of the following hold:
 
-Reference implementations may also expose an explicit pre-admission deal state while payment is still pending.
-A `payment_pending` deal has been persisted and bound to a signed `invoice_bundle`, but execution must not begin until the provider has observed the required Lightning leg states.
+- the `invoice_bundle` envelope verifies
+- `provider_id`, `requester_id`, `quote_hash`, and `deal_hash` match the current interaction
+- `destination_identity` equals `Quote.payload.settlement_terms.destination_identity`
+- `base_fee.amount_msat` and `success_fee.amount_msat` equal the quoted settlement terms
+- `success_fee.payment_hash` equals `Deal.payload.success_payment_hash`
+- `min_final_cltv_expiry` equals the quoted settlement constraint
+- `expires_at` does not exceed the quote deadline
+- `invoice_hash = SHA256(UTF-8(invoice_bolt11))` for both legs
+- the decoded BOLT11 amount, payment hash, payee identity, and expiry match the signed bundle fields
+- the decoded success-fee invoice does not advertise a smaller `min_final_cltv_expiry` than the quoted constraint
+- neither decoded invoice expiry exceeds the quoted settlement constraints or the quote deadline
 
-In mock mode, implementations may expose privileged test-only endpoints to advance invoice-bundle state for local testing.
-Such endpoints are development adapters, not part of the portable economic protocol.
+### 6.4 Execution gating
 
-### 8.4 Requester-controlled success-fee release
+The provider must not admit or execute the deal until:
 
-For the version 1 success-fee leg, the requester chooses a secret `s` and includes `payment_hash = SHA256(s)` in the deal.
-The provider creates a hold invoice bound to that hash.
+- the base-fee leg is `settled`
+- the success-fee leg is `accepted`
 
-The intended sequence is:
+That is the canonical `funds_locked` point.
 
-1. The requester asks for a quote.
-2. The provider returns a signed quote.
-3. The requester opens a deal that includes `payment_hash = SHA256(s)`.
-4. The provider returns a signed `invoice_bundle` bound to the quote and deal.
-5. The requester validates the `invoice_bundle` and pays the base fee invoice and success-fee hold invoice.
-6. The provider observes that the base fee is settled and the success fee is locked.
-7. The provider executes the work.
-8. The provider returns result material, a `result_ref`, or another transport-level result package bound to the deal.
-9. The requester reveals `s` to accept the success fee, or the provider cancels the hold or allows it to expire.
-10. After the settlement outcome is terminal, the provider emits the final signed `Receipt`.
+### 6.5 Requester-controlled release
 
-This flow intentionally gives the requester leverage over the success-fee release.
-That is acceptable for version 1, but it means Froglet does not provide perfect fair exchange for arbitrary computation or data delivery.
+The requester chooses a secret `s` and places `success_payment_hash = SHA256(s)` in the `Deal`.
 
-### 8.5 Receipt semantics under requester-controlled release
+The intended paid flow is:
 
-In requester-controlled success-fee mode, the secret `s` is not proof of payment by itself.
-The requester knew it before payment.
+1. The provider issues a signed `Quote`.
+2. The requester issues a signed `Deal` containing `success_payment_hash`.
+3. The provider issues a signed `invoice_bundle`.
+4. The requester validates the `invoice_bundle` and pays the base fee and hold invoice.
+5. The provider observes `funds_locked` and executes the work.
+6. The provider returns result material or a `result_ref`.
+7. The requester releases `s` to accept the success fee, or the provider cancels or lets the hold expire.
+8. The provider emits the final signed `Receipt` only after the success-fee leg is terminal.
 
-Therefore, the authoritative terminal artifact is the final signed `Receipt`, emitted only after the settlement outcome is terminal, and anchored by:
+### 6.6 Receipt settlement semantics
 
-- the provider signature
-- the deal hash
-- the result hash
-- execution metadata
-- Lightning settlement references and final observed settlement state
+For `lightning.base_fee_plus_success_fee.v1`:
 
-### 8.6 Time bounds and operational limits
+- `Receipt.payload.settlement_state` is the terminal state of the success-fee leg, or `none` if no `invoice_bundle` existed
+- the base-fee leg is interpreted from `Receipt.payload.settlement_refs.base_fee.state`
+- the success-fee leg is interpreted from `Receipt.payload.settlement_refs.success_fee.state`
 
-Hold invoices lock liquidity and therefore constrain the kind of work Froglet can safely sell.
-Version 1 should support short-lived jobs measured in seconds, not long-running opaque sessions.
+This avoids ambiguity in mixed two-leg outcomes.
 
-If a job does not fit within conservative hold windows, it should be:
+Examples:
 
-- chunked into multiple deals
-- converted into staged payments
-- or treated as out of scope for version 1
+- base fee `settled`, success fee `settled` -> `settlement_state = settled`
+- base fee `settled`, success fee `canceled` -> `settlement_state = canceled`
+- base fee `settled`, success fee `expired` -> `settlement_state = expired`
+- no `invoice_bundle` -> `settlement_state = none`
 
-Providers must automate cancellation and expiry handling.
-Manual operator intervention is not acceptable as the normal failure path.
+## 7. Canonical `compute.wasm.v1` Workload
 
-### 8.7 Admission, capacity, and rejection
-
-Quotes guarantee price and terms.
-They do not reserve provider capacity.
-
-Providers must be allowed to reject admission if local CPU, memory, concurrency, policy, or wallet constraints were exhausted between quote issuance and deal opening.
-These rejections should be machine-readable and signed as rejection receipts.
-
-## 9. Pricing and Workload Model
-
-Version 1 pricing is fixed-price only.
-Metered billing is intentionally out of the hard v1 core.
-
-A `Quote` must bind the full resource envelope, including:
-
-- input schema or workload type
-- maximum runtime
-- memory cap
-- maximum output size
-- completion criteria
-- total settlement amounts
-- expiry
-
-`WorkloadHash` is always the hash of a canonical request object under the protocol's canonical serialization rules.
-
-The core supports both compute and data-like services.
-For version 1, that means:
-
-- remotely supplied code execution is Wasm-only
-- data-like services remain valid, but they must still expose bounded request and response contracts with signed quotes and receipts
-
-### 9.1 Canonical `compute.wasm.v1` workload object
-
-The canonical public compute workload kind for version 1 is `compute.wasm.v1`.
+The canonical public compute workload kind for v1 is `compute.wasm.v1`.
 
 The canonical workload object must contain:
 
@@ -807,266 +531,82 @@ The canonical workload object must contain:
 - `workload_kind`: `compute.wasm.v1`
 - `abi_version`: `froglet.wasm.run_json.v1`
 - `module_format`: `application/wasm`
-- `module_hash`: lowercase hex SHA-256 of the raw Wasm binary bytes
+- `module_hash`: lowercase hex SHA-256 of the raw Wasm bytes
 - `input_format`: `application/json+jcs`
-- `input_hash`: lowercase hex SHA-256 of the RFC 8785 JCS bytes of the input JSON value
-- `requested_capabilities`: array of capability strings; must be empty in version 1
+- `input_hash`: lowercase hex SHA-256 of `JCS(input_json_value)`
+- `requested_capabilities`: array of capability strings; must be empty in public v1 remote execution
 
-The canonical `WorkloadHash` is:
+The canonical workload hash is:
 
-- `SHA256(JCS(workload_object))`
+- `workload_hash = SHA256(JCS(workload_object))`
 
-The canonical workload object deliberately does **not** include:
+The canonical workload object does not include:
 
 - inline Wasm bytes
 - transport URLs
-- local cache keys
-- provider-specific file paths
-- non-verifiable execution hints
+- cache keys
+- provider-local file paths
+- other transport-only submission material
 
-Those belong to transport-level request objects, not the economic core.
+Those belong to adapters and runtime surfaces, not to the kernel.
 
-Version 1 therefore separates:
+## 8. `froglet.wasm.run_json.v1` ABI
 
-- the economic workload identity: `module_hash + input_hash + abi_version + capability request`
-- the transport submission material: inline bytes or externally fetched blobs that satisfy those hashes
+The public v1 Wasm ABI is `froglet.wasm.run_json.v1`.
 
-This separation keeps the signed economic contract small and stable while still allowing convenient HTTP submission flows.
+Modules implementing it must satisfy all of the following:
 
-### 9.2 Transport-level Wasm submission object
-
-To make `compute.wasm.v1` executable over HTTP without bloating the core artifact model, version 1 defines a transport object called `wasm_submission`.
-
-`wasm_submission` is not a sixth core artifact type.
-It is a request/response transport object used when a requester needs to provide execution material.
-
-`wasm_submission` must contain:
-
-- `schema_version`: `froglet/v1`
-- `submission_type`: `wasm_submission`
-- `workload`: canonical `compute.wasm.v1` workload object
-- `module_bytes`: raw Wasm binary bytes encoded for transport, or an equivalent field whose decoding is unambiguous
-- `input`: the JSON input value whose JCS hash must equal `workload.input_hash`
-
-Before execution, the provider must verify:
-
-- `SHA256(module_bytes) == workload.module_hash`
-- `SHA256(JCS(input)) == workload.input_hash`
-- `workload.abi_version` is supported
-- `requested_capabilities` is acceptable under the active offer and quote
-
-Providers may support cached execution by accepting an already-known `module_hash` without resending bytes, but that is a transport optimization, not part of the canonical workload identity.
-
-## 10. Execution Model
-
-The public network execution target for version 1 is raw Wasm.
-
-Version 1 should define a small, stable Wasm execution contract with:
-
-- a fixed ABI
-- explicit input object hashing
-- explicit capability grants
-- strict resource limits
-- deterministic receipt metadata
-
-Lua is not part of version 1.
-The version 1 execution primitive is Wasm only.
-
-### 10.1 `froglet.wasm.run_json.v1` ABI
-
-The version 1 public Wasm ABI is `froglet.wasm.run_json.v1`.
-
-Its purpose is to keep remote execution interoperable and minimal:
-
-- input is canonical JSON bytes
-- output is JSON bytes
-- there is one required entrypoint
-- there are no ambient host capabilities
-- execution occurs inside one short-lived sandbox invocation
-
-Modules implementing `froglet.wasm.run_json.v1` must satisfy all of the following:
-
-- the module format must be a core WebAssembly binary module, not a component-model package
+- the module format must be a core WebAssembly binary module
 - the module must define one exported linear memory named `memory`
 - the module must export `alloc(len: i32) -> i32`
 - the module must export `run(input_ptr: i32, input_len: i32) -> i64`
-- the module may export `dealloc(ptr: i32, len: i32) -> ()`, but providers are not required to call it in version 1
+- the module may export `dealloc(ptr: i32, len: i32) -> ()`
 - the module must not require WASI, filesystem, network, clock, or other undeclared host imports
+- public v1 providers should reject all imported functions, globals, tables, and memories before instantiation
+- public v1 providers should reject shared memories, 64-bit memories, and memory declarations whose minimum or declared maximum exceed the active memory cap
 
-The host execution sequence is:
+Host execution sequence:
 
 1. Canonicalize the requester input with RFC 8785 JCS.
-2. Verify the resulting bytes hash to `workload.input_hash`.
-3. Call `alloc(input_len)` to obtain writable memory for the input bytes.
-4. Copy the JCS input bytes into `memory[input_ptr..input_ptr + input_len)`.
+2. Verify `SHA256(JCS(input)) == workload.input_hash`.
+3. Call `alloc(input_len)`.
+4. Copy the JCS input bytes into guest memory.
 5. Call `run(input_ptr, input_len)`.
 6. Interpret the returned `i64` as:
    - upper 32 bits: `result_ptr`
    - lower 32 bits: `result_len`
-7. Validate that the returned slice lies within the exported memory and that `result_len` does not exceed the active output limit.
-8. Copy the result bytes from guest memory.
+7. Verify the slice lies inside guest memory and respects the output limit.
+8. Copy the result bytes.
 9. Parse the result bytes as UTF-8 JSON.
-10. Canonicalize the resulting JSON value with RFC 8785 JCS for `result_hash` and receipt generation.
+10. Canonicalize the resulting JSON value with RFC 8785 JCS to derive `result_hash`.
 
 Execution fails if any of the following occur:
 
 - missing required exports
-- invalid memory range from `alloc` or `run`
-- trap during module execution
-- meter exhaustion
+- invalid guest memory ranges
+- trap during execution
+- fuel exhaustion
 - timeout
 - invalid UTF-8 output
 - invalid JSON output
 - output that exceeds the quoted limit
 
-The `run` function represents a successful execution only if it returns a valid pointer/length pair for a JSON result.
-Application-level success or failure inside the business logic is represented in the JSON result itself.
-Sandbox or ABI failures are represented as Froglet execution failures and must appear in terminal receipts.
-
-### 10.2 Capability and determinism profile
-
-The version 1 public capability profile for `froglet.wasm.run_json.v1` is deliberately empty.
-
-That means:
+For public v1 remote execution:
 
 - `requested_capabilities` must be `[]`
 - `capabilities_granted` in receipts must be `[]`
-- providers must not expose ambient filesystem, network, clock, randomness, or process APIs to public version 1 compute workloads
+- providers must not expose ambient filesystem, network, clock, randomness, or process APIs
 
-Future ABI versions may define explicit capability-scoped imports, but version 1 keeps the public interoperable surface pure and bounded.
+## 9. Conformance Expectations
 
-The version 1 determinism profile is:
+Milestone 1 is only complete when the frozen kernel is backed by golden vectors for:
 
-- module identity is the raw Wasm binary hash
-- input identity is the JCS hash of the input JSON value
-- result identity is the JCS hash of the output JSON value
-- no clock, RNG, filesystem, or network access is part of the public ABI
+- envelope signing and `artifact_hash` derivation
+- Nostr linked-identity challenge signing
+- `Quote -> Deal -> Receipt` verification
+- `invoice_bundle` verification
+- `compute.wasm.v1` workload hashing and receipt `result_hash` derivation
 
-This does not guarantee universal reproducibility across every engine or future CPU target.
-It does guarantee that Froglet receipts can name exactly which module, input, ABI, and result were involved in a completed deal.
+Those vectors are intentionally separate from this specification so they can evolve into an executable conformance suite without changing the kernel contract.
 
-## 11. Sandbox Requirements
-
-Sandbox policy must be explicit and default-deny.
-
-Minimum requirements for version 1 are:
-
-- memory caps
-- fuel or equivalent compute accounting
-- wall-clock execution timeout
-- output size caps
-- filesystem denial by default
-- network denial by default
-- explicit capability-scoped host calls only
-- bounded or timed host-call behavior
-
-Timeouts, policy denials, meter exhaustion, and runtime traps must surface as machine-readable failure reasons in receipts.
-
-## 12. Receipt Requirements
-
-A terminal receipt is immutable and must represent exactly one terminal outcome.
-
-At minimum, a version 1 receipt should include:
-
-- `deal_hash`
-- provider identity
-- deal outcome
-- `result_hash`
-- result format metadata
-- executor type and version
-- code or module hash when relevant
-- resource-limit profile actually applied
-- settlement references
-- final terminal settlement state
-- timestamp
-- provider signature
-
-Without this metadata, receipts are only claims, not useful accountability artifacts.
-
-## 13. Bot-Facing Local Runtime
-
-The localhost bot runtime should make Froglet immediately usable by agents.
-
-The happy path should feel like:
-
-- search
-- quote
-- deal
-- wait
-- accept or reject
-- receipt
-
-The runtime should hide transport, invoice, and discovery details on the happy path, while still allowing advanced callers to inspect them when needed.
-
-The localhost runtime must require local authentication for all privileged requests.
-Binding to localhost is not a sufficient trust boundary.
-
-Reference implementations may retain compatibility helpers such as direct `events.query`, `execute.wasm`, or async job endpoints.
-Those helpers are not the priced version 1 primitive.
-When Lightning is the active settlement backend and a workload has a non-zero price, compatibility helpers that would otherwise accept inline payment material must reject the request and direct the caller to the `Quote -> Deal -> Receipt` flow instead.
-
-The runtime may expose:
-
-- async workflows that return a `deal_id`
-- convenience workflows that wait for a terminal receipt
-- wallet and descriptor inspection
-- provider lifecycle helpers
-
-Long-lived full-agent execution, session leasing, and checkpointed remote agents are future layers on top of the same primitive, not reasons to widen version 1.
-
-## 14. Marketplace on Froglet
-
-The long-term marketplace should itself be composed of Froglet services.
-
-Examples include:
-
-- indexers that crawl descriptors, offers, and receipts
-- brokers that aggregate quotes and route deals
-- catalog services that publish curated subsets of the network
-- reputation services that interpret receipt history
-
-These services consume the same artifacts as any other participant.
-They are not privileged protocol actors.
-
-Froglet proves who signed what.
-It does not prove that every signed claim is factually true.
-Fraud interpretation, arbitration, slashing, and reputation are higher-layer marketplace concerns.
-
-## 15. What Belongs in Core
-
-Core should contain:
-
-- artifact schemas
-- canonical serialization and hashing rules
-- signing and verification
-- ledger invariants
-- deal, execution, and settlement state machines
-- settlement interfaces
-- receipt verification
-- content-addressed artifact retrieval
-
-## 16. What Does Not Belong in Core
-
-Core should not hardwire:
-
-- Cashu as a settlement dependency in version 1
-- Nostr as a source of truth
-- Tor as the only transport
-- Lua as a public network execution requirement
-- metered pricing in the hard v1 surface
-- a single privileged marketplace design
-- a mandatory storage engine
-- long-running opaque remote sessions as a version 1 requirement
-
-## 17. Product Direction
-
-The intended product direction is:
-
-- a very small, stable Froglet core
-- a Lightning-first economic kernel
-- a Wasm-first public execution surface
-- optional Tor transport and optional Nostr publication
-- a bot runtime that OpenClaw can use immediately
-- higher-layer marketplaces built on top of the same primitive
-
-That keeps Froglet usable now without turning it into a bloated platform.
+The initial checked-in bundle for this repository is `conformance/kernel_v1.json`.

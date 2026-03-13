@@ -1,0 +1,386 @@
+import json
+import socket
+import uuid
+
+from aiohttp import web
+
+from froglet_client import ProviderClient, RuntimeClient
+from froglet_nostr_adapter import FrogletNostrRelayAdapter, RetryPolicy, verify_event
+from test_support import (
+    FrogletAsyncTestCase,
+    VALID_WASM_HEX,
+    build_wasm_request,
+    generate_schnorr_signing_key,
+    schnorr_pubkey_hex,
+    sha256_hex,
+)
+
+
+def _free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+class FakeNostrRelay:
+    def __init__(
+        self,
+        *,
+        require_auth: bool = False,
+        fail_first_event_attempts: int = 0,
+    ) -> None:
+        self.events: dict[str, dict] = {}
+        self.auth_events: list[dict] = []
+        self.require_auth = require_auth
+        self.fail_first_event_attempts = fail_first_event_attempts
+        self.event_attempts = 0
+        self.query_attempts = 0
+        self._runner: web.AppRunner | None = None
+        self.url: str | None = None
+
+    async def start(self) -> None:
+        app = web.Application()
+        app.router.add_get("/", self._handle_ws)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        port = _free_tcp_port()
+        site = web.TCPSite(self._runner, "127.0.0.1", port)
+        await site.start()
+        self.url = f"ws://127.0.0.1:{port}/"
+
+    async def stop(self) -> None:
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
+
+    def store_event(self, event: dict) -> None:
+        self.events[event["id"]] = event
+
+    async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        authenticated = not self.require_auth
+        challenge = f"challenge-{uuid.uuid4().hex}"
+        pending_event: tuple[dict, int] | None = None
+        pending_query: tuple[str, list[dict], int] | None = None
+        async for message in ws:
+            payload = json.loads(message.data)
+            if not isinstance(payload, list) or not payload:
+                continue
+            if payload[0] == "AUTH" and len(payload) >= 2:
+                auth_event = payload[1]
+                self.auth_events.append(auth_event)
+                if not _auth_event_matches(auth_event, challenge, self.url):
+                    await ws.send_json(["OK", auth_event.get("id", ""), False, "invalid auth"])
+                    continue
+                authenticated = True
+                await ws.send_json(["OK", auth_event["id"], True, "auth ok"])
+                if pending_event is not None:
+                    event, attempt_no = pending_event
+                    pending_event = None
+                    if not await self._accept_event(ws, event, attempt_no):
+                        break
+                if pending_query is not None:
+                    subscription_id, filters, attempt_no = pending_query
+                    pending_query = None
+                    await self._serve_query(ws, subscription_id, filters, attempt_no)
+                continue
+            if payload[0] == "EVENT" and len(payload) >= 2:
+                event = payload[1]
+                self.event_attempts += 1
+                attempt_no = self.event_attempts
+                if not authenticated:
+                    pending_event = (event, attempt_no)
+                    await ws.send_json(["AUTH", challenge])
+                    continue
+                if not await self._accept_event(ws, event, attempt_no):
+                    break
+            elif payload[0] == "REQ" and len(payload) >= 2:
+                subscription_id = payload[1]
+                filters = payload[2:] or [{}]
+                self.query_attempts += 1
+                attempt_no = self.query_attempts
+                if not authenticated:
+                    pending_query = (subscription_id, filters, attempt_no)
+                    await ws.send_json(["AUTH", challenge])
+                    continue
+                await self._serve_query(ws, subscription_id, filters, attempt_no)
+            elif payload[0] == "CLOSE":
+                await ws.close()
+                break
+        return ws
+
+    async def _accept_event(
+        self,
+        ws: web.WebSocketResponse,
+        event: dict,
+        attempt_no: int,
+    ) -> bool:
+        if attempt_no <= self.fail_first_event_attempts:
+            await ws.close()
+            return False
+        self.events[event["id"]] = event
+        await ws.send_json(["OK", event["id"], True, "stored"])
+        return True
+
+    async def _serve_query(
+        self,
+        ws: web.WebSocketResponse,
+        subscription_id: str,
+        filters: list[dict],
+        attempt_no: int,
+    ) -> None:
+        del attempt_no
+        for event in self.events.values():
+            if any(_event_matches_filter(event, filter_) for filter_ in filters):
+                await ws.send_json(["EVENT", subscription_id, event])
+        await ws.send_json(["EOSE", subscription_id])
+
+
+def _event_matches_filter(event: dict, filter_: dict) -> bool:
+    kinds = filter_.get("kinds")
+    if kinds is not None and event.get("kind") not in kinds:
+        return False
+    authors = filter_.get("authors")
+    if authors is not None and event.get("pubkey") not in authors:
+        return False
+    return True
+
+
+def _auth_event_matches(event: dict, challenge: str, relay_url: str | None) -> bool:
+    if relay_url is None or not verify_event(event):
+        return False
+    if event.get("kind") != 22242 or event.get("content") != "":
+        return False
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return False
+    return ["relay", relay_url] in tags and ["challenge", challenge] in tags
+
+
+def _runtime_token_path(node) -> str:
+    return str(node.data_dir / "runtime" / "auth.token")
+
+
+def _runtime_requester_fields(secret_key: bytes, success_payment_hash: str) -> dict[str, str]:
+    return {
+        "requester_id": schnorr_pubkey_hex(secret_key),
+        "requester_seed_hex": secret_key.hex(),
+        "success_payment_hash": success_payment_hash,
+    }
+
+
+class NostrRelayAdapterTests(FrogletAsyncTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.relay = FakeNostrRelay()
+        await self.relay.start()
+        self.addAsyncCleanup(self.relay.stop)
+
+    async def test_external_adapter_publishes_provider_summaries_to_relay(self) -> None:
+        node = await self.start_node()
+
+        async with ProviderClient(node.base_url) as provider:
+            descriptor = await provider.descriptor()
+
+        adapter = FrogletNostrRelayAdapter.from_token_file(
+            node.base_url,
+            _runtime_token_path(node),
+            [self.relay.url],
+        )
+        async with adapter:
+            publish_results = await adapter.publish_provider_events()
+            queried = await adapter.query_events(
+                [
+                    {
+                        "kinds": [30390, 30391],
+                        "authors": [descriptor["payload"]["linked_identities"][0]["identity"]],
+                    }
+                ]
+            )
+
+        self.assertEqual(len(publish_results), 3)
+        self.assertTrue(all(result.accepted for result in publish_results))
+        self.assertGreaterEqual(len(queried), 3)
+        self.assertTrue(
+            all(
+                event["pubkey"] == descriptor["payload"]["linked_identities"][0]["identity"]
+                for event in queried
+            )
+        )
+
+    async def test_external_adapter_publishes_terminal_receipts_to_relay(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        runtime = RuntimeClient.from_token_file(node.base_url, _runtime_token_path(node))
+        success_preimage = "44" * 32
+
+        async with ProviderClient(node.base_url) as provider:
+            descriptor = await provider.descriptor()
+
+        async with runtime:
+            requester_key = generate_schnorr_signing_key()
+            handle = await runtime.buy_service(
+                {
+                    "offer_id": "execute.wasm",
+                    **build_wasm_request(VALID_WASM_HEX),
+                    "idempotency_key": "relay-adapter-receipt",
+                    **_runtime_requester_fields(
+                        requester_key,
+                        sha256_hex(bytes.fromhex(success_preimage)),
+                    ),
+                },
+                include_payment_intent=True,
+            )
+            await runtime.set_mock_lightning_state(
+                handle.payment_intent["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
+            result_ready = await runtime.wait_for_deal(
+                handle.deal["deal_id"], statuses={"result_ready"}
+            )
+            await runtime.accept_result(
+                handle.deal["deal_id"],
+                success_preimage,
+                expected_result_hash=result_ready["result_hash"],
+            )
+
+        adapter = FrogletNostrRelayAdapter.from_token_file(
+            node.base_url,
+            _runtime_token_path(node),
+            [self.relay.url],
+        )
+        async with adapter:
+            publish_results = await adapter.publish_receipt_event(handle.deal["deal_id"])
+            queried = await adapter.query_events(
+                [
+                    {
+                        "kinds": [1390],
+                        "authors": [descriptor["payload"]["linked_identities"][0]["identity"]],
+                    }
+                ]
+            )
+
+        self.assertEqual(len(publish_results), 1)
+        self.assertTrue(publish_results[0].accepted)
+        self.assertEqual(len(queried), 1)
+        self.assertEqual(queried[0]["kind"], 1390)
+        self.assertEqual(
+            queried[0]["pubkey"], descriptor["payload"]["linked_identities"][0]["identity"]
+        )
+
+    async def test_external_adapter_retries_transient_publish_failures(self) -> None:
+        retry_relay = FakeNostrRelay(fail_first_event_attempts=2)
+        await retry_relay.start()
+        self.addAsyncCleanup(retry_relay.stop)
+        node = await self.start_node()
+
+        adapter = FrogletNostrRelayAdapter.from_token_file(
+            node.base_url,
+            _runtime_token_path(node),
+            [retry_relay.url],
+            retry_policy=RetryPolicy(
+                max_attempts=3,
+                initial_backoff_secs=0.01,
+                max_backoff_secs=0.02,
+            ),
+        )
+        async with adapter:
+            publish_results = await adapter.publish_provider_events()
+
+        self.assertEqual(len(publish_results), 3)
+        self.assertTrue(all(result.accepted for result in publish_results))
+        self.assertEqual(retry_relay.event_attempts, len(publish_results) + 2)
+
+    async def test_external_adapter_handles_relay_auth_challenges(self) -> None:
+        auth_relay = FakeNostrRelay(require_auth=True)
+        await auth_relay.start()
+        self.addAsyncCleanup(auth_relay.stop)
+        node = await self.start_node()
+
+        async with ProviderClient(node.base_url) as provider:
+            descriptor = await provider.descriptor()
+
+        adapter = FrogletNostrRelayAdapter.from_token_file(
+            node.base_url,
+            _runtime_token_path(node),
+            [auth_relay.url],
+            auth_seed_path=node.data_dir / "identity" / "nostr-publication.secp256k1.seed",
+        )
+        async with adapter:
+            publish_results = await adapter.publish_provider_events()
+            queried = await adapter.query_events([{"kinds": [30390, 30391]}])
+
+        self.assertEqual(len(publish_results), 3)
+        self.assertTrue(all(result.accepted for result in publish_results))
+        self.assertGreaterEqual(len(queried), 3)
+        self.assertGreaterEqual(len(auth_relay.auth_events), 2)
+        self.assertTrue(all(verify_event(event) for event in auth_relay.auth_events))
+        self.assertTrue(
+            all(
+                event["pubkey"] == descriptor["payload"]["linked_identities"][0]["identity"]
+                for event in auth_relay.auth_events
+            )
+        )
+
+    async def test_external_adapter_uses_relay_policy_roles(self) -> None:
+        read_relay = FakeNostrRelay()
+        await read_relay.start()
+        self.addAsyncCleanup(read_relay.stop)
+        node = await self.start_node()
+        config_path = node.temp_root / "nostr-relays.json"
+
+        adapter = FrogletNostrRelayAdapter.from_token_file(
+            node.base_url,
+            _runtime_token_path(node),
+            [self.relay.url],
+        )
+        async with adapter:
+            provider_events = await adapter.collect_provider_events()
+
+        read_relay.store_event(provider_events[0])
+        config_path.write_text(
+            json.dumps(
+                {
+                    "relays": [
+                        {"url": self.relay.url, "read": False, "write": True},
+                        {"url": read_relay.url, "read": True, "write": False},
+                    ],
+                    "retry": {
+                        "max_attempts": 2,
+                        "initial_backoff_secs": 0.01,
+                        "max_backoff_secs": 0.02,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        policy_adapter = FrogletNostrRelayAdapter.from_config_file(
+            node.base_url,
+            _runtime_token_path(node),
+            config_path,
+        )
+        async with policy_adapter:
+            publish_results = await policy_adapter.publish_events(provider_events)
+            queried = await policy_adapter.query_events(
+                [{"kinds": [provider_events[0]["kind"]]}]
+            )
+
+        self.assertEqual(len(publish_results), len(provider_events))
+        self.assertTrue(all(result.accepted for result in publish_results))
+        self.assertEqual(len(self.relay.events), len(provider_events))
+        self.assertEqual(list(read_relay.events), [provider_events[0]["id"]])
+        self.assertEqual([event["id"] for event in queried], [provider_events[0]["id"]])
+
+
+if __name__ == "__main__":
+    import unittest
+
+    unittest.main(verbosity=2)

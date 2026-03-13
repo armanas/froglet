@@ -6,9 +6,10 @@ import aiohttp
 from test_support import (
     FrogletAsyncTestCase,
     LONG_RUNNING_WASM_HEX,
-    VALID_CASHU_TOKEN,
     VALID_WASM_HEX,
     build_wasm_request,
+    create_protocol_deal,
+    create_protocol_quote,
     create_signed_event,
     execute_db,
     generate_schnorr_signing_key,
@@ -28,6 +29,48 @@ def runtime_auth_headers(node) -> dict[str, str]:
 
 
 class ProtocolPrimitiveTests(FrogletAsyncTestCase):
+    async def _create_quote(
+        self,
+        session: aiohttp.ClientSession,
+        node,
+        request: dict,
+        *,
+        offer_id: str = "execute.wasm",
+        requester_key: bytes | None = None,
+    ) -> tuple[bytes, dict]:
+        requester_key = requester_key or generate_schnorr_signing_key()
+        quote = await create_protocol_quote(
+            session,
+            node,
+            offer_id=offer_id,
+            request=request,
+            requester_secret_key=requester_key,
+        )
+        return requester_key, quote
+
+    async def _create_deal(
+        self,
+        session: aiohttp.ClientSession,
+        node,
+        *,
+        quote: dict,
+        request: dict,
+        requester_key: bytes,
+        idempotency_key: str | None = None,
+        payment: dict | None = None,
+        success_payment_hash: str | None = None,
+    ) -> dict:
+        return await create_protocol_deal(
+            session,
+            node,
+            quote=quote,
+            request=request,
+            requester_secret_key=requester_key,
+            idempotency_key=idempotency_key,
+            payment=payment,
+            success_payment_hash=success_payment_hash,
+        )
+
     async def test_descriptor_offers_feed_and_artifact_fetch_are_signed(self) -> None:
         node = await self.start_node()
 
@@ -57,18 +100,36 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 fetched_artifact = await resp.json()
 
         self.assertTrue(verify_signed_artifact(descriptor))
-        self.assertEqual(descriptor["kind"], "descriptor")
-        self.assertEqual(descriptor["payload"]["protocol_version"], "v0.2")
-        self.assertEqual(descriptor["payload"]["feeds"]["cursor_type"], "artifact_sequence")
-        self.assertEqual(
-            descriptor["payload"]["feeds"]["cursor_semantics"], "exclusive_after"
+        self.assertEqual(descriptor["artifact_type"], "descriptor")
+        self.assertEqual(descriptor["schema_version"], "froglet/v1")
+        self.assertEqual(descriptor["payload"]["protocol_version"], "froglet/v1")
+        self.assertGreaterEqual(descriptor["payload"]["descriptor_seq"], 1)
+        self.assertEqual(descriptor["payload"]["provider_id"], descriptor["signer"])
+        transport_endpoints = {
+            endpoint["transport"]: endpoint
+            for endpoint in descriptor["payload"]["transport_endpoints"]
+        }
+        self.assertEqual(transport_endpoints["https"]["uri"], node.base_url)
+        self.assertNotIn("tor", transport_endpoints)
+        self.assertNotEqual(
+            descriptor["signer"], transport_endpoints["https"]["uri"]
         )
-        self.assertEqual(descriptor["payload"]["feeds"]["feed_path"], "/v1/feed")
         self.assertEqual(
-            descriptor["payload"]["feeds"]["artifact_path_template"],
-            "/v1/artifacts/{artifact_hash}",
+            descriptor["payload"]["capabilities"]["service_kinds"],
+            ["compute.wasm.v1", "events.query"],
         )
-        self.assertEqual(descriptor["payload"]["feeds"]["max_page_size"], 100)
+        self.assertEqual(
+            descriptor["payload"]["capabilities"]["execution_runtimes"],
+            ["wasm"],
+        )
+        linked_identities = descriptor["payload"]["linked_identities"]
+        self.assertEqual(len(linked_identities), 1)
+        self.assertEqual(linked_identities[0]["identity_kind"], "nostr")
+        self.assertEqual(
+            linked_identities[0]["scope"],
+            ["publication.nostr"],
+        )
+        self.assertNotEqual(linked_identities[0]["identity"], descriptor["signer"])
 
         offers = offers_payload["offers"]
         self.assertEqual(len(offers), 2)
@@ -95,36 +156,27 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertTrue(verify_signed_artifact(fetched_artifact["document"]))
 
     async def test_compute_quote_deal_and_receipt_flow(self) -> None:
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PAYMENT_BACKEND": "cashu",
-            }
-        )
+        node = await self.start_node(extra_env={"FROGLET_PRICE_EXEC_WASM": "0"})
 
         wasm_request = build_wasm_request(VALID_WASM_HEX)
-        quote_request = {"offer_id": "execute.wasm", **wasm_request}
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(node.url("/v1/quotes"), json=quote_request) as resp:
-                self.assertEqual(resp.status, 201)
-                quote = await resp.json()
+            requester_key, quote = await self._create_quote(session, node, wasm_request)
 
             self.assertTrue(verify_signed_artifact(quote))
-            self.assertEqual(quote["payload"]["price_sats"], 10)
+            self.assertEqual(
+                quote["payload"]["settlement_terms"]["success_fee_msat"], 0
+            )
             self.assertEqual(quote["payload"]["workload_kind"], "compute.wasm.v1")
 
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": quote,
-                    **wasm_request,
-                    "idempotency_key": "protocol-compute-deal",
-                    "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                deal = await resp.json()
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=wasm_request,
+                requester_key=requester_key,
+                idempotency_key="protocol-compute-deal",
+            )
 
             terminal = await self.wait_for_deal(node, deal["deal_id"])
 
@@ -142,18 +194,15 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertEqual(terminal["status"], "succeeded")
         self.assertEqual(terminal["result"], 42)
         self.assertTrue(verify_signed_artifact(terminal["receipt"]))
-        self.assertEqual(terminal["receipt"]["payload"]["status"], "succeeded")
+        self.assertEqual(terminal["receipt"]["payload"]["deal_state"], "succeeded")
+        self.assertEqual(terminal["receipt"]["payload"]["execution_state"], "succeeded")
+        self.assertEqual(terminal["receipt"]["payload"]["settlement_state"], "none")
         self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["reserved_amount_sats"], 10
+            terminal["receipt"]["payload"]["settlement_refs"]["method"], "none"
         )
         self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["status"], "committed"
+            terminal["receipt"]["payload"]["deal_hash"], terminal["deal"]["hash"]
         )
-        self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["committed_amount_sats"], 10
-        )
-        self.assertEqual(terminal["receipt"]["payload"]["amount_paid_sats"], 10)
-        self.assertEqual(terminal["receipt"]["payload"]["deal_hash"], terminal["deal"]["hash"])
         self.assertEqual(
             terminal["receipt"]["payload"]["result_format"], "application/json+jcs"
         )
@@ -177,43 +226,43 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertEqual(
             terminal["receipt"]["payload"]["limits_applied"]["fuel_limit"], 50000000
         )
-        self.assertIsNone(terminal["receipt"]["payload"].get("failure"))
+        self.assertIsNone(terminal["receipt"]["payload"].get("failure_code"))
         self.assertTrue(verify_response["valid"])
+        self.assertEqual(verify_response["deal_state"], "succeeded")
         self.assertIn(
             terminal["receipt"]["hash"],
             {artifact["hash"] for artifact in feed["artifacts"]},
         )
 
-    async def test_lightning_deal_waits_for_invoice_bundle_funding(self) -> None:
+    async def test_lightning_deal_requires_requester_preimage_release(self) -> None:
         node = await self.start_node(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_EXECUTION_TIMEOUT_SECS": "120",
             }
         )
-        requester_id = schnorr_pubkey_hex(generate_schnorr_signing_key())
-        success_payment_hash = sha256_hex(b"protocol-lightning-success")
+        requester_key = generate_schnorr_signing_key()
+        requester_id = schnorr_pubkey_hex(requester_key)
+        success_preimage = "12" * 32
+        success_payment_hash = sha256_hex(bytes.fromhex(success_preimage))
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **build_wasm_request(VALID_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": quote,
-                    **build_wasm_request(VALID_WASM_HEX),
-                    "idempotency_key": "protocol-lightning-deal",
-                    "requester_id": requester_id,
-                    "success_payment_hash": success_payment_hash,
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                deal = await resp.json()
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-deal",
+                success_payment_hash=success_payment_hash,
+            )
 
             self.assertEqual(deal["status"], "payment_pending")
 
@@ -240,7 +289,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             self.assertEqual(bundle["success_state"], "open")
             self.assertEqual(bundle["bundle"]["payload"]["requester_id"], requester_id)
             self.assertEqual(
-                bundle["bundle"]["payload"]["success_hold_invoice"]["payment_hash"],
+                bundle["bundle"]["payload"]["success_fee"]["payment_hash"],
                 success_payment_hash,
             )
             self.assertTrue(validation["valid"])
@@ -259,7 +308,19 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             self.assertEqual(updated["base_state"], "settled")
             self.assertEqual(updated["success_state"], "accepted")
 
-            terminal = await self.wait_for_deal(node, deal["deal_id"])
+            result_ready = await self.wait_for_deal_status(
+                node, deal["deal_id"], {"result_ready"}
+            )
+
+            async with session.post(
+                node.url(f"/v1/deals/{deal['deal_id']}/release-preimage"),
+                json={
+                    "success_preimage": success_preimage,
+                    "expected_result_hash": result_ready["result_hash"],
+                },
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                terminal = await resp.json()
 
             async with session.get(
                 node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
@@ -267,29 +328,422 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 self.assertEqual(resp.status, 200)
                 settled_bundle = await resp.json()
 
+        self.assertEqual(result_ready["status"], "result_ready")
+        self.assertEqual(result_ready["result"], 42)
+        self.assertIsNone(result_ready.get("receipt"))
         self.assertEqual(terminal["status"], "succeeded")
         self.assertEqual(terminal["result"], 42)
         self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["method"], "lightning"
+            terminal["receipt"]["payload"]["settlement_refs"]["method"],
+            "lightning.base_fee_plus_success_fee.v1",
         )
         self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["status"], "committed"
+            terminal["receipt"]["payload"]["settlement_state"], "settled"
         )
         self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["settlement_reference"],
-            bundle["session_id"],
+            terminal["receipt"]["payload"]["settlement_refs"]["bundle_hash"],
+            bundle["bundle"]["hash"],
         )
         self.assertEqual(
-            terminal["receipt"]["payload"]["settlement"]["payment_lock"]["token_hash"],
+            terminal["receipt"]["payload"]["settlement_refs"]["success_fee"][
+                "payment_hash"
+            ],
             success_payment_hash,
         )
         self.assertEqual(
             terminal["receipt"]["payload"]["executor"]["runtime"], "wasm"
         )
         self.assertEqual(
+            terminal["receipt"]["payload"]["limits_applied"]["max_runtime_ms"], 30000
+        )
+        self.assertEqual(
             terminal["receipt"]["payload"]["limits_applied"]["fuel_limit"], 50000000
         )
         self.assertEqual(settled_bundle["success_state"], "settled")
+
+    async def test_lightning_release_preimage_rejects_mismatched_secret(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+            }
+        )
+        requester_key = generate_schnorr_signing_key()
+        success_preimage = "34" * 32
+        success_payment_hash = sha256_hex(bytes.fromhex(success_preimage))
+
+        async with aiohttp.ClientSession() as session:
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-bad-preimage",
+                success_payment_hash=success_payment_hash,
+            )
+
+            async with session.get(
+                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                bundle = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            result_ready = await self.wait_for_deal_status(
+                node, deal["deal_id"], {"result_ready"}
+            )
+
+            async with session.post(
+                node.url(f"/v1/deals/{deal['deal_id']}/release-preimage"),
+                json={"success_preimage": "56" * 32},
+            ) as resp:
+                self.assertEqual(resp.status, 400)
+                rejected = await resp.json()
+
+        self.assertEqual(result_ready["status"], "result_ready")
+        self.assertEqual(
+            rejected["error"], "success_preimage does not match the deal payment lock"
+        )
+
+    async def test_lightning_watcher_promotes_funded_deal_without_status_polling(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        requester_key = generate_schnorr_signing_key()
+        success_payment_hash = sha256_hex(bytes.fromhex("9a" * 32))
+
+        async with aiohttp.ClientSession() as session:
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-watcher-promotion",
+                success_payment_hash=success_payment_hash,
+            )
+
+            async with session.get(
+                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                bundle = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+        status = await self.wait_for_deal_status_in_db(
+            node, deal["deal_id"], {"result_ready"}
+        )
+        self.assertEqual(status, "result_ready")
+
+    async def test_lightning_watcher_finalizes_settled_result_ready_deal(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        requester_key = generate_schnorr_signing_key()
+        success_payment_hash = sha256_hex(bytes.fromhex("ab" * 32))
+
+        async with aiohttp.ClientSession() as session:
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-watcher-finalize",
+                success_payment_hash=success_payment_hash,
+            )
+
+            async with session.get(
+                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                bundle = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            status = await self.wait_for_deal_status_in_db(
+                node, deal["deal_id"], {"result_ready"}
+            )
+            self.assertEqual(status, "result_ready")
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "settled"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            terminal_status = await self.wait_for_deal_status_in_db(
+                node, deal["deal_id"], {"succeeded"}
+            )
+            self.assertEqual(terminal_status, "succeeded")
+
+            async with session.get(node.url(f"/v1/deals/{deal['deal_id']}")) as resp:
+                self.assertEqual(resp.status, 200)
+                terminal = await resp.json()
+
+        self.assertEqual(terminal["status"], "succeeded")
+        self.assertTrue(verify_signed_artifact(terminal["receipt"]))
+        self.assertEqual(
+            terminal["receipt"]["payload"]["settlement_state"], "settled"
+        )
+
+    async def test_lightning_watcher_fails_payment_pending_deal_when_provider_cancels(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        requester_key = generate_schnorr_signing_key()
+        success_payment_hash = sha256_hex(bytes.fromhex("cd" * 32))
+
+        async with aiohttp.ClientSession() as session:
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-watcher-cancel-pending",
+                success_payment_hash=success_payment_hash,
+            )
+
+            async with session.get(
+                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                bundle = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "canceled", "success_state": "open"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            terminal = await self.wait_for_deal(node, deal["deal_id"])
+
+        self.assertEqual(terminal["status"], "failed")
+        self.assertIsNone(terminal.get("result"))
+        self.assertTrue(verify_signed_artifact(terminal["receipt"]))
+        self.assertEqual(
+            terminal["receipt"]["payload"]["failure_code"], "payment_canceled"
+        )
+        self.assertEqual(
+            terminal["receipt"]["payload"]["deal_state"], "canceled"
+        )
+        self.assertEqual(
+            terminal["receipt"]["payload"]["settlement_refs"]["success_fee"][
+                "payment_hash"
+            ],
+            success_payment_hash,
+        )
+
+    async def test_lightning_watcher_fails_result_ready_deal_when_requester_withholds_preimage(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        requester_key = generate_schnorr_signing_key()
+        success_payment_hash = sha256_hex(bytes.fromhex("ef" * 32))
+
+        async with aiohttp.ClientSession() as session:
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-withheld-preimage",
+                success_payment_hash=success_payment_hash,
+            )
+
+            async with session.get(
+                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                bundle = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            result_ready = await self.wait_for_deal_status(
+                node, deal["deal_id"], {"result_ready"}
+            )
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "canceled"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            terminal = await self.wait_for_deal(node, deal["deal_id"])
+
+        self.assertEqual(result_ready["status"], "result_ready")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(terminal["result"], 42)
+        self.assertEqual(terminal["result_hash"], result_ready["result_hash"])
+        self.assertTrue(verify_signed_artifact(terminal["receipt"]))
+        self.assertEqual(
+            terminal["receipt"]["payload"]["failure_code"],
+            "success_fee_canceled_before_release",
+        )
+        self.assertEqual(
+            terminal["receipt"]["payload"]["settlement_state"], "canceled"
+        )
+        self.assertEqual(
+            terminal["receipt"]["payload"]["result_hash"], result_ready["result_hash"]
+        )
+
+    async def test_lightning_watcher_fails_result_ready_deal_on_success_hold_expiry(self) -> None:
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        requester_key = generate_schnorr_signing_key()
+        success_payment_hash = sha256_hex(bytes.fromhex("90" * 32))
+
+        async with aiohttp.ClientSession() as session:
+            _, quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=requester_key,
+                idempotency_key="protocol-lightning-success-expired",
+                success_payment_hash=success_payment_hash,
+            )
+
+            async with session.get(
+                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                bundle = await resp.json()
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "accepted"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            result_ready = await self.wait_for_deal_status(
+                node, deal["deal_id"], {"result_ready"}
+            )
+
+            async with session.post(
+                node.url(
+                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
+                ),
+                headers=runtime_auth_headers(node),
+                json={"base_state": "settled", "success_state": "expired"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+            terminal = await self.wait_for_deal(node, deal["deal_id"])
+
+        self.assertEqual(result_ready["status"], "result_ready")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(terminal["result_hash"], result_ready["result_hash"])
+        self.assertTrue(verify_signed_artifact(terminal["receipt"]))
+        self.assertEqual(
+            terminal["receipt"]["payload"]["failure_code"],
+            "success_fee_expired_before_release",
+        )
+        self.assertEqual(
+            terminal["receipt"]["payload"]["settlement_state"], "expired"
+        )
 
     async def test_lightning_invoice_bundle_rejects_mismatched_stored_bundle(self) -> None:
         node = await self.start_node(
@@ -298,29 +752,26 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 "FROGLET_PAYMENT_BACKEND": "lightning",
             }
         )
-        first_requester_id = schnorr_pubkey_hex(generate_schnorr_signing_key())
-        second_requester_id = schnorr_pubkey_hex(generate_schnorr_signing_key())
+        first_requester_key = generate_schnorr_signing_key()
+        second_requester_key = generate_schnorr_signing_key()
+        first_requester_id = schnorr_pubkey_hex(first_requester_key)
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **build_wasm_request(VALID_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                first_quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": first_quote,
-                    **build_wasm_request(VALID_WASM_HEX),
-                    "idempotency_key": "protocol-lightning-mismatch-1",
-                    "requester_id": first_requester_id,
-                    "success_payment_hash": sha256_hex(b"protocol-lightning-mismatch-1"),
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                first_deal = await resp.json()
+            _, first_quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=first_requester_key,
+            )
+            first_deal = await self._create_deal(
+                session,
+                node,
+                quote=first_quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=first_requester_key,
+                idempotency_key="protocol-lightning-mismatch-1",
+                success_payment_hash=sha256_hex(b"protocol-lightning-mismatch-1"),
+            )
 
             async with session.get(
                 node.url(f"/v1/deals/{first_deal['deal_id']}/invoice-bundle")
@@ -328,25 +779,21 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 self.assertEqual(resp.status, 200)
                 first_bundle = await resp.json()
 
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **build_wasm_request(VALID_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                second_quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": second_quote,
-                    **build_wasm_request(VALID_WASM_HEX),
-                    "idempotency_key": "protocol-lightning-mismatch-2",
-                    "requester_id": second_requester_id,
-                    "success_payment_hash": sha256_hex(b"protocol-lightning-mismatch-2"),
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                second_deal = await resp.json()
+            _, second_quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+                requester_key=second_requester_key,
+            )
+            second_deal = await self._create_deal(
+                session,
+                node,
+                quote=second_quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=second_requester_key,
+                idempotency_key="protocol-lightning-mismatch-2",
+                success_payment_hash=sha256_hex(b"protocol-lightning-mismatch-2"),
+            )
 
             async with session.get(
                 node.url(f"/v1/deals/{second_deal['deal_id']}/invoice-bundle")
@@ -401,38 +848,31 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 json={"event": event},
             ) as resp:
                 self.assertEqual(resp.status, 201)
-
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={
-                    "offer_id": "events.query",
-                    "kind": "events_query",
-                    "kinds": ["protocol.test"],
-                    "limit": 1,
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": quote,
-                    "kind": "events_query",
-                    "kinds": ["protocol.test"],
-                    "limit": 1,
-                    "idempotency_key": "protocol-data-deal",
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                deal = await resp.json()
+            requester_key, quote = await self._create_quote(
+                session,
+                node,
+                {"kind": "events_query", "kinds": ["protocol.test"], "limit": 1},
+                offer_id="events.query",
+            )
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request={"kind": "events_query", "kinds": ["protocol.test"], "limit": 1},
+                requester_key=requester_key,
+                idempotency_key="protocol-data-deal",
+            )
 
         terminal = await self.wait_for_deal(node, deal["deal_id"])
 
         self.assertEqual(terminal["status"], "succeeded")
         self.assertEqual(len(terminal["result"]["events"]), 1)
         self.assertEqual(terminal["result"]["events"][0]["content"], "hello data deal")
-        self.assertEqual(terminal["receipt"]["payload"]["service_id"], "events.query")
+        self.assertEqual(terminal["workload_kind"], "events.query")
+        self.assertEqual(
+            terminal["receipt"]["payload"]["executor"]["runtime"],
+            "builtin.events_query",
+        )
 
     async def test_deal_rejection_emits_signed_terminal_receipt(self) -> None:
         node = await self.start_node(
@@ -440,19 +880,18 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **build_wasm_request(LONG_RUNNING_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                first_quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={"quote": first_quote, **build_wasm_request(LONG_RUNNING_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                first_deal = await resp.json()
+            first_requester_key, first_quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(LONG_RUNNING_WASM_HEX),
+            )
+            first_deal = await self._create_deal(
+                session,
+                node,
+                quote=first_quote,
+                request=build_wasm_request(LONG_RUNNING_WASM_HEX),
+                requester_key=first_requester_key,
+            )
 
             deadline = asyncio.get_running_loop().time() + 10
             while asyncio.get_running_loop().time() < deadline:
@@ -466,19 +905,18 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             else:
                 self.fail("first deal never entered running state")
 
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **build_wasm_request(VALID_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                second_quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={"quote": second_quote, **build_wasm_request(VALID_WASM_HEX)},
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                second_deal = await resp.json()
+            second_requester_key, second_quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+            )
+            second_deal = await self._create_deal(
+                session,
+                node,
+                quote=second_quote,
+                request=build_wasm_request(VALID_WASM_HEX),
+                requester_key=second_requester_key,
+            )
 
             terminal = await self.wait_for_deal(node, second_deal["deal_id"])
 
@@ -491,11 +929,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
 
         self.assertEqual(terminal["status"], "rejected")
         self.assertTrue(verify_signed_artifact(terminal["receipt"]))
-        self.assertEqual(terminal["receipt"]["payload"]["status"], "rejected")
+        self.assertEqual(terminal["receipt"]["payload"]["deal_state"], "rejected")
         self.assertEqual(terminal["receipt"]["payload"]["deal_hash"], terminal["deal"]["hash"])
-        self.assertIsNone(terminal["receipt"]["payload"].get("settlement"))
+        self.assertEqual(terminal["receipt"]["payload"]["execution_state"], "not_started")
         self.assertEqual(
-            terminal["receipt"]["payload"]["failure"]["code"], "capacity_exhausted"
+            terminal["receipt"]["payload"]["failure_code"], "capacity_exhausted"
         )
         self.assertIsNone(terminal["receipt"]["payload"].get("result_hash"))
         self.assertEqual(
@@ -512,19 +950,8 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         second_request = build_wasm_request(VALID_WASM_HEX, input={"a": 1, "b": 2})
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **first_request},
-            ) as resp:
-                first_quote = await resp.json()
-            self.assertEqual(resp.status, 201)
-
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **second_request},
-            ) as resp:
-                second_quote = await resp.json()
-            self.assertEqual(resp.status, 201)
+            _, first_quote = await self._create_quote(session, node, first_request)
+            _, second_quote = await self._create_quote(session, node, second_request)
 
         self.assertEqual(
             first_quote["payload"]["workload_hash"],
@@ -540,19 +967,15 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         request = build_wasm_request(VALID_WASM_HEX, input={"job": "deal-persist"})
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **request},
-            ) as resp:
-                quote = await resp.json()
-            self.assertEqual(resp.status, 201)
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={"quote": quote, **request, "idempotency_key": "persisted-deal-evidence"},
-            ) as resp:
-                deal = await resp.json()
-            self.assertEqual(resp.status, 202)
+            requester_key, quote = await self._create_quote(session, node, request)
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=request,
+                requester_key=requester_key,
+                idempotency_key="persisted-deal-evidence",
+            )
 
         terminal = await self.wait_for_deal(node, deal["deal_id"])
         self.assertEqual(terminal["status"], "succeeded")
@@ -600,19 +1023,15 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         request = build_wasm_request(VALID_WASM_HEX, input={"job": "reference-first-reads"})
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **request},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
-                quote = await resp.json()
-
-            async with session.post(
-                node.url("/v1/deals"),
-                json={"quote": quote, **request, "idempotency_key": "reference-first-deal"},
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                deal = await resp.json()
+            requester_key, quote = await self._create_quote(session, node, request)
+            deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=request,
+                requester_key=requester_key,
+                idempotency_key="reference-first-deal",
+            )
 
         terminal = await self.wait_for_deal(node, deal["deal_id"])
         self.assertEqual(terminal["status"], "succeeded")
@@ -620,7 +1039,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         execute_db(
             node.data_dir / "node.db",
             "UPDATE quotes SET quote_json = ? WHERE quote_id = ?",
-            ("{", quote["payload"]["quote_id"]),
+            ("{", quote["hash"]),
         )
         execute_db(
             node.data_dir / "node.db",
@@ -632,16 +1051,14 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             async with session.get(node.url(f"/v1/deals/{deal['deal_id']}")) as resp:
                 reread = await resp.json()
 
-            async with session.post(
-                node.url("/v1/deals"),
-                json={
-                    "quote": quote,
-                    **request,
-                    "idempotency_key": "reference-first-deal-second",
-                },
-            ) as resp:
-                self.assertEqual(resp.status, 202)
-                second_deal = await resp.json()
+            second_deal = await self._create_deal(
+                session,
+                node,
+                quote=quote,
+                request=request,
+                requester_key=requester_key,
+                idempotency_key="reference-first-deal-second",
+            )
 
         self.assertEqual(reread["status"], "succeeded")
         self.assertEqual(reread["quote"]["hash"], quote["hash"])
@@ -661,7 +1078,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 node.url("/v1/quotes"),
-                json={"offer_id": "execute.wasm", **request},
+                json={
+                    "offer_id": "execute.wasm",
+                    "requester_id": schnorr_pubkey_hex(generate_schnorr_signing_key()),
+                    **request,
+                },
             ) as resp:
                 payload = await resp.json()
 

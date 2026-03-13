@@ -85,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .expect("Failed to recover pending runtime state");
 
+    if node_config.payment_backend == froglet::config::PaymentBackend::Lightning {
+        tokio::spawn(api::run_lightning_settlement_loop(state.clone()));
+    }
+
     let app = api::router(state.clone());
 
     if node_config.network_mode.should_start_tor() {

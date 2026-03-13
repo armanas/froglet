@@ -11,6 +11,9 @@ Status legend:
 - [~] current focus
 - [ ] pending
 
+This checklist spans both spec-closure work and reference-implementation work.
+After the spec-first kernel split, the Milestone roadmap at the bottom is the authoritative view of what is still open before the v1 core is truly frozen and migrated.
+
 ## Guiding Constraints
 
 - Keep the hard core small enough to audit.
@@ -22,6 +25,7 @@ Status legend:
 ## Phase 1: Freeze the Version 1 Protocol Surface
 
 - [x] Reset `SPEC.md` and this checklist around the narrowed v1 direction
+- [x] Split the kernel contract from supporting docs: `ARCHITECTURE.md`, `ADAPTERS.md`, `RUNTIME.md`, `NOSTR.md`, and `STORAGE_PROFILE.md`
 - [x] Freeze the normative artifact fields for `Descriptor`, `Offer`, `Quote`, `Deal`, and `Receipt`
 - [x] Freeze RFC 8785 JCS plus domain-separated signing payload rules
 - [x] Freeze hash-chaining rules for quote, deal, and receipt verification
@@ -41,7 +45,7 @@ Status legend:
 
 ## Phase 2: Identity and Trust Bindings
 
-- [x] Specify `Descriptor` linkage proofs between Froglet application identity and Lightning settlement identity
+- [x] Specify `Descriptor` linkage proofs for optional publication identities without hardwiring settlement-adapter proof formats into the kernel
 - [x] Decide and freeze the v1 Froglet application signature scheme
 - [x] Specify optional Nostr identity linkage without making Nostr authoritative
 - [x] Define endpoint rotation rules for HTTPS and onion endpoints
@@ -51,16 +55,17 @@ Status legend:
 ## Phase 3: Lightning Settlement Core
 
 - [x] Remove Cashu from the mainline v1 design direction
-- [~] Design the Lightning settlement driver around normal invoices plus hold invoices
+- [x] Design the Lightning settlement driver around normal invoices plus hold invoices
 - [x] Define `base_fee_plus_success_fee` quote fields and validation rules
 - [x] Implement a mock-backed Lightning invoice-bundle/session layer for protocol development and persistence testing
 - [x] Implement requester-supplied `payment_hash` flow for the success-fee hold invoice
-- [ ] Validate returned invoice material against quote and deal commitments before payment
+- [x] Validate returned invoice material against quote and deal commitments before payment
 - [x] Persist invoice identifiers, destination pubkey, payment hash, expiry, CLTV data, and settlement state
-- [~] Implement automatic cancel, expiry, and restart-recovery behavior
+- [x] Implement the requester preimage-release path and non-terminal `result_ready` state for Lightning-backed deals
+- [x] Implement automatic cancel, expiry, and restart-recovery behavior
 - [x] Emit Lightning settlement references in signed receipts
-- [ ] Define conservative maximum job duration and chunking guidance for longer work
-- [ ] Add adversarial tests for requester preimage withholding and provider cancel failures
+- [x] Define conservative maximum job duration and chunking guidance for longer work
+- [x] Add adversarial tests for requester preimage withholding and provider cancel failures
 
 ## Phase 4: Wasm-First Execution Core
 
@@ -68,28 +73,28 @@ Status legend:
 - [x] Remove Lua from the v1 code and protocol surface
 - [x] Define the v1 Wasm ABI and canonical workload object
 - [x] Align API request/response shapes with `compute.wasm.v1` and `wasm_submission`
-- [~] Enforce memory, fuel, epoch, output-size, and wall-clock limits
-- [ ] Make host calls explicit, capability-scoped, and time-bounded
+- [x] Enforce memory, fuel, epoch, output-size, and wall-clock limits
+- [x] Make host calls explicit, capability-scoped, and time-bounded by rejecting all public v1 host imports
 - [x] Emit executor metadata in receipts
-- [ ] Add determinism guidance for clocks, RNG, filesystem, and network access
-- [ ] Add abuse tests for infinite loops, memory pressure, and blocking host calls
+- [x] Add determinism guidance for clocks, RNG, filesystem, and network access
+- [x] Add abuse tests for infinite loops, memory pressure, and blocking host calls
 
 ## Phase 5: Transport and Discovery Edges
 
-- [ ] Keep HTTPS as the baseline direct transport
-- [ ] Keep Tor as an optional transport with identical protocol semantics
-- [ ] Advertise clearnet and onion endpoints through `Descriptor` without coupling them to identity
-- [ ] Define Nostr publication adapter for descriptor, offer, and receipt hashes or summaries
-- [ ] Keep Nostr out of the deal execution and settlement critical path
-- [ ] Define direct-peer and signed curated-list discovery flows before broker or indexer work
+- [x] Keep HTTPS as the baseline direct transport
+- [x] Keep Tor as an optional transport with identical protocol semantics
+- [x] Advertise clearnet and onion endpoints through `Descriptor` without coupling them to identity
+- [x] Define Nostr publication adapter for descriptor, offer, and receipt hashes or summaries
+- [x] Keep Nostr out of the deal execution and settlement critical path
+- [x] Define direct-peer and signed curated-list discovery flows before broker or indexer work
 
 ## Phase 6: Bot Runtime and OpenClaw Usability
 
-- [ ] Reduce the bot-facing flow to `search -> quote -> deal -> wait -> accept/reject -> receipt`
-- [ ] Keep local auth mandatory for all privileged runtime endpoints
-- [ ] Add wallet-facing abstractions around Lightning settlement instead of raw invoice plumbing
-- [ ] Add agent-friendly client SDK helpers for quote, deal, and receipt flows
-- [ ] Ensure the happy path hides relay, transport, and invoice details unless requested
+- [x] Reduce the bot-facing flow to `search -> quote -> deal -> wait -> accept/reject -> receipt`
+- [x] Keep local auth mandatory for all privileged runtime endpoints
+- [x] Add wallet-facing abstractions around Lightning settlement instead of raw invoice plumbing
+- [x] Add agent-friendly client SDK helpers for quote, deal, and receipt flows
+- [x] Ensure the happy path hides relay, transport, and invoice details unless requested
 - [ ] Plan for eventual full remote agent execution on top of the same deal primitive without widening v1
 
 ## Phase 7: Marketplace on Froglet
@@ -98,11 +103,78 @@ Status legend:
 - [ ] Define indexer role over artifact feeds
 - [ ] Define broker role over quote aggregation and routing
 - [ ] Define catalog and reputation roles as separate Froglet services
-- [ ] Treat signed curated lists as the first bootstrap marketplace primitive
+- [x] Treat signed curated lists as the first bootstrap marketplace primitive
 - [ ] Delay open adversarial marketplace mechanics until the deal primitive is proven
 
 ## Immediate Next Steps
 
 1. [x] Replace the remaining Cashu-only paid query and job paths with explicit Lightning-era demotion from the v1 primitive.
 2. [x] Validate returned invoice material against quote and deal commitments before payment instead of treating the mock bundle as already trusted.
-3. Finish the remaining Wasm hardening gaps: host-call time bounds, stronger memory-pressure tests, and explicit determinism guidance.
+3. [x] Add an LND REST adapter boundary and settlement-destination resolution without weakening the current mock-backed safety model.
+4. [x] Implement the requester preimage-release path needed to complete real hold-invoice settlement without faking finality.
+5. [x] Add active Lightning settlement watchers so `payment_pending` and `result_ready` deals recover and progress without relying on request-driven sync points.
+6. [x] Add synthetic LND REST settlement integration coverage with real BOLT11 invoices so the `lnd_rest` driver is exercised independently of the older mock bundle path.
+7. [x] Finish the remaining Wasm hardening gaps: host-call time bounds, stronger memory-pressure tests, and explicit determinism guidance.
+8. [x] Add LND-backed regtest integration coverage for hold-invoice create, accept, settle, cancel, and restart recovery.
+9. [x] Tighten local wallet-facing abstractions so the deal engine does not depend on raw invoice-plumbing details outside the settlement driver.
+10. [x] Define conservative maximum job duration and chunking guidance for longer work.
+11. [x] Add adversarial tests for requester preimage withholding and provider cancel failures.
+12. [x] Exercise Tor as an optional transport with descriptor parity and protocol-surface checks, behind an env-gated integration path.
+13. [x] Define and implement the first Nostr publication adapter surface without making Nostr authoritative for execution or settlement.
+14. [x] Keep relay publishing outside the core node, add a distinct linked Nostr publication key, and sign local Nostr summary events with that linked key instead of the Froglet node key.
+15. [x] Build the external Nostr relay publisher/consumer adapter around the local publication surfaces, keeping relay policy out of the core node.
+16. [x] Add relay-auth, retry/backoff, and relay-list policy support to the external Nostr adapter without pulling those concerns back into the node.
+
+## Clear Roadmap
+
+### Milestone 1: Freeze the Hard Version 1 Core
+
+- [~] Tighten `SPEC.md` until the hard core is reimplementable from docs alone
+- [x] Pin exact artifact signing bytes, artifact hashing, and Nostr linkage challenge bytes unambiguously
+- [x] Shrink the kernel by freezing direct quote, deal, receipt, and settlement commitments instead of extra hashed helper objects
+- [x] Cleanly separate canonical protocol states from local runtime-only states such as `payment_pending` and `result_ready`
+- [x] Migrate the Rust implementation, verifier logic, and persistence assumptions to the frozen kernel artifact shapes
+- [x] Add protocol test vectors and conformance-style verification cases for artifact, linkage, and invoice-bundle validation
+
+Exit criteria:
+- The economic core is precise enough that another implementation could verify and reproduce hashes, signatures, and terminal receipts without reading this codebase, and the reference implementation uses those same frozen kernel shapes
+
+### Milestone 2: Stabilize Froglet as a Bot Runtime
+
+- [x] Turn the current runtime into a clearly documented bot-facing alpha surface
+- [x] Add operator documentation for wallet setup, auth token handling, archive export, and recovery flows
+- [x] Add one or two end-to-end example bot integrations using the Python client helpers
+- [x] Decide which runtime endpoints and helper shapes are part of the supported v1 bot product surface
+- [x] Plan the future full remote-agent execution layer without widening the hard v1 primitive
+
+Exit criteria:
+- A bot developer can discover, quote, buy, wait, accept, and verify receipts through the runtime without needing to understand transport or settlement internals first
+
+### Milestone 3: Build the First External Marketplace Services
+
+- [ ] Define the indexer role over artifact feeds as the first external service
+- [ ] Implement a minimal indexer that consumes descriptors, offers, curated lists, and receipt summaries without becoming canonical state
+- [ ] Define a catalog service shape for curated provider/service discovery on top of indexed data
+- [ ] Keep the marketplace out of the core trust model and preserve direct-peer and curated-list bootstrapping
+
+Exit criteria:
+- Froglet has a useful discovery layer built on top of the primitive rather than inside it
+
+### Milestone 4: Add Broker and Reputation Layers
+
+- [ ] Define the broker role for quote aggregation and routing
+- [ ] Define catalog and reputation services as separate Froglet-consuming services
+- [ ] Decide what data those services consume directly from artifact feeds versus optional Nostr summaries
+- [ ] Delay open adversarial marketplace mechanics until the deal primitive and early services are proven in practice
+
+Exit criteria:
+- Higher-layer market behavior exists without weakening the core protocol boundary
+
+### Milestone 5: Explore Post-v1 Extensions
+
+- [ ] Evaluate chunked work, staged payments, leases, or session models for longer-running agent tasks
+- [ ] Evaluate remote signing and stronger operator key isolation
+- [ ] Evaluate live-network Lightning validation beyond regtest when the operational risk is justified
+
+Exit criteria:
+- Future expansion happens on top of a stable v1 kernel instead of distorting it prematurely

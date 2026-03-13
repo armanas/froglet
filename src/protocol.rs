@@ -3,38 +3,66 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const ARTIFACT_KIND_DESCRIPTOR: &str = "descriptor";
-pub const ARTIFACT_KIND_OFFER: &str = "offer";
-pub const ARTIFACT_KIND_QUOTE: &str = "quote";
-pub const ARTIFACT_KIND_DEAL: &str = "deal";
-pub const ARTIFACT_KIND_RECEIPT: &str = "receipt";
-pub const TRANSPORT_KIND_INVOICE_BUNDLE: &str = "invoice_bundle";
+pub const FROGLET_SCHEMA_V1: &str = "froglet/v1";
+
+pub const ARTIFACT_TYPE_DESCRIPTOR: &str = "descriptor";
+pub const ARTIFACT_TYPE_OFFER: &str = "offer";
+pub const ARTIFACT_TYPE_QUOTE: &str = "quote";
+pub const ARTIFACT_TYPE_DEAL: &str = "deal";
+pub const ARTIFACT_TYPE_RECEIPT: &str = "receipt";
+pub const ARTIFACT_TYPE_CURATED_LIST: &str = "curated_list";
+pub const TRANSPORT_TYPE_INVOICE_BUNDLE: &str = "invoice_bundle";
+
+pub const ARTIFACT_KIND_DESCRIPTOR: &str = ARTIFACT_TYPE_DESCRIPTOR;
+pub const ARTIFACT_KIND_OFFER: &str = ARTIFACT_TYPE_OFFER;
+pub const ARTIFACT_KIND_QUOTE: &str = ARTIFACT_TYPE_QUOTE;
+pub const ARTIFACT_KIND_DEAL: &str = ARTIFACT_TYPE_DEAL;
+pub const ARTIFACT_KIND_RECEIPT: &str = ARTIFACT_TYPE_RECEIPT;
+pub const ARTIFACT_KIND_CURATED_LIST: &str = ARTIFACT_TYPE_CURATED_LIST;
+pub const TRANSPORT_KIND_INVOICE_BUNDLE: &str = TRANSPORT_TYPE_INVOICE_BUNDLE;
+
+pub const LINKED_IDENTITY_KIND_NOSTR: &str = "nostr";
+pub const LINKED_IDENTITY_SCOPE_PUBLICATION_NOSTR: &str = "publication.nostr";
+pub const LINKED_IDENTITY_SIGNATURE_ALGORITHM_BIP340: &str = "secp256k1_schnorr_bip340";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedArtifact<T> {
-    pub kind: String,
-    pub actor_id: String,
+    pub artifact_type: String,
+    pub schema_version: String,
+    pub signer: String,
     pub created_at: i64,
     pub payload_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hash: String,
     pub payload: T,
     pub signature: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DescriptorPayload {
-    pub protocol_version: String,
-    pub node_id: String,
-    pub public_key: String,
-    pub version: String,
-    pub discovery_mode: String,
-    pub transports: TransportEndpoints,
-    pub settlement: SettlementDescriptor,
-    pub feeds: FeedDescriptor,
-    pub runtimes: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LinkedIdentity {
+    pub identity_kind: String,
+    pub identity: String,
+    pub scope: Vec<String>,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    pub signature_algorithm: String,
+    pub linked_signature: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransportEndpoint {
+    pub transport: String,
+    pub uri: String,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    pub priority: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TransportEndpoints {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clearnet_url: Option<String>,
@@ -43,14 +71,14 @@ pub struct TransportEndpoints {
     pub tor_status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettlementDescriptor {
     pub methods: Vec<String>,
     pub reservations: bool,
     pub receipts: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeedDescriptor {
     pub pull_api: bool,
     pub cursor_type: String,
@@ -59,6 +87,42 @@ pub struct FeedDescriptor {
     pub artifact_path_template: String,
     pub max_page_size: usize,
     pub artifact_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DescriptorCapabilities {
+    pub service_kinds: Vec<String>,
+    pub execution_runtimes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_deals: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DescriptorPayload {
+    pub provider_id: String,
+    #[serde(default)]
+    pub descriptor_seq: u64,
+    pub protocol_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_identities: Vec<LinkedIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport_endpoints: Vec<TransportEndpoint>,
+    pub capabilities: DescriptorCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfferExecutionProfile {
+    pub runtime: String,
+    pub abi_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    pub max_input_bytes: usize,
+    pub max_runtime_ms: u64,
+    pub max_memory_bytes: usize,
+    pub max_output_bytes: usize,
+    pub fuel_limit: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -71,44 +135,82 @@ pub struct OfferConstraints {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfferPriceSchedule {
+    pub base_fee_msat: u64,
+    pub success_fee_msat: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfferPayload {
+    pub provider_id: String,
     pub offer_id: String,
-    pub service_id: String,
-    pub resource_kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<String>,
-    pub price_sats: u64,
-    pub payment_required: bool,
-    pub payment_methods: Vec<String>,
-    pub constraints: OfferConstraints,
+    pub descriptor_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    pub offer_kind: String,
+    pub settlement_method: String,
+    pub quote_ttl_secs: u64,
+    pub execution_profile: OfferExecutionProfile,
+    pub price_schedule: OfferPriceSchedule,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuotePayload {
-    pub quote_id: String,
-    pub offer_id: String,
-    pub service_id: String,
-    pub workload_kind: String,
-    pub workload_hash: String,
-    pub price_sats: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payment_method: Option<String>,
+pub struct CuratedListEntry {
+    pub provider_id: String,
+    pub descriptor_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_terms: Option<QuoteSettlementTerms>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CuratedListPayload {
+    pub schema_version: String,
+    pub list_type: String,
+    pub curator_id: String,
+    pub list_id: String,
+    pub created_at: i64,
     pub expires_at: i64,
+    pub entries: Vec<CuratedListEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuoteSettlementTerms {
+    pub method: String,
     pub destination_identity: String,
     pub base_fee_msat: u64,
     pub success_fee_msat: u64,
     pub max_base_invoice_expiry_secs: u64,
     pub max_success_hold_expiry_secs: u64,
     pub min_final_cltv_expiry: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionLimits {
+    pub max_input_bytes: usize,
+    pub max_runtime_ms: u64,
+    pub max_memory_bytes: usize,
+    pub max_output_bytes: usize,
+    pub fuel_limit: u64,
+}
+
+pub type ReceiptLimitsApplied = ExecutionLimits;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuotePayload {
+    pub provider_id: String,
+    pub requester_id: String,
+    pub descriptor_hash: String,
+    pub offer_hash: String,
+    pub expires_at: i64,
+    pub workload_kind: String,
+    pub workload_hash: String,
+    pub settlement_terms: QuoteSettlementTerms,
+    pub execution_limits: ExecutionLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,18 +234,27 @@ pub struct InvoiceBundleLeg {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InvoiceBundlePayload {
-    pub schema_version: String,
-    pub bundle_type: String,
     pub provider_id: String,
     pub requester_id: String,
     pub quote_hash: String,
     pub deal_hash: String,
-    pub created_at: i64,
     pub expires_at: i64,
     pub destination_identity: String,
-    pub base_invoice: InvoiceBundleLeg,
-    pub success_hold_invoice: InvoiceBundleLeg,
+    pub base_fee: InvoiceBundleLeg,
+    pub success_fee: InvoiceBundleLeg,
     pub min_final_cltv_expiry: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DealPayload {
+    pub requester_id: String,
+    pub provider_id: String,
+    pub quote_hash: String,
+    pub workload_hash: String,
+    pub success_payment_hash: String,
+    pub admission_deadline: i64,
+    pub completion_deadline: i64,
+    pub acceptance_deadline: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,22 +273,22 @@ pub enum SettlementStatus {
     Expired,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReceiptSettlement {
-    pub method: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<SettlementStatus>,
-    pub reserved_amount_sats: u64,
-    pub committed_amount_sats: u64,
-    pub payment_lock: PaymentLock,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settlement_reference: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptLegState {
+    Open,
+    Accepted,
+    Settled,
+    Canceled,
+    Expired,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReceiptFailure {
-    pub code: String,
-    pub message: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReceiptSettlementLeg {
+    pub amount_msat: u64,
+    pub invoice_hash: String,
+    pub payment_hash: String,
+    pub state: ReceiptLegState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,63 +304,48 @@ pub struct ReceiptExecutor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReceiptLimitsApplied {
+pub struct ReceiptSettlementRefs {
+    pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_input_bytes: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_runtime_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_memory_bytes: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_output_bytes: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fuel_limit: Option<u64>,
+    pub bundle_hash: Option<String>,
+    pub destination_identity: String,
+    pub base_fee: ReceiptSettlementLeg,
+    pub success_fee: ReceiptSettlementLeg,
 }
 
+pub type ReceiptSettlement = ReceiptSettlementRefs;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DealPayload {
-    pub deal_id: String,
-    pub quote_id: String,
-    pub offer_id: String,
-    pub service_id: String,
-    pub workload_hash: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payment_lock: Option<PaymentLock>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub idempotency_key: Option<String>,
-    pub deadline: i64,
+pub struct ReceiptFailure {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptPayload {
-    pub receipt_id: String,
-    pub deal_id: String,
+    pub provider_id: String,
+    pub requester_id: String,
+    pub deal_hash: String,
+    pub quote_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deal_hash: Option<String>,
-    pub quote_id: String,
-    pub offer_id: String,
-    pub service_id: String,
-    pub workload_hash: String,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub amount_paid_sats: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payment_lock: Option<PaymentLock>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settlement: Option<ReceiptSettlement>,
+    pub started_at: Option<i64>,
+    pub finished_at: i64,
+    pub deal_state: String,
+    pub execution_state: String,
+    pub settlement_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_format: Option<String>,
+    pub executor: ReceiptExecutor,
+    pub limits_applied: ExecutionLimits,
+    pub settlement_refs: ReceiptSettlementRefs,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub executor: Option<ReceiptExecutor>,
+    pub failure_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub limits_applied: Option<ReceiptLimitsApplied>,
+    pub failure_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure: Option<ReceiptFailure>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    pub completed_at: i64,
+    pub result_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -276,7 +372,7 @@ impl WorkloadSpec {
     pub fn workload_kind(&self) -> &'static str {
         match self {
             WorkloadSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
-            WorkloadSpec::EventsQuery { .. } => "events_query",
+            WorkloadSpec::EventsQuery { .. } => "events.query",
         }
     }
 
@@ -321,21 +417,28 @@ impl From<JobSpec> for WorkloadSpec {
 }
 
 pub fn sign_artifact<T: Serialize + Clone>(
-    actor_id: &str,
+    signer: &str,
     sign_message_hex: impl Fn(&[u8]) -> String,
-    kind: &str,
+    artifact_type: &str,
     created_at: i64,
     payload: T,
 ) -> Result<SignedArtifact<T>, String> {
     let payload_hash = payload_hash(&payload)?;
-    let signing_bytes =
-        canonical_signing_bytes(kind, actor_id, created_at, &payload_hash, &payload)?;
+    let signing_bytes = canonical_signing_bytes(
+        FROGLET_SCHEMA_V1,
+        artifact_type,
+        signer,
+        created_at,
+        &payload_hash,
+        &payload,
+    )?;
     let hash = crypto::sha256_hex(&signing_bytes);
     let signature = sign_message_hex(&signing_bytes);
 
     Ok(SignedArtifact {
-        kind: kind.to_string(),
-        actor_id: actor_id.to_string(),
+        artifact_type: artifact_type.to_string(),
+        schema_version: FROGLET_SCHEMA_V1.to_string(),
+        signer: signer.to_string(),
         created_at,
         payload_hash,
         hash,
@@ -344,9 +447,78 @@ pub fn sign_artifact<T: Serialize + Clone>(
     })
 }
 
+pub fn linked_identity_scope_hash(scope: &[String]) -> Result<String, String> {
+    let bytes = canonical_json::to_vec(&scope.to_vec()).map_err(|e| e.to_string())?;
+    Ok(crypto::sha256_hex(bytes))
+}
+
+pub fn linked_identity_challenge_bytes(
+    provider_id: &str,
+    identity_kind: &str,
+    identity: &str,
+    scope: &[String],
+    created_at: i64,
+    expires_at: Option<i64>,
+) -> Result<Vec<u8>, String> {
+    let scope_hash = linked_identity_scope_hash(scope)?;
+    Ok(format!(
+        "froglet:identity_link:v1\n{provider_id}\n{identity_kind}\n{identity}\n{scope_hash}\n{created_at}\n{}",
+        expires_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    )
+    .into_bytes())
+}
+
+pub fn linked_identity_has_scope(identity: &LinkedIdentity, required_scope: &str) -> bool {
+    identity.scope.iter().any(|scope| scope == required_scope)
+}
+
 pub fn verify_artifact<T: Serialize>(artifact: &SignedArtifact<T>) -> bool {
-    verify_artifact_with_current_encoding(artifact)
-        || verify_artifact_with_legacy_encoding(artifact)
+    if artifact.schema_version != FROGLET_SCHEMA_V1 {
+        return false;
+    }
+
+    let payload_hash = match payload_hash(&artifact.payload) {
+        Ok(hash) => hash,
+        Err(_) => return false,
+    };
+
+    if payload_hash != artifact.payload_hash {
+        return false;
+    }
+
+    let signing_bytes = match canonical_signing_bytes(
+        &artifact.schema_version,
+        &artifact.artifact_type,
+        &artifact.signer,
+        artifact.created_at,
+        &artifact.payload_hash,
+        &artifact.payload,
+    ) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+
+    let computed_hash = crypto::sha256_hex(&signing_bytes);
+    if !artifact.hash.is_empty() && artifact.hash != computed_hash {
+        return false;
+    }
+
+    crypto::verify_message(&artifact.signer, &artifact.signature, &signing_bytes)
+}
+
+pub fn artifact_hash<T: Serialize>(artifact: &SignedArtifact<T>) -> Result<String, String> {
+    let payload_hash = payload_hash(&artifact.payload)?;
+    canonical_signing_bytes(
+        &artifact.schema_version,
+        &artifact.artifact_type,
+        &artifact.signer,
+        artifact.created_at,
+        &payload_hash,
+        &artifact.payload,
+    )
+    .map(crypto::sha256_hex)
 }
 
 pub fn artifact_value<T: Serialize>(artifact: &SignedArtifact<T>) -> Result<Value, String> {
@@ -359,92 +531,20 @@ pub fn payload_hash<T: Serialize>(payload: &T) -> Result<String, String> {
 }
 
 pub fn canonical_signing_bytes<T: Serialize>(
-    kind: &str,
-    actor_id: &str,
+    schema_version: &str,
+    artifact_type: &str,
+    signer: &str,
     created_at: i64,
     payload_hash: &str,
     payload: &T,
 ) -> Result<Vec<u8>, String> {
-    canonical_json::to_vec(&json!([kind, actor_id, created_at, payload_hash, payload]))
-        .map_err(|e| e.to_string())
-}
-
-fn verify_artifact_with_current_encoding<T: Serialize>(artifact: &SignedArtifact<T>) -> bool {
-    let payload_hash = match payload_hash(&artifact.payload) {
-        Ok(hash) => hash,
-        Err(_) => return false,
-    };
-
-    if payload_hash != artifact.payload_hash {
-        return false;
-    }
-
-    let signing_bytes = match canonical_signing_bytes(
-        &artifact.kind,
-        &artifact.actor_id,
-        artifact.created_at,
-        &artifact.payload_hash,
-        &artifact.payload,
-    ) {
-        Ok(bytes) => bytes,
-        Err(_) => return false,
-    };
-
-    if crypto::sha256_hex(&signing_bytes) != artifact.hash {
-        return false;
-    }
-
-    crypto::verify_message(&artifact.actor_id, &artifact.signature, &signing_bytes)
-}
-
-fn verify_artifact_with_legacy_encoding<T: Serialize>(artifact: &SignedArtifact<T>) -> bool {
-    let payload_hash = match legacy_payload_hash(&artifact.payload) {
-        Ok(hash) => hash,
-        Err(_) => return false,
-    };
-
-    if payload_hash != artifact.payload_hash {
-        return false;
-    }
-
-    let signing_bytes = match legacy_canonical_signing_bytes(
-        &artifact.kind,
-        &artifact.actor_id,
-        artifact.created_at,
-        &artifact.payload_hash,
-        &artifact.payload,
-    ) {
-        Ok(bytes) => bytes,
-        Err(_) => return false,
-    };
-
-    if crypto::sha256_hex(&signing_bytes) != artifact.hash {
-        return false;
-    }
-
-    crypto::verify_message(&artifact.actor_id, &artifact.signature, &signing_bytes)
-}
-
-fn legacy_payload_hash<T: Serialize>(payload: &T) -> Result<String, String> {
-    let payload_value = serde_json::to_value(payload).map_err(|e| e.to_string())?;
-    let bytes = serde_json::to_vec(&payload_value).map_err(|e| e.to_string())?;
-    Ok(crypto::sha256_hex(bytes))
-}
-
-fn legacy_canonical_signing_bytes<T: Serialize>(
-    kind: &str,
-    actor_id: &str,
-    created_at: i64,
-    payload_hash: &str,
-    payload: &T,
-) -> Result<Vec<u8>, String> {
-    let payload_value = serde_json::to_value(payload).map_err(|e| e.to_string())?;
-    serde_json::to_vec(&json!([
-        kind,
-        actor_id,
+    canonical_json::to_vec(&json!([
+        schema_version,
+        artifact_type,
+        signer,
         created_at,
         payload_hash,
-        payload_value
+        payload
     ]))
     .map_err(|e| e.to_string())
 }
@@ -464,31 +564,46 @@ mod tests {
     #[test]
     fn signed_artifact_roundtrip_verifies() {
         let signing_key = crypto::generate_signing_key();
-        let actor_id = crypto::public_key_hex(&signing_key);
+        let signer = crypto::public_key_hex(&signing_key);
         let artifact = sign_artifact(
-            &actor_id,
+            &signer,
             |message| crypto::sign_message_hex(&signing_key, message),
-            ARTIFACT_KIND_QUOTE,
+            ARTIFACT_TYPE_QUOTE,
             123,
             QuotePayload {
-                quote_id: "q1".to_string(),
-                offer_id: "execute.wasm".to_string(),
-                service_id: "execute.wasm".to_string(),
-                workload_kind: "wasm".to_string(),
-                workload_hash: "abc".to_string(),
-                price_sats: 5,
-                payment_method: Some("cashu".to_string()),
-                settlement_terms: None,
+                provider_id: signer.clone(),
+                requester_id: "11".repeat(32),
+                descriptor_hash: "22".repeat(32),
+                offer_hash: "33".repeat(32),
                 expires_at: 456,
+                workload_kind: "compute.wasm.v1".to_string(),
+                workload_hash: "44".repeat(32),
+                settlement_terms: QuoteSettlementTerms {
+                    method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+                    destination_identity: "02".to_string() + &"55".repeat(32),
+                    base_fee_msat: 1000,
+                    success_fee_msat: 9000,
+                    max_base_invoice_expiry_secs: 30,
+                    max_success_hold_expiry_secs: 30,
+                    min_final_cltv_expiry: 18,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1,
+                    max_runtime_ms: 2,
+                    max_memory_bytes: 3,
+                    max_output_bytes: 4,
+                    fuel_limit: 5,
+                },
             },
         )
         .unwrap();
 
         assert!(verify_artifact(&artifact));
+        assert_eq!(artifact_hash(&artifact).unwrap(), artifact.hash);
     }
 
     #[test]
-    fn workload_hash_is_stable_across_object_key_order() {
+    fn payload_hash_is_stable_across_object_key_order() {
         #[derive(Serialize)]
         struct CanonicalPayload {
             config: Value,
@@ -514,39 +629,20 @@ mod tests {
     }
 
     #[test]
-    fn legacy_signed_artifacts_still_verify() {
-        let signing_key = crypto::generate_signing_key();
-        let actor_id = crypto::public_key_hex(&signing_key);
-        let payload = QuotePayload {
-            quote_id: "q1".to_string(),
-            offer_id: "execute.wasm".to_string(),
-            service_id: "execute.wasm".to_string(),
-            workload_kind: "wasm".to_string(),
-            workload_hash: "abc".to_string(),
-            price_sats: 5,
-            payment_method: Some("cashu".to_string()),
-            settlement_terms: None,
-            expires_at: 456,
-        };
-        let payload_hash = legacy_payload_hash(&payload).unwrap();
-        let signing_bytes = legacy_canonical_signing_bytes(
-            ARTIFACT_KIND_QUOTE,
-            &actor_id,
+    fn linked_identity_challenge_is_stable() {
+        let challenge = linked_identity_challenge_bytes(
+            "provider-1",
+            LINKED_IDENTITY_KIND_NOSTR,
+            "abcd",
+            &[LINKED_IDENTITY_SCOPE_PUBLICATION_NOSTR.to_string()],
             123,
-            &payload_hash,
-            &payload,
+            None,
         )
         .unwrap();
-        let artifact = SignedArtifact {
-            kind: ARTIFACT_KIND_QUOTE.to_string(),
-            actor_id: actor_id.clone(),
-            created_at: 123,
-            payload_hash,
-            hash: crypto::sha256_hex(&signing_bytes),
-            payload,
-            signature: crypto::sign_message_hex(&signing_key, &signing_bytes),
-        };
 
-        assert!(verify_artifact(&artifact));
+        assert_eq!(
+            String::from_utf8(challenge).unwrap(),
+            "froglet:identity_link:v1\nprovider-1\nnostr\nabcd\n32195491daf0054358d4a777b5e185517820f15dd18d1170f4e8351d9de46d68\n123\n-"
+        );
     }
 }
