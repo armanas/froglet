@@ -1,11 +1,29 @@
+import argparse
+import contextlib
+import io
 import json
 import socket
+import tempfile
+import unittest
 import uuid
+from pathlib import Path
+from unittest import mock
 
 from aiohttp import web
 
 from froglet_client import ProviderClient, RuntimeClient
-from froglet_nostr_adapter import FrogletNostrRelayAdapter, RetryPolicy, verify_event
+from froglet_nostr_adapter import (
+    FrogletNostrRelayAdapter,
+    NostrAuthSigner,
+    NostrRelayConfigError,
+    RelayListConfig,
+    RelayPolicy,
+    RetryPolicy,
+    _build_parser,
+    _run_cli,
+    main,
+    verify_event,
+)
 from test_support import (
     FrogletAsyncTestCase,
     VALID_WASM_HEX,
@@ -388,6 +406,146 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
         self.assertEqual(len(self.relay.events), len(provider_events))
         self.assertEqual(list(read_relay.events), [provider_events[0]["id"]])
         self.assertEqual([event["id"] for event in queried], [provider_events[0]["id"]])
+
+    async def test_external_adapter_requires_matching_read_write_roles(self) -> None:
+        node = await self.start_node()
+
+        write_disabled = FrogletNostrRelayAdapter(
+            node.runtime_url,
+            "test-token",
+            [RelayPolicy(relay_url=self.relay.url, read=True, write=False)],
+            provider_base_url=node.base_url,
+        )
+        async with write_disabled.runtime:
+            with self.assertRaisesRegex(NostrRelayConfigError, "write-enabled relays"):
+                await write_disabled.publish_events([{"id": "event-1"}])
+
+        read_disabled = FrogletNostrRelayAdapter(
+            node.runtime_url,
+            "test-token",
+            [RelayPolicy(relay_url=self.relay.url, read=False, write=True)],
+            provider_base_url=node.base_url,
+        )
+        async with read_disabled.runtime:
+            with self.assertRaisesRegex(NostrRelayConfigError, "read-enabled relays"):
+                await read_disabled.query_events([{"kinds": [30390]}])
+
+    async def test_external_adapter_cli_publish_and_query_commands_work(self) -> None:
+        node = await self.start_node()
+
+        publish_args = argparse.Namespace(
+            runtime_url=node.runtime_url,
+            provider_url=node.base_url,
+            token_file=_runtime_token_path(node),
+            relay=[self.relay.url],
+            relay_config=None,
+            auth_seed_file=None,
+            retry_attempts=2,
+            initial_backoff_secs=0.01,
+            max_backoff_secs=0.02,
+            command="publish-provider",
+            deal_id=None,
+            kind=[],
+            author=[],
+            limit=None,
+        )
+        publish_stdout = io.StringIO()
+        with contextlib.redirect_stdout(publish_stdout):
+            publish_rc = await _run_cli(publish_args)
+
+        query_args = argparse.Namespace(
+            runtime_url=node.runtime_url,
+            provider_url=node.base_url,
+            token_file=_runtime_token_path(node),
+            relay=[self.relay.url],
+            relay_config=None,
+            auth_seed_file=None,
+            retry_attempts=None,
+            initial_backoff_secs=None,
+            max_backoff_secs=None,
+            command="query",
+            deal_id=None,
+            kind=[30390],
+            author=[],
+            limit=10,
+        )
+        query_stdout = io.StringIO()
+        with contextlib.redirect_stdout(query_stdout):
+            query_rc = await _run_cli(query_args)
+
+        published = json.loads(publish_stdout.getvalue())
+        queried = json.loads(query_stdout.getvalue())
+
+        self.assertEqual(publish_rc, 0)
+        self.assertEqual(query_rc, 0)
+        self.assertEqual(len(published), 3)
+        self.assertTrue(queried)
+
+
+class NostrRelayAdapterHelperTests(unittest.TestCase):
+    def test_relay_config_helpers_validate_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "relay_url must not be empty"):
+            RelayPolicy(relay_url="   ")
+        with self.assertRaisesRegex(ValueError, "relay policy must allow read, write, or both"):
+            RelayPolicy(relay_url="ws://relay.example", read=False, write=False)
+        with self.assertRaisesRegex(ValueError, "max_attempts must be at least 1"):
+            RetryPolicy(max_attempts=0)
+        with self.assertRaisesRegex(ValueError, "backoff values must be non-negative"):
+            RetryPolicy(initial_backoff_secs=-0.1)
+        with self.assertRaisesRegex(ValueError, "max_backoff_secs must be >="):
+            RetryPolicy(initial_backoff_secs=1.0, max_backoff_secs=0.5)
+
+        with tempfile.TemporaryDirectory(prefix="froglet-nostr-config-") as temp_root:
+            temp_path = Path(temp_root)
+            config_path = temp_path / "relays.json"
+            config_path.write_text(
+                json.dumps({"relays": [{"url": "ws://relay.example"}], "retry": []}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "retry section must be an object"):
+                RelayListConfig.from_json_file(config_path)
+
+            seed_path = temp_path / "nostr.seed"
+            seed_path.write_text("not-hex", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid hex in Nostr auth seed"):
+                NostrAuthSigner.from_seed_file(seed_path)
+
+    def test_cli_parser_and_main_entrypoint(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "--runtime-url",
+                "http://127.0.0.1:9000",
+                "--provider-url",
+                "http://127.0.0.1:8000",
+                "--token-file",
+                "auth.token",
+                "--relay",
+                "ws://127.0.0.1:7000/",
+                "query",
+                "--kind",
+                "30390",
+                "--author",
+                "f" * 64,
+                "--limit",
+                "5",
+            ]
+        )
+        self.assertEqual(args.command, "query")
+        self.assertEqual(args.kind, [30390])
+        self.assertEqual(args.author, ["f" * 64])
+        self.assertEqual(args.limit, 5)
+
+        fake_parser = mock.Mock()
+        fake_args = argparse.Namespace(command="publish-provider")
+        fake_parser.parse_args.return_value = fake_args
+        with mock.patch("froglet_nostr_adapter._build_parser", return_value=fake_parser), mock.patch(
+            "froglet_nostr_adapter._run_cli",
+            new=mock.AsyncMock(return_value=0),
+        ) as run_cli:
+            self.assertEqual(main(), 0)
+
+        run_cli.assert_awaited_once_with(fake_args)
 
 
 if __name__ == "__main__":

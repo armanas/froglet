@@ -1,6 +1,6 @@
 # Examples
 
-These examples are small bot-facing integrations built on [froglet_client.py](../froglet_client.py).
+These examples are small bot-facing integrations built on [froglet_client.py](../python/froglet_client.py).
 
 ## 1. Mock-Lightning Buy and Accept
 

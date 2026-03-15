@@ -129,8 +129,18 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(restarted.url(f"/v1/deals/{deal['deal_id']}")) as resp:
-                recovered = await resp.json()
+            deadline = time.monotonic() + 10.0
+            recovered = None
+            status = None
+            while time.monotonic() < deadline:
+                async with session.get(restarted.url(f"/v1/deals/{deal['deal_id']}")) as resp:
+                    recovered = await resp.json()
+                status = recovered["status"]
+                if status == "failed":
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                self.fail(f"deal never reached failed after restart recovery: {recovered}")
 
         self.assertEqual(resp.status, 200)
         self.assertEqual(recovered["status"], "failed")

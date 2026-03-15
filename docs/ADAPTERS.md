@@ -2,7 +2,7 @@
 
 Status: non-normative supporting document
 
-This document captures adapter-level behavior that is intentionally outside the kernel frozen in `SPEC.md`.
+This document captures adapter-level behavior that is intentionally outside the kernel frozen in [`../SPEC.md`](../SPEC.md).
 
 ## 1. Transport
 
@@ -47,7 +47,7 @@ Implementations may deliver the bundle through:
 - transport relays
 - private broker infrastructure
 
-The delivery method must not change the signed `invoice_bundle` bytes or the validation rules from `SPEC.md`.
+The delivery method must not change the signed `invoice_bundle` bytes or the validation rules from [`../SPEC.md`](../SPEC.md).
 
 ## 4. Settlement Drivers
 

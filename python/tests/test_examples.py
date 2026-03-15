@@ -8,7 +8,7 @@ from pathlib import Path
 from test_support import FrogletAsyncTestCase
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ExampleScriptTests(FrogletAsyncTestCase):

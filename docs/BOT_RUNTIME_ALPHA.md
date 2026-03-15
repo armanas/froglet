@@ -3,8 +3,8 @@
 Status: supported alpha product surface
 
 This document defines the bot-facing surface that Froglet intends to support in version 1 alpha.
-It sits above the economic kernel in [SPEC.md](SPEC.md) and is narrower than the full internal node API.
-It is not the frozen primitive contract. The stable kernel remains the signed artifact and persistence model described in [SPEC.md](SPEC.md).
+It sits above the economic kernel in [../SPEC.md](../SPEC.md) and is narrower than the full internal node API.
+It is not the frozen primitive contract. The stable kernel remains the signed artifact and persistence model described in [../SPEC.md](../SPEC.md).
 
 Release boundary for this document:
 
@@ -39,7 +39,7 @@ The runtime does not hide:
 
 ## Supported Python Surface
 
-The supported alpha Python entrypoint is [froglet_client.py](froglet_client.py).
+The supported alpha Python entrypoint is [../python/froglet_client.py](../python/froglet_client.py).
 
 Supported helpers:
 
@@ -130,5 +130,5 @@ For a local bot:
 
 If you call `POST /v1/runtime/services/buy` directly instead of using the SDK, submit a pre-signed `quote` and `deal` plus the workload spec; direct runtime callers should not send requester seed material in the request body.
 
-Runnable examples are in [examples/README.md](examples/README.md).
+Runnable examples are in [../examples/README.md](../examples/README.md).
 Planned evolution beyond this alpha runtime surface is described in [REMOTE_AGENT_LAYER.md](REMOTE_AGENT_LAYER.md).

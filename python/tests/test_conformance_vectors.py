@@ -11,7 +11,7 @@ from test_support import (
 )
 
 
-FIXTURE_PATH = Path(__file__).resolve().parent / "conformance" / "kernel_v1.json"
+FIXTURE_PATH = Path(__file__).resolve().parents[2] / "conformance" / "kernel_v1.json"
 
 
 def load_fixture() -> dict:

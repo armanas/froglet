@@ -8,7 +8,7 @@ Guarantee boundary:
 
 - treat the signed artifact kernel and durable local state as the stable primitive
 - treat the runtime routes, marketplace flows, Tor publication, and wallet integrations as supported operational layers above that primitive
-- do not assume the alpha runtime surface is frozen in the same way as [SPEC.md](SPEC.md)
+- do not assume the alpha runtime surface is frozen in the same way as [../SPEC.md](../SPEC.md)
 
 ## 1. Minimal Local Setup
 
@@ -172,7 +172,7 @@ The runtime can build local publication intents through:
 - `GET /v1/runtime/nostr/publications/deals/:deal_id/receipt`
 
 Relay publication stays outside the core node.
-Use [froglet_nostr_adapter.py](froglet_nostr_adapter.py) when relay interaction is needed.
+Use [../python/froglet_nostr_adapter.py](../python/froglet_nostr_adapter.py) when relay interaction is needed.
 
 ## 9. Recommended Alpha Defaults
 
@@ -183,4 +183,4 @@ For the current bot/runtime alpha:
 - keep the bot on the runtime surface rather than lower-level compatibility endpoints
 - use archive export as the first debugging tool when a deal does not land where expected
 
-Runnable examples are in [examples/README.md](examples/README.md).
+Runnable examples are in [../examples/README.md](../examples/README.md).

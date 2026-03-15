@@ -13,6 +13,9 @@ Status legend:
 
 This checklist spans both spec-closure work and reference-implementation work.
 After the spec-first kernel split, the Milestone roadmap at the bottom is the authoritative view of what is still open before the v1 core is truly frozen and migrated.
+Detailed planning for higher-layer marketplace and addon work now lives under
+`../higher_layers/` so the core checklist can stay focused on the kernel/runtime
+boundary.
 
 ## Guiding Constraints
 
@@ -95,16 +98,13 @@ After the spec-first kernel split, the Milestone roadmap at the bottom is the au
 - [x] Add wallet-facing abstractions around Lightning settlement instead of raw invoice plumbing
 - [x] Add agent-friendly client SDK helpers for quote, deal, and receipt flows
 - [x] Ensure the happy path hides relay, transport, and invoice details unless requested
-- [ ] Plan for eventual full remote agent execution on top of the same deal primitive without widening v1
+- [x] Plan for eventual full remote agent execution on top of the same deal primitive without widening v1
 
-## Phase 7: Marketplace on Froglet
+## Phase 7: Higher-Layer Marketplace Boundary
 
-- [ ] Keep the marketplace out of the core trust model
-- [ ] Define indexer role over artifact feeds
-- [ ] Define broker role over quote aggregation and routing
-- [ ] Define catalog and reputation roles as separate Froglet services
+- [x] Keep the marketplace out of the core trust model
 - [x] Treat signed curated lists as the first bootstrap marketplace primitive
-- [ ] Delay open adversarial marketplace mechanics until the deal primitive is proven
+- [x] Move detailed marketplace and addon planning under `higher_layers/`
 
 ## Immediate Next Steps
 
@@ -150,31 +150,8 @@ Exit criteria:
 Exit criteria:
 - A bot developer can discover, quote, buy, wait, accept, and verify receipts through the runtime without needing to understand transport or settlement internals first
 
-### Milestone 3: Build the First External Marketplace Services
+### Higher-Layer Follow-On Work
 
-- [ ] Define the indexer role over artifact feeds as the first external service
-- [ ] Implement a minimal indexer that consumes descriptors, offers, curated lists, and receipt summaries without becoming canonical state
-- [ ] Define a catalog service shape for curated provider/service discovery on top of indexed data
-- [ ] Keep the marketplace out of the core trust model and preserve direct-peer and curated-list bootstrapping
-
-Exit criteria:
-- Froglet has a useful discovery layer built on top of the primitive rather than inside it
-
-### Milestone 4: Add Broker and Reputation Layers
-
-- [ ] Define the broker role for quote aggregation and routing
-- [ ] Define catalog and reputation services as separate Froglet-consuming services
-- [ ] Decide what data those services consume directly from artifact feeds versus optional Nostr summaries
-- [ ] Delay open adversarial marketplace mechanics until the deal primitive and early services are proven in practice
-
-Exit criteria:
-- Higher-layer market behavior exists without weakening the core protocol boundary
-
-### Milestone 5: Explore Post-v1 Extensions
-
-- [ ] Evaluate chunked work, staged payments, leases, or session models for longer-running agent tasks
-- [ ] Evaluate remote signing and stronger operator key isolation
-- [ ] Evaluate live-network Lightning validation beyond regtest when the operational risk is justified
-
-Exit criteria:
-- Future expansion happens on top of a stable v1 kernel instead of distorting it prematurely
+Marketplace services, broker/reputation layers, ownership/issuer products, and
+other post-v1 additions are intentionally tracked outside the core freeze
+checklist under `../higher_layers/`.

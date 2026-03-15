@@ -16,6 +16,8 @@ from test_support import (
     start_lnd_regtest_cluster,
 )
 
+LND_WAIT_TIMEOUT_SECS = 120.0
+
 
 @unittest.skipUnless(
     os.getenv("FROGLET_RUN_LND_REGTEST") == "1",
@@ -76,13 +78,13 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
             "bob",
             success_leg["payment_hash"],
             "ACCEPTED",
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         await self.wait_for_deal_status_in_db(
             self.node,
             deal["deal_id"],
             {"result_ready"},
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         return {
             "quote": quote,
@@ -107,7 +109,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
         await self.cluster.wait_invoice_state(
             "bob", settled["bundle"]["bundle"]["payload"]["success_fee"]["payment_hash"],
             "SETTLED",
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         settle_code, settle_out, settle_err = await self.cluster.wait_payment_process(
             settled["pay_proc"], timeout=30.0
@@ -121,12 +123,12 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
         await self.cluster.wait_invoice_state(
             "bob", canceled["bundle"]["bundle"]["payload"]["success_fee"]["payment_hash"],
             "CANCELED",
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         canceled_deal = await self.wait_for_deal(
             self.node,
             canceled["deal"]["deal_id"],
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         self.assertEqual(canceled_deal["status"], "failed")
         cancel_code, _, _ = await self.cluster.wait_payment_process(
@@ -140,7 +142,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
         await self.cluster.wait_invoice_state(
             "bob", recovered["bundle"]["bundle"]["payload"]["success_fee"]["payment_hash"],
             "SETTLED",
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         restart_code, restart_out, restart_err = await self.cluster.wait_payment_process(
             recovered["pay_proc"], timeout=30.0
@@ -155,7 +157,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
             self.node,
             recovered["deal"]["deal_id"],
             {"succeeded"},
-            timeout=60.0,
+            timeout=LND_WAIT_TIMEOUT_SECS,
         )
         self.assertEqual(status, "succeeded")
 

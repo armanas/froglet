@@ -1,3 +1,4 @@
+import asyncio
 import time
 import unittest
 
@@ -20,6 +21,52 @@ from test_support import (
 
 
 class ClientSdkTests(FrogletAsyncTestCase):
+    async def test_sdk_management_clients_cover_offer_wallet_publish_and_lookup(self) -> None:
+        marketplace = await self.start_marketplace()
+        node = await self.start_node(
+            extra_env={
+                "FROGLET_DISCOVERY_MODE": "marketplace",
+                "FROGLET_MARKETPLACE_URL": marketplace.base_url,
+                "FROGLET_MARKETPLACE_PUBLISH": "true",
+            }
+        )
+        runtime = RuntimeClient.from_token_file(
+            node.runtime_url,
+            node.data_dir / "runtime" / "auth.token",
+            provider_base_url=node.base_url,
+        )
+
+        async with ProviderClient(node.base_url) as provider, runtime, MarketplaceClient(
+            marketplace.base_url
+        ) as client:
+            descriptor = await provider.descriptor()
+            offers = await provider.offers()
+            provider_snapshot = await runtime.provider_start()
+            published = await runtime.publish_services()
+            wallet = await runtime.wallet_balance()
+
+            nodes = []
+            for _ in range(20):
+                nodes = await client.search_nodes(limit=10)
+                if nodes:
+                    break
+                await asyncio.sleep(0.2)
+            self.assertTrue(nodes)
+
+            node_id = descriptor["payload"]["provider_id"]
+            node_record = await client.get_node(node_id)
+
+        self.assertTrue(any(offer["payload"]["offer_id"] == "execute.wasm" for offer in offers))
+        self.assertEqual(provider_snapshot["descriptor"]["hash"], published["descriptor"]["hash"])
+        self.assertEqual(
+            provider_snapshot["descriptor"]["payload"]["provider_id"],
+            descriptor["payload"]["provider_id"],
+        )
+        self.assertIn(wallet["backend"], {"none", "mock", "lightning"})
+        self.assertIn("accepted_payment_methods", wallet)
+        self.assertEqual(node_record["descriptor"]["node_id"], node_id)
+        self.assertEqual(node_record["descriptor"]["transports"]["clearnet_url"], node.base_url)
+
     async def test_provider_client_supports_quote_deal_wait_accept_flow(self) -> None:
         node = await self.start_node(
             extra_env={

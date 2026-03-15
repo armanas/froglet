@@ -18,14 +18,14 @@ else
 fi
 
 echo "[strict] python unittest with warnings as errors"
-python3 -W error -m unittest -v
+python3 -W error -m unittest discover -s python/tests -t . -v
 
 if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then
   echo "[strict] tor integration"
-  python3 -W error -m unittest -v test_tor_integration.py
+  python3 -W error -m unittest -v python.tests.test_tor_integration
 fi
 
 if [[ "${FROGLET_RUN_LND_REGTEST:-0}" == "1" ]]; then
   echo "[strict] lnd regtest integration"
-  python3 -W error -m unittest -v test_lnd_regtest.py
+  python3 -W error -m unittest -v python.tests.test_lnd_regtest
 fi

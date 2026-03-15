@@ -2,7 +2,7 @@
 
 Status: non-normative supporting document
 
-`SPEC.md` is the kernel contract.
+[`../SPEC.md`](../SPEC.md) is the kernel contract.
 This document describes how the rest of the system is layered around that kernel.
 
 ## 1. Layering
@@ -76,6 +76,8 @@ Examples:
 
 These services consume signed artifacts.
 They are not themselves the source of truth.
+Detailed staged planning for this layer lives under `../higher_layers/` while it
+is incubated beside the core repo.
 
 ## 6. What Stays Out of the Kernel
 

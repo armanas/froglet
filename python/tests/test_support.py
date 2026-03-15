@@ -18,7 +18,7 @@ from typing import Optional
 import aiohttp
 from ecdsa import curves, ellipticcurve
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TARGET_DIR = REPO_ROOT / "target" / "debug"
 FROGLET_BIN = TARGET_DIR / "froglet"
 MARKETPLACE_BIN = TARGET_DIR / "marketplace"
@@ -455,6 +455,7 @@ async def start_lnd_regtest_cluster() -> LndRegtestCluster:
         await _wait_for_active_channel(cluster, "bob")
         for node_key in nodes:
             await _wait_for_lnd_rest_ready(cluster, node_key)
+        await _wait_for_lnd_payment_ready(cluster)
         return cluster
     except Exception:
         await cluster.stop()
@@ -563,6 +564,29 @@ async def _wait_for_lnd_rest_ready(
                 raise RuntimeError(f"missing identity_pubkey in payload: {payload}")
 
     await _wait_for(op, timeout=timeout, description=f"{node_key} lnd rest")
+
+
+async def _wait_for_lnd_payment_ready(
+    cluster: LndRegtestCluster, timeout: float = 60.0
+) -> None:
+    async def op() -> str:
+        invoice = json.loads(
+            await cluster._lncli(
+                "bob",
+                "addinvoice",
+                "--amt",
+                "1",
+                "--memo",
+                f"froglet-route-probe-{time.time_ns()}",
+            )
+        )
+        payment_request = invoice.get("payment_request")
+        if not isinstance(payment_request, str) or not payment_request:
+            raise RuntimeError(f"unexpected addinvoice payload: {invoice}")
+        await cluster.pay_invoice("alice", payment_request, timeout="15s")
+        return "ok"
+
+    await _wait_for(op, timeout=timeout, description="alice->bob probe payment")
 
 
 async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> MarketplaceServer:

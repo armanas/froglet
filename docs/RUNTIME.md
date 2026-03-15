@@ -3,8 +3,8 @@
 Status: non-normative supporting document
 
 This document covers the localhost bot-facing runtime.
-The runtime is a product surface layered on top of the kernel in `SPEC.md`.
-The current supported product boundary for that surface is defined in `BOT_RUNTIME_ALPHA.md`.
+The runtime is a product surface layered on top of the kernel in [`../SPEC.md`](../SPEC.md).
+The current supported product boundary for that surface is defined in [`BOT_RUNTIME_ALPHA.md`](BOT_RUNTIME_ALPHA.md).
 
 ## 1. Happy Path
 

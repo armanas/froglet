@@ -16,11 +16,11 @@ It freezes:
 
 The following are intentionally moved out of the kernel and are defined in companion docs:
 
-- layered product architecture: `ARCHITECTURE.md`
-- transport and discovery adapters: `ADAPTERS.md`
-- bot-facing localhost runtime: `RUNTIME.md`
-- Nostr publication behavior: `NOSTR.md`
-- storage and archival profiles: `STORAGE_PROFILE.md`
+- layered product architecture: `docs/ARCHITECTURE.md`
+- transport and discovery adapters: `docs/ADAPTERS.md`
+- bot-facing localhost runtime: `docs/RUNTIME.md`
+- Nostr publication behavior: `docs/NOSTR.md`
+- storage and archival profiles: `docs/STORAGE_PROFILE.md`
 
 ## 1. Scope
 
