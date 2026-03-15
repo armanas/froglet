@@ -1,3 +1,4 @@
+use reqwest::Url;
 use serde::Serialize;
 use std::{env, fmt, path::PathBuf};
 
@@ -76,7 +77,6 @@ impl DiscoveryMode {
 #[serde(rename_all = "snake_case")]
 pub enum PaymentBackend {
     None,
-    Cashu,
     Lightning,
 }
 
@@ -84,7 +84,6 @@ impl fmt::Display for PaymentBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentBackend::None => write!(f, "none"),
-            PaymentBackend::Cashu => write!(f, "cashu"),
             PaymentBackend::Lightning => write!(f, "lightning"),
         }
     }
@@ -94,10 +93,9 @@ impl PaymentBackend {
     fn parse(s: &str) -> Result<Self, String> {
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
-            "cashu" => Ok(Self::Cashu),
             "lightning" => Ok(Self::Lightning),
             _ => Err(format!(
-                "Invalid FROGLET_PAYMENT_BACKEND value: '{s}'. Allowed values: none, cashu, lightning"
+                "Invalid FROGLET_PAYMENT_BACKEND value: '{s}'. Allowed values: none, lightning"
             )),
         }
     }
@@ -157,13 +155,6 @@ impl PricingConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct CashuConfig {
-    pub mint_allowlist: Vec<String>,
-    pub remote_checkstate: bool,
-    pub request_timeout_secs: u64,
-}
-
-#[derive(Debug, Clone)]
 pub struct LightningConfig {
     pub mode: LightningMode,
     pub destination_identity: Option<String>,
@@ -195,16 +186,24 @@ pub struct StorageConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct TorSidecarConfig {
+    pub binary_path: String,
+    pub backend_listen_addr: String,
+    pub startup_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub network_mode: NetworkMode,
     pub listen_addr: String,
+    pub runtime_listen_addr: String,
+    pub tor: TorSidecarConfig,
     pub discovery_mode: DiscoveryMode,
     pub identity: IdentityConfig,
     pub marketplace: Option<MarketplaceConfig>,
     pub pricing: PricingConfig,
     pub payment_backend: PaymentBackend,
     pub execution_timeout_secs: u64,
-    pub cashu: CashuConfig,
     pub lightning: LightningConfig,
     pub storage: StorageConfig,
 }
@@ -218,6 +217,14 @@ impl NodeConfig {
 
         let listen_addr =
             env::var("FROGLET_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+        let runtime_listen_addr = env::var("FROGLET_RUNTIME_LISTEN_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+        let tor = TorSidecarConfig {
+            binary_path: env::var("FROGLET_TOR_BINARY").unwrap_or_else(|_| "tor".to_string()),
+            backend_listen_addr: env::var("FROGLET_TOR_BACKEND_LISTEN_ADDR")
+                .unwrap_or_else(|_| "127.0.0.1:8082".to_string()),
+            startup_timeout_secs: env_u64("FROGLET_TOR_STARTUP_TIMEOUT_SECS", 90)?.clamp(5, 300),
+        };
 
         let pricing = PricingConfig {
             events_query: env_u64("FROGLET_PRICE_EVENTS_QUERY", 0)?,
@@ -266,26 +273,10 @@ impl NodeConfig {
         };
 
         if pricing.has_paid_services() && matches!(payment_backend, PaymentBackend::None) {
-            return Err(
-                "Paid services require FROGLET_PAYMENT_BACKEND to be set to 'lightning' or an explicitly enabled legacy backend such as 'cashu'"
-                    .into(),
-            );
+            return Err("Paid services require FROGLET_PAYMENT_BACKEND=lightning".into());
         }
 
         let execution_timeout_secs = env_u64("FROGLET_EXECUTION_TIMEOUT_SECS", 10)?.clamp(1, 300);
-        let mint_allowlist = env_csv("FROGLET_CASHU_MINT_ALLOWLIST");
-        let remote_checkstate = env_bool("FROGLET_CASHU_REMOTE_CHECKSTATE", false)?;
-        if remote_checkstate && mint_allowlist.is_empty() {
-            return Err(
-                "FROGLET_CASHU_REMOTE_CHECKSTATE=true requires FROGLET_CASHU_MINT_ALLOWLIST to avoid untrusted mint callbacks"
-                    .into(),
-            );
-        }
-        let cashu = CashuConfig {
-            mint_allowlist,
-            remote_checkstate,
-            request_timeout_secs: env_u64("FROGLET_CASHU_REQUEST_TIMEOUT_SECS", 5)?.clamp(1, 30),
-        };
         let lightning_mode = match env::var("FROGLET_LIGHTNING_MODE") {
             Ok(val) => LightningMode::parse(&val)?,
             Err(_) => LightningMode::Mock,
@@ -306,10 +297,17 @@ impl NodeConfig {
                     "FROGLET_LIGHTNING_MODE=lnd_rest requires FROGLET_LIGHTNING_REST_URL".into(),
                 );
             };
+            let plaintext_loopback = lnd_rest_url_allows_plaintext_loopback(rest_url)
+                .map_err(|error| error.to_string())?;
             if rest_url.starts_with("https://") && lnd_tls_cert_path.is_none() {
                 return Err(
                     "FROGLET_LIGHTNING_TLS_CERT_PATH is required for https LND REST endpoints"
                         .into(),
+                );
+            }
+            if rest_url.starts_with("http://") && !plaintext_loopback {
+                return Err(
+                    "FROGLET_LIGHTNING_REST_URL must use https:// unless it points to a loopback-only http:// endpoint".into(),
                 );
             }
             if lnd_macaroon_path.is_none() {
@@ -354,6 +352,8 @@ impl NodeConfig {
         Ok(Self {
             network_mode,
             listen_addr,
+            runtime_listen_addr,
+            tor,
             discovery_mode,
             identity: IdentityConfig {
                 auto_generate: env_bool("FROGLET_IDENTITY_AUTO_GENERATE", true)?,
@@ -362,7 +362,6 @@ impl NodeConfig {
             pricing,
             payment_backend,
             execution_timeout_secs,
-            cashu,
             lightning,
             storage: StorageConfig {
                 data_dir,
@@ -391,24 +390,27 @@ fn env_bool(name: &str, default: bool) -> Result<bool, String> {
     }
 }
 
-fn env_csv(name: &str) -> Vec<String> {
-    match env::var(name) {
-        Ok(value) => value
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
 fn env_u64(name: &str, default: u64) -> Result<u64, String> {
     match env::var(name) {
         Ok(value) => value
             .parse::<u64>()
             .map_err(|_| format!("Invalid {name} value: '{value}'. Expected unsigned integer")),
         Err(_) => Ok(default),
+    }
+}
+
+fn lnd_rest_url_allows_plaintext_loopback(rest_url: &str) -> Result<bool, String> {
+    let parsed = Url::parse(rest_url)
+        .map_err(|error| format!("invalid FROGLET_LIGHTNING_REST_URL: {error}"))?;
+    match parsed.scheme() {
+        "https" => Ok(false),
+        "http" => Ok(matches!(
+            parsed.host_str(),
+            Some("127.0.0.1" | "localhost" | "::1")
+        )),
+        scheme => Err(format!(
+            "FROGLET_LIGHTNING_REST_URL must use https:// or loopback http://; got scheme '{scheme}'"
+        )),
     }
 }
 
@@ -462,5 +464,13 @@ mod tests {
             execute_wasm: 10,
         };
         assert!(pricing.has_paid_services());
+    }
+
+    #[test]
+    fn test_lnd_rest_url_rejects_non_loopback_http() {
+        assert!(!lnd_rest_url_allows_plaintext_loopback("https://lnd.example.com").unwrap());
+        assert!(lnd_rest_url_allows_plaintext_loopback("http://127.0.0.1:8080").unwrap());
+        assert!(lnd_rest_url_allows_plaintext_loopback("http://localhost:8080").unwrap());
+        assert!(!lnd_rest_url_allows_plaintext_loopback("http://10.0.0.5:8080").unwrap());
     }
 }

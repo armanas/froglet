@@ -64,7 +64,7 @@ class TorIntegrationTests(FrogletAsyncTestCase):
             for endpoint in descriptor["payload"]["transport_endpoints"]
         }
         self.assertEqual(
-            descriptor_transports["https"]["uri"],
+            descriptor_transports["http"]["uri"],
             capabilities["transports"]["clearnet"]["url"],
         )
         self.assertEqual(

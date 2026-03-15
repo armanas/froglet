@@ -51,7 +51,12 @@ async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Buy and accept a priced Wasm service through the Froglet runtime"
     )
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--runtime-url", default="http://127.0.0.1:8081")
+    parser.add_argument(
+        "--provider-url",
+        default="http://127.0.0.1:8080",
+        help="Public provider API base URL used for quote/deal and verification flows.",
+    )
     parser.add_argument("--token-path", default="./data/runtime/auth.token")
     parser.add_argument("--offer-id", default="execute.wasm")
     parser.add_argument("--idempotency-key", default="example-runtime-buy-accept")
@@ -64,7 +69,11 @@ async def main() -> None:
     request["idempotency_key"] = args.idempotency_key
     request.update(runtime_requester_fields(requester_seed, success_preimage))
 
-    runtime = RuntimeClient.from_token_file(args.base_url, args.token_path)
+    runtime = RuntimeClient.from_token_file(
+        args.runtime_url,
+        args.token_path,
+        provider_base_url=args.provider_url,
+    )
     async with runtime:
         snapshot = await runtime.provider_start()
         handle = await runtime.buy_service(request, include_payment_intent=True)

@@ -111,7 +111,10 @@ where
         &vector.artifact.payload,
     )
     .expect("canonical signing bytes");
-    assert_eq!(hex::encode(&signing_bytes), vector.canonical_signing_bytes_hex);
+    assert_eq!(
+        hex::encode(&signing_bytes),
+        vector.canonical_signing_bytes_hex
+    );
     assert_eq!(
         protocol::payload_hash(&vector.artifact.payload).expect("payload hash"),
         vector.payload_hash
@@ -278,14 +281,32 @@ fn kernel_conformance_linked_identity_challenge_is_stable() {
         fixture.linked_identity.expires_at,
     )
     .expect("challenge bytes");
-    assert_eq!(String::from_utf8(challenge.clone()).expect("utf8"), fixture.linked_identity.challenge_utf8);
-    assert_eq!(hex::encode(challenge), fixture.linked_identity.challenge_hex);
     assert_eq!(
-        fixture.artifacts.descriptor.artifact.payload.linked_identities[0].linked_signature,
+        String::from_utf8(challenge.clone()).expect("utf8"),
+        fixture.linked_identity.challenge_utf8
+    );
+    assert_eq!(
+        hex::encode(challenge),
+        fixture.linked_identity.challenge_hex
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .descriptor
+            .artifact
+            .payload
+            .linked_identities[0]
+            .linked_signature,
         fixture.linked_identity.linked_signature
     );
     assert_eq!(
-        fixture.artifacts.descriptor.artifact.payload.linked_identities[0].identity,
+        fixture
+            .artifacts
+            .descriptor
+            .artifact
+            .payload
+            .linked_identities[0]
+            .identity,
         fixture.keys.nostr_publication_id
     );
 }

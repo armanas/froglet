@@ -22,7 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parent
 TARGET_DIR = REPO_ROOT / "target" / "debug"
 FROGLET_BIN = TARGET_DIR / "froglet"
 MARKETPLACE_BIN = TARGET_DIR / "marketplace"
-VALID_CASHU_TOKEN = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91IHZlcnkgbXVjaC4ifQ=="
 VALID_WASM_HEX = (
     "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
     "020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432"
@@ -108,13 +107,25 @@ class ManagedProcess:
 
 
 class FrogletNode(ManagedProcess):
-    def __init__(self, process: subprocess.Popen, log_path: Path, temp_root: Path, port: int, data_dir: Path):
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        log_path: Path,
+        temp_root: Path,
+        port: int,
+        runtime_port: int,
+        data_dir: Path,
+    ):
         super().__init__(process=process, log_path=log_path, temp_root=temp_root)
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}"
+        self.runtime_port = runtime_port
+        self.runtime_url = f"http://127.0.0.1:{runtime_port}"
         self.data_dir = data_dir
 
     def url(self, path: str) -> str:
+        if path.startswith("/v1/runtime/"):
+            return f"{self.runtime_url}{path}"
         return f"{self.base_url}{path}"
 
 
@@ -597,11 +608,15 @@ async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[d
 async def start_node(
     *,
     port: Optional[int] = None,
+    runtime_port: Optional[int] = None,
+    tor_backend_port: Optional[int] = None,
     data_dir: Optional[Path] = None,
     extra_env: Optional[dict[str, str]] = None,
 ) -> FrogletNode:
     ensure_binaries()
     port = port or reserve_tcp_port()
+    runtime_port = runtime_port or reserve_tcp_port()
+    tor_backend_port = tor_backend_port or reserve_tcp_port()
     temp_root = Path(tempfile.mkdtemp(prefix="froglet-node-"))
     log_path = temp_root / "froglet.log"
     data_dir = data_dir or (temp_root / "data")
@@ -611,6 +626,8 @@ async def start_node(
         {
             "FROGLET_NETWORK_MODE": "clearnet",
             "FROGLET_LISTEN_ADDR": f"127.0.0.1:{port}",
+            "FROGLET_RUNTIME_LISTEN_ADDR": f"127.0.0.1:{runtime_port}",
+            "FROGLET_TOR_BACKEND_LISTEN_ADDR": f"127.0.0.1:{tor_backend_port}",
             "FROGLET_DATA_DIR": str(data_dir),
         }
     )
@@ -628,10 +645,20 @@ async def start_node(
             start_new_session=True,
         )
 
-    node = FrogletNode(process=process, log_path=log_path, temp_root=temp_root, port=port, data_dir=data_dir)
+    node = FrogletNode(
+        process=process,
+        log_path=log_path,
+        temp_root=temp_root,
+        port=port,
+        runtime_port=runtime_port,
+        data_dir=data_dir,
+    )
 
     try:
-        await wait_for_http(node.url("/health"))
+        network_mode = env.get("FROGLET_NETWORK_MODE", "clearnet").lower()
+        if network_mode in {"clearnet", "dual"}:
+            await wait_for_http(node.url("/health"))
+        await wait_for_http(f"{node.runtime_url}/health")
     except Exception:
         output = node.output()
         await node.stop()
@@ -761,20 +788,36 @@ PUBKEY_HEX = schnorr_pubkey_hex(SIGNING_KEY)
 
 
 def create_signed_event(content: str, *, kind: str = "market.listing", tags: Optional[list[list[str]]] = None) -> dict:
-    content_bytes = content.encode("utf-8")
     created_at = int(time.time())
-    event_id = __import__("hashlib").sha256(content_bytes).hexdigest()
     event = {
-        "id": event_id,
+        "id": "",
         "pubkey": PUBKEY_HEX,
         "created_at": created_at,
         "kind": kind,
         "tags": tags or [["t", "test"]],
         "content": content,
     }
+    event["id"] = canonical_event_id(event)
     signature = schnorr_sign_message(SIGNING_KEY, canonical_event_signing_bytes(event))
     event["sig"] = signature
     return event
+
+
+def canonical_event_id(event: dict) -> str:
+    return hashlib.sha256(canonical_event_id_bytes(event)).hexdigest()
+
+
+def canonical_event_id_bytes(event: dict) -> bytes:
+    return json.dumps(
+        [
+            event["pubkey"],
+            event["created_at"],
+            event["kind"],
+            event["tags"],
+            event["content"],
+        ],
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def canonical_event_signing_bytes(event: dict) -> bytes:
@@ -884,11 +927,35 @@ def sign_deal_artifact_from_quote(
     issued_at = created_at if created_at is not None else int(time.time())
     runtime_ms = int(quote["payload"]["execution_limits"]["max_runtime_ms"])
     execution_window_secs = max(1, (runtime_ms + 999) // 1000)
-    admission_deadline = int(quote["payload"]["expires_at"])
-    completion_deadline = admission_deadline + execution_window_secs
-    acceptance_deadline = completion_deadline + int(
-        quote["payload"]["settlement_terms"]["max_success_hold_expiry_secs"]
+    settlement_terms = quote["payload"]["settlement_terms"]
+    total_msat = int(settlement_terms["base_fee_msat"]) + int(
+        settlement_terms["success_fee_msat"]
     )
+    if (
+        settlement_terms["method"] == "lightning.base_fee_plus_success_fee.v1"
+        and total_msat > 0
+    ):
+        quote_expires_at = int(quote["payload"]["expires_at"])
+        hold_window_secs = int(settlement_terms["max_success_hold_expiry_secs"])
+        admission_window_secs = max(
+            int(settlement_terms["max_base_invoice_expiry_secs"]),
+            hold_window_secs,
+        )
+        latest_admission_deadline = quote_expires_at - execution_window_secs - hold_window_secs
+        admission_deadline = min(
+            latest_admission_deadline,
+            issued_at + admission_window_secs,
+        )
+        if admission_deadline < issued_at:
+            raise ValueError(
+                "quote no longer has enough time for the Lightning execution and acceptance windows"
+            )
+        completion_deadline = admission_deadline + execution_window_secs
+        acceptance_deadline = completion_deadline + hold_window_secs
+    else:
+        admission_deadline = int(quote["payload"]["expires_at"])
+        completion_deadline = admission_deadline + execution_window_secs
+        acceptance_deadline = completion_deadline
     payload = {
         "requester_id": schnorr_pubkey_hex(requester_secret_key),
         "provider_id": quote["payload"]["provider_id"],

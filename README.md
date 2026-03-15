@@ -26,9 +26,43 @@ This repository now contains two binaries:
 - [REMOTE_AGENT_LAYER.md](REMOTE_AGENT_LAYER.md): planned long-running remote-agent layer above the v1 primitive
 - [examples/README.md](examples/README.md): runnable Python example integrations
 
+## Support Matrix
+
+Primitive core, intended stable release surface:
+
+- signed descriptor, offer, quote, deal, receipt, curated-list, and invoice-bundle artifacts
+- local SQLite-backed artifact, deal, job, and evidence persistence
+- public provider routes for descriptor, offers, quotes, deals, verification, feed, and archive-backed artifacts
+- restart recovery for persisted accepted, running, `payment_pending`, and `result_ready` deal state
+
+Supported alpha surfaces above the primitive:
+
+- `/v1/runtime/*` local runtime routes
+- `froglet_client.py` and the bot-facing helper workflow
+- marketplace publish/search flows
+- external `tor` sidecar transport publication
+- `lnd_rest` Lightning integration
+- `froglet_nostr_adapter.py` publication helpers
+
+Operationally useful but not part of the stable primitive contract:
+
+- reference `marketplace` binary
+- relay publication policy and adapter behavior
+- local runtime convenience flows that compress multiple primitive steps
+
+Dev/test-only surfaces:
+
+- mock-Lightning invoice-bundle state mutation through `/v1/runtime/lightning/invoice-bundles/:session_id/state`
+- env-gated Tor and real-LND integration harnesses
+
+Release guarantee boundary:
+
+- the primitive is the signed artifact kernel plus durable local state transitions
+- alpha/runtime/service layers may evolve faster than the primitive and should not be treated as a frozen compatibility contract yet
+
 ## Features
 
-- Native Tor hidden service support through Arti
+- Managed external Tor hidden service sidecar support
 - Stable secp256k1 node identity stored under `./data/identity/secp256k1.seed`
 - Signed descriptor, offer, quote, deal, and receipt artifacts
 - Append-only local artifact feed backed by SQLite
@@ -37,7 +71,6 @@ This repository now contains two binaries:
 - Central marketplace publishing with signed register and heartbeat flows
 - Signed reclaim flow for bringing a node identity back online
 - Lightning-first invoice-bundle settlement for priced deals
-- Optional legacy Cashu verifier compatibility for inline-payment helpers
 - LND REST client boundary for future real hold-invoice settlement
 - Sandboxed Wasm execution
 - Async job API with persisted state, polling, and idempotency keys as a compatibility layer
@@ -67,7 +100,19 @@ The marketplace listens on `127.0.0.1:9090` by default and stores state in `./da
 
 - `FROGLET_NETWORK_MODE=clearnet|tor|dual`
 - `FROGLET_LISTEN_ADDR=127.0.0.1:8080`
+- `FROGLET_RUNTIME_LISTEN_ADDR=127.0.0.1:8081`
+- `FROGLET_TOR_BACKEND_LISTEN_ADDR=127.0.0.1:8082`
+- `FROGLET_TOR_BINARY=tor`
+- `FROGLET_TOR_STARTUP_TIMEOUT_SECS=90`
 - `FROGLET_DATA_DIR=./data`
+
+Default local listener roles:
+
+- `FROGLET_LISTEN_ADDR`: public provider API for `/v1/descriptor`, `/v1/offers`, `/v1/quotes`, `/v1/deals`, and verification routes
+- `FROGLET_RUNTIME_LISTEN_ADDR`: privileged local runtime API for `/v1/runtime/*`
+- `FROGLET_TOR_BACKEND_LISTEN_ADDR`: internal loopback-only HTTP backend that the external `tor` sidecar publishes as the onion service
+
+`FROGLET_RUNTIME_LISTEN_ADDR` and `FROGLET_TOR_BACKEND_LISTEN_ADDR` are separate trust boundaries. Neither should be exposed directly on a public interface.
 
 ### Discovery and marketplace
 
@@ -87,11 +132,8 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 
 - `FROGLET_PRICE_EVENTS_QUERY=0`
 - `FROGLET_PRICE_EXEC_WASM=0`
-- `FROGLET_PAYMENT_BACKEND=none|cashu|lightning`
+- `FROGLET_PAYMENT_BACKEND=none|lightning`
 - `FROGLET_EXECUTION_TIMEOUT_SECS=10`
-- `FROGLET_CASHU_MINT_ALLOWLIST=https://mint.example,https://mint2.example`
-- `FROGLET_CASHU_REMOTE_CHECKSTATE=true|false`
-- `FROGLET_CASHU_REQUEST_TIMEOUT_SECS=5`
 - `FROGLET_LIGHTNING_MODE=mock|lnd_rest`
 - `FROGLET_LIGHTNING_REST_URL=https://127.0.0.1:8080`
 - `FROGLET_LIGHTNING_TLS_CERT_PATH=/path/to/tls.cert`
@@ -101,17 +143,15 @@ If auto-generation is enabled and no seed file exists, Froglet creates one on fi
 
 If any price is greater than zero and `FROGLET_PAYMENT_BACKEND` is not set, Froglet defaults to `lightning`.
 The mainline priced v1 flow is `quote -> deal -> receipt`.
-The older inline-payment query and job helpers remain available only as explicit legacy compatibility when `FROGLET_PAYMENT_BACKEND=cashu`.
 `FROGLET_LIGHTNING_MODE=lnd_rest` now provides the real LND REST boundary for invoice creation, lookup, cancel, and settle operations. Froglet still uses the same explicit requester preimage-release step for the success-fee hold leg, and the background Lightning watcher reconciles `payment_pending` and `result_ready` deals on a fixed interval.
 When `FROGLET_LIGHTNING_REST_URL` is HTTPS, `FROGLET_LIGHTNING_TLS_CERT_PATH` is treated as a pinned LND server certificate rather than as a generic WebPKI CA bundle. This matches the way local LND admin endpoints typically expose self-signed TLS material.
 The test suite now covers both a synthetic LND REST backend that emits real BOLT11 invoices and an env-gated Dockerized regtest topology with real LND nodes, hold invoices, settlement, cancellation, and watcher-driven restart recovery.
 The repo also now ships a small async Python helper in `froglet_client.py` so local agents can search, quote, open deals, wait on state transitions, and accept results without hardcoding route names or parsing payment-intent details on the default path.
-There is also an env-gated Tor integration test, enabled with `FROGLET_RUN_TOR_INTEGRATION=1`, that boots `dual` transport mode and verifies descriptor/capability parity once the onion endpoint comes up.
+There is also an env-gated Tor integration test, enabled with `FROGLET_RUN_TOR_INTEGRATION=1`, that boots `dual` transport mode against the external `tor` sidecar and verifies descriptor/capability parity once the onion endpoint comes up.
 
 `FROGLET_EXECUTION_TIMEOUT_SECS` is enforced by the Wasm sandbox adapter and is also published in offer constraints.
-For Lightning-priced `execute.wasm`, Froglet clamps the advertised and enforced runtime to at most 30 seconds, or less if `FROGLET_EXECUTION_TIMEOUT_SECS` is already lower.
-
-When `FROGLET_CASHU_MINT_ALLOWLIST` is set, only tokens from those mints are accepted. If `FROGLET_CASHU_REMOTE_CHECKSTATE=true`, Froglet additionally calls the mint's NUT-07 `/v1/checkstate` endpoint before reserving the token. Remote checkstate requires a non-empty mint allowlist.
+The public API listener and the privileged runtime listener are intentionally separate. Keep `FROGLET_RUNTIME_LISTEN_ADDR` on loopback unless you are deliberately changing the trust boundary.
+The Tor sidecar backend is also intentionally separate from both of those listeners. Keep `FROGLET_TOR_BACKEND_LISTEN_ADDR` on loopback; it is not an authenticated surface.
 
 ## Marketplace Configuration
 
@@ -166,28 +206,40 @@ FROGLET_MARKETPLACE_PUBLISH=true \
 cargo run --bin froglet
 ```
 
-### Legacy paid query endpoint
+### Dual transport node with external Tor sidecar
+
+This assumes a `tor` binary is installed and available on `PATH` or explicitly configured via `FROGLET_TOR_BINARY`.
 
 ```bash
-FROGLET_PRICE_EVENTS_QUERY=10 \
-FROGLET_PAYMENT_BACKEND=cashu \
+FROGLET_NETWORK_MODE=dual \
+FROGLET_TOR_BINARY=tor \
+FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
+FROGLET_RUNTIME_LISTEN_ADDR=127.0.0.1:8081 \
+FROGLET_TOR_BACKEND_LISTEN_ADDR=127.0.0.1:8082 \
 cargo run --bin froglet
 ```
 
-Requests to `/v1/node/events/query` require a payment object only in the legacy Cashu compatibility mode:
+In this layout:
+
+- clearnet clients reach `127.0.0.1:8080`
+- local bots reach `127.0.0.1:8081`
+- the `tor` sidecar reaches `127.0.0.1:8082` and publishes that backend as the onion service
+
+### Free query helper endpoint
+
+```bash
+cargo run --bin froglet
+```
+
+Requests to `/v1/node/events/query` are available directly when the service is free:
 
 ```json
 {
   "kinds": ["note"],
-  "limit": 5,
-  "payment": {
-    "kind": "cashu",
-    "token": "cashuA..."
-  }
+  "limit": 5
 }
 ```
 
-If payment is missing, Froglet returns `402 Payment Required`.
 When `FROGLET_PAYMENT_BACKEND=lightning`, priced `events.query` requests must go through `/v1/quotes` and `/v1/deals` instead of this helper endpoint.
 
 ### Quote and deal flow
@@ -219,22 +271,6 @@ POST /v1/quotes
 The node responds with a signed quote artifact. The client can then open a deal against that quote.
 For public `compute.wasm.v1` workloads, Froglet rejects any module that declares host imports, shared memories, 64-bit memories, or memory bounds above the published v1 limit before execution begins.
 The interoperable v1 determinism profile is intentionally narrow: module, input, and result identity are all hash-based, and the public ABI exposes no ambient filesystem, network, clock, or randomness capabilities.
-In legacy Cashu compatibility mode, the deal can still carry an inline payment token:
-
-```json
-POST /v1/deals
-{
-  "quote": { "...": "signed quote artifact" },
-  "kind": "wasm",
-  "submission": {
-    "...": "same wasm_submission used for quoting"
-  },
-  "payment": {
-    "kind": "cashu",
-    "token": "cashuA..."
-  }
-}
-```
 
 Froglet persists the accepted deal immediately, executes it asynchronously, and returns a signed receipt when the deal reaches `succeeded`, `failed`, or `rejected`.
 New receipts include the signed deal hash, result format metadata, executor/runtime metadata, and the applied runtime limit profile for the workload.
@@ -258,7 +294,7 @@ POST /v1/deals
 The deal is persisted as `payment_pending`. The requester can still fetch the signed transport bundle from `GET /v1/deals/:deal_id/invoice-bundle`, but the local runtime now exposes a wallet-facing `payment_intent` on `POST /v1/runtime/services/buy` and `GET /v1/runtime/deals/:deal_id/payment-intent` so agents do not need to parse raw invoice-bundle legs on the happy path. Once the base leg is settled and the success hold is accepted, Froglet admits the deal, executes it, and stages the completed result as `result_ready`.
 The deal does not become terminal at that point. The requester must explicitly accept the success-fee leg by calling `POST /v1/deals/:deal_id/release-preimage` with the original 32-byte secret whose hash was committed as `success_payment_hash`. Only after that release does Froglet settle the hold and emit the final signed receipt.
 When a bundle is issued, Froglet clamps each Lightning leg's expiry to the remaining lifetime of the accepted quote so the returned invoices cannot outlive the quoted commitment window.
-For the same reason, Froglet also clamps Lightning-priced Wasm execution to a short wall-clock window of 30 seconds or less. Longer work should be split into multiple deals rather than stretched across one hold-invoice session.
+Lightning-priced Wasm execution now follows the configured execution limit directly. Operators are responsible for setting `FROGLET_EXECUTION_TIMEOUT_SECS` to a value that matches their settlement and resource-risk tolerance.
 Lightning-backed deals are also reconciled in the background, so `payment_pending` and `result_ready` deals can progress or fail after restart without requiring a status-polling request to trigger sync.
 In mock Lightning mode, local tests can advance bundle state through `POST /v1/runtime/lightning/invoice-bundles/:session_id/state` until the deal is admitted and executed.
 Before either Lightning leg is paid, Froglet can verify the returned bundle against the signed quote and deal via `POST /v1/invoice-bundles/verify`.
@@ -300,11 +336,10 @@ If `execute.wasm` is priced and the Lightning backend is active, `POST /v1/node/
 - `GET /v1/node/capabilities`
 - `GET /v1/node/identity`
 - `POST /v1/node/events/publish`
-- `POST /v1/node/events/query` for free queries or explicit legacy Cashu mode
+- `POST /v1/node/events/query` for free queries only
 - `POST /v1/node/execute/wasm` for free execution only
 - `POST /v1/node/jobs` for free execution only
 - `GET /v1/node/jobs/:job_id`
-- `POST /v1/node/pay/ecash`
 
 ## Agent Helper
 
@@ -316,7 +351,8 @@ If `execute.wasm` is priced and the Lightning backend is active, `POST /v1/node/
 
 The runtime helper defaults to compact deal handles and omits raw `payment_intent` details unless `include_payment_intent=True` is requested.
 It also exposes Nostr summary publication helpers for the current provider surface and terminal deal receipts without requiring relay access.
-Requester-side convenience helpers are also provided so local bots can generate a seed and construct `requester_id`, `requester_seed_hex`, and `success_payment_hash` fields without depending on `test_support.py`:
+Runtime helpers should target the dedicated runtime listener, while `ProviderClient` continues to target the public provider listener.
+Requester-side convenience helpers are also provided so local bots can generate a seed and construct local-only signing inputs without depending on `test_support.py`. The SDK consumes these values client-side and sends only signed quote/deal artifacts over HTTP:
 
 - `generate_requester_seed()`
 - `requester_id_from_seed(seed)`
@@ -324,6 +360,7 @@ Requester-side convenience helpers are also provided so local bots can generate 
 
 For the intended supported product path, see [BOT_RUNTIME_ALPHA.md](BOT_RUNTIME_ALPHA.md).
 For runnable integrations, see [examples/README.md](examples/README.md).
+For the strict local verification matrix used during hardening, run `./scripts/strict_checks.sh`.
 
 ### Runtime routes
 
@@ -338,11 +375,14 @@ For runnable integrations, see [examples/README.md](examples/README.md).
 - `GET /v1/runtime/archive/:subject_kind/:subject_id`
 - `POST /v1/runtime/lightning/invoice-bundles/:session_id/state`
 
+The runtime routes live on `FROGLET_RUNTIME_LISTEN_ADDR`, not on the public provider listener. The SDK mirrors that split: `RuntimeClient` should target the runtime listener, and `ProviderClient` should target the public listener.
+
 `GET /v1/feed` uses an exclusive cursor over the local artifact sequence.
 Pass `?cursor=<last_seen_cursor>&limit=<n>` to continue replication from the last artifact you processed.
 Use `GET /v1/artifacts/:artifact_hash` to resolve a specific content-addressed artifact by hash.
 
 For Lightning-priced deals, the runtime buy flow returns a verified `payment_intent` summary and a stable `payment_intent_path`. That summary contains the payable BOLT11 invoice strings, current invoice-leg states, and, once the result is staged, the exact `release-preimage` path plus expected `result_hash`.
+If you call `POST /v1/runtime/services/buy` directly instead of using the SDK, submit a pre-signed `quote` and `deal` plus the workload spec; the runtime route no longer accepts raw requester private key material in the request body.
 
 `GET /v1/runtime/archive/:subject_kind/:subject_id` is a privileged export surface for retained local evidence. It returns an engine-neutral archive bundle containing the subject's retained artifact documents, local feed entries, execution evidence, and any retained Lightning invoice-bundle material.
 
@@ -356,6 +396,7 @@ The adapter supports two relay-selection modes:
 - `--relay-config <path>` for a JSON relay allowlist with explicit `read` and `write` roles plus retry/backoff policy
 
 When a relay sends an `AUTH` challenge, pass `--auth-seed-file ./data/identity/nostr-publication.secp256k1.seed` so the adapter can answer the challenge with the same linked Nostr publication key that signed the Froglet summary events. This keeps relay auth outside the core node while still allowing NIP-42-style challenge handling in the external bridge.
+Use `--runtime-url` for the privileged runtime listener and `--provider-url` if the public provider listener is different.
 
 Example relay policy file:
 
@@ -420,40 +461,29 @@ Example relay policy file:
 
 ## Notes on Payments
 
-Paid endpoint enforcement currently does two things:
+Paid endpoint enforcement currently does the following:
 
-- validates Cashu token structure and amount
-- optionally enforces a mint allowlist and checks proof state against the mint via NUT-07
-- reserves the token locally before execution and only commits it on success
-- records explicit local settlement outcomes as `reserved`, `committed`, `released`, or `expired`
+- routes priced execution and query flows through signed quotes and deals
 - binds deal execution to the quoted price, not just the current endpoint default
-- returns signed terminal receipts that can be verified offline, including reserved-versus-committed settlement amounts
-
-If execution fails, Froglet marks the local reservation as `released` so the token is not consumed by a failed request and can be presented again later.
-
-If the node restarts while a deal is still accepted or running, Froglet marks the local reservation as `expired` and emits a signed terminal failure receipt for that interrupted deal during startup recovery.
-
-It does **not** redeem tokens against a mint or wallet backend. Replay protection is strictly **local to a single node**: the token hash is only compared against the node's own settlement state tables, and a token could in principle be reused at other nodes that do not share this state.
-
-The verifier is isolated behind a dedicated module so a stronger backend (for example, a real mint/wallet or remote verifier) can replace the current implementation without changing the API surface.
+- issues and validates Lightning invoice bundles against quote and deal commitments
+- preserves explicit settlement state in signed terminal receipts
+- returns signed terminal receipts that can be verified offline
 
 ### Threat Model (Current)
 
 - The node is expected to run in a controlled environment (edge node or personal server), exposed to untrusted clients over HTTP.
 - API routes are unauthenticated by default; protection is based on:
-  - static pricing and payment verification for sensitive endpoints,
+  - static pricing and quote/deal enforcement for sensitive endpoints,
   - input validation,
   - sandboxing of Wasm with fuel caps, memory caps, and global concurrency limits,
   - basic rate limiting and explicit body size limits on publish/execute routes.
 - Payments:
-  - Cashu tokens are parsed and checked for amount.
-  - Optional mint allowlists and NUT-07 checkstate verification can reject tokens before reservation.
-  - A local `reserved -> committed|released|expired` lifecycle prevents a successful token from being used twice **on the same node** while still preserving local failure state.
-  - Failed executions mark their reservation as `released` and do not intentionally consume the token.
-  - There is no global double-spend protection without an external mint/wallet integration.
+  - Priced v1 flows use signed quotes, signed deals, and Lightning invoice bundles.
+  - The requester still controls the success preimage release step for Lightning hold invoices.
+  - Restart recovery requeues recoverable work and emits signed failures for interrupted deals that cannot safely continue.
 - Storage and identities:
-  - Identity seeds, database files, and Tor state/cache directories are created with strict `0o600/0o700` permissions on Unix.
-  - Failure to secure Tor directories now causes startup to fail with a clear error.
+  - Identity seeds, database files, and Tor sidecar data/hidden-service directories are created with strict `0o600/0o700` permissions on Unix.
+  - Failure to secure Tor sidecar directories now causes startup to fail with a clear error.
 
 If you deploy Froglet on the public internet, you should still front it with additional protections (reverse proxy, WAF, external rate limiting, etc.) and carefully tune prices and limits for your threat model.
 
@@ -463,6 +493,8 @@ If you deploy Froglet on the public internet, you should still front it with add
 - **Migrate DB**: stop the node, copy `./data/node.db` (and `./data/marketplace.db` if running the marketplace) to the new location, update `FROGLET_DATA_DIR`, and restart.
 - **Toggle Tor/clearnet**:
   - Use `FROGLET_NETWORK_MODE=clearnet|tor|dual` to control which transports are enabled.
+  - `FROGLET_TOR_BINARY` must point to a usable `tor` executable when `tor` or `dual` mode is enabled.
+  - `FROGLET_TOR_BACKEND_LISTEN_ADDR` must stay loopback-only because it is the local HTTP backend that the `tor` sidecar publishes.
   - In `tor` mode, failure to start the Tor hidden service is treated as fatal.
 - **Marketplace publishing**:
   - Use `FROGLET_MARKETPLACE_PUBLISH` and `FROGLET_MARKETPLACE_REQUIRED` to control whether publishing is best-effort or mandatory.

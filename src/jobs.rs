@@ -1,4 +1,4 @@
-use crate::{pricing::ServiceId, protocol::SettlementStatus, wasm::WasmSubmission};
+use crate::{pricing::ServiceId, wasm::WasmSubmission};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -65,17 +65,7 @@ pub struct NewJob {
     pub request_hash: String,
     pub service_id: String,
     pub spec: JobSpec,
-    pub payment_token_hash: Option<String>,
-    pub payment_amount_sats: Option<u64>,
     pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobPaymentReceipt {
-    pub service_id: String,
-    pub amount_sats: u64,
-    pub token_hash: String,
-    pub settlement_status: SettlementStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,8 +80,6 @@ pub struct JobRecord {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payment_receipt: Option<JobPaymentReceipt>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -106,8 +94,6 @@ pub struct StoredJob {
     pub status: String,
     pub result: Option<Value>,
     pub error: Option<String>,
-    pub payment_token_hash: Option<String>,
-    pub payment_amount_sats: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -122,23 +108,8 @@ impl StoredJob {
             status: self.status.clone(),
             result: self.result.clone(),
             error: self.error.clone(),
-            payment_receipt: self.payment_receipt(),
             created_at: self.created_at,
             updated_at: self.updated_at,
-        }
-    }
-
-    pub fn payment_receipt(&self) -> Option<JobPaymentReceipt> {
-        match (&self.payment_token_hash, self.payment_amount_sats) {
-            (Some(token_hash), Some(amount_sats)) if self.status == JOB_STATUS_SUCCEEDED => {
-                Some(JobPaymentReceipt {
-                    service_id: self.service_id.clone(),
-                    amount_sats,
-                    token_hash: token_hash.clone(),
-                    settlement_status: SettlementStatus::Committed,
-                })
-            }
-            _ => None,
         }
     }
 }
@@ -161,8 +132,6 @@ pub fn insert_or_get_job(conn: &Connection, new_job: NewJob) -> Result<InsertJob
         request_hash,
         service_id,
         spec,
-        payment_token_hash,
-        payment_amount_sats,
         created_at,
     } = new_job;
 
@@ -179,14 +148,12 @@ pub fn insert_or_get_job(conn: &Connection, new_job: NewJob) -> Result<InsertJob
             status,
             result_json,
             error,
-            payment_token_hash,
-            payment_amount_sats,
             workload_evidence_hash,
             result_evidence_hash,
             failure_evidence_hash,
             created_at,
             updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, NULL, NULL, NULL, ?10, ?10)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL, NULL, NULL, ?8, ?8)",
         params![
             &job_id,
             idempotency_key.as_deref(),
@@ -195,8 +162,6 @@ pub fn insert_or_get_job(conn: &Connection, new_job: NewJob) -> Result<InsertJob
             spec.kind(),
             &payload_json,
             JOB_STATUS_QUEUED,
-            payment_token_hash.as_deref(),
-            payment_amount_sats.map(|v| v as i64),
             created_at,
         ],
     );
@@ -256,8 +221,6 @@ pub fn get_job(conn: &Connection, job_id: &str) -> Result<Option<StoredJob>, Str
             result_json,
             (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.result_evidence_hash LIMIT 1),
             error,
-            payment_token_hash,
-            payment_amount_sats,
             created_at,
             updated_at
          FROM jobs
@@ -294,7 +257,6 @@ pub fn complete_job_success(
     conn: &Connection,
     job_id: &str,
     result: &Value,
-    payment_receipt: Option<&JobPaymentReceipt>,
     result_evidence_hash: Option<&str>,
     now: i64,
 ) -> Result<(), String> {
@@ -304,20 +266,16 @@ pub fn complete_job_success(
          SET status = ?2,
              result_json = ?3,
              error = NULL,
-             payment_token_hash = COALESCE(?4, payment_token_hash),
-             payment_amount_sats = COALESCE(?5, payment_amount_sats),
-             result_evidence_hash = COALESCE(?6, result_evidence_hash),
+             result_evidence_hash = COALESCE(?4, result_evidence_hash),
              failure_evidence_hash = NULL,
-             updated_at = ?7
+             updated_at = ?5
          WHERE job_id = ?1",
         params![
             job_id,
             JOB_STATUS_SUCCEEDED,
             result_json,
-            payment_receipt.map(|receipt| receipt.token_hash.as_str()),
-            payment_receipt.map(|receipt| receipt.amount_sats as i64),
             result_evidence_hash,
-            now,
+            now
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -367,6 +325,60 @@ pub fn fail_incomplete_jobs(conn: &Connection, message: &str, now: i64) -> Resul
     Ok(())
 }
 
+pub fn list_incomplete_jobs(conn: &Connection) -> Result<Vec<StoredJob>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                job_id,
+                idempotency_key,
+                request_hash,
+                service_id,
+                payload_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.workload_evidence_hash LIMIT 1),
+                status,
+                result_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.result_evidence_hash LIMIT 1),
+                error,
+                created_at,
+                updated_at
+             FROM jobs
+             WHERE status IN (?1, ?2)
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(
+            params![JOB_STATUS_QUEUED, JOB_STATUS_RUNNING],
+            decode_job_row,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut jobs = Vec::new();
+    for row in rows {
+        jobs.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(jobs)
+}
+
+pub fn reset_running_job_to_queued(
+    conn: &Connection,
+    job_id: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE jobs
+             SET status = ?2, updated_at = ?3
+             WHERE job_id = ?1 AND status = ?4",
+            params![job_id, JOB_STATUS_QUEUED, now, JOB_STATUS_RUNNING],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
 pub fn find_job_by_idempotency_key(
     conn: &Connection,
     idempotency_key: &str,
@@ -383,8 +395,6 @@ pub fn find_job_by_idempotency_key(
             result_json,
             (SELECT content_json FROM execution_evidence WHERE content_hash = jobs.result_evidence_hash LIMIT 1),
             error,
-            payment_token_hash,
-            payment_amount_sats,
             created_at,
             updated_at
          FROM jobs
@@ -414,8 +424,6 @@ fn decode_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredJob> {
         None => None,
     };
 
-    let payment_amount_sats: Option<i64> = row.get(11)?;
-
     Ok(StoredJob {
         job_id: row.get(0)?,
         idempotency_key: row.get(1)?,
@@ -425,9 +433,7 @@ fn decode_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredJob> {
         status: row.get(6)?,
         result,
         error: row.get(9)?,
-        payment_token_hash: row.get(10)?,
-        payment_amount_sats: payment_amount_sats.map(|value| value as u64),
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }

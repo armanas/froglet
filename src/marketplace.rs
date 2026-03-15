@@ -19,7 +19,8 @@ pub struct NodeDescriptor {
     pub services: Vec<ServicePriceInfo>,
     #[serde(default)]
     pub faas: FaaSDescriptor,
-    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

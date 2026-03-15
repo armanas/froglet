@@ -289,14 +289,19 @@ class NostrRelayClient:
 class FrogletNostrRelayAdapter:
     def __init__(
         self,
-        base_url: str,
+        runtime_base_url: str,
         token: str,
         relay_policies: Iterable[RelayPolicy],
         *,
+        provider_base_url: str | None = None,
         retry_policy: RetryPolicy | None = None,
         auth_signer: NostrAuthSigner | None = None,
     ) -> None:
-        self.runtime = RuntimeClient(base_url, token)
+        self.runtime = RuntimeClient(
+            runtime_base_url,
+            token,
+            provider_base_url=provider_base_url,
+        )
         self.relay_policies = list(relay_policies)
         if not self.relay_policies:
             raise ValueError("at least one relay policy is required")
@@ -307,10 +312,11 @@ class FrogletNostrRelayAdapter:
     @classmethod
     def from_token_file(
         cls,
-        base_url: str,
+        runtime_base_url: str,
         token_path: str | Path,
         relay_urls: Iterable[str],
         *,
+        provider_base_url: str | None = None,
         retry_policy: RetryPolicy | None = None,
         auth_seed_path: str | Path | None = None,
     ) -> "FrogletNostrRelayAdapter":
@@ -322,9 +328,10 @@ class FrogletNostrRelayAdapter:
         )
         relay_policies = [RelayPolicy(relay_url=relay_url) for relay_url in relay_urls]
         return cls(
-            base_url,
+            runtime_base_url,
             token,
             relay_policies,
+            provider_base_url=provider_base_url,
             retry_policy=retry_policy,
             auth_signer=auth_signer,
         )
@@ -332,10 +339,11 @@ class FrogletNostrRelayAdapter:
     @classmethod
     def from_config_file(
         cls,
-        base_url: str,
+        runtime_base_url: str,
         token_path: str | Path,
         config_path: str | Path,
         *,
+        provider_base_url: str | None = None,
         retry_policy: RetryPolicy | None = None,
         auth_seed_path: str | Path | None = None,
     ) -> "FrogletNostrRelayAdapter":
@@ -347,9 +355,10 @@ class FrogletNostrRelayAdapter:
             else None
         )
         return cls(
-            base_url,
+            runtime_base_url,
             token,
             config.relay_policies,
+            provider_base_url=provider_base_url,
             retry_policy=retry_policy or config.retry_policy,
             auth_signer=auth_signer,
         )
@@ -658,17 +667,19 @@ async def _run_cli(args: argparse.Namespace) -> int:
     if args.relay_config is not None:
         config = RelayListConfig.from_json_file(args.relay_config)
         adapter = FrogletNostrRelayAdapter.from_config_file(
-            args.node_url,
+            args.runtime_url,
             args.token_file,
             args.relay_config,
+            provider_base_url=args.provider_url,
             retry_policy=retry_policy or config.retry_policy,
             auth_seed_path=args.auth_seed_file,
         )
     else:
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            args.node_url,
+            args.runtime_url,
             args.token_file,
             args.relay or [],
+            provider_base_url=args.provider_url,
             retry_policy=retry_policy,
             auth_seed_path=args.auth_seed_file,
         )
@@ -700,7 +711,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="External Nostr relay adapter for Froglet publication intents"
     )
-    parser.add_argument("--node-url", required=True)
+    parser.add_argument("--runtime-url", required=True)
+    parser.add_argument(
+        "--provider-url",
+        help="Public provider API base URL. Defaults to the runtime URL when omitted.",
+    )
     parser.add_argument("--token-file", required=True)
     relay_group = parser.add_mutually_exclusive_group(required=True)
     relay_group.add_argument(

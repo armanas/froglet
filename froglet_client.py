@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,16 +21,45 @@ _SECP256K1_ORDER = int(
     "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
     16,
 )
-
-
-def _require_ecdsa() -> Any:
+def _require_ecdsa() -> tuple[Any, Any]:
     try:
-        from ecdsa import curves
+        from ecdsa import curves, ellipticcurve
     except ImportError as exc:  # pragma: no cover - import guard
         raise RuntimeError(
             "froglet_client requester helpers require the 'ecdsa' package"
         ) from exc
-    return curves
+    return curves, ellipticcurve
+
+
+def _int_from_bytes(value: bytes) -> int:
+    return int.from_bytes(value, "big")
+
+
+def _int_to_bytes(value: int) -> bytes:
+    return value.to_bytes(32, "big")
+
+
+def _xor_bytes(left: bytes, right: bytes) -> bytes:
+    return bytes(a ^ b for a, b in zip(left, right, strict=True))
+
+
+def _tagged_hash(tag: str, data: bytes) -> bytes:
+    tag_hash = hashlib.sha256(tag.encode("utf-8")).digest()
+    return hashlib.sha256(tag_hash + tag_hash + data).digest()
+
+
+def _has_even_y(point: Any) -> bool:
+    return int(point.y()) % 2 == 0
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _seed_bytes(seed: bytes | str) -> bytes:
@@ -74,13 +105,142 @@ def generate_requester_seed() -> bytes:
 
 
 def requester_id_from_seed(seed: bytes | str) -> str:
-    curves = _require_ecdsa()
+    curves, _ = _require_ecdsa()
     seed_bytes = _seed_bytes(seed)
     scalar = int.from_bytes(seed_bytes, "big")
     if not 1 <= scalar < _SECP256K1_ORDER:
         raise ValueError("requester seed is not a valid secp256k1 secret key")
     point = scalar * curves.SECP256k1.generator
     return int(point.x()).to_bytes(32, "big").hex()
+
+
+def _schnorr_sign_message(secret_key: bytes | str, message: bytes) -> str:
+    curves, _ = _require_ecdsa()
+    secret_bytes = _seed_bytes(secret_key)
+    secret = _int_from_bytes(secret_bytes)
+    if not 1 <= secret < _SECP256K1_ORDER:
+        raise ValueError("requester seed is not a valid secp256k1 secret key")
+
+    generator = curves.SECP256k1.generator
+    point = secret * generator
+    public_key_bytes = _int_to_bytes(int(point.x()))
+    message_digest = hashlib.sha256(message).digest()
+    secret_scalar = secret if _has_even_y(point) else _SECP256K1_ORDER - secret
+
+    aux = bytes(32)
+    nonce_seed = _xor_bytes(
+        _int_to_bytes(secret_scalar),
+        _tagged_hash("BIP0340/aux", aux),
+    )
+    nonce = _int_from_bytes(
+        _tagged_hash("BIP0340/nonce", nonce_seed + public_key_bytes + message_digest)
+    ) % _SECP256K1_ORDER
+    if nonce == 0:
+        raise ValueError("derived invalid Schnorr nonce")
+
+    nonce_point = nonce * generator
+    signing_nonce = nonce if _has_even_y(nonce_point) else _SECP256K1_ORDER - nonce
+    nonce_x = _int_to_bytes(int(nonce_point.x()))
+    challenge = _int_from_bytes(
+        _tagged_hash("BIP0340/challenge", nonce_x + public_key_bytes + message_digest)
+    ) % _SECP256K1_ORDER
+    signature = nonce_x + _int_to_bytes(
+        (signing_nonce + challenge * secret_scalar) % _SECP256K1_ORDER
+    )
+    return signature.hex()
+
+
+def _canonical_artifact_signing_bytes(artifact: dict[str, Any]) -> bytes:
+    return _canonical_json_bytes(
+        [
+            artifact["schema_version"],
+            artifact["artifact_type"],
+            artifact["signer"],
+            artifact["created_at"],
+            artifact["payload_hash"],
+            artifact["payload"],
+        ]
+    )
+
+
+def _sign_artifact(
+    artifact_type: str,
+    payload: dict[str, Any],
+    *,
+    secret_key: bytes | str,
+    created_at: int | None = None,
+) -> dict[str, Any]:
+    issued_at = created_at if created_at is not None else int(time.time())
+    signer = requester_id_from_seed(secret_key)
+    artifact = {
+        "artifact_type": artifact_type,
+        "schema_version": "froglet/v1",
+        "signer": signer,
+        "created_at": issued_at,
+        "payload_hash": hashlib.sha256(_canonical_json_bytes(payload)).hexdigest(),
+        "payload": payload,
+    }
+    signing_bytes = _canonical_artifact_signing_bytes(artifact)
+    artifact["hash"] = hashlib.sha256(signing_bytes).hexdigest()
+    artifact["signature"] = _schnorr_sign_message(secret_key, signing_bytes)
+    return artifact
+
+
+def sign_deal_artifact_from_quote(
+    quote: dict[str, Any],
+    requester_seed: bytes | str,
+    *,
+    success_payment_hash: str,
+    created_at: int | None = None,
+) -> dict[str, Any]:
+    issued_at = created_at if created_at is not None else int(time.time())
+    runtime_ms = int(quote["payload"]["execution_limits"]["max_runtime_ms"])
+    execution_window_secs = max(1, (runtime_ms + 999) // 1000)
+    settlement_terms = quote["payload"]["settlement_terms"]
+    total_msat = int(settlement_terms["base_fee_msat"]) + int(
+        settlement_terms["success_fee_msat"]
+    )
+    if (
+        settlement_terms["method"] == "lightning.base_fee_plus_success_fee.v1"
+        and total_msat > 0
+    ):
+        quote_expires_at = int(quote["payload"]["expires_at"])
+        hold_window_secs = int(settlement_terms["max_success_hold_expiry_secs"])
+        admission_window_secs = max(
+            int(settlement_terms["max_base_invoice_expiry_secs"]),
+            hold_window_secs,
+        )
+        latest_admission_deadline = quote_expires_at - execution_window_secs - hold_window_secs
+        admission_deadline = min(
+            latest_admission_deadline,
+            issued_at + admission_window_secs,
+        )
+        if admission_deadline < issued_at:
+            raise ValueError(
+                "quote no longer has enough time for the Lightning execution and acceptance windows"
+            )
+        completion_deadline = admission_deadline + execution_window_secs
+        acceptance_deadline = completion_deadline + hold_window_secs
+    else:
+        admission_deadline = int(quote["payload"]["expires_at"])
+        completion_deadline = admission_deadline + execution_window_secs
+        acceptance_deadline = completion_deadline
+    payload = {
+        "requester_id": requester_id_from_seed(requester_seed),
+        "provider_id": quote["payload"]["provider_id"],
+        "quote_hash": quote["hash"],
+        "workload_hash": quote["payload"]["workload_hash"],
+        "success_payment_hash": success_payment_hash,
+        "admission_deadline": admission_deadline,
+        "completion_deadline": completion_deadline,
+        "acceptance_deadline": acceptance_deadline,
+    }
+    return _sign_artifact(
+        "deal",
+        payload,
+        secret_key=requester_seed,
+        created_at=issued_at,
+    )
 
 
 def runtime_requester_fields(
@@ -283,22 +443,52 @@ class ProviderClient(_JsonApiClient):
 
 
 class RuntimeClient(_JsonApiClient):
-    def __init__(self, base_url: str, token: str) -> None:
-        super().__init__(base_url)
+    def __init__(
+        self,
+        runtime_base_url: str,
+        token: str,
+        *,
+        provider_base_url: str | None = None,
+    ) -> None:
+        super().__init__(runtime_base_url)
         self.token = token
-        self.provider = ProviderClient(base_url)
+        self._provider_base_url = (
+            provider_base_url.rstrip("/") if provider_base_url is not None else None
+        )
+        self._provider: ProviderClient | None = None
 
     @classmethod
-    def from_token_file(cls, base_url: str, token_path: str | Path) -> "RuntimeClient":
+    def from_token_file(
+        cls,
+        runtime_base_url: str,
+        token_path: str | Path,
+        *,
+        provider_base_url: str | None = None,
+    ) -> "RuntimeClient":
         token = Path(token_path).read_text(encoding="utf-8").strip()
-        return cls(base_url, token)
+        return cls(
+            runtime_base_url,
+            token,
+            provider_base_url=provider_base_url,
+        )
 
     async def close(self) -> None:
-        await self.provider.close()
+        if self._provider is not None:
+            await self._provider.close()
+            self._provider = None
         await super().close()
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
+
+    def _provider_client(self) -> ProviderClient:
+        if self._provider is None:
+            if self._provider_base_url is None:
+                raise RuntimeError(
+                    "provider_base_url is required for quote/deal and verification helpers"
+                )
+            self._provider = ProviderClient(self._provider_base_url)
+        return self._provider
 
     async def provider_start(self) -> dict[str, Any]:
         return await self._request_json("POST", "/v1/runtime/provider/start")
@@ -317,7 +507,7 @@ class RuntimeClient(_JsonApiClient):
         wait_timeout_secs: int | None = None,
         include_payment_intent: bool = False,
     ) -> DealHandle:
-        payload = dict(request)
+        payload = await self._prepare_buy_payload(request)
         payload["wait_for_receipt"] = wait_for_receipt
         if wait_timeout_secs is not None:
             payload["wait_timeout_secs"] = wait_timeout_secs
@@ -333,6 +523,60 @@ class RuntimeClient(_JsonApiClient):
             payment_intent_path=response.get("payment_intent_path"),
             payment_intent=response.get("payment_intent") if include_payment_intent else None,
         )
+
+    async def _prepare_buy_payload(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(request)
+        requester_seed = payload.pop("requester_seed_hex", None)
+        if requester_seed is None:
+            requester_seed = payload.pop("requester_seed", None)
+        requester_id = payload.pop("requester_id", None)
+        success_payment_hash = payload.pop("success_payment_hash", None)
+        if "quote" in payload and "deal" in payload:
+            return payload
+
+        offer_id = payload.pop("offer_id", None)
+        if offer_id is None:
+            raise ValueError("buy_service requires offer_id when quote/deal are not provided")
+
+        if requester_seed is None:
+            raise ValueError(
+                "buy_service requires requester_seed_hex (local-only) when quote/deal are not provided"
+            )
+
+        if success_payment_hash is None:
+            raise ValueError(
+                "buy_service requires success_payment_hash when quote/deal are not provided"
+            )
+
+        derived_requester_id = requester_id_from_seed(requester_seed)
+        if requester_id is not None and requester_id != derived_requester_id:
+            raise ValueError("requester_id does not match requester_seed_hex")
+        requester_id = requester_id or derived_requester_id
+
+        max_price_sats = payload.pop("max_price_sats", None)
+        runtime_fields = {}
+        for key in ("idempotency_key", "payment"):
+            if key in payload:
+                runtime_fields[key] = payload.pop(key)
+
+        quote = await self._provider_client().create_quote(
+            offer_id,
+            payload,
+            requester_id=requester_id,
+            max_price_sats=max_price_sats,
+        )
+        deal = sign_deal_artifact_from_quote(
+            quote,
+            requester_seed,
+            success_payment_hash=success_payment_hash,
+        )
+
+        return {
+            **payload,
+            **runtime_fields,
+            "quote": quote,
+            "deal": deal,
+        }
 
     async def issue_curated_list(
         self,
@@ -400,7 +644,7 @@ class RuntimeClient(_JsonApiClient):
         timeout_secs: float = 15.0,
         poll_interval_secs: float = 0.2,
     ) -> dict[str, Any]:
-        return await self.provider.wait_for_deal(
+        return await self._provider_client().wait_for_deal(
             deal_id,
             statuses=statuses,
             timeout_secs=timeout_secs,
@@ -420,21 +664,24 @@ class RuntimeClient(_JsonApiClient):
             release_action = intent.get("release_action")
             if release_action is not None:
                 resolved_result_hash = release_action.get("expected_result_hash")
-        return await self.provider.accept_result(
+        return await self._provider_client().accept_result(
             deal_id,
             success_preimage,
             expected_result_hash=resolved_result_hash,
         )
 
     async def verify_receipt(self, receipt: dict[str, Any]) -> dict[str, Any]:
-        return await self.provider.verify_receipt(receipt)
+        return await self._provider_client().verify_receipt(receipt)
 
 
 class MarketplaceClient(_JsonApiClient):
     async def search_nodes(
-        self, *, limit: int = 20, active_only: bool = True
+        self, *, limit: int = 20, include_inactive: bool = False
     ) -> list[dict[str, Any]]:
-        query = f"/v1/marketplace/search?limit={limit}&active_only={'true' if active_only else 'false'}"
+        query = (
+            f"/v1/marketplace/search?limit={limit}"
+            f"&include_inactive={'true' if include_inactive else 'false'}"
+        )
         response = await self._request_json("GET", query)
         return response["nodes"]
 

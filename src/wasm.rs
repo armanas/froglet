@@ -49,7 +49,7 @@ impl WasmSubmission {
         max_module_hex_bytes: usize,
         max_input_bytes: usize,
     ) -> Result<(), String> {
-        if self.module_bytes_hex.as_bytes().len() > max_module_hex_bytes {
+        if self.module_bytes_hex.len() > max_module_hex_bytes {
             return Err("wasm module too large".to_string());
         }
 

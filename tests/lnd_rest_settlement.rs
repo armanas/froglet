@@ -9,12 +9,11 @@ use bitcoin::hashes::{Hash as _, sha256};
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use froglet::{
     config::{
-        CashuConfig, DiscoveryMode, IdentityConfig, LightningConfig, LightningLndRestConfig,
-        LightningMode, MarketplaceConfig, NetworkMode, NodeConfig, PaymentBackend, PricingConfig,
-        StorageConfig,
+        DiscoveryMode, IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode,
+        MarketplaceConfig, NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
     },
     crypto,
-    db::{self, DbPool},
+    db::DbPool,
     identity::NodeIdentity,
     lnd::InvoiceState,
     pricing::PricingTable,
@@ -44,6 +43,7 @@ struct FakeLndAppState {
     node_secret: SecretKey,
     node_pubkey_hex: String,
     next_counter: Arc<AtomicU64>,
+    issue_delay_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +192,10 @@ fn fake_bolt11_invoice(
 }
 
 fn fake_lnd_state() -> FakeLndAppState {
+    fake_lnd_state_with_issue_delay(0)
+}
+
+fn fake_lnd_state_with_issue_delay(issue_delay_secs: u64) -> FakeLndAppState {
     let node_secret = SecretKey::from_slice(&[7u8; 32]).expect("node secret");
     let secp = Secp256k1::new();
     let node_pubkey_hex = hex::encode(PublicKey::from_secret_key(&secp, &node_secret).serialize());
@@ -200,6 +204,7 @@ fn fake_lnd_state() -> FakeLndAppState {
         node_secret,
         node_pubkey_hex,
         next_counter: Arc::new(AtomicU64::new(1)),
+        issue_delay_secs,
     }
 }
 
@@ -222,6 +227,9 @@ async fn fake_lnd_add_invoice(
     State(state): State<FakeLndAppState>,
     Json(payload): Json<AddInvoiceRequest>,
 ) -> (StatusCode, Json<AddInvoiceResponse>) {
+    if state.issue_delay_secs > 0 {
+        tokio::time::sleep(Duration::from_secs(state.issue_delay_secs)).await;
+    }
     let counter = state.next_counter.fetch_add(1, Ordering::Relaxed);
     let payment_hash_hex = crypto::sha256_hex(format!("fake-lnd-base-{counter}").as_bytes());
     let value_msat = payload.value_msat.parse::<u64>().expect("value_msat");
@@ -259,6 +267,9 @@ async fn fake_lnd_add_hold_invoice(
     State(state): State<FakeLndAppState>,
     Json(payload): Json<AddHoldInvoiceRequest>,
 ) -> (StatusCode, Json<AddHoldInvoiceResponse>) {
+    if state.issue_delay_secs > 0 {
+        tokio::time::sleep(Duration::from_secs(state.issue_delay_secs)).await;
+    }
     let payment_hash_hex = hex::encode(STANDARD.decode(payload.hash).expect("payment hash"));
     let value_msat = payload.value_msat.parse::<u64>().expect("value_msat");
     let expiry_secs = payload.expiry.parse::<u64>().expect("expiry");
@@ -394,6 +405,42 @@ async fn spawn_fake_lnd() -> FakeLndHandle {
     }
 }
 
+async fn spawn_fake_lnd_with_issue_delay(issue_delay_secs: u64) -> FakeLndHandle {
+    let temp_dir = unique_temp_dir("fake-lnd");
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+    let macaroon_path = temp_dir.join("admin.macaroon");
+    std::fs::write(&macaroon_path, [1u8, 2, 3, 4]).expect("write macaroon");
+
+    let app_state = fake_lnd_state_with_issue_delay(issue_delay_secs);
+    let invoices = app_state.invoices.clone();
+    let node_pubkey_hex = app_state.node_pubkey_hex.clone();
+    let app = Router::new()
+        .route("/v1/getinfo", get(fake_lnd_get_info))
+        .route("/v1/invoices", post(fake_lnd_add_invoice))
+        .route("/v2/invoices/hodl", post(fake_lnd_add_hold_invoice))
+        .route("/v1/invoice/:payment_hash", get(fake_lnd_lookup_invoice))
+        .route("/v2/invoices/settle", post(fake_lnd_settle_invoice))
+        .route("/v2/invoices/cancel", post(fake_lnd_cancel_invoice))
+        .with_state(app_state);
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake lnd");
+    let addr = listener.local_addr().expect("fake lnd addr");
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve fake lnd");
+    });
+
+    FakeLndHandle {
+        base_url: format!("http://{}", addr),
+        invoices,
+        node_pubkey_hex,
+        macaroon_path,
+        temp_dir,
+        server_task,
+    }
+}
+
 fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
     let temp_dir = unique_temp_dir("lnd-rest-state");
     let db_path = temp_dir.join("node.db");
@@ -402,6 +449,12 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
         listen_addr: "127.0.0.1:0".to_string(),
+        runtime_listen_addr: "127.0.0.1:0".to_string(),
+        tor: froglet::config::TorSidecarConfig {
+            binary_path: "tor".to_string(),
+            backend_listen_addr: "127.0.0.1:0".to_string(),
+            startup_timeout_secs: 90,
+        },
         discovery_mode: DiscoveryMode::None,
         identity: IdentityConfig {
             auto_generate: true,
@@ -418,11 +471,6 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         },
         payment_backend: PaymentBackend::Lightning,
         execution_timeout_secs: 10,
-        cashu: CashuConfig {
-            mint_allowlist: Vec::new(),
-            remote_checkstate: false,
-            request_timeout_secs: 5,
-        },
         lightning: LightningConfig {
             mode: LightningMode::LndRest,
             destination_identity: None,
@@ -444,8 +492,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         },
     };
 
-    let conn = db::initialize_db(&node_config.storage.db_path).expect("init db");
-    let pool = DbPool::new(conn);
+    let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
     let pricing = PricingTable::from_config(node_config.pricing);
     let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
 
@@ -453,6 +500,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         db: pool,
         transport_status: Arc::new(Mutex::new(TransportStatus::from_config(&node_config))),
         marketplace_status: Arc::new(Mutex::new(MarketplaceStatus::from_config(&node_config))),
+        wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
         pricing,
@@ -484,7 +532,7 @@ fn sign_quote_and_deal(
             requester_id: requester_id.clone(),
             descriptor_hash: "descriptor-hash-lnd-1".to_string(),
             offer_hash: "offer-hash-lnd-1".to_string(),
-            expires_at: settlement::lightning_quote_expires_at(state, now, price_sats),
+            expires_at: settlement::lightning_quote_expires_at(state, now, price_sats, 30),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
             settlement_terms: settlement_terms.clone(),
@@ -547,7 +595,7 @@ async fn lnd_rest_bundle_uses_real_bolt11_and_syncs_backend_state() {
             requester_id: deal.payload.requester_id.clone(),
             quote_hash: quote.hash.clone(),
             deal_hash: deal.hash.clone(),
-            quote_expires_at: Some(quote.payload.expires_at),
+            admission_deadline: Some(deal.payload.admission_deadline),
             success_payment_hash: success_payment_hash.clone(),
             base_fee_msat: settlement_terms.base_fee_msat,
             success_fee_msat: settlement_terms.success_fee_msat,
@@ -612,6 +660,54 @@ async fn lnd_rest_bundle_uses_real_bolt11_and_syncs_backend_state() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn lnd_rest_bundle_stays_valid_when_invoice_issue_is_delayed() {
+    let fake_lnd = spawn_fake_lnd_with_issue_delay(2).await;
+    let state = lnd_rest_state(&fake_lnd);
+    let now = settlement::current_unix_timestamp() + 2;
+    let success_preimage = vec![0x51; 32];
+    let success_payment_hash = crypto::sha256_hex(&success_preimage);
+
+    let mut settlement_terms = settlement::quoted_lightning_settlement_terms(&state, 11)
+        .await
+        .expect("settlement terms")
+        .expect("lightning settlement terms");
+    settlement_terms.base_fee_msat = 2_000;
+    settlement_terms.success_fee_msat = 9_000;
+
+    let (quote, deal) =
+        sign_quote_and_deal(&state, settlement_terms.clone(), now, &success_payment_hash);
+
+    let session = settlement::create_lightning_invoice_bundle(
+        &state,
+        BuildLightningInvoiceBundleRequest {
+            session_id: Some("lnd-rest-session-delayed".to_string()),
+            requester_id: deal.payload.requester_id.clone(),
+            quote_hash: quote.hash.clone(),
+            deal_hash: deal.hash.clone(),
+            admission_deadline: Some(deal.payload.admission_deadline),
+            success_payment_hash: success_payment_hash.clone(),
+            base_fee_msat: settlement_terms.base_fee_msat,
+            success_fee_msat: settlement_terms.success_fee_msat,
+            created_at: now,
+        },
+    )
+    .await
+    .expect("bundle");
+
+    let report = settlement::validate_lightning_invoice_bundle(
+        &session.bundle,
+        &quote,
+        &deal,
+        Some(&deal.payload.requester_id),
+    );
+    assert!(
+        report.valid,
+        "unexpected validation issues after delayed LND issuance: {:?}",
+        report.issues
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn lnd_rest_success_settlement_calls_backend_and_updates_bundle() {
     let fake_lnd = spawn_fake_lnd().await;
     let state = lnd_rest_state(&fake_lnd);
@@ -626,7 +722,7 @@ async fn lnd_rest_success_settlement_calls_backend_and_updates_bundle() {
             requester_id: "33".repeat(32),
             quote_hash: "quote-hash-2".to_string(),
             deal_hash: "deal-hash-2".to_string(),
-            quote_expires_at: None,
+            admission_deadline: None,
             success_payment_hash: success_payment_hash.clone(),
             base_fee_msat: 0,
             success_fee_msat: 9_000,
@@ -669,7 +765,7 @@ async fn lnd_rest_bundle_sync_reflects_backend_cancellation() {
     let fake_lnd = spawn_fake_lnd().await;
     let state = lnd_rest_state(&fake_lnd);
     let now = settlement::current_unix_timestamp() + 2;
-    let success_payment_hash = crypto::sha256_hex(&[0x44; 32]);
+    let success_payment_hash = crypto::sha256_hex([0x44; 32]);
 
     let session = settlement::create_lightning_invoice_bundle(
         &state,
@@ -678,7 +774,7 @@ async fn lnd_rest_bundle_sync_reflects_backend_cancellation() {
             requester_id: "44".repeat(32),
             quote_hash: "quote-hash-3".to_string(),
             deal_hash: "deal-hash-3".to_string(),
-            quote_expires_at: None,
+            admission_deadline: None,
             success_payment_hash,
             base_fee_msat: 0,
             success_fee_msat: 9_000,
@@ -702,5 +798,58 @@ async fn lnd_rest_bundle_sync_reflects_backend_cancellation() {
     assert_eq!(
         synced.success_state,
         protocol::InvoiceBundleLegState::Canceled
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn lnd_rest_bundle_creation_cancels_issued_invoices_when_local_persistence_fails() {
+    let fake_lnd = spawn_fake_lnd().await;
+    let mut state = lnd_rest_state(&fake_lnd);
+    let conn = rusqlite::Connection::open(&state.config.storage.db_path).expect("open db");
+    froglet::db::initialize_db_for_connection(&conn).expect("init db");
+    conn.execute_batch("PRAGMA query_only = ON;")
+        .expect("set query_only");
+    state.db = DbPool::new(conn);
+
+    let now = settlement::current_unix_timestamp() + 2;
+    let success_payment_hash = crypto::sha256_hex([0x55; 32]);
+    let error = settlement::create_lightning_invoice_bundle(
+        &state,
+        BuildLightningInvoiceBundleRequest {
+            session_id: Some("lnd-rest-session-4".to_string()),
+            requester_id: "55".repeat(32),
+            quote_hash: "quote-hash-4".to_string(),
+            deal_hash: "deal-hash-4".to_string(),
+            admission_deadline: None,
+            success_payment_hash: success_payment_hash.clone(),
+            base_fee_msat: 2_000,
+            success_fee_msat: 9_000,
+            created_at: now,
+        },
+    )
+    .await
+    .expect_err("bundle creation should fail when local persistence is read-only");
+    assert!(
+        error.contains("attempt to write a readonly database"),
+        "unexpected error: {error}"
+    );
+
+    let success_state = fake_lnd
+        .get_invoice_state(&success_payment_hash)
+        .await
+        .expect("success invoice state");
+    assert_eq!(success_state, InvoiceState::Canceled);
+
+    let invoices = fake_lnd.invoices.lock().await;
+    let canceled_base_hashes = invoices
+        .values()
+        .filter(|invoice| invoice.state == InvoiceState::Canceled)
+        .map(|invoice| invoice.payment_hash_hex.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        canceled_base_hashes
+            .iter()
+            .any(|hash| hash != &success_payment_hash),
+        "expected the issued base invoice to be canceled as well"
     );
 }

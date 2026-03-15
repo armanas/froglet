@@ -8,9 +8,10 @@ from test_support import (
     FrogletAsyncTestCase,
     VALID_WASM_HEX,
     build_wasm_request,
+    create_protocol_quote,
     generate_schnorr_signing_key,
-    schnorr_pubkey_hex,
     sha256_hex,
+    sign_deal_artifact_from_quote,
     verify_signed_artifact,
 )
 
@@ -21,11 +22,29 @@ def runtime_auth_headers(node) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def runtime_requester_fields(secret_key: bytes, success_payment_hash: str) -> dict[str, str]:
+async def runtime_buy_request(
+    session: aiohttp.ClientSession,
+    node,
+    *,
+    request: dict[str, object],
+    requester_key: bytes,
+    success_payment_hash: str,
+) -> dict[str, object]:
+    quote = await create_protocol_quote(
+        session,
+        node,
+        offer_id=str(request["offer_id"]),
+        request={key: value for key, value in request.items() if key != "offer_id"},
+        requester_secret_key=requester_key,
+    )
     return {
-        "requester_id": schnorr_pubkey_hex(secret_key),
-        "requester_seed_hex": secret_key.hex(),
-        "success_payment_hash": success_payment_hash,
+        **{key: value for key, value in request.items() if key != "offer_id"},
+        "quote": quote,
+        "deal": sign_deal_artifact_from_quote(
+            quote,
+            requester_key,
+            success_payment_hash=success_payment_hash,
+        ),
     }
 
 
@@ -63,6 +82,27 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertEqual(len(snapshot["offers"]), 2)
         self.assertTrue(all(verify_signed_artifact(offer) for offer in snapshot["offers"]))
 
+    async def test_runtime_services_buy_requires_presigned_artifacts(self) -> None:
+        node = await self.start_node()
+        headers = runtime_auth_headers(node)
+        requester_key = generate_schnorr_signing_key()
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/runtime/services/buy"),
+                headers=headers,
+                json={
+                    "offer_id": "execute.wasm",
+                    **build_wasm_request(VALID_WASM_HEX),
+                    "requester_seed_hex": requester_key.hex(),
+                    "success_payment_hash": sha256_hex(b"legacy-runtime-seed"),
+                },
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("pre-signed quote artifact", payload["error"])
+
     async def test_all_privileged_runtime_routes_require_local_auth(self) -> None:
         node = await self.start_node(
             extra_env={
@@ -76,16 +116,20 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-auth-lightning-deal",
-            **runtime_requester_fields(
-                requester_key, sha256_hex(b"runtime-auth-success")
-            ),
         }
 
         async with aiohttp.ClientSession() as session:
+            buy_request = await runtime_buy_request(
+                session,
+                node,
+                request=request,
+                requester_key=requester_key,
+                success_payment_hash=sha256_hex(b"runtime-auth-success"),
+            )
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json=request,
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 authorized = await resp.json()
@@ -97,7 +141,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 ("get", "/v1/runtime/wallet/balance", None),
                 ("post", "/v1/runtime/provider/start", None),
                 ("post", "/v1/runtime/services/publish", None),
-                ("post", "/v1/runtime/services/buy", request),
+                ("post", "/v1/runtime/services/buy", buy_request),
                 (
                     "post",
                     "/v1/runtime/discovery/curated-lists/issue",
@@ -153,12 +197,16 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-nostr-summary-1",
-            **runtime_requester_fields(
-                requester_key, sha256_hex(bytes.fromhex(success_preimage))
-            ),
         }
 
         async with aiohttp.ClientSession() as session:
+            buy_request = await runtime_buy_request(
+                session,
+                node,
+                request=request,
+                requester_key=requester_key,
+                success_payment_hash=sha256_hex(bytes.fromhex(success_preimage)),
+            )
             async with session.get(node.url("/v1/descriptor")) as resp:
                 self.assertEqual(resp.status, 200)
                 descriptor = await resp.json()
@@ -180,7 +228,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json=request,
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 response = await resp.json()
@@ -245,17 +293,21 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-service-buy-1",
-            **runtime_requester_fields(
-                requester_key, sha256_hex(b"runtime-service-buy-1")
-            ),
             "wait_for_receipt": True,
         }
 
         async with aiohttp.ClientSession() as session:
+            buy_request = await runtime_buy_request(
+                session,
+                node,
+                request=request,
+                requester_key=requester_key,
+                success_payment_hash=sha256_hex(b"runtime-service-buy-1"),
+            )
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json=request,
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 first = await resp.json()
@@ -263,15 +315,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json={
-                    "offer_id": "execute.wasm",
-                    **build_wasm_request(VALID_WASM_HEX),
-                    "idempotency_key": request["idempotency_key"],
-                    **runtime_requester_fields(
-                        requester_key, request["success_payment_hash"]
-                    ),
-                    "wait_for_receipt": True,
-                },
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 second = await resp.json()
@@ -300,17 +344,21 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-service-buy-lightning-1",
-            **runtime_requester_fields(
-                requester_key, sha256_hex(b"runtime-lightning-success")
-            ),
             "wait_for_receipt": True,
         }
 
         async with aiohttp.ClientSession() as session:
+            buy_request = await runtime_buy_request(
+                session,
+                node,
+                request=request,
+                requester_key=requester_key,
+                success_payment_hash=sha256_hex(b"runtime-lightning-success"),
+            )
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json=request,
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 response = await resp.json()
@@ -334,7 +382,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertEqual(intent["payment_requests"][0]["role"], "success_fee_hold")
         self.assertEqual(
             intent["payment_requests"][0]["payment_hash"],
-            request["success_payment_hash"],
+            buy_request["deal"]["payload"]["success_payment_hash"],
         )
         self.assertTrue(
             intent["payment_requests"][0]["invoice"].startswith("lnmock-")
@@ -355,16 +403,20 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-service-buy-lightning-2",
-            **runtime_requester_fields(
-                requester_key, sha256_hex(bytes.fromhex(success_preimage))
-            ),
         }
 
         async with aiohttp.ClientSession() as session:
+            buy_request = await runtime_buy_request(
+                session,
+                node,
+                request=request,
+                requester_key=requester_key,
+                success_payment_hash=sha256_hex(bytes.fromhex(success_preimage)),
+            )
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json=request,
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 initial = await resp.json()
@@ -444,16 +496,20 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             "offer_id": "execute.wasm",
             **build_wasm_request(VALID_WASM_HEX),
             "idempotency_key": "runtime-archive-lightning-deal-1",
-            **runtime_requester_fields(
-                requester_key, sha256_hex(bytes.fromhex(success_preimage))
-            ),
         }
 
         async with aiohttp.ClientSession() as session:
+            buy_request = await runtime_buy_request(
+                session,
+                node,
+                request=request,
+                requester_key=requester_key,
+                success_payment_hash=sha256_hex(bytes.fromhex(success_preimage)),
+            )
             async with session.post(
                 node.url("/v1/runtime/services/buy"),
                 headers=headers,
-                json=request,
+                json=buy_request,
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 response = await resp.json()

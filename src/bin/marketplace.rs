@@ -1,6 +1,8 @@
-use froglet::marketplace_server::{self, MarketplaceAppState};
-use std::{path::PathBuf, sync::Arc};
-use tokio::sync::Mutex;
+use froglet::{
+    db::DbPool,
+    marketplace_server::{self, MarketplaceAppState},
+};
+use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 #[tokio::main]
@@ -22,7 +24,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let conn = marketplace_server::initialize_marketplace_db(&db_path)?;
+    let pool = DbPool::open_with(
+        &db_path,
+        marketplace_server::initialize_marketplace_db,
+        marketplace_server::initialize_marketplace_db_reader,
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -33,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = MarketplaceAppState {
-        db: Arc::new(Mutex::new(conn)),
+        db: pool,
         stale_after_secs,
     };
 

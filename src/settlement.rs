@@ -1,8 +1,8 @@
 use crate::{
     config::{LightningMode, PaymentBackend},
     crypto,
-    db::{self, LightningInvoiceBundleRecord, ReservePaymentTokenOutcome},
-    deals, ecash,
+    db::{self, LightningInvoiceBundleRecord},
+    deals,
     lnd::LndRestClient,
     pricing::ServiceId,
     protocol::{
@@ -13,20 +13,15 @@ use crate::{
     state::AppState,
 };
 use axum::http::StatusCode;
-use cashu::{
-    MintUrl,
-    nuts::nut07::{CheckStateRequest, CheckStateResponse, State as ProofState},
-};
 use futures::future::BoxFuture;
 use lightning_invoice::Bolt11Invoice;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, str::FromStr, time::Duration};
 use thiserror::Error;
 
-pub const CASHU_VERIFIER_MODE: &str = "format_and_replay_guard";
 pub const LIGHTNING_MOCK_MODE: &str = "mock_hold_invoice";
 pub const LIGHTNING_LND_REST_MODE: &str = "lnd_rest";
+const LND_INVOICE_EXPIRY_GUARD_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidedPayment {
@@ -61,7 +56,7 @@ pub struct BuildLightningInvoiceBundleRequest {
     pub requester_id: String,
     pub quote_hash: String,
     pub deal_hash: String,
-    pub quote_expires_at: Option<i64>,
+    pub admission_deadline: Option<i64>,
     pub success_payment_hash: String,
     pub base_fee_msat: u64,
     pub success_fee_msat: u64,
@@ -155,7 +150,6 @@ pub struct SettlementDriverDescriptor {
     pub backend: String,
     pub mode: String,
     pub accepted_payment_methods: Vec<String>,
-    pub accepted_mints: Vec<String>,
     pub capabilities: Vec<String>,
     pub reservations: bool,
     pub receipts: bool,
@@ -169,7 +163,6 @@ pub struct WalletBalanceSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance_sats: Option<u64>,
     pub accepted_payment_methods: Vec<String>,
-    pub accepted_mints: Vec<String>,
     pub capabilities: Vec<String>,
     pub reservations: bool,
     pub receipts: bool,
@@ -183,7 +176,6 @@ impl WalletBalanceSnapshot {
             balance_known: false,
             balance_sats: None,
             accepted_payment_methods: descriptor.accepted_payment_methods,
-            accepted_mints: descriptor.accepted_mints,
             capabilities: descriptor.capabilities,
             reservations: descriptor.reservations,
             receipts: descriptor.receipts,
@@ -220,28 +212,6 @@ pub enum PaymentError {
         price_sats: u64,
         backend: String,
     },
-    #[error("invalid payment token: {message}")]
-    InvalidToken {
-        service_id: String,
-        price_sats: u64,
-        message: String,
-    },
-    #[error("payment amount is below required price")]
-    Underpaid {
-        service_id: String,
-        price_sats: u64,
-        amount_sats: u64,
-    },
-    #[error("payment token is already reserved by another request")]
-    InUse {
-        service_id: String,
-        token_hash: String,
-    },
-    #[error("payment token has already been redeemed")]
-    Replay {
-        service_id: String,
-        token_hash: String,
-    },
     #[error("database error: {0}")]
     Database(String),
 }
@@ -252,10 +222,6 @@ impl PaymentError {
             PaymentError::PaymentRequired { .. } => StatusCode::PAYMENT_REQUIRED,
             PaymentError::UnsupportedKind { .. } => StatusCode::BAD_REQUEST,
             PaymentError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            PaymentError::InvalidToken { .. } => StatusCode::BAD_REQUEST,
-            PaymentError::Underpaid { .. } => StatusCode::PAYMENT_REQUIRED,
-            PaymentError::InUse { .. } => StatusCode::CONFLICT,
-            PaymentError::Replay { .. } => StatusCode::CONFLICT,
             PaymentError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -292,45 +258,6 @@ impl PaymentError {
                 "service_id": service_id,
                 "price_sats": price_sats,
                 "backend": backend
-            }),
-            PaymentError::InvalidToken {
-                service_id,
-                price_sats,
-                message,
-            } => serde_json::json!({
-                "error": message,
-                "service_id": service_id,
-                "price_sats": price_sats,
-                "payment_kind": "cashu"
-            }),
-            PaymentError::Underpaid {
-                service_id,
-                price_sats,
-                amount_sats,
-            } => serde_json::json!({
-                "error": "payment amount is below required price",
-                "service_id": service_id,
-                "price_sats": price_sats,
-                "amount_sats": amount_sats,
-                "payment_kind": "cashu"
-            }),
-            PaymentError::InUse {
-                service_id,
-                token_hash,
-            } => serde_json::json!({
-                "error": "payment token is already reserved by another request",
-                "service_id": service_id,
-                "token_hash": token_hash,
-                "payment_kind": "cashu"
-            }),
-            PaymentError::Replay {
-                service_id,
-                token_hash,
-            } => serde_json::json!({
-                "error": "payment token has already been redeemed",
-                "service_id": service_id,
-                "token_hash": token_hash,
-                "payment_kind": "cashu"
             }),
             PaymentError::Database(message) => {
                 tracing::error!("Settlement database error: {message}");
@@ -428,16 +355,18 @@ pub async fn release_payment(
 }
 
 pub fn current_unix_timestamp() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() as i64,
+        Err(error) => {
+            tracing::error!("System clock is before the Unix epoch: {error}");
+            0
+        }
+    }
 }
 
 fn selected_driver(state: &AppState) -> &'static dyn SettlementDriver {
     match state.config.payment_backend {
         PaymentBackend::None => &NO_SETTLEMENT_DRIVER,
-        PaymentBackend::Cashu => &CASHU_VERIFIER_DRIVER,
         PaymentBackend::Lightning => &LIGHTNING_DRIVER,
     }
 }
@@ -458,9 +387,9 @@ pub async fn create_lightning_invoice_bundle(
     let created_at = session.created_at;
     let base_state = session.base_state.clone();
     let success_state = session.success_state.clone();
-    state
+    let insert_result = state
         .db
-        .with_conn(move |conn| {
+        .with_write_conn(move |conn| {
             db::insert_lightning_invoice_bundle(
                 conn,
                 &session_id_for_db,
@@ -470,7 +399,15 @@ pub async fn create_lightning_invoice_bundle(
                 created_at,
             )
         })
-        .await?;
+        .await;
+    if let Err(error) = insert_result {
+        if let Err(cancel_error) = cancel_lightning_invoice_bundle(state, &session).await {
+            return Err(format!(
+                "{error}; additionally failed to cancel issued lightning invoices: {cancel_error}"
+            ));
+        }
+        return Err(error);
+    }
     Ok(session)
 }
 
@@ -481,7 +418,7 @@ pub async fn get_lightning_invoice_bundle(
     let session_id_for_db = session_id.to_string();
     let session = state
         .db
-        .with_conn(move |conn| {
+        .with_read_conn(move |conn| {
             db::get_lightning_invoice_bundle(conn, &session_id_for_db)
                 .map(|record| record.map(map_lightning_bundle_record))
         })
@@ -501,7 +438,7 @@ pub async fn get_lightning_invoice_bundle_by_deal_hash(
     let deal_hash_for_db = deal_hash.to_string();
     let session = state
         .db
-        .with_conn(move |conn| {
+        .with_read_conn(move |conn| {
             db::get_lightning_invoice_bundle_by_deal_hash(conn, &deal_hash_for_db)
                 .map(|record| record.map(map_lightning_bundle_record))
         })
@@ -525,7 +462,7 @@ pub async fn update_lightning_invoice_bundle_states(
     let now = current_unix_timestamp();
     state
         .db
-        .with_conn(move |conn| {
+        .with_write_conn(move |conn| {
             if !db::update_lightning_invoice_bundle_states(
                 conn,
                 &session_id_for_update,
@@ -563,16 +500,14 @@ fn expire_open_invoice_legs_if_due(
     let mut success_state = session.success_state.clone();
 
     if matches!(base_state, InvoiceBundleLegState::Open) {
-        let decoded =
-            decode_lightning_invoice(&session.bundle.payload.base_fee.invoice_bolt11)?;
+        let decoded = decode_lightning_invoice(&session.bundle.payload.base_fee.invoice_bolt11)?;
         if now >= decoded.expires_at {
             base_state = InvoiceBundleLegState::Expired;
         }
     }
 
     if matches!(success_state, InvoiceBundleLegState::Open) {
-        let decoded =
-            decode_lightning_invoice(&session.bundle.payload.success_fee.invoice_bolt11)?;
+        let decoded = decode_lightning_invoice(&session.bundle.payload.success_fee.invoice_bolt11)?;
         if now >= decoded.expires_at {
             success_state = InvoiceBundleLegState::Expired;
         }
@@ -695,6 +630,34 @@ pub async fn settle_lightning_success_hold_invoice(
     }
 }
 
+pub async fn cancel_lightning_invoice_bundle(
+    state: &AppState,
+    session: &LightningInvoiceBundleSession,
+) -> Result<(), String> {
+    match state.config.lightning.mode {
+        LightningMode::Mock => Ok(()),
+        LightningMode::LndRest => {
+            let client = lnd_rest_client(state)?;
+            let mut payment_hashes = Vec::new();
+            if session.bundle.payload.base_fee.amount_msat > 0
+                && matches!(
+                    session.base_state,
+                    InvoiceBundleLegState::Open | InvoiceBundleLegState::Accepted
+                )
+            {
+                payment_hashes.push(session.bundle.payload.base_fee.payment_hash.clone());
+            }
+            if matches!(
+                session.success_state,
+                InvoiceBundleLegState::Open | InvoiceBundleLegState::Accepted
+            ) {
+                payment_hashes.push(session.bundle.payload.success_fee.payment_hash.clone());
+            }
+            cancel_lnd_invoices(&client, &payment_hashes).await
+        }
+    }
+}
+
 fn lnd_rest_client(state: &AppState) -> Result<LndRestClient, String> {
     let Some(config) = state.config.lightning.lnd_rest.as_ref() else {
         return Err("missing lnd_rest configuration".to_string());
@@ -752,14 +715,22 @@ pub async fn quoted_lightning_settlement_terms(
     }))
 }
 
-pub fn lightning_quote_expires_at(state: &AppState, created_at: i64, price_sats: u64) -> i64 {
+pub fn lightning_quote_expires_at(
+    state: &AppState,
+    created_at: i64,
+    price_sats: u64,
+    execution_window_secs: u64,
+) -> i64 {
     if state.config.payment_backend == PaymentBackend::Lightning && price_sats > 0 {
+        let admission_window_secs = state
+            .config
+            .lightning
+            .base_invoice_expiry_secs
+            .max(state.config.lightning.success_hold_expiry_secs);
         created_at
-            + state
-                .config
-                .lightning
-                .base_invoice_expiry_secs
-                .max(state.config.lightning.success_hold_expiry_secs) as i64
+            + admission_window_secs as i64
+            + execution_window_secs as i64
+            + state.config.lightning.success_hold_expiry_secs as i64
     } else {
         created_at + 60
     }
@@ -891,19 +862,9 @@ pub fn build_lightning_wallet_intent(
 
     payment_requests.push(LightningWalletPaymentRequest {
         role: "success_fee_hold".to_string(),
-        invoice: session
-            .bundle
-            .payload
-            .success_fee
-            .invoice_bolt11
-            .clone(),
+        invoice: session.bundle.payload.success_fee.invoice_bolt11.clone(),
         amount_msat: session.bundle.payload.success_fee.amount_msat,
-        payment_hash: session
-            .bundle
-            .payload
-            .success_fee
-            .payment_hash
-            .clone(),
+        payment_hash: session.bundle.payload.success_fee.payment_hash.clone(),
         state: session.success_state.clone(),
     });
 
@@ -911,12 +872,7 @@ pub fn build_lightning_wallet_intent(
     let can_release_preimage = result_ready && lightning_bundle_can_settle_success(session);
     let release_action = can_release_preimage.then(|| LightningWalletReleaseAction {
         endpoint_path: format!("/v1/deals/{deal_id}/release-preimage"),
-        payment_hash: session
-            .bundle
-            .payload
-            .success_fee
-            .payment_hash
-            .clone(),
+        payment_hash: session.bundle.payload.success_fee.payment_hash.clone(),
         expected_result_hash: result_hash.map(str::to_string),
     });
 
@@ -941,8 +897,7 @@ pub fn build_lightning_wallet_intent(
     }
 }
 
-fn sign_lightning_invoice_bundle(
-    state: &AppState,
+struct LightningInvoiceBundleSignature {
     session_id: String,
     provider_id: String,
     request: BuildLightningInvoiceBundleRequest,
@@ -954,47 +909,53 @@ fn sign_lightning_invoice_bundle(
     base_state: InvoiceBundleLegState,
     success_hold_invoice_bolt11: String,
     success_state: InvoiceBundleLegState,
+}
+
+fn sign_lightning_invoice_bundle(
+    state: &AppState,
+    signature: LightningInvoiceBundleSignature,
 ) -> Result<LightningInvoiceBundleSession, String> {
-    let base_expires_at = request.created_at + base_invoice_expiry_secs as i64;
-    let success_expires_at = request.created_at + success_hold_expiry_secs as i64;
+    let base_expires_at = signature.request.created_at + signature.base_invoice_expiry_secs as i64;
+    let success_expires_at =
+        signature.request.created_at + signature.success_hold_expiry_secs as i64;
     let bundle_expires_at = base_expires_at.max(success_expires_at);
     let bundle = sign_artifact(
-        &provider_id,
+        &signature.provider_id,
         |message| state.identity.sign_message_hex(message),
         TRANSPORT_KIND_INVOICE_BUNDLE,
-        request.created_at,
+        signature.request.created_at,
         InvoiceBundlePayload {
-            provider_id: provider_id.clone(),
-            requester_id: request.requester_id.clone(),
-            quote_hash: request.quote_hash.clone(),
-            deal_hash: request.deal_hash.clone(),
+            provider_id: signature.provider_id.clone(),
+            requester_id: signature.request.requester_id.clone(),
+            quote_hash: signature.request.quote_hash.clone(),
+            deal_hash: signature.request.deal_hash.clone(),
             expires_at: bundle_expires_at,
-            destination_identity,
+            destination_identity: signature.destination_identity,
             base_fee: InvoiceBundleLeg {
-                amount_msat: request.base_fee_msat,
-                invoice_bolt11: base_invoice_bolt11.clone(),
-                invoice_hash: crypto::sha256_hex(base_invoice_bolt11.as_bytes()),
-                payment_hash: base_payment_hash,
-                state: base_state.clone(),
+                amount_msat: signature.request.base_fee_msat,
+                invoice_bolt11: signature.base_invoice_bolt11.clone(),
+                invoice_hash: crypto::sha256_hex(signature.base_invoice_bolt11.as_bytes()),
+                payment_hash: signature.base_payment_hash,
+                state: signature.base_state.clone(),
             },
             success_fee: InvoiceBundleLeg {
-                amount_msat: request.success_fee_msat,
-                invoice_bolt11: success_hold_invoice_bolt11.clone(),
-                invoice_hash: crypto::sha256_hex(success_hold_invoice_bolt11.as_bytes()),
-                payment_hash: request.success_payment_hash.clone(),
-                state: success_state.clone(),
+                amount_msat: signature.request.success_fee_msat,
+                invoice_bolt11: signature.success_hold_invoice_bolt11.clone(),
+                invoice_hash: crypto::sha256_hex(signature.success_hold_invoice_bolt11.as_bytes()),
+                payment_hash: signature.request.success_payment_hash.clone(),
+                state: signature.success_state.clone(),
             },
             min_final_cltv_expiry: state.config.lightning.min_final_cltv_expiry,
         },
     )?;
 
     Ok(LightningInvoiceBundleSession {
-        session_id,
+        session_id: signature.session_id,
         bundle,
-        base_state,
-        success_state,
-        created_at: request.created_at,
-        updated_at: request.created_at,
+        base_state: signature.base_state,
+        success_state: signature.success_state,
+        created_at: signature.request.created_at,
+        updated_at: signature.request.created_at,
     })
 }
 
@@ -1005,10 +966,13 @@ fn effective_bundle_expiry_secs(
     let mut base_invoice_expiry_secs = state.config.lightning.base_invoice_expiry_secs;
     let mut success_hold_expiry_secs = state.config.lightning.success_hold_expiry_secs;
 
-    if let Some(quote_expires_at) = request.quote_expires_at {
-        let remaining_secs = quote_expires_at.saturating_sub(request.created_at);
+    if let Some(admission_deadline) = request.admission_deadline {
+        let remaining_secs = admission_deadline.saturating_sub(request.created_at);
         if remaining_secs <= 0 {
-            return Err("quote expired before lightning invoice bundle issuance".to_string());
+            return Err(
+                "deal admission_deadline passed before lightning invoice bundle issuance"
+                    .to_string(),
+            );
         }
         let remaining_secs = remaining_secs as u64;
         base_invoice_expiry_secs = base_invoice_expiry_secs.min(remaining_secs);
@@ -1016,6 +980,12 @@ fn effective_bundle_expiry_secs(
     }
 
     Ok((base_invoice_expiry_secs, success_hold_expiry_secs))
+}
+
+fn guarded_lnd_invoice_expiry_secs(expiry_secs: u64) -> u64 {
+    expiry_secs
+        .saturating_sub(LND_INVOICE_EXPIRY_GUARD_SECS)
+        .max(1)
 }
 
 fn push_bundle_issue(
@@ -1097,14 +1067,14 @@ pub fn validate_lightning_invoice_bundle(
             "invoice bundle deal_hash does not match the deal artifact hash",
         );
     }
-    if let Some(expected_requester_id) = expected_requester_id {
-        if bundle.payload.requester_id != expected_requester_id {
-            push_bundle_issue(
-                &mut issues,
-                "requester_id_mismatch",
-                "invoice bundle requester_id does not match the expected requester",
-            );
-        }
+    if let Some(expected_requester_id) = expected_requester_id
+        && bundle.payload.requester_id != expected_requester_id
+    {
+        push_bundle_issue(
+            &mut issues,
+            "requester_id_mismatch",
+            "invoice bundle requester_id does not match the expected requester",
+        );
     }
 
     if quote.payload.settlement_terms.method != "lightning.base_fee_plus_success_fee.v1" {
@@ -1171,6 +1141,13 @@ pub fn validate_lightning_invoice_bundle(
             &mut issues,
             "bundle_expiry_exceeds_quote",
             "invoice bundle expires after the quote deadline",
+        );
+    }
+    if bundle.payload.expires_at > deal.payload.admission_deadline {
+        push_bundle_issue(
+            &mut issues,
+            "bundle_expiry_exceeds_admission_deadline",
+            "invoice bundle expires after the deal admission_deadline",
         );
     }
 
@@ -1273,6 +1250,13 @@ pub fn validate_lightning_invoice_bundle(
                         format!("{leg_name} invoice expiry exceeds the quote deadline"),
                     );
                 }
+                if decoded.expires_at > deal.payload.admission_deadline {
+                    push_bundle_issue(
+                        &mut issues,
+                        "invoice_expiry_exceeds_admission_deadline",
+                        format!("{leg_name} invoice expiry exceeds the deal admission_deadline"),
+                    );
+                }
             }
             Err(error) => push_bundle_issue(
                 &mut issues,
@@ -1318,17 +1302,19 @@ pub fn build_lightning_invoice_bundle(
     );
     sign_lightning_invoice_bundle(
         state,
-        session_id,
-        provider_id,
-        request,
-        base_invoice_expiry_secs,
-        success_hold_expiry_secs,
-        destination_identity,
-        base_invoice_bolt11,
-        base_payment_hash,
-        InvoiceBundleLegState::Open,
-        success_hold_invoice_bolt11,
-        InvoiceBundleLegState::Open,
+        LightningInvoiceBundleSignature {
+            session_id,
+            provider_id,
+            request,
+            base_invoice_expiry_secs,
+            success_hold_expiry_secs,
+            destination_identity,
+            base_invoice_bolt11,
+            base_payment_hash,
+            base_state: InvoiceBundleLegState::Open,
+            success_hold_invoice_bolt11,
+            success_state: InvoiceBundleLegState::Open,
+        },
     )
 }
 
@@ -1337,12 +1323,16 @@ async fn issue_lnd_rest_invoice_bundle(
     request: BuildLightningInvoiceBundleRequest,
 ) -> Result<LightningInvoiceBundleSession, String> {
     let client = lnd_rest_client(state)?;
-    let (base_invoice_expiry_secs, success_hold_expiry_secs) =
+    let (max_base_invoice_expiry_secs, max_success_hold_expiry_secs) =
         effective_bundle_expiry_secs(state, &request)?;
+    let base_invoice_expiry_secs = guarded_lnd_invoice_expiry_secs(max_base_invoice_expiry_secs);
+    let success_hold_expiry_secs = guarded_lnd_invoice_expiry_secs(max_success_hold_expiry_secs);
     let session_id = request.session_id.clone().unwrap_or_else(new_request_id);
     let provider_id = state.identity.node_id().to_string();
     let destination_identity = resolve_lightning_destination_identity(state).await?;
+    let mut issued_payment_hashes = Vec::new();
     let mut base_state = InvoiceBundleLegState::Open;
+    let mut bundle_created_at = request.created_at;
     let (base_payment_hash, base_invoice_bolt11) = if request.base_fee_msat == 0 {
         base_state = InvoiceBundleLegState::Settled;
         let payment_hash = crypto::sha256_hex(format!("lightning-base:{session_id}").as_bytes());
@@ -1363,9 +1353,10 @@ async fn issue_lnd_rest_invoice_bundle(
             )
             .await
             .map_err(|error| error.to_string())?;
+        issued_payment_hashes.push(base_invoice.payment_hash_hex.clone());
         (base_invoice.payment_hash_hex, base_invoice.payment_request)
     };
-    let success_invoice = client
+    let success_invoice = match client
         .add_hold_invoice(
             &request.success_payment_hash,
             request.success_fee_msat,
@@ -1375,179 +1366,174 @@ async fn issue_lnd_rest_invoice_bundle(
             true,
         )
         .await
-        .map_err(|error| error.to_string())?;
+    {
+        Ok(invoice) => invoice,
+        Err(error) => {
+            return Err(cleanup_failed_lnd_bundle_issue(
+                &client,
+                &issued_payment_hashes,
+                error.to_string(),
+            )
+            .await);
+        }
+    };
+    issued_payment_hashes.push(request.success_payment_hash.clone());
 
     if request.base_fee_msat > 0 {
-        let decoded_base = decode_lightning_invoice(&base_invoice_bolt11)?;
+        let decoded_base = match decode_lightning_invoice(&base_invoice_bolt11) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                return Err(cleanup_failed_lnd_bundle_issue(
+                    &client,
+                    &issued_payment_hashes,
+                    error.to_string(),
+                )
+                .await);
+            }
+        };
         if decoded_base.amount_msat != request.base_fee_msat {
-            return Err("LND base invoice amount did not match the requested amount".to_string());
+            return Err(cleanup_failed_lnd_bundle_issue(
+                &client,
+                &issued_payment_hashes,
+                "LND base invoice amount did not match the requested amount".to_string(),
+            )
+            .await);
+        }
+        if let Some(admission_deadline) = request.admission_deadline
+            && decoded_base.expires_at > admission_deadline
+        {
+            return Err(cleanup_failed_lnd_bundle_issue(
+                &client,
+                &issued_payment_hashes,
+                "LND base invoice expiry exceeded the deal admission_deadline".to_string(),
+            )
+            .await);
         }
         if decoded_base.destination_identity != destination_identity {
-            return Err(
+            return Err(cleanup_failed_lnd_bundle_issue(
+                &client,
+                &issued_payment_hashes,
                 "LND base invoice destination did not match the provider identity".to_string(),
-            );
+            )
+            .await);
         }
+        bundle_created_at = bundle_created_at.max(
+            decoded_base
+                .expires_at
+                .saturating_sub(base_invoice_expiry_secs as i64),
+        );
     }
 
-    let decoded_success = decode_lightning_invoice(&success_invoice.payment_request)?;
+    let decoded_success = match decode_lightning_invoice(&success_invoice.payment_request) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            return Err(cleanup_failed_lnd_bundle_issue(
+                &client,
+                &issued_payment_hashes,
+                error.to_string(),
+            )
+            .await);
+        }
+    };
     if decoded_success.amount_msat != request.success_fee_msat {
-        return Err(
+        return Err(cleanup_failed_lnd_bundle_issue(
+            &client,
+            &issued_payment_hashes,
             "LND success hold invoice amount did not match the requested amount".to_string(),
-        );
+        )
+        .await);
+    }
+    if let Some(admission_deadline) = request.admission_deadline
+        && decoded_success.expires_at > admission_deadline
+    {
+        return Err(cleanup_failed_lnd_bundle_issue(
+            &client,
+            &issued_payment_hashes,
+            "LND success hold invoice expiry exceeded the deal admission_deadline".to_string(),
+        )
+        .await);
     }
     if decoded_success.payment_hash != request.success_payment_hash {
-        return Err(
+        return Err(cleanup_failed_lnd_bundle_issue(
+            &client,
+            &issued_payment_hashes,
             "LND success hold invoice payment hash did not match the deal payment lock".to_string(),
-        );
+        )
+        .await);
     }
     if decoded_success.destination_identity != destination_identity {
-        return Err(
+        return Err(cleanup_failed_lnd_bundle_issue(
+            &client,
+            &issued_payment_hashes,
             "LND success hold invoice destination did not match the provider identity".to_string(),
-        );
+        )
+        .await);
     }
     if decoded_success.min_final_cltv_expiry < state.config.lightning.min_final_cltv_expiry {
-        return Err(
+        return Err(cleanup_failed_lnd_bundle_issue(
+            &client,
+            &issued_payment_hashes,
             "LND success hold invoice min_final_cltv_expiry was below the configured floor"
                 .to_string(),
-        );
+        )
+        .await);
     }
+
+    bundle_created_at = bundle_created_at.max(
+        decoded_success
+            .expires_at
+            .saturating_sub(success_hold_expiry_secs as i64),
+    );
+
+    let mut request = request;
+    request.created_at = bundle_created_at;
 
     sign_lightning_invoice_bundle(
         state,
-        session_id,
-        provider_id,
-        request,
-        base_invoice_expiry_secs,
-        success_hold_expiry_secs,
-        destination_identity,
-        base_invoice_bolt11,
-        base_payment_hash,
-        base_state,
-        success_invoice.payment_request,
-        InvoiceBundleLegState::Open,
+        LightningInvoiceBundleSignature {
+            session_id,
+            provider_id,
+            request,
+            base_invoice_expiry_secs,
+            success_hold_expiry_secs,
+            destination_identity,
+            base_invoice_bolt11,
+            base_payment_hash,
+            base_state,
+            success_hold_invoice_bolt11: success_invoice.payment_request,
+            success_state: InvoiceBundleLegState::Open,
+        },
     )
 }
 
-fn invalid_cashu_token(
-    request: &PreparePaymentRequest,
-    message: impl Into<String>,
-) -> PaymentError {
-    PaymentError::InvalidToken {
-        service_id: request.service_id.as_str().to_string(),
-        price_sats: request.price_sats,
-        message: message.into(),
+async fn cleanup_failed_lnd_bundle_issue(
+    client: &LndRestClient,
+    payment_hashes: &[String],
+    issue_error: String,
+) -> String {
+    match cancel_lnd_invoices(client, payment_hashes).await {
+        Ok(()) => issue_error,
+        Err(cancel_error) => {
+            format!("{issue_error}; additionally failed to cancel issued invoices: {cancel_error}")
+        }
     }
 }
 
-fn canonicalize_mint_urlish(value: &str) -> String {
-    value.trim().trim_end_matches('/').to_ascii_lowercase()
-}
-
-fn mint_allowed(allowlist: &[String], mint_url: &str) -> bool {
-    if allowlist.is_empty() {
-        return true;
+async fn cancel_lnd_invoices(
+    client: &LndRestClient,
+    payment_hashes: &[String],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for payment_hash in payment_hashes {
+        if let Err(error) = client.cancel_invoice(payment_hash).await {
+            failures.push(format!("{payment_hash}: {error}"));
+        }
     }
-
-    let normalized_mint = canonicalize_mint_urlish(mint_url);
-    allowlist
-        .iter()
-        .any(|entry| canonicalize_mint_urlish(entry) == normalized_mint)
-}
-
-async fn verify_cashu_token_policies(
-    state: &AppState,
-    request: &PreparePaymentRequest,
-    token_info: &ecash::CashuTokenInfo,
-) -> Result<(), PaymentError> {
-    if !mint_allowed(&state.config.cashu.mint_allowlist, &token_info.mint_url) {
-        return Err(invalid_cashu_token(
-            request,
-            format!("cashu mint is not allowed: {}", token_info.mint_url),
-        ));
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
-
-    if token_info.has_spend_conditions {
-        return Err(invalid_cashu_token(
-            request,
-            "spend-conditioned Cashu tokens are not supported by Froglet's verifier-only settlement mode",
-        ));
-    }
-
-    if state.config.cashu.remote_checkstate {
-        verify_cashu_checkstate(state, request, token_info).await?;
-    }
-
-    Ok(())
-}
-
-async fn verify_cashu_checkstate(
-    state: &AppState,
-    request: &PreparePaymentRequest,
-    token_info: &ecash::CashuTokenInfo,
-) -> Result<(), PaymentError> {
-    let mint_url = MintUrl::from_str(&token_info.mint_url)
-        .map_err(|e| invalid_cashu_token(request, format!("invalid cashu mint url: {e}")))?;
-    let checkstate_url = mint_url.join("v1/checkstate").map_err(|e| {
-        invalid_cashu_token(request, format!("failed to build checkstate url: {e}"))
-    })?;
-
-    let response = state
-        .http_client
-        .post(checkstate_url)
-        .timeout(Duration::from_secs(state.config.cashu.request_timeout_secs))
-        .json(&CheckStateRequest {
-            ys: token_info.proof_ys.clone(),
-        })
-        .send()
-        .await
-        .map_err(|e| {
-            invalid_cashu_token(request, format!("mint checkstate request failed: {e}"))
-        })?;
-
-    if !response.status().is_success() {
-        return Err(invalid_cashu_token(
-            request,
-            format!("mint checkstate returned {}", response.status()),
-        ));
-    }
-
-    let response = response.json::<CheckStateResponse>().await.map_err(|e| {
-        invalid_cashu_token(request, format!("invalid mint checkstate response: {e}"))
-    })?;
-
-    let requested_ys = token_info
-        .proof_ys
-        .iter()
-        .map(ToString::to_string)
-        .collect::<BTreeSet<_>>();
-    let returned_ys = response
-        .states
-        .iter()
-        .map(|state| state.y.to_string())
-        .collect::<BTreeSet<_>>();
-
-    if requested_ys != returned_ys {
-        return Err(invalid_cashu_token(
-            request,
-            "mint checkstate response did not match all submitted proofs",
-        ));
-    }
-
-    if let Some(proof_state) = response
-        .states
-        .iter()
-        .find(|state| !matches!(state.state, ProofState::Unspent))
-    {
-        return Err(invalid_cashu_token(
-            request,
-            format!(
-                "cashu proof is not spendable according to the mint: {} ({})",
-                proof_state.y, proof_state.state
-            ),
-        ));
-    }
-
-    Ok(())
 }
 
 struct NoSettlementDriver;
@@ -1558,7 +1544,6 @@ impl SettlementDriver for NoSettlementDriver {
             backend: PaymentBackend::None.to_string(),
             mode: "disabled".to_string(),
             accepted_payment_methods: Vec::new(),
-            accepted_mints: Vec::new(),
             capabilities: Vec::new(),
             reservations: false,
             receipts: false,
@@ -1617,189 +1602,6 @@ impl SettlementDriver for NoSettlementDriver {
     }
 }
 
-struct CashuVerifierDriver;
-
-impl CashuVerifierDriver {
-    fn descriptor_inner(&self, state: &AppState) -> SettlementDriverDescriptor {
-        let mut capabilities = vec![
-            "token_format_verification".to_string(),
-            "local_replay_guard".to_string(),
-        ];
-        if !state.config.cashu.mint_allowlist.is_empty() {
-            capabilities.push("mint_allowlist".to_string());
-        }
-        if state.config.cashu.remote_checkstate {
-            capabilities.push("nut07_checkstate".to_string());
-        }
-        SettlementDriverDescriptor {
-            backend: PaymentBackend::Cashu.to_string(),
-            mode: CASHU_VERIFIER_MODE.to_string(),
-            accepted_payment_methods: vec!["cashu".to_string()],
-            accepted_mints: state.config.cashu.mint_allowlist.clone(),
-            capabilities,
-            reservations: true,
-            receipts: true,
-        }
-    }
-}
-
-impl SettlementDriver for CashuVerifierDriver {
-    fn descriptor(&self, state: &AppState) -> SettlementDriverDescriptor {
-        self.descriptor_inner(state)
-    }
-
-    fn wallet_balance<'a>(
-        &'a self,
-        state: &'a AppState,
-    ) -> BoxFuture<'a, Result<WalletBalanceSnapshot, PaymentError>> {
-        let descriptor = self.descriptor_inner(state);
-        Box::pin(async move { Ok(WalletBalanceSnapshot::from_descriptor(descriptor)) })
-    }
-
-    fn prepare<'a>(
-        &'a self,
-        state: &'a AppState,
-        request: PreparePaymentRequest,
-    ) -> BoxFuture<'a, Result<Option<PaymentReservation>, PaymentError>> {
-        let accepted_payment_methods = self.descriptor_inner(state).accepted_payment_methods;
-
-        Box::pin(async move {
-            if request.price_sats == 0 {
-                return Ok(None);
-            }
-
-            let payment =
-                request
-                    .payment
-                    .as_ref()
-                    .ok_or_else(|| PaymentError::PaymentRequired {
-                        service_id: request.service_id.as_str().to_string(),
-                        price_sats: request.price_sats,
-                        accepted_payment_methods: accepted_payment_methods.clone(),
-                    })?;
-
-            if payment.kind.to_lowercase() != "cashu" {
-                return Err(PaymentError::UnsupportedKind {
-                    service_id: request.service_id.as_str().to_string(),
-                    price_sats: request.price_sats,
-                    kind: payment.kind.clone(),
-                    accepted_payment_methods,
-                });
-            }
-
-            let token_info = ecash::inspect_cashu_token(&payment.token).map_err(|e| {
-                PaymentError::InvalidToken {
-                    service_id: request.service_id.as_str().to_string(),
-                    price_sats: request.price_sats,
-                    message: e.to_string(),
-                }
-            })?;
-            verify_cashu_token_policies(state, &request, &token_info).await?;
-
-            if token_info.amount_satoshis < request.price_sats {
-                return Err(PaymentError::Underpaid {
-                    service_id: request.service_id.as_str().to_string(),
-                    price_sats: request.price_sats,
-                    amount_sats: token_info.amount_satoshis,
-                });
-            }
-
-            let request_id = request.request_id.unwrap_or_else(new_request_id);
-            let token_hash = token_info.token_hash.clone();
-            let amount_sats = token_info.amount_satoshis;
-            let reserve_request_id = request_id.clone();
-            let reserve_token_hash = token_hash.clone();
-            let service_id = request.service_id;
-            let outcome = state
-                .db
-                .with_conn(move |conn| {
-                    db::reserve_payment_token(
-                        conn,
-                        &reserve_token_hash,
-                        service_id,
-                        amount_sats,
-                        &reserve_request_id,
-                        current_unix_timestamp(),
-                    )
-                })
-                .await
-                .map_err(PaymentError::Database)?;
-
-            match outcome {
-                ReservePaymentTokenOutcome::Reserved => Ok(Some(PaymentReservation {
-                    request_id,
-                    method: "cashu".to_string(),
-                    service_id: request.service_id,
-                    amount_sats,
-                    token_hash,
-                })),
-                ReservePaymentTokenOutcome::InUse => Err(PaymentError::InUse {
-                    service_id: request.service_id.as_str().to_string(),
-                    token_hash,
-                }),
-                ReservePaymentTokenOutcome::Replay => Err(PaymentError::Replay {
-                    service_id: request.service_id.as_str().to_string(),
-                    token_hash,
-                }),
-            }
-        })
-    }
-
-    fn commit<'a>(
-        &'a self,
-        state: &'a AppState,
-        reservation: PaymentReservation,
-    ) -> BoxFuture<'a, Result<PaymentReceipt, PaymentError>> {
-        Box::pin(async move {
-            let token_hash = reservation.token_hash.clone();
-            let request_id = reservation.request_id.clone();
-            let committed = state
-                .db
-                .with_conn(move |conn| {
-                    db::commit_payment_token(
-                        conn,
-                        &token_hash,
-                        &request_id,
-                        current_unix_timestamp(),
-                    )
-                })
-                .await
-                .map_err(PaymentError::Database)?;
-
-            if !committed {
-                return Err(PaymentError::Database(
-                    "payment reservation could not be committed".to_string(),
-                ));
-            }
-
-            Ok(reservation.receipt(SettlementStatus::Committed, reservation.amount_sats, None))
-        })
-    }
-
-    fn release<'a>(
-        &'a self,
-        state: &'a AppState,
-        reservation: &'a PaymentReservation,
-    ) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            let token_hash = reservation.token_hash.clone();
-            let request_id = reservation.request_id.clone();
-            state
-                .db
-                .with_conn(move |conn| {
-                    db::release_payment_token(
-                        conn,
-                        &token_hash,
-                        &request_id,
-                        current_unix_timestamp(),
-                    )
-                })
-                .await?;
-            Ok(())
-        })
-    }
-}
-
 struct LightningDriver;
 
 impl LightningDriver {
@@ -1820,7 +1622,6 @@ impl LightningDriver {
             backend: PaymentBackend::Lightning.to_string(),
             mode: mode.to_string(),
             accepted_payment_methods: vec!["lightning".to_string()],
-            accepted_mints: Vec::new(),
             capabilities,
             reservations: true,
             receipts: true,
@@ -1883,5 +1684,4 @@ impl SettlementDriver for LightningDriver {
 }
 
 static NO_SETTLEMENT_DRIVER: NoSettlementDriver = NoSettlementDriver;
-static CASHU_VERIFIER_DRIVER: CashuVerifierDriver = CashuVerifierDriver;
 static LIGHTNING_DRIVER: LightningDriver = LightningDriver;

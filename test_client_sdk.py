@@ -29,7 +29,9 @@ class ClientSdkTests(FrogletAsyncTestCase):
             }
         )
         runtime = RuntimeClient.from_token_file(
-            node.base_url, node.data_dir / "runtime" / "auth.token"
+            node.runtime_url,
+            node.data_dir / "runtime" / "auth.token",
+            provider_base_url=node.base_url,
         )
         requester_key = generate_requester_seed()
         requester_id = requester_id_from_seed(requester_key)
@@ -88,7 +90,9 @@ class ClientSdkTests(FrogletAsyncTestCase):
             }
         )
         runtime = RuntimeClient.from_token_file(
-            node.base_url, node.data_dir / "runtime" / "auth.token"
+            node.runtime_url,
+            node.data_dir / "runtime" / "auth.token",
+            provider_base_url=node.base_url,
         )
 
         async with runtime:
@@ -128,7 +132,9 @@ class ClientSdkTests(FrogletAsyncTestCase):
     async def test_runtime_client_issues_curated_list_and_provider_client_verifies_it(self) -> None:
         node = await self.start_node()
         runtime = RuntimeClient.from_token_file(
-            node.base_url, node.data_dir / "runtime" / "auth.token"
+            node.runtime_url,
+            node.data_dir / "runtime" / "auth.token",
+            provider_base_url=node.base_url,
         )
 
         async with ProviderClient(node.base_url) as provider:
@@ -163,7 +169,9 @@ class ClientSdkTests(FrogletAsyncTestCase):
             }
         )
         runtime = RuntimeClient.from_token_file(
-            node.base_url, node.data_dir / "runtime" / "auth.token"
+            node.runtime_url,
+            node.data_dir / "runtime" / "auth.token",
+            provider_base_url=node.base_url,
         )
         success_preimage = "22" * 32
 

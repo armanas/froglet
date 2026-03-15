@@ -2,29 +2,23 @@ use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
 use serde::Serialize;
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::task;
 
 use crate::{
     api::NodeEventEnvelope,
-    canonical_json, crypto, deals, jobs,
-    pricing::ServiceId,
+    canonical_json, crypto,
     protocol::{InvoiceBundleLegState, InvoiceBundlePayload, SignedArtifact},
 };
 
-const PAYMENT_TOKEN_STATE_RESERVED: &str = "reserved";
-const PAYMENT_TOKEN_STATE_COMMITTED: &str = "committed";
-const PAYMENT_TOKEN_STATE_RELEASED: &str = "released";
-const PAYMENT_TOKEN_STATE_EXPIRED: &str = "expired";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReservePaymentTokenOutcome {
-    Reserved,
-    InUse,
-    Replay,
-}
+const LEGACY_ARTIFACTS_MIGRATION: &str = "20260313_legacy_artifacts_backfill";
+const DEFAULT_DB_READ_CONNECTIONS: usize = 4;
+pub const MAX_EVENT_QUERY_KINDS: usize = 100;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LedgerArtifact {
@@ -94,22 +88,6 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_kind_created_at ON events (kind, created_at DESC);
 
-        CREATE TABLE IF NOT EXISTS payment_redemptions (
-            token_hash TEXT PRIMARY KEY,
-            service_id TEXT NOT NULL,
-            amount_sats INTEGER NOT NULL,
-            redeemed_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS payment_tokens (
-            token_hash TEXT PRIMARY KEY,
-            service_id TEXT NOT NULL,
-            amount_sats INTEGER NOT NULL,
-            state TEXT NOT NULL,
-            request_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_payment_tokens_state_updated_at ON payment_tokens (state, updated_at);
         CREATE TABLE IF NOT EXISTS jobs (
             job_id TEXT PRIMARY KEY,
             idempotency_key TEXT UNIQUE,
@@ -120,8 +98,6 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             status TEXT NOT NULL,
             result_json TEXT,
             error TEXT,
-            payment_token_hash TEXT,
-            payment_amount_sats INTEGER,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -166,6 +142,10 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             UNIQUE (subject_kind, subject_id, evidence_kind, content_hash)
         );
         CREATE INDEX IF NOT EXISTS idx_execution_evidence_subject ON execution_evidence (subject_kind, subject_id, evidence_id ASC);
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
         CREATE TABLE IF NOT EXISTS lightning_invoice_bundles (
             session_id TEXT PRIMARY KEY,
             provider_id TEXT NOT NULL,
@@ -224,16 +204,16 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         CREATE INDEX IF NOT EXISTS idx_deals_status_updated_at ON deals (status, updated_at DESC);
         COMMIT;",
     )?;
-    ensure_column(&conn, "jobs", "workload_evidence_hash", "TEXT")?;
-    ensure_column(&conn, "jobs", "result_evidence_hash", "TEXT")?;
-    ensure_column(&conn, "jobs", "failure_evidence_hash", "TEXT")?;
-    ensure_column(&conn, "deals", "workload_evidence_hash", "TEXT")?;
-    ensure_column(&conn, "deals", "deal_artifact_hash", "TEXT")?;
-    ensure_column(&conn, "deals", "result_evidence_hash", "TEXT")?;
-    ensure_column(&conn, "deals", "failure_evidence_hash", "TEXT")?;
-    ensure_column(&conn, "deals", "receipt_artifact_hash", "TEXT")?;
-    ensure_column(&conn, "deals", "payment_method", "TEXT")?;
-    migrate_legacy_artifacts(&conn)?;
+    ensure_column(conn, "jobs", "workload_evidence_hash", "TEXT")?;
+    ensure_column(conn, "jobs", "result_evidence_hash", "TEXT")?;
+    ensure_column(conn, "jobs", "failure_evidence_hash", "TEXT")?;
+    ensure_column(conn, "deals", "workload_evidence_hash", "TEXT")?;
+    ensure_column(conn, "deals", "deal_artifact_hash", "TEXT")?;
+    ensure_column(conn, "deals", "result_evidence_hash", "TEXT")?;
+    ensure_column(conn, "deals", "failure_evidence_hash", "TEXT")?;
+    ensure_column(conn, "deals", "receipt_artifact_hash", "TEXT")?;
+    ensure_column(conn, "deals", "payment_method", "TEXT")?;
+    apply_migration_once(conn, LEGACY_ARTIFACTS_MIGRATION, migrate_legacy_artifacts)?;
     Ok(())
 }
 
@@ -243,20 +223,72 @@ pub fn initialize_db(db_path: &Path) -> SqlResult<Connection> {
     Ok(conn)
 }
 
+pub fn initialize_db_reader(db_path: &Path) -> SqlResult<Connection> {
+    let conn = Connection::open(db_path)?;
+    configure_connection(&conn)?;
+    conn.execute_batch("PRAGMA query_only = ON;")?;
+    Ok(conn)
+}
+
 pub fn initialize_db_for_connection(conn: &Connection) -> SqlResult<()> {
     configure_connection(conn)
 }
 
 #[derive(Clone)]
 pub struct DbPool {
-    inner: Arc<Mutex<Connection>>,
+    write: Arc<Mutex<Connection>>,
+    readers: Arc<Vec<Arc<Mutex<Connection>>>>,
+    next_reader: Arc<AtomicUsize>,
 }
 
 impl DbPool {
     pub fn new(conn: Connection) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(conn)),
+            write: Arc::new(Mutex::new(conn)),
+            readers: Arc::new(Vec::new()),
+            next_reader: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn open(db_path: &Path) -> SqlResult<Self> {
+        Self::open_with(db_path, initialize_db, initialize_db_reader)
+    }
+
+    pub fn open_with(
+        db_path: &Path,
+        init_write: fn(&Path) -> SqlResult<Connection>,
+        init_read: fn(&Path) -> SqlResult<Connection>,
+    ) -> SqlResult<Self> {
+        let write = init_write(db_path)?;
+        let reader_count = db_read_connection_count();
+        let mut readers = Vec::with_capacity(reader_count);
+        for _ in 0..reader_count {
+            readers.push(Arc::new(Mutex::new(init_read(db_path)?)));
+        }
+        Ok(Self {
+            write: Arc::new(Mutex::new(write)),
+            readers: Arc::new(readers),
+            next_reader: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    pub async fn with_read_conn<F, R, E>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&Connection) -> std::result::Result<R, E> + Send + 'static,
+        R: Send + 'static,
+        E: ToString + Send + 'static,
+    {
+        let connection = self.next_read_connection();
+        Self::run_locked_connection(connection, f).await
+    }
+
+    pub async fn with_write_conn<F, R, E>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&Connection) -> std::result::Result<R, E> + Send + 'static,
+        R: Send + 'static,
+        E: ToString + Send + 'static,
+    {
+        Self::run_locked_connection(self.write.clone(), f).await
     }
 
     pub async fn with_conn<F, R, E>(&self, f: F) -> Result<R, String>
@@ -265,7 +297,27 @@ impl DbPool {
         R: Send + 'static,
         E: ToString + Send + 'static,
     {
-        let inner = self.inner.clone();
+        self.with_write_conn(f).await
+    }
+
+    fn next_read_connection(&self) -> Arc<Mutex<Connection>> {
+        if self.readers.is_empty() {
+            return self.write.clone();
+        }
+
+        let index = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        self.readers[index].clone()
+    }
+
+    async fn run_locked_connection<F, R, E>(
+        inner: Arc<Mutex<Connection>>,
+        f: F,
+    ) -> Result<R, String>
+    where
+        F: FnOnce(&Connection) -> std::result::Result<R, E> + Send + 'static,
+        R: Send + 'static,
+        E: ToString + Send + 'static,
+    {
         task::spawn_blocking(move || {
             let conn = inner
                 .lock()
@@ -277,10 +329,16 @@ impl DbPool {
     }
 }
 
-pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> SqlResult<()> {
+fn db_read_connection_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().clamp(2, 8))
+        .unwrap_or(DEFAULT_DB_READ_CONNECTIONS)
+}
+
+pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> SqlResult<bool> {
     let tags_json = serde_json::to_string(&event.tags).unwrap_or_else(|_| "[]".to_string());
 
-    conn.execute(
+    let inserted = conn.execute(
         "INSERT OR IGNORE INTO events (id, pubkey, created_at, kind, content, sig, tags)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
@@ -294,7 +352,7 @@ pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> SqlResult<(
         ],
     )?;
 
-    Ok(())
+    Ok(inserted > 0)
 }
 
 pub fn query_events_by_kind(
@@ -304,6 +362,11 @@ pub fn query_events_by_kind(
 ) -> SqlResult<Vec<NodeEventEnvelope>> {
     if kinds.is_empty() {
         return Ok(vec![]);
+    }
+    if kinds.len() > MAX_EVENT_QUERY_KINDS {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "events query exceeds maximum of {MAX_EVENT_QUERY_KINDS} kinds"
+        )));
     }
 
     let placeholders: Vec<String> = kinds.iter().map(|_| "?".to_string()).collect();
@@ -347,197 +410,16 @@ pub fn query_events_by_kind(
     Ok(events)
 }
 
-pub fn try_record_payment_redemption(
-    conn: &Connection,
-    token_hash: &str,
-    service_id: ServiceId,
-    amount_sats: u64,
-    redeemed_at: i64,
-) -> SqlResult<bool> {
-    let inserted = conn.execute(
-        "INSERT OR IGNORE INTO payment_redemptions (token_hash, service_id, amount_sats, redeemed_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![
-            token_hash,
-            service_id.as_str(),
-            amount_sats as i64,
-            redeemed_at
-        ],
-    )?;
-
-    Ok(inserted > 0)
-}
-
-pub fn reserve_payment_token(
-    conn: &Connection,
-    token_hash: &str,
-    service_id: ServiceId,
-    amount_sats: u64,
-    request_id: &str,
-    now: i64,
-) -> Result<ReservePaymentTokenOutcome, String> {
-    let inserted = conn
-        .execute(
-            "INSERT OR IGNORE INTO payment_tokens (
-                token_hash,
-                service_id,
-                amount_sats,
-                state,
-                request_id,
-                created_at,
-                updated_at
-             ) VALUES (?1, ?2, ?3, 'reserved', ?4, ?5, ?5)",
-            params![
-                token_hash,
-                service_id.as_str(),
-                amount_sats as i64,
-                request_id,
-                now
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-
-    if inserted > 0 {
-        return Ok(ReservePaymentTokenOutcome::Reserved);
-    }
-
-    let reclaimed = conn
-        .execute(
-            "UPDATE payment_tokens
-             SET service_id = ?2,
-                 amount_sats = ?3,
-                 state = ?4,
-                 request_id = ?5,
-                 updated_at = ?6
-             WHERE token_hash = ?1 AND state IN (?7, ?8)",
-            params![
-                token_hash,
-                service_id.as_str(),
-                amount_sats as i64,
-                PAYMENT_TOKEN_STATE_RESERVED,
-                request_id,
-                now,
-                PAYMENT_TOKEN_STATE_RELEASED,
-                PAYMENT_TOKEN_STATE_EXPIRED,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-
-    if reclaimed > 0 {
-        return Ok(ReservePaymentTokenOutcome::Reserved);
-    }
-
-    let row: Option<(String, String)> = conn
-        .query_row(
-            "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
-            params![token_hash],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    match row {
-        Some((state, existing_request_id))
-            if state == PAYMENT_TOKEN_STATE_RESERVED && existing_request_id == request_id =>
-        {
-            Ok(ReservePaymentTokenOutcome::Reserved)
-        }
-        Some((state, _)) if state == PAYMENT_TOKEN_STATE_RESERVED => {
-            Ok(ReservePaymentTokenOutcome::InUse)
-        }
-        Some(_) => Ok(ReservePaymentTokenOutcome::Replay),
-        None => Err("payment token disappeared during reservation".to_string()),
-    }
-}
-
-pub fn commit_payment_token(
-    conn: &Connection,
-    token_hash: &str,
-    request_id: &str,
-    committed_at: i64,
-) -> Result<bool, String> {
-    let updated = conn
-        .execute(
-            "UPDATE payment_tokens
-             SET state = ?3, updated_at = ?4
-             WHERE token_hash = ?1 AND request_id = ?2 AND state = ?5",
-            params![
-                token_hash,
-                request_id,
-                PAYMENT_TOKEN_STATE_COMMITTED,
-                committed_at,
-                PAYMENT_TOKEN_STATE_RESERVED
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-
-    if updated == 0 {
-        return Ok(false);
-    }
-
-    conn.execute(
-        "INSERT OR REPLACE INTO payment_redemptions (token_hash, service_id, amount_sats, redeemed_at)
-         SELECT token_hash, service_id, amount_sats, ?2
-         FROM payment_tokens
-         WHERE token_hash = ?1",
-        params![token_hash, committed_at],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(true)
-}
-
-pub fn release_payment_token(
-    conn: &Connection,
-    token_hash: &str,
-    request_id: &str,
-    released_at: i64,
-) -> Result<bool, String> {
-    let updated = conn
-        .execute(
-            "UPDATE payment_tokens
-             SET state = ?3, updated_at = ?4
-             WHERE token_hash = ?1 AND request_id = ?2 AND state = ?5",
-            params![
-                token_hash,
-                request_id,
-                PAYMENT_TOKEN_STATE_RELEASED,
-                released_at,
-                PAYMENT_TOKEN_STATE_RESERVED
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-
-    Ok(updated > 0)
-}
-
-pub fn expire_reserved_payment_tokens(conn: &Connection, expired_at: i64) -> Result<usize, String> {
-    conn.execute(
-        "UPDATE payment_tokens
-         SET state = ?1, updated_at = ?2
-         WHERE state = ?3",
-        params![
-            PAYMENT_TOKEN_STATE_EXPIRED,
-            expired_at,
-            PAYMENT_TOKEN_STATE_RESERVED
-        ],
-    )
-    .map_err(|e| e.to_string())
-}
-
-pub fn recover_runtime_state(conn: &Connection, now: i64) -> Result<(), String> {
-    let _ = expire_reserved_payment_tokens(conn, now)?;
-    jobs::fail_incomplete_jobs(conn, "node restarted before job completion", now)?;
-    deals::fail_incomplete_deals(conn, "node restarted before deal completion", now)?;
-    Ok(())
-}
-
 fn ensure_column(
     conn: &Connection,
     table_name: &str,
     column_name: &str,
     column_definition: &str,
 ) -> SqlResult<()> {
+    validate_sql_identifier("table name", table_name)?;
+    validate_sql_identifier("column name", column_name)?;
+    validate_column_definition(column_definition)?;
+
     let pragma = format!("PRAGMA table_info({table_name})");
     let mut stmt = conn.prepare(&pragma)?;
     let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
@@ -550,6 +432,61 @@ fn ensure_column(
     let alter = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}");
     conn.execute(&alter, [])?;
     Ok(())
+}
+
+fn apply_migration_once<F>(conn: &Connection, name: &str, apply: F) -> SqlResult<()>
+where
+    F: FnOnce(&Connection) -> SqlResult<()>,
+{
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let operation = (|| -> SqlResult<()> {
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (name) VALUES (?1)",
+            params![name],
+        )?;
+        if inserted == 0 {
+            return Ok(());
+        }
+        apply(conn)?;
+        Ok(())
+    })();
+
+    if let Err(error) = operation {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(error);
+    }
+
+    conn.execute_batch("COMMIT")?;
+    Ok(())
+}
+
+fn validate_sql_identifier(kind: &str, value: &str) -> SqlResult<()> {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "invalid {kind}: {value}"
+            )));
+        }
+    }
+
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::InvalidParameterName(format!(
+            "invalid {kind}: {value}"
+        )))
+    }
+}
+
+fn validate_column_definition(column_definition: &str) -> SqlResult<()> {
+    match column_definition {
+        "TEXT" | "INTEGER" | "REAL" | "BLOB" => Ok(()),
+        _ => Err(rusqlite::Error::InvalidParameterName(format!(
+            "invalid column definition: {column_definition}"
+        ))),
+    }
 }
 
 fn migrate_legacy_artifacts(conn: &Connection) -> SqlResult<()> {
@@ -785,7 +722,7 @@ pub fn list_artifacts(
     cursor: Option<i64>,
     limit: usize,
 ) -> Result<(Vec<LedgerArtifact>, bool), String> {
-    let limit = limit.min(100).max(1) as i64;
+    let limit = limit.clamp(1, 100) as i64;
     let cursor = cursor.unwrap_or(0);
     let mut stmt = conn
         .prepare(
@@ -1098,4 +1035,121 @@ pub fn list_execution_evidence_for_subject(
     }
 
     Ok(evidence)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tokio::runtime::Runtime;
+
+    fn temp_db_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "froglet-{label}-{}-{unique}.db",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn configure_connection_applies_legacy_artifact_backfill_once() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE artifacts (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                artifact_hash TEXT NOT NULL UNIQUE,
+                payload_hash TEXT NOT NULL,
+                artifact_kind TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                document_json TEXT NOT NULL,
+                UNIQUE (actor_id, artifact_kind, payload_hash)
+            );
+            INSERT INTO artifacts (
+                artifact_hash,
+                payload_hash,
+                artifact_kind,
+                actor_id,
+                created_at,
+                document_json
+            ) VALUES (
+                'artifact-hash',
+                'payload-hash',
+                'quote',
+                'actor-id',
+                123,
+                '{\"hash\":\"artifact-hash\"}'
+            );",
+        )
+        .expect("seed legacy artifacts");
+
+        configure_connection(&conn).expect("initial configure");
+        configure_connection(&conn).expect("reconfigure");
+
+        let artifact_documents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artifact_documents", [], |row| {
+                row.get(0)
+            })
+            .expect("artifact document count");
+        let artifact_feed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artifact_feed", [], |row| row.get(0))
+            .expect("artifact feed count");
+        let applied_migrations: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE name = ?1",
+                params![LEGACY_ARTIFACTS_MIGRATION],
+                |row| row.get(0),
+            )
+            .expect("migration count");
+
+        assert_eq!(artifact_documents, 1);
+        assert_eq!(artifact_feed, 1);
+        assert_eq!(applied_migrations, 1);
+    }
+
+    #[test]
+    fn ensure_column_rejects_invalid_identifiers() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute("CREATE TABLE safe_table (id INTEGER)", [])
+            .expect("create table");
+
+        let error = ensure_column(
+            &conn,
+            "safe_table; DROP TABLE safe_table",
+            "column_name",
+            "TEXT",
+        )
+        .expect_err("expected invalid identifier error");
+        assert!(error.to_string().contains("invalid table name"));
+    }
+
+    #[test]
+    fn db_pool_read_connections_are_query_only() {
+        let db_path = temp_db_path("reader-pool");
+        let pool = DbPool::open(&db_path).expect("open pool");
+        let runtime = Runtime::new().expect("tokio runtime");
+
+        let error = runtime
+            .block_on(pool.with_read_conn(|conn| {
+                conn.execute("CREATE TABLE forbidden_write (id INTEGER)", [])
+                    .map(|_| ())
+            }))
+            .expect_err("read pool should reject writes");
+
+        assert!(
+            error.contains("readonly") || error.contains("query-only"),
+            "unexpected read-connection write error: {error}"
+        );
+
+        drop(pool);
+        drop(runtime);
+        let _ = fs::remove_file(db_path);
+    }
 }

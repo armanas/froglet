@@ -1,14 +1,13 @@
 use froglet::{
     config::{
-        CashuConfig, DiscoveryMode, IdentityConfig, LightningConfig, LightningMode,
-        MarketplaceConfig, NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
+        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, MarketplaceConfig,
+        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
     },
     db::{self, DbPool},
     marketplace::{
         descriptor_digest_hex, heartbeat_signing_payload, reclaim_signing_payload,
         register_signing_payload,
     },
-    payments::{self, ProvidedPayment},
     pricing::ServiceId,
     protocol::{
         self, DealPayload, ExecutionLimits, InvoiceBundleLegState, QuotePayload, verify_artifact,
@@ -16,14 +15,40 @@ use froglet::{
     settlement,
     state::{AppState, MarketplaceStatus, TransportStatus},
 };
-use rusqlite::params;
+use rand::{RngCore, SeedableRng, rngs::StdRng};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn seeded_signing_key(rng: &mut StdRng) -> froglet::crypto::NodeSigningKey {
+    loop {
+        let mut seed = [0_u8; 32];
+        rng.fill_bytes(&mut seed);
+        if let Ok(key) = froglet::crypto::signing_key_from_seed_bytes(&seed) {
+            return key;
+        }
+    }
+}
+
+fn random_hex(rng: &mut StdRng, bytes_len: usize) -> String {
+    let mut bytes = vec![0_u8; bytes_len];
+    rng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn random_destination_identity(rng: &mut StdRng) -> String {
+    let prefix = if rng.next_u32().is_multiple_of(2) {
+        "02"
+    } else {
+        "03"
+    };
+    format!("{prefix}{}", random_hex(rng, 32))
+}
 
 fn in_memory_state() -> AppState {
     let unique = std::time::SystemTime::now()
@@ -41,6 +66,12 @@ fn in_memory_state() -> AppState {
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
         listen_addr: "127.0.0.1:0".to_string(),
+        runtime_listen_addr: "127.0.0.1:0".to_string(),
+        tor: froglet::config::TorSidecarConfig {
+            binary_path: "tor".to_string(),
+            backend_listen_addr: "127.0.0.1:0".to_string(),
+            startup_timeout_secs: 90,
+        },
         discovery_mode: DiscoveryMode::None,
         identity: IdentityConfig {
             auto_generate: true,
@@ -55,13 +86,8 @@ fn in_memory_state() -> AppState {
             events_query: 10,
             execute_wasm: 30,
         },
-        payment_backend: PaymentBackend::Cashu,
+        payment_backend: PaymentBackend::Lightning,
         execution_timeout_secs: 10,
-        cashu: CashuConfig {
-            mint_allowlist: Vec::new(),
-            remote_checkstate: false,
-            request_timeout_secs: 5,
-        },
         lightning: LightningConfig {
             mode: LightningMode::Mock,
             destination_identity: None,
@@ -83,8 +109,7 @@ fn in_memory_state() -> AppState {
         },
     };
 
-    let conn = db::initialize_db(&node_config.storage.db_path).expect("init db");
-    let pool = DbPool::new(conn);
+    let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
 
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
@@ -97,6 +122,7 @@ fn in_memory_state() -> AppState {
         marketplace_status: Arc::new(tokio::sync::Mutex::new(MarketplaceStatus::from_config(
             &node_config,
         ))),
+        wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
         pricing,
@@ -109,18 +135,26 @@ fn in_memory_state() -> AppState {
 #[test]
 fn marketplace_signing_payloads_are_stable() {
     let state = in_memory_state();
+    let rt = Runtime::new().unwrap();
 
-    let descriptor = Runtime::new()
-        .unwrap()
+    let descriptor1 = rt
         .block_on(froglet::marketplace_client::build_descriptor(&state))
-        .expect("descriptor");
+        .expect("descriptor 1");
+    let descriptor2 = rt
+        .block_on(froglet::marketplace_client::build_descriptor(&state))
+        .expect("descriptor 2");
 
-    let digest1 = descriptor_digest_hex(&descriptor).expect("digest");
-    let digest2 = descriptor_digest_hex(&descriptor).expect("digest again");
-    assert_eq!(digest1, digest2, "descriptor digest must be deterministic");
+    let digest1 = descriptor_digest_hex(&descriptor1).expect("digest 1");
+    let digest2 = descriptor_digest_hex(&descriptor2).expect("digest 2");
+    assert_eq!(
+        digest1, digest2,
+        "descriptor digest must remain stable across rebuilds"
+    );
+    assert_eq!(descriptor1.updated_at, None);
+    assert_eq!(descriptor2.updated_at, None);
 
     let ts = 1234567890_i64;
-    let register_msg = register_signing_payload(&descriptor, ts).expect("register payload");
+    let register_msg = register_signing_payload(&descriptor1, ts).expect("register payload");
     let heartbeat_msg = heartbeat_signing_payload(state.identity.node_id(), ts);
     let reclaim_msg = reclaim_signing_payload(state.identity.node_id(), "challenge", "nonce", ts);
 
@@ -190,7 +224,7 @@ fn payments_enforce_all_error_paths() {
     // Backend unavailable when backend is None and price > 0.
     state.config.payment_backend = PaymentBackend::None;
     let err = rt
-        .block_on(payments::prepare_payment(
+        .block_on(settlement::prepare_payment(
             &state,
             ServiceId::EventsQuery,
             None,
@@ -199,41 +233,22 @@ fn payments_enforce_all_error_paths() {
         .unwrap_err();
     assert!(matches!(
         err,
-        payments::PaymentError::BackendUnavailable { .. }
+        settlement::PaymentError::BackendUnavailable { .. }
     ));
 
-    // Reset backend for further tests.
-    state.config.payment_backend = PaymentBackend::Cashu;
-
-    // Payment required when missing.
+    // Lightning-priced legacy helpers are also unavailable through inline payments.
+    state.config.payment_backend = PaymentBackend::Lightning;
     let err = rt
-        .block_on(payments::prepare_payment(
+        .block_on(settlement::prepare_payment(
             &state,
             ServiceId::EventsQuery,
             None,
-            Some("req-missing".to_string()),
+            Some("req-backend-lightning".to_string()),
         ))
         .unwrap_err();
     assert!(matches!(
         err,
-        payments::PaymentError::PaymentRequired { .. }
-    ));
-
-    // Unsupported kind.
-    let err = rt
-        .block_on(payments::prepare_payment(
-            &state,
-            ServiceId::EventsQuery,
-            Some(ProvidedPayment {
-                kind: "other".to_string(),
-                token: "x".to_string(),
-            }),
-            Some("req-kind".to_string()),
-        ))
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        payments::PaymentError::UnsupportedKind { .. }
+        settlement::PaymentError::BackendUnavailable { .. }
     ));
 }
 
@@ -242,32 +257,6 @@ fn settlement_driver_reports_capabilities_consistently() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
 
-    let cashu_descriptor = settlement::driver_descriptor(&state);
-    assert_eq!(cashu_descriptor.backend, "cashu");
-    assert_eq!(cashu_descriptor.mode, settlement::CASHU_VERIFIER_MODE);
-    assert_eq!(cashu_descriptor.accepted_payment_methods, vec!["cashu"]);
-    assert!(cashu_descriptor.accepted_mints.is_empty());
-    assert_eq!(
-        cashu_descriptor.capabilities,
-        vec!["token_format_verification", "local_replay_guard"]
-    );
-    assert!(cashu_descriptor.reservations);
-    assert!(cashu_descriptor.receipts);
-
-    let cashu_wallet = rt
-        .block_on(settlement::wallet_balance_snapshot(&state))
-        .expect("wallet snapshot");
-    assert_eq!(cashu_wallet.backend, "cashu");
-    assert_eq!(cashu_wallet.mode, settlement::CASHU_VERIFIER_MODE);
-    assert!(!cashu_wallet.balance_known);
-    assert_eq!(cashu_wallet.accepted_payment_methods, vec!["cashu"]);
-    assert!(cashu_wallet.accepted_mints.is_empty());
-    assert_eq!(
-        cashu_wallet.capabilities,
-        vec!["token_format_verification", "local_replay_guard"]
-    );
-
-    state.config.payment_backend = PaymentBackend::Lightning;
     let lightning_descriptor = settlement::driver_descriptor(&state);
     assert_eq!(lightning_descriptor.backend, "lightning");
     assert_eq!(lightning_descriptor.mode, settlement::LIGHTNING_MOCK_MODE);
@@ -275,7 +264,6 @@ fn settlement_driver_reports_capabilities_consistently() {
         lightning_descriptor.accepted_payment_methods,
         vec!["lightning"]
     );
-    assert!(lightning_descriptor.accepted_mints.is_empty());
     assert_eq!(
         lightning_descriptor.capabilities,
         vec!["invoice_bundles", "hold_invoices", "mock_mode"]
@@ -321,7 +309,6 @@ fn settlement_driver_reports_capabilities_consistently() {
     assert_eq!(none_descriptor.backend, "none");
     assert_eq!(none_descriptor.mode, "disabled");
     assert!(none_descriptor.accepted_payment_methods.is_empty());
-    assert!(none_descriptor.accepted_mints.is_empty());
     assert!(none_descriptor.capabilities.is_empty());
     assert!(!none_descriptor.reservations);
     assert!(!none_descriptor.receipts);
@@ -332,30 +319,7 @@ fn settlement_driver_reports_capabilities_consistently() {
     assert_eq!(none_wallet.backend, "none");
     assert_eq!(none_wallet.mode, "disabled");
     assert!(none_wallet.accepted_payment_methods.is_empty());
-    assert!(none_wallet.accepted_mints.is_empty());
     assert!(none_wallet.capabilities.is_empty());
-}
-
-#[test]
-fn settlement_descriptor_reports_mint_policy_capabilities() {
-    let mut configured = in_memory_state();
-    configured.config.cashu = CashuConfig {
-        mint_allowlist: vec!["https://mint.example".to_string()],
-        remote_checkstate: true,
-        request_timeout_secs: 2,
-    };
-
-    let descriptor = settlement::driver_descriptor(&configured);
-    assert_eq!(descriptor.accepted_mints, vec!["https://mint.example"]);
-    assert_eq!(
-        descriptor.capabilities,
-        vec![
-            "token_format_verification",
-            "local_replay_guard",
-            "mint_allowlist",
-            "nut07_checkstate",
-        ]
-    );
 }
 
 #[test]
@@ -372,7 +336,7 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
                 requester_id: "requester-1".to_string(),
                 quote_hash: "quote-hash-1".to_string(),
                 deal_hash: "deal-hash-1".to_string(),
-                quote_expires_at: None,
+                admission_deadline: None,
                 success_payment_hash: "11".repeat(32),
                 base_fee_msat: 1_500,
                 success_fee_msat: 9_000,
@@ -388,10 +352,7 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
     assert!(verify_artifact(&created.bundle));
     assert_eq!(created.bundle.payload.destination_identity.len(), 66);
     assert_eq!(created.bundle.payload.base_fee.amount_msat, 1_500);
-    assert_eq!(
-        created.bundle.payload.success_fee.amount_msat,
-        9_000
-    );
+    assert_eq!(created.bundle.payload.success_fee.amount_msat, 9_000);
     assert_eq!(
         created.bundle.payload.success_fee.payment_hash,
         "11".repeat(32)
@@ -445,7 +406,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             requester_id: requester_id.clone(),
             descriptor_hash: "descriptor-hash-1".to_string(),
             offer_hash: "offer-hash-1".to_string(),
-            expires_at: settlement::lightning_quote_expires_at(&state, now, 9),
+            expires_at: settlement::lightning_quote_expires_at(&state, now, 9, 30),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
             settlement_terms: settlement_terms.clone(),
@@ -484,7 +445,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             requester_id: requester_id.clone(),
             quote_hash: quote.hash.clone(),
             deal_hash: deal.hash.clone(),
-            quote_expires_at: Some(quote.payload.expires_at),
+            admission_deadline: Some(deal.payload.admission_deadline),
             success_payment_hash: "11".repeat(32),
             base_fee_msat: settlement_terms.base_fee_msat,
             success_fee_msat: settlement_terms.success_fee_msat,
@@ -508,7 +469,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             requester_id: requester_id.clone(),
             quote_hash: quote.hash.clone(),
             deal_hash: deal.hash.clone(),
-            quote_expires_at: Some(quote.payload.expires_at),
+            admission_deadline: Some(deal.payload.admission_deadline),
             success_payment_hash: "33".repeat(32),
             base_fee_msat: settlement_terms.base_fee_msat,
             success_fee_msat: settlement_terms.success_fee_msat,
@@ -533,93 +494,207 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
 }
 
 #[test]
-fn payment_token_storage_tracks_release_and_expiry_without_deletion() {
+fn randomized_invoice_bundle_validation_reports_targeted_issues() {
     let rt = Runtime::new().unwrap();
-    let state = in_memory_state();
+    let mut state = in_memory_state();
+    state.config.payment_backend = PaymentBackend::Lightning;
+    let mut rng = StdRng::seed_from_u64(0x000F_06A1_E7B0_0D1E);
 
-    let reserve = rt
-        .block_on(state.db.with_conn(|conn| {
-            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-1", 100)
-        }))
-        .expect("reserve");
-    assert!(matches!(reserve, db::ReservePaymentTokenOutcome::Reserved));
+    for iteration in 0..27_u64 {
+        let quoted_price_sats = 1 + (iteration % 25);
+        let now = 1_700_000_000 + (iteration as i64 * 17);
+        let settlement_terms = rt
+            .block_on(settlement::quoted_lightning_settlement_terms(
+                &state,
+                quoted_price_sats,
+            ))
+            .expect("settlement terms")
+            .expect("lightning settlement terms");
 
-    let released = rt
-        .block_on(
-            state
-                .db
-                .with_conn(|conn| db::release_payment_token(conn, "token-a", "req-1", 110)),
+        let requester_signing_key = seeded_signing_key(&mut rng);
+        let requester_id = froglet::crypto::public_key_hex(&requester_signing_key);
+        let quote = protocol::sign_artifact(
+            state.identity.node_id(),
+            |message| state.identity.sign_message_hex(message),
+            protocol::ARTIFACT_KIND_QUOTE,
+            now,
+            QuotePayload {
+                provider_id: state.identity.node_id().to_string(),
+                requester_id: requester_id.clone(),
+                descriptor_hash: random_hex(&mut rng, 32),
+                offer_hash: random_hex(&mut rng, 32),
+                expires_at: settlement::lightning_quote_expires_at(
+                    &state,
+                    now,
+                    quoted_price_sats,
+                    30,
+                ),
+                workload_kind: "compute.wasm.v1".to_string(),
+                workload_hash: random_hex(&mut rng, 32),
+                settlement_terms: settlement_terms.clone(),
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 128 * 1024,
+                    max_runtime_ms: 30_000,
+                    max_memory_bytes: 8 * 1024 * 1024,
+                    max_output_bytes: 128 * 1024,
+                    fuel_limit: 50_000_000,
+                },
+            },
         )
-        .expect("release");
-    assert!(released);
-
-    let released_state = rt
-        .block_on(state.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
-                params!["token-a"],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(|e| e.to_string())
-        }))
-        .expect("load released state");
-    assert_eq!(released_state.0, "released");
-    assert_eq!(released_state.1, "req-1");
-
-    let reclaimed = rt
-        .block_on(state.db.with_conn(|conn| {
-            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-2", 120)
-        }))
-        .expect("re-reserve released token");
-    assert!(matches!(
-        reclaimed,
-        db::ReservePaymentTokenOutcome::Reserved
-    ));
-
-    let _ = rt
-        .block_on(
-            state
-                .db
-                .with_conn(|conn| db::expire_reserved_payment_tokens(conn, 130)),
+        .expect("quote");
+        let deal = protocol::sign_artifact(
+            &requester_id,
+            |message| froglet::crypto::sign_message_hex(&requester_signing_key, message),
+            protocol::ARTIFACT_KIND_DEAL,
+            now,
+            DealPayload {
+                requester_id: requester_id.clone(),
+                provider_id: quote.payload.provider_id.clone(),
+                quote_hash: quote.hash.clone(),
+                workload_hash: quote.payload.workload_hash.clone(),
+                success_payment_hash: random_hex(&mut rng, 32),
+                admission_deadline: quote.payload.expires_at,
+                completion_deadline: quote.payload.expires_at + 30,
+                acceptance_deadline: quote.payload.expires_at + 60,
+            },
         )
-        .expect("expire reserved");
-
-    let expired_state = rt
-        .block_on(state.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT state, request_id FROM payment_tokens WHERE token_hash = ?1",
-                params!["token-a"],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(|e| e.to_string())
-        }))
-        .expect("load expired state");
-    assert_eq!(expired_state.0, "expired");
-    assert_eq!(expired_state.1, "req-2");
-
-    let reclaimed_after_expiry = rt
-        .block_on(state.db.with_conn(|conn| {
-            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-3", 140)
-        }))
-        .expect("re-reserve expired token");
-    assert!(matches!(
-        reclaimed_after_expiry,
-        db::ReservePaymentTokenOutcome::Reserved
-    ));
-
-    let committed = rt
-        .block_on(
-            state
-                .db
-                .with_conn(|conn| db::commit_payment_token(conn, "token-a", "req-3", 150)),
+        .expect("deal");
+        let valid_bundle = settlement::build_lightning_invoice_bundle(
+            &state,
+            settlement::BuildLightningInvoiceBundleRequest {
+                session_id: Some(format!("randomized-valid-{iteration}")),
+                requester_id: requester_id.clone(),
+                quote_hash: quote.hash.clone(),
+                deal_hash: deal.hash.clone(),
+                admission_deadline: Some(deal.payload.admission_deadline),
+                success_payment_hash: deal.payload.success_payment_hash.clone(),
+                base_fee_msat: settlement_terms.base_fee_msat,
+                success_fee_msat: settlement_terms.success_fee_msat,
+                created_at: now,
+            },
         )
-        .expect("commit");
-    assert!(committed);
+        .expect("valid bundle");
 
-    let replay = rt
-        .block_on(state.db.with_conn(|conn| {
-            db::reserve_payment_token(conn, "token-a", ServiceId::EventsQuery, 10, "req-4", 160)
-        }))
-        .expect("replay check");
-    assert!(matches!(replay, db::ReservePaymentTokenOutcome::Replay));
+        let valid_report = settlement::validate_lightning_invoice_bundle(
+            &valid_bundle.bundle,
+            &quote,
+            &deal,
+            Some(&requester_id),
+        );
+        assert!(
+            valid_report.valid,
+            "iteration {iteration} unexpectedly invalid: {:?}",
+            valid_report.issues
+        );
+
+        let mut tampered_payload = valid_bundle.bundle.payload.clone();
+        let expected_code = match iteration % 9 {
+            0 => {
+                tampered_payload.requester_id = random_hex(&mut rng, 32);
+                "requester_id_mismatch"
+            }
+            1 => {
+                tampered_payload.quote_hash = random_hex(&mut rng, 32);
+                "quote_hash_mismatch"
+            }
+            2 => {
+                tampered_payload.deal_hash = random_hex(&mut rng, 32);
+                "deal_hash_mismatch"
+            }
+            3 => {
+                tampered_payload.destination_identity = random_destination_identity(&mut rng);
+                "destination_identity_mismatch"
+            }
+            4 => {
+                tampered_payload.base_fee.amount_msat =
+                    tampered_payload.base_fee.amount_msat.saturating_add(1);
+                "base_fee_mismatch"
+            }
+            5 => {
+                tampered_payload.success_fee.amount_msat =
+                    tampered_payload.success_fee.amount_msat.saturating_add(1);
+                "success_fee_mismatch"
+            }
+            6 => {
+                tampered_payload.min_final_cltv_expiry =
+                    tampered_payload.min_final_cltv_expiry.saturating_add(1);
+                "min_final_cltv_mismatch"
+            }
+            7 => {
+                tampered_payload.base_fee.invoice_hash = random_hex(&mut rng, 32);
+                "invoice_hash_mismatch"
+            }
+            _ => {
+                tampered_payload.success_fee.payment_hash = random_hex(&mut rng, 32);
+                "success_payment_hash_mismatch"
+            }
+        };
+        let tampered_bundle = protocol::sign_artifact(
+            state.identity.node_id(),
+            |message| state.identity.sign_message_hex(message),
+            protocol::TRANSPORT_KIND_INVOICE_BUNDLE,
+            valid_bundle.bundle.created_at,
+            tampered_payload,
+        )
+        .expect("tampered bundle");
+
+        let invalid_report = settlement::validate_lightning_invoice_bundle(
+            &tampered_bundle,
+            &quote,
+            &deal,
+            Some(&requester_id),
+        );
+        assert!(
+            !invalid_report.valid,
+            "iteration {iteration} should be invalid for {expected_code}"
+        );
+        assert!(
+            invalid_report
+                .issues
+                .iter()
+                .any(|issue| issue.code == expected_code),
+            "iteration {iteration} missing {expected_code}; issues: {:?}",
+            invalid_report.issues
+        );
+    }
+}
+
+#[test]
+fn marketplace_initial_sync_returns_after_http_timeout() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut state = in_memory_state();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind hung marketplace");
+        let addr = listener.local_addr().expect("listener addr");
+        state.config.marketplace.as_mut().expect("marketplace").url = format!("http://{addr}");
+        state.http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_millis(100))
+            .build()
+            .expect("http client");
+
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        });
+
+        let started_at = tokio::time::Instant::now();
+        let error = froglet::marketplace_client::perform_initial_sync(Arc::new(state))
+            .await
+            .expect_err("initial sync should time out");
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "initial sync should fail quickly, elapsed {:?}",
+            started_at.elapsed()
+        );
+        assert!(
+            error.contains("register request failed")
+                || error.contains("challenge request failed")
+                || error.contains("timed out")
+                || error.contains("deadline"),
+            "unexpected error: {error}"
+        );
+    });
 }

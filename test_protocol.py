@@ -109,10 +109,10 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             endpoint["transport"]: endpoint
             for endpoint in descriptor["payload"]["transport_endpoints"]
         }
-        self.assertEqual(transport_endpoints["https"]["uri"], node.base_url)
+        self.assertEqual(transport_endpoints["http"]["uri"], node.base_url)
         self.assertNotIn("tor", transport_endpoints)
         self.assertNotEqual(
-            descriptor["signer"], transport_endpoints["https"]["uri"]
+            descriptor["signer"], transport_endpoints["http"]["uri"]
         )
         self.assertEqual(
             descriptor["payload"]["capabilities"]["service_kinds"],
@@ -354,7 +354,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             terminal["receipt"]["payload"]["executor"]["runtime"], "wasm"
         )
         self.assertEqual(
-            terminal["receipt"]["payload"]["limits_applied"]["max_runtime_ms"], 30000
+            terminal["receipt"]["payload"]["limits_applied"]["max_runtime_ms"], 120000
         )
         self.assertEqual(
             terminal["receipt"]["payload"]["limits_applied"]["fuel_limit"], 50000000

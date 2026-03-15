@@ -179,17 +179,21 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::{
-        CashuConfig, DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode,
-        NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
+        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig,
     };
-    use std::path::PathBuf;
-
     #[test]
     fn test_identity_sign_and_load() {
         let temp_dir = std::env::temp_dir().join(format!("froglet-test-{}", std::process::id()));
         let config = NodeConfig {
             network_mode: NetworkMode::Clearnet,
             listen_addr: "127.0.0.1:8080".into(),
+            runtime_listen_addr: "127.0.0.1:8081".into(),
+            tor: TorSidecarConfig {
+                binary_path: "tor".into(),
+                backend_listen_addr: "127.0.0.1:8082".into(),
+                startup_timeout_secs: 90,
+            },
             discovery_mode: DiscoveryMode::None,
             identity: IdentityConfig {
                 auto_generate: true,
@@ -201,11 +205,6 @@ mod tests {
             },
             payment_backend: PaymentBackend::None,
             execution_timeout_secs: 10,
-            cashu: CashuConfig {
-                mint_allowlist: Vec::new(),
-                remote_checkstate: false,
-                request_timeout_secs: 5,
-            },
             lightning: LightningConfig {
                 mode: LightningMode::Mock,
                 destination_identity: None,
@@ -237,6 +236,6 @@ mod tests {
         );
         assert_ne!(identity.node_id(), identity.nostr_publication_key_hex());
 
-        let _ = std::fs::remove_dir_all(PathBuf::from(temp_dir));
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

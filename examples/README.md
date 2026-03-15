@@ -29,6 +29,19 @@ Then run:
 python3 examples/runtime_mock_lightning_buy_accept.py
 ```
 
+The example targets the default split local topology:
+
+- runtime: `http://127.0.0.1:8081`
+- provider: `http://127.0.0.1:8080`
+
+Override either listener explicitly when needed:
+
+```bash
+python3 examples/runtime_mock_lightning_buy_accept.py \
+  --runtime-url http://127.0.0.1:18081 \
+  --provider-url http://127.0.0.1:18080
+```
+
 ## 2. Curated Discovery Surface
 
 [runtime_curated_discovery.py](runtime_curated_discovery.py) exercises the authenticated discovery/publication helpers:
@@ -45,3 +58,5 @@ Run it against any local Froglet node with a runtime auth token:
 ```bash
 python3 examples/runtime_curated_discovery.py
 ```
+
+Like the buy/accept example, this script also expects separate runtime and provider URLs and defaults to the split local topology unless you override `--runtime-url` or `--provider-url`.

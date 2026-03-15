@@ -5,7 +5,7 @@ use crate::{
         RegisterRequest, TransportDescriptor, descriptor_digest_hex, heartbeat_signing_payload,
         reclaim_signing_payload, register_signing_payload,
     },
-    payments::current_unix_timestamp,
+    settlement::current_unix_timestamp,
     state::AppState,
 };
 use reqwest::StatusCode;
@@ -94,7 +94,7 @@ pub async fn build_descriptor(state: &AppState) -> Result<NodeDescriptor, String
         },
         services: state.pricing.services(),
         faas: FaaSDescriptor::standard(),
-        updated_at: current_unix_timestamp(),
+        updated_at: None,
     })
 }
 

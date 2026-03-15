@@ -54,7 +54,7 @@ After the spec-first kernel split, the Milestone roadmap at the bottom is the au
 
 ## Phase 3: Lightning Settlement Core
 
-- [x] Remove Cashu from the mainline v1 design direction
+- [x] Finalize the Lightning-only mainline v1 payment direction
 - [x] Design the Lightning settlement driver around normal invoices plus hold invoices
 - [x] Define `base_fee_plus_success_fee` quote fields and validation rules
 - [x] Implement a mock-backed Lightning invoice-bundle/session layer for protocol development and persistence testing
@@ -108,7 +108,7 @@ After the spec-first kernel split, the Milestone roadmap at the bottom is the au
 
 ## Immediate Next Steps
 
-1. [x] Replace the remaining Cashu-only paid query and job paths with explicit Lightning-era demotion from the v1 primitive.
+1. [x] Retire inline paid query and job paths in favor of explicit Lightning-era protocol deals.
 2. [x] Validate returned invoice material against quote and deal commitments before payment instead of treating the mock bundle as already trusted.
 3. [x] Add an LND REST adapter boundary and settlement-destination resolution without weakening the current mock-backed safety model.
 4. [x] Implement the requester preimage-release path needed to complete real hold-invoice settlement without faking finality.

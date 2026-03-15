@@ -4,6 +4,12 @@ Status: practical operating guidance for the current runtime
 
 This document describes the operational steps that matter for the bot-facing alpha surface.
 
+Guarantee boundary:
+
+- treat the signed artifact kernel and durable local state as the stable primitive
+- treat the runtime routes, marketplace flows, Tor publication, and wallet integrations as supported operational layers above that primitive
+- do not assume the alpha runtime surface is frozen in the same way as [SPEC.md](SPEC.md)
+
 ## 1. Minimal Local Setup
 
 For local bot development, the easiest path is mock Lightning:
@@ -20,6 +26,9 @@ That gives you:
 - a priced deal flow
 - runtime-issued payment intents
 - deterministic local settlement control through the mock-Lightning runtime route
+- the default split local topology:
+  - provider API on `127.0.0.1:8080`
+  - runtime API on `127.0.0.1:8081`
 
 For free local development:
 
@@ -43,6 +52,12 @@ The current runtime bootstrap snapshot is:
 
 That returns the current descriptor, current offers, and the runtime token path that the node is using.
 
+For SDK callers, this means:
+
+- `RuntimeClient` should point at the runtime listener
+- `ProviderClient` should point at the public provider listener
+- the runtime auth token should never be sent to the public provider listener
+
 ## 3. Wallet Modes
 
 Supported operating modes today:
@@ -64,12 +79,45 @@ For `lnd_rest`, configure:
 
 Use `GET /v1/runtime/wallet/balance` to confirm the runtime sees the configured wallet backend.
 
-## 4. Bot Runtime Workflow
+## 4. Transport Modes
+
+Tor support now runs through an external `tor` sidecar process rather than an in-process Rust Tor stack.
+
+Relevant transport settings:
+
+- `FROGLET_NETWORK_MODE=clearnet|tor|dual`
+- `FROGLET_TOR_BINARY=tor`
+- `FROGLET_TOR_BACKEND_LISTEN_ADDR=127.0.0.1:8082`
+- `FROGLET_TOR_STARTUP_TIMEOUT_SECS=90`
+
+Keep `FROGLET_TOR_BACKEND_LISTEN_ADDR` on loopback. It is the local HTTP backend that the Tor sidecar exposes as the onion service.
+That backend carries the same public provider routes as `FROGLET_LISTEN_ADDR`, but it is not intended for direct clients or reverse proxies.
+
+Practical startup behavior:
+
+1. Froglet starts the public listener when `clearnet` or `dual` mode is enabled.
+2. Froglet starts the local runtime listener on `FROGLET_RUNTIME_LISTEN_ADDR`.
+3. In `tor` or `dual` mode, Froglet starts a local Tor backend listener on `FROGLET_TOR_BACKEND_LISTEN_ADDR`.
+4. Froglet then launches the external `tor` sidecar and waits for bootstrap plus a hidden-service hostname before reporting Tor transport `up`.
+
+If the `tor` sidecar exits later:
+
+- Tor transport status falls back to `down`
+- in `tor` mode the node treats that as fatal
+- in `dual` mode the clearnet listener keeps serving, but the onion transport is gone until restart
+
+Recommended checks in `dual` mode:
+
+1. Verify the public API is reachable on `FROGLET_LISTEN_ADDR`.
+2. Verify the runtime API is reachable on `FROGLET_RUNTIME_LISTEN_ADDR`.
+3. Read `/v1/node/capabilities` from the public API and confirm `transports.tor.status == "up"` plus a non-empty `onion_url`.
+
+## 5. Bot Runtime Workflow
 
 The intended local operator workflow is:
 
 1. Start Froglet.
-2. Hand the bot the runtime auth token path.
+2. Hand the bot the runtime auth token path plus the correct runtime and provider base URLs.
 3. Let the bot call `RuntimeClient.buy_service(...)` or equivalent.
 4. Let the bot wait on `payment_pending`, `result_ready`, or a terminal state.
 5. Let the bot call `accept_result(...)` only when it is ready to release the success-fee preimage.
@@ -81,7 +129,7 @@ For local mock-Lightning flows, the runtime also exposes:
 
 That route is useful for development, examples, and deterministic local testing.
 
-## 5. Archive Export
+## 6. Archive Export
 
 Use:
 
@@ -102,7 +150,7 @@ Use archive export when:
 - preserving evidence before cleanup
 - comparing local state with a third-party verifier
 
-## 6. Restart and Recovery
+## 7. Restart and Recovery
 
 Current recovery behavior:
 
@@ -115,7 +163,7 @@ Operationally, after a restart:
 2. inspect the terminal receipt if one exists
 3. export the runtime archive if the interaction matters
 
-## 7. Publication and Discovery
+## 8. Publication and Discovery
 
 The runtime can build local publication intents through:
 
@@ -126,7 +174,7 @@ The runtime can build local publication intents through:
 Relay publication stays outside the core node.
 Use [froglet_nostr_adapter.py](froglet_nostr_adapter.py) when relay interaction is needed.
 
-## 8. Recommended Alpha Defaults
+## 9. Recommended Alpha Defaults
 
 For the current bot/runtime alpha:
 

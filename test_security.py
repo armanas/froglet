@@ -8,6 +8,7 @@ import aiohttp
 from test_support import (
     FrogletAsyncTestCase,
     PUBKEY_HEX,
+    canonical_event_id,
     canonical_event_signing_bytes,
     create_signed_event,
     generate_schnorr_signing_key,
@@ -25,6 +26,7 @@ class SecurityApiTests(FrogletAsyncTestCase):
         node = await self.start_node()
         event = create_signed_event("legitimate offer")
         event["content"] = "malicious offer"
+        event["id"] = canonical_event_id(event)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(node.url("/v1/node/events/publish"), json={"event": event}) as resp:
@@ -37,13 +39,14 @@ class SecurityApiTests(FrogletAsyncTestCase):
         node = await self.start_node()
         content = "impersonation attack"
         event = {
-            "id": __import__("hashlib").sha256(content.encode("utf-8")).hexdigest(),
+            "id": "",
             "pubkey": ATTACKER_PUBKEY,
             "created_at": int(time.time()),
             "kind": "market.listing",
             "tags": [["t", "test"]],
             "content": content,
         }
+        event["id"] = canonical_event_id(event)
         event["sig"] = schnorr_sign_message(VICTIM_KEY, canonical_event_signing_bytes(event))
 
         async with aiohttp.ClientSession() as session:
@@ -52,6 +55,22 @@ class SecurityApiTests(FrogletAsyncTestCase):
 
         self.assertEqual(resp.status, 400)
         self.assertIn("invalid signature", payload["error"])
+
+    async def test_rejects_event_with_noncanonical_content_hash_id(self) -> None:
+        node = await self.start_node()
+        event = create_signed_event("valid content")
+        event["id"] = "00" * 32
+        event["sig"] = schnorr_sign_message(ATTACKER_KEY, canonical_event_signing_bytes(event))
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/events/publish"),
+                json={"event": event},
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("invalid event id", payload["error"])
 
     async def test_sql_injection_payload_is_stored_as_data(self) -> None:
         node = await self.start_node()
@@ -143,6 +162,23 @@ class SecurityApiTests(FrogletAsyncTestCase):
 
         self.assertEqual(resp.status, 200)
         self.assertIn("events", payload)
+
+    async def test_rejects_event_query_with_too_many_kinds(self) -> None:
+        node = await self.start_node()
+        request = {
+            "kinds": [f"kind-{index}" for index in range(101)],
+            "limit": 1,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/events/query"),
+                json=request,
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertEqual(payload["max_kinds"], 100)
 
 
 if __name__ == "__main__":

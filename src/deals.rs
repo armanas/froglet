@@ -98,7 +98,7 @@ impl StoredDeal {
                 kind: self
                     .payment_method
                     .clone()
-                    .unwrap_or_else(|| "cashu".to_string()),
+                    .unwrap_or_else(|| "lightning".to_string()),
                 token_hash: token_hash.clone(),
                 amount_sats,
             }),
@@ -409,6 +409,23 @@ pub fn try_mark_deal_running(conn: &Connection, deal_id: &str, now: i64) -> Resu
     Ok(updated > 0)
 }
 
+pub fn reset_running_deal_to_accepted(
+    conn: &Connection,
+    deal_id: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2, updated_at = ?3
+             WHERE deal_id = ?1 AND status = ?4",
+            params![deal_id, DEAL_STATUS_ACCEPTED, now, DEAL_STATUS_RUNNING],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
 pub fn try_mark_deal_accepted_from_payment_pending(
     conn: &Connection,
     deal_id: &str,
@@ -473,20 +490,24 @@ pub fn complete_deal_success(
     Ok(())
 }
 
+pub struct DealSuccessCompletion<'a> {
+    pub deal_id: &'a str,
+    pub expected_status: &'a str,
+    pub result: &'a Value,
+    pub receipt: &'a SignedArtifact<ReceiptPayload>,
+    pub result_evidence_hash: Option<&'a str>,
+    pub receipt_artifact_hash: Option<&'a str>,
+    pub now: i64,
+}
+
 pub fn complete_deal_success_if_status(
     conn: &Connection,
-    deal_id: &str,
-    expected_status: &str,
-    result: &Value,
-    receipt: &SignedArtifact<ReceiptPayload>,
-    result_evidence_hash: Option<&str>,
-    receipt_artifact_hash: Option<&str>,
-    now: i64,
+    update: DealSuccessCompletion<'_>,
 ) -> Result<bool, String> {
-    let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
+    let result_json = serde_json::to_string(update.result).map_err(|e| e.to_string())?;
     let result_hash =
-        crypto::sha256_hex(canonical_json::to_vec(result).map_err(|e| e.to_string())?);
-    let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+        crypto::sha256_hex(canonical_json::to_vec(update.result).map_err(|e| e.to_string())?);
+    let receipt_json = serde_json::to_string(update.receipt).map_err(|e| e.to_string())?;
 
     let updated = conn
         .execute(
@@ -500,17 +521,17 @@ pub fn complete_deal_success_if_status(
                  failure_evidence_hash = NULL,
                  receipt_artifact_hash = COALESCE(?7, receipt_artifact_hash),
                  updated_at = ?8
-             WHERE deal_id = ?1 AND status = ?9",
+            WHERE deal_id = ?1 AND status = ?9",
             params![
-                deal_id,
+                update.deal_id,
                 DEAL_STATUS_SUCCEEDED,
                 result_json,
                 result_hash,
                 receipt_json,
-                result_evidence_hash,
-                receipt_artifact_hash,
-                now,
-                expected_status,
+                update.result_evidence_hash,
+                update.receipt_artifact_hash,
+                update.now,
+                update.expected_status,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -557,17 +578,21 @@ pub fn stage_deal_result_ready(
     Ok(updated > 0)
 }
 
+pub struct DealTerminalTransition<'a> {
+    pub deal_id: &'a str,
+    pub expected_status: &'a str,
+    pub error: &'a str,
+    pub receipt: &'a SignedArtifact<ReceiptPayload>,
+    pub failure_evidence_hash: Option<&'a str>,
+    pub receipt_artifact_hash: Option<&'a str>,
+    pub now: i64,
+}
+
 pub fn reject_deal_if_status(
     conn: &Connection,
-    deal_id: &str,
-    expected_status: &str,
-    error: &str,
-    receipt: &SignedArtifact<ReceiptPayload>,
-    failure_evidence_hash: Option<&str>,
-    receipt_artifact_hash: Option<&str>,
-    now: i64,
+    update: DealTerminalTransition<'_>,
 ) -> Result<bool, String> {
-    let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+    let receipt_json = serde_json::to_string(update.receipt).map_err(|e| e.to_string())?;
 
     let updated = conn
         .execute(
@@ -581,14 +606,14 @@ pub fn reject_deal_if_status(
                  updated_at = ?7
              WHERE deal_id = ?1 AND status = ?8",
             params![
-                deal_id,
+                update.deal_id,
                 DEAL_STATUS_REJECTED,
-                error,
+                update.error,
                 receipt_json,
-                failure_evidence_hash,
-                receipt_artifact_hash,
-                now,
-                expected_status,
+                update.failure_evidence_hash,
+                update.receipt_artifact_hash,
+                update.now,
+                update.expected_status,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -607,13 +632,15 @@ pub fn reject_deal_admission(
 ) -> Result<bool, String> {
     reject_deal_if_status(
         conn,
-        deal_id,
-        DEAL_STATUS_ACCEPTED,
-        error,
-        receipt,
-        failure_evidence_hash,
-        receipt_artifact_hash,
-        now,
+        DealTerminalTransition {
+            deal_id,
+            expected_status: DEAL_STATUS_ACCEPTED,
+            error,
+            receipt,
+            failure_evidence_hash,
+            receipt_artifact_hash,
+            now,
+        },
     )
 }
 
@@ -655,15 +682,9 @@ pub fn complete_deal_failure(
 
 pub fn complete_deal_failure_if_status(
     conn: &Connection,
-    deal_id: &str,
-    expected_status: &str,
-    error: &str,
-    receipt: &SignedArtifact<ReceiptPayload>,
-    failure_evidence_hash: Option<&str>,
-    receipt_artifact_hash: Option<&str>,
-    now: i64,
+    update: DealTerminalTransition<'_>,
 ) -> Result<bool, String> {
-    let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+    let receipt_json = serde_json::to_string(update.receipt).map_err(|e| e.to_string())?;
 
     let updated = conn
         .execute(
@@ -676,14 +697,14 @@ pub fn complete_deal_failure_if_status(
                  updated_at = ?7
              WHERE deal_id = ?1 AND status = ?8",
             params![
-                deal_id,
+                update.deal_id,
                 DEAL_STATUS_FAILED,
-                error,
+                update.error,
                 receipt_json,
-                failure_evidence_hash,
-                receipt_artifact_hash,
-                now,
-                expected_status,
+                update.failure_evidence_hash,
+                update.receipt_artifact_hash,
+                update.now,
+                update.expected_status,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -736,14 +757,19 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
                 created_at,
                 updated_at
              FROM deals
-             WHERE status IN (?1, ?2)
+             WHERE status IN (?1, ?2, ?3, ?4)
              ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
         .query_map(
-            params![DEAL_STATUS_ACCEPTED, DEAL_STATUS_RUNNING],
+            params![
+                DEAL_STATUS_ACCEPTED,
+                DEAL_STATUS_RUNNING,
+                DEAL_STATUS_PAYMENT_PENDING,
+                DEAL_STATUS_RESULT_READY
+            ],
             decode_deal_row,
         )
         .map_err(|e| e.to_string())?;
@@ -831,7 +857,7 @@ fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
     let result_evidence_json: Option<String> = row.get(10)?;
     let result_source = result_evidence_json.as_deref().or(result_json.as_deref());
     let result = match result_source {
-        Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
+        Some(json) => Some(serde_json::from_str(json).map_err(|err| {
             rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(err))
         })?),
         None => None,
@@ -841,7 +867,7 @@ fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
     let receipt_document_json: Option<String> = row.get(17)?;
     let receipt_source = receipt_document_json.as_deref().or(receipt_json.as_deref());
     let receipt = match receipt_source {
-        Some(json) => Some(serde_json::from_str(&json).map_err(|err| {
+        Some(json) => Some(serde_json::from_str(json).map_err(|err| {
             rusqlite::Error::FromSqlConversionFailure(
                 16,
                 rusqlite::types::Type::Text,

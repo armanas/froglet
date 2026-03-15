@@ -18,13 +18,22 @@ async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Issue a curated list and verify local publication intents"
     )
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--runtime-url", default="http://127.0.0.1:8081")
+    parser.add_argument(
+        "--provider-url",
+        default="http://127.0.0.1:8080",
+        help="Public provider API base URL used for descriptor and verification flows.",
+    )
     parser.add_argument("--token-path", default="./data/runtime/auth.token")
     parser.add_argument("--list-id", default="example-curated-list")
     args = parser.parse_args()
 
-    runtime = RuntimeClient.from_token_file(args.base_url, args.token_path)
-    async with ProviderClient(args.base_url) as provider:
+    runtime = RuntimeClient.from_token_file(
+        args.runtime_url,
+        args.token_path,
+        provider_base_url=args.provider_url,
+    )
+    async with ProviderClient(args.provider_url) as provider:
         async with runtime:
             snapshot = await runtime.provider_start()
             published = await runtime.publish_services()

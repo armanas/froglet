@@ -54,7 +54,8 @@ pub struct LinkedIdentity {
 pub struct TransportEndpoint {
     pub transport: String,
     pub uri: String,
-    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
     pub priority: u32,
@@ -352,7 +353,7 @@ pub struct ReceiptPayload {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkloadSpec {
     Wasm {
-        submission: WasmSubmission,
+        submission: Box<WasmSubmission>,
     },
     EventsQuery {
         kinds: Vec<String>,
@@ -411,7 +412,9 @@ impl WorkloadSpec {
 impl From<JobSpec> for WorkloadSpec {
     fn from(value: JobSpec) -> Self {
         match value {
-            JobSpec::Wasm { submission } => WorkloadSpec::Wasm { submission },
+            JobSpec::Wasm { submission } => WorkloadSpec::Wasm {
+                submission: Box::new(submission),
+            },
         }
     }
 }
@@ -501,7 +504,7 @@ pub fn verify_artifact<T: Serialize>(artifact: &SignedArtifact<T>) -> bool {
     };
 
     let computed_hash = crypto::sha256_hex(&signing_bytes);
-    if !artifact.hash.is_empty() && artifact.hash != computed_hash {
+    if artifact.hash != computed_hash {
         return false;
     }
 
@@ -559,7 +562,32 @@ pub fn new_artifact_id() -> String {
 mod tests {
     use super::*;
     use crate::crypto;
+    use rand::{RngCore, SeedableRng, rngs::StdRng};
     use serde::Serialize;
+
+    fn seeded_signing_key(rng: &mut StdRng) -> crypto::NodeSigningKey {
+        loop {
+            let mut seed = [0_u8; 32];
+            rng.fill_bytes(&mut seed);
+            if let Ok(key) = crypto::signing_key_from_seed_bytes(&seed) {
+                return key;
+            }
+        }
+    }
+
+    fn random_hex(rng: &mut StdRng, bytes_len: usize) -> String {
+        let mut bytes = vec![0_u8; bytes_len];
+        rng.fill_bytes(&mut bytes);
+        hex::encode(bytes)
+    }
+
+    fn flip_hex_char(value: &mut String, index: usize) {
+        let replacement = match value.as_bytes()[index] {
+            b'0' => "1",
+            _ => "0",
+        };
+        value.replace_range(index..index + 1, replacement);
+    }
 
     #[test]
     fn signed_artifact_roundtrip_verifies() {
@@ -600,6 +628,47 @@ mod tests {
 
         assert!(verify_artifact(&artifact));
         assert_eq!(artifact_hash(&artifact).unwrap(), artifact.hash);
+    }
+
+    #[test]
+    fn signed_artifact_with_empty_hash_is_rejected() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut artifact = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_QUOTE,
+            123,
+            QuotePayload {
+                provider_id: signer.clone(),
+                requester_id: "11".repeat(32),
+                descriptor_hash: "22".repeat(32),
+                offer_hash: "33".repeat(32),
+                expires_at: 456,
+                workload_kind: "compute.wasm.v1".to_string(),
+                workload_hash: "44".repeat(32),
+                settlement_terms: QuoteSettlementTerms {
+                    method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+                    destination_identity: "02".to_string() + &"55".repeat(32),
+                    base_fee_msat: 1000,
+                    success_fee_msat: 9000,
+                    max_base_invoice_expiry_secs: 30,
+                    max_success_hold_expiry_secs: 30,
+                    min_final_cltv_expiry: 18,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1,
+                    max_runtime_ms: 2,
+                    max_memory_bytes: 3,
+                    max_output_bytes: 4,
+                    fuel_limit: 5,
+                },
+            },
+        )
+        .unwrap();
+        artifact.hash.clear();
+
+        assert!(!verify_artifact(&artifact));
     }
 
     #[test]
@@ -644,5 +713,108 @@ mod tests {
             String::from_utf8(challenge).unwrap(),
             "froglet:identity_link:v1\nprovider-1\nnostr\nabcd\n32195491daf0054358d4a777b5e185517820f15dd18d1170f4e8351d9de46d68\n123\n-"
         );
+    }
+
+    #[test]
+    fn randomized_artifact_tampering_breaks_verification() {
+        let mut rng = StdRng::seed_from_u64(0x0F06_A1E7);
+
+        for iteration in 0..32_i64 {
+            let signing_key = seeded_signing_key(&mut rng);
+            let signer = crypto::public_key_hex(&signing_key);
+            let artifact = sign_artifact(
+                &signer,
+                |message| crypto::sign_message_hex(&signing_key, message),
+                ARTIFACT_TYPE_QUOTE,
+                1_700_000_000 + iteration,
+                QuotePayload {
+                    provider_id: signer.clone(),
+                    requester_id: random_hex(&mut rng, 32),
+                    descriptor_hash: random_hex(&mut rng, 32),
+                    offer_hash: random_hex(&mut rng, 32),
+                    expires_at: 1_700_000_100 + iteration,
+                    workload_kind: "compute.wasm.v1".to_string(),
+                    workload_hash: random_hex(&mut rng, 32),
+                    settlement_terms: QuoteSettlementTerms {
+                        method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+                        destination_identity: format!("02{}", random_hex(&mut rng, 32)),
+                        base_fee_msat: 1_000 + iteration as u64,
+                        success_fee_msat: 9_000 + iteration as u64,
+                        max_base_invoice_expiry_secs: 60,
+                        max_success_hold_expiry_secs: 120,
+                        min_final_cltv_expiry: 18,
+                    },
+                    execution_limits: ExecutionLimits {
+                        max_input_bytes: 1_024 + iteration as usize,
+                        max_runtime_ms: 2_000 + iteration as u64,
+                        max_memory_bytes: 4_096 + iteration as usize,
+                        max_output_bytes: 2_048 + iteration as usize,
+                        fuel_limit: 50_000 + iteration as u64,
+                    },
+                },
+            )
+            .expect("artifact should sign");
+
+            assert!(
+                verify_artifact(&artifact),
+                "iteration {iteration} should verify before tampering"
+            );
+
+            let mut tampered_schema = artifact.clone();
+            tampered_schema.schema_version = "froglet/v2".to_string();
+            assert!(
+                !verify_artifact(&tampered_schema),
+                "iteration {iteration} should fail on schema tampering"
+            );
+
+            let mut tampered_type = artifact.clone();
+            tampered_type.artifact_type = ARTIFACT_TYPE_DEAL.to_string();
+            assert!(
+                !verify_artifact(&tampered_type),
+                "iteration {iteration} should fail on artifact_type tampering"
+            );
+
+            let mut tampered_created_at = artifact.clone();
+            tampered_created_at.created_at += 1;
+            assert!(
+                !verify_artifact(&tampered_created_at),
+                "iteration {iteration} should fail on created_at tampering"
+            );
+
+            let mut tampered_payload = artifact.clone();
+            tampered_payload.payload.workload_hash = random_hex(&mut rng, 32);
+            assert!(
+                !verify_artifact(&tampered_payload),
+                "iteration {iteration} should fail on payload tampering"
+            );
+
+            let mut tampered_payload_hash = artifact.clone();
+            flip_hex_char(&mut tampered_payload_hash.payload_hash, 0);
+            assert!(
+                !verify_artifact(&tampered_payload_hash),
+                "iteration {iteration} should fail on payload_hash tampering"
+            );
+
+            let mut tampered_hash = artifact.clone();
+            flip_hex_char(&mut tampered_hash.hash, 0);
+            assert!(
+                !verify_artifact(&tampered_hash),
+                "iteration {iteration} should fail on artifact hash tampering"
+            );
+
+            let mut tampered_signer = artifact.clone();
+            tampered_signer.signer = random_hex(&mut rng, 32);
+            assert!(
+                !verify_artifact(&tampered_signer),
+                "iteration {iteration} should fail on signer tampering"
+            );
+
+            let mut tampered_signature = artifact.clone();
+            flip_hex_char(&mut tampered_signature.signature, 0);
+            assert!(
+                !verify_artifact(&tampered_signature),
+                "iteration {iteration} should fail on signature tampering"
+            );
+        }
     }
 }

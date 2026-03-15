@@ -1,4 +1,7 @@
-use crate::{config::NodeConfig, db::DbPool, identity::NodeIdentity, pricing::PricingTable};
+use crate::{
+    config::NodeConfig, db::DbPool, identity::NodeIdentity, pricing::PricingTable,
+    sandbox::WasmSandbox,
+};
 use serde::Serialize;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex as TokioMutex;
@@ -60,6 +63,7 @@ pub struct AppState {
     pub db: DbPool,
     pub transport_status: Arc<TokioMutex<TransportStatus>>,
     pub marketplace_status: Arc<TokioMutex<MarketplaceStatus>>,
+    pub wasm_sandbox: Arc<WasmSandbox>,
     pub config: NodeConfig,
     pub identity: Arc<NodeIdentity>,
     pub pricing: PricingTable,

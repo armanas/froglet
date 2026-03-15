@@ -6,7 +6,6 @@ import aiohttp
 from test_support import (
     FrogletAsyncTestCase,
     TRAPPING_WASM_HEX,
-    VALID_CASHU_TOKEN,
     VALID_WASM_HEX,
     build_wasm_request,
     build_wasm_submission,
@@ -135,53 +134,6 @@ class JobApiTests(FrogletAsyncTestCase):
 
         self.assertEqual(resp.status, 400)
         self.assertIn("input hash", payload["error"].lower())
-
-    async def test_failed_paid_job_releases_payment_reservation(self) -> None:
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PRICE_EVENTS_QUERY": "10",
-                "FROGLET_PAYMENT_BACKEND": "cashu",
-            }
-        )
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/node/jobs"),
-                json={
-                    **build_wasm_request(TRAPPING_WASM_HEX),
-                    "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
-                },
-            ) as resp:
-                failed_job = await resp.json()
-
-            completed = await self.wait_for_job(node, failed_job["job_id"])
-            async with session.post(
-                node.url("/v1/node/events/query"),
-                json={
-                    "kinds": ["note"],
-                    "limit": 1,
-                    "payment": {"kind": "cashu", "token": VALID_CASHU_TOKEN},
-                },
-            ) as resp:
-                query_payload = await resp.json()
-
-        self.assertEqual(completed["status"], "failed")
-        self.assertEqual(resp.status, 200)
-        self.assertIn("events", query_payload)
-        self.assertIsNotNone(query_payload["payment_receipt"])
-        self.assertEqual(query_payload["payment_receipt"]["settlement_status"], "committed")
-        evidence_kinds = {
-            row[0]
-            for row in read_db_rows(
-                node.data_dir / "node.db",
-                "SELECT evidence_kind FROM execution_evidence WHERE subject_kind = 'job' AND subject_id = ? ORDER BY evidence_id ASC",
-                (failed_job["job_id"],),
-            )
-        }
-        self.assertIn("workload_spec", evidence_kinds)
-        self.assertIn("execution_failure", evidence_kinds)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

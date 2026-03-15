@@ -184,9 +184,10 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
             descriptor = await provider.descriptor()
 
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            node.base_url,
+            node.runtime_url,
             _runtime_token_path(node),
             [self.relay.url],
+            provider_base_url=node.base_url,
         )
         async with adapter:
             publish_results = await adapter.publish_provider_events()
@@ -217,7 +218,11 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
-        runtime = RuntimeClient.from_token_file(node.base_url, _runtime_token_path(node))
+        runtime = RuntimeClient.from_token_file(
+            node.runtime_url,
+            _runtime_token_path(node),
+            provider_base_url=node.base_url,
+        )
         success_preimage = "44" * 32
 
         async with ProviderClient(node.base_url) as provider:
@@ -252,9 +257,10 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
             )
 
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            node.base_url,
+            node.runtime_url,
             _runtime_token_path(node),
             [self.relay.url],
+            provider_base_url=node.base_url,
         )
         async with adapter:
             publish_results = await adapter.publish_receipt_event(handle.deal["deal_id"])
@@ -282,9 +288,10 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
         node = await self.start_node()
 
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            node.base_url,
+            node.runtime_url,
             _runtime_token_path(node),
             [retry_relay.url],
+            provider_base_url=node.base_url,
             retry_policy=RetryPolicy(
                 max_attempts=3,
                 initial_backoff_secs=0.01,
@@ -308,9 +315,10 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
             descriptor = await provider.descriptor()
 
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            node.base_url,
+            node.runtime_url,
             _runtime_token_path(node),
             [auth_relay.url],
+            provider_base_url=node.base_url,
             auth_seed_path=node.data_dir / "identity" / "nostr-publication.secp256k1.seed",
         )
         async with adapter:
@@ -337,9 +345,10 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
         config_path = node.temp_root / "nostr-relays.json"
 
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            node.base_url,
+            node.runtime_url,
             _runtime_token_path(node),
             [self.relay.url],
+            provider_base_url=node.base_url,
         )
         async with adapter:
             provider_events = await adapter.collect_provider_events()
@@ -363,9 +372,10 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
         )
 
         policy_adapter = FrogletNostrRelayAdapter.from_config_file(
-            node.base_url,
+            node.runtime_url,
             _runtime_token_path(node),
             config_path,
+            provider_base_url=node.base_url,
         )
         async with policy_adapter:
             publish_results = await policy_adapter.publish_events(provider_events)

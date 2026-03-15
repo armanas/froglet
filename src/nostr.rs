@@ -196,9 +196,8 @@ pub fn build_offer_summary_event(
         "t".to_string(),
         offer.payload.execution_profile.abi_version.clone(),
     ]);
-    for method in [offer.payload.settlement_method.clone()] {
-        tags.push(vec!["t".to_string(), method.clone()]);
-    }
+    let settlement_method = offer.payload.settlement_method.clone();
+    tags.push(vec!["t".to_string(), settlement_method]);
     if let Some(expires_at) = offer.payload.expires_at {
         tags.push(vec!["expiration".to_string(), expires_at.to_string()]);
     }

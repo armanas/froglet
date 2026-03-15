@@ -73,8 +73,23 @@ pub struct LndRestClient {
 
 impl LndRestClient {
     pub fn from_config(config: &LightningLndRestConfig) -> Result<Self, LndRestError> {
+        crate::tls::ensure_rustls_crypto_provider();
         let base_url = Url::parse(&config.rest_url)
             .map_err(|error| LndRestError::Config(format!("invalid rest url: {error}")))?;
+        match base_url.scheme() {
+            "https" => {}
+            "http" if matches!(base_url.host_str(), Some("127.0.0.1" | "localhost" | "::1")) => {}
+            "http" => {
+                return Err(LndRestError::Config(
+                    "plain HTTP LND REST URLs are only allowed on loopback addresses".to_string(),
+                ));
+            }
+            scheme => {
+                return Err(LndRestError::Config(format!(
+                    "unsupported LND REST URL scheme: {scheme}"
+                )));
+            }
+        }
         let mut builder =
             Client::builder().timeout(Duration::from_secs(config.request_timeout_secs));
 
@@ -651,6 +666,17 @@ mod tests {
         assert_eq!(requests[4].0, "cancel_invoice");
         assert_eq!(requests[4].1["payment_hash"], STANDARD.encode([0x33; 32]));
 
+        let _ = fs::remove_file(&config.macaroon_path);
+    }
+
+    #[test]
+    fn lnd_rest_client_rejects_non_loopback_http() {
+        let config = test_config("http://10.0.0.5:8080".to_string());
+        let error = match LndRestClient::from_config(&config) {
+            Ok(_) => panic!("non-loopback plain HTTP should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("loopback"));
         let _ = fs::remove_file(&config.macaroon_path);
     }
 }
