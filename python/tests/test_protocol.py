@@ -239,6 +239,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "120",
             }
         )
@@ -366,6 +367,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
         requester_key = generate_schnorr_signing_key()
@@ -425,6 +427,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -473,6 +476,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -545,6 +549,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -606,6 +611,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -680,6 +686,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -750,6 +757,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
         first_requester_key = generate_schnorr_signing_key()
@@ -885,6 +893,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 node,
                 build_wasm_request(LONG_RUNNING_WASM_HEX),
             )
+            second_requester_key, second_quote = await self._create_quote(
+                session,
+                node,
+                build_wasm_request(VALID_WASM_HEX),
+            )
             first_deal = await self._create_deal(
                 session,
                 node,
@@ -905,11 +918,6 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             else:
                 self.fail("first deal never entered running state")
 
-            second_requester_key, second_quote = await self._create_quote(
-                session,
-                node,
-                build_wasm_request(VALID_WASM_HEX),
-            )
             second_deal = await self._create_deal(
                 session,
                 node,

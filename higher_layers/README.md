@@ -20,6 +20,10 @@ Current topics:
 
 - [MARKETPLACE.md](MARKETPLACE.md): service split and scope for discovery,
   indexing, catalog, broker, and reputation layers
+- [EXECUTION_PLAN.md](EXECUTION_PLAN.md): phased implementation order for the
+  open core, open integration tooling, and closed higher-layer services
+- [REPO_STRATEGY.md](REPO_STRATEGY.md): public/private repo split, license
+  position, and temporary ignored `private/` incubation rules
 - [OWNERSHIP.md](OWNERSHIP.md): ownership and issuer-model notes that do not
   require kernel changes today
 - [CHECKLIST.md](CHECKLIST.md): separate execution checklist for marketplace and

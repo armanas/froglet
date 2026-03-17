@@ -1,22 +1,26 @@
 use std::{
+    collections::HashMap,
     env, io,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 use wasmtime::{
-    Config, Engine, ExternType, Linker, Memory, MemoryType, Module, Store, StoreLimits,
-    StoreLimitsBuilder, Trap,
+    AsContext, AsContextMut, Caller, Config, Engine, ExternType, Linker, Memory, MemoryType,
+    Module, Store, StoreLimits, StoreLimitsBuilder, Trap, ValType,
 };
 
-use crate::canonical_json;
+use crate::{
+    canonical_json, wasm, wasm_host::WasmExecutionContext, wasm_host::WasmHostEnvironment,
+};
 
 pub const WASM_FUEL_LIMIT: u64 = 50_000_000;
 pub const WASM_MAX_MEMORY_BYTES: usize = 8 * 1024 * 1024;
@@ -24,8 +28,33 @@ pub const WASM_MAX_OUTPUT_BYTES: usize = 128 * 1024;
 const WASM_EPOCH_TICK_MILLIS: u64 = 10;
 const WASM_PAGE_BYTES: u64 = 64 * 1024;
 const WASM_MAX_MEMORY_PAGES: u64 = (WASM_MAX_MEMORY_BYTES as u64) / WASM_PAGE_BYTES;
+const WASM_MODULE_CACHE_DEFAULT_CAPACITY: usize = 128;
+const WASM_HOST_IMPORT_MODULE: &str = "froglet_host";
+const WASM_HOST_IMPORT_CALL_JSON: &str = "call_json";
 
 pub struct ExecutionPermit(OwnedSemaphorePermit);
+
+#[derive(Clone)]
+pub struct WasmExecutionOptions {
+    pub abi_version: String,
+    pub capabilities_granted: Vec<String>,
+    pub host_environment: Option<Arc<WasmHostEnvironment>>,
+}
+
+impl WasmExecutionOptions {
+    pub fn pure_compute() -> Self {
+        Self {
+            abi_version: wasm::WASM_RUN_JSON_ABI_V1.to_string(),
+            capabilities_granted: Vec::new(),
+            host_environment: None,
+        }
+    }
+}
+
+struct WasmStoreData {
+    limits: StoreLimits,
+    host_context: Option<WasmExecutionContext>,
+}
 
 struct EpochTicker {
     stop: Arc<AtomicBool>,
@@ -65,15 +94,23 @@ impl Drop for EpochTicker {
 pub struct WasmSandbox {
     engine: Engine,
     concurrency_semaphore: Arc<Semaphore>,
+    module_cache: Mutex<ModuleCache>,
     _epoch_ticker: EpochTicker,
 }
 
 impl WasmSandbox {
     pub fn from_env() -> Result<Self, String> {
-        Self::new(wasm_concurrency_limit())
+        Self::new_with_module_cache_capacity(wasm_concurrency_limit(), wasm_module_cache_capacity())
     }
 
     pub fn new(concurrency_limit: usize) -> Result<Self, String> {
+        Self::new_with_module_cache_capacity(concurrency_limit, wasm_module_cache_capacity())
+    }
+
+    fn new_with_module_cache_capacity(
+        concurrency_limit: usize,
+        module_cache_capacity: usize,
+    ) -> Result<Self, String> {
         let mut config = Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
@@ -84,6 +121,7 @@ impl WasmSandbox {
         Ok(Self {
             engine,
             concurrency_semaphore: Arc::new(Semaphore::new(concurrency_limit.max(1))),
+            module_cache: Mutex::new(ModuleCache::new(module_cache_capacity)),
             _epoch_ticker: epoch_ticker,
         })
     }
@@ -120,9 +158,38 @@ impl WasmSandbox {
         permit: ExecutionPermit,
         timeout: Duration,
     ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        self.execute_module_with_options_and_permit(
+            wasm_bytes,
+            input,
+            WasmExecutionOptions::pure_compute(),
+            permit,
+            timeout,
+        )
+    }
+
+    pub fn execute_module_with_options(
+        &self,
+        wasm_bytes: &[u8],
+        input: &Value,
+        options: WasmExecutionOptions,
+        timeout: Duration,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        let permit = self
+            .try_acquire_execution_permit()
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+        self.execute_module_with_options_and_permit(wasm_bytes, input, options, permit, timeout)
+    }
+
+    pub fn execute_module_with_options_and_permit(
+        &self,
+        wasm_bytes: &[u8],
+        input: &Value,
+        options: WasmExecutionOptions,
+        permit: ExecutionPermit,
+        timeout: Duration,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
         let _permit = permit.0;
-        let module = Module::new(&self.engine, wasm_bytes)?;
-        validate_module_policy(&module)?;
+        let module = self.load_module(wasm_bytes, &options.abi_version)?;
 
         let limits: StoreLimits = StoreLimitsBuilder::new()
             .memory_size(WASM_MAX_MEMORY_BYTES)
@@ -131,14 +198,42 @@ impl WasmSandbox {
             .memories(1)
             .trap_on_grow_failure(true)
             .build();
-
-        let mut store = Store::new(&self.engine, limits);
-        store.limiter(|limits| limits);
+        let execution_deadline = Instant::now().checked_add(timeout);
+        let host_context = options.host_environment.map(|environment| {
+            WasmExecutionContext::new(
+                environment,
+                options.capabilities_granted,
+                execution_deadline,
+            )
+        });
+        let mut store = Store::new(
+            &self.engine,
+            WasmStoreData {
+                limits,
+                host_context,
+            },
+        );
+        store.limiter(|data| &mut data.limits);
         store.set_fuel(WASM_FUEL_LIMIT)?;
         store.set_epoch_deadline(timeout_to_epoch_ticks(timeout));
         store.epoch_deadline_trap();
 
-        let linker = Linker::new(&self.engine);
+        let mut linker = Linker::new(&self.engine);
+        if options.abi_version == wasm::WASM_HOST_JSON_ABI_V1 {
+            linker
+                .func_wrap(
+                    WASM_HOST_IMPORT_MODULE,
+                    WASM_HOST_IMPORT_CALL_JSON,
+                    |mut caller: Caller<'_, WasmStoreData>,
+                     ptr: i32,
+                     len: i32|
+                     -> Result<i64, wasmtime::Error> {
+                        host_call_json(&mut caller, ptr, len)
+                            .map_err(|error| wasmtime::Error::msg(error.to_string()))
+                    },
+                )
+                .map_err(|error| boxed_message(error.to_string()))?;
+        }
         let instance = linker.instantiate(&mut store, &module)?;
         let memory = instance
             .get_memory(&mut store, "memory")
@@ -201,6 +296,121 @@ impl WasmSandbox {
 
         Ok(result)
     }
+
+    #[cfg(test)]
+    fn cached_module_count(&self) -> usize {
+        self.with_module_cache(|cache| cache.entry_count())
+    }
+
+    fn load_module(
+        &self,
+        wasm_bytes: &[u8],
+        abi_version: &str,
+    ) -> Result<Module, Box<dyn std::error::Error + Send + Sync>> {
+        let cache_key = ModuleCacheKey::new(wasm_bytes, abi_version);
+        if let Some(module) = self.with_module_cache(|cache| cache.get(&cache_key)) {
+            return Ok(module);
+        }
+
+        let module = Module::new(&self.engine, wasm_bytes)?;
+        validate_module_policy(&module, abi_version)?;
+        self.with_module_cache(|cache| cache.insert(cache_key, module.clone()));
+        Ok(module)
+    }
+
+    fn with_module_cache<T>(&self, operation: impl FnOnce(&mut ModuleCache) -> T) -> T {
+        let mut cache = self
+            .module_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        operation(&mut cache)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ModuleCacheKey {
+    module_hash: [u8; 32],
+    abi_version: String,
+}
+
+impl ModuleCacheKey {
+    fn new(wasm_bytes: &[u8], abi_version: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(wasm_bytes);
+        let digest = hasher.finalize();
+        let mut module_hash = [0u8; 32];
+        module_hash.copy_from_slice(&digest);
+        Self {
+            module_hash,
+            abi_version: abi_version.to_string(),
+        }
+    }
+}
+
+struct ModuleCache {
+    capacity: usize,
+    entries: HashMap<ModuleCacheKey, CachedModuleEntry>,
+    next_lru_tick: u64,
+}
+
+struct CachedModuleEntry {
+    module: Module,
+    last_used_tick: u64,
+}
+
+impl ModuleCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+            next_lru_tick: 0,
+        }
+    }
+
+    fn get(&mut self, key: &ModuleCacheKey) -> Option<Module> {
+        let tick = self.next_tick();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used_tick = tick;
+        Some(entry.module.clone())
+    }
+
+    fn insert(&mut self, key: ModuleCacheKey, module: Module) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        let tick = self.next_tick();
+        self.entries.insert(
+            key,
+            CachedModuleEntry {
+                module,
+                last_used_tick: tick,
+            },
+        );
+
+        while self.entries.len() > self.capacity {
+            let Some(evicted_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used_tick)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.entries.remove(&evicted_key);
+        }
+    }
+
+    #[cfg(test)]
+    fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn next_tick(&mut self) -> u64 {
+        let tick = self.next_lru_tick;
+        self.next_lru_tick = self.next_lru_tick.wrapping_add(1);
+        tick
+    }
 }
 
 fn concurrency_limit(name: &str, default: usize) -> usize {
@@ -218,7 +428,17 @@ pub fn wasm_concurrency_limit() -> usize {
     concurrency_limit("FROGLET_WASM_CONCURRENCY_LIMIT", 16)
 }
 
-fn validate_module_policy(module: &Module) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn wasm_module_cache_capacity() -> usize {
+    concurrency_limit(
+        "FROGLET_WASM_MODULE_CACHE_CAPACITY",
+        WASM_MODULE_CACHE_DEFAULT_CAPACITY,
+    )
+}
+
+fn validate_module_policy(
+    module: &Module,
+    abi_version: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let imports: Vec<String> = module
         .imports()
         .map(|import| {
@@ -230,11 +450,20 @@ fn validate_module_policy(module: &Module) -> Result<(), Box<dyn std::error::Err
             )
         })
         .collect();
-    if !imports.is_empty() {
-        return Err(boxed_message(format!(
-            "Wasm host imports are not permitted in froglet.wasm.run_json.v1: {}",
-            imports.join(", ")
-        )));
+    match abi_version {
+        wasm::WASM_RUN_JSON_ABI_V1 if !imports.is_empty() => {
+            return Err(boxed_message(format!(
+                "Wasm host imports are not permitted in froglet.wasm.run_json.v1: {}",
+                imports.join(", ")
+            )));
+        }
+        wasm::WASM_RUN_JSON_ABI_V1 => {}
+        wasm::WASM_HOST_JSON_ABI_V1 => validate_host_imports(module)?,
+        _ => {
+            return Err(boxed_message(format!(
+                "unsupported Wasm ABI for sandbox execution: {abi_version}"
+            )));
+        }
     }
 
     let exported_memories: Vec<(String, MemoryType)> = module
@@ -259,6 +488,51 @@ fn validate_module_policy(module: &Module) -> Result<(), Box<dyn std::error::Err
             ));
         }
         validate_memory_type(memory)?;
+    }
+
+    Ok(())
+}
+
+fn validate_host_imports(module: &Module) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut import_count = 0;
+    for import in module.imports() {
+        import_count += 1;
+        if import.module() != WASM_HOST_IMPORT_MODULE || import.name() != WASM_HOST_IMPORT_CALL_JSON
+        {
+            return Err(boxed_message(format!(
+                "unsupported Wasm host import for {}: {}::{}",
+                wasm::WASM_HOST_JSON_ABI_V1,
+                import.module(),
+                import.name()
+            )));
+        }
+
+        let import_type = import.ty();
+        let Some(func_type) = import_type.func() else {
+            return Err(boxed_message(format!(
+                "{}::{} must be a function import",
+                WASM_HOST_IMPORT_MODULE, WASM_HOST_IMPORT_CALL_JSON
+            )));
+        };
+        let params = func_type.params().collect::<Vec<_>>();
+        let results = func_type.results().collect::<Vec<_>>();
+        let params_ok = params.len() == 2
+            && matches!(params[0], ValType::I32)
+            && matches!(params[1], ValType::I32);
+        let results_ok = results.len() == 1 && matches!(results[0], ValType::I64);
+        if !params_ok || !results_ok {
+            return Err(boxed_message(format!(
+                "{}::{} must have signature (i32, i32) -> i64",
+                WASM_HOST_IMPORT_MODULE, WASM_HOST_IMPORT_CALL_JSON
+            )));
+        }
+    }
+
+    if import_count > 1 {
+        return Err(boxed_message(format!(
+            "{} allows at most one host import",
+            wasm::WASM_HOST_JSON_ABI_V1
+        )));
     }
 
     Ok(())
@@ -340,13 +614,80 @@ fn normalize_wasm_error(
     }
 }
 
-fn write_memory(
+fn host_call_json(
+    caller: &mut Caller<'_, WasmStoreData>,
+    ptr: i32,
+    len: i32,
+) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+    if ptr < 0 || len < 0 {
+        return Err(boxed_message(
+            "froglet_host.call_json received a negative pointer or length".to_string(),
+        ));
+    }
+
+    let memory = caller
+        .get_export("memory")
+        .and_then(|export| export.into_memory())
+        .ok_or_else(|| boxed_message("Wasm module must export memory".to_string()))?;
+    let request_bytes = read_memory(&memory, caller.as_context(), ptr as usize, len as usize)?;
+    // Safety: `memory` is a wasmtime::Memory handle (a stable index into the store's memory
+    // table), not a direct slice into linear memory. The `caller_alloc` call below re-enters
+    // WASM and may trigger `memory.grow`, which reallocates the backing buffer. This is safe
+    // because we re-borrow the data slice via `write_memory` after the alloc returns. The
+    // current ABI allows only a single host import (`call_json`), so nested re-entrancy into
+    // this function cannot occur. If additional host imports are added in the future, ensure
+    // they do not allow re-entrancy that could invalidate memory assumptions.
+    let response_bytes = caller
+        .data_mut()
+        .host_context
+        .as_mut()
+        .ok_or_else(|| boxed_message("host context is not available".to_string()))?
+        .dispatch_json(&request_bytes)
+        .map_err(boxed_message)?;
+    let response_len_i32 = i32::try_from(response_bytes.len())
+        .map_err(|_| boxed_message("host response is too large".to_string()))?;
+    let response_ptr = caller_alloc(caller, response_len_i32)?;
+    if response_ptr < 0 {
+        return Err(boxed_message(
+            "Wasm alloc returned a negative pointer for host response".to_string(),
+        ));
+    }
+    write_memory(
+        &memory,
+        caller.as_context_mut(),
+        response_ptr as usize,
+        &response_bytes,
+    )?;
+    Ok(pack_ptr_len(response_ptr, response_len_i32))
+}
+
+fn caller_alloc(
+    caller: &mut Caller<'_, WasmStoreData>,
+    len: i32,
+) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+    let alloc = caller
+        .get_export("alloc")
+        .and_then(|export| export.into_func())
+        .ok_or_else(|| boxed_message("Wasm module must export alloc".to_string()))?;
+    let alloc = alloc
+        .typed::<i32, i32>(caller.as_context())
+        .map_err(|error| boxed_message(error.to_string()))?;
+    alloc
+        .call(caller.as_context_mut(), len)
+        .map_err(|error| boxed_message(error.to_string()))
+}
+
+fn pack_ptr_len(ptr: i32, len: i32) -> i64 {
+    ((ptr as u32 as u64) << 32 | (len as u32 as u64)) as i64
+}
+
+fn write_memory<T: 'static>(
     memory: &Memory,
-    store: &mut Store<StoreLimits>,
+    mut store: impl wasmtime::AsContextMut<Data = T>,
     ptr: usize,
     bytes: &[u8],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let data = memory.data_mut(store);
+    let data = memory.data_mut(store.as_context_mut());
     let end = ptr
         .checked_add(bytes.len())
         .ok_or_else(|| boxed_message("Wasm memory write overflow".to_string()))?;
@@ -357,13 +698,13 @@ fn write_memory(
     Ok(())
 }
 
-fn read_memory(
+fn read_memory<T: 'static>(
     memory: &Memory,
-    store: &mut Store<StoreLimits>,
+    store: impl wasmtime::AsContext<Data = T>,
     ptr: usize,
     len: usize,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let data = memory.data(store);
+    let data = memory.data(store.as_context());
     let end = ptr
         .checked_add(len)
         .ok_or_else(|| boxed_message("Wasm memory read overflow".to_string()))?;
@@ -380,14 +721,34 @@ fn boxed_message(message: String) -> Box<dyn std::error::Error + Send + Sync> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::{WasmPolicy, WasmSqliteHandleConfig, WasmSqlitePolicy},
+        wasm_host::WasmHostEnvironment,
+    };
+    use rusqlite::Connection;
     use serde_json::Value;
+    use std::{
+        collections::BTreeMap,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use wat::parse_str as wat2wasm;
 
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
     const INFINITE_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0f02040041100b080003400c000b000b";
 
     fn test_sandbox() -> WasmSandbox {
-        WasmSandbox::new(16).expect("sandbox")
+        WasmSandbox::new_with_module_cache_capacity(16, 16).expect("sandbox")
+    }
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "froglet-sandbox-tests-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
     #[test]
@@ -558,6 +919,89 @@ mod tests {
     }
 
     #[test]
+    fn wasm_host_abi_can_query_sqlite_via_host_import() {
+        let temp_dir = unique_temp_dir("host-db");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("workload.db");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute("CREATE TABLE sample (value INTEGER)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO sample (value) VALUES (42)", [])
+            .unwrap();
+        drop(connection);
+
+        let request_json = r#"{"op":"db.query","request":{"handle":"main","sql":"SELECT value FROM sample","params":[]}}"#;
+        let wasm_bytes = wat2wasm(format!(
+            r#"(module
+                (import "froglet_host" "call_json" (func $call_json (param i32 i32) (result i64)))
+                (memory (export "memory") 1)
+                (global $heap (mut i32) (i32.const 256))
+                (data (i32.const 0) "{request}")
+                (func (export "alloc") (param $len i32) (result i32)
+                    (local $ptr i32)
+                    global.get $heap
+                    local.set $ptr
+                    global.get $heap
+                    local.get $len
+                    i32.add
+                    global.set $heap
+                    local.get $ptr)
+                (func (export "run") (param i32 i32) (result i64)
+                    i32.const 0
+                    i32.const {request_len}
+                    call $call_json))"#,
+            request = request_json.replace('\\', "\\\\").replace('"', "\\\""),
+            request_len = request_json.len(),
+        ))
+        .unwrap();
+
+        let host_environment = Arc::new(
+            WasmHostEnvironment::from_policy(WasmPolicy {
+                http: None,
+                sqlite: Some(WasmSqlitePolicy {
+                    max_queries_per_execution: 4,
+                    max_rows_per_query: 10,
+                    max_result_bytes: 4_096,
+                    handles: BTreeMap::from([(
+                        "main".to_string(),
+                        WasmSqliteHandleConfig {
+                            path: db_path.clone(),
+                        },
+                    )]),
+                }),
+            })
+            .unwrap(),
+        );
+
+        let result = test_sandbox()
+            .execute_module_with_options(
+                &wasm_bytes,
+                &Value::Null,
+                WasmExecutionOptions {
+                    abi_version: wasm::WASM_HOST_JSON_ABI_V1.to_string(),
+                    capabilities_granted: vec![
+                        wasm::WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX.to_string() + "main",
+                    ],
+                    host_environment: Some(host_environment),
+                },
+                Duration::from_secs(1),
+            )
+            .expect("host abi execution should succeed");
+
+        assert_eq!(
+            result,
+            serde_json::json!({
+                "columns": ["value"],
+                "rows": [[42]],
+            })
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn wasm_rejects_initial_memory_above_limit() {
         let wasm_bytes = wat2wasm(
             r#"(module
@@ -615,5 +1059,39 @@ mod tests {
             .try_acquire_execution_permit()
             .expect("second sandbox permit should be independent");
         drop(second_permit);
+    }
+
+    #[test]
+    fn wasm_module_cache_is_bounded() {
+        let sandbox = WasmSandbox::new_with_module_cache_capacity(2, 1).expect("sandbox");
+        let module_a = wat2wasm(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 2)
+                (data (i32.const 0) "42"))"#,
+        )
+        .unwrap();
+        let module_b = wat2wasm(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32)
+                    i32.const 16)
+                (func (export "run") (param i32 i32) (result i64)
+                    i64.const 2)
+                (data (i32.const 0) "43"))"#,
+        )
+        .unwrap();
+
+        let _ = sandbox.execute_module(&module_a, &Value::Null, Duration::from_secs(1));
+        assert_eq!(sandbox.cached_module_count(), 1);
+
+        let _ = sandbox.execute_module(&module_b, &Value::Null, Duration::from_secs(1));
+        assert_eq!(sandbox.cached_module_count(), 1);
+
+        let _ = sandbox.execute_module(&module_b, &Value::Null, Duration::from_secs(1));
+        assert_eq!(sandbox.cached_module_count(), 1);
     }
 }

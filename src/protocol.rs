@@ -210,6 +210,12 @@ pub struct QuotePayload {
     pub expires_at: i64,
     pub workload_kind: String,
     pub workload_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities_granted: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_use: Option<String>,
     pub settlement_terms: QuoteSettlementTerms,
     pub execution_limits: ExecutionLimits,
 }
@@ -252,6 +258,14 @@ pub struct DealPayload {
     pub provider_id: String,
     pub quote_hash: String,
     pub workload_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_deal_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_nonce: Option<String>,
     pub success_payment_hash: String,
     pub admission_deadline: i64,
     pub completion_deadline: i64,
@@ -328,6 +342,10 @@ pub struct ReceiptPayload {
     pub requester_id: String,
     pub deal_hash: String,
     pub quote_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<i64>,
     pub finished_at: i64,
@@ -398,6 +416,13 @@ impl WorkloadSpec {
         }
     }
 
+    pub fn abi_version(&self) -> Option<&str> {
+        match self {
+            WorkloadSpec::Wasm { submission } => Some(submission.workload.abi_version.as_str()),
+            WorkloadSpec::EventsQuery { .. } => None,
+        }
+    }
+
     pub fn request_hash(&self) -> Result<String, String> {
         match self {
             WorkloadSpec::Wasm { submission } => submission.workload_hash(),
@@ -405,6 +430,13 @@ impl WorkloadSpec {
                 let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
                 Ok(crypto::sha256_hex(encoded))
             }
+        }
+    }
+
+    pub fn requested_capabilities(&self) -> &[String] {
+        match self {
+            WorkloadSpec::Wasm { submission } => &submission.workload.requested_capabilities,
+            WorkloadSpec::EventsQuery { .. } => &[],
         }
     }
 }
@@ -606,6 +638,9 @@ mod tests {
                 expires_at: 456,
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: "44".repeat(32),
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
                 settlement_terms: QuoteSettlementTerms {
                     method: "lightning.base_fee_plus_success_fee.v1".to_string(),
                     destination_identity: "02".to_string() + &"55".repeat(32),
@@ -647,6 +682,9 @@ mod tests {
                 expires_at: 456,
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: "44".repeat(32),
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
                 settlement_terms: QuoteSettlementTerms {
                     method: "lightning.base_fee_plus_success_fee.v1".to_string(),
                     destination_identity: "02".to_string() + &"55".repeat(32),
@@ -735,6 +773,9 @@ mod tests {
                     expires_at: 1_700_000_100 + iteration,
                     workload_kind: "compute.wasm.v1".to_string(),
                     workload_hash: random_hex(&mut rng, 32),
+                    capabilities_granted: Vec::new(),
+                    extension_refs: Vec::new(),
+                    quote_use: None,
                     settlement_terms: QuoteSettlementTerms {
                         method: "lightning.base_fee_plus_success_fee.v1".to_string(),
                         destination_identity: format!("02{}", random_hex(&mut rng, 32)),

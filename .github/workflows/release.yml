@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-images:
+    name: Publish Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Derive release metadata
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$version" == "$GITHUB_REF_NAME" ]]; then
+            echo "expected tag to start with 'v', got: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          owner_lc="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          sha_tag="sha-${GITHUB_SHA::12}"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "owner_lc=$owner_lc" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=$sha_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Cargo version matches tag
+        run: |
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          import os
+
+          cargo = tomllib.loads(Path("Cargo.toml").read_text())
+          cargo_version = cargo["package"]["version"]
+          tag_version = os.environ["TAG_VERSION"]
+          if cargo_version != tag_version:
+              raise SystemExit(
+                  f"Cargo.toml version {cargo_version!r} does not match tag {tag_version!r}"
+              )
+          PY
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+
+      - name: Validate Compose configuration
+        run: docker compose config
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push froglet image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+        run: |
+          image="ghcr.io/${OWNER_LC}/froglet"
+          docker build \
+            --target froglet \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            -t "${image}:${VERSION}" \
+            -t "${image}:${SHA_TAG}" \
+            .
+          docker push "${image}:${VERSION}"
+          docker push "${image}:${SHA_TAG}"
+
+      - name: Build and push marketplace image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+        run: |
+          image="ghcr.io/${OWNER_LC}/froglet-marketplace"
+          docker build \
+            --target marketplace \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            -t "${image}:${VERSION}" \
+            -t "${image}:${SHA_TAG}" \
+            .
+          docker push "${image}:${VERSION}"
+          docker push "${image}:${SHA_TAG}"
+
+      - name: Write release summary
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+        run: |
+          {
+            echo "## Published Images"
+            echo ""
+            echo "- ghcr.io/${OWNER_LC}/froglet:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${SHA_TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"

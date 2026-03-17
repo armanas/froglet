@@ -17,6 +17,19 @@ else
   echo "[strict] skipping clippy: cargo-clippy is not installed"
 fi
 
+if command -v node >/dev/null 2>&1; then
+  node_major=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')
+  if [ "$node_major" -ge 18 ] 2>/dev/null; then
+    echo "[strict] OpenClaw plugin checks"
+    node --check integrations/openclaw/froglet/index.js
+    node --test integrations/openclaw/froglet/test/plugin.test.js
+  else
+    echo "[strict] skipping OpenClaw plugin checks: node $node_major < 18"
+  fi
+else
+  echo "[strict] skipping OpenClaw plugin checks: node is not installed"
+fi
+
 echo "[strict] python unittest with warnings as errors"
 python3 -W error -m unittest discover -s python/tests -t . -v
 

@@ -20,3 +20,6 @@ pub mod state;
 pub mod tls;
 pub mod tor;
 pub mod wasm;
+pub mod wasm_db;
+pub mod wasm_host;
+pub mod wasm_http;

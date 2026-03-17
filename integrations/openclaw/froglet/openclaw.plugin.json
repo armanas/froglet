@@ -1,0 +1,37 @@
+{
+  "id": "froglet",
+  "name": "Froglet",
+  "version": "0.1.0",
+  "description": "Read-only Froglet marketplace and provider discovery tools for OpenClaw.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "marketplaceUrl": {
+        "type": "string",
+        "description": "Base URL for the Froglet marketplace, for example http://127.0.0.1:9090."
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 60000,
+        "default": 10000,
+        "description": "HTTP timeout for marketplace and provider requests."
+      },
+      "defaultSearchLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 10,
+        "description": "Default marketplace search size when the tool caller omits a limit."
+      },
+      "maxSearchLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 50,
+        "description": "Hard ceiling applied to marketplace search limits."
+      }
+    }
+  }
+}

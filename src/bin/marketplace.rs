@@ -29,6 +29,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         marketplace_server::initialize_marketplace_db,
         marketplace_server::initialize_marketplace_db_reader,
     )?;
+    let db_metrics_path = db_path.clone();
+    let wal_metrics = pool
+        .with_write_conn(move |conn| {
+            froglet::db::collect_wal_checkpoint_metrics(conn, &db_metrics_path)
+        })
+        .await?;
+    tracing::info!(
+        wal_size_bytes = wal_metrics.wal_size_bytes,
+        wal_frames = wal_metrics.log_frames,
+        wal_checkpointed_frames = wal_metrics.checkpointed_frames,
+        wal_busy = wal_metrics.busy,
+        wal_checkpoint_duration_ms = wal_metrics.duration_ms as u64,
+        "Marketplace SQLite WAL checkpoint metrics collected"
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -45,7 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = marketplace_server::router(state);
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    tracing::info!("Marketplace listening on http://{}", listen_addr);
+    let bound_addr = listener.local_addr()?;
+    println!(" 🌐 Marketplace API: http://{}", bound_addr);
+    tracing::info!("Marketplace listening on http://{}", bound_addr);
     axum::serve(listener, app).await?;
     Ok(())
 }

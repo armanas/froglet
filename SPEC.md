@@ -12,7 +12,7 @@ It freezes:
 - the hash-chain and verification rules between those artifacts
 - the canonical deal, execution, and settlement states
 - the Lightning settlement binding rules that a receipt relies on
-- the canonical `compute.wasm.v1` workload object and `froglet.wasm.run_json.v1` ABI
+- the canonical `compute.wasm.v1` workload object and the `froglet.wasm.run_json.v1` / `froglet.wasm.host_json.v1` ABIs
 
 The following are intentionally moved out of the kernel and are defined in companion docs:
 
@@ -161,7 +161,7 @@ For v1 Nostr linkage, `linked_signature` is a BIP340 Schnorr signature over the 
 
 Each `transport_endpoints[]` entry must contain:
 
-- `transport`: `https` or `tor`
+- `transport`: `http`, `https`, or `tor`
 - `uri`: canonical endpoint URI
 - `created_at`: Unix timestamp in seconds
 - `expires_at`: Unix timestamp in seconds or `null`
@@ -183,8 +183,8 @@ Each `transport_endpoints[]` entry must contain:
 - `quote_ttl_secs`: maximum lifetime of quotes issued from this offer
 - `execution_profile`: object with:
   - `runtime`: must be `wasm` for public v1 remote compute
-  - `abi_version`: must be `froglet.wasm.run_json.v1` for public v1 remote compute
-  - `capabilities`: array of capability strings; must be empty for public v1 remote compute
+  - `abi_version`: supported v1 public compute ABIs are `froglet.wasm.run_json.v1` and `froglet.wasm.host_json.v1`
+  - `capabilities`: array of capability strings; `froglet.wasm.run_json.v1` offers must publish `[]`, while `froglet.wasm.host_json.v1` offers may publish a provider-defined allowlist such as `net.http.fetch`, `net.http.fetch.auth.<profile>`, or `db.sqlite.query.read.<handle>`
   - `max_input_bytes`
   - `max_runtime_ms`
   - `max_memory_bytes`
@@ -209,6 +209,7 @@ Each `transport_endpoints[]` entry must contain:
 - `expires_at`: Unix timestamp in seconds
 - `workload_kind`: workload kind identifier; public v1 remote compute uses `compute.wasm.v1`
 - `workload_hash`: hash of the canonical workload object
+- `capabilities_granted`: capability strings granted for this quoted execution; must be a subset of both `Offer.execution_profile.capabilities` and the workload's `requested_capabilities`
 - `settlement_terms`: object with:
   - `method`: must be `lightning.base_fee_plus_success_fee.v1`
   - `destination_identity`
@@ -230,6 +231,7 @@ Quote validation rules:
 - `expires_at` must be no later than `created_at + Offer.quote_ttl_secs`
 - `workload_kind` must be compatible with `Offer.offer_kind`
 - `execution_limits` must be less than or equal to the maxima advertised in `Offer.execution_profile`
+- `capabilities_granted` must be a subset of `Offer.execution_profile.capabilities`
 - `settlement_terms.method` must equal `Offer.settlement_method`
 - `settlement_terms.base_fee_msat` and `settlement_terms.success_fee_msat` must equal `Offer.price_schedule`
 
@@ -300,6 +302,7 @@ Receipt validation rules:
 - `provider_id` must equal the quote provider and the receipt signer
 - `requester_id` must equal the deal requester
 - `quote_hash` must equal `Deal.payload.quote_hash`
+- `Receipt.executor.capabilities_granted` must be a subset of `Quote.payload.capabilities_granted`
 - `finished_at` must be greater than or equal to `started_at` when `started_at` is present
 - `result_hash` and `result_format` must both be present if and only if `execution_state = succeeded`
 - if `deal_state = rejected`, then `execution_state` must be `not_started`
@@ -424,7 +427,7 @@ The v1 paid settlement method is:
 
 It has two Lightning legs:
 
-- `base_fee`: normal invoice, intended to settle immediately
+- `base_fee`: the non-conditional fee leg that must reach `settled` before admission; implementations may realize it as either a normal invoice or a hold invoice so long as the signed bundle fields and observed leg states remain consistent
 - `success_fee`: hold invoice, released only after requester acceptance
 
 ### 6.2 Signed `invoice_bundle`
@@ -462,7 +465,10 @@ Leg `state` values are:
 - `canceled`
 - `expired`
 
-At issuance time both legs must be `open`.
+At issuance time:
+
+- `success_fee.state` must be `open`
+- `base_fee.state` must be `open`, except that it may be `settled` immediately when `base_fee.amount_msat = 0`
 
 ### 6.3 Requester-side `invoice_bundle` validation
 
@@ -499,6 +505,7 @@ The intended paid flow is:
 2. The requester issues a signed `Deal` containing `success_payment_hash`.
 3. The provider issues a signed `invoice_bundle`.
 4. The requester validates the `invoice_bundle` and pays the base fee and hold invoice.
+   If the provider realizes the base-fee leg as a hold invoice, the requester still funds that leg first and the provider must settle it before admission.
 5. The provider observes `funds_locked` and executes the work.
 6. The provider returns result material or a `result_ref`.
 7. The requester releases `s` to accept the success fee, or the provider cancels or lets the hold expire.
@@ -529,12 +536,12 @@ The canonical workload object must contain:
 
 - `schema_version`: `froglet/v1`
 - `workload_kind`: `compute.wasm.v1`
-- `abi_version`: `froglet.wasm.run_json.v1`
+- `abi_version`: `froglet.wasm.run_json.v1` or `froglet.wasm.host_json.v1`
 - `module_format`: `application/wasm`
 - `module_hash`: lowercase hex SHA-256 of the raw Wasm bytes
 - `input_format`: `application/json+jcs`
 - `input_hash`: lowercase hex SHA-256 of `JCS(input_json_value)`
-- `requested_capabilities`: array of capability strings; must be empty in public v1 remote execution
+- `requested_capabilities`: array of capability strings; `froglet.wasm.run_json.v1` workloads must use `[]`, while `froglet.wasm.host_json.v1` workloads may request a provider-offered subset such as `net.http.fetch`, `net.http.fetch.auth.<profile>`, or `db.sqlite.query.read.<handle>`
 
 The canonical workload hash is:
 
@@ -550,9 +557,11 @@ The canonical workload object does not include:
 
 Those belong to adapters and runtime surfaces, not to the kernel.
 
-## 8. `froglet.wasm.run_json.v1` ABI
+## 8. Wasm ABIs
 
-The public v1 Wasm ABI is `froglet.wasm.run_json.v1`.
+### 8.1 `froglet.wasm.run_json.v1`
+
+The pure-compute v1 Wasm ABI is `froglet.wasm.run_json.v1`.
 
 Modules implementing it must satisfy all of the following:
 
@@ -596,6 +605,27 @@ For public v1 remote execution:
 - `requested_capabilities` must be `[]`
 - `capabilities_granted` in receipts must be `[]`
 - providers must not expose ambient filesystem, network, clock, randomness, or process APIs
+
+### 8.2 `froglet.wasm.host_json.v1`
+
+The capability-enabled v1 Wasm ABI is `froglet.wasm.host_json.v1`.
+
+It uses the same exported `memory`, `alloc`, `run`, and optional `dealloc` contract as `froglet.wasm.run_json.v1`, but it may additionally import:
+
+- `froglet_host::call_json(input_ptr: i32, input_len: i32) -> i64`
+
+Providers using this ABI must:
+
+- publish the offered capability allowlist in `Offer.execution_profile.capabilities`
+- sign the accepted subset in `Quote.payload.capabilities_granted`
+- repeat the accepted subset in `Receipt.executor.capabilities_granted`
+- enforce provider-local policy for outbound HTTP, named database handles, auth profiles, call-count ceilings, and private-network access
+
+The initial capability namespace is:
+
+- `net.http.fetch`
+- `net.http.fetch.auth.<profile>`
+- `db.sqlite.query.read.<handle>`
 
 ## 9. Conformance Expectations
 

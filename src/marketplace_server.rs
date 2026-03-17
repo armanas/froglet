@@ -64,7 +64,9 @@ fn configure_marketplace_connection(conn: &Connection) -> rusqlite::Result<()> {
             FOREIGN KEY(node_id) REFERENCES nodes(node_id)
         );
         CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen_at DESC);
         CREATE INDEX IF NOT EXISTS idx_challenges_node_id ON challenges(node_id);
+        CREATE INDEX IF NOT EXISTS idx_challenges_expires_at ON challenges(expires_at);
         COMMIT;",
     )?;
     Ok(())
@@ -184,6 +186,15 @@ enum HeartbeatOutcome {
     InvalidSignature,
 }
 
+fn purge_stale_challenges(conn: &Connection, now: i64) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM challenges WHERE expires_at < ?1 OR used_at IS NOT NULL",
+        params![now],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 async fn heartbeat(
     State(state): State<MarketplaceAppState>,
     Json(payload): Json<HeartbeatRequest>,
@@ -251,6 +262,7 @@ async fn reclaim_challenge(
     match state
         .db
         .with_write_conn(move |conn| -> Result<Option<ReclaimChallengeResponse>, String> {
+            purge_stale_challenges(conn, now)?;
             let exists: Option<String> = conn
                 .query_row(
                     "SELECT node_id FROM nodes WHERE node_id = ?1",
@@ -335,6 +347,7 @@ async fn reclaim_complete(
                 params![challenge_id, now],
             )
             .map_err(|error| error.to_string())?;
+            purge_stale_challenges(conn, now)?;
 
             conn.execute(
                 "UPDATE nodes SET status = 'active', updated_at = ?2, last_seen_at = ?2 WHERE node_id = ?1",
@@ -379,6 +392,7 @@ async fn search_nodes(
     let include_inactive = query.include_inactive.unwrap_or(false);
     let now = current_unix_timestamp();
     let stale_after_secs = state.stale_after_secs;
+    let minimum_last_seen = now.saturating_sub(stale_after_secs);
     match state
         .db
         .with_read_conn(move |conn| -> Result<Vec<MarketplaceNodeRecord>, String> {
@@ -387,44 +401,73 @@ async fn search_nodes(
                  FROM nodes ORDER BY last_seen_at DESC LIMIT ?1"
             } else {
                 "SELECT node_id, descriptor_json, status, registered_at, updated_at, last_seen_at
-                 FROM nodes WHERE status = 'active' ORDER BY last_seen_at DESC LIMIT ?1"
+                 FROM nodes
+                 WHERE status = 'active' AND last_seen_at >= ?2
+                 ORDER BY last_seen_at DESC
+                 LIMIT ?1"
             };
             let mut stmt = conn.prepare(sql).map_err(|error| error.to_string())?;
-
-            let rows = stmt
-                .query_map(params![limit], |row| {
-                    let descriptor_json: String = row.get(1)?;
-                    let descriptor: NodeDescriptor = serde_json::from_str(&descriptor_json)
-                        .map_err(|err| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                1,
-                                rusqlite::types::Type::Text,
-                                Box::new(err),
-                            )
-                        })?;
-
-                    Ok(MarketplaceNodeRecord {
-                        descriptor,
-                        status: effective_status(
-                            &row.get::<_, String>(2)?,
-                            row.get(5)?,
-                            now,
-                            stale_after_secs,
-                        ),
-                        registered_at: row.get(3)?,
-                        updated_at: row.get(4)?,
-                        last_seen_at: row.get(5)?,
-                    })
-                })
-                .map_err(|error| error.to_string())?;
-
             let mut nodes = Vec::new();
-            for row in rows {
-                let node = row.map_err(|error| error.to_string())?;
-                if !include_inactive && node.status == "inactive" {
-                    continue;
+            if include_inactive {
+                let rows = stmt
+                    .query_map(params![limit], |row| {
+                        let descriptor_json: String = row.get(1)?;
+                        let descriptor: NodeDescriptor = serde_json::from_str(&descriptor_json)
+                            .map_err(|err| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    1,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(err),
+                                )
+                            })?;
+
+                        Ok(MarketplaceNodeRecord {
+                            descriptor,
+                            status: effective_status(
+                                &row.get::<_, String>(2)?,
+                                row.get(5)?,
+                                now,
+                                stale_after_secs,
+                            ),
+                            registered_at: row.get(3)?,
+                            updated_at: row.get(4)?,
+                            last_seen_at: row.get(5)?,
+                        })
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    nodes.push(row.map_err(|error| error.to_string())?);
                 }
-                nodes.push(node);
+            } else {
+                let rows = stmt
+                    .query_map(params![limit, minimum_last_seen], |row| {
+                        let descriptor_json: String = row.get(1)?;
+                        let descriptor: NodeDescriptor = serde_json::from_str(&descriptor_json)
+                            .map_err(|err| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    1,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(err),
+                                )
+                            })?;
+
+                        Ok(MarketplaceNodeRecord {
+                            descriptor,
+                            status: effective_status(
+                                &row.get::<_, String>(2)?,
+                                row.get(5)?,
+                                now,
+                                stale_after_secs,
+                            ),
+                            registered_at: row.get(3)?,
+                            updated_at: row.get(4)?,
+                            last_seen_at: row.get(5)?,
+                        })
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    nodes.push(row.map_err(|error| error.to_string())?);
+                }
             }
 
             Ok(nodes)

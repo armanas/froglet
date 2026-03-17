@@ -8,16 +8,19 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bitcoin::hashes::{Hash as _, sha256};
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use froglet::{
+    api,
     config::{
         DiscoveryMode, IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode,
         MarketplaceConfig, NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
+        WasmConfig,
     },
     crypto,
-    db::DbPool,
+    db::{self, DbPool},
+    deals::{self, NewDeal},
     identity::NodeIdentity,
     lnd::InvoiceState,
     pricing::PricingTable,
-    protocol::{self, DealPayload, ExecutionLimits, QuotePayload, verify_artifact},
+    protocol::{self, DealPayload, ExecutionLimits, QuotePayload, WorkloadSpec, verify_artifact},
     settlement::{self, BuildLightningInvoiceBundleRequest},
     state::{AppState, MarketplaceStatus, TransportStatus},
 };
@@ -449,6 +452,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
         listen_addr: "127.0.0.1:0".to_string(),
+        public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
@@ -490,11 +494,24 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
             tor_dir: temp_dir.join("tor"),
         },
+        wasm: WasmConfig {
+            policy_path: None,
+            policy: None,
+        },
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
+    let events_query_capacity = pool.read_connection_count().max(1);
     let pricing = PricingTable::from_config(node_config.pricing);
     let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
+    let lnd_rest_client = froglet::lnd::LndRestClient::from_config(
+        node_config
+            .lightning
+            .lnd_rest
+            .as_ref()
+            .expect("lnd rest config"),
+    )
+    .expect("cached lnd client");
 
     AppState {
         db: pool,
@@ -505,8 +522,12 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         identity: Arc::new(identity),
         pricing,
         http_client: reqwest::Client::new(),
+        wasm_host: None,
         runtime_auth_token: "test-runtime-token".to_string(),
         runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+        events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        lnd_rest_client: Some(Arc::new(lnd_rest_client)),
+        lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
     }
 }
 
@@ -535,6 +556,9 @@ fn sign_quote_and_deal(
             expires_at: settlement::lightning_quote_expires_at(state, now, price_sats, 30),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
+            capabilities_granted: Vec::new(),
+            extension_refs: Vec::new(),
+            quote_use: None,
             settlement_terms: settlement_terms.clone(),
             execution_limits: ExecutionLimits {
                 max_input_bytes: 128 * 1024,
@@ -556,6 +580,10 @@ fn sign_quote_and_deal(
             provider_id: quote.payload.provider_id.clone(),
             quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
+            extension_refs: Vec::new(),
+            authority_ref: None,
+            supersedes_deal_hash: None,
+            client_nonce: None,
             success_payment_hash: success_payment_hash.to_string(),
             admission_deadline: quote.payload.expires_at,
             completion_deadline: quote.payload.expires_at + 30,
@@ -638,7 +666,7 @@ async fn lnd_rest_bundle_uses_real_bolt11_and_syncs_backend_state() {
     fake_lnd
         .set_invoice_state(
             &session.bundle.payload.base_fee.payment_hash,
-            InvoiceState::Settled,
+            InvoiceState::Accepted,
         )
         .await;
     fake_lnd
@@ -656,6 +684,12 @@ async fn lnd_rest_bundle_uses_real_bolt11_and_syncs_backend_state() {
     assert_eq!(
         synced.success_state,
         protocol::InvoiceBundleLegState::Accepted
+    );
+    assert_eq!(
+        fake_lnd
+            .get_invoice_state(&session.bundle.payload.base_fee.payment_hash)
+            .await,
+        Some(InvoiceState::Settled)
     );
 }
 
@@ -852,4 +886,131 @@ async fn lnd_rest_bundle_creation_cancels_issued_invoices_when_local_persistence
             .any(|hash| hash != &success_payment_hash),
         "expected the issued base invoice to be canceled as well"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn remote_recovery_cancels_orphaned_materialization_invoices() {
+    let fake_lnd = spawn_fake_lnd().await;
+    let state = Arc::new(lnd_rest_state(&fake_lnd));
+    let now = settlement::current_unix_timestamp() + 2;
+    let success_payment_hash = crypto::sha256_hex([0x66; 32]);
+    let deal_id = protocol::new_artifact_id();
+
+    let mut settlement_terms = settlement::quoted_lightning_settlement_terms(state.as_ref(), 11)
+        .await
+        .expect("settlement terms")
+        .expect("lightning settlement terms");
+    settlement_terms.base_fee_msat = 2_000;
+    settlement_terms.success_fee_msat = 9_000;
+
+    let (quote, deal) = sign_quote_and_deal(
+        state.as_ref(),
+        settlement_terms.clone(),
+        now,
+        &success_payment_hash,
+    );
+    let request = BuildLightningInvoiceBundleRequest {
+        session_id: Some(deal_id.clone()),
+        requester_id: deal.payload.requester_id.clone(),
+        quote_hash: quote.hash.clone(),
+        deal_hash: deal.hash.clone(),
+        admission_deadline: Some(deal.payload.admission_deadline),
+        success_payment_hash: success_payment_hash.clone(),
+        base_fee_msat: settlement_terms.base_fee_msat,
+        success_fee_msat: settlement_terms.success_fee_msat,
+        created_at: now,
+    };
+    let issued = settlement::issue_lightning_invoice_bundle(state.as_ref(), request.clone())
+        .await
+        .expect("issue orphaned bundle");
+
+    let materialization_json = serde_json::to_string(&request).expect("materialization json");
+    state
+        .db
+        .with_write_conn({
+            let deal_id = deal_id.clone();
+            let quote = quote.clone();
+            let deal = deal.clone();
+            let success_payment_hash = success_payment_hash.clone();
+            move |conn| -> Result<(), String> {
+                deals::insert_or_get_deal(
+                    conn,
+                    NewDeal {
+                        deal_id: deal_id.clone(),
+                        idempotency_key: Some("orphaned-materialization".to_string()),
+                        quote,
+                        spec: WorkloadSpec::EventsQuery {
+                            kinds: vec!["note".to_string()],
+                            limit: Some(1),
+                        },
+                        artifact: deal.clone(),
+                        workload_evidence_hash: None,
+                        deal_artifact_hash: deal.hash.clone(),
+                        payment_method: Some("lightning".to_string()),
+                        payment_token_hash: Some(success_payment_hash),
+                        payment_amount_sats: Some(
+                            (settlement_terms.base_fee_msat + settlement_terms.success_fee_msat)
+                                / 1_000,
+                        ),
+                        initial_status: deals::DEAL_STATUS_PAYMENT_PENDING.to_string(),
+                        created_at: now,
+                    },
+                )?;
+                db::insert_deal_settlement_materialization(
+                    conn,
+                    &deal_id,
+                    "lightning_invoice_bundle",
+                    &materialization_json,
+                    now,
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .expect("seed orphaned materialization");
+
+    api::recover_runtime_state_remote(state.clone())
+        .await
+        .expect("remote recovery");
+
+    assert_eq!(
+        fake_lnd
+            .get_invoice_state(&issued.bundle.payload.base_fee.payment_hash)
+            .await,
+        Some(InvoiceState::Canceled)
+    );
+    assert_eq!(
+        fake_lnd
+            .get_invoice_state(&issued.bundle.payload.success_fee.payment_hash)
+            .await,
+        Some(InvoiceState::Canceled)
+    );
+
+    let recovered_deal = state
+        .db
+        .with_read_conn({
+            let deal_id = deal_id.clone();
+            move |conn| deals::get_deal(conn, &deal_id)
+        })
+        .await
+        .expect("load recovered deal")
+        .expect("deal");
+    assert_eq!(recovered_deal.status, deals::DEAL_STATUS_FAILED);
+    assert_eq!(
+        recovered_deal
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.payload.failure_code.as_deref()),
+        Some("settlement_materialization_interrupted_during_recovery")
+    );
+
+    let remaining_materialization = state
+        .db
+        .with_read_conn({
+            let deal_id = deal_id.clone();
+            move |conn| db::get_deal_settlement_materialization(conn, &deal_id)
+        })
+        .await
+        .expect("load materialization");
+    assert!(remaining_materialization.is_none());
 }

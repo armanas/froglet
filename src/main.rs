@@ -3,21 +3,49 @@ use froglet::{
     config::NodeConfig,
     db::DbPool,
     identity::NodeIdentity,
+    lnd::LndRestClient,
     marketplace_client,
     pricing::PricingTable,
     runtime_auth, sandbox,
     state::{AppState, MarketplaceStatus, TransportStatus},
     tls, tor,
 };
+use futures::FutureExt;
 use hyper::server::conn::http1;
-use hyper_util::rt::TokioIo;
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
-use tokio::sync::Mutex as TokioMutex;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use rand::Rng;
+use std::{
+    future::Future,
+    net::SocketAddr,
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::{Duration, Instant},
+};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{Mutex as TokioMutex, Semaphore};
 use tower::Service;
 use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-const SUPERVISOR_RESTART_DELAY_SECS: u64 = 2;
+const SUPERVISOR_RESTART_MIN_DELAY_SECS: u64 = 1;
+const SUPERVISOR_RESTART_MAX_DELAY_SECS: u64 = 30;
+const HTTP_MAX_CONNECTIONS: usize = 256;
+const HTTP_HEADER_READ_TIMEOUT_SECS: u64 = 10;
+/// Maximum time a single read or write operation may remain pending before the
+/// connection is closed.  Despite the name "idle timeout", the deadline resets
+/// on every completed I/O operation, so it measures the longest stall on a
+/// single syscall rather than true connection-level inactivity.
+const HTTP_IO_STALL_TIMEOUT_SECS: u64 = 120;
+const HTTP_ACCEPT_BACKOFF_MIN_MS: u64 = 50;
+const HTTP_ACCEPT_BACKOFF_MAX_MS: u64 = 5_000;
+#[cfg(unix)]
+const ENFILE_ERRNO: i32 = 23;
+#[cfg(unix)]
+const EMFILE_ERRNO: i32 = 24;
+#[cfg(windows)]
+const WSAEMFILE_ERRNO: i32 = 10024;
 
 type SupervisedTaskFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 type SupervisedTask = Arc<dyn Fn() -> SupervisedTaskFuture + Send + Sync>;
@@ -25,7 +53,17 @@ type SupervisedTask = Arc<dyn Fn() -> SupervisedTaskFuture + Send + Sync>;
 #[derive(Clone, Copy)]
 enum SupervisionPolicy {
     Fatal,
-    Restart { delay: Duration },
+    Restart {
+        min_delay: Duration,
+        max_delay: Duration,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct HttpServeConfig {
+    max_connections: usize,
+    header_read_timeout: Duration,
+    idle_timeout: Duration,
 }
 
 #[tokio::main]
@@ -80,11 +118,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_pool =
         DbPool::open(&node_config.storage.db_path).expect("Failed to initialize SQLite DB pool");
     set_mode(&node_config.storage.db_path, 0o600)?;
+    let events_query_capacity = db_pool.read_connection_count().max(1);
 
     let http_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .build()?;
+    let wasm_host = node_config
+        .wasm
+        .policy
+        .clone()
+        .map(froglet::wasm_host::WasmHostEnvironment::from_policy)
+        .transpose()
+        .map(|environment| environment.map(Arc::new))?;
+    let lnd_rest_client = node_config
+        .lightning
+        .lnd_rest
+        .as_ref()
+        .map(LndRestClient::from_config)
+        .transpose()
+        .map_err(|error| format!("Failed to initialize cached LND REST client: {error}"))?
+        .map(Arc::new);
 
     let state = Arc::new(AppState {
         db: db_pool,
@@ -97,30 +151,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         identity,
         config: node_config.clone(),
         http_client,
+        wasm_host,
         runtime_auth_token: runtime_auth.token,
         runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
+        events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
+        lnd_rest_client,
+        lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
     });
 
-    api::recover_runtime_state(state.clone())
+    log_startup_db_metrics(state.clone(), &node_config.storage.db_path)
         .await
-        .expect("Failed to recover pending runtime state");
+        .expect("Failed to collect SQLite startup metrics");
+    audit_duplicate_deal_hashes(state.clone())
+        .await
+        .expect("Failed to audit duplicate deal hashes");
 
-    let restart_delay = Duration::from_secs(SUPERVISOR_RESTART_DELAY_SECS);
-
-    if node_config.payment_backend == froglet::config::PaymentBackend::Lightning {
-        let settlement_state = state.clone();
-        spawn_supervised_task(
-            "lightning-settlement-loop",
-            SupervisionPolicy::Fatal,
-            Arc::new(move || {
-                let settlement_state = settlement_state.clone();
-                Box::pin(async move {
-                    api::run_lightning_settlement_loop(settlement_state).await;
-                    Err("lightning settlement loop exited unexpectedly".to_string())
-                })
-            }),
-        );
-    }
+    let restart_policy = SupervisionPolicy::Restart {
+        min_delay: Duration::from_secs(SUPERVISOR_RESTART_MIN_DELAY_SECS),
+        max_delay: Duration::from_secs(SUPERVISOR_RESTART_MAX_DELAY_SECS),
+    };
+    let http_serve_config = HttpServeConfig {
+        max_connections: HTTP_MAX_CONNECTIONS,
+        header_read_timeout: Duration::from_secs(HTTP_HEADER_READ_TIMEOUT_SECS),
+        idle_timeout: Duration::from_secs(HTTP_IO_STALL_TIMEOUT_SECS),
+    };
 
     let public_app = api::public_router(state.clone());
     let runtime_app = api::runtime_router(state.clone());
@@ -145,9 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tor_backend_policy = if node_config.network_mode.tor_required() {
             SupervisionPolicy::Fatal
         } else {
-            SupervisionPolicy::Restart {
-                delay: restart_delay,
-            }
+            restart_policy
         };
         spawn_supervised_task(
             "tor-backend-listener",
@@ -155,6 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(move || {
                 let initial_tor_backend_listener = initial_tor_backend_listener.clone();
                 let tor_backend_app = tor_backend_app.clone();
+                let serve_config = http_serve_config;
                 Box::pin(async move {
                     let listener = take_or_bind_listener(
                         initial_tor_backend_listener,
@@ -166,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "Local Tor backend listener: http://{}",
                         bound_tor_backend_addr
                     );
-                    serve_http_listener(listener, tor_backend_app)
+                    serve_http_listener(listener, tor_backend_app, serve_config)
                         .await
                         .map_err(|error| format!("error serving Tor backend API over TCP: {error}"))
                 })
@@ -195,12 +248,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(" 🔒 Local Runtime API: http://{}", bound_runtime_addr);
     spawn_supervised_task(
         "runtime-api-listener",
-        SupervisionPolicy::Restart {
-            delay: restart_delay,
-        },
+        restart_policy,
         Arc::new(move || {
             let initial_runtime_listener = initial_runtime_listener.clone();
             let runtime_app = runtime_app.clone();
+            let serve_config = http_serve_config;
             Box::pin(async move {
                 let listener = take_or_bind_listener(
                     initial_runtime_listener,
@@ -208,12 +260,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "runtime API",
                 )
                 .await?;
-                serve_http_listener(listener, runtime_app)
+                serve_http_listener(listener, runtime_app, serve_config)
                     .await
                     .map_err(|error| format!("error serving runtime API over TCP: {error}"))
             })
         }),
     );
+
+    if node_config.network_mode.should_start_clearnet() {
+        let addr: SocketAddr = node_config
+            .listen_addr
+            .parse()
+            .expect("Invalid listen address format");
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+        {
+            let mut transport_status = state.transport_status.lock().await;
+            if let Err(error) =
+                transport_status.update_clearnet_bound_addr(&node_config, bound_addr)
+            {
+                error!("{error}");
+                std::process::exit(1);
+            }
+        }
+        let initial_public_listener = Arc::new(TokioMutex::new(Some(listener)));
+        let public_listener_app = public_app.clone();
+        println!(" 🌐 Local API Gateway: http://{}", bound_addr);
+        if !node_config.network_mode.should_start_tor() {
+            println!("\n=========================================");
+            println!(" ✅ Node is now online and accepting traffic.");
+            println!("=========================================\n");
+        }
+        spawn_supervised_task(
+            "public-api-listener",
+            SupervisionPolicy::Fatal,
+            Arc::new(move || {
+                let initial_public_listener = initial_public_listener.clone();
+                let public_listener_app = public_listener_app.clone();
+                let serve_config = http_serve_config;
+                Box::pin(async move {
+                    let listener =
+                        take_or_bind_listener(initial_public_listener, bound_addr, "public API")
+                            .await?;
+                    serve_http_listener(listener, public_listener_app, serve_config)
+                        .await
+                        .map_err(|error| format!("error serving public API over TCP: {error}"))
+                })
+            }),
+        );
+    } else {
+        info!("Running in Tor-only mode. No clearnet server started.");
+    }
+
+    api::recover_runtime_state_local(state.clone())
+        .await
+        .expect("Failed to recover local runtime state");
+
+    if node_config.payment_backend == froglet::config::PaymentBackend::Lightning {
+        let recovery_state = state.clone();
+        spawn_supervised_task(
+            "lightning-remote-recovery",
+            restart_policy,
+            Arc::new(move || {
+                let recovery_state = recovery_state.clone();
+                Box::pin(async move {
+                    api::recover_runtime_state_remote(recovery_state).await?;
+                    futures::future::pending::<()>().await;
+                    #[allow(unreachable_code)]
+                    Ok(())
+                })
+            }),
+        );
+
+        let settlement_state = state.clone();
+        spawn_supervised_task(
+            "lightning-settlement-loop",
+            SupervisionPolicy::Fatal,
+            Arc::new(move || {
+                let settlement_state = settlement_state.clone();
+                Box::pin(async move {
+                    api::run_lightning_settlement_loop(settlement_state).await;
+                    Err("lightning settlement loop exited unexpectedly".to_string())
+                })
+            }),
+        );
+    }
 
     if let Some(tor_backend_addr) = tor_backend_addr {
         let tor_state = state.clone();
@@ -225,9 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tor_policy = if tor_required {
             SupervisionPolicy::Fatal
         } else {
-            SupervisionPolicy::Restart {
-                delay: restart_delay,
-            }
+            restart_policy
         };
         spawn_supervised_task(
             "tor-sidecar",
@@ -237,6 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let tor_binary = tor_binary.clone();
                 let tor_dir = tor_dir.clone();
                 Box::pin(async move {
+                    let started_at = Instant::now();
                     match tor::start_hidden_service(
                         &tor_binary,
                         tor_dir,
@@ -247,13 +377,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         Ok(service) => {
                             let onion_url = service.onion_url.clone();
-                            info!("Tor hidden service started successfully: {}", onion_url);
+                            info!(
+                                startup_duration_ms = started_at.elapsed().as_millis() as u64,
+                                "Tor hidden service started successfully: {}", onion_url
+                            );
                             let mut status = tor_state.transport_status.lock().await;
                             status.tor_onion_url = Some(onion_url);
                             status.tor_status = "up".to_string();
                             drop(status);
 
                             let exit_status = service.wait().await?;
+                            warn!("Tor sidecar exited with status {exit_status}");
                             {
                                 let mut status = tor_state.transport_status.lock().await;
                                 status.tor_onion_url = None;
@@ -262,6 +396,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(format!("Tor sidecar exited with status {exit_status}"))
                         }
                         Err(error) => {
+                            error!(
+                                startup_duration_ms = started_at.elapsed().as_millis() as u64,
+                                "Tor sidecar startup failed: {error}"
+                            );
                             let mut status = tor_state.transport_status.lock().await;
                             status.tor_onion_url = None;
                             status.tor_status = "down".to_string();
@@ -303,9 +441,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::new(TokioMutex::new(Some(initial_marketplace_hash)));
             spawn_supervised_task(
                 "marketplace-sync-loop",
-                SupervisionPolicy::Restart {
-                    delay: restart_delay,
-                },
+                restart_policy,
                 Arc::new(move || {
                     let sync_state = sync_state.clone();
                     let initial_marketplace_hash = initial_marketplace_hash.clone();
@@ -324,9 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sync_state = state.clone();
             spawn_supervised_task(
                 "marketplace-sync-loop",
-                SupervisionPolicy::Restart {
-                    delay: restart_delay,
-                },
+                restart_policy,
                 Arc::new(move || {
                     let sync_state = sync_state.clone();
                     Box::pin(async move {
@@ -351,28 +485,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if node_config.network_mode.should_start_clearnet() {
-        let addr: SocketAddr = node_config
-            .listen_addr
-            .parse()
-            .expect("Invalid listen address format");
-
-        println!(" 🌐 Local API Gateway: http://{}", addr);
-        if !node_config.network_mode.should_start_tor() {
-            println!("\n=========================================");
-            println!(" ✅ Node is now online and accepting traffic.");
-            println!("=========================================\n");
-        }
-
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        serve_http_listener(listener, public_app).await?;
-    } else {
-        info!("Running in Tor-only mode. No clearnet server started.");
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
-        }
-    }
-
+    std::future::pending::<()>().await;
+    #[allow(unreachable_code)]
     Ok(())
 }
 
@@ -405,11 +519,86 @@ fn set_mode(path: &std::path::Path, mode: u32) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+async fn log_startup_db_metrics(
+    state: Arc<AppState>,
+    db_path: &std::path::Path,
+) -> Result<(), String> {
+    let db_path = db_path.to_path_buf();
+    let metrics = state
+        .db
+        .with_write_conn(move |conn| froglet::db::collect_wal_checkpoint_metrics(conn, &db_path))
+        .await?;
+    info!(
+        wal_size_bytes = metrics.wal_size_bytes,
+        wal_frames = metrics.log_frames,
+        wal_checkpointed_frames = metrics.checkpointed_frames,
+        wal_busy = metrics.busy,
+        wal_checkpoint_duration_ms = metrics.duration_ms as u64,
+        "SQLite WAL checkpoint metrics collected"
+    );
+    Ok(())
+}
+
+async fn audit_duplicate_deal_hashes(state: Arc<AppState>) -> Result<(), String> {
+    let duplicates = state
+        .db
+        .with_read_conn(move |conn| froglet::db::list_duplicate_deal_artifact_hashes(conn, 10))
+        .await?;
+    if duplicates.is_empty() {
+        info!("No duplicate deal artifact hashes detected at startup");
+        return Ok(());
+    }
+
+    warn!(
+        duplicate_hashes = duplicates.len(),
+        "Duplicate canonical deal hashes detected at startup"
+    );
+    for (deal_artifact_hash, duplicate_count) in duplicates {
+        warn!(
+            %deal_artifact_hash,
+            duplicate_count,
+            "duplicate deal artifact hash audit hit"
+        );
+    }
+    Ok(())
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+fn compute_restart_delay(failure_count: u32, min_delay: Duration, max_delay: Duration) -> Duration {
+    let exponent = failure_count.saturating_sub(1).min(10);
+    let multiplier = 1u32 << exponent;
+    let base = min_delay
+        .checked_mul(multiplier)
+        .unwrap_or(max_delay)
+        .min(max_delay);
+    let jitter_ms_cap = (base.as_millis() / 4).max(1) as u64;
+    let jitter_ms = rand::thread_rng().gen_range(0..=jitter_ms_cap);
+    base.saturating_add(Duration::from_millis(jitter_ms))
+        .min(max_delay)
+}
+
 fn spawn_supervised_task(name: &'static str, policy: SupervisionPolicy, task: SupervisedTask) {
     tokio::spawn(async move {
+        let mut consecutive_failures = 0u32;
         loop {
             info!("Starting background task: {name}");
-            let result = (task)().await;
+            let started_at = Instant::now();
+            let result = match AssertUnwindSafe((task)()).catch_unwind().await {
+                Ok(result) => result,
+                Err(payload) => Err(format!(
+                    "background task panicked: {}",
+                    panic_payload_to_string(payload)
+                )),
+            };
             match result {
                 Ok(()) => warn!("Background task {name} exited cleanly"),
                 Err(error) => error!("Background task {name} failed: {error}"),
@@ -420,10 +609,18 @@ fn spawn_supervised_task(name: &'static str, policy: SupervisionPolicy, task: Su
                     error!("Fatal background task {name} exited. Terminating node.");
                     std::process::exit(1);
                 }
-                SupervisionPolicy::Restart { delay } => {
+                SupervisionPolicy::Restart {
+                    min_delay,
+                    max_delay,
+                } => {
+                    if started_at.elapsed() >= Duration::from_secs(60) {
+                        consecutive_failures = 0;
+                    }
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let delay = compute_restart_delay(consecutive_failures, min_delay, max_delay);
                     warn!(
-                        "Restarting background task {name} after {}s",
-                        delay.as_secs()
+                        "Restarting background task {name} after {:.3}s",
+                        delay.as_secs_f64()
                     );
                     tokio::time::sleep(delay).await;
                 }
@@ -465,34 +662,200 @@ async fn take_initial_hash_or_resync(
     }
 }
 
+fn accept_error_is_transient(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::OutOfMemory
+            | std::io::ErrorKind::AddrInUse
+    ) {
+        return true;
+    }
+
+    match error.raw_os_error() {
+        #[cfg(unix)]
+        Some(code) if matches!(code, ENFILE_ERRNO | EMFILE_ERRNO) => true,
+        #[cfg(windows)]
+        Some(code) if code == WSAEMFILE_ERRNO => true,
+        _ => false,
+    }
+}
+
+struct IdleTimeoutStream {
+    stream: tokio::net::TcpStream,
+    idle_timeout: Duration,
+    read_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+    write_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl IdleTimeoutStream {
+    fn new(stream: tokio::net::TcpStream, idle_timeout: Duration) -> Self {
+        Self {
+            stream,
+            idle_timeout,
+            read_deadline: None,
+            write_deadline: None,
+        }
+    }
+
+    fn poll_deadline(
+        deadline: &mut Option<Pin<Box<tokio::time::Sleep>>>,
+        idle_timeout: Duration,
+        cx: &mut Context<'_>,
+        operation: &str,
+    ) -> Poll<std::io::Result<()>> {
+        if deadline.is_none() {
+            *deadline = Some(Box::pin(tokio::time::sleep(idle_timeout)));
+        }
+        if deadline
+            .as_mut()
+            .expect("idle timeout deadline must be initialized")
+            .as_mut()
+            .poll(cx)
+            .is_ready()
+        {
+            *deadline = None;
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "connection idle timeout exceeded during {operation} after {:.3}s",
+                    idle_timeout.as_secs_f64()
+                ),
+            )));
+        }
+        Poll::Pending
+    }
+}
+
+impl AsyncRead for IdleTimeoutStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.stream).poll_read(cx, buf) {
+            Poll::Ready(result) => {
+                this.read_deadline = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                Self::poll_deadline(&mut this.read_deadline, this.idle_timeout, cx, "read")
+            }
+        }
+    }
+}
+
+impl AsyncWrite for IdleTimeoutStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.stream).poll_write(cx, buf) {
+            Poll::Ready(result) => {
+                this.write_deadline = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                Self::poll_deadline(&mut this.write_deadline, this.idle_timeout, cx, "write")
+                    .map(|result| result.map(|_| 0))
+            }
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.stream).poll_flush(cx) {
+            Poll::Ready(result) => {
+                this.write_deadline = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                Self::poll_deadline(&mut this.write_deadline, this.idle_timeout, cx, "flush")
+            }
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.stream).poll_shutdown(cx) {
+            Poll::Ready(result) => {
+                this.write_deadline = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                Self::poll_deadline(&mut this.write_deadline, this.idle_timeout, cx, "shutdown")
+            }
+        }
+    }
+}
+
 async fn serve_http_listener(
     listener: tokio::net::TcpListener,
     app: axum::Router,
+    config: HttpServeConfig,
 ) -> std::io::Result<()> {
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let io = TokioIo::new(stream);
-        let app_clone = app.clone();
+    let connection_semaphore = Arc::new(Semaphore::new(config.max_connections.max(1)));
+    let mut accept_backoff = Duration::from_millis(HTTP_ACCEPT_BACKOFF_MIN_MS);
 
-        tokio::spawn(async move {
-            if let Err(error) = serve_http_stream(io, app_clone).await {
-                error!("Error serving Axum over TCP stream: {error}");
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                accept_backoff = Duration::from_millis(HTTP_ACCEPT_BACKOFF_MIN_MS);
+                let permit = match connection_semaphore.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("Dropping inbound connection because listener capacity is exhausted");
+                        continue;
+                    }
+                };
+                let app_clone = app.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = serve_http_stream(stream, app_clone, config).await {
+                        error!("Error serving Axum over TCP stream: {error}");
+                    }
+                });
             }
-        });
+            Err(error) if accept_error_is_transient(&error) => {
+                warn!(
+                    "Listener accept failed transiently: {error}; retrying after {:.3}s",
+                    accept_backoff.as_secs_f64()
+                );
+                tokio::time::sleep(accept_backoff).await;
+                accept_backoff =
+                    (accept_backoff * 2).min(Duration::from_millis(HTTP_ACCEPT_BACKOFF_MAX_MS));
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
 async fn serve_http_stream(
-    io: TokioIo<tokio::net::TcpStream>,
+    stream: tokio::net::TcpStream,
     app: axum::Router,
-) -> Result<(), hyper::Error> {
+    config: HttpServeConfig,
+) -> Result<(), String> {
     let mut builder = http1::Builder::new();
     builder.half_close(true);
+    builder.keep_alive(true);
+    builder.timer(TokioTimer::new());
+    builder.header_read_timeout(Some(config.header_read_timeout));
 
     let hyper_service =
         hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
             app.clone().call(req)
         });
 
-    builder.serve_connection(io, hyper_service).await
+    let io = TokioIo::new(IdleTimeoutStream::new(stream, config.idle_timeout));
+    builder
+        .serve_connection(io, hyper_service)
+        .await
+        .map_err(|error| error.to_string())
 }

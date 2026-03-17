@@ -7,6 +7,10 @@ Primary entrypoints:
 - [../SPEC.md](../SPEC.md): frozen economic kernel and protocol contract
 - [BOT_RUNTIME_ALPHA.md](BOT_RUNTIME_ALPHA.md): supported bot-facing alpha
   runtime surface
+- [DOCKER.md](DOCKER.md): official Docker images, Compose starter, and container
+  runtime notes
+- [OPENCLAW.md](OPENCLAW.md): public OpenClaw plugin install and configuration
+- [RELEASE.md](RELEASE.md): alpha versioning, tag flow, and GHCR image publish
 - [OPERATOR.md](OPERATOR.md): operator guidance for wallet setup, auth, archive
   export, and recovery
 - [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md): core freeze and

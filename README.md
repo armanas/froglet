@@ -51,6 +51,32 @@ cargo run --bin froglet
 
 In this layout clearnet clients reach `:8080`, local bots reach `:8081`, and the `tor` sidecar exposes `:8082` as the onion service.
 
+## Docker Quick Start
+
+The repo now includes official container assets for both binaries.
+
+Start the priced node + reference marketplace starter stack:
+
+```bash
+docker compose up --build
+```
+
+That publishes:
+
+- Froglet provider API on `http://127.0.0.1:8080`
+- reference marketplace on `http://127.0.0.1:9090`
+
+The runtime listener stays container-internal by design. For container details,
+single-image commands, volume behavior, and Tor/LND notes, see
+[docs/DOCKER.md](docs/DOCKER.md).
+
+## OpenClaw
+
+The repo also ships a public OpenClaw plugin under
+[integrations/openclaw/froglet](integrations/openclaw/froglet). It only uses
+Froglet's public marketplace and provider APIs, not the privileged runtime
+surface. See [docs/OPENCLAW.md](docs/OPENCLAW.md) for configuration.
+
 ## Architecture
 
 ```mermaid
@@ -77,11 +103,15 @@ Quoted prices are enforced before execution. Terminal receipts are always signed
 |---|---|---|
 | `FROGLET_NETWORK_MODE` | `clearnet` | `clearnet`, `tor`, or `dual` |
 | `FROGLET_LISTEN_ADDR` | `127.0.0.1:8080` | Public provider API |
+| `FROGLET_PUBLIC_BASE_URL` | — | Advertised clearnet URL for descriptor and marketplace publication |
 | `FROGLET_RUNTIME_LISTEN_ADDR` | `127.0.0.1:8081` | Privileged local runtime API |
 | `FROGLET_TOR_BACKEND_LISTEN_ADDR` | `127.0.0.1:8082` | Internal backend the Tor sidecar publishes |
 | `FROGLET_TOR_BINARY` | `tor` | Path to the `tor` executable |
 | `FROGLET_TOR_STARTUP_TIMEOUT_SECS` | `90` | Seconds to wait for Tor bootstrap |
 | `FROGLET_DATA_DIR` | `./data` | Root directory for all local state |
+
+`FROGLET_PUBLIC_BASE_URL` is useful when Froglet binds `0.0.0.0` inside a
+container but should advertise a host- or proxy-reachable URL.
 
 `FROGLET_RUNTIME_LISTEN_ADDR` and `FROGLET_TOR_BACKEND_LISTEN_ADDR` are separate trust boundaries — keep both on loopback.
 
@@ -89,7 +119,7 @@ Quoted prices are enforced before execution. Terminal receipts are always signed
 
 | Variable | Default | Description |
 |---|---|---|
-| `FROGLET_IDENTITY_AUTO_GENERATE` | `false` | Create a seed file on first boot if none exists |
+| `FROGLET_IDENTITY_AUTO_GENERATE` | `true` | Create a seed file on first boot if none exists |
 
 The identity seed is stored at `./data/identity/secp256k1.seed` and reused on every subsequent start.
 
@@ -109,6 +139,24 @@ The identity seed is stored at `./data/identity/secp256k1.seed` and reused on ev
 | `FROGLET_LIGHTNING_SYNC_INTERVAL_MS` | `1000` | Background watcher reconciliation interval |
 
 If any price is non-zero and `FROGLET_PAYMENT_BACKEND` is unset, Froglet defaults to `lightning`. The mainline priced flow is `quote → deal → receipt`.
+
+When `FROGLET_WASM_POLICY_PATH` is configured, Froglet also publishes an
+additional capability-enabled Wasm offer at `offer_id = "execute.wasm.host"`.
+
+### Node — Wasm Host Policy
+
+| Variable | Default | Description |
+|---|---|---|
+| `FROGLET_WASM_POLICY_PATH` | — | Path to a TOML policy file enabling host-assisted Wasm HTTP/SQLite/auth-profile access |
+
+The policy file controls:
+
+- outbound HTTP allowlists, timeouts, and per-execution call ceilings
+- named read-only SQLite handles exposed to Wasm
+- named HTTP auth profiles that stay host-side
+
+Froglet rejects any Wasm policy that points a named SQLite handle at the node's
+internal `node.db`.
 
 ### Node — Discovery
 
@@ -316,6 +364,12 @@ Run the local verification matrix:
 ./scripts/strict_checks.sh
 ```
 
+GitHub Actions mirrors that strict gate and also verifies the Docker starter at
+[.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+Tagged image publication is described in [docs/RELEASE.md](docs/RELEASE.md),
+with release notes tracked in [CHANGELOG.md](CHANGELOG.md).
+
 ## Docs
 
 | Doc | Contents |
@@ -324,6 +378,9 @@ Run the local verification matrix:
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, pre-PR checklist, conformance vector guidance |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layer breakdown: kernel → adapters → runtime → marketplace |
 | [docs/BOT_RUNTIME_ALPHA.md](docs/BOT_RUNTIME_ALPHA.md) | Supported bot-facing alpha surface |
+| [docs/DOCKER.md](docs/DOCKER.md) | Official Docker images, Compose starter, container notes |
+| [docs/OPENCLAW.md](docs/OPENCLAW.md) | Public OpenClaw plugin install and configuration |
+| [docs/RELEASE.md](docs/RELEASE.md) | Alpha versioning, tag flow, and GHCR image publish |
 | [docs/OPERATOR.md](docs/OPERATOR.md) | Wallet setup, auth, archive export, recovery |
 | [docs/RUNTIME.md](docs/RUNTIME.md) | Runtime design and compatibility endpoints |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | Transport, Lightning, and Nostr adapter design |
@@ -333,3 +390,4 @@ Run the local verification matrix:
 | [python/README.md](python/README.md) | Python SDK and test layout |
 | [examples/README.md](examples/README.md) | Runnable Python integrations |
 | [higher_layers/README.md](higher_layers/README.md) | Marketplace and addon planning (pre-extraction) |
+| [CHANGELOG.md](CHANGELOG.md) | Unreleased notes and alpha cut checklist |

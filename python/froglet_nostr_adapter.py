@@ -6,18 +6,21 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
 import aiohttp
 from ecdsa import curves, ellipticcurve
 
-from froglet_client import RuntimeClient
+from froglet_client import DEFAULT_HTTP_TIMEOUT, RuntimeClient
 
 AUTH_EVENT_KIND = 22242
 SECP256K1 = curves.SECP256k1
 FIELD_PRIME = SECP256K1.curve.p()
 GROUP_ORDER = SECP256K1.order
 GENERATOR = SECP256K1.generator
+_DEFAULT_RELAY_CONCURRENCY = 8
+_RelayItem = TypeVar("_RelayItem")
+_RelayResult = TypeVar("_RelayResult")
 
 
 class NostrRelayError(RuntimeError):
@@ -282,7 +285,7 @@ class NostrRelayClient:
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(timeout=DEFAULT_HTTP_TIMEOUT)
         return self._session
 
 
@@ -308,6 +311,7 @@ class FrogletNostrRelayAdapter:
         self.relay_urls = [policy.relay_url for policy in self.relay_policies]
         self.retry_policy = retry_policy or RetryPolicy()
         self.auth_signer = auth_signer
+        self._relay_concurrency_limit = _DEFAULT_RELAY_CONCURRENCY
 
     @classmethod
     def from_token_file(
@@ -394,15 +398,28 @@ class FrogletNostrRelayAdapter:
             raise NostrRelayConfigError("no write-enabled relays are configured")
 
         results: list[RelayPublishResult] = []
-        async with aiohttp.ClientSession() as session:
-            for relay_policy in write_relays:
+        async with aiohttp.ClientSession(timeout=DEFAULT_HTTP_TIMEOUT) as session:
+
+            async def publish_for_relay(
+                relay_policy: RelayPolicy,
+            ) -> list[RelayPublishResult]:
                 relay = NostrRelayClient(
                     relay_policy.relay_url,
                     session=session,
                     auth_signer=self.auth_signer,
                 )
+                relay_results: list[RelayPublishResult] = []
                 for event in event_list:
-                    results.append(await self._publish_with_retry(relay, relay_policy, event))
+                    relay_results.append(
+                        await self._publish_with_retry(relay, relay_policy, event)
+                    )
+                return relay_results
+
+            relay_results = await self._gather_relays_bounded(
+                write_relays, publish_for_relay
+            )
+            for item in relay_results:
+                results.extend(item)
         return results
 
     async def query_events(
@@ -415,14 +432,20 @@ class FrogletNostrRelayAdapter:
 
         deduped: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
-        async with aiohttp.ClientSession() as session:
-            for relay_policy in read_relays:
+        async with aiohttp.ClientSession(timeout=DEFAULT_HTTP_TIMEOUT) as session:
+
+            async def query_relay(
+                relay_policy: RelayPolicy,
+            ) -> tuple[list[dict[str, Any]], str | None]:
                 relay = NostrRelayClient(
                     relay_policy.relay_url,
                     session=session,
                     auth_signer=self.auth_signer,
                 )
-                events, error = await self._query_with_retry(relay, relay_policy, filters)
+                return await self._query_with_retry(relay, relay_policy, filters)
+
+            relay_results = await self._gather_relays_bounded(read_relays, query_relay)
+            for events, error in relay_results:
                 if error is not None:
                     errors.append(error)
                     continue
@@ -492,6 +515,22 @@ class FrogletNostrRelayAdapter:
             f"query against {relay_policy.relay_url} failed after "
             f"{self.retry_policy.max_attempts} attempt(s): {last_error or 'unknown relay error'}",
         )
+
+    async def _gather_relays_bounded(
+        self,
+        relay_items: list[_RelayItem],
+        runner: Callable[[_RelayItem], Awaitable[_RelayResult]],
+    ) -> list[_RelayResult]:
+        if not relay_items:
+            return []
+        limit = max(1, min(self._relay_concurrency_limit, len(relay_items)))
+        semaphore = asyncio.Semaphore(limit)
+
+        async def run_item(item: _RelayItem) -> _RelayResult:
+            async with semaphore:
+                return await runner(item)
+
+        return list(await asyncio.gather(*(run_item(item) for item in relay_items)))
 
 
 def verify_event(event: dict[str, Any]) -> bool:
@@ -626,7 +665,7 @@ def _tagged_hash(tag: str, message: bytes) -> bytes:
 
 
 def _xor_bytes(left: bytes, right: bytes) -> bytes:
-    return bytes(a ^ b for a, b in zip(left, right))
+    return bytes(a ^ b for a, b in zip(left, right, strict=True))
 
 
 def _int_from_bytes(data: bytes) -> int:

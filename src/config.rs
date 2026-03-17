@@ -1,6 +1,10 @@
 use reqwest::Url;
-use serde::Serialize;
-use std::{env, fmt, path::PathBuf};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    env, fmt, fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,10 +196,111 @@ pub struct TorSidecarConfig {
     pub startup_timeout_secs: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_path: Option<PathBuf>,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub policy: Option<WasmPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmPolicy {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http: Option<WasmHttpPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sqlite: Option<WasmSqlitePolicy>,
+}
+
+impl WasmPolicy {
+    pub fn advertised_capabilities(&self) -> Vec<String> {
+        let mut capabilities = Vec::new();
+
+        if let Some(http) = &self.http {
+            capabilities.push(crate::wasm::WASM_CAPABILITY_HTTP_FETCH.to_string());
+            for profile in http.auth_profiles.keys() {
+                capabilities.push(format!(
+                    "{}{}",
+                    crate::wasm::WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX,
+                    profile
+                ));
+            }
+        }
+
+        if let Some(sqlite) = &self.sqlite {
+            for handle in sqlite.handles.keys() {
+                capabilities.push(format!(
+                    "{}{}",
+                    crate::wasm::WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX,
+                    handle
+                ));
+            }
+        }
+
+        capabilities.sort();
+        capabilities.dedup();
+        capabilities
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmHttpPolicy {
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub allow_private_networks: bool,
+    #[serde(default = "default_http_max_calls_per_execution")]
+    pub max_calls_per_execution: u32,
+    #[serde(default = "default_http_max_timeout_ms")]
+    pub max_timeout_ms: u64,
+    #[serde(default = "default_http_max_request_body_bytes")]
+    pub max_request_body_bytes: usize,
+    #[serde(default = "default_http_max_response_body_bytes")]
+    pub max_response_body_bytes: usize,
+    #[serde(default = "default_http_max_redirects")]
+    pub max_redirects: usize,
+    #[serde(default)]
+    pub auth_profiles: BTreeMap<String, WasmHttpAuthProfile>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WasmHttpAuthProfile {
+    pub header_name: String,
+    #[serde(skip_serializing)]
+    pub header_value: String,
+}
+
+impl fmt::Debug for WasmHttpAuthProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WasmHttpAuthProfile")
+            .field("header_name", &self.header_name)
+            .field("header_value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmSqlitePolicy {
+    #[serde(default = "default_sqlite_max_queries_per_execution")]
+    pub max_queries_per_execution: u32,
+    #[serde(default = "default_sqlite_max_rows_per_query")]
+    pub max_rows_per_query: usize,
+    #[serde(default = "default_sqlite_max_result_bytes")]
+    pub max_result_bytes: usize,
+    #[serde(default)]
+    pub handles: BTreeMap<String, WasmSqliteHandleConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmSqliteHandleConfig {
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub network_mode: NetworkMode,
     pub listen_addr: String,
+    pub public_base_url: Option<String>,
     pub runtime_listen_addr: String,
     pub tor: TorSidecarConfig,
     pub discovery_mode: DiscoveryMode,
@@ -206,6 +311,7 @@ pub struct NodeConfig {
     pub execution_timeout_secs: u64,
     pub lightning: LightningConfig,
     pub storage: StorageConfig,
+    pub wasm: WasmConfig,
 }
 
 impl NodeConfig {
@@ -217,6 +323,10 @@ impl NodeConfig {
 
         let listen_addr =
             env::var("FROGLET_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+        let public_base_url = match env::var("FROGLET_PUBLIC_BASE_URL") {
+            Ok(value) => Some(normalize_public_base_url(&value)?),
+            Err(_) => None,
+        };
         let runtime_listen_addr = env::var("FROGLET_RUNTIME_LISTEN_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8081".to_string());
         let tor = TorSidecarConfig {
@@ -277,8 +387,15 @@ impl NodeConfig {
         }
 
         let execution_timeout_secs = env_u64("FROGLET_EXECUTION_TIMEOUT_SECS", 10)?.clamp(1, 300);
+        let lightning_required = matches!(payment_backend, PaymentBackend::Lightning);
         let lightning_mode = match env::var("FROGLET_LIGHTNING_MODE") {
             Ok(val) => LightningMode::parse(&val)?,
+            Err(_) if lightning_required => {
+                return Err(
+                    "FROGLET_LIGHTNING_MODE is required whenever Lightning payments are active"
+                        .into(),
+                );
+            }
             Err(_) => LightningMode::Mock,
         };
         let lnd_rest_url = env::var("FROGLET_LIGHTNING_REST_URL").ok();
@@ -348,10 +465,16 @@ impl NodeConfig {
         let runtime_auth_token_path = runtime_dir.join("auth.token");
         let tor_dir = data_dir.join("tor");
         let db_path = data_dir.join("node.db");
+        let wasm_policy_path = env::var("FROGLET_WASM_POLICY_PATH").ok().map(PathBuf::from);
+        let wasm_policy = match wasm_policy_path.as_ref() {
+            Some(path) => Some(load_wasm_policy(path, &db_path)?),
+            None => None,
+        };
 
         Ok(Self {
             network_mode,
             listen_addr,
+            public_base_url,
             runtime_listen_addr,
             tor,
             discovery_mode,
@@ -373,8 +496,44 @@ impl NodeConfig {
                 runtime_auth_token_path,
                 tor_dir,
             },
+            wasm: WasmConfig {
+                policy_path: wasm_policy_path,
+                policy: wasm_policy,
+            },
         })
     }
+}
+
+fn default_http_max_calls_per_execution() -> u32 {
+    16
+}
+
+fn default_http_max_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_http_max_request_body_bytes() -> usize {
+    256 * 1024
+}
+
+fn default_http_max_response_body_bytes() -> usize {
+    2 * 1024 * 1024
+}
+
+fn default_http_max_redirects() -> usize {
+    5
+}
+
+fn default_sqlite_max_queries_per_execution() -> u32 {
+    16
+}
+
+fn default_sqlite_max_rows_per_query() -> usize {
+    256
+}
+
+fn default_sqlite_max_result_bytes() -> usize {
+    256 * 1024
 }
 
 fn env_bool(name: &str, default: bool) -> Result<bool, String> {
@@ -414,9 +573,180 @@ fn lnd_rest_url_allows_plaintext_loopback(rest_url: &str) -> Result<bool, String
     }
 }
 
+fn normalize_public_base_url(url: &str) -> Result<String, String> {
+    let parsed =
+        Url::parse(url).map_err(|error| format!("Invalid FROGLET_PUBLIC_BASE_URL: {error}"))?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed.to_string().trim_end_matches('/').to_string()),
+        other => Err(format!(
+            "Invalid FROGLET_PUBLIC_BASE_URL scheme '{other}'. Allowed schemes: http, https"
+        )),
+    }
+}
+
+fn load_wasm_policy(path: &Path, internal_db_path: &Path) -> Result<WasmPolicy, String> {
+    let document = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read FROGLET_WASM_POLICY_PATH {}: {error}",
+            path.display()
+        )
+    })?;
+    let policy: WasmPolicy = toml::from_str(&document).map_err(|error| {
+        format!(
+            "Failed to parse FROGLET_WASM_POLICY_PATH {}: {error}",
+            path.display()
+        )
+    })?;
+    validate_wasm_policy(&policy, internal_db_path)?;
+    Ok(policy)
+}
+
+/// Validates a Wasm policy at load time.
+///
+/// NOTE: The SQLite path protection check uses `fs::canonicalize` which resolves
+/// symlinks at the time of this call. If a symlink is created after this check
+/// but before the database is opened, the protection could be bypassed. This is
+/// acceptable because the filesystem is operator-controlled, but operators should
+/// be aware this is a startup-time check, not a runtime enforcement.
+fn validate_wasm_policy(policy: &WasmPolicy, internal_db_path: &Path) -> Result<(), String> {
+    if let Some(http) = &policy.http {
+        if http.max_calls_per_execution == 0 {
+            return Err(
+                "Wasm HTTP policy max_calls_per_execution must be greater than zero".into(),
+            );
+        }
+        if http.max_timeout_ms == 0 {
+            return Err("Wasm HTTP policy max_timeout_ms must be greater than zero".into());
+        }
+        if http.max_request_body_bytes == 0 {
+            return Err("Wasm HTTP policy max_request_body_bytes must be greater than zero".into());
+        }
+        if http.max_response_body_bytes == 0 {
+            return Err(
+                "Wasm HTTP policy max_response_body_bytes must be greater than zero".into(),
+            );
+        }
+
+        for host in &http.allowed_hosts {
+            if host.trim().is_empty() {
+                return Err("Wasm HTTP policy allowed_hosts must not contain empty values".into());
+            }
+        }
+
+        for (profile, auth_profile) in &http.auth_profiles {
+            validate_wasm_policy_name("http auth profile", profile)?;
+            if auth_profile.header_name.trim().is_empty() {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' header_name must not be empty"
+                ));
+            }
+        }
+    }
+
+    if let Some(sqlite) = &policy.sqlite {
+        if sqlite.max_queries_per_execution == 0 {
+            return Err(
+                "Wasm SQLite policy max_queries_per_execution must be greater than zero".into(),
+            );
+        }
+        if sqlite.max_rows_per_query == 0 {
+            return Err("Wasm SQLite policy max_rows_per_query must be greater than zero".into());
+        }
+        if sqlite.max_result_bytes == 0 {
+            return Err("Wasm SQLite policy max_result_bytes must be greater than zero".into());
+        }
+        if sqlite.handles.is_empty() {
+            return Err("Wasm SQLite policy must define at least one named handle".into());
+        }
+
+        let normalized_internal_db_path = normalize_path_for_comparison(internal_db_path)?;
+        for (handle, handle_config) in &sqlite.handles {
+            validate_wasm_policy_name("sqlite handle", handle)?;
+            if !handle_config.path.exists() {
+                return Err(format!(
+                    "Wasm SQLite handle '{handle}' path does not exist: {}",
+                    handle_config.path.display()
+                ));
+            }
+            let normalized_handle_path = normalize_path_for_comparison(&handle_config.path)?;
+            if normalized_handle_path == normalized_internal_db_path {
+                return Err(format!(
+                    "Wasm SQLite handle '{handle}' must not reference Froglet's internal database"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_wasm_policy_name(kind: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_'))
+    {
+        return Err(format!(
+            "Invalid {kind} name '{value}'. Allowed characters: lowercase ascii letters, digits, '-' and '_'"
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_path_for_comparison(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|error| format!("failed to resolve current working directory: {error}"))?
+            .join(path)
+    };
+
+    let mut existing_prefix = absolute.as_path();
+    let mut missing_components = Vec::new();
+    while !existing_prefix.exists() {
+        let component = existing_prefix.file_name().ok_or_else(|| {
+            format!(
+                "failed to normalize path '{}': no existing parent directory found",
+                absolute.display()
+            )
+        })?;
+        missing_components.push(component.to_os_string());
+        existing_prefix = existing_prefix.parent().ok_or_else(|| {
+            format!(
+                "failed to normalize path '{}': no existing parent directory found",
+                absolute.display()
+            )
+        })?;
+    }
+
+    let mut normalized = fs::canonicalize(existing_prefix).map_err(|error| {
+        format!(
+            "failed to canonicalize path prefix '{}': {error}",
+            existing_prefix.display()
+        )
+    })?;
+    while let Some(component) = missing_components.pop() {
+        normalized.push(component);
+    }
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "froglet-config-tests-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn test_parse_valid_modes() {
@@ -472,5 +802,106 @@ mod tests {
         assert!(lnd_rest_url_allows_plaintext_loopback("http://127.0.0.1:8080").unwrap());
         assert!(lnd_rest_url_allows_plaintext_loopback("http://localhost:8080").unwrap());
         assert!(!lnd_rest_url_allows_plaintext_loopback("http://10.0.0.5:8080").unwrap());
+    }
+
+    #[test]
+    fn test_normalize_public_base_url_accepts_http_and_https() {
+        assert_eq!(
+            normalize_public_base_url("http://127.0.0.1:8080/").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            normalize_public_base_url("https://froglet.example.com").unwrap(),
+            "https://froglet.example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_public_base_url_rejects_non_http_schemes() {
+        assert!(normalize_public_base_url("ftp://froglet.example.com").is_err());
+    }
+
+    #[test]
+    fn test_load_wasm_policy_accepts_valid_policy_file() {
+        let temp_dir = unique_temp_dir("wasm-policy-valid");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let internal_db_path = temp_dir.join("node.db");
+        let sqlite_db_path = temp_dir.join("workload.db");
+        std::fs::write(&internal_db_path, "").unwrap();
+        std::fs::write(&sqlite_db_path, "").unwrap();
+
+        let policy_path = temp_dir.join("wasm-policy.toml");
+        std::fs::write(
+            &policy_path,
+            format!(
+                r#"
+[http]
+allowed_hosts = ["api.example.com"]
+max_calls_per_execution = 4
+max_timeout_ms = 5000
+max_request_body_bytes = 1024
+max_response_body_bytes = 2048
+max_redirects = 2
+
+[http.auth_profiles.github]
+header_name = "authorization"
+header_value = "Bearer token"
+
+[sqlite]
+max_queries_per_execution = 3
+max_rows_per_query = 10
+max_result_bytes = 4096
+
+[sqlite.handles.main]
+path = "{}"
+"#,
+                sqlite_db_path.display()
+            ),
+        )
+        .unwrap();
+
+        let policy = load_wasm_policy(&policy_path, &internal_db_path).expect("policy should load");
+        assert_eq!(
+            policy.advertised_capabilities(),
+            vec![
+                "db.sqlite.query.read.main".to_string(),
+                "net.http.fetch".to_string(),
+                "net.http.fetch.auth.github".to_string(),
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_load_wasm_policy_rejects_internal_db_handle() {
+        let temp_dir = unique_temp_dir("wasm-policy-internal-db");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let internal_db_path = temp_dir.join("node.db");
+        std::fs::write(&internal_db_path, "").unwrap();
+
+        let policy_path = temp_dir.join("wasm-policy.toml");
+        std::fs::write(
+            &policy_path,
+            format!(
+                r#"
+[sqlite]
+max_queries_per_execution = 1
+max_rows_per_query = 10
+max_result_bytes = 1024
+
+[sqlite.handles.main]
+path = "{}"
+"#,
+                internal_db_path.display()
+            ),
+        )
+        .unwrap();
+
+        let error = load_wasm_policy(&policy_path, &internal_db_path)
+            .expect_err("policy should reject internal db handle");
+        assert!(error.contains("must not reference Froglet's internal database"));
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

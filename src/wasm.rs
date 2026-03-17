@@ -6,8 +6,12 @@ pub const FROGLET_SCHEMA_V1: &str = "froglet/v1";
 pub const WORKLOAD_KIND_COMPUTE_WASM_V1: &str = "compute.wasm.v1";
 pub const WASM_SUBMISSION_TYPE_V1: &str = "wasm_submission";
 pub const WASM_RUN_JSON_ABI_V1: &str = "froglet.wasm.run_json.v1";
+pub const WASM_HOST_JSON_ABI_V1: &str = "froglet.wasm.host_json.v1";
 pub const WASM_MODULE_FORMAT: &str = "application/wasm";
 pub const JCS_JSON_FORMAT: &str = "application/json+jcs";
+pub const WASM_CAPABILITY_HTTP_FETCH: &str = "net.http.fetch";
+pub const WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX: &str = "net.http.fetch.auth.";
+pub const WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX: &str = "db.sqlite.query.read.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComputeWasmWorkload {
@@ -36,6 +40,8 @@ pub struct WasmSubmission {
 pub struct VerifiedWasmSubmission {
     pub module_bytes: Vec<u8>,
     pub input: Value,
+    pub abi_version: String,
+    pub requested_capabilities: Vec<String>,
 }
 
 impl WasmSubmission {
@@ -91,7 +97,9 @@ impl WasmSubmission {
             ));
         }
 
-        if workload.abi_version != WASM_RUN_JSON_ABI_V1 {
+        if workload.abi_version != WASM_RUN_JSON_ABI_V1
+            && workload.abi_version != WASM_HOST_JSON_ABI_V1
+        {
             return Err(format!(
                 "unsupported wasm abi_version: {}",
                 workload.abi_version
@@ -112,8 +120,19 @@ impl WasmSubmission {
             ));
         }
 
-        if !workload.requested_capabilities.is_empty() {
-            return Err("requested_capabilities are not supported".to_string());
+        let requested_capabilities =
+            normalize_requested_capabilities(&workload.requested_capabilities)?;
+        match workload.abi_version.as_str() {
+            WASM_RUN_JSON_ABI_V1 if !requested_capabilities.is_empty() => {
+                return Err(
+                    "requested_capabilities are not supported by froglet.wasm.run_json.v1"
+                        .to_string(),
+                );
+            }
+            WASM_HOST_JSON_ABI_V1 => {
+                validate_host_capability_dependencies(&requested_capabilities)?
+            }
+            _ => {}
         }
 
         let module_bytes =
@@ -132,6 +151,8 @@ impl WasmSubmission {
         Ok(VerifiedWasmSubmission {
             module_bytes,
             input: self.input.clone(),
+            abi_version: workload.abi_version.clone(),
+            requested_capabilities,
         })
     }
 }
@@ -154,6 +175,56 @@ impl ComputeWasmWorkload {
 
 fn default_input_value() -> Value {
     Value::Null
+}
+
+pub fn normalize_requested_capabilities(capabilities: &[String]) -> Result<Vec<String>, String> {
+    let mut normalized = capabilities.to_vec();
+    normalized.sort();
+    normalized.dedup();
+
+    for capability in &normalized {
+        validate_capability_name(capability)?;
+    }
+
+    Ok(normalized)
+}
+
+fn validate_capability_name(capability: &str) -> Result<(), String> {
+    let valid = capability == WASM_CAPABILITY_HTTP_FETCH
+        || capability.starts_with(WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX)
+        || capability.starts_with(WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX);
+
+    if !valid {
+        return Err(format!("unsupported requested_capability: {capability}"));
+    }
+
+    for segment in capability.split('.') {
+        if segment.is_empty()
+            || !segment
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_'))
+        {
+            return Err(format!("invalid requested_capability: {capability}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_host_capability_dependencies(capabilities: &[String]) -> Result<(), String> {
+    let has_http_fetch = capabilities
+        .iter()
+        .any(|capability| capability == WASM_CAPABILITY_HTTP_FETCH);
+
+    for capability in capabilities {
+        if capability.starts_with(WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX) && !has_http_fetch {
+            return Err(format!(
+                "{capability} requires {WASM_CAPABILITY_HTTP_FETCH}"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -249,7 +320,7 @@ mod tests {
             module_bytes_hex: VALID_WASM_HEX.to_string(),
             input,
         };
-        submission.workload.requested_capabilities = vec!["net.outbound".to_string()];
+        submission.workload.requested_capabilities = vec![WASM_CAPABILITY_HTTP_FETCH.to_string()];
 
         let error = submission
             .verify()

@@ -1,0 +1,32 @@
+{
+  "plugins": {
+    "load": {
+      "paths": [
+        "/absolute/path/to/froglet/integrations/openclaw/froglet"
+      ]
+    },
+    "entries": {
+      "froglet": {
+        "enabled": true,
+        "config": {
+          "marketplaceUrl": "http://127.0.0.1:9090",
+          "requestTimeoutMs": 10000,
+          "defaultSearchLimit": 10,
+          "maxSearchLimit": 50
+        }
+      }
+    }
+  },
+  "agents": {
+    "list": [
+      {
+        "id": "main",
+        "tools": {
+          "allow": [
+            "froglet"
+          ]
+        }
+      }
+    ]
+  }
+}

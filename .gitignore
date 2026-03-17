@@ -38,6 +38,13 @@ venv/
 /marketplace.db
 /marketplace.db-*
 
+# Private higher-layer incubation
+private/**
+!private/
+!private/README.md
+!private/*/
+!private/*/.gitkeep
+
 # IDE and local tooling
 .idea/
 .vscode/

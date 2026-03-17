@@ -1,12 +1,13 @@
 use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params};
 use serde::Serialize;
 use std::{
+    fs,
     path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::task;
 
@@ -67,6 +68,24 @@ pub struct LightningInvoiceBundleRecord {
     pub success_state: InvoiceBundleLegState,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DealSettlementMaterializationRecord {
+    pub deal_id: String,
+    pub materialization_kind: String,
+    pub request_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct WalCheckpointMetrics {
+    pub wal_size_bytes: u64,
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+    pub duration_ms: u128,
 }
 
 fn configure_connection(conn: &Connection) -> SqlResult<()> {
@@ -213,6 +232,24 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
     ensure_column(conn, "deals", "failure_evidence_hash", "TEXT")?;
     ensure_column(conn, "deals", "receipt_artifact_hash", "TEXT")?;
     ensure_column(conn, "deals", "payment_method", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_execution_evidence_content_hash
+            ON execution_evidence (content_hash);
+         CREATE INDEX IF NOT EXISTS idx_deals_payment_method_status_created_at
+            ON deals (payment_method, status, created_at);
+         CREATE INDEX IF NOT EXISTS idx_deals_deal_artifact_hash
+            ON deals (deal_artifact_hash);
+         CREATE TABLE IF NOT EXISTS deal_settlement_materializations (
+            deal_id TEXT PRIMARY KEY,
+            materialization_kind TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (deal_id) REFERENCES deals(deal_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_deal_settlement_materializations_updated_at
+            ON deal_settlement_materializations (updated_at ASC);",
+    )?;
     apply_migration_once(conn, LEGACY_ARTIFACTS_MIGRATION, migrate_legacy_artifacts)?;
     Ok(())
 }
@@ -270,6 +307,10 @@ impl DbPool {
             readers: Arc::new(readers),
             next_reader: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    pub fn read_connection_count(&self) -> usize {
+        self.readers.len().max(1)
     }
 
     pub async fn with_read_conn<F, R, E>(&self, f: F) -> Result<R, String>
@@ -333,6 +374,30 @@ fn db_read_connection_count() -> usize {
     std::thread::available_parallelism()
         .map(|parallelism| parallelism.get().clamp(2, 8))
         .unwrap_or(DEFAULT_DB_READ_CONNECTIONS)
+}
+
+pub fn collect_wal_checkpoint_metrics(
+    conn: &Connection,
+    db_path: &Path,
+) -> Result<WalCheckpointMetrics, String> {
+    let wal_path = Path::new(&format!("{}-wal", db_path.display())).to_path_buf();
+    let wal_size_bytes = fs::metadata(&wal_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let started_at = Instant::now();
+    let (busy, log_frames, checkpointed_frames) = conn
+        .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(WalCheckpointMetrics {
+        wal_size_bytes,
+        busy,
+        log_frames,
+        checkpointed_frames,
+        duration_ms: started_at.elapsed().as_millis(),
+    })
 }
 
 pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> SqlResult<bool> {
@@ -901,6 +966,120 @@ pub fn update_lightning_invoice_bundle_states(
         .map_err(|e| e.to_string())?;
 
     Ok(updated > 0)
+}
+
+pub fn insert_deal_settlement_materialization(
+    conn: &Connection,
+    deal_id: &str,
+    materialization_kind: &str,
+    request_json: &str,
+    created_at: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO deal_settlement_materializations (
+            deal_id,
+            materialization_kind,
+            request_json,
+            created_at,
+            updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![deal_id, materialization_kind, request_json, created_at],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn get_deal_settlement_materialization(
+    conn: &Connection,
+    deal_id: &str,
+) -> Result<Option<DealSettlementMaterializationRecord>, String> {
+    conn.query_row(
+        "SELECT deal_id, materialization_kind, request_json, created_at, updated_at
+         FROM deal_settlement_materializations
+         WHERE deal_id = ?1",
+        params![deal_id],
+        |row| {
+            Ok(DealSettlementMaterializationRecord {
+                deal_id: row.get(0)?,
+                materialization_kind: row.get(1)?,
+                request_json: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+pub fn list_deal_settlement_materializations(
+    conn: &Connection,
+) -> Result<Vec<DealSettlementMaterializationRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT deal_id, materialization_kind, request_json, created_at, updated_at
+             FROM deal_settlement_materializations
+             ORDER BY updated_at ASC, deal_id ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DealSettlementMaterializationRecord {
+                deal_id: row.get(0)?,
+                materialization_kind: row.get(1)?,
+                request_json: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(records)
+}
+
+pub fn delete_deal_settlement_materialization(
+    conn: &Connection,
+    deal_id: &str,
+) -> Result<bool, String> {
+    let deleted = conn
+        .execute(
+            "DELETE FROM deal_settlement_materializations WHERE deal_id = ?1",
+            params![deal_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(deleted > 0)
+}
+
+pub fn list_duplicate_deal_artifact_hashes(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(String, u64)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT deal_artifact_hash, COUNT(*) AS duplicate_count
+             FROM deals
+             WHERE deal_artifact_hash IS NOT NULL AND deal_artifact_hash != ''
+             GROUP BY deal_artifact_hash
+             HAVING COUNT(*) > 1
+             ORDER BY duplicate_count DESC, deal_artifact_hash ASC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok((row.get(0)?, row.get::<_, i64>(1)? as u64))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut duplicates = Vec::new();
+    for row in rows {
+        duplicates.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(duplicates)
 }
 
 fn invoice_leg_state_str(state: InvoiceBundleLegState) -> &'static str {

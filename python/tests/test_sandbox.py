@@ -76,7 +76,7 @@ class SandboxTests(FrogletAsyncTestCase):
     async def test_execute_wasm_rejects_requested_capabilities(self) -> None:
         node = await self.start_node()
         submission = build_wasm_submission(VALID_WASM_HEX)
-        submission["workload"]["requested_capabilities"] = ["net.outbound"]
+        submission["workload"]["requested_capabilities"] = ["net.http.fetch"]
 
         async with aiohttp.ClientSession() as session:
             async with session.post(

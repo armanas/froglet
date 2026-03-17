@@ -1,7 +1,7 @@
 use froglet::{
     config::{
         DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, MarketplaceConfig,
-        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
+        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
     },
     db::{self, DbPool},
     marketplace::{
@@ -66,6 +66,7 @@ fn in_memory_state() -> AppState {
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
         listen_addr: "127.0.0.1:0".to_string(),
+        public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
@@ -107,9 +108,14 @@ fn in_memory_state() -> AppState {
             runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
             tor_dir: temp_dir.join("tor"),
         },
+        wasm: WasmConfig {
+            policy_path: None,
+            policy: None,
+        },
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
+    let events_query_capacity = pool.read_connection_count().max(1);
 
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
@@ -127,8 +133,12 @@ fn in_memory_state() -> AppState {
         identity: Arc::new(identity),
         pricing,
         http_client: reqwest::Client::new(),
+        wasm_host: None,
         runtime_auth_token: "test-runtime-token".to_string(),
         runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+        events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        lnd_rest_client: None,
+        lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
     }
 }
 
@@ -409,6 +419,9 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             expires_at: settlement::lightning_quote_expires_at(&state, now, 9, 30),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
+            capabilities_granted: Vec::new(),
+            extension_refs: Vec::new(),
+            quote_use: None,
             settlement_terms: settlement_terms.clone(),
             execution_limits: ExecutionLimits {
                 max_input_bytes: 128 * 1024,
@@ -430,6 +443,10 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             provider_id: quote.payload.provider_id.clone(),
             quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
+            extension_refs: Vec::new(),
+            authority_ref: None,
+            supersedes_deal_hash: None,
+            client_nonce: None,
             success_payment_hash: "11".repeat(32),
             admission_deadline: quote.payload.expires_at,
             completion_deadline: quote.payload.expires_at + 30,
@@ -531,6 +548,9 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
                 ),
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: random_hex(&mut rng, 32),
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
                 settlement_terms: settlement_terms.clone(),
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 128 * 1024,
@@ -552,6 +572,10 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
                 provider_id: quote.payload.provider_id.clone(),
                 quote_hash: quote.hash.clone(),
                 workload_hash: quote.payload.workload_hash.clone(),
+                extension_refs: Vec::new(),
+                authority_ref: None,
+                supersedes_deal_hash: None,
+                client_nonce: None,
                 success_payment_hash: random_hex(&mut rng, 32),
                 admission_deadline: quote.payload.expires_at,
                 completion_deadline: quote.payload.expires_at + 30,

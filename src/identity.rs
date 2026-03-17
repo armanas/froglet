@@ -71,6 +71,13 @@ impl NodeIdentity {
     pub fn sign_nostr_publication_message_hex(&self, message: &[u8]) -> String {
         crypto::sign_message_hex(&self.nostr_publication_signing_key, message)
     }
+
+    /// Derives a keyed HMAC-SHA256 hex string using the node's identity seed as key.
+    /// This ensures the output is unpredictable without knowledge of the private key.
+    pub fn keyed_hmac_hex(&self, message: &[u8]) -> String {
+        let seed = crypto::signing_key_seed_bytes(&self.signing_key);
+        crypto::hmac_sha256_hex(&seed, message)
+    }
 }
 
 fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
@@ -180,7 +187,7 @@ mod tests {
     use super::*;
     use crate::config::{
         DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig,
+        PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     #[test]
     fn test_identity_sign_and_load() {
@@ -188,6 +195,7 @@ mod tests {
         let config = NodeConfig {
             network_mode: NetworkMode::Clearnet,
             listen_addr: "127.0.0.1:8080".into(),
+            public_base_url: None,
             runtime_listen_addr: "127.0.0.1:8081".into(),
             tor: TorSidecarConfig {
                 binary_path: "tor".into(),
@@ -224,6 +232,10 @@ mod tests {
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 tor_dir: temp_dir.join("tor"),
+            },
+            wasm: WasmConfig {
+                policy_path: None,
+                policy: None,
             },
         };
 

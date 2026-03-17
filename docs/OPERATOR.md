@@ -36,6 +36,11 @@ For free local development:
 cargo run --bin froglet
 ```
 
+Containerized startup is documented in [DOCKER.md](DOCKER.md). The included
+Compose stack brings up a priced mock-Lightning node plus the reference
+marketplace, while keeping the privileged runtime listener internal to the
+container.
+
 ## 2. Runtime Auth Token
 
 Privileged runtime calls require a bearer token.

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 import signal
 import socket
@@ -13,7 +14,8 @@ import unittest
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 from ecdsa import curves, ellipticcurve
@@ -49,11 +51,70 @@ def ensure_binaries() -> None:
     _BUILD_DONE = True
 
 
+def listening_port(site: aiohttp.web.TCPSite) -> int:
+    server = getattr(site, "_server", None)
+    sockets = getattr(server, "sockets", None)
+    if not sockets:
+        raise RuntimeError("test server did not expose a bound socket")
+    return int(sockets[0].getsockname()[1])
+
+
 def reserve_tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         return int(sock.getsockname()[1])
+
+
+def _process_log_failure(
+    process: subprocess.Popen[str], log_path: Path, marker: str
+) -> RuntimeError:
+    output = log_path.read_text() if log_path.exists() else ""
+    if output.strip():
+        return RuntimeError(output.strip())
+    return RuntimeError(
+        f"Process exited with code {process.returncode} before logging marker {marker!r}"
+    )
+
+
+async def wait_for_logged_url(
+    log_path: Path,
+    marker: str,
+    *,
+    process: Optional[subprocess.Popen[str]] = None,
+    timeout: float = 60.0,
+) -> str:
+    deadline = time.monotonic() + timeout
+    pattern = re.compile(re.escape(marker) + r"\s*(?P<scheme>https?)://(?P<authority>[^\s]+)")
+
+    while time.monotonic() < deadline:
+        if log_path.exists():
+            contents = log_path.read_text()
+            match = pattern.search(contents)
+            if match:
+                return f"{match.group('scheme')}://{match.group('authority')}"
+        if process is not None and process.poll() is not None:
+            raise _process_log_failure(process, log_path, marker)
+        await asyncio.sleep(0.1)
+
+    if process is not None and process.poll() is not None:
+        raise _process_log_failure(process, log_path, marker)
+    raise RuntimeError(f"Timed out waiting for log marker {marker!r} in {log_path}")
+
+
+async def _raise_startup_failure(
+    *,
+    process: subprocess.Popen[str],
+    log_path: Path,
+    temp_root: Path,
+    label: str,
+    cause: Exception,
+) -> NoReturn:
+    managed = ManagedProcess(process=process, log_path=log_path, temp_root=temp_root)
+    output = managed.output().strip()
+    await managed.stop()
+    message = output or str(cause)
+    raise RuntimeError(f"{label} failed to start:\n{message}") from cause
 
 
 async def wait_for_http(url: str, timeout: float = 20.0) -> None:
@@ -591,7 +652,8 @@ async def _wait_for_lnd_payment_ready(
 
 async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> MarketplaceServer:
     ensure_binaries()
-    port = port or reserve_tcp_port()
+    requested_port = port
+    port = port or 0
     temp_root = Path(tempfile.mkdtemp(prefix="froglet-marketplace-"))
     log_path = temp_root / "marketplace.log"
     db_path = temp_root / "marketplace.db"
@@ -617,6 +679,26 @@ async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[d
             start_new_session=True,
         )
 
+    try:
+        if requested_port is None:
+            bound_url = await wait_for_logged_url(
+                log_path,
+                "Marketplace API:",
+                process=process,
+            )
+            parsed = urlparse(bound_url)
+            if parsed.port is None:
+                raise RuntimeError(f"Marketplace bound URL did not include a port: {bound_url}")
+            port = parsed.port
+    except Exception as exc:
+        await _raise_startup_failure(
+            process=process,
+            log_path=log_path,
+            temp_root=temp_root,
+            label="Marketplace",
+            cause=exc,
+        )
+
     server = MarketplaceServer(process=process, log_path=log_path, temp_root=temp_root, port=port, db_path=db_path)
 
     try:
@@ -638,9 +720,11 @@ async def start_node(
     extra_env: Optional[dict[str, str]] = None,
 ) -> FrogletNode:
     ensure_binaries()
-    port = port or reserve_tcp_port()
-    runtime_port = runtime_port or reserve_tcp_port()
-    tor_backend_port = tor_backend_port or reserve_tcp_port()
+    requested_port = port
+    requested_runtime_port = runtime_port
+    port = port or 0
+    runtime_port = runtime_port or 0
+    tor_backend_port = tor_backend_port or 0
     temp_root = Path(tempfile.mkdtemp(prefix="froglet-node-"))
     log_path = temp_root / "froglet.log"
     data_dir = data_dir or (temp_root / "data")
@@ -657,6 +741,7 @@ async def start_node(
     )
     if extra_env:
         env.update(extra_env)
+    network_mode = env.get("FROGLET_NETWORK_MODE", "clearnet").lower()
 
     with log_path.open("w") as log_file:
         process = subprocess.Popen(
@@ -669,6 +754,36 @@ async def start_node(
             start_new_session=True,
         )
 
+    try:
+        if requested_runtime_port is None:
+            runtime_url = await wait_for_logged_url(
+                log_path,
+                "Local Runtime API:",
+                process=process,
+            )
+            parsed_runtime = urlparse(runtime_url)
+            if parsed_runtime.port is None:
+                raise RuntimeError(f"Runtime bound URL did not include a port: {runtime_url}")
+            runtime_port = parsed_runtime.port
+        if requested_port is None and network_mode in {"clearnet", "dual"}:
+            public_url = await wait_for_logged_url(
+                log_path,
+                "Local API Gateway:",
+                process=process,
+            )
+            parsed_public = urlparse(public_url)
+            if parsed_public.port is None:
+                raise RuntimeError(f"Public bound URL did not include a port: {public_url}")
+            port = parsed_public.port
+    except Exception as exc:
+        await _raise_startup_failure(
+            process=process,
+            log_path=log_path,
+            temp_root=temp_root,
+            label="Froglet",
+            cause=exc,
+        )
+
     node = FrogletNode(
         process=process,
         log_path=log_path,
@@ -679,7 +794,6 @@ async def start_node(
     )
 
     try:
-        network_mode = env.get("FROGLET_NETWORK_MODE", "clearnet").lower()
         if network_mode in {"clearnet", "dual"}:
             await wait_for_http(node.url("/health"))
         await wait_for_http(f"{node.runtime_url}/health")
@@ -711,7 +825,7 @@ def int_to_bytes(value: int) -> bytes:
 
 
 def xor_bytes(left: bytes, right: bytes) -> bytes:
-    return bytes(a ^ b for a, b in zip(left, right))
+    return bytes(a ^ b for a, b in zip(left, right, strict=True))
 
 
 def has_even_y(point: ellipticcurve.Point) -> bool:

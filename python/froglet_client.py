@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,15 @@ class FrogletClientError(RuntimeError):
         self.payload = payload
         super().__init__(f"froglet request failed with status {status}: {payload}")
 
+
+DEFAULT_HTTP_TIMEOUT = aiohttp.ClientTimeout(
+    total=30.0,
+    connect=5.0,
+    sock_connect=5.0,
+    sock_read=30.0,
+)
+_MAX_ERROR_BODY_CHARS = 2048
+_WAIT_BACKOFF_CAP_SECS = 2.0
 
 _SECP256K1_ORDER = int(
     "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
@@ -284,7 +294,7 @@ class _JsonApiClient:
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(timeout=DEFAULT_HTTP_TIMEOUT)
         return self._session
 
     def _headers(self) -> dict[str, str]:
@@ -298,6 +308,7 @@ class _JsonApiClient:
         json_body: dict[str, Any] | None = None,
         expected_statuses: Iterable[int] = (200,),
     ) -> Any:
+        expected = set(expected_statuses)
         session = await self._ensure_session()
         async with session.request(
             method,
@@ -305,9 +316,25 @@ class _JsonApiClient:
             headers=self._headers(),
             json=json_body,
         ) as resp:
-            payload = await resp.json()
-        if resp.status not in set(expected_statuses):
+            raw_body = await resp.text()
+        payload = _try_parse_json(raw_body)
+        if resp.status not in expected:
+            if payload is None:
+                payload = {
+                    "error": "non_json_error_response",
+                    "body": _truncate_error_body(raw_body),
+                }
             raise FrogletClientError(resp.status, payload)
+        if payload is None:
+            if not raw_body.strip():
+                return None
+            raise FrogletClientError(
+                resp.status,
+                {
+                    "error": "invalid_json_response",
+                    "body": _truncate_error_body(raw_body),
+                },
+            )
         return payload
 
 
@@ -431,12 +458,21 @@ class ProviderClient(_JsonApiClient):
         poll_interval_secs: float = 0.2,
     ) -> dict[str, Any]:
         accepted_statuses = statuses or {"succeeded", "failed", "rejected"}
-        deadline = asyncio.get_running_loop().time() + timeout_secs
-        while asyncio.get_running_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_secs
+        base_delay = max(0.01, poll_interval_secs)
+        max_delay = max(base_delay, min(_WAIT_BACKOFF_CAP_SECS, timeout_secs))
+        attempt = 0
+        while loop.time() < deadline:
             deal = await self.get_deal(deal_id)
             if deal["status"] in accepted_statuses:
                 return deal
-            await asyncio.sleep(poll_interval_secs)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            sleep_secs = min(remaining, _next_wait_delay(base_delay, max_delay, attempt))
+            attempt += 1
+            await asyncio.sleep(sleep_secs)
         raise TimeoutError(
             f"timed out waiting for deal {deal_id} to reach {sorted(accepted_statuses)}"
         )
@@ -687,3 +723,23 @@ class MarketplaceClient(_JsonApiClient):
 
     async def get_node(self, node_id: str) -> dict[str, Any]:
         return await self._request_json("GET", f"/v1/marketplace/nodes/{node_id}")
+
+
+def _try_parse_json(raw_body: str) -> Any | None:
+    if not raw_body.strip():
+        return None
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError:
+        return None
+
+
+def _truncate_error_body(raw_body: str) -> str:
+    if len(raw_body) <= _MAX_ERROR_BODY_CHARS:
+        return raw_body
+    return f"{raw_body[:_MAX_ERROR_BODY_CHARS]}...(truncated)"
+
+
+def _next_wait_delay(base_delay: float, max_delay: float, attempt: int) -> float:
+    exponential = min(max_delay, base_delay * (2**attempt))
+    return random.uniform(exponential * 0.5, exponential)

@@ -1,8 +1,13 @@
 import asyncio
+import socket
 import time
 import unittest
+from unittest import mock
+
+from aiohttp import web
 
 from froglet_client import (
+    FrogletClientError,
     MarketplaceClient,
     ProviderClient,
     RuntimeClient,
@@ -14,6 +19,7 @@ from test_support import (
     FrogletAsyncTestCase,
     VALID_WASM_HEX,
     build_wasm_request,
+    listening_port,
     sign_deal_artifact_from_quote,
     sha256_hex,
     verify_signed_artifact,
@@ -72,6 +78,7 @@ class ClientSdkTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -134,6 +141,7 @@ class ClientSdkTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
         runtime = RuntimeClient.from_token_file(
@@ -212,6 +220,7 @@ class ClientSdkTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -289,6 +298,75 @@ class ClientSdkTests(FrogletAsyncTestCase):
         self.assertTrue(nodes)
         self.assertTrue(any(entry["descriptor"]["node_id"] for entry in nodes))
         self.assertTrue(any(entry["descriptor"]["transports"]["clearnet_url"] == node.base_url for entry in nodes))
+
+class ClientSdkHardeningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sdk_client_sessions_use_explicit_timeouts(self) -> None:
+        client = ProviderClient("http://127.0.0.1:9")
+        session = await client._ensure_session()
+        try:
+            self.assertIsNotNone(session.timeout.total)
+            self.assertIsNotNone(session.timeout.connect)
+            self.assertIsNotNone(session.timeout.sock_connect)
+            self.assertIsNotNone(session.timeout.sock_read)
+        finally:
+            await client.close()
+
+    async def test_non_json_error_bodies_raise_normalized_froglet_error(self) -> None:
+        async def descriptor_error(_: web.Request) -> web.Response:
+            return web.Response(status=502, text="upstream is down", content_type="text/plain")
+
+        app = web.Application()
+        app.router.add_get("/v1/descriptor", descriptor_error)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        self.addAsyncCleanup(runner.cleanup)
+        port = listening_port(site)
+
+        async with ProviderClient(f"http://127.0.0.1:{port}") as client:
+            with self.assertRaises(FrogletClientError) as raised:
+                await client.descriptor()
+
+        self.assertEqual(raised.exception.status, 502)
+        self.assertEqual(raised.exception.payload["error"], "non_json_error_response")
+        self.assertIn("upstream is down", raised.exception.payload["body"])
+
+    async def test_wait_for_deal_uses_capped_backoff_with_jitter(self) -> None:
+        client = ProviderClient("http://127.0.0.1:9")
+        statuses = iter(
+            [
+                {"status": "running"},
+                {"status": "result_ready"},
+                {"status": "succeeded"},
+            ]
+        )
+        sleep_calls: list[float] = []
+
+        async def fake_get_deal(_: str) -> dict[str, str]:
+            return next(statuses)
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with mock.patch.object(client, "get_deal", side_effect=fake_get_deal), mock.patch(
+            "froglet_client.asyncio.sleep",
+            side_effect=fake_sleep,
+        ), mock.patch(
+            "froglet_client.random.uniform",
+            side_effect=lambda lower, upper: upper,
+        ):
+            terminal = await client.wait_for_deal(
+                "deal-1",
+                statuses={"succeeded"},
+                timeout_secs=5.0,
+                poll_interval_secs=0.2,
+            )
+
+        self.assertEqual(terminal["status"], "succeeded")
+        self.assertEqual(len(sleep_calls), 2)
+        self.assertAlmostEqual(sleep_calls[0], 0.2)
+        self.assertAlmostEqual(sleep_calls[1], 0.4)
 
 
 if __name__ == "__main__":

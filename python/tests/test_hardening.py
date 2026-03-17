@@ -26,6 +26,7 @@ class HardeningTests(FrogletAsyncTestCase):
         node = await self.start_node(
             extra_env={
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "120",
             }

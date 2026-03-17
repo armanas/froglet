@@ -27,6 +27,8 @@ pub struct NewDeal {
     pub quote: SignedArtifact<QuotePayload>,
     pub spec: WorkloadSpec,
     pub artifact: SignedArtifact<DealPayload>,
+    pub workload_evidence_hash: Option<String>,
+    pub deal_artifact_hash: String,
     pub payment_method: Option<String>,
     pub payment_token_hash: Option<String>,
     pub payment_amount_sats: Option<u64>,
@@ -177,6 +179,13 @@ pub fn get_quote(conn: &Connection, quote_id: &str) -> Result<Option<StoredQuote
     .map_err(|e| e.to_string())
 }
 
+/// Inserts a new deal if it does not already exist under the canonical artifact hash or
+/// idempotency key.
+///
+/// Callers are expected to execute this inside the same `BEGIN IMMEDIATE` transaction that
+/// persists any related artifact documents, evidence rows, or settlement side effects. The
+/// helper performs read-then-insert admission checks but does not open its own write
+/// transaction, so calling it outside a serializing transaction weakens the dedupe guarantees.
 pub fn insert_or_get_deal(
     conn: &Connection,
     new_deal: NewDeal,
@@ -187,6 +196,8 @@ pub fn insert_or_get_deal(
         quote,
         spec,
         artifact,
+        workload_evidence_hash,
+        deal_artifact_hash,
         payment_method,
         payment_token_hash,
         payment_amount_sats,
@@ -197,6 +208,33 @@ pub fn insert_or_get_deal(
     let quote_json = serde_json::to_string(&quote).map_err(|e| e.to_string())?;
     let spec_json = serde_json::to_string(&spec).map_err(|e| e.to_string())?;
     let artifact_json = serde_json::to_string(&artifact).map_err(|e| e.to_string())?;
+
+    if let Some(existing) = get_deal_by_artifact_hash(conn, &deal_artifact_hash)? {
+        if let Some(idempotency_key) = idempotency_key.as_deref()
+            && existing.idempotency_key.as_deref() != Some(idempotency_key)
+        {
+            return Err(
+                "idempotency key conflict: artifact hash already claimed with a different key"
+                    .to_string(),
+            );
+        }
+        return Ok(InsertDealOutcome {
+            deal: existing,
+            created: false,
+        });
+    }
+
+    if let Some(idempotency_key) = idempotency_key.as_deref()
+        && let Some(existing) = find_deal_by_idempotency_key(conn, idempotency_key)?
+    {
+        if existing.artifact.hash != artifact.hash {
+            return Err("idempotency key reused with different deal payload".to_string());
+        }
+        return Ok(InsertDealOutcome {
+            deal: existing,
+            created: false,
+        });
+    }
 
     let insert_result = conn.execute(
         "INSERT INTO deals (
@@ -225,7 +263,7 @@ pub fn insert_or_get_deal(
             receipt_artifact_hash,
             created_at,
             updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL, NULL, ?12, ?13, ?14, NULL, NULL, NULL, NULL, NULL, NULL, ?15, ?15)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL, NULL, ?12, ?13, ?14, NULL, ?15, ?16, NULL, NULL, NULL, ?17, ?17)",
         params![
             &deal_id,
             idempotency_key.as_deref(),
@@ -241,6 +279,8 @@ pub fn insert_or_get_deal(
             payment_method.as_deref(),
             payment_token_hash.as_deref(),
             payment_amount_sats.map(|value| value as i64),
+            workload_evidence_hash.as_deref(),
+            &deal_artifact_hash,
             created_at,
         ],
     );
@@ -255,23 +295,24 @@ pub fn insert_or_get_deal(
             })
         }
         Err(e) => {
-            let Some(idempotency_key) = idempotency_key else {
-                return Err(e.to_string());
-            };
-
-            let existing = find_deal_by_idempotency_key(conn, &idempotency_key)?
-                .ok_or_else(|| e.to_string())?;
-
-            if existing.quote.hash != quote.hash
-                || existing.artifact.payload.workload_hash != artifact.payload.workload_hash
-            {
-                return Err("idempotency key reused with different deal payload".to_string());
+            if let Some(existing) = get_deal_by_artifact_hash(conn, &deal_artifact_hash)? {
+                return Ok(InsertDealOutcome {
+                    deal: existing,
+                    created: false,
+                });
             }
-
-            Ok(InsertDealOutcome {
-                deal: existing,
-                created: false,
-            })
+            if let Some(idempotency_key) = idempotency_key.as_deref()
+                && let Some(existing) = find_deal_by_idempotency_key(conn, idempotency_key)?
+            {
+                if existing.artifact.hash != artifact.hash {
+                    return Err("idempotency key reused with different deal payload".to_string());
+                }
+                return Ok(InsertDealOutcome {
+                    deal: existing,
+                    created: false,
+                });
+            }
+            Err(e.to_string())
         }
     }
 }

@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use futures::{StreamExt, stream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,7 +17,7 @@ use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::Tim
 
 use crate::{
     canonical_json,
-    config::PaymentBackend,
+    config::{LightningMode, PaymentBackend},
     crypto, db,
     deals::{self, NewDeal},
     jobs::{self, JobSpec, NewJob},
@@ -408,6 +409,7 @@ const DEFAULT_RUNTIME_WAIT_TIMEOUT_SECS: u64 = 15;
 const MAX_RUNTIME_WAIT_TIMEOUT_SECS: u64 = 60;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = MAX_RUNTIME_WAIT_TIMEOUT_SECS + 5;
 const _: () = assert!(RUNTIME_WAIT_ROUTE_TIMEOUT_SECS > MAX_RUNTIME_WAIT_TIMEOUT_SECS);
+const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 type ApiFailure = (StatusCode, serde_json::Value);
 
 fn publish_routes() -> Router<Arc<AppState>> {
@@ -423,12 +425,46 @@ fn publish_routes() -> Router<Arc<AppState>> {
         )
 }
 
-fn exec_routes() -> Router<Arc<AppState>> {
+fn execute_wasm_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let timeout_secs = state
+        .config
+        .execution_timeout_secs
+        .saturating_add(BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS)
+        .saturating_add(1);
+    let concurrency_limit = sandbox::wasm_concurrency_limit();
     Router::new()
         .route("/v1/node/execute/wasm", post(execute_wasm))
+        .route_layer(ConcurrencyLimitLayer::new(concurrency_limit))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_timeout_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(timeout_secs))),
+        )
+}
+
+fn jobs_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/v1/node/jobs", post(create_job))
         .route("/v1/node/jobs/:job_id", get(get_job_status))
         .route_layer(ConcurrencyLimitLayer::new(16))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_timeout_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(
+                    DEFAULT_ROUTE_TIMEOUT_SECS,
+                ))),
+        )
+}
+
+fn events_query_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let limit = state
+        .db
+        .read_connection_count()
+        .max(1)
+        .min(DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT);
+    Router::new()
+        .route("/v1/node/events/query", post(query_events))
+        .route_layer(ConcurrencyLimitLayer::new(limit))
         .layer(
             ServiceBuilder::new()
                 .layer(HandleErrorLayer::new(handle_timeout_error))
@@ -529,7 +565,6 @@ fn common_routes() -> Router<Arc<AppState>> {
         .route("/health", get(health_check))
         .route("/v1/node/capabilities", get(node_capabilities))
         .route("/v1/node/identity", get(node_identity))
-        .route("/v1/node/events/query", post(query_events))
         .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::SERVER,
             HeaderValue::from_static("nginx/1.18.0"),
@@ -539,14 +574,17 @@ fn common_routes() -> Router<Arc<AppState>> {
 
 pub fn public_router(state: Arc<AppState>) -> Router {
     common_routes()
+        .merge(events_query_routes(&state))
         .merge(protocol_routes())
         .merge(publish_routes())
-        .merge(exec_routes())
+        .merge(execute_wasm_routes(&state))
+        .merge(jobs_routes())
         .with_state(state)
 }
 
 pub fn runtime_router(state: Arc<AppState>) -> Router {
     common_routes()
+        .merge(events_query_routes(&state))
         .merge(runtime_wait_routes())
         .merge(runtime_routes())
         .with_state(state)
@@ -554,11 +592,13 @@ pub fn runtime_router(state: Arc<AppState>) -> Router {
 
 pub fn router(state: Arc<AppState>) -> Router {
     common_routes()
+        .merge(events_query_routes(&state))
         .merge(runtime_wait_routes())
         .merge(runtime_routes())
         .merge(protocol_routes())
         .merge(publish_routes())
-        .merge(exec_routes())
+        .merge(execute_wasm_routes(&state))
+        .merge(jobs_routes())
         .with_state(state)
 }
 
@@ -964,6 +1004,10 @@ fn build_requester_signed_deal_artifact(
             provider_id: quote.payload.provider_id.clone(),
             quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
+            extension_refs: Vec::new(),
+            authority_ref: None,
+            supersedes_deal_hash: None,
+            client_nonce: None,
             success_payment_hash: success_payment_hash.to_string(),
             admission_deadline,
             completion_deadline,
@@ -1923,7 +1967,7 @@ pub async fn query_events(
         Err(error) => return error_json(error.status_code(), error.details()),
     };
 
-    match query_events_db(state.as_ref(), payload.kinds, payload.limit).await {
+    match query_events_with_capacity(state.as_ref(), payload.kinds, payload.limit).await {
         Ok(events) => {
             let receipt = match finalize_payment(state.as_ref(), reservation).await {
                 Ok(receipt) => receipt,
@@ -1942,10 +1986,17 @@ pub async fn query_events(
         Err(e) => {
             let _ = release_payment(state.as_ref(), reservation).await;
             tracing::error!("Database query failed: {}", e);
-            error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": "database error" }),
-            )
+            if e.contains(EVENTS_QUERY_CAPACITY_EXHAUSTED) {
+                error_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    events_query_capacity_error(),
+                )
+            } else {
+                error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "database error" }),
+                )
+            }
         }
     }
 }
@@ -1958,6 +2009,21 @@ pub async fn execute_wasm(
 
     if let Err(response) = validate_wasm_submission(&payload.submission) {
         return response;
+    }
+
+    if payload.submission.workload.abi_version == wasm::WASM_HOST_JSON_ABI_V1 {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": format!(
+                    "{} requires the /v1/quotes and /v1/deals protocol flow",
+                    wasm::WASM_HOST_JSON_ABI_V1
+                ),
+                "abi_version": wasm::WASM_HOST_JSON_ABI_V1,
+                "quote_path": "/v1/quotes",
+                "deal_path": "/v1/deals",
+            }),
+        );
     }
 
     if let Some(response) = legacy_paid_endpoint_requires_protocol_deal(
@@ -2214,6 +2280,25 @@ async fn insert_event_db(state: &AppState, event: NodeEventEnvelope) -> Result<b
         .await
 }
 
+const EVENTS_QUERY_CAPACITY_EXHAUSTED: &str = "events query capacity exhausted";
+
+fn events_query_capacity_error() -> serde_json::Value {
+    json!({
+        "error": EVENTS_QUERY_CAPACITY_EXHAUSTED,
+        "code": "capacity_exhausted",
+    })
+}
+
+fn try_acquire_events_query_permit(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    state
+        .events_query_semaphore
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| EVENTS_QUERY_CAPACITY_EXHAUSTED.to_string())
+}
+
 async fn query_events_db(
     state: &AppState,
     kinds: Vec<String>,
@@ -2230,6 +2315,15 @@ async fn query_events_db(
         .db
         .with_read_conn(move |conn| db::query_events_by_kind(conn, &kinds, limit))
         .await
+}
+
+async fn query_events_with_capacity(
+    state: &AppState,
+    kinds: Vec<String>,
+    limit: Option<usize>,
+) -> Result<Vec<NodeEventEnvelope>, String> {
+    let _permit = try_acquire_events_query_permit(state)?;
+    query_events_db(state, kinds, limit).await
 }
 
 async fn ensure_protocol_root_artifacts(state: &AppState) -> Result<(), String> {
@@ -2371,10 +2465,17 @@ async fn lookup_offer(
 
 fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferPayload> {
     let provider_id = state.identity.node_id().to_string();
-    let priced_offer = |service_id: ServiceId,
+    let wasm_host_capabilities = state
+        .wasm_host
+        .as_ref()
+        .map(|host| host.advertised_capabilities())
+        .unwrap_or_default();
+    let priced_offer = |offer_id: &str,
+                        service_id: ServiceId,
                         offer_kind: &str,
                         runtime: &str,
                         abi_version: &str,
+                        capabilities: Vec<String>,
                         max_input_bytes: usize,
                         max_runtime_ms: u64,
                         max_memory_bytes: usize,
@@ -2383,7 +2484,7 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
         let price_sats = state.pricing.price_for(service_id);
         OfferPayload {
             provider_id: provider_id.clone(),
-            offer_id: service_id.as_str().to_string(),
+            offer_id: offer_id.to_string(),
             descriptor_hash: descriptor_hash.to_string(),
             expires_at: None,
             offer_kind: offer_kind.to_string(),
@@ -2397,7 +2498,7 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
             execution_profile: protocol::OfferExecutionProfile {
                 runtime: runtime.to_string(),
                 abi_version: abi_version.to_string(),
-                capabilities: Vec::new(),
+                capabilities,
                 max_input_bytes,
                 max_runtime_ms,
                 max_memory_bytes,
@@ -2414,10 +2515,12 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
 
     vec![
         priced_offer(
+            ServiceId::EventsQuery.as_str(),
             ServiceId::EventsQuery,
             "events.query",
             "events_query",
             "froglet.events.query.v1",
+            Vec::new(),
             MAX_BODY_BYTES,
             state.config.execution_timeout_secs.saturating_mul(1_000),
             0,
@@ -2425,10 +2528,12 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
             0,
         ),
         priced_offer(
+            ServiceId::ExecuteWasm.as_str(),
             ServiceId::ExecuteWasm,
             crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
             "wasm",
             crate::wasm::WASM_RUN_JSON_ABI_V1,
+            Vec::new(),
             MAX_WASM_INPUT_BYTES,
             state.config.execution_timeout_secs.saturating_mul(1_000),
             sandbox::WASM_MAX_MEMORY_BYTES,
@@ -2436,10 +2541,98 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
             sandbox::WASM_FUEL_LIMIT,
         ),
     ]
+    .into_iter()
+    .chain((!wasm_host_capabilities.is_empty()).then(|| {
+        priced_offer(
+            "execute.wasm.host",
+            ServiceId::ExecuteWasm,
+            crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
+            "wasm",
+            crate::wasm::WASM_HOST_JSON_ABI_V1,
+            wasm_host_capabilities,
+            MAX_WASM_INPUT_BYTES,
+            state.config.execution_timeout_secs.saturating_mul(1_000),
+            sandbox::WASM_MAX_MEMORY_BYTES,
+            sandbox::WASM_MAX_OUTPUT_BYTES,
+            sandbox::WASM_FUEL_LIMIT,
+        )
+    }))
+    .collect()
 }
 
 fn accepted_payment_methods(state: &AppState) -> Vec<String> {
     settlement::accepted_payment_methods(state)
+}
+
+fn grant_requested_capabilities_from_offer(
+    spec: &WorkloadSpec,
+    offer: &SignedArtifact<OfferPayload>,
+) -> Result<Vec<String>, (StatusCode, Json<serde_json::Value>)> {
+    let requested = spec.requested_capabilities();
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if spec.runtime() != Some("wasm") {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "requested_capabilities are only supported for wasm workloads" }),
+        ));
+    }
+
+    for capability in requested {
+        if !offer
+            .payload
+            .execution_profile
+            .capabilities
+            .iter()
+            .any(|granted| granted == capability)
+        {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "offer does not grant requested capability",
+                    "capability": capability,
+                    "offer_id": offer.payload.offer_id,
+                }),
+            ));
+        }
+    }
+
+    Ok(requested.to_vec())
+}
+
+fn local_wasm_capabilities_for_submission(
+    state: &AppState,
+    submission: &wasm::VerifiedWasmSubmission,
+) -> Result<
+    (
+        Vec<String>,
+        Option<Arc<crate::wasm_host::WasmHostEnvironment>>,
+    ),
+    String,
+> {
+    match submission.abi_version.as_str() {
+        wasm::WASM_RUN_JSON_ABI_V1 => Ok((Vec::new(), None)),
+        wasm::WASM_HOST_JSON_ABI_V1 => {
+            let Some(host_environment) = state.wasm_host.clone() else {
+                return Err("froglet.wasm.host_json.v1 is not enabled on this provider".to_string());
+            };
+            let offered = host_environment.advertised_capabilities();
+            for capability in &submission.requested_capabilities {
+                if !offered.iter().any(|offered| offered == capability) {
+                    return Err(format!(
+                        "requested_capability '{capability}' is not enabled on this provider"
+                    ));
+                }
+            }
+            Ok((
+                submission.requested_capabilities.clone(),
+                Some(host_environment),
+            ))
+        }
+        other => Err(format!("unsupported wasm abi_version: {other}")),
+    }
 }
 
 async fn quoted_settlement_terms(
@@ -2563,6 +2756,24 @@ async fn find_existing_deal(
         })
 }
 
+async fn find_existing_deal_by_artifact_hash(
+    state: &AppState,
+    deal_artifact_hash: &str,
+) -> Result<Option<deals::StoredDeal>, (StatusCode, Json<serde_json::Value>)> {
+    let deal_artifact_hash = deal_artifact_hash.to_string();
+    state
+        .db
+        .with_read_conn(move |conn| deals::get_deal_by_artifact_hash(conn, &deal_artifact_hash))
+        .await
+        .map_err(|error| {
+            tracing::error!("Failed to look up deal by artifact hash: {error}");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "database error" }),
+            )
+        })
+}
+
 fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
     let Some(value) = headers.get(header::AUTHORIZATION) else {
         return Err((
@@ -2679,6 +2890,20 @@ async fn create_quote_record(
             }),
         ));
     }
+    if let Some(abi_version) = payload.spec.abi_version()
+        && offer.payload.execution_profile.abi_version != abi_version
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "offer does not match workload abi_version",
+                "offer_abi_version": offer.payload.execution_profile.abi_version,
+                "requested_abi_version": abi_version,
+            }),
+        ));
+    }
+    let capabilities_granted = grant_requested_capabilities_from_offer(&payload.spec, &offer)
+        .map_err(|response| (response.0, response.1.0))?;
 
     let quoted_total_sats = (offer.payload.price_schedule.base_fee_msat
         + offer.payload.price_schedule.success_fee_msat)
@@ -2738,6 +2963,9 @@ async fn create_quote_record(
             expires_at: quote_expires_at,
             workload_kind,
             workload_hash,
+            capabilities_granted,
+            extension_refs: Vec::new(),
+            quote_use: None,
             settlement_terms,
             execution_limits: ExecutionLimits {
                 max_input_bytes: offer.payload.execution_profile.max_input_bytes,
@@ -2930,6 +3158,31 @@ async fn create_deal_record(
         return Err((status, json!({ "error": message })));
     }
 
+    if let Some(existing) =
+        find_existing_deal_by_artifact_hash(state.as_ref(), &canonical_deal_hash)
+            .await
+            .map_err(|response| (response.0, response.1.0))?
+    {
+        if existing.quote.hash != canonical_quote_hash {
+            return Err((
+                StatusCode::CONFLICT,
+                json!({ "error": "deal artifact hash already exists with a different quote" }),
+            ));
+        }
+        if let Some(idempotency_key) = idempotency_key.clone()
+            && let Some(existing_by_key) = find_existing_deal(state.as_ref(), Some(idempotency_key))
+                .await
+                .map_err(|response| (response.0, response.1.0))?
+            && existing_by_key.artifact.hash != canonical_deal_hash
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                json!({ "error": "idempotency key reused with different deal payload" }),
+            ));
+        }
+        return Ok((existing.public_record(), StatusCode::OK));
+    }
+
     if let Some(existing) = find_existing_deal(state.as_ref(), idempotency_key.clone())
         .await
         .map_err(|response| (response.0, response.1.0))?
@@ -2977,34 +3230,18 @@ async fn create_deal_record(
             json!({ "error": format!("failed to encode quote: {error}") }),
         )
     })?;
-
-    let invoice_bundle_session = if uses_lightning_bundle {
-        Some(
-            settlement::issue_lightning_invoice_bundle(
-                state.as_ref(),
-                settlement::BuildLightningInvoiceBundleRequest {
-                    session_id: None,
-                    requester_id: payload.deal.payload.requester_id.clone(),
-                    quote_hash: canonical_quote_hash.clone(),
-                    deal_hash: canonical_deal_hash.clone(),
-                    admission_deadline: Some(payload.deal.payload.admission_deadline),
-                    success_payment_hash: payload.deal.payload.success_payment_hash.clone(),
-                    base_fee_msat: payload.quote.payload.settlement_terms.base_fee_msat,
-                    success_fee_msat: payload.quote.payload.settlement_terms.success_fee_msat,
-                    created_at: now,
-                },
-            )
-            .await
-            .map_err(|error| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": format!("failed to build lightning invoice bundle: {error}") }),
-                )
-            })?,
-        )
-    } else {
-        None
-    };
+    let pending_materialization_request =
+        uses_lightning_bundle.then(|| settlement::BuildLightningInvoiceBundleRequest {
+            session_id: Some(deal_id.clone()),
+            requester_id: payload.deal.payload.requester_id.clone(),
+            quote_hash: canonical_quote_hash.clone(),
+            deal_hash: canonical_deal_hash.clone(),
+            admission_deadline: Some(payload.deal.payload.admission_deadline),
+            success_payment_hash: payload.deal.payload.success_payment_hash.clone(),
+            base_fee_msat: payload.quote.payload.settlement_terms.base_fee_msat,
+            success_fee_msat: payload.quote.payload.settlement_terms.success_fee_msat,
+            created_at: now,
+        });
 
     if !uses_lightning_bundle && payload.spec.runtime() == Some("wasm") {
         match state.wasm_sandbox.try_acquire_execution_permit() {
@@ -3057,24 +3294,6 @@ async fn create_deal_record(
         }
     }
 
-    let deal_for_db = NewDeal {
-        deal_id: deal_id.clone(),
-        idempotency_key: idempotency_key.clone(),
-        quote: payload.quote.clone(),
-        spec: payload.spec.clone(),
-        artifact: deal_artifact.clone(),
-        payment_method: uses_lightning_bundle.then(|| "lightning".to_string()),
-        payment_token_hash: uses_lightning_bundle
-            .then(|| payload.deal.payload.success_payment_hash.clone()),
-        payment_amount_sats: uses_lightning_bundle.then_some(quoted_total_sats),
-        initial_status: if uses_lightning_bundle {
-            deals::DEAL_STATUS_PAYMENT_PENDING.to_string()
-        } else {
-            deals::DEAL_STATUS_ACCEPTED.to_string()
-        },
-        created_at: now,
-    };
-
     let deal_hash = canonical_deal_hash.clone();
     let deal_payload_hash = deal_artifact.payload_hash.clone();
     let deal_actor_id = deal_artifact.signer.clone();
@@ -3083,10 +3302,11 @@ async fn create_deal_record(
     let quote_payload_hash = payload.quote.payload_hash.clone();
     let quote_actor_id = payload.quote.signer.clone();
     let quote_id = canonical_quote_hash.clone();
+    let deal_id_for_db = deal_id.clone();
     let spec_for_evidence = payload.spec.clone();
     let quote_artifact_ref = json!({ "artifact_hash": quote_hash.clone() });
     let deal_artifact_ref = json!({ "artifact_hash": deal_hash.clone() });
-    let invoice_bundle_session_for_db = invoice_bundle_session.clone();
+    let materialization_request_for_db = pending_materialization_request.clone();
     let immediate_rejection_for_db = immediate_rejection.clone();
     let insert_result = state
         .db
@@ -3122,6 +3342,26 @@ async fn create_deal_record(
                     &deal_json,
                 )?;
 
+                let deal_for_db = NewDeal {
+                    deal_id: deal_id_for_db.clone(),
+                    idempotency_key: idempotency_key.clone(),
+                    quote: payload.quote.clone(),
+                    spec: payload.spec.clone(),
+                    artifact: deal_artifact.clone(),
+                    workload_evidence_hash: None,
+                    deal_artifact_hash: deal_artifact_hash.clone(),
+                    payment_method: uses_lightning_bundle.then(|| "lightning".to_string()),
+                    payment_token_hash: uses_lightning_bundle
+                        .then(|| payload.deal.payload.success_payment_hash.clone()),
+                    payment_amount_sats: uses_lightning_bundle.then_some(quoted_total_sats),
+                    initial_status: if uses_lightning_bundle {
+                        deals::DEAL_STATUS_PAYMENT_PENDING.to_string()
+                    } else {
+                        deals::DEAL_STATUS_ACCEPTED.to_string()
+                    },
+                    created_at: now,
+                };
+
                 let insert_outcome = deals::insert_or_get_deal(conn, deal_for_db.clone())?;
                 if insert_outcome.created {
                     let workload_evidence_hash = db::insert_execution_evidence(
@@ -3131,6 +3371,12 @@ async fn create_deal_record(
                         "workload_spec",
                         &spec_for_evidence,
                         now,
+                    )?;
+                    deals::set_deal_storage_refs(
+                        conn,
+                        &insert_outcome.deal.deal_id,
+                        &workload_evidence_hash,
+                        &deal_artifact_hash,
                     )?;
                     let _ = db::insert_execution_evidence(
                         conn,
@@ -3148,30 +3394,14 @@ async fn create_deal_record(
                         &deal_artifact_ref,
                         now,
                     )?;
-                    deals::set_deal_storage_refs(
-                        conn,
-                        &insert_outcome.deal.deal_id,
-                        &workload_evidence_hash,
-                        &deal_artifact_hash,
-                    )?;
-                    if let Some(invoice_bundle_session) = invoice_bundle_session_for_db.as_ref() {
-                        db::insert_lightning_invoice_bundle(
+                    if let Some(materialization_request) = materialization_request_for_db.as_ref() {
+                        let request_json = serde_json::to_string(materialization_request)
+                            .map_err(|error| error.to_string())?;
+                        db::insert_deal_settlement_materialization(
                             conn,
-                            &invoice_bundle_session.session_id,
-                            &invoice_bundle_session.bundle,
-                            invoice_bundle_session.base_state.clone(),
-                            invoice_bundle_session.success_state.clone(),
-                            invoice_bundle_session.created_at,
-                        )?;
-                        let _ = db::insert_execution_evidence(
-                            conn,
-                            "deal",
                             &insert_outcome.deal.deal_id,
-                            "lightning_invoice_bundle_ref",
-                            &json!({
-                                "session_id": invoice_bundle_session.session_id,
-                                "bundle_hash": invoice_bundle_session.bundle.hash,
-                            }),
+                            "lightning_invoice_bundle",
+                            &request_json,
                             now,
                         )?;
                     }
@@ -3241,19 +3471,6 @@ async fn create_deal_record(
         Ok(result) => result,
         Err(error) => {
             let _ = release_payment(state.as_ref(), reservation).await;
-            if let Some(bundle) = invoice_bundle_session.as_ref()
-                && let Err(cancel_error) =
-                    settlement::cancel_lightning_invoice_bundle(state.as_ref(), bundle).await
-            {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({
-                        "error": format!(
-                            "{error}; additionally failed to cancel issued lightning invoices: {cancel_error}"
-                        ),
-                    }),
-                ));
-            }
             let status = if error.contains("idempotency key reused") {
                 StatusCode::CONFLICT
             } else {
@@ -3265,19 +3482,6 @@ async fn create_deal_record(
 
     if !insert_result.created {
         let _ = release_payment(state.as_ref(), reservation).await;
-        if let Some(bundle) = invoice_bundle_session.as_ref()
-            && let Err(cancel_error) =
-                settlement::cancel_lightning_invoice_bundle(state.as_ref(), bundle).await
-        {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({
-                    "error": format!(
-                        "failed to cancel issued lightning invoices for duplicate deal: {cancel_error}"
-                    ),
-                }),
-            ));
-        }
         return Ok((insert_result.deal.public_record(), StatusCode::OK));
     }
 
@@ -3303,6 +3507,36 @@ async fn create_deal_record(
         return Ok((rejected.public_record(), StatusCode::ACCEPTED));
     }
 
+    if uses_lightning_bundle {
+        if let Err(error) = materialize_pending_lightning_bundle(state.clone(), &deal_id).await {
+            tracing::error!("Failed to materialize paid deal settlement for {deal_id}: {error}");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to materialize lightning invoice bundle" }),
+            ));
+        }
+
+        let persisted_deal_id = deal_id.clone();
+        let persisted = state
+            .db
+            .with_read_conn(move |conn| deals::get_deal(conn, &persisted_deal_id))
+            .await
+            .map_err(|error| {
+                tracing::error!("Failed to reload paid deal {deal_id}: {error}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "failed to reload persisted deal" }),
+                )
+            })?
+            .ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "persisted deal missing after settlement materialization" }),
+                )
+            })?;
+        return Ok((persisted.public_record(), StatusCode::ACCEPTED));
+    }
+
     if !uses_lightning_bundle {
         tokio::spawn(process_deal_with_reserved_permit(
             state,
@@ -3311,6 +3545,241 @@ async fn create_deal_record(
         ));
     }
     Ok((insert_result.deal.public_record(), StatusCode::ACCEPTED))
+}
+
+async fn fail_pending_deal_materialization(
+    state: Arc<AppState>,
+    deal: &deals::StoredDeal,
+    failure_code: &str,
+    error_message: String,
+) -> Result<(), String> {
+    let failure = receipt_failure(failure_code, error_message.clone());
+    let completed_at = settlement::current_unix_timestamp();
+    let receipt = sign_deal_receipt(
+        state.as_ref(),
+        deal,
+        completed_at,
+        ReceiptSignSpec {
+            deal_state: "failed",
+            execution_state: "not_started",
+            bundle: None,
+            result_hash: None,
+            failure: Some(failure.clone()),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let receipt_json = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
+    let deal_id = deal.deal_id.clone();
+    let expected_status = deal.status.clone();
+    let receipt_for_db = receipt.clone();
+    let updated = state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation = (|| -> Result<bool, String> {
+                let _ = db::delete_deal_settlement_materialization(conn, &deal_id)?;
+                let failure_evidence_hash = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "execution_failure",
+                    &failure,
+                    completed_at,
+                )?;
+                let updated = deals::complete_deal_failure_if_status(
+                    conn,
+                    deals::DealTerminalTransition {
+                        deal_id: &deal_id,
+                        expected_status: &expected_status,
+                        error: &error_message,
+                        receipt: &receipt_for_db,
+                        failure_evidence_hash: Some(&failure_evidence_hash),
+                        receipt_artifact_hash: Some(&receipt_for_db.hash),
+                        now: completed_at,
+                    },
+                )?;
+
+                if updated {
+                    db::insert_artifact_document(
+                        conn,
+                        &receipt_for_db.hash,
+                        &receipt_for_db.payload_hash,
+                        ARTIFACT_KIND_RECEIPT,
+                        &receipt_for_db.signer,
+                        receipt_for_db.created_at,
+                        &receipt_json,
+                    )?;
+                    let _ = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &deal_id,
+                        "receipt_artifact_ref",
+                        &json!({ "artifact_hash": receipt_for_db.hash }),
+                        completed_at,
+                    )?;
+                }
+
+                Ok(updated)
+            })();
+
+            let result = match operation {
+                Ok(result) => result,
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(error);
+                }
+            };
+
+            conn.execute_batch("COMMIT")
+                .map_err(|error| error.to_string())?;
+            Ok(result)
+        })
+        .await?;
+
+    if !updated {
+        tracing::warn!(
+            "Deal {} changed state before settlement materialization failure could be persisted",
+            deal.deal_id
+        );
+    }
+
+    Ok(())
+}
+
+async fn materialize_pending_lightning_bundle(
+    state: Arc<AppState>,
+    deal_id: &str,
+) -> Result<(), String> {
+    let lookup_deal_id = deal_id.to_string();
+    let (deal, materialization) = state
+        .db
+        .with_read_conn(
+            move |conn| -> Result<
+                (
+                    Option<deals::StoredDeal>,
+                    Option<db::DealSettlementMaterializationRecord>,
+                ),
+                String,
+            > {
+                Ok((
+                    deals::get_deal(conn, &lookup_deal_id)?,
+                    db::get_deal_settlement_materialization(conn, &lookup_deal_id)?,
+                ))
+            },
+        )
+        .await?;
+
+    let Some(deal) = deal else {
+        return Ok(());
+    };
+    let Some(materialization) = materialization else {
+        return Ok(());
+    };
+
+    if materialization.materialization_kind != "lightning_invoice_bundle" {
+        return Err(format!(
+            "unsupported settlement materialization kind: {}",
+            materialization.materialization_kind
+        ));
+    }
+
+    let request: settlement::BuildLightningInvoiceBundleRequest =
+        serde_json::from_str(&materialization.request_json).map_err(|error| {
+            format!(
+                "invalid settlement materialization payload for deal {}: {error}",
+                deal.deal_id
+            )
+        })?;
+
+    let bundle = match settlement::issue_lightning_invoice_bundle(state.as_ref(), request).await {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            fail_pending_deal_materialization(
+                state,
+                &deal,
+                "lightning_invoice_bundle_materialization_failed",
+                error.clone(),
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+
+    let bundle_for_db = bundle.clone();
+    let bundle_session_id = bundle.session_id.clone();
+    let deal_id_for_db = deal.deal_id.clone();
+    let deal_hash_for_db = deal.artifact.hash.clone();
+    let persisted = state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation = (|| -> Result<(), String> {
+                if db::get_deal_settlement_materialization(conn, &deal_id_for_db)?.is_none() {
+                    return Ok(());
+                }
+
+                if db::get_lightning_invoice_bundle_by_deal_hash(conn, &deal_hash_for_db)?.is_some()
+                {
+                    let _ = db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                    return Ok(());
+                }
+
+                db::insert_lightning_invoice_bundle(
+                    conn,
+                    &bundle_session_id,
+                    &bundle_for_db.bundle,
+                    bundle_for_db.base_state.clone(),
+                    bundle_for_db.success_state.clone(),
+                    bundle_for_db.created_at,
+                )?;
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id_for_db,
+                    "lightning_invoice_bundle_ref",
+                    &json!({
+                        "session_id": bundle_for_db.session_id,
+                        "bundle_hash": bundle_for_db.bundle.hash,
+                    }),
+                    settlement::current_unix_timestamp(),
+                )?;
+                let _ = db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                Ok(())
+            })();
+
+            if let Err(error) = operation {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+
+            conn.execute_batch("COMMIT")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .await;
+
+    if let Err(error) = persisted {
+        let cancel_error =
+            settlement::cancel_lightning_invoice_bundle(state.as_ref(), &bundle).await;
+        let failure_message = match cancel_error {
+            Ok(()) => error.clone(),
+            Err(cancel_error) => format!(
+                "{error}; additionally failed to cancel materialized lightning invoices: {cancel_error}"
+            ),
+        };
+        fail_pending_deal_materialization(
+            state,
+            &deal,
+            "lightning_invoice_bundle_persist_failed",
+            failure_message.clone(),
+        )
+        .await?;
+        return Err(failure_message);
+    }
+
+    Ok(())
 }
 
 async fn wait_for_terminal_deal(
@@ -3384,7 +3853,7 @@ fn validate_workload_spec(
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match spec {
         WorkloadSpec::Wasm { submission } => validate_wasm_submission(submission),
-        WorkloadSpec::EventsQuery { kinds, limit } if kinds.is_empty() => Err(error_json(
+        WorkloadSpec::EventsQuery { kinds, limit: _ } if kinds.is_empty() => Err(error_json(
             StatusCode::BAD_REQUEST,
             json!({ "error": "events query must include at least one kind" }),
         )),
@@ -3843,12 +4312,13 @@ async fn persist_lightning_success_receipt(
         .await
 }
 
-async fn persist_lightning_terminal_failure_receipt(
+async fn persist_deal_terminal_failure_receipt(
     state: Arc<AppState>,
     deal: &deals::StoredDeal,
-    bundle: &settlement::LightningInvoiceBundleSession,
+    expected_status: &str,
     deal_state: &str,
     execution_state: &str,
+    bundle: Option<&settlement::LightningInvoiceBundleSession>,
     failure: ReceiptFailure,
 ) -> Result<bool, String> {
     let completed_at = settlement::current_unix_timestamp();
@@ -3860,14 +4330,14 @@ async fn persist_lightning_terminal_failure_receipt(
         ReceiptSignSpec {
             deal_state,
             execution_state,
-            bundle: Some(bundle),
+            bundle,
             result_hash: deal.result_hash.clone(),
             failure: Some(failure.clone()),
         },
     )?;
     let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
     let deal_id = deal.deal_id.clone();
-    let expected_status = deal.status.clone();
+    let expected_status = expected_status.to_string();
     let receipt_for_db = receipt.clone();
     state
         .db
@@ -3928,6 +4398,26 @@ async fn persist_lightning_terminal_failure_receipt(
         .await
 }
 
+async fn persist_lightning_terminal_failure_receipt(
+    state: Arc<AppState>,
+    deal: &deals::StoredDeal,
+    bundle: &settlement::LightningInvoiceBundleSession,
+    deal_state: &str,
+    execution_state: &str,
+    failure: ReceiptFailure,
+) -> Result<bool, String> {
+    persist_deal_terminal_failure_receipt(
+        state,
+        deal,
+        &deal.status,
+        deal_state,
+        execution_state,
+        Some(bundle),
+        failure,
+    )
+    .await
+}
+
 async fn reconcile_lightning_deal(
     state: Arc<AppState>,
     deal: deals::StoredDeal,
@@ -3970,15 +4460,25 @@ pub async fn reconcile_lightning_settlement_once(state: Arc<AppState>) -> Result
         return Ok(());
     }
 
+    let started_at = std::time::Instant::now();
     let watch_deals = state
         .db
         .with_read_conn(deals::list_lightning_watch_deals)
         .await?;
-    for deal in watch_deals {
-        if let Err(error) = reconcile_lightning_deal(state.clone(), deal).await {
-            tracing::error!("Failed to reconcile Lightning deal: {error}");
-        }
-    }
+    stream::iter(watch_deals)
+        .for_each_concurrent(8, |deal| {
+            let state = state.clone();
+            async move {
+                if let Err(error) = reconcile_lightning_deal(state, deal).await {
+                    tracing::error!("Failed to reconcile Lightning deal: {error}");
+                }
+            }
+        })
+        .await;
+    tracing::info!(
+        duration_ms = started_at.elapsed().as_millis() as u64,
+        "Completed Lightning settlement reconciliation pass"
+    );
 
     Ok(())
 }
@@ -4005,6 +4505,12 @@ async fn update_deal_lightning_bundle_state(
     let Some(bundle) = deal_lightning_invoice_bundle(state, deal).await? else {
         return Ok(None);
     };
+
+    if matches!(success_state, InvoiceBundleLegState::Canceled) {
+        return settlement::cancel_and_sync_lightning_invoice_bundle(state, &bundle)
+            .await
+            .map(Some);
+    }
 
     settlement::update_lightning_invoice_bundle_states(
         state,
@@ -4224,14 +4730,14 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn receipt_executor_for_spec(spec: &WorkloadSpec) -> ReceiptExecutor {
-    match spec {
+fn receipt_executor_for_deal(deal: &deals::StoredDeal) -> ReceiptExecutor {
+    match &deal.spec {
         WorkloadSpec::Wasm { submission } => ReceiptExecutor {
             runtime: "wasm".to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
             abi_version: Some(submission.workload.abi_version.clone()),
             module_hash: Some(submission.workload.module_hash.clone()),
-            capabilities_granted: Vec::new(),
+            capabilities_granted: deal.quote.payload.capabilities_granted.clone(),
         },
         WorkloadSpec::EventsQuery { .. } => ReceiptExecutor {
             runtime: "builtin.events_query".to_string(),
@@ -4384,19 +4890,6 @@ fn recovery_execution_state(deal: &deals::StoredDeal) -> &'static str {
     }
 }
 
-fn cancel_recovery_bundle_if_pending(
-    bundle: &mut settlement::LightningInvoiceBundleSession,
-    updated_at: i64,
-) {
-    if matches!(
-        bundle.success_state,
-        InvoiceBundleLegState::Open | InvoiceBundleLegState::Accepted
-    ) {
-        bundle.success_state = InvoiceBundleLegState::Canceled;
-        bundle.updated_at = updated_at;
-    }
-}
-
 fn build_recovered_deal_failure(
     state: &AppState,
     deal: deals::StoredDeal,
@@ -4521,8 +5014,14 @@ async fn classify_deal_recovery(
     }
 
     if recovered_at > deal.artifact.payload.completion_deadline {
-        if let Some(bundle) = bundle.as_mut() {
-            cancel_recovery_bundle_if_pending(bundle, recovered_at);
+        if let Some(existing_bundle) = bundle.take() {
+            bundle = Some(
+                settlement::cancel_and_sync_lightning_invoice_bundle(
+                    state.as_ref(),
+                    &existing_bundle,
+                )
+                .await?,
+            );
         }
         let failure = receipt_failure(
             "completion_deadline_elapsed_during_recovery",
@@ -4547,32 +5046,13 @@ async fn classify_deal_recovery(
     }))
 }
 
-pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
-    let incomplete_deals = state
-        .db
-        .with_read_conn(deals::list_incomplete_deals)
-        .await?;
-    let incomplete_jobs = state.db.with_read_conn(jobs::list_incomplete_jobs).await?;
-    let recovered_at = settlement::current_unix_timestamp();
-    let mut recovered_deals = Vec::new();
-    let mut failed_deals = Vec::new();
-
-    for deal in incomplete_deals {
-        match classify_deal_recovery(&state, deal, recovered_at).await? {
-            DealRecoveryDecision::Requeue(resume) => recovered_deals.push(resume),
-            DealRecoveryDecision::Fail(failure) => failed_deals.push(*failure),
-        }
-    }
-
-    let recovered_jobs: Vec<RecoveredJobResume> = incomplete_jobs
-        .into_iter()
-        .map(|job| RecoveredJobResume {
-            job_id: job.job_id,
-            previous_status: job.status.clone(),
-            reset_running_status: job.status == jobs::JOB_STATUS_RUNNING,
-        })
-        .collect();
-
+async fn apply_recovery_plan(
+    state: Arc<AppState>,
+    recovered_jobs: Vec<RecoveredJobResume>,
+    recovered_deals: Vec<RecoveredDealResume>,
+    failed_deals: Vec<RecoveredDealFailure>,
+    recovered_at: i64,
+) -> Result<(), String> {
     let recovered_jobs_for_db = recovered_jobs.clone();
     let recovered_deals_for_db = recovered_deals.clone();
     state
@@ -4708,6 +5188,199 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+async fn delete_orphaned_deal_materialization_record(
+    state: Arc<AppState>,
+    orphaned_deal_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .with_write_conn(move |conn| -> Result<(), String> {
+            db::delete_deal_settlement_materialization(conn, &orphaned_deal_id)?;
+            Ok(())
+        })
+        .await
+}
+
+async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> Result<(), String> {
+    let records = state
+        .db
+        .with_read_conn(db::list_deal_settlement_materializations)
+        .await?;
+
+    for record in records {
+        let deal_id = record.deal_id.clone();
+        let deal = state
+            .db
+            .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
+            .await?;
+
+        match deal {
+            Some(deal) => {
+                let requires_remote_cancellation = state.config.payment_backend
+                    == PaymentBackend::Lightning
+                    && matches!(state.config.lightning.mode, LightningMode::LndRest)
+                    && record.materialization_kind == "lightning_invoice_bundle"
+                    && deal.payment_method.as_deref() == Some("lightning");
+                if requires_remote_cancellation {
+                    continue;
+                }
+                fail_pending_deal_materialization(
+                    state.clone(),
+                    &deal,
+                    "settlement_materialization_interrupted_during_recovery",
+                    "settlement materialization did not complete before node restart".to_string(),
+                )
+                .await?;
+            }
+            None => {
+                delete_orphaned_deal_materialization_record(state.clone(), record.deal_id).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn recover_orphaned_deal_materializations_remote(state: Arc<AppState>) -> Result<(), String> {
+    if state.config.payment_backend != PaymentBackend::Lightning {
+        return Ok(());
+    }
+
+    let records = state
+        .db
+        .with_read_conn(db::list_deal_settlement_materializations)
+        .await?;
+
+    for record in records {
+        let deal_id = record.deal_id.clone();
+        let deal = state
+            .db
+            .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
+            .await?;
+
+        match deal {
+            Some(deal) => {
+                if record.materialization_kind != "lightning_invoice_bundle"
+                    || deal.payment_method.as_deref() != Some("lightning")
+                {
+                    continue;
+                }
+
+                let request: settlement::BuildLightningInvoiceBundleRequest =
+                    serde_json::from_str(&record.request_json).map_err(|error| {
+                        format!(
+                            "invalid settlement materialization payload for deal {} during recovery: {error}",
+                            deal.deal_id
+                        )
+                    })?;
+                settlement::cancel_pending_lightning_materialization_request(
+                    state.as_ref(),
+                    &request,
+                )
+                .await?;
+                fail_pending_deal_materialization(
+                    state.clone(),
+                    &deal,
+                    "settlement_materialization_interrupted_during_recovery",
+                    "settlement materialization did not complete before node restart".to_string(),
+                )
+                .await?;
+            }
+            None => {
+                delete_orphaned_deal_materialization_record(state.clone(), record.deal_id).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), String> {
+    recover_orphaned_deal_materializations_local(state.clone()).await?;
+
+    let incomplete_deals = state
+        .db
+        .with_read_conn(deals::list_incomplete_deals)
+        .await?;
+    let incomplete_jobs = state.db.with_read_conn(jobs::list_incomplete_jobs).await?;
+    let recovered_at = settlement::current_unix_timestamp();
+    let mut recovered_deals = Vec::new();
+    let mut failed_deals = Vec::new();
+
+    for deal in incomplete_deals
+        .into_iter()
+        .filter(|deal| deal.payment_method.as_deref() != Some("lightning"))
+    {
+        match classify_deal_recovery(&state, deal, recovered_at).await? {
+            DealRecoveryDecision::Requeue(resume) => recovered_deals.push(resume),
+            DealRecoveryDecision::Fail(failure) => failed_deals.push(*failure),
+        }
+    }
+
+    let recovered_jobs: Vec<RecoveredJobResume> = incomplete_jobs
+        .into_iter()
+        .map(|job| RecoveredJobResume {
+            job_id: job.job_id,
+            previous_status: job.status.clone(),
+            reset_running_status: job.status == jobs::JOB_STATUS_RUNNING,
+        })
+        .collect();
+
+    apply_recovery_plan(
+        state,
+        recovered_jobs,
+        recovered_deals,
+        failed_deals,
+        recovered_at,
+    )
+    .await
+}
+
+pub async fn recover_runtime_state_remote(state: Arc<AppState>) -> Result<(), String> {
+    if state.config.payment_backend != PaymentBackend::Lightning {
+        return Ok(());
+    }
+
+    recover_orphaned_deal_materializations_remote(state.clone()).await?;
+
+    let incomplete_deals = state
+        .db
+        .with_read_conn(deals::list_incomplete_deals)
+        .await?;
+    let recovered_at = settlement::current_unix_timestamp();
+    let mut recovered_deals = Vec::new();
+    let mut failed_deals = Vec::new();
+
+    for deal in incomplete_deals
+        .into_iter()
+        .filter(|deal| deal.payment_method.as_deref() == Some("lightning"))
+    {
+        match classify_deal_recovery(&state, deal, recovered_at).await? {
+            DealRecoveryDecision::Requeue(resume) => recovered_deals.push(resume),
+            DealRecoveryDecision::Fail(failure) => failed_deals.push(*failure),
+        }
+    }
+
+    apply_recovery_plan(
+        state,
+        Vec::new(),
+        recovered_deals,
+        failed_deals,
+        recovered_at,
+    )
+    .await
+}
+
+/// Combined recovery function retained for test convenience. In production,
+/// `recover_runtime_state_local` and `recover_runtime_state_remote` are invoked
+/// separately (the remote path runs as a supervised background task). Do not
+/// call this from production startup code to avoid double-running remote recovery.
+#[cfg(test)]
+pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
+    recover_runtime_state_local(state.clone()).await?;
+    recover_runtime_state_remote(state).await
+}
+
 async fn run_wasm_with_timeout<F>(timeout: Duration, operation: F) -> Result<Value, String>
 where
     F: FnOnce() -> Result<Value, Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
@@ -4736,9 +5409,20 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
     match spec {
         JobSpec::Wasm { submission } => {
             let verified = submission.verify()?;
+            let (capabilities_granted, host_environment) =
+                local_wasm_capabilities_for_submission(state, &verified)?;
             let wasm_sandbox = state.wasm_sandbox.clone();
             run_wasm_with_timeout(timeout, move || {
-                wasm_sandbox.execute_module(&verified.module_bytes, &verified.input, timeout)
+                wasm_sandbox.execute_module_with_options(
+                    &verified.module_bytes,
+                    &verified.input,
+                    sandbox::WasmExecutionOptions {
+                        abi_version: verified.abi_version.clone(),
+                        capabilities_granted,
+                        host_environment,
+                    },
+                    timeout,
+                )
             })
             .await
         }
@@ -4748,6 +5432,7 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
 async fn run_workload_spec_with_admission(
     state: &AppState,
     spec: WorkloadSpec,
+    capabilities_granted: Vec<String>,
     payment_method: Option<&str>,
     permit: Option<sandbox::ExecutionPermit>,
 ) -> Result<Value, String> {
@@ -4755,11 +5440,17 @@ async fn run_workload_spec_with_admission(
     match (spec, permit) {
         (WorkloadSpec::Wasm { submission }, Some(permit)) => {
             let verified = submission.verify()?;
+            let (_, host_environment) = local_wasm_capabilities_for_submission(state, &verified)?;
             let wasm_sandbox = state.wasm_sandbox.clone();
             run_wasm_with_timeout(timeout, move || {
-                wasm_sandbox.execute_module_with_permit(
+                wasm_sandbox.execute_module_with_options_and_permit(
                     &verified.module_bytes,
                     &verified.input,
+                    sandbox::WasmExecutionOptions {
+                        abi_version: verified.abi_version.clone(),
+                        capabilities_granted,
+                        host_environment,
+                    },
                     permit,
                     timeout,
                 )
@@ -4776,7 +5467,7 @@ async fn run_workload_spec_with_admission(
             .await
         }
         (WorkloadSpec::EventsQuery { kinds, limit }, None) => {
-            let events = query_events_db(state, kinds, limit).await?;
+            let events = query_events_with_capacity(state, kinds, limit).await?;
             Ok(json!({
                 "events": events,
                 "cursor": null
@@ -4907,7 +5598,11 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
 
 fn classify_execution_failure(message: &str) -> &'static str {
     let normalized = message.to_ascii_lowercase();
-    if normalized.contains("timeout")
+    if message.contains(EVENTS_QUERY_CAPACITY_EXHAUSTED)
+        || normalized.contains("concurrency limit")
+    {
+        "capacity_exhausted"
+    } else if normalized.contains("timeout")
         || normalized.contains("deadline")
         || normalized.contains("interrupt")
     {
@@ -4954,6 +5649,8 @@ fn sign_deal_receipt(
             requester_id: deal.artifact.payload.requester_id.clone(),
             deal_hash: deal.artifact.hash.clone(),
             quote_hash: deal.quote.hash.clone(),
+            extension_refs: Vec::new(),
+            acceptance_ref: None,
             started_at: receipt_started_at(deal, spec.execution_state),
             finished_at,
             deal_state: spec.deal_state.to_string(),
@@ -4961,7 +5658,7 @@ fn sign_deal_receipt(
             settlement_state,
             result_hash: spec.result_hash,
             result_format,
-            executor: receipt_executor_for_spec(&deal.spec),
+            executor: receipt_executor_for_deal(deal),
             limits_applied: receipt_limits_for_spec(
                 state,
                 &deal.spec,
@@ -5156,9 +5853,26 @@ async fn process_deal_with_reserved_permit(
         }
     }
 
+    // Intersect the capabilities granted at quote-time with the provider's
+    // current advertised capabilities, so that capabilities removed since the
+    // quote was issued are no longer honoured at execution time.
+    let effective_capabilities = if let Some(host_env) = state.wasm_host.as_ref() {
+        let current = host_env.advertised_capabilities();
+        deal.quote
+            .payload
+            .capabilities_granted
+            .iter()
+            .filter(|cap| current.iter().any(|c| c == *cap))
+            .cloned()
+            .collect()
+    } else {
+        deal.quote.payload.capabilities_granted.clone()
+    };
+
     match run_workload_spec_with_admission(
         state.as_ref(),
         deal.spec.clone(),
+        effective_capabilities,
         deal.payment_method.as_deref(),
         execution_permit,
     )
@@ -5419,7 +6133,7 @@ mod tests {
     use crate::{
         config::{
             DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-            PaymentBackend, PricingConfig, StorageConfig,
+            PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
         },
         crypto,
         db::DbPool,
@@ -5459,6 +6173,7 @@ mod tests {
         let node_config = NodeConfig {
             network_mode: NetworkMode::Clearnet,
             listen_addr: "127.0.0.1:0".to_string(),
+            public_base_url: None,
             runtime_listen_addr: "127.0.0.1:0".to_string(),
             tor: crate::config::TorSidecarConfig {
                 binary_path: "tor".to_string(),
@@ -5496,9 +6211,14 @@ mod tests {
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 tor_dir: temp_dir.join("tor"),
             },
+            wasm: WasmConfig {
+                policy_path: None,
+                policy: None,
+            },
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
+        let events_query_capacity = db.read_connection_count().max(1);
         let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
 
         Arc::new(AppState {
@@ -5514,8 +6234,12 @@ mod tests {
             identity: Arc::new(identity),
             pricing: PricingTable::from_config(node_config.pricing),
             http_client: reqwest::Client::new(),
+            wasm_host: None,
             runtime_auth_token: "test-runtime-token".to_string(),
             runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
+            events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+            lnd_rest_client: None,
+            lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
@@ -5598,6 +6322,9 @@ mod tests {
                 expires_at,
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: "cc".repeat(32),
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
                 settlement_terms: QuoteSettlementTerms {
                     method: "lightning.base_fee_plus_success_fee.v1".to_string(),
                     destination_identity: format!("02{}", "dd".repeat(32)),
@@ -5693,6 +6420,10 @@ mod tests {
                 provider_id: quote.payload.provider_id.clone(),
                 quote_hash: quote.hash.clone(),
                 workload_hash: quote.payload.workload_hash.clone(),
+                extension_refs: Vec::new(),
+                authority_ref: None,
+                supersedes_deal_hash: None,
+                client_nonce: None,
                 success_payment_hash: "11".repeat(32),
                 admission_deadline: created_at + 60,
                 completion_deadline: created_at + 120,
@@ -5840,7 +6571,9 @@ mod tests {
                             idempotency_key: Some("recovery-deal".to_string()),
                             quote,
                             spec,
-                            artifact: deal,
+                            artifact: deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal.hash.clone(),
                             payment_method: None,
                             payment_token_hash: None,
                             payment_amount_sats: None,
@@ -5928,7 +6661,9 @@ mod tests {
                                 kinds: vec!["market.listing".to_string()],
                                 limit: Some(1),
                             },
-                            artifact: expired_deal,
+                            artifact: expired_deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: expired_deal.hash.clone(),
                             payment_method: None,
                             payment_token_hash: None,
                             payment_amount_sats: None,
@@ -6003,6 +6738,8 @@ mod tests {
                                 submission: Box::new(test_wasm_submission()),
                             },
                             artifact: deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal.hash.clone(),
                             payment_method: Some("lightning".to_string()),
                             payment_token_hash: Some(deal.payload.success_payment_hash.clone()),
                             payment_amount_sats: Some(lightning_payment_amount_sats(&quote)),
@@ -6091,6 +6828,8 @@ mod tests {
                                 submission: Box::new(test_wasm_submission()),
                             },
                             artifact: deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal.hash.clone(),
                             payment_method: Some("lightning".to_string()),
                             payment_token_hash: Some(deal.payload.success_payment_hash.clone()),
                             payment_amount_sats: Some(lightning_payment_amount_sats(&quote)),
@@ -6181,6 +6920,8 @@ mod tests {
                                 submission: Box::new(test_wasm_submission()),
                             },
                             artifact: deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal.hash.clone(),
                             payment_method: Some("lightning".to_string()),
                             payment_token_hash: Some(deal.payload.success_payment_hash.clone()),
                             payment_amount_sats: Some(lightning_payment_amount_sats(&quote)),

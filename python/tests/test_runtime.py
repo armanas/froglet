@@ -108,6 +108,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
         headers = runtime_auth_headers(node)
@@ -187,6 +188,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -336,6 +338,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
         headers = runtime_auth_headers(node)
@@ -393,6 +396,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -487,6 +491,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
         headers = runtime_auth_headers(node)

@@ -6,22 +6,19 @@ from test_support import FrogletAsyncTestCase, VALID_WASM_HEX, build_wasm_reques
 
 
 class PaymentEnforcementTests(FrogletAsyncTestCase):
-    async def test_priced_services_default_to_lightning_backend(self) -> None:
-        node = await self.start_node(extra_env={"FROGLET_PRICE_EVENTS_QUERY": "10"})
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(node.url("/v1/node/capabilities")) as resp:
-                payload = await resp.json()
-
-        self.assertEqual(resp.status, 200)
-        self.assertEqual(payload["payments"]["backend"], "lightning")
-        self.assertEqual(payload["payments"]["accepted_payment_methods"], ["lightning"])
+    async def test_priced_services_require_explicit_lightning_mode(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "FROGLET_LIGHTNING_MODE is required whenever Lightning payments are active",
+        ):
+            await self.start_node(extra_env={"FROGLET_PRICE_EVENTS_QUERY": "10"})
 
     async def test_lightning_priced_query_requires_protocol_deal_flow(self) -> None:
         node = await self.start_node(
             extra_env={
                 "FROGLET_PRICE_EVENTS_QUERY": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
 
@@ -44,6 +41,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
 
@@ -64,6 +62,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
 

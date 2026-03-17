@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import contextlib
 import io
 import json
@@ -15,7 +16,9 @@ from froglet_client import ProviderClient, RuntimeClient
 from froglet_nostr_adapter import (
     FrogletNostrRelayAdapter,
     NostrAuthSigner,
+    NostrRelayClient,
     NostrRelayConfigError,
+    RelayPublishResult,
     RelayListConfig,
     RelayPolicy,
     RetryPolicy,
@@ -29,15 +32,10 @@ from test_support import (
     VALID_WASM_HEX,
     build_wasm_request,
     generate_schnorr_signing_key,
+    listening_port,
     schnorr_pubkey_hex,
     sha256_hex,
 )
-
-
-def _free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 class FakeNostrRelay:
@@ -61,10 +59,9 @@ class FakeNostrRelay:
         app.router.add_get("/", self._handle_ws)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        port = _free_tcp_port()
-        site = web.TCPSite(self._runner, "127.0.0.1", port)
+        site = web.TCPSite(self._runner, "127.0.0.1", 0)
         await site.start()
-        self.url = f"ws://127.0.0.1:{port}/"
+        self.url = f"ws://127.0.0.1:{listening_port(site)}/"
 
     async def stop(self) -> None:
         if self._runner is not None:
@@ -233,6 +230,7 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
             }
         )
@@ -480,6 +478,99 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
         self.assertEqual(query_rc, 0)
         self.assertEqual(len(published), 3)
         self.assertTrue(queried)
+
+
+class NostrRelayAdapterHardeningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nostr_relay_client_uses_explicit_session_timeouts(self) -> None:
+        relay = NostrRelayClient("ws://127.0.0.1:9")
+        session = await relay._ensure_session()
+        try:
+            self.assertIsNotNone(session.timeout.total)
+            self.assertIsNotNone(session.timeout.connect)
+            self.assertIsNotNone(session.timeout.sock_connect)
+            self.assertIsNotNone(session.timeout.sock_read)
+        finally:
+            await relay.close()
+
+    async def test_publish_events_limits_relay_concurrency(self) -> None:
+        relay_policies = [
+            RelayPolicy(relay_url=f"ws://relay-{index}.example")
+            for index in range(4)
+        ]
+        adapter = FrogletNostrRelayAdapter(
+            "http://127.0.0.1:8000",
+            "token",
+            relay_policies,
+            provider_base_url="http://127.0.0.1:9000",
+        )
+        adapter._relay_concurrency_limit = 2
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def fake_publish_with_retry(
+            relay: NostrRelayClient,
+            relay_policy: RelayPolicy,
+            event: dict[str, object],
+        ) -> RelayPublishResult:
+            del relay
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            try:
+                await asyncio.sleep(0.05)
+            finally:
+                in_flight -= 1
+            return RelayPublishResult(
+                relay_url=relay_policy.relay_url,
+                event_id=str(event["id"]),
+                accepted=True,
+                message="ok",
+            )
+
+        with mock.patch.object(adapter, "_publish_with_retry", side_effect=fake_publish_with_retry):
+            results = await adapter.publish_events([{"id": "event-1"}])
+
+        self.assertEqual(len(results), len(relay_policies))
+        self.assertLessEqual(max_in_flight, 2)
+
+    async def test_query_events_runs_relays_in_parallel(self) -> None:
+        relay_policies = [
+            RelayPolicy(relay_url="ws://slow-relay.example"),
+            RelayPolicy(relay_url="ws://fast-relay.example"),
+        ]
+        adapter = FrogletNostrRelayAdapter(
+            "http://127.0.0.1:8000",
+            "token",
+            relay_policies,
+            provider_base_url="http://127.0.0.1:9000",
+        )
+
+        slow_started = asyncio.Event()
+        fast_started = asyncio.Event()
+        release_slow = asyncio.Event()
+
+        async def fake_query_with_retry(
+            relay: NostrRelayClient,
+            relay_policy: RelayPolicy,
+            filters: list[dict[str, object]],
+        ) -> tuple[list[dict[str, object]], str | None]:
+            del relay, filters
+            if relay_policy.relay_url == "ws://slow-relay.example":
+                slow_started.set()
+                await release_slow.wait()
+                return [{"id": "slow-event"}], None
+            fast_started.set()
+            return [{"id": "fast-event"}], None
+
+        with mock.patch.object(adapter, "_query_with_retry", side_effect=fake_query_with_retry):
+            query_task = asyncio.create_task(adapter.query_events([{"kinds": [30390]}]))
+            await asyncio.wait_for(slow_started.wait(), timeout=1.0)
+            await asyncio.wait_for(fast_started.wait(), timeout=1.0)
+            release_slow.set()
+            events = await asyncio.wait_for(query_task, timeout=1.0)
+
+        self.assertEqual({event["id"] for event in events}, {"slow-event", "fast-event"})
 
 
 class NostrRelayAdapterHelperTests(unittest.TestCase):

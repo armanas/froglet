@@ -65,6 +65,7 @@ pub enum LndRestError {
     UnsupportedState(String),
 }
 
+#[derive(Clone)]
 pub struct LndRestClient {
     base_url: Url,
     client: Client,

@@ -1,0 +1,16 @@
+{
+  "name": "froglet-openclaw-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Public OpenClaw plugin for Froglet marketplace and provider discovery.",
+  "scripts": {
+    "check": "node --check index.js",
+    "test": "node --test test/plugin.test.js"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}
