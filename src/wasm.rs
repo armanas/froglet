@@ -249,7 +249,7 @@ impl OciWasmSubmission {
                 workload.input_format
             ));
         }
-        
+
         if workload.oci_reference.is_empty() {
             return Err("missing oci_reference".to_string());
         }

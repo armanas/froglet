@@ -21,6 +21,7 @@ The container images default to:
 - `FROGLET_LISTEN_ADDR=0.0.0.0:8080`
 - `FROGLET_PUBLIC_BASE_URL=http://127.0.0.1:8080`
 - `FROGLET_RUNTIME_LISTEN_ADDR=127.0.0.1:8081`
+- `FROGLET_RUNTIME_ALLOW_NON_LOOPBACK=false`
 - `FROGLET_TOR_BACKEND_LISTEN_ADDR=127.0.0.1:8082`
 - `FROGLET_MARKETPLACE_LISTEN_ADDR=0.0.0.0:9090`
 - `FROGLET_MARKETPLACE_DB_PATH=/data/marketplace.db`
@@ -74,6 +75,9 @@ This layout is the easiest Docker path for full OpenClaw runtime mode because
 the checked-in full-runtime OpenClaw config can point at the same host URLs and
 token path as the direct host process flow.
 
+The dedicated Compose file opts into non-loopback runtime binding inside the
+container while still publishing only host loopback ports.
+
 ## 4. Single-Image Usage
 
 Build the node image only:
@@ -95,8 +99,9 @@ docker run --rm \
 ```
 
 Run it in host-accessible full-runtime mode. The `0.0.0.0` override for
-`FROGLET_RUNTIME_LISTEN_ADDR` is mandatory — without it the runtime binds
-loopback inside the container and the published host port cannot reach it:
+`FROGLET_RUNTIME_LISTEN_ADDR` and explicit
+`FROGLET_RUNTIME_ALLOW_NON_LOOPBACK=true` opt-in are both mandatory — without
+them the runtime either binds loopback inside the container or exits at startup:
 
 ```bash
 mkdir -p ./data
@@ -108,6 +113,7 @@ docker run --rm \
   -e FROGLET_PAYMENT_BACKEND=lightning \
   -e FROGLET_LIGHTNING_MODE=mock \
   -e FROGLET_RUNTIME_LISTEN_ADDR=0.0.0.0:8081 \
+  -e FROGLET_RUNTIME_ALLOW_NON_LOOPBACK=true \
   froglet:local
 ```
 
@@ -130,6 +136,9 @@ docker run --rm \
 
 The Froglet runtime listener is intentionally still loopback-only inside the
 starter container layout.
+
+Non-loopback runtime binding is now an explicit opt-in meant for the dedicated
+full-runtime Docker path. Do not enable it for normal starter deployments.
 
 That means:
 

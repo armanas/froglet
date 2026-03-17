@@ -58,7 +58,7 @@ jobs:
         run: docker compose build marketplace froglet
 
       - name: Start starter stack
-        run: docker compose up -d marketplace froglet
+        run: docker compose up -d --wait marketplace froglet
 
       - name: Wait for marketplace health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:9090/health
@@ -126,7 +126,7 @@ jobs:
       - name: Start full-runtime stack
         run: |
           mkdir -p ./data
-          docker compose -f compose.full-runtime.yaml up -d marketplace froglet
+          docker compose -f compose.full-runtime.yaml up -d --wait marketplace froglet
 
       - name: Wait for marketplace health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:9090/health

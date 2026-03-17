@@ -234,18 +234,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime_listen_addr
         .parse()
         .expect("Invalid runtime listen address format");
-    if !runtime_addr.ip().is_loopback() {
+    if !runtime_addr.ip().is_loopback() && !node_config.runtime_allow_non_loopback {
         error!(
             "FROGLET_RUNTIME_LISTEN_ADDR must bind to a loopback address, got {}",
             node_config.runtime_listen_addr
         );
         std::process::exit(1);
     }
+    if !runtime_addr.ip().is_loopback() {
+        warn!(
+            "Runtime API is binding a non-loopback address ({}) because FROGLET_RUNTIME_ALLOW_NON_LOOPBACK=true; restrict network access to trusted local callers",
+            node_config.runtime_listen_addr
+        );
+    }
 
     let runtime_listener = tokio::net::TcpListener::bind(runtime_addr).await?;
     let bound_runtime_addr = runtime_listener.local_addr()?;
     let initial_runtime_listener = Arc::new(TokioMutex::new(Some(runtime_listener)));
-    println!(" 🔒 Local Runtime API: http://{}", bound_runtime_addr);
+    if runtime_addr.ip().is_loopback() {
+        println!(" 🔒 Local Runtime API: http://{}", bound_runtime_addr);
+    } else {
+        println!(" 🔒 Runtime API: http://{}", bound_runtime_addr);
+    }
     spawn_supervised_task(
         "runtime-api-listener",
         restart_policy,

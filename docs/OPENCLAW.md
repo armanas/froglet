@@ -176,6 +176,7 @@ Unlike the starter [../compose.yaml](../compose.yaml), this full-runtime file:
 
 - publishes the privileged runtime on `127.0.0.1:8081`
 - bind-mounts `./data` so the token is visible on the host
+- opts into non-loopback runtime binding only inside the container so the host port can reach it
 - keeps the same host URLs and token path as the direct process flow
 
 That means you can use the same

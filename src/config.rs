@@ -302,6 +302,7 @@ pub struct NodeConfig {
     pub listen_addr: String,
     pub public_base_url: Option<String>,
     pub runtime_listen_addr: String,
+    pub runtime_allow_non_loopback: bool,
     pub tor: TorSidecarConfig,
     pub discovery_mode: DiscoveryMode,
     pub identity: IdentityConfig,
@@ -329,6 +330,7 @@ impl NodeConfig {
         };
         let runtime_listen_addr = env::var("FROGLET_RUNTIME_LISTEN_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+        let runtime_allow_non_loopback = env_bool("FROGLET_RUNTIME_ALLOW_NON_LOOPBACK", false)?;
         let tor = TorSidecarConfig {
             binary_path: env::var("FROGLET_TOR_BINARY").unwrap_or_else(|_| "tor".to_string()),
             backend_listen_addr: env::var("FROGLET_TOR_BACKEND_LISTEN_ADDR")
@@ -476,6 +478,7 @@ impl NodeConfig {
             listen_addr,
             public_base_url,
             runtime_listen_addr,
+            runtime_allow_non_loopback,
             tor,
             discovery_mode,
             identity: IdentityConfig {

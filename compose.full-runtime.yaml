@@ -33,6 +33,7 @@ services:
       FROGLET_PUBLIC_BASE_URL: http://127.0.0.1:8080
       # Bind 0.0.0.0 inside the container so the published host port reaches the runtime.
       FROGLET_RUNTIME_LISTEN_ADDR: 0.0.0.0:8081
+      FROGLET_RUNTIME_ALLOW_NON_LOOPBACK: "true"
       FROGLET_MARKETPLACE_URL: http://marketplace:9090
       FROGLET_MARKETPLACE_PUBLISH: "true"
     ports:

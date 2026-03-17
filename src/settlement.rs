@@ -566,11 +566,14 @@ pub async fn sync_lightning_invoice_bundle_session(
             };
             if matches!(base_state, InvoiceBundleLegState::Accepted) {
                 match client
-                    .settle_invoice(&deterministic_base_fee_preimage_hex(state, &session.session_id))
+                    .settle_invoice(&deterministic_base_fee_preimage_hex(
+                        state,
+                        &session.session_id,
+                    ))
                     .await
                 {
                     Ok(()) => {}
-                    Err(LndRestError::Status { status, .. }) if status == 409 => {
+                    Err(LndRestError::Status { status: 409, .. }) => {
                         // Already settled — proceed idempotently.
                     }
                     Err(error) => return Err(error.to_string()),

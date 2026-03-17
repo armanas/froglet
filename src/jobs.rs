@@ -29,8 +29,12 @@ impl FaaSDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobSpec {
-    Wasm { submission: WasmSubmission },
-    OciWasm { submission: crate::wasm::OciWasmSubmission },
+    Wasm {
+        submission: WasmSubmission,
+    },
+    OciWasm {
+        submission: crate::wasm::OciWasmSubmission,
+    },
 }
 
 impl JobSpec {

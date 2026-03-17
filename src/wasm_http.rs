@@ -136,11 +136,7 @@ pub fn fetch(
                 let vetted_addresses =
                     resolve_public_http_host_addresses(&host_for_resolution, host_port, deadline)
                         .await?;
-                build_resolved_http_client(
-                    &host_for_resolution,
-                    host_port,
-                    &vetted_addresses,
-                )?
+                build_resolved_http_client(&host_for_resolution, host_port, &vetted_addresses)?
             };
             let mut builder = request_client
                 .request(method, parsed_url)
@@ -362,10 +358,10 @@ fn ip_targets_private_network(ip: IpAddr) -> bool {
                 || ip.is_unique_local()
                 || ip.is_unicast_link_local()
                 || ip.is_multicast()
-                || ip.to_ipv4_mapped()
-                    .map_or(false, ip_v4_targets_private_network)
-                || ip.to_ipv4()
-                    .map_or(false, ip_v4_targets_private_network)
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(ip_v4_targets_private_network)
+                || ip.to_ipv4().is_some_and(ip_v4_targets_private_network)
         }
     }
 }

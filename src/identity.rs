@@ -197,6 +197,7 @@ mod tests {
             listen_addr: "127.0.0.1:8080".into(),
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:8081".into(),
+            runtime_allow_non_loopback: false,
             tor: TorSidecarConfig {
                 binary_path: "tor".into(),
                 backend_listen_addr: "127.0.0.1:8082".into(),

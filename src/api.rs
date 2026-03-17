@@ -461,8 +461,7 @@ fn events_query_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let limit = state
         .db
         .read_connection_count()
-        .max(1)
-        .min(DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT);
+        .clamp(1, DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT);
     Router::new()
         .route("/v1/node/events/query", post(query_events))
         .route_layer(ConcurrencyLimitLayer::new(limit))
@@ -5450,9 +5449,7 @@ async fn fetch_oci_wasm_module(
     let oci_ref = &submission.workload.oci_reference;
     let parts: Vec<&str> = oci_ref.split('/').collect();
     if parts.len() < 2 {
-        return Err(
-            "invalid oci_reference format, expected at least host/image".to_string(),
-        );
+        return Err("invalid oci_reference format, expected at least host/image".to_string());
     }
 
     let host = parts[0];
@@ -5484,10 +5481,7 @@ async fn fetch_oci_wasm_module(
             "https://ghcr.io/token".to_string(),
         )
     } else {
-        (
-            format!("https://{host}"),
-            format!("https://{host}/token"),
-        )
+        (format!("https://{host}"), format!("https://{host}/token"))
     };
 
     // 2. Setup Client
@@ -5512,19 +5506,14 @@ async fn fetch_oci_wasm_module(
     let wasm_layer = manifest
         .layers
         .iter()
-        .find(|l| {
-            l.media_type == crate::wasm::WASM_MODULE_FORMAT
-                || l.media_type.contains("wasm")
-        })
+        .find(|l| l.media_type == crate::wasm::WASM_MODULE_FORMAT || l.media_type.contains("wasm"))
         .ok_or_else(|| "no wasm layer found in OCI manifest".to_string())?;
 
     // 6. Download Blob (with size cap)
     let mut blob_stream = client
         .blob(image, &wasm_layer.digest)
         .await
-        .map_err(|e| {
-            format!("failed to fetch OCI blob {}: {:?}", wasm_layer.digest, e)
-        })?;
+        .map_err(|e| format!("failed to fetch OCI blob {}: {:?}", wasm_layer.digest, e))?;
 
     let mut module_bytes = Vec::new();
     loop {
@@ -5581,20 +5570,18 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
             submission.verify()?;
             let module_bytes = fetch_oci_wasm_module(&submission).await?;
 
-            let declared_capabilities =
-                crate::wasm::normalize_requested_capabilities(
-                    &submission.workload.requested_capabilities,
-                )?;
-            let (capabilities_granted, host_environment) =
-                local_wasm_capabilities_for_submission(
-                    state,
-                    &crate::wasm::VerifiedWasmSubmission {
-                        module_bytes: module_bytes.clone(),
-                        input: submission.input.clone(),
-                        abi_version: submission.workload.abi_version.clone(),
-                        requested_capabilities: declared_capabilities,
-                    },
-                )?;
+            let declared_capabilities = crate::wasm::normalize_requested_capabilities(
+                &submission.workload.requested_capabilities,
+            )?;
+            let (capabilities_granted, host_environment) = local_wasm_capabilities_for_submission(
+                state,
+                &crate::wasm::VerifiedWasmSubmission {
+                    module_bytes: module_bytes.clone(),
+                    input: submission.input.clone(),
+                    abi_version: submission.workload.abi_version.clone(),
+                    requested_capabilities: declared_capabilities,
+                },
+            )?;
 
             let wasm_sandbox = state.wasm_sandbox.clone();
             let abi_version = submission.workload.abi_version.clone();
@@ -5661,20 +5648,18 @@ async fn run_workload_spec_with_admission(
             submission.verify()?;
             let module_bytes = fetch_oci_wasm_module(&submission).await?;
 
-            let declared_capabilities =
-                crate::wasm::normalize_requested_capabilities(
-                    &submission.workload.requested_capabilities,
-                )?;
-            let (_, host_environment) =
-                local_wasm_capabilities_for_submission(
-                    state,
-                    &crate::wasm::VerifiedWasmSubmission {
-                        module_bytes: module_bytes.clone(),
-                        input: submission.input.clone(),
-                        abi_version: submission.workload.abi_version.clone(),
-                        requested_capabilities: declared_capabilities,
-                    },
-                )?;
+            let declared_capabilities = crate::wasm::normalize_requested_capabilities(
+                &submission.workload.requested_capabilities,
+            )?;
+            let (_, host_environment) = local_wasm_capabilities_for_submission(
+                state,
+                &crate::wasm::VerifiedWasmSubmission {
+                    module_bytes: module_bytes.clone(),
+                    input: submission.input.clone(),
+                    abi_version: submission.workload.abi_version.clone(),
+                    requested_capabilities: declared_capabilities,
+                },
+            )?;
 
             let wasm_sandbox = state.wasm_sandbox.clone();
             let abi_version = submission.workload.abi_version.clone();
@@ -5827,8 +5812,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
 
 fn classify_execution_failure(message: &str) -> &'static str {
     let normalized = message.to_ascii_lowercase();
-    if message.contains(EVENTS_QUERY_CAPACITY_EXHAUSTED)
-        || normalized.contains("concurrency limit")
+    if message.contains(EVENTS_QUERY_CAPACITY_EXHAUSTED) || normalized.contains("concurrency limit")
     {
         "capacity_exhausted"
     } else if normalized.contains("timeout")
@@ -6420,6 +6404,7 @@ mod tests {
             listen_addr: "127.0.0.1:0".to_string(),
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:0".to_string(),
+            runtime_allow_non_loopback: false,
             tor: crate::config::TorSidecarConfig {
                 binary_path: "tor".to_string(),
                 backend_listen_addr: "127.0.0.1:0".to_string(),

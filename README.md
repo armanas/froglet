@@ -136,6 +136,7 @@ Quoted prices are enforced before execution. Terminal receipts are always signed
 | `FROGLET_LISTEN_ADDR` | `127.0.0.1:8080` | Public provider API |
 | `FROGLET_PUBLIC_BASE_URL` | — | Advertised clearnet URL for descriptor and marketplace publication |
 | `FROGLET_RUNTIME_LISTEN_ADDR` | `127.0.0.1:8081` | Privileged local runtime API |
+| `FROGLET_RUNTIME_ALLOW_NON_LOOPBACK` | `false` | Explicit opt-in for container/published runtime bindings |
 | `FROGLET_TOR_BACKEND_LISTEN_ADDR` | `127.0.0.1:8082` | Internal backend the Tor sidecar publishes |
 | `FROGLET_TOR_BINARY` | `tor` | Path to the `tor` executable |
 | `FROGLET_TOR_STARTUP_TIMEOUT_SECS` | `90` | Seconds to wait for Tor bootstrap |
@@ -144,7 +145,7 @@ Quoted prices are enforced before execution. Terminal receipts are always signed
 `FROGLET_PUBLIC_BASE_URL` is useful when Froglet binds `0.0.0.0` inside a
 container but should advertise a host- or proxy-reachable URL.
 
-`FROGLET_RUNTIME_LISTEN_ADDR` and `FROGLET_TOR_BACKEND_LISTEN_ADDR` are separate trust boundaries — keep both on loopback.
+`FROGLET_RUNTIME_LISTEN_ADDR` and `FROGLET_TOR_BACKEND_LISTEN_ADDR` are separate trust boundaries — keep both on loopback unless you are deliberately publishing the runtime from the dedicated full-runtime Docker path.
 
 ### Node — Identity
 
