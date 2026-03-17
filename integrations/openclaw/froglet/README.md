@@ -14,9 +14,10 @@ Closed marketplace/catalog/broker logic does not belong in this package. Keep
 that as a separate private plugin/package even if it still consumes public
 Froglet APIs.
 
-Starter config:
+Starter configs:
 
 - [examples/openclaw.config.example.json](examples/openclaw.config.example.json)
+- [examples/openclaw.config.full-runtime.example.json](examples/openclaw.config.full-runtime.example.json)
 
 Local verification:
 
@@ -26,5 +27,5 @@ node --test test/plugin.test.js
 python3 -m py_compile bridge.py
 ```
 
-See [../../../docs/OPENCLAW.md](../../../docs/OPENCLAW.md) for installation and
-configuration.
+See [../../../docs/OPENCLAW.md](../../../docs/OPENCLAW.md) for installation,
+full-runtime setup, and configuration.

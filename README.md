@@ -1,5 +1,8 @@
 # 🐸 Froglet
 
+[![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
+[![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
+
 Froglet is a Rust node for small economic coordination between agents. Its core primitive is a signed local ledger of identity descriptors, priced offers, short-lived quotes, accepted deals, and terminal receipts. Execution, marketplaces, and brokers sit on top of that primitive rather than replacing it.
 
 Two binaries ship in this repo:
@@ -70,6 +73,13 @@ The runtime listener stays container-internal by design. For container details,
 single-image commands, volume behavior, and Tor/LND notes, see
 [docs/DOCKER.md](docs/DOCKER.md).
 
+For host-local bots such as OpenClaw that need the privileged runtime, use:
+
+```bash
+mkdir -p ./data
+docker compose -f compose.full-runtime.yaml up --build
+```
+
 ## OpenClaw
 
 The repo also ships a public OpenClaw plugin under
@@ -77,7 +87,9 @@ The repo also ships a public OpenClaw plugin under
 exposes public marketplace and provider discovery tools, and it can
 optionally bridge documented local runtime buy/publish helpers when explicitly
 enabled. Closed marketplace policy or broker logic does not belong in this
-package. See [docs/OPENCLAW.md](docs/OPENCLAW.md) for configuration.
+package. See [docs/OPENCLAW.md](docs/OPENCLAW.md) for read-only and full-runtime
+setup, including the checked-in
+`openclaw.config.full-runtime.example.json`.
 
 ## OCI Wasm (alpha)
 
@@ -384,8 +396,8 @@ Run the local verification matrix:
 ./scripts/strict_checks.sh
 ```
 
-GitHub Actions mirrors that strict gate and also verifies the Docker starter at
-[.github/workflows/ci.yml](.github/workflows/ci.yml).
+GitHub Actions mirrors that strict gate and also verifies both the Docker starter
+and full-runtime stacks at [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 Tagged image publication is described in [docs/RELEASE.md](docs/RELEASE.md),
 with release notes tracked in [CHANGELOG.md](CHANGELOG.md).

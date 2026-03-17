@@ -53,8 +53,10 @@ jobs:
         env:
           TAG_VERSION: ${{ steps.meta.outputs.version }}
 
-      - name: Validate Compose configuration
-        run: docker compose config
+      - name: Validate Compose configurations
+        run: |
+          docker compose config
+          docker compose -f compose.full-runtime.yaml config
 
       - name: Log in to GHCR
         env:

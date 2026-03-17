@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
@@ -49,7 +49,7 @@ jobs:
 
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Validate Compose configuration
         run: docker compose config
@@ -107,3 +107,50 @@ jobs:
       - name: Stop starter stack
         if: always()
         run: docker compose down -v
+
+  docker-full-runtime:
+    name: Docker Full Runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Validate full-runtime Compose configuration
+        run: docker compose -f compose.full-runtime.yaml config
+
+      - name: Build full-runtime images
+        run: docker compose -f compose.full-runtime.yaml build marketplace froglet
+
+      - name: Start full-runtime stack
+        run: |
+          mkdir -p ./data
+          docker compose -f compose.full-runtime.yaml up -d marketplace froglet
+
+      - name: Wait for marketplace health
+        run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:9090/health
+
+      - name: Wait for froglet health
+        run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8080/health
+
+      - name: Verify runtime port is reachable
+        run: curl --retry 10 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8081/health
+
+      - name: Verify runtime auth token is accessible on host
+        run: |
+          test -f ./data/runtime/auth.token || { echo "auth token not found on bind-mounted host path"; exit 1; }
+          TOKEN=$(cat ./data/runtime/auth.token)
+          test -n "$TOKEN" || { echo "auth token file is empty"; exit 1; }
+
+      - name: Show container status
+        if: always()
+        run: docker compose -f compose.full-runtime.yaml ps
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f compose.full-runtime.yaml logs --no-color marketplace froglet
+
+      - name: Stop full-runtime stack
+        if: always()
+        run: docker compose -f compose.full-runtime.yaml down -v
