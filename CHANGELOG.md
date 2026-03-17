@@ -9,12 +9,27 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ### Added
 
+- OCI Wasm workload kind (`compute.wasm.oci.v1`) allowing Wasm modules to be
+  referenced by OCI image (`oci_reference` + `oci_digest`) instead of inline hex
+  bytes; supports `ghcr.io` and Docker Hub registries with anonymous pulls
+- `OciWasmSubmission` and `OciWasmWorkload` structs in `src/wasm.rs`
+- `oci-registry-client` dependency for OCI manifest and blob fetching
+- OCI Wasm deal execution path with digest verification and sandbox execution
 - official Docker assets for `froglet` and `marketplace`, including a starter
   `compose.yaml`
 - public OpenClaw plugin with marketplace discovery and provider-surface tools
 - checked-in OpenClaw starter config example
 - GitHub Actions CI for strict checks and Docker starter validation
 - GitHub Actions release workflow for tagged GHCR image publication
+
+### Fixed
+
+- replaced `todo!()` panic in free OCI Wasm job path with full implementation
+- added 50 MB size cap on OCI module downloads to prevent memory exhaustion
+- fixed OCI reference parsing to handle `@sha256:` digest syntax alongside `:tag`
+- replaced hardcoded registry allowlist with generic `https://{host}` fallback
+  for unknown OCI-compliant registries
+- extracted shared `fetch_oci_wasm_module` helper to deduplicate OCI pull logic
 
 ### Changed
 

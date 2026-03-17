@@ -4,10 +4,13 @@ use serde_json::Value;
 
 pub const FROGLET_SCHEMA_V1: &str = "froglet/v1";
 pub const WORKLOAD_KIND_COMPUTE_WASM_V1: &str = "compute.wasm.v1";
+pub const WORKLOAD_KIND_COMPUTE_WASM_OCI_V1: &str = "compute.wasm.oci.v1";
 pub const WASM_SUBMISSION_TYPE_V1: &str = "wasm_submission";
+pub const WASM_OCI_SUBMISSION_TYPE_V1: &str = "wasm_oci_submission";
 pub const WASM_RUN_JSON_ABI_V1: &str = "froglet.wasm.run_json.v1";
 pub const WASM_HOST_JSON_ABI_V1: &str = "froglet.wasm.host_json.v1";
 pub const WASM_MODULE_FORMAT: &str = "application/wasm";
+pub const WASM_MODULE_OCI_FORMAT: &str = "application/vnd.oci.image.manifest.v1+json";
 pub const JCS_JSON_FORMAT: &str = "application/json+jcs";
 pub const WASM_CAPABILITY_HTTP_FETCH: &str = "net.http.fetch";
 pub const WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX: &str = "net.http.fetch.auth.";
@@ -27,11 +30,34 @@ pub struct ComputeWasmWorkload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OciWasmWorkload {
+    pub schema_version: String,
+    pub workload_kind: String,
+    pub abi_version: String,
+    pub module_format: String,
+    pub oci_reference: String,
+    pub oci_digest: String,
+    pub input_format: String,
+    pub input_hash: String,
+    #[serde(default)]
+    pub requested_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WasmSubmission {
     pub schema_version: String,
     pub submission_type: String,
     pub workload: ComputeWasmWorkload,
     pub module_bytes_hex: String,
+    #[serde(default = "default_input_value")]
+    pub input: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OciWasmSubmission {
+    pub schema_version: String,
+    pub submission_type: String,
+    pub workload: OciWasmWorkload,
     #[serde(default = "default_input_value")]
     pub input: Value,
 }
@@ -154,6 +180,102 @@ impl WasmSubmission {
             abi_version: workload.abi_version.clone(),
             requested_capabilities,
         })
+    }
+}
+
+impl OciWasmSubmission {
+    pub fn workload_hash(&self) -> Result<String, String> {
+        let workload_bytes = canonical_json::to_vec(&self.workload).map_err(|e| e.to_string())?;
+        Ok(crypto::sha256_hex(workload_bytes))
+    }
+
+    pub fn validate_limits(&self, max_input_bytes: usize) -> Result<(), String> {
+        let input_bytes = canonical_json::to_vec(&self.input).map_err(|e| e.to_string())?;
+        if input_bytes.len() > max_input_bytes {
+            return Err("wasm input too large".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if self.schema_version != FROGLET_SCHEMA_V1 {
+            return Err(format!(
+                "unsupported wasm oci submission schema_version: {}",
+                self.schema_version
+            ));
+        }
+
+        if self.submission_type != WASM_OCI_SUBMISSION_TYPE_V1 {
+            return Err(format!(
+                "unsupported wasm oci submission_type: {}",
+                self.submission_type
+            ));
+        }
+
+        let workload = &self.workload;
+        if workload.schema_version != FROGLET_SCHEMA_V1 {
+            return Err(format!(
+                "unsupported wasm workload schema_version: {}",
+                workload.schema_version
+            ));
+        }
+
+        if workload.workload_kind != WORKLOAD_KIND_COMPUTE_WASM_OCI_V1 {
+            return Err(format!(
+                "unsupported wasm oci workload_kind: {}",
+                workload.workload_kind
+            ));
+        }
+
+        if workload.abi_version != WASM_RUN_JSON_ABI_V1
+            && workload.abi_version != WASM_HOST_JSON_ABI_V1
+        {
+            return Err(format!(
+                "unsupported wasm abi_version: {}",
+                workload.abi_version
+            ));
+        }
+
+        if workload.module_format != WASM_MODULE_OCI_FORMAT {
+            return Err(format!(
+                "unsupported wasm module_format for OCI struct: {}",
+                workload.module_format
+            ));
+        }
+
+        if workload.input_format != JCS_JSON_FORMAT {
+            return Err(format!(
+                "unsupported wasm input_format: {}",
+                workload.input_format
+            ));
+        }
+        
+        if workload.oci_reference.is_empty() {
+            return Err("missing oci_reference".to_string());
+        }
+
+        let requested_capabilities =
+            normalize_requested_capabilities(&workload.requested_capabilities)?;
+        match workload.abi_version.as_str() {
+            WASM_RUN_JSON_ABI_V1 if !requested_capabilities.is_empty() => {
+                return Err(
+                    "requested_capabilities are not supported by froglet.wasm.run_json.v1"
+                        .to_string(),
+                );
+            }
+            WASM_HOST_JSON_ABI_V1 => {
+                validate_host_capability_dependencies(&requested_capabilities)?
+            }
+            _ => {}
+        }
+
+        let input_bytes = canonical_json::to_vec(&self.input).map_err(|e| e.to_string())?;
+        let computed_input_hash = crypto::sha256_hex(&input_bytes);
+        if computed_input_hash != workload.input_hash {
+            return Err("input hash does not match canonical input".to_string());
+        }
+
+        Ok(())
     }
 }
 

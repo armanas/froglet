@@ -77,6 +77,22 @@ The repo also ships a public OpenClaw plugin under
 Froglet's public marketplace and provider APIs, not the privileged runtime
 surface. See [docs/OPENCLAW.md](docs/OPENCLAW.md) for configuration.
 
+## OCI Wasm (alpha)
+
+Froglet now supports referencing Wasm modules by OCI image reference instead of
+inlining hex bytes. The new `compute.wasm.oci.v1` workload kind lets clients
+submit an `oci_reference` (e.g. `ghcr.io/org/module:tag`) and an `oci_digest`
+(SHA-256 of the expected Wasm layer). At execution time the node pulls the
+manifest, downloads the Wasm layer, verifies the digest, and runs the module in
+the same sandbox as inline submissions.
+
+Current limitations:
+
+- Anonymous (public) pulls only; authenticated registries are not yet supported
+- Known registries (`ghcr.io`, Docker Hub) have explicit URL mappings; other
+  OCI-compliant registries use a generic `https://{host}` fallback
+- OCI module downloads are capped at 50 MB
+
 ## Architecture
 
 ```mermaid
@@ -85,6 +101,7 @@ flowchart TD
   nodeApi --> protocol[Descriptor Offer Quote Deal Receipt]
   nodeApi --> payments[PaymentsAndSettlement]
   nodeApi --> sandbox[WasmSandbox]
+  nodeApi --> ociRegistry[OCI Registry Pull]
   nodeApi --> ledger[SQLiteArtifactLedger]
   nodeApi --> eventsDB[EventsDB]
   nodeApi --> marketplaceClient[MarketplaceClient]
@@ -338,6 +355,7 @@ The runtime buy flow (`POST /v1/runtime/services/buy`) wraps this for local bots
 - External Tor sidecar transport
 - `lnd_rest` Lightning integration
 - Nostr adapter publication helpers
+- OCI Wasm workload kind (`compute.wasm.oci.v1`) with OCI-compliant registry support
 
 **Dev/test only**:
 

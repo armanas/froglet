@@ -29,7 +29,7 @@ It contains:
 - cross-artifact commitments
 - canonical deal, execution, and settlement states
 - Lightning settlement binding rules
-- the canonical Wasm workload object and ABI
+- the canonical Wasm workload objects (`compute.wasm.v1` and `compute.wasm.oci.v1`) and ABIs
 
 ## 3. Adapters
 
@@ -42,6 +42,7 @@ Examples:
 - Nostr publication and relay behavior
 - discovery bootstrap formats
 - runtime submission helpers such as transport-level Wasm uploads
+- OCI registry pulls for `compute.wasm.oci.v1` workloads
 
 Adapters may change, and implementations may support more than one adapter, as long as they preserve kernel semantics.
 

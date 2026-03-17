@@ -13,6 +13,7 @@ It freezes:
 - the canonical deal, execution, and settlement states
 - the Lightning settlement binding rules that a receipt relies on
 - the canonical `compute.wasm.v1` workload object and the `froglet.wasm.run_json.v1` / `froglet.wasm.host_json.v1` ABIs
+- the canonical `compute.wasm.oci.v1` workload object for OCI-referenced Wasm modules
 
 The following are intentionally moved out of the kernel and are defined in companion docs:
 
@@ -155,7 +156,7 @@ For v1 Nostr linkage, `linked_signature` is a BIP340 Schnorr signature over the 
 - `linked_identities`: array of linked publication identities
 - `transport_endpoints`: array of transport endpoint objects
 - `capabilities`: object with:
-  - `service_kinds`: array such as `compute.wasm.v1`
+  - `service_kinds`: array such as `compute.wasm.v1` or `compute.wasm.oci.v1`
   - `execution_runtimes`: array; public v1 remote execution should only advertise `wasm`
   - `max_concurrent_deals`: integer or `null`
 
@@ -178,7 +179,7 @@ Each `transport_endpoints[]` entry must contain:
 - `offer_id`: stable provider-chosen identifier for the offer
 - `descriptor_hash`: `artifact_hash` of the descriptor the offer is published under
 - `expires_at`: Unix timestamp in seconds or `null`
-- `offer_kind`: service kind identifier; public v1 remote compute uses `compute.wasm.v1`
+- `offer_kind`: service kind identifier; public v1 remote compute uses `compute.wasm.v1` or `compute.wasm.oci.v1`
 - `settlement_method`: must be `lightning.base_fee_plus_success_fee.v1` for v1 paid remote execution
 - `quote_ttl_secs`: maximum lifetime of quotes issued from this offer
 - `execution_profile`: object with:
@@ -557,6 +558,43 @@ The canonical workload object does not include:
 
 Those belong to adapters and runtime surfaces, not to the kernel.
 
+## 7b. Canonical `compute.wasm.oci.v1` Workload
+
+The OCI-referenced compute workload kind for v1 is `compute.wasm.oci.v1`.
+
+This workload kind is identical to `compute.wasm.v1` except that the Wasm module is referenced by an OCI image rather than by inline bytes. The canonical workload object must contain:
+
+- `schema_version`: `froglet/v1`
+- `workload_kind`: `compute.wasm.oci.v1`
+- `abi_version`: `froglet.wasm.run_json.v1` or `froglet.wasm.host_json.v1`
+- `module_format`: `application/vnd.oci.image.manifest.v1+json`
+- `oci_reference`: OCI image reference such as `ghcr.io/org/module:tag`
+- `oci_digest`: lowercase hex SHA-256 of the Wasm layer bytes
+- `input_format`: `application/json+jcs`
+- `input_hash`: lowercase hex SHA-256 of `JCS(input_json_value)`
+- `requested_capabilities`: array of capability strings; same rules as `compute.wasm.v1`
+
+The canonical workload hash is:
+
+- `workload_hash = SHA256(JCS(workload_object))`
+
+At execution time the provider must:
+
+1. Fetch the OCI manifest from the registry identified by `oci_reference`.
+2. Locate the first layer with media type `application/wasm` (or containing `wasm`).
+3. Download the layer blob.
+4. Verify `SHA256(blob_bytes) == oci_digest`.
+5. Execute the module under the same sandbox rules as `compute.wasm.v1`.
+
+The submission envelope for this workload kind is `wasm_oci_submission` and does not include inline module bytes. The submission carries `oci_reference` and `oci_digest` in the workload object, plus the `input` value.
+
+Current implementation notes:
+
+- Known registries (`ghcr.io`, Docker Hub) have explicit URL mappings; other OCI-compliant registries use a generic `https://{host}` fallback.
+- Only anonymous (public) pulls are supported; authenticated registries require future work.
+- OCI module downloads are capped at 50 MB.
+- Both tag (`:tag`) and digest (`@sha256:...`) reference styles are supported.
+
 ## 8. Wasm ABIs
 
 ### 8.1 `froglet.wasm.run_json.v1`
@@ -635,7 +673,7 @@ Milestone 1 is only complete when the frozen kernel is backed by golden vectors 
 - Nostr linked-identity challenge signing
 - `Quote -> Deal -> Receipt` verification
 - `invoice_bundle` verification
-- `compute.wasm.v1` workload hashing and receipt `result_hash` derivation
+- `compute.wasm.v1` and `compute.wasm.oci.v1` workload hashing and receipt `result_hash` derivation
 
 Those vectors are intentionally separate from this specification so they can evolve into an executable conformance suite without changing the kernel contract.
 

@@ -373,6 +373,9 @@ pub enum WorkloadSpec {
     Wasm {
         submission: Box<WasmSubmission>,
     },
+    OciWasm {
+        submission: Box<crate::wasm::OciWasmSubmission>,
+    },
     EventsQuery {
         kinds: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,6 +387,7 @@ impl WorkloadSpec {
     pub fn kind(&self) -> &'static str {
         match self {
             WorkloadSpec::Wasm { .. } => "wasm",
+            WorkloadSpec::OciWasm { .. } => "oci_wasm",
             WorkloadSpec::EventsQuery { .. } => "events_query",
         }
     }
@@ -391,6 +395,7 @@ impl WorkloadSpec {
     pub fn workload_kind(&self) -> &'static str {
         match self {
             WorkloadSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
+            WorkloadSpec::OciWasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1,
             WorkloadSpec::EventsQuery { .. } => "events.query",
         }
     }
@@ -398,6 +403,7 @@ impl WorkloadSpec {
     pub fn service_id(&self) -> ServiceId {
         match self {
             WorkloadSpec::Wasm { .. } => ServiceId::ExecuteWasm,
+            WorkloadSpec::OciWasm { .. } => ServiceId::ExecuteWasm,
             WorkloadSpec::EventsQuery { .. } => ServiceId::EventsQuery,
         }
     }
@@ -406,12 +412,14 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::EventsQuery { .. } => "data",
             WorkloadSpec::Wasm { .. } => "compute",
+            WorkloadSpec::OciWasm { .. } => "compute",
         }
     }
 
     pub fn runtime(&self) -> Option<&'static str> {
         match self {
             WorkloadSpec::Wasm { .. } => Some("wasm"),
+            WorkloadSpec::OciWasm { .. } => Some("wasm"),
             WorkloadSpec::EventsQuery { .. } => None,
         }
     }
@@ -419,6 +427,7 @@ impl WorkloadSpec {
     pub fn abi_version(&self) -> Option<&str> {
         match self {
             WorkloadSpec::Wasm { submission } => Some(submission.workload.abi_version.as_str()),
+            WorkloadSpec::OciWasm { submission } => Some(submission.workload.abi_version.as_str()),
             WorkloadSpec::EventsQuery { .. } => None,
         }
     }
@@ -426,6 +435,7 @@ impl WorkloadSpec {
     pub fn request_hash(&self) -> Result<String, String> {
         match self {
             WorkloadSpec::Wasm { submission } => submission.workload_hash(),
+            WorkloadSpec::OciWasm { submission } => submission.workload_hash(),
             WorkloadSpec::EventsQuery { .. } => {
                 let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
                 Ok(crypto::sha256_hex(encoded))
@@ -436,6 +446,7 @@ impl WorkloadSpec {
     pub fn requested_capabilities(&self) -> &[String] {
         match self {
             WorkloadSpec::Wasm { submission } => &submission.workload.requested_capabilities,
+            WorkloadSpec::OciWasm { submission } => &submission.workload.requested_capabilities,
             WorkloadSpec::EventsQuery { .. } => &[],
         }
     }
@@ -445,6 +456,9 @@ impl From<JobSpec> for WorkloadSpec {
     fn from(value: JobSpec) -> Self {
         match value {
             JobSpec::Wasm { submission } => WorkloadSpec::Wasm {
+                submission: Box::new(submission),
+            },
+            JobSpec::OciWasm { submission } => WorkloadSpec::OciWasm {
                 submission: Box::new(submission),
             },
         }

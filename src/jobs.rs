@@ -30,30 +30,35 @@ impl FaaSDescriptor {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobSpec {
     Wasm { submission: WasmSubmission },
+    OciWasm { submission: crate::wasm::OciWasmSubmission },
 }
 
 impl JobSpec {
     pub fn service_id(&self) -> ServiceId {
         match self {
             JobSpec::Wasm { .. } => ServiceId::ExecuteWasm,
+            JobSpec::OciWasm { .. } => ServiceId::ExecuteWasm,
         }
     }
 
     pub fn kind(&self) -> &'static str {
         match self {
             JobSpec::Wasm { .. } => "wasm",
+            JobSpec::OciWasm { .. } => "oci_wasm",
         }
     }
 
     pub fn workload_kind(&self) -> &'static str {
         match self {
             JobSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
+            JobSpec::OciWasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1,
         }
     }
 
     pub fn request_hash(&self) -> Result<String, String> {
         match self {
             JobSpec::Wasm { submission } => submission.workload_hash(),
+            JobSpec::OciWasm { submission } => submission.workload_hash(),
         }
     }
 }

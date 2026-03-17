@@ -402,6 +402,7 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 const MAX_EVENT_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_WASM_HEX_BYTES: usize = 512 * 1024;
 const MAX_WASM_INPUT_BYTES: usize = 128 * 1024;
+const MAX_OCI_WASM_MODULE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 const BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS: u64 = 1;
 const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
@@ -3825,6 +3826,7 @@ async fn wait_for_terminal_deal(
 fn validate_job_spec(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match spec {
         JobSpec::Wasm { submission } => validate_wasm_submission(submission),
+        JobSpec::OciWasm { submission } => validate_oci_wasm_submission(submission),
     }
 }
 
@@ -3832,6 +3834,26 @@ fn validate_wasm_submission(
     submission: &WasmSubmission,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if let Err(error) = submission.validate_limits(MAX_WASM_HEX_BYTES, MAX_WASM_INPUT_BYTES) {
+        return Err(error_json(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            json!({ "error": error }),
+        ));
+    }
+
+    if let Err(error) = submission.verify() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error }),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_oci_wasm_submission(
+    submission: &crate::wasm::OciWasmSubmission,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if let Err(error) = submission.validate_limits(MAX_WASM_INPUT_BYTES) {
         return Err(error_json(
             StatusCode::PAYLOAD_TOO_LARGE,
             json!({ "error": error }),
@@ -4739,6 +4761,13 @@ fn receipt_executor_for_deal(deal: &deals::StoredDeal) -> ReceiptExecutor {
             module_hash: Some(submission.workload.module_hash.clone()),
             capabilities_granted: deal.quote.payload.capabilities_granted.clone(),
         },
+        WorkloadSpec::OciWasm { submission } => ReceiptExecutor {
+            runtime: "wasm".to_string(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            abi_version: Some(submission.workload.abi_version.clone()),
+            module_hash: Some(submission.workload.oci_digest.clone()),
+            capabilities_granted: deal.quote.payload.capabilities_granted.clone(),
+        },
         WorkloadSpec::EventsQuery { .. } => ReceiptExecutor {
             runtime: "builtin.events_query".to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -4758,6 +4787,13 @@ fn receipt_limits_for_spec(
         duration_millis_u64(workload_execution_timeout(state, spec, payment_method));
     match spec {
         WorkloadSpec::Wasm { .. } => ReceiptLimitsApplied {
+            max_input_bytes: MAX_WASM_INPUT_BYTES,
+            max_runtime_ms,
+            max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
+            max_output_bytes: sandbox::WASM_MAX_OUTPUT_BYTES,
+            fuel_limit: sandbox::WASM_FUEL_LIMIT,
+        },
+        WorkloadSpec::OciWasm { .. } => ReceiptLimitsApplied {
             max_input_bytes: MAX_WASM_INPUT_BYTES,
             max_runtime_ms,
             max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
@@ -5404,6 +5440,121 @@ where
     }
 }
 
+/// Parse an OCI reference, pull the Wasm layer from the registry, and verify its digest.
+/// Returns the raw Wasm module bytes on success.
+async fn fetch_oci_wasm_module(
+    submission: &crate::wasm::OciWasmSubmission,
+) -> Result<Vec<u8>, String> {
+    // 1. Parse OCI reference: e.g. "ghcr.io/armanas/namespace/image:tag"
+    //    or "ghcr.io/armanas/namespace/image@sha256:abc123"
+    let oci_ref = &submission.workload.oci_reference;
+    let parts: Vec<&str> = oci_ref.split('/').collect();
+    if parts.len() < 2 {
+        return Err(
+            "invalid oci_reference format, expected at least host/image".to_string(),
+        );
+    }
+
+    let host = parts[0];
+    let name_tag = parts[1..].join("/");
+
+    // Handle both tag (:tag) and digest (@sha256:...) reference styles
+    let (image, reference) = if let Some(at_pos) = name_tag.find('@') {
+        (&name_tag[..at_pos], &name_tag[at_pos + 1..])
+    } else {
+        let colon_pos = name_tag.rfind(':');
+        match colon_pos {
+            Some(pos) => (&name_tag[..pos], &name_tag[pos + 1..]),
+            None => (name_tag.as_str(), "latest"),
+        }
+    };
+
+    // Registry URL mappings; fall back to https://{host} for OCI-compliant registries
+    let (api_url, auth_url) = if host == "registry.hub.docker.com"
+        || host == "docker.io"
+        || host == "registry-1.docker.io"
+    {
+        (
+            "https://registry-1.docker.io".to_string(),
+            "https://auth.docker.io/token".to_string(),
+        )
+    } else if host == "ghcr.io" {
+        (
+            "https://ghcr.io".to_string(),
+            "https://ghcr.io/token".to_string(),
+        )
+    } else {
+        (
+            format!("https://{host}"),
+            format!("https://{host}/token"),
+        )
+    };
+
+    // 2. Setup Client
+    use oci_registry_client::DockerRegistryClientV2;
+    let mut client = DockerRegistryClientV2::new(host, &api_url, &auth_url);
+
+    // 3. Authenticate (anonymous pull)
+    match client.auth("repository", image, "pull").await {
+        Ok(token) => client.set_auth_token(Some(token)),
+        Err(err) => {
+            tracing::warn!("OCI auth failed (might be public repo): {}", err);
+        }
+    }
+
+    // 4. Fetch Manifest
+    let manifest = client
+        .manifest(image, reference)
+        .await
+        .map_err(|e| format!("failed to fetch OCI manifest: {:?}", e))?;
+
+    // 5. Extract first WASM layer
+    let wasm_layer = manifest
+        .layers
+        .iter()
+        .find(|l| {
+            l.media_type == crate::wasm::WASM_MODULE_FORMAT
+                || l.media_type.contains("wasm")
+        })
+        .ok_or_else(|| "no wasm layer found in OCI manifest".to_string())?;
+
+    // 6. Download Blob (with size cap)
+    let mut blob_stream = client
+        .blob(image, &wasm_layer.digest)
+        .await
+        .map_err(|e| {
+            format!("failed to fetch OCI blob {}: {:?}", wasm_layer.digest, e)
+        })?;
+
+    let mut module_bytes = Vec::new();
+    loop {
+        match blob_stream.chunk().await {
+            Ok(Some(chunk)) => {
+                module_bytes.extend_from_slice(&chunk);
+                if module_bytes.len() > MAX_OCI_WASM_MODULE_BYTES {
+                    return Err(format!(
+                        "OCI module exceeds maximum size of {} bytes",
+                        MAX_OCI_WASM_MODULE_BYTES
+                    ));
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return Err(format!("failed downloading blob chunk: {:?}", e)),
+        }
+    }
+
+    // 7. Verify Workload Hash
+    let computed_hash = crate::crypto::sha256_hex(&module_bytes);
+    if computed_hash != submission.workload.oci_digest {
+        return Err(format!(
+            "OCI layer digest mismatch. expected: {}, got: {}",
+            submission.workload.oci_digest, computed_hash
+        ));
+    }
+
+    Ok(module_bytes)
+}
+
 async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, String> {
     let timeout = execution_timeout(state);
     match spec {
@@ -5418,6 +5569,43 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                     &verified.input,
                     sandbox::WasmExecutionOptions {
                         abi_version: verified.abi_version.clone(),
+                        capabilities_granted,
+                        host_environment,
+                    },
+                    timeout,
+                )
+            })
+            .await
+        }
+        JobSpec::OciWasm { submission } => {
+            submission.verify()?;
+            let module_bytes = fetch_oci_wasm_module(&submission).await?;
+
+            let declared_capabilities =
+                crate::wasm::normalize_requested_capabilities(
+                    &submission.workload.requested_capabilities,
+                )?;
+            let (capabilities_granted, host_environment) =
+                local_wasm_capabilities_for_submission(
+                    state,
+                    &crate::wasm::VerifiedWasmSubmission {
+                        module_bytes: module_bytes.clone(),
+                        input: submission.input.clone(),
+                        abi_version: submission.workload.abi_version.clone(),
+                        requested_capabilities: declared_capabilities,
+                    },
+                )?;
+
+            let wasm_sandbox = state.wasm_sandbox.clone();
+            let abi_version = submission.workload.abi_version.clone();
+            let input = submission.input.clone();
+
+            run_wasm_with_timeout(timeout, move || {
+                wasm_sandbox.execute_module_with_options(
+                    &module_bytes,
+                    &input,
+                    sandbox::WasmExecutionOptions {
+                        abi_version,
                         capabilities_granted,
                         host_environment,
                     },
@@ -5457,13 +5645,54 @@ async fn run_workload_spec_with_admission(
             })
             .await
         }
-        (WorkloadSpec::Wasm { submission }, None) => {
+        (WorkloadSpec::Wasm { .. }, None) => {
+            Err("Wasm workloads require an execution permit".to_string())
+        }
+        (WorkloadSpec::OciWasm { submission }, None) => {
             run_job_spec_now(
                 state,
-                JobSpec::Wasm {
+                JobSpec::OciWasm {
                     submission: *submission,
                 },
             )
+            .await
+        }
+        (WorkloadSpec::OciWasm { submission }, Some(permit)) => {
+            submission.verify()?;
+            let module_bytes = fetch_oci_wasm_module(&submission).await?;
+
+            let declared_capabilities =
+                crate::wasm::normalize_requested_capabilities(
+                    &submission.workload.requested_capabilities,
+                )?;
+            let (_, host_environment) =
+                local_wasm_capabilities_for_submission(
+                    state,
+                    &crate::wasm::VerifiedWasmSubmission {
+                        module_bytes: module_bytes.clone(),
+                        input: submission.input.clone(),
+                        abi_version: submission.workload.abi_version.clone(),
+                        requested_capabilities: declared_capabilities,
+                    },
+                )?;
+
+            let wasm_sandbox = state.wasm_sandbox.clone();
+            let abi_version = submission.workload.abi_version.clone();
+            let input = submission.input.clone();
+
+            run_wasm_with_timeout(timeout, move || {
+                wasm_sandbox.execute_module_with_options_and_permit(
+                    &module_bytes,
+                    &input,
+                    sandbox::WasmExecutionOptions {
+                        abi_version,
+                        capabilities_granted,
+                        host_environment,
+                    },
+                    permit,
+                    timeout,
+                )
+            })
             .await
         }
         (WorkloadSpec::EventsQuery { kinds, limit }, None) => {
@@ -5813,6 +6042,22 @@ async fn process_deal_with_reserved_permit(
     let execution_permit = match (&deal.spec, reserved_execution_permit) {
         (WorkloadSpec::Wasm { .. }, Some(permit)) => Some(permit),
         (WorkloadSpec::Wasm { .. }, None) => {
+            match state.wasm_sandbox.try_acquire_execution_permit() {
+                Ok(permit) => Some(permit),
+                Err(error_message) => {
+                    reject_deal_before_execution(
+                        &state,
+                        &deal,
+                        deals::DEAL_STATUS_ACCEPTED,
+                        error_message,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+        (WorkloadSpec::OciWasm { .. }, Some(permit)) => Some(permit),
+        (WorkloadSpec::OciWasm { .. }, None) => {
             match state.wasm_sandbox.try_acquire_execution_permit() {
                 Ok(permit) => Some(permit),
                 Err(error_message) => {
