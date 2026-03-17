@@ -47,6 +47,9 @@ Implication:
 
 - SDKs and integration adapters should optimize for visibility, portability,
   and third-party use.
+- The public Froglet OpenClaw plugin may include reference marketplace
+  discovery plus documented local runtime helpers, but first-party
+  marketplace-product integrations should stay in separate private packages.
 - Commercial differentiation should live in higher-layer services and data, not
   in hidden protocol connectors.
 

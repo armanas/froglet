@@ -2,7 +2,7 @@
   "id": "froglet",
   "name": "Froglet",
   "version": "0.1.0",
-  "description": "Read-only Froglet marketplace and provider discovery tools for OpenClaw.",
+  "description": "Public Froglet discovery, provider, and optional local runtime tools for OpenClaw.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -31,6 +31,28 @@
         "maximum": 200,
         "default": 50,
         "description": "Hard ceiling applied to marketplace search limits."
+      },
+      "enablePrivilegedRuntimeTools": {
+        "type": "boolean",
+        "default": false,
+        "description": "Register optional local runtime buy, payment-intent, accept-result, and publish tools."
+      },
+      "providerUrl": {
+        "type": "string",
+        "description": "Default public Froglet provider base URL, for example http://127.0.0.1:8080."
+      },
+      "runtimeUrl": {
+        "type": "string",
+        "description": "Default Froglet runtime base URL, for example http://127.0.0.1:8081."
+      },
+      "runtimeAuthTokenPath": {
+        "type": "string",
+        "description": "Default Froglet runtime auth token path, for example /absolute/path/to/data/runtime/auth.token."
+      },
+      "pythonExecutable": {
+        "type": "string",
+        "default": "python3",
+        "description": "Python command used to run the public Froglet runtime bridge."
       }
     }
   }

@@ -73,9 +73,11 @@ single-image commands, volume behavior, and Tor/LND notes, see
 ## OpenClaw
 
 The repo also ships a public OpenClaw plugin under
-[integrations/openclaw/froglet](integrations/openclaw/froglet). It only uses
-Froglet's public marketplace and provider APIs, not the privileged runtime
-surface. See [docs/OPENCLAW.md](docs/OPENCLAW.md) for configuration.
+[integrations/openclaw/froglet](integrations/openclaw/froglet). By default it
+exposes public marketplace and provider discovery tools, and it can
+optionally bridge documented local runtime buy/publish helpers when explicitly
+enabled. Closed marketplace policy or broker logic does not belong in this
+package. See [docs/OPENCLAW.md](docs/OPENCLAW.md) for configuration.
 
 ## OCI Wasm (alpha)
 
