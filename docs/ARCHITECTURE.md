@@ -12,7 +12,8 @@ Froglet is intentionally split into four layers:
 - economic kernel
 - adapters
 - bot-facing localhost runtime
-- higher-layer marketplace services
+- higher-layer discovery, indexer, broker, trust, operator, and OpenClaw
+  services
 
 The kernel is the smallest irreversible surface.
 Everything above it may evolve without changing how hashes, signatures, deals, or receipts work.
@@ -64,9 +65,11 @@ Those are product decisions, not protocol commitments.
 
 The planned evolution from this runtime toward fuller long-running agent workflows is described in `REMOTE_AGENT_LAYER.md`.
 
-## 5. Marketplace Services
+## 5. Reference Discovery and Higher Layers
 
-Froglet's long-term marketplace should be composed from ordinary Froglet-consuming services rather than privileged protocol actors.
+Froglet's long-term reference discovery and commercial product layers should
+be composed from ordinary Froglet-consuming services rather than privileged
+protocol actors.
 
 Examples:
 
@@ -89,7 +92,7 @@ The kernel should not hardwire:
 - a single storage engine
 - runtime HTTP endpoint shapes
 - Python helper ergonomics
-- marketplace roles or ranking logic
+- reference-discovery, ranking, or broker logic
 - archive bundle layout
 - long-running session semantics
 

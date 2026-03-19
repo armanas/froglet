@@ -1,0 +1,15 @@
+services:
+  provider:
+    build:
+      context: .
+      target: provider
+    image: froglet-provider:local
+    environment:
+      FROGLET_PRICE_EXEC_WASM: "10"
+      FROGLET_PAYMENT_BACKEND: lightning
+      FROGLET_LIGHTNING_MODE: mock
+      FROGLET_LISTEN_ADDR: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data

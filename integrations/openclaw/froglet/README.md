@@ -1,31 +1,34 @@
 # Froglet OpenClaw Plugin
 
-Public OpenClaw integration for Froglet.
+Public OpenClaw integration for the Froglet requester runtime.
 
-This plugin stays on the public boundary:
+This plugin is runtime-only. It does not call provider or discovery APIs directly.
 
-- marketplace discovery via `GET /v1/marketplace/search`
-- marketplace node lookup via `GET /v1/marketplace/nodes/:node_id`
-- provider surface reads via `GET /v1/descriptor` and `GET /v1/offers`
-- optional local runtime helpers for buy, wait, payment-intent,
-  accept-result, and publish-services when `enablePrivilegedRuntimeTools=true`
+## Tools
 
-Closed marketplace/catalog/broker logic does not belong in this package. Keep
-that as a separate private plugin/package even if it still consumes public
-Froglet APIs.
+- `froglet_search`
+- `froglet_get_provider`
+- `froglet_buy`
+- `froglet_wait_deal`
+- `froglet_payment_intent`
+- `froglet_accept_result`
+- `froglet_wallet_balance`
 
-Starter configs:
+## Config
 
 - [examples/openclaw.config.example.json](examples/openclaw.config.example.json)
-- [examples/openclaw.config.full-runtime.example.json](examples/openclaw.config.full-runtime.example.json)
+- [examples/openclaw.config.nemoclaw.example.json](examples/openclaw.config.nemoclaw.example.json)
 
-Local verification:
+Required keys:
+
+- `runtimeUrl`
+- `runtimeAuthTokenPath`
+
+## Verification
 
 ```bash
 node --check index.js
 node --test test/plugin.test.js
-python3 -m py_compile bridge.py
 ```
 
-See [../../../docs/OPENCLAW.md](../../../docs/OPENCLAW.md) for installation,
-full-runtime setup, and configuration.
+See [../../../docs/OPENCLAW.md](../../../docs/OPENCLAW.md).

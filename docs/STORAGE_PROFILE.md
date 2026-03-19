@@ -3,7 +3,8 @@
 Status: non-normative supporting document
 
 The kernel does not mandate a storage engine.
-This document records the logical invariants and the current reference SQLite profile used by the implementation.
+This document records the logical invariants and the current reference storage
+profile used by the implementation.
 
 ## 1. Logical Invariants
 
@@ -26,7 +27,7 @@ The important invariants are:
 
 Any engine is acceptable if those invariants hold.
 
-## 2. Reference SQLite Split
+## 2. Reference Storage Split
 
 The reference implementation currently maps those invariants into three explicit storage classes:
 
@@ -43,6 +44,9 @@ The same implementation may also keep mutable convenience tables such as:
 - `events`
 
 Those convenience tables are not the authoritative evidence layer.
+
+An implementation may map the same logical split onto another storage engine as
+long as these logical stores and evidence invariants remain intact.
 
 ## 3. Evidence Retention
 

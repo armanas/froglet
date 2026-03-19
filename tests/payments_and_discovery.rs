@@ -1,10 +1,11 @@
 use froglet::{
+    confidential::ConfidentialConfig,
     config::{
-        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, MarketplaceConfig,
-        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
+        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        PaymentBackend, PricingConfig, ReferenceDiscoveryConfig, StorageConfig, WasmConfig,
     },
     db::{self, DbPool},
-    marketplace::{
+    discovery::{
         descriptor_digest_hex, heartbeat_signing_payload, reclaim_signing_payload,
         register_signing_payload,
     },
@@ -13,7 +14,7 @@ use froglet::{
         self, DealPayload, ExecutionLimits, InvoiceBundleLegState, QuotePayload, verify_artifact,
     },
     settlement,
-    state::{AppState, MarketplaceStatus, TransportStatus},
+    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
 };
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use std::sync::{
@@ -69,16 +70,17 @@ fn in_memory_state() -> AppState {
         public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
+        http_ca_cert_path: None,
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
-        discovery_mode: DiscoveryMode::None,
+        discovery_mode: DiscoveryMode::Reference,
         identity: IdentityConfig {
             auto_generate: true,
         },
-        marketplace: Some(MarketplaceConfig {
+        reference_discovery: Some(ReferenceDiscoveryConfig {
             url: "http://localhost".to_string(),
             publish: true,
             required: false,
@@ -113,6 +115,11 @@ fn in_memory_state() -> AppState {
             policy_path: None,
             policy: None,
         },
+        confidential: ConfidentialConfig {
+            policy_path: None,
+            policy: None,
+            session_ttl_secs: 300,
+        },
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -126,15 +133,16 @@ fn in_memory_state() -> AppState {
         transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
             &node_config,
         ))),
-        marketplace_status: Arc::new(tokio::sync::Mutex::new(MarketplaceStatus::from_config(
-            &node_config,
-        ))),
+        reference_discovery_status: Arc::new(tokio::sync::Mutex::new(
+            ReferenceDiscoveryStatus::from_config(&node_config),
+        )),
         wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
         pricing,
         http_client: reqwest::Client::new(),
         wasm_host: None,
+        confidential_policy: None,
         runtime_auth_token: "test-runtime-token".to_string(),
         runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
@@ -144,15 +152,15 @@ fn in_memory_state() -> AppState {
 }
 
 #[test]
-fn marketplace_signing_payloads_are_stable() {
+fn discovery_signing_payloads_are_stable() {
     let state = in_memory_state();
     let rt = Runtime::new().unwrap();
 
     let descriptor1 = rt
-        .block_on(froglet::marketplace_client::build_descriptor(&state))
+        .block_on(froglet::discovery_client::build_descriptor(&state))
         .expect("descriptor 1");
     let descriptor2 = rt
-        .block_on(froglet::marketplace_client::build_descriptor(&state))
+        .block_on(froglet::discovery_client::build_descriptor(&state))
         .expect("descriptor 2");
 
     let digest1 = descriptor_digest_hex(&descriptor1).expect("digest 1");
@@ -420,6 +428,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             expires_at: settlement::lightning_quote_expires_at(&state, now, 9, 30),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
+            confidential_session_hash: None,
             capabilities_granted: Vec::new(),
             extension_refs: Vec::new(),
             quote_use: None,
@@ -444,6 +453,7 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
             provider_id: quote.payload.provider_id.clone(),
             quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
+            confidential_session_hash: None,
             extension_refs: Vec::new(),
             authority_ref: None,
             supersedes_deal_hash: None,
@@ -549,6 +559,7 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
                 ),
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: random_hex(&mut rng, 32),
+                confidential_session_hash: None,
                 capabilities_granted: Vec::new(),
                 extension_refs: Vec::new(),
                 quote_use: None,
@@ -573,6 +584,7 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
                 provider_id: quote.payload.provider_id.clone(),
                 quote_hash: quote.hash.clone(),
                 workload_hash: quote.payload.workload_hash.clone(),
+                confidential_session_hash: None,
                 extension_refs: Vec::new(),
                 authority_ref: None,
                 supersedes_deal_hash: None,
@@ -685,15 +697,20 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
 }
 
 #[test]
-fn marketplace_initial_sync_returns_after_http_timeout() {
+fn discovery_initial_sync_returns_after_http_timeout() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         let mut state = in_memory_state();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("bind hung marketplace");
+            .expect("bind hung discovery");
         let addr = listener.local_addr().expect("listener addr");
-        state.config.marketplace.as_mut().expect("marketplace").url = format!("http://{addr}");
+        state
+            .config
+            .reference_discovery
+            .as_mut()
+            .expect("reference discovery")
+            .url = format!("http://{addr}");
         state.http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(100))
             .timeout(Duration::from_millis(100))
@@ -706,7 +723,7 @@ fn marketplace_initial_sync_returns_after_http_timeout() {
         });
 
         let started_at = tokio::time::Instant::now();
-        let error = froglet::marketplace_client::perform_initial_sync(Arc::new(state))
+        let error = froglet::discovery_client::perform_initial_sync(Arc::new(state))
             .await
             .expect_err("initial sync should time out");
         assert!(

@@ -1,0 +1,3 @@
+aiohttp>=3.9,<4
+ecdsa>=0.19,<1
+cryptography>=43,<46

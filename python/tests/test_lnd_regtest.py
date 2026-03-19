@@ -33,7 +33,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
             **self.cluster.lightning_env("bob"),
             "FROGLET_PRICE_EXEC_WASM": "30",
         }
-        self.node = await self.start_node(
+        self.node = await self.start_provider(
             data_dir=self.node_data_dir,
             extra_env=self.node_env,
         )
@@ -63,7 +63,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                self.node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                self.node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
@@ -99,7 +99,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                self.node.url(f"/v1/deals/{settled['deal']['deal_id']}/release-preimage"),
+                self.node.url(f"/v1/provider/deals/{settled['deal']['deal_id']}/accept"),
                 json={"success_preimage": settled["preimage_hex"]},
             ) as resp:
                 self.assertEqual(resp.status, 200)
@@ -149,7 +149,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
         )
         self.assertEqual(restart_code, 0, f"stdout:\n{restart_out}\nstderr:\n{restart_err}")
 
-        self.node = await self.start_node(
+        self.node = await self.start_provider(
             data_dir=self.node_data_dir,
             extra_env=self.node_env,
         )
@@ -163,7 +163,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                self.node.url(f"/v1/deals/{recovered['deal']['deal_id']}")
+                self.node.url(f"/v1/provider/deals/{recovered['deal']['deal_id']}")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 recovered_deal = await resp.json()

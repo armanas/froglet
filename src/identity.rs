@@ -198,6 +198,7 @@ mod tests {
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:8081".into(),
             runtime_allow_non_loopback: false,
+            http_ca_cert_path: None,
             tor: TorSidecarConfig {
                 binary_path: "tor".into(),
                 backend_listen_addr: "127.0.0.1:8082".into(),
@@ -207,7 +208,7 @@ mod tests {
             identity: IdentityConfig {
                 auto_generate: true,
             },
-            marketplace: None,
+            reference_discovery: None,
             pricing: PricingConfig {
                 events_query: 0,
                 execute_wasm: 0,
@@ -237,6 +238,11 @@ mod tests {
             wasm: WasmConfig {
                 policy_path: None,
                 policy: None,
+            },
+            confidential: crate::confidential::ConfidentialConfig {
+                policy_path: None,
+                policy: None,
+                session_ttl_secs: 300,
             },
         };
 

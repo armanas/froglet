@@ -489,19 +489,28 @@ pub fn try_mark_deal_accepted_from_payment_pending(
     Ok(updated > 0)
 }
 
+pub struct DealSuccessPersistence<'a> {
+    pub deal_id: &'a str,
+    pub result: &'a Value,
+    pub explicit_result_hash: Option<&'a str>,
+    pub receipt: &'a SignedArtifact<ReceiptPayload>,
+    pub result_evidence_hash: Option<&'a str>,
+    pub receipt_artifact_hash: Option<&'a str>,
+    pub now: i64,
+}
+
 pub fn complete_deal_success(
     conn: &Connection,
-    deal_id: &str,
-    result: &Value,
-    receipt: &SignedArtifact<ReceiptPayload>,
-    result_evidence_hash: Option<&str>,
-    receipt_artifact_hash: Option<&str>,
-    now: i64,
+    update: DealSuccessPersistence<'_>,
 ) -> Result<(), String> {
-    let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
-    let result_hash =
-        crypto::sha256_hex(canonical_json::to_vec(result).map_err(|e| e.to_string())?);
-    let receipt_json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+    let result_json = serde_json::to_string(update.result).map_err(|e| e.to_string())?;
+    let result_hash = update
+        .explicit_result_hash
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            crypto::sha256_hex(canonical_json::to_vec(update.result).unwrap_or_default())
+        });
+    let receipt_json = serde_json::to_string(update.receipt).map_err(|e| e.to_string())?;
 
     conn.execute(
         "UPDATE deals
@@ -516,14 +525,14 @@ pub fn complete_deal_success(
              updated_at = ?8
          WHERE deal_id = ?1",
         params![
-            deal_id,
+            update.deal_id,
             DEAL_STATUS_SUCCEEDED,
             result_json,
             result_hash,
             receipt_json,
-            result_evidence_hash,
-            receipt_artifact_hash,
-            now,
+            update.result_evidence_hash,
+            update.receipt_artifact_hash,
+            update.now,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -535,6 +544,7 @@ pub struct DealSuccessCompletion<'a> {
     pub deal_id: &'a str,
     pub expected_status: &'a str,
     pub result: &'a Value,
+    pub explicit_result_hash: Option<&'a str>,
     pub receipt: &'a SignedArtifact<ReceiptPayload>,
     pub result_evidence_hash: Option<&'a str>,
     pub receipt_artifact_hash: Option<&'a str>,
@@ -546,8 +556,12 @@ pub fn complete_deal_success_if_status(
     update: DealSuccessCompletion<'_>,
 ) -> Result<bool, String> {
     let result_json = serde_json::to_string(update.result).map_err(|e| e.to_string())?;
-    let result_hash =
-        crypto::sha256_hex(canonical_json::to_vec(update.result).map_err(|e| e.to_string())?);
+    let result_hash = update
+        .explicit_result_hash
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            crypto::sha256_hex(canonical_json::to_vec(update.result).unwrap_or_default())
+        });
     let receipt_json = serde_json::to_string(update.receipt).map_err(|e| e.to_string())?;
 
     let updated = conn
@@ -584,12 +598,14 @@ pub fn stage_deal_result_ready(
     conn: &Connection,
     deal_id: &str,
     result: &Value,
+    explicit_result_hash: Option<&str>,
     result_evidence_hash: Option<&str>,
     now: i64,
 ) -> Result<bool, String> {
     let result_json = serde_json::to_string(result).map_err(|e| e.to_string())?;
-    let result_hash =
-        crypto::sha256_hex(canonical_json::to_vec(result).map_err(|e| e.to_string())?);
+    let result_hash = explicit_result_hash
+        .map(str::to_string)
+        .unwrap_or_else(|| crypto::sha256_hex(canonical_json::to_vec(result).unwrap_or_default()));
 
     let updated = conn
         .execute(

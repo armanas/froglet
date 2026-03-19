@@ -31,6 +31,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r python/requirements.txt
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -42,8 +47,27 @@ jobs:
       - name: Run strict verification matrix
         run: ./scripts/strict_checks.sh
 
-  docker-starter:
-    name: Docker Starter
+  openclaw-node18:
+    name: OpenClaw Node 18
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Verify OpenClaw plugin on supported minimum Node
+        run: |
+          node --check integrations/openclaw/froglet/index.js
+          node --test integrations/openclaw/froglet/test/plugin.test.js
+
+  docker-three-role:
+    name: Docker Three Role
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -54,47 +78,65 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose config
 
-      - name: Build starter images
-        run: docker compose build marketplace froglet
+      - name: Build three-role images
+        run: docker compose build discovery provider runtime
 
-      - name: Start starter stack
-        run: docker compose up -d --wait marketplace froglet
+      - name: Start three-role stack
+        run: docker compose up -d --wait discovery provider runtime
 
-      - name: Wait for marketplace health
+      - name: Wait for discovery health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:9090/health
 
-      - name: Wait for froglet health
+      - name: Wait for provider health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8080/health
 
-      - name: Verify marketplace publish flow and advertised URLs
+      - name: Wait for runtime health
+        run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8081/health
+
+      - name: Verify discovery publish flow and runtime token
         run: |
           python3 - <<'PY'
           import json
+          import os
           import urllib.request
 
           def get_json(url: str) -> dict:
               with urllib.request.urlopen(url) as response:
                   return json.load(response)
 
-          search = get_json("http://127.0.0.1:9090/v1/marketplace/search?limit=5")
+          token_path = "./data/runtime/auth.token"
+          assert os.path.exists(token_path), token_path
+          assert open(token_path, "r", encoding="utf-8").read().strip(), "runtime auth token is empty"
+
+          req = urllib.request.Request(
+              "http://127.0.0.1:9090/v1/discovery/search",
+              method="POST",
+              headers={"Content-Type": "application/json"},
+              data=b"{}",
+          )
+          with urllib.request.urlopen(req) as response:
+              search = json.load(response)
           nodes = search.get("nodes", [])
-          assert nodes, "expected at least one marketplace node"
+          assert nodes, "expected at least one discovery node"
           node = nodes[0]
           clearnet_url = node["descriptor"]["transports"]["clearnet_url"]
-          assert clearnet_url == "http://127.0.0.1:8080", clearnet_url
+          assert clearnet_url == "http://provider:8080", clearnet_url
 
           node_id = node["descriptor"]["node_id"]
           detail = get_json(
-              f"http://127.0.0.1:9090/v1/marketplace/nodes/{node_id}"
+              f"http://127.0.0.1:9090/v1/discovery/providers/{node_id}"
           )
-          assert detail["descriptor"]["transports"]["clearnet_url"] == "http://127.0.0.1:8080"
+          assert detail["descriptor"]["transports"]["clearnet_url"] == "http://provider:8080"
 
-          descriptor = get_json("http://127.0.0.1:8080/v1/descriptor")
+          descriptor = get_json("http://127.0.0.1:8080/v1/provider/descriptor")
           endpoints = descriptor["payload"]["transport_endpoints"]
           assert any(
-              endpoint["uri"] == "http://127.0.0.1:8080" for endpoint in endpoints
+              endpoint["uri"] == "http://provider:8080" for endpoint in endpoints
           ), endpoints
           PY
+
+      - name: Smoke test OpenClaw plugin against compose-backed Froglet
+        run: node integrations/openclaw/froglet/test/compose-smoke.mjs
 
       - name: Show container status
         if: always()
@@ -102,55 +144,8 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs --no-color marketplace froglet
+        run: docker compose logs --no-color discovery provider runtime
 
-      - name: Stop starter stack
+      - name: Stop three-role stack
         if: always()
         run: docker compose down -v
-
-  docker-full-runtime:
-    name: Docker Full Runtime
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Validate full-runtime Compose configuration
-        run: docker compose -f compose.full-runtime.yaml config
-
-      - name: Build full-runtime images
-        run: docker compose -f compose.full-runtime.yaml build marketplace froglet
-
-      - name: Start full-runtime stack
-        run: |
-          mkdir -p ./data
-          docker compose -f compose.full-runtime.yaml up -d --wait marketplace froglet
-
-      - name: Wait for marketplace health
-        run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:9090/health
-
-      - name: Wait for froglet health
-        run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8080/health
-
-      - name: Verify runtime port is reachable
-        run: curl --retry 10 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8081/health
-
-      - name: Verify runtime auth token is accessible on host
-        run: |
-          test -f ./data/runtime/auth.token || { echo "auth token not found on bind-mounted host path"; exit 1; }
-          TOKEN=$(cat ./data/runtime/auth.token)
-          test -n "$TOKEN" || { echo "auth token file is empty"; exit 1; }
-
-      - name: Show container status
-        if: always()
-        run: docker compose -f compose.full-runtime.yaml ps
-
-      - name: Show container logs on failure
-        if: failure()
-        run: docker compose -f compose.full-runtime.yaml logs --no-color marketplace froglet
-
-      - name: Stop full-runtime stack
-        if: always()
-        run: docker compose -f compose.full-runtime.yaml down -v

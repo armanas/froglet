@@ -5,6 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import aiohttp
+
 from test_support import FrogletAsyncTestCase
 
 
@@ -12,6 +14,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ExampleScriptTests(FrogletAsyncTestCase):
+    async def _wait_for_provider_publication(
+        self,
+        discovery,
+        provider_id: str,
+        *,
+        timeout_secs: float = 10.0,
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout_secs
+        async with aiohttp.ClientSession() as session:
+            while asyncio.get_running_loop().time() < deadline:
+                async with session.post(discovery.url("/v1/discovery/search"), json={}) as resp:
+                    self.assertEqual(resp.status, 200)
+                    payload = await resp.json()
+                if any(
+                    node.get("descriptor", {}).get("node_id") == provider_id
+                    for node in payload["nodes"]
+                ):
+                    return
+                await asyncio.sleep(0.2)
+        raise TimeoutError(f"timed out waiting for provider {provider_id} in discovery")
+
     async def _run_example(self, script_name: str, *args: str) -> dict:
         script_path = REPO_ROOT / "examples" / script_name
         completed = await asyncio.to_thread(
@@ -24,52 +47,85 @@ class ExampleScriptTests(FrogletAsyncTestCase):
         )
         return json.loads(completed.stdout)
 
-    async def test_runtime_mock_lightning_buy_accept_example(self) -> None:
-        node = await self.start_node(
+    async def test_runtime_search_and_buy_example(self) -> None:
+        discovery = await self.start_discovery()
+        provider = await self.start_provider(
             extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
+                "FROGLET_DISCOVERY_MODE": "reference",
+                "FROGLET_DISCOVERY_URL": discovery.base_url,
+                "FROGLET_DISCOVERY_PUBLISH": "true",
+                "FROGLET_PRICE_EXEC_WASM": "0",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
                 "FROGLET_LIGHTNING_MODE": "mock",
-                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+            }
+        )
+        runtime = await self.start_runtime(
+            extra_env={
+                "FROGLET_DISCOVERY_MODE": "reference",
+                "FROGLET_DISCOVERY_URL": discovery.base_url,
+                "FROGLET_PAYMENT_BACKEND": "lightning",
+                "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
 
-        output = await self._run_example(
-            "runtime_mock_lightning_buy_accept.py",
-            "--runtime-url",
-            node.runtime_url,
-            "--provider-url",
-            node.base_url,
-            "--token-path",
-            str(node.data_dir / "runtime" / "auth.token"),
-            "--idempotency-key",
-            "example-test-buy-accept",
+        async with aiohttp.ClientSession() as session:
+            async with session.get(provider.url("/v1/node/capabilities")) as resp:
+                self.assertEqual(resp.status, 200)
+                provider_caps = await resp.json()
+        await self._wait_for_provider_publication(
+            discovery, provider_caps["identity"]["node_id"]
         )
 
-        self.assertEqual(output["terminal_status"], "succeeded")
-        self.assertTrue(output["receipt_valid"])
-        self.assertGreaterEqual(output["archive_artifact_count"], 3)
-        self.assertGreaterEqual(output["archive_evidence_count"], 3)
-
-    async def test_runtime_curated_discovery_example(self) -> None:
-        node = await self.start_node()
-
         output = await self._run_example(
-            "runtime_curated_discovery.py",
+            "runtime_search_and_buy.py",
             "--runtime-url",
-            node.runtime_url,
-            "--provider-url",
-            node.base_url,
+            runtime.runtime_url,
             "--token-path",
-            str(node.data_dir / "runtime" / "auth.token"),
-            "--list-id",
-            "example-test-curated-list",
+            str(runtime.runtime_auth_token_path),
         )
 
-        self.assertEqual(output["curated_list_id"], "example-test-curated-list")
-        self.assertTrue(output["curated_list_valid"])
-        self.assertTrue(output["descriptor_summary_valid"])
-        self.assertGreaterEqual(output["offer_count"], 1)
+        self.assertEqual(output["provider_id"], provider_caps["identity"]["node_id"])
+        self.assertEqual(set(output["offer_ids"]), {"events.query", "execute.wasm"})
+        self.assertTrue(output["deal_id"])
+        self.assertIn(
+            output["deal_status"], {"running", "accepted", "result_ready", "succeeded"}
+        )
+
+    async def test_runtime_search_and_inspect_example(self) -> None:
+        discovery = await self.start_discovery()
+        provider = await self.start_provider(
+            extra_env={
+                "FROGLET_DISCOVERY_MODE": "reference",
+                "FROGLET_DISCOVERY_URL": discovery.base_url,
+                "FROGLET_DISCOVERY_PUBLISH": "true",
+            }
+        )
+        runtime = await self.start_runtime(
+            extra_env={
+                "FROGLET_DISCOVERY_MODE": "reference",
+                "FROGLET_DISCOVERY_URL": discovery.base_url,
+            }
+        )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(provider.url("/v1/node/capabilities")) as resp:
+                self.assertEqual(resp.status, 200)
+                provider_caps = await resp.json()
+        await self._wait_for_provider_publication(
+            discovery, provider_caps["identity"]["node_id"]
+        )
+
+        output = await self._run_example(
+            "runtime_search_and_inspect.py",
+            "--runtime-url",
+            runtime.runtime_url,
+            "--token-path",
+            str(runtime.runtime_auth_token_path),
+        )
+
+        self.assertEqual(output["provider_id"], provider_caps["identity"]["node_id"])
+        self.assertTrue(output["descriptor_hash"])
+        self.assertGreaterEqual(len(output["offer_ids"]), 1)
 
 
 if __name__ == "__main__":

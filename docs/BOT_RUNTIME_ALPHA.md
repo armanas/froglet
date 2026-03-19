@@ -1,134 +1,63 @@
 # Froglet Bot Runtime Alpha
 
-Status: supported alpha product surface
+Status: supported bot-facing product surface
 
-This document defines the bot-facing surface that Froglet intends to support in version 1 alpha.
-It sits above the economic kernel in [../SPEC.md](../SPEC.md) and is narrower than the full internal node API.
-It is not the frozen primitive contract. The stable kernel remains the signed artifact and persistence model described in [../SPEC.md](../SPEC.md).
+The only supported bot contract is the local requester runtime.
 
-Release boundary for this document:
+Bots do not:
 
-- stable primitive underneath: descriptor/offer/quote/deal/receipt artifacts and local restart-safe state
-- supported alpha here: local runtime routes, Python helpers, and bot-facing convenience flows
-- not promised stable here: internal storage layout, relay policy, or long-term route shape for non-runtime convenience endpoints
-
-## Scope
-
-The supported alpha happy path is:
-
-- discover provider state
-- request a quote or use the authenticated runtime buy flow
-- open a deal
-- wait for `payment_pending`, `result_ready`, or a terminal receipt
-- accept the result when required
-- verify the terminal receipt
-- optionally export the retained archive bundle
-
-The runtime should hide:
-
-- raw invoice-bundle parsing on the happy path
-- relay behavior and relay auth
-- internal deal signing details for local bot callers
-
-The runtime does not hide:
-
-- signed artifacts
-- `artifact_hash` values
-- receipt verification
-- optional archive export for debugging or audit
-
-## Supported Python Surface
-
-The supported alpha Python entrypoint is [../python/froglet_client.py](../python/froglet_client.py).
-
-Supported helpers:
-
-- `RuntimeClient`
-- `ProviderClient`
-- `MarketplaceClient`
-- `generate_requester_seed()`
-- `requester_id_from_seed(seed)`
-- `runtime_requester_fields(seed, success_preimage)`
-
-Supported helper shapes:
-
-- `DealHandle`
-  - `quote`
-  - `deal`
-  - `terminal`
-  - `payment_intent_path`
-  - optional `payment_intent`
-
-These helpers are part of the alpha bot surface because they let a local bot complete the default flow without manually parsing settlement internals first. The SDK now consumes the local signing inputs client-side and sends only signed quote/deal artifacts over HTTP.
+- call provider routes directly
+- call discovery routes directly
+- manage requester seed material
+- manage success preimages client-side
 
 ## Supported Runtime Routes
 
-These localhost routes are part of the supported alpha runtime surface:
-
 - `GET /v1/runtime/wallet/balance`
-- `POST /v1/runtime/provider/start`
-- `POST /v1/runtime/services/publish`
-- `POST /v1/runtime/services/buy`
+- `POST /v1/runtime/search`
+- `GET /v1/runtime/providers/:provider_id`
+- `POST /v1/runtime/deals`
+- `GET /v1/runtime/deals/:deal_id`
 - `GET /v1/runtime/deals/:deal_id/payment-intent`
+- `POST /v1/runtime/deals/:deal_id/accept`
 - `GET /v1/runtime/archive/:subject_kind/:subject_id`
-- `POST /v1/runtime/discovery/curated-lists/issue`
-- `GET /v1/runtime/nostr/publications/provider`
-- `GET /v1/runtime/nostr/publications/deals/:deal_id/receipt`
 
-The mock-Lightning state mutation route remains alpha-only and test-oriented:
+## Supported SDK Surface
 
-- `POST /v1/runtime/lightning/invoice-bundles/:session_id/state`
+Primary bot surface in [../python/froglet_client.py](../python/froglet_client.py):
 
-It is useful for local bot development and examples, but it is not a public-network workflow.
-The runtime surface is expected to live on a dedicated loopback listener that is separate from the public provider API.
-The Tor sidecar transport, when enabled, publishes the public provider surface rather than the privileged runtime surface.
+- `RuntimeClient`
+- `DealHandle`
 
-## Supported Verification Routes
+Low-level, non-primary surfaces:
 
-These node routes are intentionally part of the alpha bot product because bots still need explicit verification:
+- `ProviderClient`
+- `DiscoveryClient`
+
+## Supported Bot Flow
+
+1. search through the local runtime
+2. inspect a provider through the local runtime
+3. create a deal through the local runtime
+4. poll the local runtime for status
+5. inspect payment intent if present
+6. accept through the local runtime when required
+7. export archive if needed
+
+## Verification Surface
+
+These routes remain supported because bots and operators still need verification:
 
 - `POST /v1/invoice-bundles/verify`
 - `POST /v1/curated-lists/verify`
 - `POST /v1/nostr/events/verify`
 - `POST /v1/receipts/verify`
 
-## Explicitly Out of the Alpha Bot Surface
+## Out of Scope
 
-These endpoints may continue to exist, but they are not the primary bot-facing alpha contract:
+These are not part of the bot-facing alpha contract:
 
-- free-only compatibility execution endpoints
-- raw feed replication as the first integration path
-- internal storage layout or SQLite details
-- relay publishing policy
-
-Bots can still use the lower-level node routes, but the supported product path is the runtime plus verification helpers above.
-
-## State Model for Bot Callers
-
-The runtime may expose these local statuses:
-
-- `payment_pending`
-- `result_ready`
-- terminal `succeeded`, `failed`, or `rejected`
-
-Bot callers should treat `payment_pending` and `result_ready` as operational states, not signed protocol facts.
-Receipt verification still depends on the terminal signed receipt artifact.
-
-## Recommended Integration Pattern
-
-For a local bot:
-
-1. Read the runtime auth token from `./data/runtime/auth.token`.
-2. Point `RuntimeClient` at the dedicated runtime listener and `ProviderClient` at the public provider listener when they differ.
-   In the default topology this means runtime `http://127.0.0.1:8081` and provider `http://127.0.0.1:8080`.
-3. Use `RuntimeClient.buy_service(...)` with `runtime_requester_fields(...)`.
-4. If the returned handle is non-terminal, inspect or follow `payment_intent`.
-5. Wait for `result_ready` or a terminal state.
-6. Call `accept_result(...)` when the success-fee preimage should be released.
-7. Call `verify_receipt(...)`.
-8. Export `archive_subject(...)` if the interaction needs retention or debugging.
-
-If you call `POST /v1/runtime/services/buy` directly instead of using the SDK, submit a pre-signed `quote` and `deal` plus the workload spec; direct runtime callers should not send requester seed material in the request body.
-
-Runnable examples are in [../examples/README.md](../examples/README.md).
-Planned evolution beyond this alpha runtime surface is described in [REMOTE_AGENT_LAYER.md](REMOTE_AGENT_LAYER.md).
+- internal storage layout
+- direct provider quote/deal orchestration from bots
+- direct discovery coupling from bots
+- private broker/ranking/catalog layers

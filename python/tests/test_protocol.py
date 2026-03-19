@@ -28,6 +28,20 @@ def runtime_auth_headers(node) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def set_mock_invoice_bundle_states(
+    provider,
+    session_id: str,
+    *,
+    base_state: str,
+    success_state: str,
+) -> None:
+    execute_db(
+        provider.data_dir / "node.db",
+        "UPDATE lightning_invoice_bundles SET base_state = ?, success_state = ?, updated_at = strftime('%s','now') WHERE session_id = ?",
+        (base_state, success_state, session_id),
+    )
+
+
 class ProtocolPrimitiveTests(FrogletAsyncTestCase):
     async def _create_quote(
         self,
@@ -72,14 +86,14 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_descriptor_offers_feed_and_artifact_fetch_are_signed(self) -> None:
-        node = await self.start_node()
+        node = await self.start_provider()
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(node.url("/v1/descriptor")) as resp:
+            async with session.get(node.url("/v1/provider/descriptor")) as resp:
                 self.assertEqual(resp.status, 200)
                 descriptor = await resp.json()
 
-            async with session.get(node.url("/v1/offers")) as resp:
+            async with session.get(node.url("/v1/provider/offers")) as resp:
                 self.assertEqual(resp.status, 200)
                 offers_payload = await resp.json()
 
@@ -156,7 +170,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertTrue(verify_signed_artifact(fetched_artifact["document"]))
 
     async def test_compute_quote_deal_and_receipt_flow(self) -> None:
-        node = await self.start_node(extra_env={"FROGLET_PRICE_EXEC_WASM": "0"})
+        node = await self.start_provider(extra_env={"FROGLET_PRICE_EXEC_WASM": "0"})
 
         wasm_request = build_wasm_request(VALID_WASM_HEX)
 
@@ -235,7 +249,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_lightning_deal_requires_requester_preimage_release(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -268,7 +282,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             self.assertEqual(deal["status"], "payment_pending")
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
@@ -296,25 +310,19 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             self.assertTrue(validation["valid"])
             self.assertEqual(validation["issues"], [])
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "accepted"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
-                updated = await resp.json()
-
-            self.assertEqual(updated["base_state"], "settled")
-            self.assertEqual(updated["success_state"], "accepted")
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
 
             result_ready = await self.wait_for_deal_status(
                 node, deal["deal_id"], {"result_ready"}
             )
 
             async with session.post(
-                node.url(f"/v1/deals/{deal['deal_id']}/release-preimage"),
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/accept"),
                 json={
                     "success_preimage": success_preimage,
                     "expected_result_hash": result_ready["result_hash"],
@@ -324,7 +332,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
                 terminal = await resp.json()
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 settled_bundle = await resp.json()
@@ -363,7 +371,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertEqual(settled_bundle["success_state"], "settled")
 
     async def test_lightning_release_preimage_rejects_mismatched_secret(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -392,26 +400,24 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "accepted"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
 
             result_ready = await self.wait_for_deal_status(
                 node, deal["deal_id"], {"result_ready"}
             )
 
             async with session.post(
-                node.url(f"/v1/deals/{deal['deal_id']}/release-preimage"),
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/accept"),
                 json={"success_preimage": "56" * 32},
             ) as resp:
                 self.assertEqual(resp.status, 400)
@@ -423,7 +429,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_lightning_watcher_promotes_funded_deal_without_status_polling(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -452,19 +458,17 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "accepted"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
 
         status = await self.wait_for_deal_status_in_db(
             node, deal["deal_id"], {"result_ready"}
@@ -472,7 +476,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertEqual(status, "result_ready")
 
     async def test_lightning_watcher_finalizes_settled_result_ready_deal(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -501,40 +505,36 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "accepted"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
 
             status = await self.wait_for_deal_status_in_db(
                 node, deal["deal_id"], {"result_ready"}
             )
             self.assertEqual(status, "result_ready")
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "settled"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="settled",
+            )
 
             terminal_status = await self.wait_for_deal_status_in_db(
                 node, deal["deal_id"], {"succeeded"}
             )
             self.assertEqual(terminal_status, "succeeded")
 
-            async with session.get(node.url(f"/v1/deals/{deal['deal_id']}")) as resp:
+            async with session.get(node.url(f"/v1/provider/deals/{deal['deal_id']}")) as resp:
                 self.assertEqual(resp.status, 200)
                 terminal = await resp.json()
 
@@ -545,7 +545,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_lightning_watcher_fails_payment_pending_deal_when_provider_cancels(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -574,19 +574,17 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "canceled", "success_state": "open"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="canceled",
+                success_state="open",
+            )
 
             terminal = await self.wait_for_deal(node, deal["deal_id"])
 
@@ -607,7 +605,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_lightning_watcher_fails_result_ready_deal_when_requester_withholds_preimage(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -636,32 +634,28 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "accepted"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
 
             result_ready = await self.wait_for_deal_status(
                 node, deal["deal_id"], {"result_ready"}
             )
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "canceled"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="canceled",
+            )
 
             terminal = await self.wait_for_deal(node, deal["deal_id"])
 
@@ -682,7 +676,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_lightning_watcher_fails_result_ready_deal_on_success_hold_expiry(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -711,32 +705,28 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 bundle = await resp.json()
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "accepted"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="accepted",
+            )
 
             result_ready = await self.wait_for_deal_status(
                 node, deal["deal_id"], {"result_ready"}
             )
 
-            async with session.post(
-                node.url(
-                    f"/v1/runtime/lightning/invoice-bundles/{bundle['session_id']}/state"
-                ),
-                headers=runtime_auth_headers(node),
-                json={"base_state": "settled", "success_state": "expired"},
-            ) as resp:
-                self.assertEqual(resp.status, 200)
+            set_mock_invoice_bundle_states(
+                node,
+                bundle["session_id"],
+                base_state="settled",
+                success_state="expired",
+            )
 
             terminal = await self.wait_for_deal(node, deal["deal_id"])
 
@@ -753,7 +743,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_lightning_invoice_bundle_rejects_mismatched_stored_bundle(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -782,7 +772,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{first_deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{first_deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 first_bundle = await resp.json()
@@ -804,7 +794,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             )
 
             async with session.get(
-                node.url(f"/v1/deals/{second_deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{second_deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 second_bundle = await resp.json()
@@ -817,7 +807,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                node.url(f"/v1/deals/{first_deal['deal_id']}/invoice-bundle")
+                node.url(f"/v1/provider/deals/{first_deal['deal_id']}/invoice-bundle")
             ) as resp:
                 self.assertEqual(resp.status, 409)
                 corrupted = await resp.json()
@@ -847,7 +837,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_data_offer_can_be_quoted_and_executed(self) -> None:
-        node = await self.start_node()
+        node = await self.start_provider()
         event = create_signed_event("hello data deal", kind="protocol.test")
 
         async with aiohttp.ClientSession() as session:
@@ -883,7 +873,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_deal_rejection_emits_signed_terminal_receipt(self) -> None:
-        node = await self.start_node(
+        node = await self.start_provider(
             extra_env={"FROGLET_WASM_CONCURRENCY_LIMIT": "1"}
         )
 
@@ -909,7 +899,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             deadline = asyncio.get_running_loop().time() + 10
             while asyncio.get_running_loop().time() < deadline:
                 async with session.get(
-                    node.url(f"/v1/deals/{first_deal['deal_id']}")
+                    node.url(f"/v1/provider/deals/{first_deal['deal_id']}")
                 ) as resp:
                     first_status = await resp.json()
                 if first_status["status"] == "running":
@@ -953,7 +943,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertTrue(verify_response["valid"])
 
     async def test_quote_workload_hash_is_stable_across_canonical_input_key_order(self) -> None:
-        node = await self.start_node()
+        node = await self.start_provider()
         first_request = build_wasm_request(VALID_WASM_HEX, input={"b": 2, "a": 1})
         second_request = build_wasm_request(VALID_WASM_HEX, input={"a": 1, "b": 2})
 
@@ -971,7 +961,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_deal_persistence_keeps_submission_evidence_and_quote_hash(self) -> None:
-        node = await self.start_node()
+        node = await self.start_provider()
         request = build_wasm_request(VALID_WASM_HEX, input={"job": "deal-persist"})
 
         async with aiohttp.ClientSession() as session:
@@ -1027,7 +1017,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
     async def test_deal_and_quote_reads_prefer_retained_artifacts_over_cache_columns(self) -> None:
-        node = await self.start_node()
+        node = await self.start_provider()
         request = build_wasm_request(VALID_WASM_HEX, input={"job": "reference-first-reads"})
 
         async with aiohttp.ClientSession() as session:
@@ -1056,7 +1046,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(node.url(f"/v1/deals/{deal['deal_id']}")) as resp:
+            async with session.get(node.url(f"/v1/provider/deals/{deal['deal_id']}")) as resp:
                 reread = await resp.json()
 
             second_deal = await self._create_deal(
@@ -1079,13 +1069,13 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertEqual(second_terminal["quote"]["hash"], quote["hash"])
 
     async def test_quote_rejects_unsupported_wasm_abi_version(self) -> None:
-        node = await self.start_node()
+        node = await self.start_provider()
         request = build_wasm_request(VALID_WASM_HEX)
         request["submission"]["workload"]["abi_version"] = "froglet.wasm.run_json.v0"
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/quotes"),
+                node.url("/v1/provider/quotes"),
                 json={
                     "offer_id": "execute.wasm",
                     "requester_id": schnorr_pubkey_hex(generate_schnorr_signing_key()),

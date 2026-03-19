@@ -11,7 +11,10 @@ from typing import Any, Awaitable, Callable, Iterable, TypeVar
 import aiohttp
 from ecdsa import curves, ellipticcurve
 
-from froglet_client import DEFAULT_HTTP_TIMEOUT, RuntimeClient
+try:
+    from .froglet_client import DEFAULT_HTTP_TIMEOUT, RuntimeClient
+except ImportError:
+    from froglet_client import DEFAULT_HTTP_TIMEOUT, RuntimeClient
 
 AUTH_EVENT_KIND = 22242
 SECP256K1 = curves.SECP256k1

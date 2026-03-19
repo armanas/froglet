@@ -53,10 +53,39 @@ jobs:
         env:
           TAG_VERSION: ${{ steps.meta.outputs.version }}
 
+      - name: Verify OpenClaw plugin versions match tag
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          tag_version = os.environ["TAG_VERSION"]
+          package_version = json.loads(
+              Path("integrations/openclaw/froglet/package.json").read_text()
+          )["version"]
+          plugin_version = json.loads(
+              Path("integrations/openclaw/froglet/openclaw.plugin.json").read_text()
+          )["version"]
+
+          if package_version != tag_version:
+              raise SystemExit(
+                  f"package.json version {package_version!r} does not match tag {tag_version!r}"
+              )
+          if plugin_version != tag_version:
+              raise SystemExit(
+                  f"openclaw.plugin.json version {plugin_version!r} does not match tag {tag_version!r}"
+              )
+          PY
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+
       - name: Validate Compose configurations
         run: |
           docker compose config
-          docker compose -f compose.full-runtime.yaml config
+          docker compose -f compose.provider.yaml config
+          docker compose -f compose.runtime.yaml config
+          docker compose -f compose.discovery.yaml config
 
       - name: Log in to GHCR
         env:
@@ -64,15 +93,15 @@ jobs:
         run: |
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-      - name: Build and push froglet image
+      - name: Build and push provider image
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
           SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
         run: |
-          image="ghcr.io/${OWNER_LC}/froglet"
+          image="ghcr.io/${OWNER_LC}/froglet-provider"
           docker build \
-            --target froglet \
+            --target provider \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${image}:${VERSION}" \
@@ -81,15 +110,32 @@ jobs:
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
 
-      - name: Build and push marketplace image
+      - name: Build and push runtime image
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
           SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
         run: |
-          image="ghcr.io/${OWNER_LC}/froglet-marketplace"
+          image="ghcr.io/${OWNER_LC}/froglet-runtime"
           docker build \
-            --target marketplace \
+            --target runtime \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            -t "${image}:${VERSION}" \
+            -t "${image}:${SHA_TAG}" \
+            .
+          docker push "${image}:${VERSION}"
+          docker push "${image}:${SHA_TAG}"
+
+      - name: Build and push discovery image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+        run: |
+          image="ghcr.io/${OWNER_LC}/froglet-discovery"
+          docker build \
+            --target discovery \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${image}:${VERSION}" \
@@ -107,8 +153,10 @@ jobs:
           {
             echo "## Published Images"
             echo ""
-            echo "- ghcr.io/${OWNER_LC}/froglet:${VERSION}"
-            echo "- ghcr.io/${OWNER_LC}/froglet:${SHA_TAG}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${VERSION}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-provider:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-provider:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-discovery:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-discovery:${SHA_TAG}"
           } >> "$GITHUB_STEP_SUMMARY"

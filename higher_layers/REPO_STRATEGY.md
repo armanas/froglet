@@ -1,83 +1,67 @@
 # Higher-Layer Repo Strategy
 
-This document captures the intended split between the public Froglet core and
-private product-layer services.
+This document is the canonical public/private boundary for product-layer work.
+It replaces the older `private/` incubation idea as the active planning model.
 
-## 1. Public Components
+## Public Components
 
-The following should remain public and permissively licensed:
+Keep public:
 
 - `SPEC.md` and protocol-facing docs
 - the Froglet node/runtime
-- SDKs and integration tooling
-- the OpenClaw integration
-- conformance fixtures and reference examples
+- adapters and verification surfaces
+- SDKs, conformance fixtures, and reference examples
+- the public OpenClaw integration
 - the reference discovery service
 
 These pieces exist to maximize interoperability, trust, and ecosystem
 adoption.
 
-## 2. Private Components
+## Private Components
 
-The following may remain private:
+Keep private or extract later:
 
-- the official marketplace product
+- the commercial marketplace product
 - indexers and catalog projections
 - broker and routing logic
 - ranking and reputation systems
-- ownership / issuer overlays
-- seed-service catalog data and policy
-- hosted control-plane or operator tooling
+- ownership and issuer overlays
+- hosted operator/control-plane tooling
+- first-party OpenClaw integration helpers for private product surfaces
 
-Those systems should compete on data, curation, routing quality, trust policy,
+These systems should compete on data, curation, routing quality, trust policy,
 operations, and user experience rather than on protocol secrecy.
 
-## 3. License Position
+## In-Repo Staging Rule
 
-The public Froglet repo should stay under Apache-2.0 unless there is a concrete
-distribution reason to change it.
+While this work is still incubated in the public Froglet repo, stage it under:
 
-Why:
+- `higher_layers/marketplace/`
+- `higher_layers/indexer/`
+- `higher_layers/broker/`
+- `higher_layers/trust/`
+- `higher_layers/operator/`
+- `higher_layers/openclaw/`
 
-- it is permissive enough for broad protocol and SDK adoption
-- it keeps integration tooling easy to consume
-- it includes an explicit patent grant, which is valuable for protocol and
-  infrastructure code
+Do not reintroduce a hidden `private/` source tree as the primary plan.
 
-Switching to MIT would simplify the text, but it would not materially improve
-the intended open-core / closed-service split.
+## Boundary Rules
 
-## 4. Temporary In-Repo Private Incubation
+Higher-layer code must:
 
-During early alignment, private higher-layer work may live in an ignored local
-`private/` directory in this repo.
-
-Suggested layout:
-
-- `private/marketplace/`
-- `private/indexer/`
-- `private/broker/`
-- `private/openclaw/` only for non-public operational helpers if needed
-
-This is a temporary incubation aid, not the long-term home for those services.
-
-## 5. Boundary Rules
-
-Private higher-layer code must:
-
-- consume public Froglet HTTP APIs, signed artifacts, or explicitly documented
-  external contracts
+- consume public Froglet HTTP APIs, signed artifacts, or documented external
+  contracts
 - avoid direct reads from Froglet SQLite databases
 - avoid imports from non-public internal Rust modules as shortcuts
 - avoid shaping `SPEC.md` around private-product convenience
 - document any new required public contract under `higher_layers/` before
   depending on it privately
 
-Public code must not depend on ignored `private/` code or assume it exists.
+Public code must not depend on ignored private code or assume it exists.
 
-## 6. Extraction Trigger
+## Extraction Trigger
 
-Move each private service into its own repository once:
+Move each service into its own repository once:
 
 - the service interface is defined
 - data ownership is clear

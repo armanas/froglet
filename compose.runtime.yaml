@@ -1,0 +1,13 @@
+services:
+  runtime:
+    build:
+      context: .
+      target: runtime
+    image: froglet-runtime:local
+    environment:
+      FROGLET_RUNTIME_LISTEN_ADDR: 0.0.0.0:8081
+      FROGLET_RUNTIME_ALLOW_NON_LOOPBACK: "true"
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ./data:/data

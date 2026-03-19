@@ -979,7 +979,7 @@ pub fn build_lightning_wallet_intent(
     let result_ready = deal_status == deals::DEAL_STATUS_RESULT_READY;
     let can_release_preimage = result_ready && lightning_bundle_can_settle_success(session);
     let release_action = can_release_preimage.then(|| LightningWalletReleaseAction {
-        endpoint_path: format!("/v1/deals/{deal_id}/release-preimage"),
+        endpoint_path: format!("/v1/provider/deals/{deal_id}/accept"),
         payment_hash: session.bundle.payload.success_fee.payment_hash.clone(),
         expected_result_hash: result_hash.map(str::to_string),
     });

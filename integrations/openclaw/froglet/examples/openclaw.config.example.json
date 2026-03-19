@@ -9,12 +9,8 @@
       "froglet": {
         "enabled": true,
         "config": {
-          "marketplaceUrl": "http://127.0.0.1:9090",
-          "enablePrivilegedRuntimeTools": false,
-          "providerUrl": "http://127.0.0.1:8080",
           "runtimeUrl": "http://127.0.0.1:8081",
           "runtimeAuthTokenPath": "/absolute/path/to/froglet/data/runtime/auth.token",
-          "pythonExecutable": "python3",
           "requestTimeoutMs": 10000,
           "defaultSearchLimit": 10,
           "maxSearchLimit": 50

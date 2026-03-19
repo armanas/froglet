@@ -18,12 +18,14 @@ from typing import NoReturn, Optional
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp import web
 from ecdsa import curves, ellipticcurve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TARGET_DIR = REPO_ROOT / "target" / "debug"
-FROGLET_BIN = TARGET_DIR / "froglet"
-MARKETPLACE_BIN = TARGET_DIR / "marketplace"
+FROGLET_PROVIDER_BIN = TARGET_DIR / "froglet-provider"
+FROGLET_RUNTIME_BIN = TARGET_DIR / "froglet-runtime"
+DISCOVERY_BIN = TARGET_DIR / "froglet-discovery"
 VALID_WASM_HEX = (
     "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
     "020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432"
@@ -46,12 +48,16 @@ def ensure_binaries() -> None:
         return
 
     subprocess.run(["cargo", "build", "--bins"], cwd=REPO_ROOT, check=True)
-    if not FROGLET_BIN.exists() or not MARKETPLACE_BIN.exists():
+    if (
+        not FROGLET_PROVIDER_BIN.exists()
+        or not FROGLET_RUNTIME_BIN.exists()
+        or not DISCOVERY_BIN.exists()
+    ):
         raise RuntimeError("Expected compiled froglet binaries in target/debug")
     _BUILD_DONE = True
 
 
-def listening_port(site: aiohttp.web.TCPSite) -> int:
+def listening_port(site: web.TCPSite) -> int:
     server = getattr(site, "_server", None)
     sockets = getattr(server, "sockets", None)
     if not sockets:
@@ -167,30 +173,44 @@ class ManagedProcess:
         shutil.rmtree(self.temp_root, ignore_errors=True)
 
 
-class FrogletNode(ManagedProcess):
+class FrogletProvider(ManagedProcess):
     def __init__(
         self,
         process: subprocess.Popen,
         log_path: Path,
         temp_root: Path,
         port: int,
-        runtime_port: int,
         data_dir: Path,
     ):
         super().__init__(process=process, log_path=log_path, temp_root=temp_root)
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}"
-        self.runtime_port = runtime_port
-        self.runtime_url = f"http://127.0.0.1:{runtime_port}"
         self.data_dir = data_dir
 
     def url(self, path: str) -> str:
-        if path.startswith("/v1/runtime/"):
-            return f"{self.runtime_url}{path}"
         return f"{self.base_url}{path}"
 
 
-class MarketplaceServer(ManagedProcess):
+class FrogletRuntime(ManagedProcess):
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        log_path: Path,
+        temp_root: Path,
+        runtime_port: int,
+        data_dir: Path,
+    ):
+        super().__init__(process=process, log_path=log_path, temp_root=temp_root)
+        self.runtime_port = runtime_port
+        self.runtime_url = f"http://127.0.0.1:{runtime_port}"
+        self.data_dir = data_dir
+        self.runtime_auth_token_path = data_dir / "runtime" / "auth.token"
+
+    def url(self, path: str) -> str:
+        return f"{self.runtime_url}{path}"
+
+
+class DiscoveryServer(ManagedProcess):
     def __init__(self, process: subprocess.Popen, log_path: Path, temp_root: Path, port: int, db_path: Path):
         super().__init__(process=process, log_path=log_path, temp_root=temp_root)
         self.port = port
@@ -650,19 +670,19 @@ async def _wait_for_lnd_payment_ready(
     await _wait_for(op, timeout=timeout, description="alice->bob probe payment")
 
 
-async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> MarketplaceServer:
+async def start_discovery(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> DiscoveryServer:
     ensure_binaries()
     requested_port = port
     port = port or 0
-    temp_root = Path(tempfile.mkdtemp(prefix="froglet-marketplace-"))
-    log_path = temp_root / "marketplace.log"
-    db_path = temp_root / "marketplace.db"
+    temp_root = Path(tempfile.mkdtemp(prefix="froglet-discovery-"))
+    log_path = temp_root / "discovery.log"
+    db_path = temp_root / "discovery.db"
 
     env = os.environ.copy()
     env.update(
         {
-            "FROGLET_MARKETPLACE_LISTEN_ADDR": f"127.0.0.1:{port}",
-            "FROGLET_MARKETPLACE_DB_PATH": str(db_path),
+            "FROGLET_DISCOVERY_LISTEN_ADDR": f"127.0.0.1:{port}",
+            "FROGLET_DISCOVERY_DB_PATH": str(db_path),
         }
     )
     if extra_env:
@@ -670,7 +690,7 @@ async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[d
 
     with log_path.open("w") as log_file:
         process = subprocess.Popen(
-            [str(MARKETPLACE_BIN)],
+            [str(DISCOVERY_BIN)],
             cwd=REPO_ROOT,
             env=env,
             stdout=log_file,
@@ -683,47 +703,52 @@ async def start_marketplace(*, port: Optional[int] = None, extra_env: Optional[d
         if requested_port is None:
             bound_url = await wait_for_logged_url(
                 log_path,
-                "Marketplace API:",
+                "Reference Discovery API:",
                 process=process,
             )
             parsed = urlparse(bound_url)
             if parsed.port is None:
-                raise RuntimeError(f"Marketplace bound URL did not include a port: {bound_url}")
+                raise RuntimeError(
+                    f"Reference discovery bound URL did not include a port: {bound_url}"
+                )
             port = parsed.port
     except Exception as exc:
         await _raise_startup_failure(
             process=process,
             log_path=log_path,
             temp_root=temp_root,
-            label="Marketplace",
+            label="Reference discovery",
             cause=exc,
         )
 
-    server = MarketplaceServer(process=process, log_path=log_path, temp_root=temp_root, port=port, db_path=db_path)
+    server = DiscoveryServer(
+        process=process,
+        log_path=log_path,
+        temp_root=temp_root,
+        port=port,
+        db_path=db_path,
+    )
 
     try:
         await wait_for_http(server.url("/health"))
     except Exception:
         output = server.output()
         await server.stop()
-        raise RuntimeError(f"Marketplace failed to start:\n{output}")
+        raise RuntimeError(f"Reference discovery failed to start:\n{output}")
 
     return server
 
 
-async def start_node(
+async def start_provider(
     *,
     port: Optional[int] = None,
-    runtime_port: Optional[int] = None,
     tor_backend_port: Optional[int] = None,
     data_dir: Optional[Path] = None,
     extra_env: Optional[dict[str, str]] = None,
-) -> FrogletNode:
+) -> FrogletProvider:
     ensure_binaries()
     requested_port = port
-    requested_runtime_port = runtime_port
     port = port or 0
-    runtime_port = runtime_port or 0
     tor_backend_port = tor_backend_port or 0
     temp_root = Path(tempfile.mkdtemp(prefix="froglet-node-"))
     log_path = temp_root / "froglet.log"
@@ -734,7 +759,7 @@ async def start_node(
         {
             "FROGLET_NETWORK_MODE": "clearnet",
             "FROGLET_LISTEN_ADDR": f"127.0.0.1:{port}",
-            "FROGLET_RUNTIME_LISTEN_ADDR": f"127.0.0.1:{runtime_port}",
+            "FROGLET_RUNTIME_LISTEN_ADDR": "127.0.0.1:0",
             "FROGLET_TOR_BACKEND_LISTEN_ADDR": f"127.0.0.1:{tor_backend_port}",
             "FROGLET_DATA_DIR": str(data_dir),
         }
@@ -745,7 +770,7 @@ async def start_node(
 
     with log_path.open("w") as log_file:
         process = subprocess.Popen(
-            [str(FROGLET_BIN)],
+            [str(FROGLET_PROVIDER_BIN)],
             cwd=REPO_ROOT,
             env=env,
             stdout=log_file,
@@ -755,16 +780,6 @@ async def start_node(
         )
 
     try:
-        if requested_runtime_port is None:
-            runtime_url = await wait_for_logged_url(
-                log_path,
-                "Local Runtime API:",
-                process=process,
-            )
-            parsed_runtime = urlparse(runtime_url)
-            if parsed_runtime.port is None:
-                raise RuntimeError(f"Runtime bound URL did not include a port: {runtime_url}")
-            runtime_port = parsed_runtime.port
         if requested_port is None and network_mode in {"clearnet", "dual"}:
             public_url = await wait_for_logged_url(
                 log_path,
@@ -784,25 +799,102 @@ async def start_node(
             cause=exc,
         )
 
-    node = FrogletNode(
+    node = FrogletProvider(
         process=process,
         log_path=log_path,
         temp_root=temp_root,
         port=port,
-        runtime_port=runtime_port,
         data_dir=data_dir,
     )
 
     try:
         if network_mode in {"clearnet", "dual"}:
             await wait_for_http(node.url("/health"))
-        await wait_for_http(f"{node.runtime_url}/health")
     except Exception:
         output = node.output()
         await node.stop()
         raise RuntimeError(f"Froglet failed to start:\n{output}")
 
     return node
+
+
+async def start_runtime(
+    *,
+    runtime_port: Optional[int] = None,
+    data_dir: Optional[Path] = None,
+    extra_env: Optional[dict[str, str]] = None,
+) -> FrogletRuntime:
+    ensure_binaries()
+    requested_runtime_port = runtime_port
+    runtime_port = runtime_port or 0
+    temp_root = Path(tempfile.mkdtemp(prefix="froglet-runtime-"))
+    log_path = temp_root / "froglet-runtime.log"
+    data_dir = data_dir or (temp_root / "data")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "FROGLET_NETWORK_MODE": "clearnet",
+            "FROGLET_LISTEN_ADDR": "127.0.0.1:0",
+            "FROGLET_RUNTIME_LISTEN_ADDR": f"127.0.0.1:{runtime_port}",
+            "FROGLET_TOR_BACKEND_LISTEN_ADDR": "127.0.0.1:0",
+            "FROGLET_DATA_DIR": str(data_dir),
+        }
+    )
+    if extra_env:
+        env.update(extra_env)
+
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(
+            [str(FROGLET_RUNTIME_BIN)],
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+
+    try:
+        if requested_runtime_port is None:
+            runtime_url = await wait_for_logged_url(
+                log_path,
+                "Local Runtime API:",
+                process=process,
+            )
+            parsed_runtime = urlparse(runtime_url)
+            if parsed_runtime.port is None:
+                raise RuntimeError(f"Runtime bound URL did not include a port: {runtime_url}")
+            runtime_port = parsed_runtime.port
+    except Exception as exc:
+        await _raise_startup_failure(
+            process=process,
+            log_path=log_path,
+            temp_root=temp_root,
+            label="Froglet runtime",
+            cause=exc,
+        )
+
+    runtime = FrogletRuntime(
+        process=process,
+        log_path=log_path,
+        temp_root=temp_root,
+        runtime_port=runtime_port,
+        data_dir=data_dir,
+    )
+
+    try:
+        await wait_for_http(f"{runtime.runtime_url}/health")
+    except Exception:
+        output = runtime.output()
+        await runtime.stop()
+        raise RuntimeError(f"Froglet runtime failed to start:\n{output}")
+
+    return runtime
+
+
+async def start_node(**kwargs) -> FrogletProvider:
+    return await start_provider(**kwargs)
 
 
 SECP256K1 = curves.SECP256k1
@@ -1118,7 +1210,7 @@ def default_success_payment_hash(label: str) -> str:
 
 async def create_protocol_quote(
     session: aiohttp.ClientSession,
-    node: FrogletNode,
+    node: FrogletProvider,
     *,
     offer_id: str,
     request: dict,
@@ -1132,16 +1224,18 @@ async def create_protocol_quote(
     }
     if max_price_sats is not None:
         payload["max_price_sats"] = max_price_sats
-    async with session.post(node.url("/v1/quotes"), json=payload) as resp:
+    async with session.post(node.url("/v1/provider/quotes"), json=payload) as resp:
         quote = await resp.json()
     if resp.status != 201:
-        raise AssertionError(f"expected 201 from /v1/quotes, got {resp.status}: {quote}")
+        raise AssertionError(
+            f"expected 201 from /v1/provider/quotes, got {resp.status}: {quote}"
+        )
     return quote
 
 
 async def create_protocol_deal(
     session: aiohttp.ClientSession,
-    node: FrogletNode,
+    node: FrogletProvider,
     *,
     quote: dict,
     request: dict,
@@ -1167,11 +1261,11 @@ async def create_protocol_deal(
     if payment is not None:
         payload["payment"] = payment
 
-    async with session.post(node.url("/v1/deals"), json=payload) as resp:
+    async with session.post(node.url("/v1/provider/deals"), json=payload) as resp:
         created = await resp.json()
     if resp.status not in expected_statuses:
         raise AssertionError(
-            f"expected {expected_statuses} from /v1/deals, got {resp.status}: {created}"
+            f"expected {expected_statuses} from /v1/provider/deals, got {resp.status}: {created}"
         )
     return created
 
@@ -1226,22 +1320,32 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.to_thread(ensure_binaries)
         asyncio.get_running_loop().slow_callback_duration = 1.0
 
-    async def start_node(self, **kwargs) -> FrogletNode:
-        node = await start_node(**kwargs)
-        self.addAsyncCleanup(node.stop)
-        return node
+    async def start_provider(self, **kwargs) -> FrogletProvider:
+        provider = await start_provider(**kwargs)
+        self.addAsyncCleanup(provider.stop)
+        return provider
 
-    async def start_marketplace(self, **kwargs) -> MarketplaceServer:
-        marketplace = await start_marketplace(**kwargs)
-        self.addAsyncCleanup(marketplace.stop)
-        return marketplace
+    async def start_node(self, **kwargs) -> FrogletProvider:
+        return await self.start_provider(**kwargs)
 
-    async def wait_for_job(self, node: FrogletNode, job_id: str, timeout: float = 15.0) -> dict:
+    async def start_runtime(self, **kwargs) -> FrogletRuntime:
+        runtime = await start_runtime(**kwargs)
+        self.addAsyncCleanup(runtime.stop)
+        return runtime
+
+    async def start_discovery(self, **kwargs) -> DiscoveryServer:
+        discovery = await start_discovery(**kwargs)
+        self.addAsyncCleanup(discovery.stop)
+        return discovery
+
+    async def wait_for_job(
+        self, provider: FrogletProvider, job_id: str, timeout: float = 15.0
+    ) -> dict:
         deadline = time.monotonic() + timeout
 
         async with aiohttp.ClientSession() as session:
             while time.monotonic() < deadline:
-                async with session.get(node.url(f"/v1/node/jobs/{job_id}")) as resp:
+                async with session.get(provider.url(f"/v1/node/jobs/{job_id}")) as resp:
                     payload = await resp.json()
                 if payload["status"] in {"succeeded", "failed"}:
                     return payload
@@ -1249,12 +1353,14 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
         raise RuntimeError(f"Timed out waiting for job {job_id}")
 
-    async def wait_for_deal(self, node: FrogletNode, deal_id: str, timeout: float = 15.0) -> dict:
+    async def wait_for_deal(
+        self, provider: FrogletProvider, deal_id: str, timeout: float = 15.0
+    ) -> dict:
         deadline = time.monotonic() + timeout
 
         async with aiohttp.ClientSession() as session:
             while time.monotonic() < deadline:
-                async with session.get(node.url(f"/v1/deals/{deal_id}")) as resp:
+                async with session.get(provider.url(f"/v1/provider/deals/{deal_id}")) as resp:
                     payload = await resp.json()
                 if payload["status"] in {"succeeded", "failed", "rejected"}:
                     return payload
@@ -1264,7 +1370,7 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def wait_for_deal_status(
         self,
-        node: FrogletNode,
+        provider: FrogletProvider,
         deal_id: str,
         statuses: set[str] | frozenset[str],
         timeout: float = 15.0,
@@ -1273,7 +1379,7 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
         async with aiohttp.ClientSession() as session:
             while time.monotonic() < deadline:
-                async with session.get(node.url(f"/v1/deals/{deal_id}")) as resp:
+                async with session.get(provider.url(f"/v1/provider/deals/{deal_id}")) as resp:
                     payload = await resp.json()
                 if payload["status"] in statuses:
                     return payload
@@ -1283,7 +1389,7 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def wait_for_deal_status_in_db(
         self,
-        node: FrogletNode,
+        provider: FrogletProvider,
         deal_id: str,
         statuses: set[str] | frozenset[str],
         timeout: float = 15.0,
@@ -1292,7 +1398,7 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
         while time.monotonic() < deadline:
             row = read_db_row(
-                node.data_dir / "node.db",
+                provider.data_dir / "node.db",
                 "SELECT status FROM deals WHERE deal_id = ?",
                 (deal_id,),
             )

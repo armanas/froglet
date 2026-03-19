@@ -23,7 +23,7 @@ from test_support import (
 
 class HardeningTests(FrogletAsyncTestCase):
     async def test_execute_wasm_offer_exposes_execution_profile_timeout(self) -> None:
-        node = await self.start_node(
+        provider = await self.start_provider(
             extra_env={
                 "FROGLET_PAYMENT_BACKEND": "lightning",
                 "FROGLET_LIGHTNING_MODE": "mock",
@@ -33,7 +33,7 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(node.url("/v1/offers")) as resp:
+            async with session.get(provider.url("/v1/provider/offers")) as resp:
                 offers = await resp.json()
 
         self.assertEqual(resp.status, 200)
@@ -47,14 +47,14 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
     async def test_execute_wasm_enforces_wall_clock_timeout(self) -> None:
-        node = await self.start_node(
+        provider = await self.start_provider(
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "1",
             }
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(node.url("/v1/offers")) as resp:
+            async with session.get(provider.url("/v1/provider/offers")) as resp:
                 offers = await resp.json()
             self.assertEqual(resp.status, 200)
             wasm_offer = next(
@@ -67,7 +67,7 @@ class HardeningTests(FrogletAsyncTestCase):
             )
 
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                provider.url("/v1/node/execute/wasm"),
                 json={"submission": build_wasm_submission(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
@@ -82,7 +82,7 @@ class HardeningTests(FrogletAsyncTestCase):
         data_root = Path(tempfile.mkdtemp(prefix="froglet-recovery-data-"))
         self.addCleanup(lambda: shutil.rmtree(data_root, ignore_errors=True))
 
-        node = await self.start_node(
+        provider = await self.start_provider(
             data_dir=data_root,
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "30",
@@ -94,14 +94,14 @@ class HardeningTests(FrogletAsyncTestCase):
             requester_key = generate_schnorr_signing_key()
             quote = await create_protocol_quote(
                 session,
-                node,
+                provider,
                 offer_id="execute.wasm",
                 request=build_wasm_request(LONG_RUNNING_WASM_HEX),
                 requester_secret_key=requester_key,
             )
             deal = await create_protocol_deal(
                 session,
-                node,
+                provider,
                 quote=quote,
                 request=build_wasm_request(LONG_RUNNING_WASM_HEX),
                 requester_secret_key=requester_key,
@@ -110,7 +110,9 @@ class HardeningTests(FrogletAsyncTestCase):
             deadline = time.monotonic() + 5.0
             current = deal
             while time.monotonic() < deadline:
-                async with session.get(node.url(f"/v1/deals/{deal['deal_id']}")) as poll_resp:
+                async with session.get(
+                    provider.url(f"/v1/provider/deals/{deal['deal_id']}")
+                ) as poll_resp:
                     current = await poll_resp.json()
                 if current["status"] == "running":
                     break
@@ -118,10 +120,10 @@ class HardeningTests(FrogletAsyncTestCase):
             else:
                 self.fail(f"deal never reached running state: {current}")
 
-        os.killpg(node.process.pid, signal.SIGKILL)
-        await asyncio.to_thread(node.process.wait, 5)
+        os.killpg(provider.process.pid, signal.SIGKILL)
+        await asyncio.to_thread(provider.process.wait, 5)
 
-        restarted = await self.start_node(
+        restarted = await self.start_provider(
             data_dir=data_root,
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "30",
@@ -134,7 +136,9 @@ class HardeningTests(FrogletAsyncTestCase):
             recovered = None
             status = None
             while time.monotonic() < deadline:
-                async with session.get(restarted.url(f"/v1/deals/{deal['deal_id']}")) as resp:
+                async with session.get(
+                    restarted.url(f"/v1/provider/deals/{deal['deal_id']}")
+                ) as resp:
                     recovered = await resp.json()
                 status = recovered["status"]
                 if status == "failed":
@@ -159,13 +163,13 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
     async def test_execute_wasm_rejects_module_hash_mismatch(self) -> None:
-        node = await self.start_node()
+        provider = await self.start_provider()
         submission = build_wasm_submission(VALID_WASM_HEX)
         submission["workload"]["module_hash"] = "00" * 32
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                provider.url("/v1/node/execute/wasm"),
                 json={"submission": submission},
             ) as resp:
                 payload = await resp.json()

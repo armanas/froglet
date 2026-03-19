@@ -1,0 +1,21 @@
+{
+  "plugins": {
+    "load": {
+      "paths": [
+        "/sandbox/froglet/integrations/openclaw/froglet"
+      ]
+    },
+    "entries": {
+      "froglet": {
+        "enabled": true,
+        "config": {
+          "runtimeUrl": "http://127.0.0.1:8081",
+          "runtimeAuthTokenPath": "/sandbox/state/froglet/runtime/auth.token",
+          "requestTimeoutMs": 10000,
+          "defaultSearchLimit": 10,
+          "maxSearchLimit": 50
+        }
+      }
+    }
+  }
+}

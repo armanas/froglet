@@ -1,6 +1,6 @@
 use froglet::{
     db::DbPool,
-    marketplace_server::{self, MarketplaceAppState},
+    discovery_server::{self, DiscoveryAppState},
 };
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -9,13 +9,13 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    let listen_addr = std::env::var("FROGLET_MARKETPLACE_LISTEN_ADDR")
+    let listen_addr = std::env::var("FROGLET_DISCOVERY_LISTEN_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:9090".to_string());
     let db_path = PathBuf::from(
-        std::env::var("FROGLET_MARKETPLACE_DB_PATH")
-            .unwrap_or_else(|_| "./data/marketplace.db".to_string()),
+        std::env::var("FROGLET_DISCOVERY_DB_PATH")
+            .unwrap_or_else(|_| "./data/discovery.db".to_string()),
     );
-    let stale_after_secs = std::env::var("FROGLET_MARKETPLACE_STALE_AFTER_SECS")
+    let stale_after_secs = std::env::var("FROGLET_DISCOVERY_STALE_AFTER_SECS")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(300);
@@ -26,8 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = DbPool::open_with(
         &db_path,
-        marketplace_server::initialize_marketplace_db,
-        marketplace_server::initialize_marketplace_db_reader,
+        discovery_server::initialize_discovery_db,
+        discovery_server::initialize_discovery_db_reader,
     )?;
     let db_metrics_path = db_path.clone();
     let wal_metrics = pool
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         wal_checkpointed_frames = wal_metrics.checkpointed_frames,
         wal_busy = wal_metrics.busy,
         wal_checkpoint_duration_ms = wal_metrics.duration_ms as u64,
-        "Marketplace SQLite WAL checkpoint metrics collected"
+        "Reference discovery SQLite WAL checkpoint metrics collected"
     );
     #[cfg(unix)]
     {
@@ -52,16 +52,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::set_permissions(&db_path, perms)?;
     }
 
-    let state = MarketplaceAppState {
+    let state = DiscoveryAppState {
         db: pool,
         stale_after_secs,
     };
 
-    let app = marketplace_server::router(state);
+    let app = discovery_server::router(state);
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let bound_addr = listener.local_addr()?;
-    println!(" 🌐 Marketplace API: http://{}", bound_addr);
-    tracing::info!("Marketplace listening on http://{}", bound_addr);
+    println!(" 🌐 Reference Discovery API: http://{}", bound_addr);
+    tracing::info!("Reference discovery listening on http://{}", bound_addr);
     axum::serve(listener, app).await?;
     Ok(())
 }

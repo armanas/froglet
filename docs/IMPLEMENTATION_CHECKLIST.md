@@ -11,11 +11,11 @@ Status legend:
 - [~] current focus
 - [ ] pending
 
-This checklist spans both spec-closure work and reference-implementation work.
-After the spec-first kernel split, the Milestone roadmap at the bottom is the authoritative view of what is still open before the v1 core is truly frozen and migrated.
-Detailed planning for higher-layer marketplace and addon work now lives under
-`../higher_layers/` so the core checklist can stay focused on the kernel/runtime
-boundary.
+This checklist is the only freeze-status authority for the Froglet core.
+It spans both spec-closure work and reference-implementation work.
+Detailed planning for higher-layer discovery, broker, trust, operator, and
+OpenClaw boundary work now lives under `../higher_layers/` so the core
+checklist can stay focused on the kernel/runtime boundary.
 
 ## Guiding Constraints
 
@@ -53,7 +53,7 @@ boundary.
 - [x] Specify optional Nostr identity linkage without making Nostr authoritative
 - [x] Define endpoint rotation rules for HTTPS and onion endpoints
 - [x] Define signed curated-list format for bootstrap discovery
-- [x] Implement secp256k1 x-only node identity plus BIP340 Schnorr signing for artifacts and marketplace flows
+- [x] Implement secp256k1 x-only node identity plus BIP340 Schnorr signing for artifacts and discovery flows
 
 ## Phase 3: Lightning Settlement Core
 
@@ -100,11 +100,11 @@ boundary.
 - [x] Ensure the happy path hides relay, transport, and invoice details unless requested
 - [x] Plan for eventual full remote agent execution on top of the same deal primitive without widening v1
 
-## Phase 7: Higher-Layer Marketplace Boundary
+## Phase 7: Higher-Layer Boundary
 
-- [x] Keep the marketplace out of the core trust model
-- [x] Treat signed curated lists as the first bootstrap marketplace primitive
-- [x] Move detailed marketplace and addon planning under `higher_layers/`
+- [x] Keep discovery and commercial layers out of the core trust model
+- [x] Treat signed curated lists as the first bootstrap discovery primitive
+- [x] Move detailed higher-layer and addon planning under `higher_layers/`
 
 ## Immediate Next Steps
 
@@ -152,6 +152,6 @@ Exit criteria:
 
 ### Higher-Layer Follow-On Work
 
-Marketplace services, broker/reputation layers, ownership/issuer products, and
+Discovery services, broker/reputation layers, ownership/issuer products, and
 other post-v1 additions are intentionally tracked outside the core freeze
 checklist under `../higher_layers/`.

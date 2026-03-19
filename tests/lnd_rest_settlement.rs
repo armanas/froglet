@@ -9,10 +9,11 @@ use bitcoin::hashes::{Hash as _, sha256};
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use froglet::{
     api,
+    confidential::ConfidentialConfig,
     config::{
         DiscoveryMode, IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode,
-        MarketplaceConfig, NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig,
-        WasmConfig,
+        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, ReferenceDiscoveryConfig,
+        StorageConfig, WasmConfig,
     },
     crypto,
     db::{self, DbPool},
@@ -22,7 +23,7 @@ use froglet::{
     pricing::PricingTable,
     protocol::{self, DealPayload, ExecutionLimits, QuotePayload, WorkloadSpec, verify_artifact},
     settlement::{self, BuildLightningInvoiceBundleRequest},
-    state::{AppState, MarketplaceStatus, TransportStatus},
+    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
 };
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use serde::{Deserialize, Serialize};
@@ -455,6 +456,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
+        http_ca_cert_path: None,
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
             backend_listen_addr: "127.0.0.1:0".to_string(),
@@ -464,7 +466,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         identity: IdentityConfig {
             auto_generate: true,
         },
-        marketplace: Some(MarketplaceConfig {
+        reference_discovery: Some(ReferenceDiscoveryConfig {
             url: "http://localhost".to_string(),
             publish: false,
             required: false,
@@ -499,6 +501,11 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             policy_path: None,
             policy: None,
         },
+        confidential: ConfidentialConfig {
+            policy_path: None,
+            policy: None,
+            session_ttl_secs: 300,
+        },
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -517,13 +524,16 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
     AppState {
         db: pool,
         transport_status: Arc::new(Mutex::new(TransportStatus::from_config(&node_config))),
-        marketplace_status: Arc::new(Mutex::new(MarketplaceStatus::from_config(&node_config))),
+        reference_discovery_status: Arc::new(Mutex::new(ReferenceDiscoveryStatus::from_config(
+            &node_config,
+        ))),
         wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
         pricing,
         http_client: reqwest::Client::new(),
         wasm_host: None,
+        confidential_policy: None,
         runtime_auth_token: "test-runtime-token".to_string(),
         runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
@@ -557,6 +567,7 @@ fn sign_quote_and_deal(
             expires_at: settlement::lightning_quote_expires_at(state, now, price_sats, 30),
             workload_kind: "compute.wasm.v1".to_string(),
             workload_hash: "aa".repeat(32),
+            confidential_session_hash: None,
             capabilities_granted: Vec::new(),
             extension_refs: Vec::new(),
             quote_use: None,
@@ -581,6 +592,7 @@ fn sign_quote_and_deal(
             provider_id: quote.payload.provider_id.clone(),
             quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
+            confidential_session_hash: None,
             extension_refs: Vec::new(),
             authority_ref: None,
             supersedes_deal_hash: None,

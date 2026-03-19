@@ -1,6 +1,7 @@
 use crate::{
-    config::NodeConfig, db::DbPool, identity::NodeIdentity, lnd::LndRestClient,
-    pricing::PricingTable, sandbox::WasmSandbox, wasm_host::WasmHostEnvironment,
+    confidential::ConfidentialPolicy, config::NodeConfig, db::DbPool, identity::NodeIdentity,
+    lnd::LndRestClient, pricing::PricingTable, sandbox::WasmSandbox,
+    wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -74,7 +75,7 @@ impl TransportStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct MarketplaceStatus {
+pub struct ReferenceDiscoveryStatus {
     pub publish_enabled: bool,
     pub connected: bool,
     pub last_register_at: Option<i64>,
@@ -82,13 +83,13 @@ pub struct MarketplaceStatus {
     pub last_error: Option<String>,
 }
 
-impl MarketplaceStatus {
+impl ReferenceDiscoveryStatus {
     pub fn from_config(config: &NodeConfig) -> Self {
         Self {
             publish_enabled: config
-                .marketplace
+                .reference_discovery
                 .as_ref()
-                .map(|marketplace| marketplace.publish)
+                .map(|discovery| discovery.publish)
                 .unwrap_or(false),
             connected: false,
             last_register_at: None,
@@ -101,13 +102,14 @@ impl MarketplaceStatus {
 pub struct AppState {
     pub db: DbPool,
     pub transport_status: Arc<TokioMutex<TransportStatus>>,
-    pub marketplace_status: Arc<TokioMutex<MarketplaceStatus>>,
+    pub reference_discovery_status: Arc<TokioMutex<ReferenceDiscoveryStatus>>,
     pub wasm_sandbox: Arc<WasmSandbox>,
     pub config: NodeConfig,
     pub identity: Arc<NodeIdentity>,
     pub pricing: PricingTable,
     pub http_client: reqwest::Client,
     pub wasm_host: Option<Arc<WasmHostEnvironment>>,
+    pub confidential_policy: Option<Arc<ConfidentialPolicy>>,
     pub runtime_auth_token: String,
     pub runtime_auth_token_path: PathBuf,
     pub events_query_semaphore: Arc<Semaphore>,
@@ -130,6 +132,7 @@ mod tests {
             public_base_url: public_base_url.map(str::to_string),
             runtime_listen_addr: "127.0.0.1:8081".to_string(),
             runtime_allow_non_loopback: false,
+            http_ca_cert_path: None,
             tor: TorSidecarConfig {
                 binary_path: "tor".to_string(),
                 backend_listen_addr: "127.0.0.1:8082".to_string(),
@@ -139,7 +142,7 @@ mod tests {
             identity: IdentityConfig {
                 auto_generate: true,
             },
-            marketplace: None,
+            reference_discovery: None,
             pricing: PricingConfig {
                 events_query: 0,
                 execute_wasm: 0,
@@ -170,6 +173,11 @@ mod tests {
             wasm: WasmConfig {
                 policy_path: None,
                 policy: None,
+            },
+            confidential: crate::confidential::ConfidentialConfig {
+                policy_path: None,
+                policy: None,
+                session_ttl_secs: 300,
             },
         }
     }

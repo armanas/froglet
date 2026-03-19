@@ -1,15 +1,40 @@
-import { spawn } from "node:child_process"
-import { fileURLToPath } from "node:url"
-
-import { resolveProviderUrl, resolveRuntimeAuthTokenPath, resolveRuntimeUrl } from "./config.js"
-import { clampNumber, toolTextResult } from "./shared.js"
-import { summarizeDescriptor, summarizeOffer } from "./public-tools.js"
-
-export const BRIDGE_SCRIPT_PATH = fileURLToPath(new URL("../bridge.py", import.meta.url))
+import { resolveRuntimeAuthTokenPath, resolveRuntimeUrl } from "./config.js"
+import { summarizeDescriptor, summarizeNode, summarizeOffer } from "./public-tools.js"
+import { toolTextResult } from "./shared.js"
+import {
+  DEFAULT_WAIT_STATUSES,
+  acceptResultForDeal,
+  buyWithRuntime,
+  getProvider,
+  paymentIntentForDeal,
+  searchRuntime,
+  waitForDeal,
+  walletBalance
+} from "./runtime-client.js"
 
 const DEFAULT_WAIT_TIMEOUT_SECS = 15
 const DEFAULT_WAIT_POLL_INTERVAL_SECS = 0.2
-const DEFAULT_WAIT_STATUSES = ["result_ready", "succeeded", "failed", "rejected"]
+
+function buildRuntimeContext(config, args = {}) {
+  return {
+    runtimeUrl: resolveRuntimeUrl(config, args.runtime_url),
+    runtimeAuthTokenPath: resolveRuntimeAuthTokenPath(
+      config,
+      args.runtime_auth_token_path
+    )
+  }
+}
+
+function summarizeDeal(deal) {
+  return [
+    `deal_id: ${deal?.deal_id ?? "unknown"}`,
+    `provider_id: ${deal?.provider_id ?? "unknown"}`,
+    `provider_url: ${deal?.provider_url ?? "unknown"}`,
+    `status: ${deal?.status ?? "unknown"}`,
+    `result_hash: ${deal?.result_hash ?? "none"}`,
+    `receipt_hash: ${deal?.receipt?.hash ?? "none"}`
+  ]
+}
 
 function summarizePaymentRequests(intent) {
   const requests = Array.isArray(intent?.payment_requests) ? intent.payment_requests : []
@@ -30,12 +55,11 @@ function summarizePaymentIntent(intent) {
   if (intent === null || typeof intent !== "object") {
     return ["payment_intent: none"]
   }
-
   const releaseAction = intent.release_action ?? null
   return [
     `payment_backend: ${intent.backend ?? "unknown"}`,
     `payment_session_id: ${intent.session_id ?? "unknown"}`,
-    `payment_deal_status: ${intent.deal_status ?? "unknown"}`,
+    `deal_status: ${intent.deal_status ?? "unknown"}`,
     `admission_ready: ${intent.admission_ready === true}`,
     `result_ready: ${intent.result_ready === true}`,
     `can_release_preimage: ${intent.can_release_preimage === true}`,
@@ -45,16 +69,11 @@ function summarizePaymentIntent(intent) {
   ]
 }
 
-function summarizeDealRecord(deal) {
-  if (deal === null || typeof deal !== "object") {
-    return ["deal: none"]
+function appendRaw(lines, label, payload, includeRaw) {
+  if (!includeRaw) {
+    return lines
   }
-  return [
-    `deal_id: ${deal.deal_id ?? "unknown"}`,
-    `deal_status: ${deal.status ?? "unknown"}`,
-    `result_hash: ${deal.result_hash ?? "none"}`,
-    `result: ${JSON.stringify(deal.result ?? null)}`
-  ]
+  return [...lines, "", label, JSON.stringify(payload, null, 2)]
 }
 
 function normalizeStatuses(value) {
@@ -67,168 +86,124 @@ function normalizeStatuses(value) {
   return statuses.length > 0 ? [...new Set(statuses)] : DEFAULT_WAIT_STATUSES
 }
 
-function runtimeBridgeError(message, details) {
-  if (typeof details !== "string" || details.trim().length === 0) {
-    return new Error(message)
-  }
-  return new Error(`${message}: ${details.trim()}`)
-}
-
-export async function invokeRuntimeBridge(config, payload, options = {}) {
-  const spawnImpl = options.spawnImpl ?? spawn
-  const command = config.pythonExecutable
-
-  return await new Promise((resolve, reject) => {
-    let stdout = ""
-    let stderr = ""
-    let child
-    try {
-      child = spawnImpl(command, [BRIDGE_SCRIPT_PATH], {
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: "1"
-        },
-        stdio: ["pipe", "pipe", "pipe"]
-      })
-    } catch (error) {
-      reject(runtimeBridgeError(`Failed to spawn runtime bridge command ${command}`, error?.message))
-      return
-    }
-
-    child.stdout.setEncoding("utf8")
-    child.stderr.setEncoding("utf8")
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk
-    })
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk
-    })
-    child.on("error", (error) => {
-      reject(runtimeBridgeError(`Runtime bridge process error for ${command}`, error?.message))
-    })
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(
-          runtimeBridgeError(
-            `Runtime bridge exited with code ${code}`,
-            stderr || stdout || "unknown error"
-          )
-        )
-        return
-      }
-
-      const trimmed = stdout.trim()
-      if (trimmed.length === 0) {
-        reject(runtimeBridgeError("Runtime bridge returned no JSON output"))
-        return
-      }
-
-      try {
-        resolve(JSON.parse(trimmed))
-      } catch (error) {
-        reject(
-          runtimeBridgeError(
-            `Runtime bridge returned invalid JSON`,
-            `${error.message}; payload=${trimmed}`
-          )
+export function registerRuntimeTools(api, config) {
+  api.registerTool(
+    {
+      name: "froglet_search",
+      description:
+        "Search Froglet discovery through the authenticated local runtime.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: config.maxSearchLimit,
+            description: "Maximum number of providers to return."
+          },
+          include_inactive: {
+            type: "boolean",
+            description: "Include inactive discovery records."
+          },
+          runtime_url: {
+            type: "string",
+            description: "Optional runtime base URL override."
+          },
+          runtime_auth_token_path: {
+            type: "string",
+            description: "Optional runtime auth token path override."
+          },
+          include_raw: {
+            type: "boolean",
+            description: "Include the raw runtime search response JSON."
+          }
+        }
+      },
+      async execute(_id, args = {}) {
+        const includeRaw = args.include_raw === true
+        const response = await searchRuntime({
+          ...buildRuntimeContext(config, args),
+          limit: args.limit ?? config.defaultSearchLimit,
+          includeInactive: args.include_inactive === true,
+          requestTimeoutMs: config.requestTimeoutMs
+        })
+        const nodes = Array.isArray(response?.nodes) ? response.nodes : []
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          `returned_nodes: ${nodes.length}`,
+          "",
+          ...(nodes.length > 0
+            ? nodes.map((node, index) => `${index + 1}.\n${summarizeNode(node)}`)
+            : ["No Froglet providers matched the requested search."])
+        ]
+        return toolTextResult(
+          appendRaw(lines, "search_response_json:", response, includeRaw).join("\n")
         )
       }
-    })
-
-    child.stdin.on("error", (error) => {
-      reject(runtimeBridgeError("Failed to write runtime bridge input", error?.message))
-    })
-    child.stdin.end(`${JSON.stringify(payload)}\n`)
-  })
-}
-
-function summarizeBuyResponse(response) {
-  const lines = [
-    `runtime_url: ${response.runtime_url ?? "unknown"}`,
-    `provider_url: ${response.provider_url ?? "unknown"}`,
-    ...summarizeDealRecord(response.deal),
-    `terminal: ${response.terminal === true}`,
-    `payment_intent_path: ${response.payment_intent_path ?? "none"}`,
-    `managed_preimage: ${response.stored_preimage === true}`,
-    `local_state_path: ${response.stored_state_path ?? "none"}`
-  ]
-  return [...lines, ...summarizePaymentIntent(response.payment_intent)]
-}
-
-function summarizeWaitResponse(response) {
-  return [
-    `provider_url: ${response.provider_url ?? "unknown"}`,
-    `wait_statuses: ${Array.isArray(response.wait_statuses) ? response.wait_statuses.join(", ") : "unknown"}`,
-    ...summarizeDealRecord(response.deal)
-  ]
-}
-
-function summarizeAcceptResponse(response) {
-  const terminal = response.terminal ?? {}
-  const receipt = terminal.receipt ?? {}
-  return [
-    `runtime_url: ${response.runtime_url ?? "unknown"}`,
-    `provider_url: ${response.provider_url ?? "unknown"}`,
-    `deal_id: ${response.deal_id ?? terminal.deal_id ?? "unknown"}`,
-    `terminal_status: ${terminal.status ?? "unknown"}`,
-    `receipt_hash: ${receipt.hash ?? "none"}`,
-    `result_hash: ${terminal.result_hash ?? "none"}`,
-    `local_state_path: ${response.stored_state_path ?? "none"}`
-  ]
-}
-
-function summarizePublishResponse(response) {
-  const offers = Array.isArray(response.offers) ? response.offers : []
-  return [
-    `runtime_url: ${response.runtime_url ?? "unknown"}`,
-    `provider_url: ${response.provider_url ?? "unknown"}`,
-    "",
-    summarizeDescriptor(response.descriptor),
-    "",
-    `offers_returned: ${offers.length}`,
-    ...(offers.length > 0 ? offers.map(summarizeOffer) : ["no offers published"])
-  ]
-}
-
-function summarizePaymentIntentResponse(response) {
-  return [
-    `runtime_url: ${response.runtime_url ?? "unknown"}`,
-    `deal_id: ${response.deal_id ?? "unknown"}`,
-    ...summarizePaymentIntent(response.payment_intent)
-  ]
-}
-
-function appendRaw(lines, label, payload, includeRaw) {
-  if (!includeRaw) {
-    return lines
-  }
-  return [...lines, "", label, JSON.stringify(payload, null, 2)]
-}
-
-function buildRuntimeContext(config, args = {}) {
-  return {
-    runtime_url: resolveRuntimeUrl(config, args.runtime_url, { required: false }),
-    provider_url: resolveProviderUrl(config, args.provider_url, { required: false }),
-    runtime_auth_token_path: resolveRuntimeAuthTokenPath(
-      config,
-      args.runtime_auth_token_path,
-      { required: false }
-    )
-  }
-}
-
-export function registerRuntimeTools(api, config, options = {}) {
-  if (!config.enablePrivilegedRuntimeTools) {
-    return
-  }
-
-  const runBridge = (payload) => invokeRuntimeBridge(config, payload, options)
+    },
+    { optional: true }
+  )
 
   api.registerTool(
     {
-      name: "froglet_runtime_buy",
+      name: "froglet_get_provider",
       description:
-        "Buy a Froglet service through the authenticated local runtime. This uses public provider APIs plus the documented runtime buy flow, and stores local release state so accept_result only needs a deal_id.",
+        "Fetch provider discovery, descriptor, and offers through the authenticated local runtime.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["provider_id"],
+        properties: {
+          provider_id: {
+            type: "string",
+            description: "Froglet provider_id to resolve through the local runtime."
+          },
+          runtime_url: {
+            type: "string",
+            description: "Optional runtime base URL override."
+          },
+          runtime_auth_token_path: {
+            type: "string",
+            description: "Optional runtime auth token path override."
+          },
+          include_raw: {
+            type: "boolean",
+            description: "Include the raw runtime provider response JSON."
+          }
+        }
+      },
+      async execute(_id, args = {}) {
+        const includeRaw = args.include_raw === true
+        const response = await getProvider({
+          ...buildRuntimeContext(config, args),
+          providerId: args.provider_id,
+          requestTimeoutMs: config.requestTimeoutMs
+        })
+        const offers = Array.isArray(response.offers) ? response.offers : []
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          "",
+          summarizeNode(response.discovery),
+          "",
+          summarizeDescriptor(response.descriptor),
+          "",
+          `offers_returned: ${offers.length}`,
+          ...(offers.length > 0 ? offers.map(summarizeOffer) : ["no offers"])
+        ]
+        return toolTextResult(
+          appendRaw(lines, "provider_response_json:", response, includeRaw).join("\n")
+        )
+      }
+    },
+    { optional: true }
+  )
+
+  api.registerTool(
+    {
+      name: "froglet_buy",
+      description:
+        "Create a Froglet deal through the authenticated local runtime. The runtime owns requester identity, deal signing, and payment preimage management.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -238,56 +213,39 @@ export function registerRuntimeTools(api, config, options = {}) {
             type: "object",
             additionalProperties: true,
             description:
-              "Generic Froglet runtime buy payload. The helper can fill requester seed and success-preimage state automatically for the default local flow."
+              "Runtime deal request. It must include a provider reference, offer_id, and workload fields."
           },
           runtime_url: {
             type: "string",
             description: "Optional runtime base URL override."
           },
-          provider_url: {
-            type: "string",
-            description: "Optional provider base URL override."
-          },
           runtime_auth_token_path: {
             type: "string",
             description: "Optional runtime auth token path override."
           },
-          wait_for_receipt: {
-            type: "boolean",
-            description: "Wait for a terminal receipt before returning when the runtime flow supports it."
-          },
-          wait_timeout_secs: {
-            type: "integer",
-            minimum: 1,
-            description: "Optional runtime-side wait budget in seconds."
-          },
-          include_payment_intent: {
-            type: "boolean",
-            description: "Include the current payment intent in the bridge response."
-          },
           include_raw: {
             type: "boolean",
-            description: "Include the raw bridge response JSON."
+            description: "Include the raw runtime buy response JSON."
           }
         }
       },
       async execute(_id, args = {}) {
         const includeRaw = args.include_raw === true
-        const response = await runBridge({
-          action: "buy",
+        const response = await buyWithRuntime({
           ...buildRuntimeContext(config, args),
           request: args.request,
-          wait_for_receipt: args.wait_for_receipt === true,
-          wait_timeout_secs: args.wait_timeout_secs,
-          include_payment_intent: args.include_payment_intent !== false
+          requestTimeoutMs: config.requestTimeoutMs
         })
-        const lines = appendRaw(
-          summarizeBuyResponse(response),
-          "buy_response_json:",
-          response,
-          includeRaw
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          ...summarizeDeal(response.deal),
+          `terminal: ${response.terminal === true}`,
+          `payment_intent_path: ${response.payment_intent_path ?? "none"}`,
+          ...summarizePaymentIntent(response.payment_intent)
+        ]
+        return toolTextResult(
+          appendRaw(lines, "buy_response_json:", response, includeRaw).join("\n")
         )
-        return toolTextResult(lines.join("\n"))
       }
     },
     { optional: true }
@@ -295,9 +253,9 @@ export function registerRuntimeTools(api, config, options = {}) {
 
   api.registerTool(
     {
-      name: "froglet_runtime_wait_deal",
+      name: "froglet_wait_deal",
       description:
-        "Wait for a Froglet deal to reach result_ready or a terminal state through the provider API.",
+        "Poll the authenticated local runtime until a Froglet deal reaches one of the requested statuses.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -305,104 +263,26 @@ export function registerRuntimeTools(api, config, options = {}) {
         properties: {
           deal_id: {
             type: "string",
-            description: "Deal identifier to poll."
+            description: "Runtime deal_id to poll."
           },
-          runtime_url: {
-            type: "string",
-            description:
-              "Optional runtime base URL override. This is accepted for parity with the other runtime tools even though waiting uses provider polling."
-          },
-          provider_url: {
-            type: "string",
-            description: "Optional provider base URL override."
-          },
-          runtime_auth_token_path: {
-            type: "string",
-            description:
-              "Optional runtime auth token path override. Used only to recover stored helper state."
-          },
-          statuses: {
+          wait_statuses: {
             type: "array",
-            items: {
-              type: "string"
-            },
-            description:
-              "Optional status list to stop on. Defaults to result_ready, succeeded, failed, rejected."
+            items: { type: "string" },
+            description: "Statuses that should stop polling."
           },
           timeout_secs: {
             type: "number",
-            minimum: 0.1,
-            description: "Maximum time to wait."
+            minimum: 0.5,
+            description: "Maximum wait time in seconds."
           },
           poll_interval_secs: {
             type: "number",
             minimum: 0.05,
-            description: "Polling interval."
-          },
-          include_raw: {
-            type: "boolean",
-            description: "Include the raw bridge response JSON."
-          }
-        }
-      },
-      async execute(_id, args = {}) {
-        const includeRaw = args.include_raw === true
-        const response = await runBridge({
-          action: "wait_deal",
-          runtime_url: resolveRuntimeUrl(config, args.runtime_url, { required: false }),
-          provider_url: resolveProviderUrl(config, args.provider_url, { required: false }),
-          runtime_auth_token_path: resolveRuntimeAuthTokenPath(
-            config,
-            args.runtime_auth_token_path,
-            { required: false }
-          ),
-          deal_id: typeof args.deal_id === "string" ? args.deal_id.trim() : "",
-          wait_statuses: normalizeStatuses(args.statuses),
-          timeout_secs: clampNumber(
-            args.timeout_secs,
-            DEFAULT_WAIT_TIMEOUT_SECS,
-            0.1,
-            3600
-          ),
-          poll_interval_secs: clampNumber(
-            args.poll_interval_secs,
-            DEFAULT_WAIT_POLL_INTERVAL_SECS,
-            0.05,
-            60
-          )
-        })
-        const lines = appendRaw(
-          summarizeWaitResponse(response),
-          "wait_response_json:",
-          response,
-          includeRaw
-        )
-        return toolTextResult(lines.join("\n"))
-      }
-    },
-    { optional: true }
-  )
-
-  api.registerTool(
-    {
-      name: "froglet_runtime_payment_intent",
-      description: "Inspect the current Froglet runtime payment intent for a deal.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        required: ["deal_id"],
-        properties: {
-          deal_id: {
-            type: "string",
-            description: "Deal identifier to inspect."
+            description: "Polling interval in seconds."
           },
           runtime_url: {
             type: "string",
             description: "Optional runtime base URL override."
-          },
-          provider_url: {
-            type: "string",
-            description: "Optional provider base URL override."
           },
           runtime_auth_token_path: {
             type: "string",
@@ -410,24 +290,28 @@ export function registerRuntimeTools(api, config, options = {}) {
           },
           include_raw: {
             type: "boolean",
-            description: "Include the raw bridge response JSON."
+            description: "Include the raw wait response JSON."
           }
         }
       },
       async execute(_id, args = {}) {
         const includeRaw = args.include_raw === true
-        const response = await runBridge({
-          action: "payment_intent",
+        const response = await waitForDeal({
           ...buildRuntimeContext(config, args),
-          deal_id: typeof args.deal_id === "string" ? args.deal_id.trim() : ""
+          dealId: args.deal_id,
+          waitStatuses: normalizeStatuses(args.wait_statuses),
+          timeoutSecs: args.timeout_secs ?? DEFAULT_WAIT_TIMEOUT_SECS,
+          pollIntervalSecs: args.poll_interval_secs ?? DEFAULT_WAIT_POLL_INTERVAL_SECS,
+          requestTimeoutMs: config.requestTimeoutMs
         })
-        const lines = appendRaw(
-          summarizePaymentIntentResponse(response),
-          "payment_intent_response_json:",
-          response,
-          includeRaw
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          `wait_statuses: ${response.wait_statuses.join(", ")}`,
+          ...summarizeDeal(response.deal)
+        ]
+        return toolTextResult(
+          appendRaw(lines, "wait_response_json:", response, includeRaw).join("\n")
         )
-        return toolTextResult(lines.join("\n"))
       }
     },
     { optional: true }
@@ -435,9 +319,9 @@ export function registerRuntimeTools(api, config, options = {}) {
 
   api.registerTool(
     {
-      name: "froglet_runtime_accept_result",
+      name: "froglet_payment_intent",
       description:
-        "Accept a Froglet result by releasing the locally stored success preimage for a deal created by this helper.",
+        "Fetch the current payment intent for a Froglet runtime deal.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -445,49 +329,89 @@ export function registerRuntimeTools(api, config, options = {}) {
         properties: {
           deal_id: {
             type: "string",
-            description: "Deal identifier to accept."
+            description: "Runtime deal_id to inspect."
           },
           runtime_url: {
             type: "string",
             description: "Optional runtime base URL override."
           },
-          provider_url: {
-            type: "string",
-            description: "Optional provider base URL override."
-          },
           runtime_auth_token_path: {
             type: "string",
             description: "Optional runtime auth token path override."
+          },
+          include_raw: {
+            type: "boolean",
+            description: "Include the raw payment intent response JSON."
+          }
+        }
+      },
+      async execute(_id, args = {}) {
+        const includeRaw = args.include_raw === true
+        const response = await paymentIntentForDeal({
+          ...buildRuntimeContext(config, args),
+          dealId: args.deal_id,
+          requestTimeoutMs: config.requestTimeoutMs
+        })
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          `deal_id: ${response.deal_id}`,
+          ...summarizePaymentIntent(response.payment_intent)
+        ]
+        return toolTextResult(
+          appendRaw(lines, "payment_intent_response_json:", response, includeRaw).join("\n")
+        )
+      }
+    },
+    { optional: true }
+  )
+
+  api.registerTool(
+    {
+      name: "froglet_accept_result",
+      description:
+        "Release the managed success preimage for a runtime deal through the authenticated local runtime.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["deal_id"],
+        properties: {
+          deal_id: {
+            type: "string",
+            description: "Runtime deal_id to accept."
           },
           expected_result_hash: {
             type: "string",
             description: "Optional expected result hash override."
           },
+          runtime_url: {
+            type: "string",
+            description: "Optional runtime base URL override."
+          },
+          runtime_auth_token_path: {
+            type: "string",
+            description: "Optional runtime auth token path override."
+          },
           include_raw: {
             type: "boolean",
-            description: "Include the raw bridge response JSON."
+            description: "Include the raw accept response JSON."
           }
         }
       },
       async execute(_id, args = {}) {
         const includeRaw = args.include_raw === true
-        const response = await runBridge({
-          action: "accept_result",
+        const response = await acceptResultForDeal({
           ...buildRuntimeContext(config, args),
-          deal_id: typeof args.deal_id === "string" ? args.deal_id.trim() : "",
-          expected_result_hash:
-            typeof args.expected_result_hash === "string" &&
-            args.expected_result_hash.trim().length > 0
-              ? args.expected_result_hash.trim()
-              : null
+          dealId: args.deal_id,
+          expectedResultHash: args.expected_result_hash,
+          requestTimeoutMs: config.requestTimeoutMs
         })
-        const lines = appendRaw(
-          summarizeAcceptResponse(response),
-          "accept_response_json:",
-          response,
-          includeRaw
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          ...summarizeDeal(response.deal)
+        ]
+        return toolTextResult(
+          appendRaw(lines, "accept_response_json:", response, includeRaw).join("\n")
         )
-        return toolTextResult(lines.join("\n"))
       }
     },
     { optional: true }
@@ -495,9 +419,9 @@ export function registerRuntimeTools(api, config, options = {}) {
 
   api.registerTool(
     {
-      name: "froglet_runtime_publish_services",
+      name: "froglet_wallet_balance",
       description:
-        "Publish the current Froglet provider surface through the authenticated local runtime.",
+        "Inspect the local Froglet requester runtime wallet balance and payment backend status.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -506,33 +430,33 @@ export function registerRuntimeTools(api, config, options = {}) {
             type: "string",
             description: "Optional runtime base URL override."
           },
-          provider_url: {
-            type: "string",
-            description: "Optional provider base URL override."
-          },
           runtime_auth_token_path: {
             type: "string",
             description: "Optional runtime auth token path override."
           },
           include_raw: {
             type: "boolean",
-            description: "Include the raw bridge response JSON."
+            description: "Include the raw wallet balance response JSON."
           }
         }
       },
       async execute(_id, args = {}) {
         const includeRaw = args.include_raw === true
-        const response = await runBridge({
-          action: "publish_services",
-          ...buildRuntimeContext(config, args)
+        const response = await walletBalance({
+          ...buildRuntimeContext(config, args),
+          requestTimeoutMs: config.requestTimeoutMs
         })
-        const lines = appendRaw(
-          summarizePublishResponse(response),
-          "publish_response_json:",
-          response,
-          includeRaw
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          `backend: ${response.backend ?? "unknown"}`,
+          `mode: ${response.mode ?? "unknown"}`,
+          `balance_known: ${response.balance_known === true}`,
+          `balance_sats: ${response.balance_sats ?? "unknown"}`,
+          `accepted_payment_methods: ${Array.isArray(response.accepted_payment_methods) ? response.accepted_payment_methods.join(", ") : "none"}`
+        ]
+        return toolTextResult(
+          appendRaw(lines, "wallet_balance_response_json:", response, includeRaw).join("\n")
         )
-        return toolTextResult(lines.join("\n"))
       }
     },
     { optional: true }

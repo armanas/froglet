@@ -13,18 +13,9 @@ ensure_dir() {
 umask 077
 
 case "$cmd" in
-  froglet)
+  froglet-provider|froglet-runtime|froglet-discovery)
     data_dir="${FROGLET_DATA_DIR:-/data}"
     ensure_dir "$data_dir"
-    ;;
-  marketplace)
-    db_path="${FROGLET_MARKETPLACE_DB_PATH:-/data/marketplace.db}"
-    db_dir="$(dirname "$db_path")"
-    ensure_dir "$db_dir"
-    if [ -e "$db_path" ]; then
-      chown froglet:froglet "$db_path"
-      chmod 600 "$db_path"
-    fi
     ;;
 esac
 

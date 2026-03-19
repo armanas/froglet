@@ -1,13 +1,15 @@
 services:
-  marketplace:
+  discovery:
     build:
       context: .
-      target: marketplace
-    image: froglet-marketplace:local
+      target: discovery
+    image: froglet-discovery:local
+    environment:
+      FROGLET_DISCOVERY_DB_PATH: /discovery-data/discovery.db
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
-      - marketplace-data:/data
+      - ./data/discovery:/discovery-data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9090/health >/dev/null"]
       interval: 10s
@@ -15,26 +17,26 @@ services:
       retries: 10
       start_period: 5s
 
-  froglet:
+  provider:
     build:
       context: .
-      target: froglet
-    image: froglet:local
+      target: provider
+    image: froglet-provider:local
     depends_on:
-      marketplace:
+      discovery:
         condition: service_healthy
     environment:
       FROGLET_PRICE_EXEC_WASM: "10"
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
-      FROGLET_DISCOVERY_MODE: marketplace
-      FROGLET_PUBLIC_BASE_URL: http://127.0.0.1:8080
-      FROGLET_MARKETPLACE_URL: http://marketplace:9090
-      FROGLET_MARKETPLACE_PUBLISH: "true"
+      FROGLET_DISCOVERY_MODE: reference
+      FROGLET_PUBLIC_BASE_URL: http://provider:8080
+      FROGLET_DISCOVERY_URL: http://discovery:9090
+      FROGLET_DISCOVERY_PUBLISH: "true"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - froglet-data:/data
+      - ./data/provider:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 10s
@@ -42,6 +44,28 @@ services:
       retries: 10
       start_period: 5s
 
-volumes:
-  froglet-data:
-  marketplace-data:
+  runtime:
+    build:
+      context: .
+      target: runtime
+    image: froglet-runtime:local
+    depends_on:
+      discovery:
+        condition: service_healthy
+      provider:
+        condition: service_healthy
+    environment:
+      FROGLET_DISCOVERY_MODE: reference
+      FROGLET_DISCOVERY_URL: http://discovery:9090
+      FROGLET_PAYMENT_BACKEND: lightning
+      FROGLET_LIGHTNING_MODE: mock
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s

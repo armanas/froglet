@@ -24,4 +24,4 @@ __pycache__
 htmlcov
 .DS_Store
 Thumbs.db
-
+_tmp/testing

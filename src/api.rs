@@ -7,9 +7,11 @@ use axum::{
     routing::{get, post},
 };
 use futures::{StreamExt, stream};
+use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
@@ -17,20 +19,30 @@ use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::Tim
 
 use crate::{
     canonical_json,
+    confidential::{
+        self, AttestationBundle, AttestationProvider, ConfidentialExecutionContext,
+        ConfidentialExecutor, ConfidentialProfileConfig, ConfidentialProfilePayload,
+        ConfidentialSessionOpenRequest, ConfidentialSessionPayload, EncryptedEnvelope,
+        KeyReleaseProvider, MockExternalKeyReleaseProvider, NvidiaMockAttestationProvider,
+        PolicyConfidentialExecutor, SessionPrivateMaterial,
+    },
     config::{LightningMode, PaymentBackend},
     crypto, db,
     deals::{self, NewDeal},
+    discovery::{DiscoveryNodeRecord, DiscoverySearchResponse},
     jobs::{self, JobSpec, NewJob},
     nostr,
     pricing::{PricingInfo, ServiceId},
     protocol::{
-        self, ARTIFACT_KIND_CURATED_LIST, ARTIFACT_KIND_DEAL, ARTIFACT_KIND_DESCRIPTOR,
-        ARTIFACT_KIND_OFFER, ARTIFACT_KIND_QUOTE, ARTIFACT_KIND_RECEIPT, CuratedListEntry,
-        CuratedListPayload, DealPayload, DescriptorPayload, ExecutionLimits, InvoiceBundleLegState,
-        InvoiceBundlePayload, LinkedIdentity, OfferPayload, QuotePayload, QuoteSettlementTerms,
-        ReceiptExecutor, ReceiptFailure, ReceiptLegState, ReceiptLimitsApplied, ReceiptPayload,
-        ReceiptSettlement, ReceiptSettlementLeg, SignedArtifact, WorkloadSpec,
+        self, ARTIFACT_KIND_CONFIDENTIAL_PROFILE, ARTIFACT_KIND_CONFIDENTIAL_SESSION,
+        ARTIFACT_KIND_DEAL, ARTIFACT_KIND_DESCRIPTOR, ARTIFACT_KIND_OFFER, ARTIFACT_KIND_QUOTE,
+        ARTIFACT_KIND_RECEIPT, CuratedListPayload, DealPayload, DescriptorPayload, ExecutionLimits,
+        InvoiceBundleLegState, InvoiceBundlePayload, LinkedIdentity, OfferPayload, QuotePayload,
+        QuoteSettlementTerms, ReceiptExecutor, ReceiptFailure, ReceiptLegState,
+        ReceiptLimitsApplied, ReceiptPayload, ReceiptSettlement, ReceiptSettlementLeg,
+        SignedArtifact, WorkloadSpec,
     },
+    requester_deals::{self, NewRequesterDeal},
     sandbox,
     settlement::{self, PaymentReceipt, PaymentReservation, ProvidedPayment},
     state::AppState,
@@ -43,7 +55,7 @@ pub struct NodeCapabilities {
     pub version: String,
     pub identity: IdentityInfo,
     pub discovery: DiscoveryInfo,
-    pub marketplace: MarketplaceInfo,
+    pub reference_discovery: ReferenceDiscoveryInfo,
     pub transports: TransportsInfo,
     pub execution: ExecutionInfo,
     pub limits: LimitsInfo,
@@ -64,7 +76,7 @@ pub struct DiscoveryInfo {
 }
 
 #[derive(Debug, Serialize)]
-pub struct MarketplaceInfo {
+pub struct ReferenceDiscoveryInfo {
     pub enabled: bool,
     pub publish_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,6 +228,13 @@ pub struct CreateDealRequest {
     pub payment: Option<ProvidedPayment>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ConfidentialSessionResponse {
+    pub profile: SignedArtifact<ConfidentialProfilePayload>,
+    pub session: SignedArtifact<ConfidentialSessionPayload>,
+    pub attestation: AttestationBundle,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct FeedQuery {
     #[serde(default)]
@@ -280,60 +299,69 @@ pub struct RuntimeWalletBalanceResponse {
     pub receipts: bool,
 }
 
-#[derive(Debug, Serialize)]
-pub struct RuntimeProviderResponse {
-    pub status: String,
-    pub descriptor: SignedArtifact<DescriptorPayload>,
-    pub offers: Vec<SignedArtifact<OfferPayload>>,
-    pub runtime_auth: RuntimeAuthInfo,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RuntimeAuthInfo {
-    pub scheme: String,
-    pub token_path: String,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RuntimeProviderRef {
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub provider_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RuntimeBuyServiceRequest {
+pub struct RuntimeSearchRequest {
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub include_inactive: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeProviderDetailsResponse {
+    pub discovery: DiscoveryNodeRecord,
+    pub descriptor: SignedArtifact<DescriptorPayload>,
+    pub offers: Vec<SignedArtifact<OfferPayload>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RuntimeCreateDealRequest {
+    pub provider: RuntimeProviderRef,
+    pub offer_id: String,
     #[serde(flatten)]
     pub spec: WorkloadSpec,
+    #[serde(default)]
+    pub max_price_sats: Option<u64>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub payment: Option<ProvidedPayment>,
-    #[serde(default)]
-    pub quote: Option<SignedArtifact<QuotePayload>>,
-    #[serde(default)]
-    pub deal: Option<SignedArtifact<DealPayload>>,
-    #[serde(default)]
-    pub wait_for_receipt: bool,
-    #[serde(default)]
-    pub wait_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct RuntimeBuyServiceResponse {
+pub struct RuntimeCreateDealResponse {
+    pub provider_id: String,
+    pub provider_url: String,
     pub quote: SignedArtifact<QuotePayload>,
-    pub deal: deals::DealRecord,
-    pub terminal: bool,
+    pub deal: requester_deals::RequesterDealRecord,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_intent_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_intent: Option<settlement::LightningWalletIntent>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IssueCuratedListRequest {
-    #[serde(default)]
-    pub list_id: Option<String>,
-    pub expires_at: i64,
-    pub entries: Vec<CuratedListEntry>,
+#[derive(Debug, Serialize)]
+pub struct RuntimeDealResponse {
+    pub deal: requester_deals::RequesterDealRecord,
 }
 
 #[derive(Debug, Serialize)]
-pub struct IssueCuratedListResponse {
-    pub curated_list: SignedArtifact<CuratedListPayload>,
+pub struct RuntimeAcceptDealResponse {
+    pub deal: requester_deals::RequesterDealRecord,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RuntimeAcceptDealRequest {
+    #[serde(default)]
+    pub expected_result_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -374,12 +402,6 @@ pub struct VerifyNostrEventResponse {
     pub kind: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateLightningInvoiceBundleStateRequest {
-    pub base_state: InvoiceBundleLegState,
-    pub success_state: InvoiceBundleLegState,
-}
-
 #[derive(Debug, Serialize)]
 pub struct RuntimeArchiveExportResponse {
     pub schema_version: String,
@@ -406,10 +428,7 @@ const MAX_OCI_WASM_MODULE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 const BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS: u64 = 1;
 const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_RUNTIME_WAIT_TIMEOUT_SECS: u64 = 15;
-const MAX_RUNTIME_WAIT_TIMEOUT_SECS: u64 = 60;
-const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = MAX_RUNTIME_WAIT_TIMEOUT_SECS + 5;
-const _: () = assert!(RUNTIME_WAIT_ROUTE_TIMEOUT_SECS > MAX_RUNTIME_WAIT_TIMEOUT_SECS);
+const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 type ApiFailure = (StatusCode, serde_json::Value);
 
@@ -474,21 +493,33 @@ fn events_query_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         )
 }
 
-fn protocol_routes() -> Router<Arc<AppState>> {
+fn provider_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/descriptor", get(protocol_descriptor))
-        .route("/v1/offers", get(list_offers))
+        .route("/v1/provider/descriptor", get(protocol_descriptor))
+        .route("/v1/provider/offers", get(list_offers))
         .route("/v1/feed", get(get_feed))
         .route("/v1/artifacts/:artifact_hash", get(get_artifact))
-        .route("/v1/quotes", post(create_quote))
-        .route("/v1/deals", post(create_deal))
-        .route("/v1/deals/:deal_id", get(get_deal_status))
         .route(
-            "/v1/deals/:deal_id/release-preimage",
+            "/v1/provider/confidential/profiles/:artifact_hash",
+            get(get_confidential_profile),
+        )
+        .route(
+            "/v1/provider/confidential/sessions",
+            post(open_confidential_session),
+        )
+        .route(
+            "/v1/provider/confidential/sessions/:session_id",
+            get(get_confidential_session),
+        )
+        .route("/v1/provider/quotes", post(create_quote))
+        .route("/v1/provider/deals", post(create_deal))
+        .route("/v1/provider/deals/:deal_id", get(get_deal_status))
+        .route(
+            "/v1/provider/deals/:deal_id/accept",
             post(release_deal_preimage),
         )
         .route(
-            "/v1/deals/:deal_id/invoice-bundle",
+            "/v1/provider/deals/:deal_id/invoice-bundle",
             get(get_deal_invoice_bundle),
         )
         .route("/v1/invoice-bundles/verify", post(verify_invoice_bundle))
@@ -508,48 +539,25 @@ fn protocol_routes() -> Router<Arc<AppState>> {
 fn runtime_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/runtime/wallet/balance", get(runtime_wallet_balance))
-        .route("/v1/runtime/provider/start", post(runtime_provider_start))
+        .route("/v1/runtime/search", post(runtime_search))
         .route(
-            "/v1/runtime/services/publish",
-            post(runtime_services_publish),
+            "/v1/runtime/providers/:provider_id",
+            get(runtime_provider_details),
         )
-        .route(
-            "/v1/runtime/discovery/curated-lists/issue",
-            post(runtime_issue_curated_list),
-        )
-        .route(
-            "/v1/runtime/nostr/publications/provider",
-            get(runtime_nostr_provider_publications),
-        )
-        .route(
-            "/v1/runtime/nostr/publications/deals/:deal_id/receipt",
-            get(runtime_nostr_receipt_publication),
-        )
+        .route("/v1/runtime/deals", post(runtime_create_deal))
+        .route("/v1/runtime/deals/:deal_id", get(runtime_get_deal))
         .route(
             "/v1/runtime/deals/:deal_id/payment-intent",
             get(runtime_deal_payment_intent),
         )
         .route(
+            "/v1/runtime/deals/:deal_id/accept",
+            post(runtime_accept_deal),
+        )
+        .route(
             "/v1/runtime/archive/:subject_kind/:subject_id",
             get(runtime_archive_subject),
         )
-        .route(
-            "/v1/runtime/lightning/invoice-bundles/:session_id/state",
-            post(runtime_update_lightning_bundle_state),
-        )
-        .route_layer(ConcurrencyLimitLayer::new(16))
-        .layer(
-            ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(handle_timeout_error))
-                .layer(TimeoutLayer::new(Duration::from_secs(
-                    DEFAULT_ROUTE_TIMEOUT_SECS,
-                ))),
-        )
-}
-
-fn runtime_wait_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/v1/runtime/services/buy", post(runtime_services_buy))
         .route_layer(ConcurrencyLimitLayer::new(16))
         .layer(
             ServiceBuilder::new()
@@ -575,7 +583,7 @@ fn common_routes() -> Router<Arc<AppState>> {
 pub fn public_router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(events_query_routes(&state))
-        .merge(protocol_routes())
+        .merge(provider_routes())
         .merge(publish_routes())
         .merge(execute_wasm_routes(&state))
         .merge(jobs_routes())
@@ -583,19 +591,14 @@ pub fn public_router(state: Arc<AppState>) -> Router {
 }
 
 pub fn runtime_router(state: Arc<AppState>) -> Router {
-    common_routes()
-        .merge(events_query_routes(&state))
-        .merge(runtime_wait_routes())
-        .merge(runtime_routes())
-        .with_state(state)
+    common_routes().merge(runtime_routes()).with_state(state)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(events_query_routes(&state))
-        .merge(runtime_wait_routes())
         .merge(runtime_routes())
-        .merge(protocol_routes())
+        .merge(provider_routes())
         .merge(publish_routes())
         .merge(execute_wasm_routes(&state))
         .merge(jobs_routes())
@@ -611,7 +614,7 @@ pub async fn health_check() -> impl IntoResponse {
 
 pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let transport_status = state.transport_status.lock().await.clone();
-    let marketplace_status = state.marketplace_status.lock().await.clone();
+    let reference_discovery_status = state.reference_discovery_status.lock().await.clone();
     let settlement_descriptor = settlement::driver_descriptor(state.as_ref());
 
     let capabilities = NodeCapabilities {
@@ -624,18 +627,18 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
         discovery: DiscoveryInfo {
             mode: state.config.discovery_mode.to_string(),
         },
-        marketplace: MarketplaceInfo {
-            enabled: state.config.marketplace.is_some(),
-            publish_enabled: marketplace_status.publish_enabled,
+        reference_discovery: ReferenceDiscoveryInfo {
+            enabled: state.config.reference_discovery.is_some(),
+            publish_enabled: reference_discovery_status.publish_enabled,
             url: state
                 .config
-                .marketplace
+                .reference_discovery
                 .as_ref()
-                .map(|marketplace| marketplace.url.clone()),
-            connected: marketplace_status.connected,
-            last_register_at: marketplace_status.last_register_at,
-            last_heartbeat_at: marketplace_status.last_heartbeat_at,
-            last_error: marketplace_status.last_error,
+                .map(|discovery| discovery.url.clone()),
+            connected: reference_discovery_status.connected,
+            last_register_at: reference_discovery_status.last_register_at,
+            last_heartbeat_at: reference_discovery_status.last_heartbeat_at,
+            last_error: reference_discovery_status.last_error,
         },
         transports: TransportsInfo {
             clearnet: ClearnetInfo {
@@ -717,188 +720,992 @@ pub async fn runtime_wallet_balance(
     }
 }
 
-pub async fn runtime_provider_start(
+#[derive(Debug, Deserialize)]
+struct ProviderOffersResponse {
+    offers: Vec<SignedArtifact<OfferPayload>>,
+}
+
+fn runtime_discovery_url(state: &AppState) -> Result<String, ApiFailure> {
+    state
+        .config
+        .reference_discovery
+        .as_ref()
+        .map(|discovery| discovery.url.clone())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "runtime discovery is not configured" }),
+            )
+        })
+}
+
+fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source: Option<&(dyn StdError + 'static)> = error.source();
+    while let Some(next) = source {
+        parts.push(next.to_string());
+        source = next.source();
+    }
+    parts.join(": ")
+}
+
+async fn remote_json_request<T, B>(
+    state: &AppState,
+    method: reqwest::Method,
+    url: String,
+    body: Option<&B>,
+) -> Result<T, ApiFailure>
+where
+    T: DeserializeOwned,
+    B: Serialize + ?Sized,
+{
+    let mut request = state.http_client.request(method, &url);
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+
+    let response = request.send().await.map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "upstream request failed", "details": format_reqwest_error(&error), "url": url }),
+        )
+    })?;
+    let status = response.status();
+    let body_text = response.text().await.map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "failed to read upstream response", "details": error.to_string(), "url": url }),
+        )
+    })?;
+    if !status.is_success() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "upstream request failed",
+                "upstream_status": status.as_u16(),
+                "upstream_body": body_text,
+                "url": url,
+            }),
+        ));
+    }
+    serde_json::from_str(&body_text).map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "invalid upstream json", "details": error.to_string(), "url": url }),
+        )
+    })
+}
+
+fn provider_url_from_discovery(record: &DiscoveryNodeRecord) -> Result<String, ApiFailure> {
+    record
+        .descriptor
+        .transports
+        .clearnet_url
+        .clone()
+        .or_else(|| record.descriptor.transports.onion_url.clone())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": "discovery record does not advertise a provider url",
+                    "provider_id": record.descriptor.node_id,
+                }),
+            )
+        })
+}
+
+async fn fetch_discovery_provider(
+    state: &AppState,
+    provider_id: &str,
+) -> Result<DiscoveryNodeRecord, ApiFailure> {
+    let discovery_url = runtime_discovery_url(state)?;
+    remote_json_request(
+        state,
+        reqwest::Method::GET,
+        format!(
+            "{}/v1/discovery/providers/{}",
+            discovery_url,
+            urlencoding::encode(provider_id)
+        ),
+        Option::<&()>::None,
+    )
+    .await
+}
+
+async fn fetch_provider_descriptor(
+    state: &AppState,
+    provider_url: &str,
+) -> Result<SignedArtifact<DescriptorPayload>, ApiFailure> {
+    remote_json_request(
+        state,
+        reqwest::Method::GET,
+        format!("{provider_url}/v1/provider/descriptor"),
+        Option::<&()>::None,
+    )
+    .await
+}
+
+async fn fetch_provider_offers(
+    state: &AppState,
+    provider_url: &str,
+) -> Result<Vec<SignedArtifact<OfferPayload>>, ApiFailure> {
+    let response: ProviderOffersResponse = remote_json_request(
+        state,
+        reqwest::Method::GET,
+        format!("{provider_url}/v1/provider/offers"),
+        Option::<&()>::None,
+    )
+    .await?;
+    Ok(response.offers)
+}
+
+fn provider_bad_gateway(message: &str) -> ApiFailure {
+    (StatusCode::BAD_GATEWAY, json!({ "error": message }))
+}
+
+fn verify_provider_descriptor_artifact(
+    descriptor: &SignedArtifact<DescriptorPayload>,
+) -> Result<(), ApiFailure> {
+    if !protocol::verify_artifact(descriptor) {
+        return Err(provider_bad_gateway(
+            "provider descriptor signature verification failed",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_provider_offers_artifacts(
+    offers: &[SignedArtifact<OfferPayload>],
+    provider_id: &str,
+    descriptor_hash: &str,
+) -> Result<(), ApiFailure> {
+    for offer in offers {
+        if !protocol::verify_artifact(offer) {
+            return Err(provider_bad_gateway(
+                "provider offer signature verification failed",
+            ));
+        }
+        if offer.payload.provider_id != provider_id {
+            return Err(provider_bad_gateway(
+                "provider offer provider_id does not match provider descriptor",
+            ));
+        }
+        if offer.payload.descriptor_hash != descriptor_hash {
+            return Err(provider_bad_gateway(
+                "provider offer descriptor_hash does not match provider descriptor",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_provider_receipt_artifact(
+    receipt: &SignedArtifact<ReceiptPayload>,
+    quote: &SignedArtifact<QuotePayload>,
+    deal: &SignedArtifact<DealPayload>,
+    expected_provider_id: &str,
+    expected_requester_id: &str,
+    result: Option<&Value>,
+    result_hash: Option<&str>,
+) -> Result<(), ApiFailure> {
+    if !protocol::verify_artifact(receipt) {
+        return Err(provider_bad_gateway(
+            "provider receipt signature verification failed",
+        ));
+    }
+    if receipt.payload.provider_id != expected_provider_id {
+        return Err(provider_bad_gateway(
+            "provider receipt provider_id does not match selected provider",
+        ));
+    }
+    if receipt.payload.requester_id != expected_requester_id {
+        return Err(provider_bad_gateway(
+            "provider receipt requester_id does not match local runtime identity",
+        ));
+    }
+    if receipt.payload.quote_hash != quote.hash {
+        return Err(provider_bad_gateway(
+            "provider receipt quote_hash does not match local requester quote",
+        ));
+    }
+    if receipt.payload.deal_hash != deal.hash {
+        return Err(provider_bad_gateway(
+            "provider receipt deal_hash does not match local requester deal",
+        ));
+    }
+    if let Some(result_hash) = result_hash
+        && receipt.payload.result_hash.as_deref() != Some(result_hash)
+    {
+        return Err(provider_bad_gateway(
+            "provider receipt result_hash does not match provider result_hash",
+        ));
+    }
+    if let Some(result) = result {
+        let canonical_hash = canonical_result_hash(result);
+        if receipt.payload.result_hash.as_deref() != Some(canonical_hash.as_str()) {
+            return Err(provider_bad_gateway(
+                "provider receipt result_hash does not match provider result",
+            ));
+        }
+    }
+    Ok(())
+}
+
+struct ResolvedProvider {
+    provider_id: String,
+    provider_url: String,
+}
+
+async fn resolve_runtime_provider(
+    state: &AppState,
+    provider: &RuntimeProviderRef,
+) -> Result<ResolvedProvider, ApiFailure> {
+    let explicit_provider_id = provider.provider_id.clone();
+    if let Some(provider_url) = provider.provider_url.clone() {
+        let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
+        verify_provider_descriptor_artifact(&descriptor)?;
+        if let Some(expected_provider_id) = explicit_provider_id.as_deref()
+            && descriptor.payload.provider_id != expected_provider_id
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "provider_id does not match provider_url descriptor",
+                    "provider_id": expected_provider_id,
+                    "descriptor_provider_id": descriptor.payload.provider_id,
+                }),
+            ));
+        }
+        return Ok(ResolvedProvider {
+            provider_id: descriptor.payload.provider_id.clone(),
+            provider_url,
+        });
+    }
+
+    let Some(provider_id) = explicit_provider_id else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "provider.provider_id or provider.provider_url is required" }),
+        ));
+    };
+    let discovery = fetch_discovery_provider(state, &provider_id).await?;
+    let provider_url = provider_url_from_discovery(&discovery)?;
+    let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
+    verify_provider_descriptor_artifact(&descriptor)?;
+    if descriptor.payload.provider_id != provider_id {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "provider descriptor does not match discovery provider_id",
+                "discovery_provider_id": provider_id,
+                "descriptor_provider_id": descriptor.payload.provider_id,
+            }),
+        ));
+    }
+    Ok(ResolvedProvider {
+        provider_id,
+        provider_url,
+    })
+}
+
+fn generate_success_preimage_hex() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn lightning_quote_max_admission_deadline(quote: &SignedArtifact<QuotePayload>) -> i64 {
+    quote
+        .payload
+        .expires_at
+        .saturating_sub(deal_execution_window_secs(&quote.payload.execution_limits) as i64)
+        .saturating_sub(quote.payload.settlement_terms.max_success_hold_expiry_secs as i64)
+}
+
+fn build_runtime_requester_deal_artifact(
+    state: &AppState,
+    quote: &SignedArtifact<QuotePayload>,
+    success_payment_hash: &str,
+    created_at: i64,
+    uses_lightning_bundle: bool,
+) -> Result<SignedArtifact<DealPayload>, String> {
+    let requester_id = state.identity.node_id().to_string();
+    let execution_window_secs = deal_execution_window_secs(&quote.payload.execution_limits);
+    let admission_deadline = if uses_lightning_bundle {
+        lightning_quote_max_admission_deadline(quote).min(
+            created_at
+                .saturating_add(lightning_admission_window_secs(&quote.payload.settlement_terms) as i64),
+        )
+    } else {
+        quote.payload.expires_at
+    };
+    if uses_lightning_bundle && admission_deadline < created_at {
+        return Err(
+            "quote expiry already leaves no remaining Lightning admission window".to_string(),
+        );
+    }
+    let completion_deadline = admission_deadline.saturating_add(execution_window_secs as i64);
+    let acceptance_deadline = if uses_lightning_bundle {
+        completion_deadline
+            .saturating_add(quote.payload.settlement_terms.max_success_hold_expiry_secs as i64)
+    } else {
+        completion_deadline
+    };
+
+    if uses_lightning_bundle && acceptance_deadline > quote.payload.expires_at {
+        return Err(
+            "quote expiry is too short for the Lightning admission, execution, and acceptance windows"
+                .to_string(),
+        );
+    }
+
+    protocol::sign_artifact(
+        &requester_id,
+        |message| state.identity.sign_message_hex(message),
+        ARTIFACT_KIND_DEAL,
+        created_at,
+        DealPayload {
+            requester_id: requester_id.clone(),
+            provider_id: quote.payload.provider_id.clone(),
+            quote_hash: quote.hash.clone(),
+            workload_hash: quote.payload.workload_hash.clone(),
+            confidential_session_hash: quote.payload.confidential_session_hash.clone(),
+            extension_refs: Vec::new(),
+            authority_ref: None,
+            supersedes_deal_hash: None,
+            client_nonce: None,
+            success_payment_hash: success_payment_hash.to_string(),
+            admission_deadline,
+            completion_deadline,
+            acceptance_deadline,
+        },
+    )
+}
+
+fn persist_runtime_artifact(
+    conn: &rusqlite::Connection,
+    artifact_hash: &str,
+    payload_hash: &str,
+    artifact_kind: &str,
+    actor_id: &str,
+    created_at: i64,
+    document_json: &str,
+) -> Result<(), String> {
+    db::insert_artifact_document(
+        conn,
+        artifact_hash,
+        payload_hash,
+        artifact_kind,
+        actor_id,
+        created_at,
+        document_json,
+    )
+}
+
+async fn persist_requester_artifacts(
+    state: Arc<AppState>,
+    quote: &SignedArtifact<QuotePayload>,
+    deal: &SignedArtifact<DealPayload>,
+    receipt: Option<&SignedArtifact<ReceiptPayload>>,
+) -> Result<(), String> {
+    let quote_json = serde_json::to_string(quote).map_err(|error| error.to_string())?;
+    let deal_json = serde_json::to_string(deal).map_err(|error| error.to_string())?;
+    let receipt_json = receipt
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let quote = quote.clone();
+    let deal = deal.clone();
+    let receipt = receipt.cloned();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation = (|| -> Result<(), String> {
+                persist_runtime_artifact(
+                    conn,
+                    &quote.hash,
+                    &quote.payload_hash,
+                    &quote.artifact_type,
+                    &quote.signer,
+                    quote.created_at,
+                    &quote_json,
+                )?;
+                persist_runtime_artifact(
+                    conn,
+                    &deal.hash,
+                    &deal.payload_hash,
+                    &deal.artifact_type,
+                    &deal.signer,
+                    deal.created_at,
+                    &deal_json,
+                )?;
+                if let (Some(receipt), Some(receipt_json)) =
+                    (receipt.as_ref(), receipt_json.as_ref())
+                {
+                    persist_runtime_artifact(
+                        conn,
+                        &receipt.hash,
+                        &receipt.payload_hash,
+                        &receipt.artifact_type,
+                        &receipt.signer,
+                        receipt.created_at,
+                        receipt_json,
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = operation {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+            conn.execute_batch("COMMIT")
+                .map_err(|error| error.to_string())
+        })
+        .await
+}
+
+async fn sync_requester_deal_from_provider(
+    state: Arc<AppState>,
+    deal_id: &str,
+) -> Result<requester_deals::StoredRequesterDeal, ApiFailure> {
+    let lookup_deal_id = deal_id.to_string();
+    let stored = state
+        .db
+        .with_read_conn(move |conn| requester_deals::get_requester_deal(conn, &lookup_deal_id))
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("database error: {error}") }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                json!({ "error": "deal not found", "deal_id": deal_id }),
+            )
+        })?;
+
+    let remote: deals::DealRecord = remote_json_request(
+        state.as_ref(),
+        reqwest::Method::GET,
+        format!(
+            "{}/v1/provider/deals/{}",
+            stored.provider_url,
+            urlencoding::encode(deal_id)
+        ),
+        Option::<&()>::None,
+    )
+    .await?;
+
+    if remote.quote.hash != stored.quote.hash || remote.deal.hash != stored.deal.hash {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider deal does not match local requester deal" }),
+        ));
+    }
+    if let Some(receipt) = remote.receipt.as_ref() {
+        verify_provider_receipt_artifact(
+            receipt,
+            &stored.quote,
+            &stored.deal,
+            &stored.provider_id,
+            &stored.deal.payload.requester_id,
+            remote.result.as_ref(),
+            remote.result_hash.as_deref(),
+        )?;
+    }
+
+    persist_requester_artifacts(
+        state.clone(),
+        &remote.quote,
+        &remote.deal,
+        remote.receipt.as_ref(),
+    )
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "failed to persist requester artifacts", "details": error }),
+        )
+    })?;
+
+    let update_id = deal_id.to_string();
+    let status = remote.status.clone();
+    let result = remote.result.clone();
+    let result_hash = remote.result_hash.clone();
+    let error = remote.error.clone();
+    let receipt = remote.receipt.clone();
+    let updated_at = settlement::current_unix_timestamp();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            requester_deals::update_requester_deal_state(
+                conn,
+                &update_id,
+                &status,
+                result.as_ref(),
+                result_hash.as_deref(),
+                error.as_deref(),
+                receipt.as_ref(),
+                updated_at,
+            )
+        })
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("database error: {error}") }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                json!({ "error": "deal not found after sync", "deal_id": deal_id }),
+            )
+        })
+}
+
+pub async fn runtime_search(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Json(payload): Json<RuntimeSearchRequest>,
 ) -> impl IntoResponse {
     if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
         return error_json(error.0, error.1);
     }
 
-    match runtime_provider_snapshot(state.as_ref()).await {
-        Ok(snapshot) => (StatusCode::OK, Json(json!(snapshot))),
+    let discovery_url = match runtime_discovery_url(state.as_ref()) {
+        Ok(url) => url,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    match remote_json_request::<DiscoverySearchResponse, _>(
+        state.as_ref(),
+        reqwest::Method::POST,
+        format!("{discovery_url}/v1/discovery/search"),
+        Some(&payload),
+    )
+    .await
+    {
+        Ok(response) => (StatusCode::OK, Json(json!(response))),
         Err(error) => error_json(error.0, error.1),
     }
 }
 
-pub async fn runtime_services_publish(
+pub async fn runtime_provider_details(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Path(provider_id): Path<String>,
 ) -> impl IntoResponse {
     if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
         return error_json(error.0, error.1);
     }
 
-    match runtime_provider_snapshot(state.as_ref()).await {
-        Ok(snapshot) => (StatusCode::OK, Json(json!(snapshot))),
-        Err(error) => error_json(error.0, error.1),
+    let discovery = match fetch_discovery_provider(state.as_ref(), &provider_id).await {
+        Ok(record) => record,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    let provider_url = match provider_url_from_discovery(&discovery) {
+        Ok(url) => url,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    let descriptor = match fetch_provider_descriptor(state.as_ref(), &provider_url).await {
+        Ok(descriptor) => descriptor,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    if let Err(error) = verify_provider_descriptor_artifact(&descriptor) {
+        return error_json(error.0, error.1);
     }
+    if descriptor.payload.provider_id != provider_id {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "provider descriptor does not match discovery provider_id",
+                "discovery_provider_id": provider_id,
+                "descriptor_provider_id": descriptor.payload.provider_id,
+            }),
+        );
+    }
+    let offers = match fetch_provider_offers(state.as_ref(), &provider_url).await {
+        Ok(offers) => offers,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    if let Err(error) =
+        verify_provider_offers_artifacts(&offers, &descriptor.payload.provider_id, &descriptor.hash)
+    {
+        return error_json(error.0, error.1);
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!(RuntimeProviderDetailsResponse {
+            discovery,
+            descriptor,
+            offers,
+        })),
+    )
 }
 
-fn runtime_buy_wait_timeout_secs(requested: Option<u64>) -> u64 {
-    requested
-        .unwrap_or(DEFAULT_RUNTIME_WAIT_TIMEOUT_SECS)
-        .clamp(1, MAX_RUNTIME_WAIT_TIMEOUT_SECS)
-}
-
-pub async fn runtime_services_buy(
+pub async fn runtime_create_deal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<RuntimeBuyServiceRequest>,
+    Json(payload): Json<RuntimeCreateDealRequest>,
 ) -> impl IntoResponse {
     if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
         return error_json(error.0, error.1);
     }
-
-    let wait_for_receipt = payload.wait_for_receipt;
-    let wait_timeout_secs = runtime_buy_wait_timeout_secs(payload.wait_timeout_secs);
-
     if let Err(response) = validate_workload_spec(&payload.spec) {
         return response;
     }
 
-    if let Some(existing) =
-        match find_existing_deal(state.as_ref(), payload.idempotency_key.clone()).await {
-            Ok(existing) => existing,
-            Err(error) => return error_json(error.0, error.1.0),
-        }
-    {
-        let workload_hash = match payload.spec.request_hash() {
-            Ok(hash) => hash,
-            Err(error) => {
-                return error_json(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": format!("failed to hash workload: {error}") }),
-                );
-            }
-        };
-
-        if existing.artifact.payload.workload_hash != workload_hash
-            || payload
-                .quote
-                .as_ref()
-                .is_some_and(|quote| quote.hash != existing.quote.hash)
-            || payload
-                .deal
-                .as_ref()
-                .is_some_and(|deal| deal.hash != existing.artifact.hash)
-        {
+    let provider = match resolve_runtime_provider(state.as_ref(), &payload.provider).await {
+        Ok(provider) => provider,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    let expected_workload_kind = payload.spec.workload_kind().to_string();
+    let expected_workload_hash = match payload.spec.request_hash() {
+        Ok(hash) => hash,
+        Err(error) => {
             return error_json(
-                StatusCode::CONFLICT,
-                json!({ "error": "idempotency key reused with different service request" }),
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("failed to hash requested workload: {error}") }),
             );
         }
-
-        let mut deal = existing.public_record();
-        let mut terminal = is_terminal_deal_status(&deal.status);
-        if wait_for_receipt && !terminal && !is_wait_blocking_deal_status(&deal.status) {
-            match wait_for_terminal_deal(state.clone(), &deal.deal_id, wait_timeout_secs).await {
-                Ok(terminal_deal) => {
-                    deal = terminal_deal;
-                    terminal = is_terminal_deal_status(&deal.status);
-                }
-                Err(error) => return error_json(error.0, error.1),
-            }
-        }
-
-        let (deal, payment_intent) = if existing.payment_method.as_deref() == Some("lightning") {
-            match load_runtime_deal_and_payment_intent(state.clone(), &deal.deal_id).await {
-                Ok(result) => result,
-                Err(error) => return error_json(error.0, error.1),
-            }
-        } else {
-            (deal, None)
-        };
-
-        return (
-            StatusCode::OK,
-            Json(json!(RuntimeBuyServiceResponse {
-                quote: existing.quote,
-                deal,
-                terminal,
-                payment_intent_path: payment_intent
-                    .as_ref()
-                    .map(|intent| runtime_payment_intent_path(&intent.deal_id)),
-                payment_intent,
-            })),
-        );
-    }
-
-    let Some(quote) = payload.quote.clone() else {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({
-                "error": "runtime buy requires a pre-signed quote artifact",
-                "quote_path": "/v1/quotes",
-            }),
-        );
     };
-    let Some(deal_artifact) = payload.deal.clone() else {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({
-                "error": "runtime buy requires a pre-signed deal artifact",
-                "deal_path": "/v1/deals",
-            }),
-        );
-    };
+    let expected_confidential_session_hash =
+        payload.spec.confidential_session_hash().map(str::to_string);
 
-    let (mut deal, _) = match create_deal_record(
-        state.clone(),
-        CreateDealRequest {
-            quote: quote.clone(),
-            deal: deal_artifact,
-            spec: payload.spec,
-            idempotency_key: payload.idempotency_key,
-            payment: payload.payment,
-        },
+    let quote = match remote_json_request::<SignedArtifact<QuotePayload>, _>(
+        state.as_ref(),
+        reqwest::Method::POST,
+        format!("{}/v1/provider/quotes", provider.provider_url),
+        Some(&CreateQuoteRequest {
+            offer_id: payload.offer_id.clone(),
+            requester_id: state.identity.node_id().to_string(),
+            spec: payload.spec.clone(),
+            max_price_sats: payload.max_price_sats,
+        }),
     )
     .await
     {
-        Ok(result) => result,
+        Ok(quote) => quote,
         Err(error) => return error_json(error.0, error.1),
     };
 
-    let mut terminal = false;
-    if wait_for_receipt && !is_wait_blocking_deal_status(&deal.status) {
-        match wait_for_terminal_deal(state.clone(), &deal.deal_id, wait_timeout_secs).await {
-            Ok(terminal_deal) => {
-                deal = terminal_deal;
-                terminal = is_terminal_deal_status(&deal.status);
-            }
+    if !protocol::verify_artifact(&quote) {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider quote signature verification failed" }),
+        );
+    }
+    if quote.payload.provider_id != provider.provider_id {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider quote provider_id does not match selected provider" }),
+        );
+    }
+    if quote.payload.requester_id != state.identity.node_id() {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider quote requester_id does not match local runtime identity" }),
+        );
+    }
+    if quote.payload.workload_kind != expected_workload_kind {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "provider quote workload_kind does not match requested workload",
+                "quote_workload_kind": quote.payload.workload_kind,
+                "requested_workload_kind": expected_workload_kind,
+            }),
+        );
+    }
+    if quote.payload.workload_hash != expected_workload_hash {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "provider quote workload_hash does not match requested workload",
+                "quote_workload_hash": quote.payload.workload_hash,
+                "requested_workload_hash": expected_workload_hash,
+            }),
+        );
+    }
+    if quote.payload.confidential_session_hash != expected_confidential_session_hash {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "provider quote confidential_session_hash does not match requested workload",
+                "quote_confidential_session_hash": quote.payload.confidential_session_hash,
+                "requested_confidential_session_hash": expected_confidential_session_hash,
+            }),
+        );
+    }
+
+    let success_preimage = generate_success_preimage_hex();
+    let success_payment_hash = crypto::sha256_hex(
+        hex::decode(&success_preimage)
+            .expect("generated success preimage should always be valid hex"),
+    );
+    let deal_artifact = match build_runtime_requester_deal_artifact(
+        state.as_ref(),
+        &quote,
+        &success_payment_hash,
+        settlement::current_unix_timestamp(),
+        quote_uses_lightning_bundle(state.as_ref(), &quote),
+    ) {
+        Ok(deal) => deal,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
+        }
+    };
+
+    let remote_deal = match remote_json_request::<deals::DealRecord, _>(
+        state.as_ref(),
+        reqwest::Method::POST,
+        format!("{}/v1/provider/deals", provider.provider_url),
+        Some(&CreateDealRequest {
+            quote: quote.clone(),
+            deal: deal_artifact.clone(),
+            spec: payload.spec.clone(),
+            idempotency_key: payload.idempotency_key.clone(),
+            payment: payload.payment.clone(),
+        }),
+    )
+    .await
+    {
+        Ok(deal) => deal,
+        Err(error) => return error_json(error.0, error.1),
+    };
+
+    if remote_deal.quote.hash != quote.hash || remote_deal.deal.hash != deal_artifact.hash {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider deal response does not match submitted artifacts" }),
+        );
+    }
+    if let Some(receipt) = remote_deal.receipt.as_ref() {
+        if let Err(error) = verify_provider_receipt_artifact(
+            receipt,
+            &quote,
+            &deal_artifact,
+            &provider.provider_id,
+            &deal_artifact.payload.requester_id,
+            remote_deal.result.as_ref(),
+            remote_deal.result_hash.as_deref(),
+        ) {
+            return error_json(error.0, error.1);
+        }
+    }
+
+    if let Err(error) = persist_requester_artifacts(
+        state.clone(),
+        &quote,
+        &deal_artifact,
+        remote_deal.receipt.as_ref(),
+    )
+    .await
+    {
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "failed to persist requester artifacts", "details": error }),
+        );
+    }
+
+    let created_at = settlement::current_unix_timestamp();
+    let insert_deal_id = remote_deal.deal_id.clone();
+    let provider_id = provider.provider_id.clone();
+    let provider_url = provider.provider_url.clone();
+    let stored = match state
+        .db
+        .with_write_conn(move |conn| {
+            requester_deals::insert_or_get_requester_deal(
+                conn,
+                NewRequesterDeal {
+                    deal_id: insert_deal_id,
+                    idempotency_key: payload.idempotency_key.clone(),
+                    provider_id,
+                    provider_url,
+                    spec: payload.spec.clone(),
+                    quote: quote.clone(),
+                    deal: deal_artifact.clone(),
+                    status: remote_deal.status.clone(),
+                    success_preimage,
+                    created_at,
+                },
+            )
+        })
+        .await
+    {
+        Ok(stored) => stored,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("database error: {error}") }),
+            );
+        }
+    };
+
+    let stored = match sync_requester_deal_from_provider(state.clone(), &stored.deal_id).await {
+        Ok(stored) => stored,
+        Err(_) => stored,
+    };
+    let mut payment_intent = None;
+    if quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
+        match load_runtime_requester_deal_and_payment_intent(state.clone(), &stored.deal_id).await {
+            Ok((_deal, intent)) => payment_intent = intent,
             Err(error) => return error_json(error.0, error.1),
         }
     }
 
-    let (deal, payment_intent) = if quote_uses_lightning_bundle(state.as_ref(), &quote) {
-        match load_runtime_deal_and_payment_intent(state.clone(), &deal.deal_id).await {
-            Ok(result) => result,
-            Err(error) => return error_json(error.0, error.1),
-        }
-    } else {
-        (deal, None)
-    };
-
     (
         StatusCode::OK,
-        Json(json!(RuntimeBuyServiceResponse {
-            quote,
-            deal,
-            terminal,
+        Json(json!(RuntimeCreateDealResponse {
+            provider_id: stored.provider_id.clone(),
+            provider_url: stored.provider_url.clone(),
+            quote: stored.quote.clone(),
+            deal: stored.public_record(),
             payment_intent_path: payment_intent
                 .as_ref()
                 .map(|intent| runtime_payment_intent_path(&intent.deal_id)),
             payment_intent,
+        })),
+    )
+}
+
+pub async fn runtime_get_deal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(deal_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+
+    match sync_requester_deal_from_provider(state, &deal_id).await {
+        Ok(deal) => (
+            StatusCode::OK,
+            Json(json!(RuntimeDealResponse {
+                deal: deal.public_record()
+            })),
+        ),
+        Err(error) => error_json(error.0, error.1),
+    }
+}
+
+pub async fn runtime_accept_deal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(deal_id): Path<String>,
+    Json(payload): Json<RuntimeAcceptDealRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+
+    let stored = match sync_requester_deal_from_provider(state.clone(), &deal_id).await {
+        Ok(deal) => deal,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    let expected_result_hash = payload
+        .expected_result_hash
+        .or_else(|| stored.result_hash.clone());
+
+    let terminal = match remote_json_request::<deals::DealRecord, _>(
+        state.as_ref(),
+        reqwest::Method::POST,
+        format!(
+            "{}/v1/provider/deals/{}/accept",
+            stored.provider_url,
+            urlencoding::encode(&deal_id)
+        ),
+        Some(&ReleaseDealPreimageRequest {
+            success_preimage: stored.success_preimage.clone(),
+            expected_result_hash,
+        }),
+    )
+    .await
+    {
+        Ok(terminal) => terminal,
+        Err(error) => return error_json(error.0, error.1),
+    };
+    if terminal.quote.hash != stored.quote.hash || terminal.deal.hash != stored.deal.hash {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider accept response does not match local requester deal" }),
+        );
+    }
+    if let Some(receipt) = terminal.receipt.as_ref()
+        && let Err(error) = verify_provider_receipt_artifact(
+            receipt,
+            &stored.quote,
+            &stored.deal,
+            &stored.provider_id,
+            &stored.deal.payload.requester_id,
+            terminal.result.as_ref(),
+            terminal.result_hash.as_deref(),
+        )
+    {
+        return error_json(error.0, error.1);
+    }
+
+    if let Err(error) = persist_requester_artifacts(
+        state.clone(),
+        &terminal.quote,
+        &terminal.deal,
+        terminal.receipt.as_ref(),
+    )
+    .await
+    {
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "failed to persist requester artifacts", "details": error }),
+        );
+    }
+
+    let updated_at = settlement::current_unix_timestamp();
+    let update_deal_id = deal_id.clone();
+    let terminal_status = terminal.status.clone();
+    let terminal_result = terminal.result.clone();
+    let terminal_result_hash = terminal.result_hash.clone();
+    let terminal_error = terminal.error.clone();
+    let terminal_receipt = terminal.receipt.clone();
+    let updated = match state
+        .db
+        .with_write_conn(move |conn| {
+            requester_deals::update_requester_deal_state(
+                conn,
+                &update_deal_id,
+                &terminal_status,
+                terminal_result.as_ref(),
+                terminal_result_hash.as_deref(),
+                terminal_error.as_deref(),
+                terminal_receipt.as_ref(),
+                updated_at,
+            )
+        })
+        .await
+    {
+        Ok(Some(updated)) => updated,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "deal not found", "deal_id": deal_id }),
+            );
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("database error: {error}") }),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!(RuntimeAcceptDealResponse {
+            deal: updated.public_record(),
         })),
     )
 }
@@ -974,11 +1781,18 @@ fn build_requester_signed_deal_artifact(
     let requester_id = crypto::public_key_hex(requester_signing_key);
     let execution_window_secs = deal_execution_window_secs(&quote.payload.execution_limits);
     let admission_deadline = if uses_lightning_bundle {
-        created_at
-            .saturating_add(lightning_admission_window_secs(&quote.payload.settlement_terms) as i64)
+        lightning_quote_max_admission_deadline(quote).min(
+            created_at
+                .saturating_add(lightning_admission_window_secs(&quote.payload.settlement_terms) as i64),
+        )
     } else {
         quote.payload.expires_at
     };
+    if uses_lightning_bundle && admission_deadline < created_at {
+        return Err(
+            "quote expiry already leaves no remaining Lightning admission window".to_string(),
+        );
+    }
     let completion_deadline = admission_deadline.saturating_add(execution_window_secs as i64);
     let acceptance_deadline = if uses_lightning_bundle {
         completion_deadline
@@ -1004,6 +1818,7 @@ fn build_requester_signed_deal_artifact(
             provider_id: quote.payload.provider_id.clone(),
             quote_hash: quote.hash.clone(),
             workload_hash: quote.payload.workload_hash.clone(),
+            confidential_session_hash: quote.payload.confidential_session_hash.clone(),
             extension_refs: Vec::new(),
             authority_ref: None,
             supersedes_deal_hash: None,
@@ -1022,55 +1837,6 @@ fn quote_uses_lightning_bundle(state: &AppState, quote: &SignedArtifact<QuotePay
     state.config.payment_backend == PaymentBackend::Lightning
         && total_msat > 0
         && quote.payload.settlement_terms.method == "lightning.base_fee_plus_success_fee.v1"
-}
-
-pub async fn runtime_issue_curated_list(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(payload): Json<IssueCuratedListRequest>,
-) -> impl IntoResponse {
-    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1);
-    }
-
-    if payload.entries.is_empty() {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "curated list must contain at least one entry" }),
-        );
-    }
-
-    let created_at = settlement::current_unix_timestamp();
-    if payload.expires_at <= created_at {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "expires_at must be in the future" }),
-        );
-    }
-
-    match sign_node_artifact(
-        state.as_ref(),
-        ARTIFACT_KIND_CURATED_LIST,
-        created_at,
-        CuratedListPayload {
-            schema_version: "froglet/v1".to_string(),
-            list_type: "curated_list".to_string(),
-            curator_id: state.identity.node_id().to_string(),
-            list_id: payload.list_id.unwrap_or_else(protocol::new_artifact_id),
-            created_at,
-            expires_at: payload.expires_at,
-            entries: payload.entries,
-        },
-    ) {
-        Ok(curated_list) => (
-            StatusCode::CREATED,
-            Json(json!(IssueCuratedListResponse { curated_list })),
-        ),
-        Err(error) => error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": format!("failed to sign curated list: {error}") }),
-        ),
-    }
 }
 
 pub async fn runtime_nostr_provider_publications(
@@ -1201,7 +1967,7 @@ pub async fn runtime_deal_payment_intent(
         return error_json(error.0, error.1);
     }
 
-    match load_runtime_deal_and_payment_intent(state, &deal_id).await {
+    match load_runtime_requester_deal_and_payment_intent(state, &deal_id).await {
         Ok((_deal, Some(payment_intent))) => (
             StatusCode::OK,
             Json(json!(RuntimeDealPaymentIntentResponse { payment_intent })),
@@ -1215,70 +1981,6 @@ pub async fn runtime_deal_payment_intent(
         ),
         Err(error) => error_json(error.0, error.1),
     }
-}
-
-pub async fn runtime_update_lightning_bundle_state(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-    Json(payload): Json<UpdateLightningInvoiceBundleStateRequest>,
-) -> impl IntoResponse {
-    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1);
-    }
-
-    let updated = match settlement::update_lightning_invoice_bundle_states(
-        state.as_ref(),
-        &session_id,
-        payload.base_state.clone(),
-        payload.success_state.clone(),
-    )
-    .await
-    {
-        Ok(Some(updated)) => updated,
-        Ok(None) => {
-            return error_json(
-                StatusCode::NOT_FOUND,
-                json!({ "error": "invoice bundle not found", "session_id": session_id }),
-            );
-        }
-        Err(error) => {
-            tracing::error!("Failed to update invoice bundle {session_id}: {error}");
-            return error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": "failed to update invoice bundle" }),
-            );
-        }
-    };
-
-    if settlement::lightning_bundle_is_funded(&updated) {
-        let deal_hash = updated.bundle.payload.deal_hash.clone();
-        match state
-            .db
-            .with_read_conn(move |conn| deals::get_deal_by_artifact_hash(conn, &deal_hash))
-            .await
-        {
-            Ok(Some(deal)) => {
-                if let Err(error) =
-                    promote_lightning_deal_if_funded(state.clone(), &deal, &updated).await
-                {
-                    tracing::error!(
-                        "Failed to promote Lightning deal {} after invoice update: {error}",
-                        deal.deal_id
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::error!(
-                    "Failed to load deal for Lightning invoice bundle {}: {error}",
-                    updated.session_id
-                );
-            }
-        }
-    }
-
-    (StatusCode::OK, Json(json!(updated)))
 }
 
 pub async fn runtime_archive_subject(
@@ -2016,12 +2718,12 @@ pub async fn execute_wasm(
             StatusCode::BAD_REQUEST,
             json!({
                 "error": format!(
-                    "{} requires the /v1/quotes and /v1/deals protocol flow",
+                    "{} requires the /v1/provider/quotes and /v1/provider/deals protocol flow",
                     wasm::WASM_HOST_JSON_ABI_V1
                 ),
                 "abi_version": wasm::WASM_HOST_JSON_ABI_V1,
-                "quote_path": "/v1/quotes",
-                "deal_path": "/v1/deals",
+                "quote_path": "/v1/provider/quotes",
+                "deal_path": "/v1/provider/deals",
             }),
         );
     }
@@ -2252,15 +2954,15 @@ fn legacy_paid_endpoint_requires_protocol_deal(
         StatusCode::CONFLICT,
         json!({
             "error": format!(
-                "priced {} requests must use /v1/quotes and /v1/deals when the lightning backend is active",
+                "priced {} requests must use /v1/provider/quotes and /v1/provider/deals when the lightning backend is active",
                 service_id.as_str()
             ),
             "service_id": service_id.as_str(),
             "price_sats": price_sats,
             "payment_backend": "lightning",
             "legacy_endpoint": endpoint_path,
-            "quote_path": "/v1/quotes",
-            "deal_path": "/v1/deals",
+            "quote_path": "/v1/provider/quotes",
+            "deal_path": "/v1/provider/deals",
             "requires_protocol_deal": true
         }),
     ))
@@ -2369,6 +3071,419 @@ fn descriptor_payload_equivalent(
     current == existing
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedConfidentialProfile {
+    config: ConfidentialProfileConfig,
+    artifact: SignedArtifact<ConfidentialProfilePayload>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedConfidentialSession {
+    profile: SignedArtifact<ConfidentialProfilePayload>,
+    session: SignedArtifact<ConfidentialSessionPayload>,
+    attestation: AttestationBundle,
+    private_material: SessionPrivateMaterial,
+}
+
+async fn current_confidential_profile_artifacts(
+    state: &AppState,
+) -> Result<Vec<ResolvedConfidentialProfile>, String> {
+    let Some(policy) = state.confidential_policy.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let mut profiles = Vec::new();
+    for (profile_id, config) in &policy.profiles {
+        let artifact = persist_signed_artifact(
+            state,
+            ARTIFACT_KIND_CONFIDENTIAL_PROFILE,
+            confidential::profile_payload_from_config(state.identity.node_id(), profile_id, config),
+        )
+        .await?;
+        profiles.push(ResolvedConfidentialProfile {
+            config: config.clone(),
+            artifact,
+        });
+    }
+
+    Ok(profiles)
+}
+
+async fn lookup_confidential_profile_artifact(
+    state: &AppState,
+    artifact_hash: &str,
+) -> Result<Option<SignedArtifact<ConfidentialProfilePayload>>, String> {
+    let _ = current_confidential_profile_artifacts(state).await?;
+    let lookup_hash = artifact_hash.to_string();
+    let artifact = state
+        .db
+        .with_read_conn(move |conn| db::get_artifact_document_by_hash(conn, &lookup_hash))
+        .await?;
+    match artifact {
+        Some(document) if document.artifact_kind == ARTIFACT_KIND_CONFIDENTIAL_PROFILE => {
+            let profile: SignedArtifact<ConfidentialProfilePayload> =
+                serde_json::from_value(document.document).map_err(|error| error.to_string())?;
+            Ok(Some(profile))
+        }
+        Some(_) => Ok(None),
+        None => Ok(None),
+    }
+}
+
+fn deserialize_evidence_content<T: DeserializeOwned>(
+    evidence: &[db::ExecutionEvidenceRecord],
+    evidence_kind: &str,
+) -> Result<T, String> {
+    let record = evidence
+        .iter()
+        .find(|record| record.evidence_kind == evidence_kind)
+        .ok_or_else(|| format!("missing confidential session evidence '{evidence_kind}'"))?;
+    serde_json::from_value(record.content.clone()).map_err(|error| error.to_string())
+}
+
+async fn load_confidential_session_by_hash(
+    state: &AppState,
+    confidential_session_hash: &str,
+) -> Result<Option<LoadedConfidentialSession>, String> {
+    let lookup_hash = confidential_session_hash.to_string();
+    let session_document = state
+        .db
+        .with_read_conn(move |conn| db::get_artifact_document_by_hash(conn, &lookup_hash))
+        .await?;
+    let Some(session_document) = session_document else {
+        return Ok(None);
+    };
+    if session_document.artifact_kind != ARTIFACT_KIND_CONFIDENTIAL_SESSION {
+        return Ok(None);
+    }
+    let session: SignedArtifact<ConfidentialSessionPayload> =
+        serde_json::from_value(session_document.document).map_err(|error| error.to_string())?;
+    let session_id = session.payload.session_id.clone();
+    let evidence = state
+        .db
+        .with_read_conn(move |conn| {
+            db::list_execution_evidence_for_subject(conn, "confidential_session", &session_id)
+        })
+        .await?;
+    let attestation: AttestationBundle =
+        deserialize_evidence_content(&evidence, "attestation_bundle")?;
+    let private_material: SessionPrivateMaterial =
+        deserialize_evidence_content(&evidence, "session_private_material")?;
+    if private_material.confidential_session_hash != session.hash {
+        return Err(
+            "confidential session private material does not match session hash".to_string(),
+        );
+    }
+    let Some(profile) =
+        lookup_confidential_profile_artifact(state, &session.payload.confidential_profile_hash)
+            .await?
+    else {
+        return Err("confidential profile referenced by session is missing".to_string());
+    };
+
+    Ok(Some(LoadedConfidentialSession {
+        profile,
+        session,
+        attestation,
+        private_material,
+    }))
+}
+
+async fn load_confidential_session_by_id(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<LoadedConfidentialSession>, String> {
+    let lookup_id = session_id.to_string();
+    let evidence = state
+        .db
+        .with_read_conn(move |conn| {
+            db::list_execution_evidence_for_subject(conn, "confidential_session", &lookup_id)
+        })
+        .await?;
+    let artifact_ref: Value = deserialize_evidence_content(&evidence, "session_artifact_ref")?;
+    let Some(confidential_session_hash) = artifact_ref
+        .get("artifact_hash")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Err("confidential session artifact ref is missing artifact_hash".to_string());
+    };
+    load_confidential_session_by_hash(state, &confidential_session_hash).await
+}
+
+pub async fn get_confidential_profile(
+    State(state): State<Arc<AppState>>,
+    Path(artifact_hash): Path<String>,
+) -> impl IntoResponse {
+    match lookup_confidential_profile_artifact(state.as_ref(), &artifact_hash).await {
+        Ok(Some(profile)) => (StatusCode::OK, Json(json!(profile))),
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "confidential profile not found", "artifact_hash": artifact_hash }),
+        ),
+        Err(error) => {
+            tracing::error!(
+                "Failed to load confidential profile {}: {error}",
+                artifact_hash
+            );
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load confidential profile" }),
+            )
+        }
+    }
+}
+
+pub async fn open_confidential_session(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ConfidentialSessionOpenRequest>,
+) -> impl IntoResponse {
+    let Some(policy) = state.confidential_policy.as_ref() else {
+        return error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "confidential execution is not enabled on this provider" }),
+        );
+    };
+    let requester_id = match normalize_hex_field("requester_id", payload.requester_id.clone(), 64) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let requester_public_key =
+        match confidential::validate_public_key_hex(payload.requester_public_key.as_str()) {
+            Ok(value) => value,
+            Err(error) => {
+                return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
+            }
+        };
+    let profiles = match current_confidential_profile_artifacts(state.as_ref()).await {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            tracing::error!("Failed to load confidential profiles: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load confidential profiles" }),
+            );
+        }
+    };
+    let Some(profile) = profiles
+        .iter()
+        .find(|profile| profile.artifact.hash == payload.confidential_profile_hash)
+        .cloned()
+    else {
+        return error_json(
+            StatusCode::NOT_FOUND,
+            json!({
+                "error": "confidential profile not found",
+                "confidential_profile_hash": payload.confidential_profile_hash,
+            }),
+        );
+    };
+    if profile.artifact.payload.allowed_workload_kind != payload.allowed_workload_kind {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "requested workload kind does not match confidential profile",
+                "allowed_workload_kind": profile.artifact.payload.allowed_workload_kind,
+                "requested_workload_kind": payload.allowed_workload_kind,
+            }),
+        );
+    }
+    if profile.artifact.payload.attestation_platform != policy.backend.platform {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "configured confidential backend platform does not match profile",
+                "backend_platform": policy.backend.platform,
+                "profile_platform": profile.artifact.payload.attestation_platform,
+            }),
+        );
+    }
+
+    let now = settlement::current_unix_timestamp();
+    let expires_at = now.saturating_add(state.config.confidential.session_ttl_secs as i64);
+    let session_id = protocol::new_artifact_id();
+    let (session_private_key, session_public_key) = confidential::generate_keypair();
+    let attestation_provider = NvidiaMockAttestationProvider;
+    let attestation = match attestation_provider.issue_attestation(
+        &profile.artifact.payload,
+        &session_public_key,
+        now,
+        expires_at,
+    ) {
+        Ok(attestation) => attestation,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to issue confidential attestation: {error}") }),
+            );
+        }
+    };
+    let attestation_evidence_hash = match confidential::attestation_hash(&attestation) {
+        Ok(hash) => hash,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to hash confidential attestation: {error}") }),
+            );
+        }
+    };
+    let session = match sign_node_artifact(
+        state.as_ref(),
+        ARTIFACT_KIND_CONFIDENTIAL_SESSION,
+        now,
+        ConfidentialSessionPayload {
+            provider_id: state.identity.node_id().to_string(),
+            requester_id,
+            session_id: session_id.clone(),
+            confidential_profile_hash: profile.artifact.hash.clone(),
+            allowed_workload_kind: profile.artifact.payload.allowed_workload_kind.clone(),
+            execution_mode: profile.artifact.payload.execution_mode.clone(),
+            attestation_platform: profile.artifact.payload.attestation_platform.clone(),
+            measurement: profile.artifact.payload.measurement.clone(),
+            attestation_evidence_hash,
+            key_release_policy_hash: profile.artifact.payload.key_release_policy_hash.clone(),
+            session_public_key: session_public_key.clone(),
+            requester_public_key: requester_public_key.clone(),
+            encryption_algorithm: confidential::ENCRYPTION_ALGORITHM_SECP256K1_AES_256_GCM_V1
+                .to_string(),
+            expires_at,
+        },
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to sign confidential session: {error}") }),
+            );
+        }
+    };
+    let session_json = match serde_json::to_string(&session) {
+        Ok(value) => value,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to encode confidential session: {error}") }),
+            );
+        }
+    };
+    let session_private_material = SessionPrivateMaterial {
+        confidential_session_hash: session.hash.clone(),
+        confidential_profile_hash: profile.artifact.hash.clone(),
+        session_id: session_id.clone(),
+        session_private_key,
+        session_public_key,
+        requester_public_key,
+        expires_at,
+    };
+    let session_hash = session.hash.clone();
+    let payload_hash = session.payload_hash.clone();
+    let actor_id = session.signer.clone();
+    let session_for_db = session.clone();
+    let attestation_for_db = attestation.clone();
+    let persisted = state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation = (|| -> Result<(), String> {
+                db::insert_artifact_document(
+                    conn,
+                    &session_hash,
+                    &payload_hash,
+                    ARTIFACT_KIND_CONFIDENTIAL_SESSION,
+                    &actor_id,
+                    session_for_db.created_at,
+                    &session_json,
+                )?;
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "confidential_session",
+                    &session_id,
+                    "session_artifact_ref",
+                    &json!({ "artifact_hash": session_for_db.hash }),
+                    now,
+                )?;
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "confidential_session",
+                    &session_id,
+                    "attestation_bundle",
+                    &attestation_for_db,
+                    now,
+                )?;
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "confidential_session",
+                    &session_id,
+                    "session_private_material",
+                    &session_private_material,
+                    now,
+                )?;
+                Ok(())
+            })();
+
+            if let Err(error) = operation {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+
+            conn.execute_batch("COMMIT")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .await;
+
+    if let Err(error) = persisted {
+        tracing::error!(
+            "Failed to persist confidential session {}: {error}",
+            session.hash
+        );
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "failed to persist confidential session" }),
+        );
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(json!(ConfidentialSessionResponse {
+            profile: profile.artifact,
+            session,
+            attestation,
+        })),
+    )
+}
+
+pub async fn get_confidential_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match load_confidential_session_by_id(state.as_ref(), &session_id).await {
+        Ok(Some(loaded)) => (
+            StatusCode::OK,
+            Json(json!(ConfidentialSessionResponse {
+                profile: loaded.profile,
+                session: loaded.session,
+                attestation: loaded.attestation,
+            })),
+        ),
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "confidential session not found", "session_id": session_id }),
+        ),
+        Err(error) => {
+            tracing::error!(
+                "Failed to load confidential session {}: {error}",
+                session_id
+            );
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load confidential session" }),
+            )
+        }
+    }
+}
+
 async fn current_descriptor_artifact(
     state: &AppState,
 ) -> Result<SignedArtifact<DescriptorPayload>, String> {
@@ -2402,6 +3517,22 @@ async fn current_descriptor_artifact(
             ],
         });
     }
+    let confidential_profiles = current_confidential_profile_artifacts(state).await?;
+    let mut service_kinds = vec![
+        crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
+        "events.query".to_string(),
+    ];
+    let mut execution_runtimes = vec!["wasm".to_string()];
+    if !confidential_profiles.is_empty() {
+        execution_runtimes.push("tee".to_string());
+        for profile in &confidential_profiles {
+            service_kinds.push(profile.artifact.payload.allowed_workload_kind.clone());
+        }
+    }
+    service_kinds.sort();
+    service_kinds.dedup();
+    execution_runtimes.sort();
+    execution_runtimes.dedup();
     let mut payload = DescriptorPayload {
         provider_id: state.identity.node_id().to_string(),
         descriptor_seq: 0,
@@ -2410,11 +3541,8 @@ async fn current_descriptor_artifact(
         linked_identities: vec![nostr_publication_linked_identity(state)?],
         transport_endpoints,
         capabilities: protocol::DescriptorCapabilities {
-            service_kinds: vec![
-                crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
-                "events.query".to_string(),
-            ],
-            execution_runtimes: vec!["wasm".to_string()],
+            service_kinds,
+            execution_runtimes,
             max_concurrent_deals: Some(sandbox::wasm_concurrency_limit() as u32),
         },
     };
@@ -2446,8 +3574,9 @@ async fn current_offer_artifacts(
 ) -> Result<Vec<SignedArtifact<OfferPayload>>, String> {
     let descriptor = current_descriptor_artifact(state).await?;
     let descriptor_hash = descriptor.hash.clone();
+    let confidential_profiles = current_confidential_profile_artifacts(state).await?;
     let mut offers = Vec::new();
-    for payload in current_offer_payloads(state, &descriptor_hash) {
+    for payload in current_offer_payloads(state, &descriptor_hash, &confidential_profiles) {
         offers.push(persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await?);
     }
     Ok(offers)
@@ -2463,7 +3592,11 @@ async fn lookup_offer(
         .find(|offer| offer.payload.offer_id == offer_id))
 }
 
-fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferPayload> {
+fn current_offer_payloads(
+    state: &AppState,
+    descriptor_hash: &str,
+    confidential_profiles: &[ResolvedConfidentialProfile],
+) -> Vec<OfferPayload> {
     let provider_id = state.identity.node_id().to_string();
     let wasm_host_capabilities = state
         .wasm_host
@@ -2510,10 +3643,11 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
                 success_fee_msat: price_sats.saturating_mul(1_000),
             },
             terms_hash: None,
+            confidential_profile_hash: None,
         }
     };
 
-    vec![
+    let mut offers = vec![
         priced_offer(
             ServiceId::EventsQuery.as_str(),
             ServiceId::EventsQuery,
@@ -2540,10 +3674,9 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
             sandbox::WASM_MAX_OUTPUT_BYTES,
             sandbox::WASM_FUEL_LIMIT,
         ),
-    ]
-    .into_iter()
-    .chain((!wasm_host_capabilities.is_empty()).then(|| {
-        priced_offer(
+    ];
+    if !wasm_host_capabilities.is_empty() {
+        offers.push(priced_offer(
             "execute.wasm.host",
             ServiceId::ExecuteWasm,
             crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
@@ -2555,9 +3688,55 @@ fn current_offer_payloads(state: &AppState, descriptor_hash: &str) -> Vec<OfferP
             sandbox::WASM_MAX_MEMORY_BYTES,
             sandbox::WASM_MAX_OUTPUT_BYTES,
             sandbox::WASM_FUEL_LIMIT,
-        )
-    }))
-    .collect()
+        ));
+    }
+    for profile in confidential_profiles {
+        let runtime = match profile.config.allowed_workload_kind.as_str() {
+            confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => "tee.service",
+            confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => "tee.wasm",
+            _ => continue,
+        };
+        let abi_version = match profile.config.allowed_workload_kind.as_str() {
+            confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => {
+                "froglet.confidential.service.v1"
+            }
+            confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => {
+                "froglet.confidential.attested_wasm.v1"
+            }
+            _ => continue,
+        };
+        offers.push(OfferPayload {
+            provider_id: provider_id.clone(),
+            offer_id: profile.config.offer_id.clone(),
+            descriptor_hash: descriptor_hash.to_string(),
+            expires_at: None,
+            offer_kind: profile.config.allowed_workload_kind.clone(),
+            settlement_method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+            quote_ttl_secs: advertised_offer_timeout_secs(
+                state,
+                ServiceId::ExecuteWasm,
+                profile.config.price_sats,
+                &accepted_payment_methods(state),
+            ),
+            execution_profile: protocol::OfferExecutionProfile {
+                runtime: runtime.to_string(),
+                abi_version: abi_version.to_string(),
+                capabilities: Vec::new(),
+                max_input_bytes: profile.config.max_input_bytes,
+                max_runtime_ms: profile.config.max_runtime_ms,
+                max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
+                max_output_bytes: profile.config.max_output_bytes,
+                fuel_limit: sandbox::WASM_FUEL_LIMIT,
+            },
+            price_schedule: protocol::OfferPriceSchedule {
+                base_fee_msat: 0,
+                success_fee_msat: profile.config.price_sats.saturating_mul(1_000),
+            },
+            terms_hash: profile.config.terms_hash.clone(),
+            confidential_profile_hash: Some(profile.artifact.hash.clone()),
+        });
+    }
+    offers
 }
 
 fn accepted_payment_methods(state: &AppState) -> Vec<String> {
@@ -2812,36 +3991,6 @@ fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Api
     Ok(())
 }
 
-async fn runtime_provider_snapshot(
-    state: &AppState,
-) -> Result<RuntimeProviderResponse, ApiFailure> {
-    let descriptor = current_descriptor_artifact(state).await.map_err(|error| {
-        tracing::error!("Failed to build runtime descriptor snapshot: {error}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": "failed to build descriptor" }),
-        )
-    })?;
-
-    let offers = current_offer_artifacts(state).await.map_err(|error| {
-        tracing::error!("Failed to build runtime offer snapshot: {error}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": "failed to build offers" }),
-        )
-    })?;
-
-    Ok(RuntimeProviderResponse {
-        status: "running".to_string(),
-        descriptor,
-        offers,
-        runtime_auth: RuntimeAuthInfo {
-            scheme: "bearer".to_string(),
-            token_path: state.runtime_auth_token_path.display().to_string(),
-        },
-    })
-}
-
 async fn create_quote_record(
     state: Arc<AppState>,
     payload: CreateQuoteRequest,
@@ -2880,13 +4029,15 @@ async fn create_quote_record(
         ));
     }
 
-    if payload.spec.runtime() == Some("wasm") && offer.payload.execution_profile.runtime != "wasm" {
+    if let Some(requested_runtime) = payload.spec.runtime()
+        && offer.payload.execution_profile.runtime != requested_runtime
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             json!({
                 "error": "offer does not match workload runtime",
                 "offer_runtime": offer.payload.execution_profile.runtime,
-                "requested_runtime": payload.spec.runtime(),
+                "requested_runtime": requested_runtime,
             }),
         ));
     }
@@ -2900,6 +4051,71 @@ async fn create_quote_record(
                 "offer_abi_version": offer.payload.execution_profile.abi_version,
                 "requested_abi_version": abi_version,
             }),
+        ));
+    }
+    if let Some(confidential_profile_hash) = offer.payload.confidential_profile_hash.as_deref() {
+        let Some(confidential_session_hash) = payload.spec.confidential_session_hash() else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "confidential offers require confidential_session_hash" }),
+            ));
+        };
+        let Some(session) =
+            load_confidential_session_by_hash(state.as_ref(), confidential_session_hash)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        "Failed to load confidential session {}: {error}",
+                        confidential_session_hash
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load confidential session" }),
+                    )
+                })?
+        else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                json!({
+                    "error": "confidential session not found",
+                    "confidential_session_hash": confidential_session_hash,
+                }),
+            ));
+        };
+        if session.session.payload.confidential_profile_hash != confidential_profile_hash {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "confidential session does not match offer profile" }),
+            ));
+        }
+        if session.session.payload.requester_id != requester_id {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "confidential session requester_id does not match quote requester_id" }),
+            ));
+        }
+        if session.session.payload.allowed_workload_kind != workload_kind {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "confidential session workload kind does not match requested workload" }),
+            ));
+        }
+        confidential::verify_attestation_bundle(
+            &session.profile.payload,
+            &session.session,
+            &session.attestation,
+            settlement::current_unix_timestamp(),
+        )
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("invalid confidential session attestation: {error}") }),
+            )
+        })?;
+    } else if payload.spec.confidential_session_hash().is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "confidential_session_hash requires an offer with confidential_profile_hash" }),
         ));
     }
     let capabilities_granted = grant_requested_capabilities_from_offer(&payload.spec, &offer)
@@ -2963,6 +4179,7 @@ async fn create_quote_record(
             expires_at: quote_expires_at,
             workload_kind,
             workload_hash,
+            confidential_session_hash: payload.spec.confidential_session_hash().map(str::to_string),
             capabilities_granted,
             extension_refs: Vec::new(),
             quote_use: None,
@@ -3134,6 +4351,22 @@ async fn create_deal_record(
             json!({ "error": "deal does not match workload payload" }),
         ));
     }
+    if payload.quote.payload.confidential_session_hash
+        != payload.spec.confidential_session_hash().map(str::to_string)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "quote confidential_session_hash does not match workload payload" }),
+        ));
+    }
+    if payload.deal.payload.confidential_session_hash
+        != payload.quote.payload.confidential_session_hash
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "deal confidential_session_hash does not match quote confidential_session_hash" }),
+        ));
+    }
 
     let now = settlement::current_unix_timestamp();
     if payload.quote.payload.expires_at < now {
@@ -3145,6 +4378,50 @@ async fn create_deal_record(
                 "expires_at": payload.quote.payload.expires_at,
             }),
         ));
+    }
+    if let Some(confidential_session_hash) =
+        payload.quote.payload.confidential_session_hash.as_deref()
+    {
+        let Some(session) =
+            load_confidential_session_by_hash(state.as_ref(), confidential_session_hash)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        "Failed to load confidential session {}: {error}",
+                        confidential_session_hash
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load confidential session" }),
+                    )
+                })?
+        else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                json!({
+                    "error": "confidential session not found",
+                    "confidential_session_hash": confidential_session_hash,
+                }),
+            ));
+        };
+        if now > session.session.payload.expires_at {
+            return Err((
+                StatusCode::GONE,
+                json!({ "error": "confidential session expired" }),
+            ));
+        }
+        confidential::verify_attestation_bundle(
+            &session.profile.payload,
+            &session.session,
+            &session.attestation,
+            now,
+        )
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("invalid confidential session attestation: {error}") }),
+            )
+        })?;
     }
 
     let quoted_total_msat = payload.quote.payload.settlement_terms.base_fee_msat
@@ -3274,6 +4551,8 @@ async fn create_deal_record(
                         execution_state: "not_started",
                         bundle: None,
                         result_hash: None,
+                        result_format: None,
+                        result_envelope_hash: None,
                         failure: Some(failure.clone()),
                     },
                 )
@@ -3564,6 +4843,8 @@ async fn fail_pending_deal_materialization(
             execution_state: "not_started",
             bundle: None,
             result_hash: None,
+            result_format: None,
+            result_envelope_hash: None,
             failure: Some(failure.clone()),
         },
     )
@@ -3782,46 +5063,6 @@ async fn materialize_pending_lightning_bundle(
     Ok(())
 }
 
-async fn wait_for_terminal_deal(
-    state: Arc<AppState>,
-    deal_id: &str,
-    timeout_secs: u64,
-) -> Result<deals::DealRecord, ApiFailure> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-
-    loop {
-        let lookup_deal_id = deal_id.to_string();
-        let deal = state
-            .db
-            .with_read_conn(move |conn| deals::get_deal(conn, &lookup_deal_id))
-            .await
-            .map_err(|error| {
-                tracing::error!("Failed to poll deal {deal_id}: {error}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": "database error" }),
-                )
-            })?;
-
-        let Some(deal) = deal else {
-            return Err((StatusCode::NOT_FOUND, json!({ "error": "deal not found" })));
-        };
-
-        if is_terminal_deal_status(&deal.status) || deal.status == deals::DEAL_STATUS_RESULT_READY {
-            return Ok(deal.public_record());
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err((
-                StatusCode::REQUEST_TIMEOUT,
-                json!({ "error": "timed out waiting for terminal deal status", "deal_id": deal_id }),
-            ));
-        }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
 fn validate_job_spec(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match spec {
         JobSpec::Wasm { submission } => validate_wasm_submission(submission),
@@ -3874,6 +5115,55 @@ fn validate_workload_spec(
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     match spec {
         WorkloadSpec::Wasm { submission } => validate_wasm_submission(submission),
+        WorkloadSpec::ConfidentialService {
+            confidential_session_hash,
+            service_id,
+            request_envelope,
+        } => {
+            if confidential_session_hash.trim().is_empty() {
+                return Err(error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "confidential service requires confidential_session_hash" }),
+                ));
+            }
+            if service_id.trim().is_empty() {
+                return Err(error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "confidential service requires service_id" }),
+                ));
+            }
+            request_envelope
+                .validate()
+                .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+            if request_envelope.confidential_session_hash != confidential_session_hash.as_str() {
+                return Err(error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "encrypted envelope confidential_session_hash does not match the workload payload" }),
+                ));
+            }
+            Ok(())
+        }
+        WorkloadSpec::AttestedWasm {
+            confidential_session_hash,
+            request_envelope,
+        } => {
+            if confidential_session_hash.trim().is_empty() {
+                return Err(error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "attested wasm requires confidential_session_hash" }),
+                ));
+            }
+            request_envelope
+                .validate()
+                .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+            if request_envelope.confidential_session_hash != confidential_session_hash.as_str() {
+                return Err(error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "encrypted envelope confidential_session_hash does not match the workload payload" }),
+                ));
+            }
+            Ok(())
+        }
         WorkloadSpec::EventsQuery { kinds, limit: _ } if kinds.is_empty() => Err(error_json(
             StatusCode::BAD_REQUEST,
             json!({ "error": "events query must include at least one kind" }),
@@ -3992,112 +5282,66 @@ async fn deal_lightning_invoice_bundle(
     settlement::get_lightning_invoice_bundle_by_deal_hash(state, &deal.artifact.hash).await
 }
 
-fn is_terminal_deal_status(status: &str) -> bool {
-    matches!(
-        status,
-        deals::DEAL_STATUS_SUCCEEDED | deals::DEAL_STATUS_FAILED | deals::DEAL_STATUS_REJECTED
-    )
-}
-
-fn is_wait_blocking_deal_status(status: &str) -> bool {
-    matches!(
-        status,
-        deals::DEAL_STATUS_PAYMENT_PENDING | deals::DEAL_STATUS_RESULT_READY
-    )
-}
-
 fn runtime_payment_intent_path(deal_id: &str) -> String {
     format!("/v1/runtime/deals/{deal_id}/payment-intent")
 }
 
-async fn load_runtime_deal_and_payment_intent(
+async fn load_runtime_requester_deal_and_payment_intent(
     state: Arc<AppState>,
     deal_id: &str,
-) -> Result<(deals::DealRecord, Option<settlement::LightningWalletIntent>), ApiFailure> {
-    let lookup_deal_id = deal_id.to_string();
-    let stored = state
-        .db
-        .with_read_conn(move |conn| deals::get_deal(conn, &lookup_deal_id))
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("database error: {error}") }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                json!({ "error": "deal not found", "deal_id": deal_id }),
-            )
-        })?;
+) -> Result<
+    (
+        requester_deals::RequesterDealRecord,
+        Option<settlement::LightningWalletIntent>,
+    ),
+    ApiFailure,
+> {
+    let stored = sync_requester_deal_from_provider(state.clone(), deal_id).await?;
 
-    if stored.payment_method.as_deref() != Some("lightning") {
+    if !quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
         return Ok((stored.public_record(), None));
     }
 
-    let Some(bundle) = sync_and_maybe_promote_lightning_deal(state.clone(), &stored)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": "failed to sync lightning settlement state", "details": error }),
-            )
-        })?
-    else {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({
-                "error": "lightning deal is missing its wallet payment intent",
-                "deal_id": deal_id,
-            }),
-        ));
-    };
-
-    let reload_deal_id = deal_id.to_string();
-    let current = state
-        .db
-        .with_read_conn(move |conn| deals::get_deal(conn, &reload_deal_id))
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("database error: {error}") }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                json!({ "error": "deal not found", "deal_id": deal_id }),
-            )
-        })?;
-
+    let bundle: settlement::LightningInvoiceBundleSession = remote_json_request(
+        state.as_ref(),
+        reqwest::Method::GET,
+        format!(
+            "{}/v1/provider/deals/{}/invoice-bundle",
+            stored.provider_url,
+            urlencoding::encode(deal_id)
+        ),
+        Option::<&()>::None,
+    )
+    .await?;
     let report = settlement::validate_lightning_invoice_bundle(
         &bundle.bundle,
-        &current.quote,
-        &current.artifact,
+        &stored.quote,
+        &stored.deal,
         None,
     );
     if !report.valid {
         return Err((
             StatusCode::CONFLICT,
             json!({
-                "error": "stored lightning invoice bundle failed commitment validation",
+                "error": "provider invoice bundle failed commitment validation",
                 "deal_id": deal_id,
                 "validation": report,
             }),
         ));
     }
 
-    let payment_intent = settlement::build_lightning_wallet_intent(
+    let mut payment_intent = settlement::build_lightning_wallet_intent(
         state.as_ref(),
-        &current.deal_id,
-        &current.status,
-        current.result_hash.as_deref(),
+        &stored.deal_id,
+        &stored.status,
+        stored.result_hash.as_deref(),
         &bundle,
     );
+    if let Some(release_action) = payment_intent.release_action.as_mut() {
+        release_action.endpoint_path = format!("/v1/runtime/deals/{deal_id}/accept");
+    }
 
-    Ok((current.public_record(), Some(payment_intent)))
+    Ok((stored.public_record(), Some(payment_intent)))
 }
 
 async fn promote_lightning_deal_if_funded(
@@ -4264,6 +5508,8 @@ async fn persist_lightning_success_receipt(
             execution_state: "succeeded",
             bundle: Some(bundle),
             result_hash: Some(result_hash),
+            result_format: None,
+            result_envelope_hash: None,
             failure: None,
         },
     )?;
@@ -4311,6 +5557,7 @@ async fn persist_lightning_success_receipt(
                         deal_id: &deal_id,
                         expected_status: deals::DEAL_STATUS_RESULT_READY,
                         result: &result_for_db,
+                        explicit_result_hash: None,
                         receipt: &receipt_for_db,
                         result_evidence_hash: None,
                         receipt_artifact_hash: Some(&receipt_for_db.hash),
@@ -4353,6 +5600,8 @@ async fn persist_deal_terminal_failure_receipt(
             execution_state,
             bundle,
             result_hash: deal.result_hash.clone(),
+            result_format: None,
+            result_envelope_hash: None,
             failure: Some(failure.clone()),
         },
     )?;
@@ -4552,6 +5801,18 @@ fn collect_archive_artifact_hashes_for_deal(deal: &deals::StoredDeal) -> Vec<Str
     hashes
 }
 
+fn collect_archive_artifact_hashes_for_requester_deal(
+    deal: &requester_deals::StoredRequesterDeal,
+) -> Vec<String> {
+    let mut hashes = vec![deal.quote.hash.clone(), deal.deal.hash.clone()];
+    if let Some(receipt) = deal.receipt.as_ref() {
+        hashes.push(receipt.hash.clone());
+    }
+    hashes.sort();
+    hashes.dedup();
+    hashes
+}
+
 async fn build_runtime_archive_export(
     state: &AppState,
     subject_kind: &str,
@@ -4571,12 +5832,19 @@ async fn build_runtime_archive_export(
         .db
         .with_read_conn(move |conn| match subject_kind_owned.as_str() {
             "deal" => {
-                let Some(deal) = deals::get_deal(conn, &subject_id_owned)? else {
+                if let Some(deal) = deals::get_deal(conn, &subject_id_owned)? {
+                    return Ok(Some(ArchiveSubject::Deal {
+                        artifact_hashes: collect_archive_artifact_hashes_for_deal(&deal),
+                        deal_hash: deal.artifact.hash,
+                    }));
+                }
+                let Some(deal) = requester_deals::get_requester_deal(conn, &subject_id_owned)?
+                else {
                     return Ok(None);
                 };
                 Ok(Some(ArchiveSubject::Deal {
-                    artifact_hashes: collect_archive_artifact_hashes_for_deal(&deal),
-                    deal_hash: deal.artifact.hash,
+                    artifact_hashes: collect_archive_artifact_hashes_for_requester_deal(&deal),
+                    deal_hash: deal.deal.hash,
                 }))
             }
             "job" => {
@@ -4756,6 +6024,9 @@ fn receipt_executor_for_deal(deal: &deals::StoredDeal) -> ReceiptExecutor {
         WorkloadSpec::Wasm { submission } => ReceiptExecutor {
             runtime: "wasm".to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            execution_mode: None,
+            attestation_platform: None,
+            measurement: None,
             abi_version: Some(submission.workload.abi_version.clone()),
             module_hash: Some(submission.workload.module_hash.clone()),
             capabilities_granted: deal.quote.payload.capabilities_granted.clone(),
@@ -4763,13 +6034,43 @@ fn receipt_executor_for_deal(deal: &deals::StoredDeal) -> ReceiptExecutor {
         WorkloadSpec::OciWasm { submission } => ReceiptExecutor {
             runtime: "wasm".to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            execution_mode: None,
+            attestation_platform: None,
+            measurement: None,
             abi_version: Some(submission.workload.abi_version.clone()),
             module_hash: Some(submission.workload.oci_digest.clone()),
             capabilities_granted: deal.quote.payload.capabilities_granted.clone(),
         },
+        WorkloadSpec::ConfidentialService { .. } => ReceiptExecutor {
+            runtime: "confidential.service".to_string(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            execution_mode: Some(crate::confidential::EXECUTION_MODE_TEE.to_string()),
+            attestation_platform: Some(
+                crate::confidential::ATTESTATION_PLATFORM_NVIDIA.to_string(),
+            ),
+            measurement: None,
+            abi_version: None,
+            module_hash: None,
+            capabilities_granted: Vec::new(),
+        },
+        WorkloadSpec::AttestedWasm { .. } => ReceiptExecutor {
+            runtime: "confidential.wasm".to_string(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            execution_mode: Some(crate::confidential::EXECUTION_MODE_TEE.to_string()),
+            attestation_platform: Some(
+                crate::confidential::ATTESTATION_PLATFORM_NVIDIA.to_string(),
+            ),
+            measurement: None,
+            abi_version: None,
+            module_hash: None,
+            capabilities_granted: Vec::new(),
+        },
         WorkloadSpec::EventsQuery { .. } => ReceiptExecutor {
             runtime: "builtin.events_query".to_string(),
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            execution_mode: None,
+            attestation_platform: None,
+            measurement: None,
             abi_version: None,
             module_hash: None,
             capabilities_granted: Vec::new(),
@@ -4793,6 +6094,20 @@ fn receipt_limits_for_spec(
             fuel_limit: sandbox::WASM_FUEL_LIMIT,
         },
         WorkloadSpec::OciWasm { .. } => ReceiptLimitsApplied {
+            max_input_bytes: MAX_WASM_INPUT_BYTES,
+            max_runtime_ms,
+            max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
+            max_output_bytes: sandbox::WASM_MAX_OUTPUT_BYTES,
+            fuel_limit: sandbox::WASM_FUEL_LIMIT,
+        },
+        WorkloadSpec::ConfidentialService { .. } => ReceiptLimitsApplied {
+            max_input_bytes: MAX_BODY_BYTES,
+            max_runtime_ms,
+            max_memory_bytes: 0,
+            max_output_bytes: MAX_BODY_BYTES,
+            fuel_limit: 0,
+        },
+        WorkloadSpec::AttestedWasm { .. } => ReceiptLimitsApplied {
             max_input_bytes: MAX_WASM_INPUT_BYTES,
             max_runtime_ms,
             max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
@@ -4943,6 +6258,8 @@ fn build_recovered_deal_failure(
             execution_state: recovery_execution_state(&deal),
             bundle: bundle.as_ref(),
             result_hash: None,
+            result_format: None,
+            result_envelope_hash: None,
             failure: Some(failure.clone()),
         },
     )?;
@@ -5604,20 +6921,218 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
     }
 }
 
+#[derive(Debug, Clone)]
+struct WorkloadRunOutput {
+    persisted_result: Value,
+    result_hash: String,
+    result_format: String,
+    result_envelope_hash: Option<String>,
+    result_evidence_kind: String,
+    extra_evidence: Vec<(String, Value)>,
+}
+
+fn run_output_for_plain_result(result: Value) -> WorkloadRunOutput {
+    WorkloadRunOutput {
+        result_hash: canonical_result_hash(&result),
+        persisted_result: result,
+        result_format: wasm::JCS_JSON_FORMAT.to_string(),
+        result_envelope_hash: None,
+        result_evidence_kind: "execution_result".to_string(),
+        extra_evidence: Vec::new(),
+    }
+}
+
+fn confidential_execution_timeout(
+    state: &AppState,
+    profile: &ConfidentialProfilePayload,
+) -> Duration {
+    Duration::from_millis(
+        profile
+            .max_runtime_ms
+            .min(duration_millis_u64(execution_timeout(state))),
+    )
+}
+
+fn ensure_safe_attested_wasm_submission(
+    submission: &crate::wasm::VerifiedWasmSubmission,
+) -> Result<(), String> {
+    if !submission.requested_capabilities.is_empty() {
+        return Err(
+            "attested confidential wasm currently requires empty requested_capabilities"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn run_confidential_service_workload(
+    state: &AppState,
+    confidential_session_hash: &str,
+    service_id: &str,
+    request_envelope: &EncryptedEnvelope,
+) -> Result<WorkloadRunOutput, String> {
+    let loaded = load_confidential_session_by_hash(state, confidential_session_hash)
+        .await?
+        .ok_or_else(|| "confidential session not found".to_string())?;
+    confidential::verify_attestation_bundle(
+        &loaded.profile.payload,
+        &loaded.session,
+        &loaded.attestation,
+        settlement::current_unix_timestamp(),
+    )?;
+    if loaded.profile.payload.service_id.as_deref() != Some(service_id) {
+        return Err("confidential service_id does not match the session profile".to_string());
+    }
+
+    let key_release_provider = MockExternalKeyReleaseProvider;
+    let key_release = key_release_provider.release_key(
+        confidential_session_hash,
+        &loaded.session.payload,
+        &loaded.attestation,
+        settlement::current_unix_timestamp(),
+    )?;
+    let input: Value = confidential::decrypt_request_envelope(
+        confidential_session_hash,
+        &loaded.private_material.session_private_key,
+        &loaded.session.payload.requester_public_key,
+        request_envelope,
+    )?;
+    let input_size = canonical_json::to_vec(&input)
+        .map_err(|error| error.to_string())?
+        .len();
+    if input_size > loaded.profile.payload.max_input_bytes {
+        return Err("confidential request exceeds profile max_input_bytes".to_string());
+    }
+    let executor = PolicyConfidentialExecutor {
+        policy: state
+            .confidential_policy
+            .as_ref()
+            .ok_or_else(|| "confidential policy is not enabled".to_string())?
+            .as_ref()
+            .clone(),
+    };
+    let timeout = confidential_execution_timeout(state, &loaded.profile.payload);
+    let service_id = service_id.to_string();
+    let context = ConfidentialExecutionContext {
+        confidential_session_hash,
+        now: settlement::current_unix_timestamp(),
+    };
+    let result = tokio::time::timeout(timeout, async move {
+        executor.execute_service(&service_id, input, &context)
+    })
+    .await
+    .map_err(|_| "confidential service execution timed out".to_string())??;
+    let result_size = canonical_json::to_vec(&result)
+        .map_err(|error| error.to_string())?
+        .len();
+    if result_size > loaded.profile.payload.max_output_bytes {
+        return Err("confidential result exceeds profile max_output_bytes".to_string());
+    }
+    let result_hash = canonical_result_hash(&result);
+    let result_envelope = confidential::encrypt_result_envelope(
+        confidential_session_hash,
+        &loaded.private_material.session_private_key,
+        &loaded.session.payload.requester_public_key,
+        &result,
+        wasm::JCS_JSON_FORMAT,
+    )?;
+    let result_envelope_hash = result_envelope.envelope_hash()?;
+    Ok(WorkloadRunOutput {
+        persisted_result: json!(result_envelope),
+        result_hash,
+        result_format: wasm::JCS_JSON_FORMAT.to_string(),
+        result_envelope_hash: Some(result_envelope_hash),
+        result_evidence_kind: "execution_result_envelope".to_string(),
+        extra_evidence: vec![
+            ("attestation_bundle".to_string(), json!(loaded.attestation)),
+            ("key_release_evidence".to_string(), json!(key_release)),
+        ],
+    })
+}
+
+async fn run_attested_wasm_workload(
+    state: &AppState,
+    confidential_session_hash: &str,
+    request_envelope: &EncryptedEnvelope,
+    permit: sandbox::ExecutionPermit,
+) -> Result<WorkloadRunOutput, String> {
+    let loaded = load_confidential_session_by_hash(state, confidential_session_hash)
+        .await?
+        .ok_or_else(|| "confidential session not found".to_string())?;
+    confidential::verify_attestation_bundle(
+        &loaded.profile.payload,
+        &loaded.session,
+        &loaded.attestation,
+        settlement::current_unix_timestamp(),
+    )?;
+    let key_release_provider = MockExternalKeyReleaseProvider;
+    let key_release = key_release_provider.release_key(
+        confidential_session_hash,
+        &loaded.session.payload,
+        &loaded.attestation,
+        settlement::current_unix_timestamp(),
+    )?;
+    let submission: crate::wasm::WasmSubmission = confidential::decrypt_request_envelope(
+        confidential_session_hash,
+        &loaded.private_material.session_private_key,
+        &loaded.session.payload.requester_public_key,
+        request_envelope,
+    )?;
+    submission.validate_limits(MAX_WASM_HEX_BYTES, MAX_WASM_INPUT_BYTES)?;
+    let verified = submission.verify()?;
+    ensure_safe_attested_wasm_submission(&verified)?;
+    let timeout = confidential_execution_timeout(state, &loaded.profile.payload);
+    let wasm_sandbox = state.wasm_sandbox.clone();
+    let result = run_wasm_with_timeout(timeout, move || {
+        wasm_sandbox.execute_module_with_options_and_permit(
+            &verified.module_bytes,
+            &verified.input,
+            sandbox::WasmExecutionOptions {
+                abi_version: verified.abi_version.clone(),
+                capabilities_granted: Vec::new(),
+                host_environment: None,
+            },
+            permit,
+            timeout,
+        )
+    })
+    .await?;
+    let result_hash = canonical_result_hash(&result);
+    let result_envelope = confidential::encrypt_result_envelope(
+        confidential_session_hash,
+        &loaded.private_material.session_private_key,
+        &loaded.session.payload.requester_public_key,
+        &result,
+        wasm::JCS_JSON_FORMAT,
+    )?;
+    let result_envelope_hash = result_envelope.envelope_hash()?;
+    Ok(WorkloadRunOutput {
+        persisted_result: json!(result_envelope),
+        result_hash,
+        result_format: wasm::JCS_JSON_FORMAT.to_string(),
+        result_envelope_hash: Some(result_envelope_hash),
+        result_evidence_kind: "execution_result_envelope".to_string(),
+        extra_evidence: vec![
+            ("attestation_bundle".to_string(), json!(loaded.attestation)),
+            ("key_release_evidence".to_string(), json!(key_release)),
+        ],
+    })
+}
+
 async fn run_workload_spec_with_admission(
     state: &AppState,
     spec: WorkloadSpec,
     capabilities_granted: Vec<String>,
     payment_method: Option<&str>,
     permit: Option<sandbox::ExecutionPermit>,
-) -> Result<Value, String> {
+) -> Result<WorkloadRunOutput, String> {
     let timeout = workload_execution_timeout(state, &spec, payment_method);
     match (spec, permit) {
         (WorkloadSpec::Wasm { submission }, Some(permit)) => {
             let verified = submission.verify()?;
             let (_, host_environment) = local_wasm_capabilities_for_submission(state, &verified)?;
             let wasm_sandbox = state.wasm_sandbox.clone();
-            run_wasm_with_timeout(timeout, move || {
+            let result = run_wasm_with_timeout(timeout, move || {
                 wasm_sandbox.execute_module_with_options_and_permit(
                     &verified.module_bytes,
                     &verified.input,
@@ -5630,19 +7145,21 @@ async fn run_workload_spec_with_admission(
                     timeout,
                 )
             })
-            .await
+            .await?;
+            Ok(run_output_for_plain_result(result))
         }
         (WorkloadSpec::Wasm { .. }, None) => {
             Err("Wasm workloads require an execution permit".to_string())
         }
         (WorkloadSpec::OciWasm { submission }, None) => {
-            run_job_spec_now(
+            let result = run_job_spec_now(
                 state,
                 JobSpec::OciWasm {
                     submission: *submission,
                 },
             )
-            .await
+            .await?;
+            Ok(run_output_for_plain_result(result))
         }
         (WorkloadSpec::OciWasm { submission }, Some(permit)) => {
             submission.verify()?;
@@ -5665,7 +7182,7 @@ async fn run_workload_spec_with_admission(
             let abi_version = submission.workload.abi_version.clone();
             let input = submission.input.clone();
 
-            run_wasm_with_timeout(timeout, move || {
+            let result = run_wasm_with_timeout(timeout, move || {
                 wasm_sandbox.execute_module_with_options_and_permit(
                     &module_bytes,
                     &input,
@@ -5678,14 +7195,52 @@ async fn run_workload_spec_with_admission(
                     timeout,
                 )
             })
+            .await?;
+            Ok(run_output_for_plain_result(result))
+        }
+        (WorkloadSpec::ConfidentialService { .. }, Some(_)) => {
+            Err("confidential service workloads do not use execution permits".to_string())
+        }
+        (
+            WorkloadSpec::ConfidentialService {
+                confidential_session_hash,
+                service_id,
+                request_envelope,
+            },
+            None,
+        ) => {
+            run_confidential_service_workload(
+                state,
+                &confidential_session_hash,
+                &service_id,
+                request_envelope.as_ref(),
+            )
+            .await
+        }
+        (WorkloadSpec::AttestedWasm { .. }, None) => {
+            Err("attested confidential wasm workloads require an execution permit".to_string())
+        }
+        (
+            WorkloadSpec::AttestedWasm {
+                confidential_session_hash,
+                request_envelope,
+            },
+            Some(permit),
+        ) => {
+            run_attested_wasm_workload(
+                state,
+                &confidential_session_hash,
+                request_envelope.as_ref(),
+                permit,
+            )
             .await
         }
         (WorkloadSpec::EventsQuery { kinds, limit }, None) => {
             let events = query_events_with_capacity(state, kinds, limit).await?;
-            Ok(json!({
+            Ok(run_output_for_plain_result(json!({
                 "events": events,
                 "cursor": null
-            }))
+            })))
         }
         (WorkloadSpec::EventsQuery { .. }, Some(_)) => {
             Err("events workloads do not use execution permits".to_string())
@@ -5835,6 +7390,8 @@ struct ReceiptSignSpec<'a> {
     execution_state: &'a str,
     bundle: Option<&'a settlement::LightningInvoiceBundleSession>,
     result_hash: Option<String>,
+    result_format: Option<String>,
+    result_envelope_hash: Option<String>,
     failure: Option<ReceiptFailure>,
 }
 
@@ -5844,10 +7401,11 @@ fn sign_deal_receipt(
     finished_at: i64,
     spec: ReceiptSignSpec<'_>,
 ) -> Result<SignedArtifact<ReceiptPayload>, String> {
-    let result_format = spec
-        .result_hash
-        .as_ref()
-        .map(|_| wasm::JCS_JSON_FORMAT.to_string());
+    let result_format = spec.result_format.or_else(|| {
+        spec.result_hash
+            .as_ref()
+            .map(|_| wasm::JCS_JSON_FORMAT.to_string())
+    });
     let settlement_refs = settlement_refs_from_bundle(spec.bundle);
     let settlement_state = settlement_state_from_bundle(spec.bundle);
     let failure_code = spec.failure.as_ref().map(|details| details.code.clone());
@@ -5870,6 +7428,8 @@ fn sign_deal_receipt(
             execution_state: spec.execution_state.to_string(),
             settlement_state,
             result_hash: spec.result_hash,
+            confidential_session_hash: deal.spec.confidential_session_hash().map(str::to_string),
+            result_envelope_hash: spec.result_envelope_hash,
             result_format,
             executor: receipt_executor_for_deal(deal),
             limits_applied: receipt_limits_for_spec(
@@ -5916,6 +7476,8 @@ async fn reject_deal_before_execution(
             execution_state: "not_started",
             bundle: bundle.as_ref(),
             result_hash: None,
+            result_format: None,
+            result_envelope_hash: None,
             failure: Some(failure.clone()),
         },
     ) {
@@ -6056,6 +7618,26 @@ async fn process_deal_with_reserved_permit(
                 }
             }
         }
+        (WorkloadSpec::AttestedWasm { .. }, Some(permit)) => Some(permit),
+        (WorkloadSpec::AttestedWasm { .. }, None) => {
+            match state.wasm_sandbox.try_acquire_execution_permit() {
+                Ok(permit) => Some(permit),
+                Err(error_message) => {
+                    reject_deal_before_execution(
+                        &state,
+                        &deal,
+                        deals::DEAL_STATUS_ACCEPTED,
+                        error_message,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+        (WorkloadSpec::ConfidentialService { .. }, maybe_permit) => {
+            drop(maybe_permit);
+            None
+        }
         (WorkloadSpec::EventsQuery { .. }, maybe_permit) => {
             drop(maybe_permit);
             None
@@ -6107,11 +7689,12 @@ async fn process_deal_with_reserved_permit(
     )
     .await
     {
-        Ok(result) => {
+        Ok(output) => {
             let completed_at = settlement::current_unix_timestamp();
-            let result_for_db = result.clone();
+            let result_for_db = output.persisted_result.clone();
             if deal.payment_method.as_deref() == Some("lightning") {
                 let deal_for_stage = deal.clone();
+                let output_for_stage = output.clone();
                 let persisted = state
                     .db
                     .with_write_conn(move |conn| {
@@ -6122,14 +7705,26 @@ async fn process_deal_with_reserved_permit(
                                 conn,
                                 "deal",
                                 &deal_for_stage.deal_id,
-                                "execution_result",
+                                &output_for_stage.result_evidence_kind,
                                 &result_for_db,
                                 completed_at,
                             )?;
+                            for (evidence_kind, evidence_value) in &output_for_stage.extra_evidence
+                            {
+                                let _ = db::insert_execution_evidence(
+                                    conn,
+                                    "deal",
+                                    &deal_for_stage.deal_id,
+                                    evidence_kind,
+                                    evidence_value,
+                                    completed_at,
+                                )?;
+                            }
                             let staged = deals::stage_deal_result_ready(
                                 conn,
                                 &deal_for_stage.deal_id,
                                 &result_for_db,
+                                Some(&output_for_stage.result_hash),
                                 Some(&result_evidence_hash),
                                 completed_at,
                             )?;
@@ -6164,7 +7759,9 @@ async fn process_deal_with_reserved_permit(
                         deal_state: "succeeded",
                         execution_state: "succeeded",
                         bundle: None,
-                        result_hash: Some(canonical_result_hash(&result)),
+                        result_hash: Some(output.result_hash.clone()),
+                        result_format: Some(output.result_format.clone()),
+                        result_envelope_hash: output.result_envelope_hash.clone(),
                         failure: None,
                     },
                 ) {
@@ -6185,6 +7782,7 @@ async fn process_deal_with_reserved_permit(
 
                 let deal_for_commit = deal.clone();
                 let receipt_for_db = receipt.clone();
+                let output_for_commit = output.clone();
                 let persisted = state
                     .db
                     .with_write_conn(move |conn| {
@@ -6195,10 +7793,21 @@ async fn process_deal_with_reserved_permit(
                                 conn,
                                 "deal",
                                 &deal_for_commit.deal_id,
-                                "execution_result",
+                                &output_for_commit.result_evidence_kind,
                                 &result_for_db,
                                 completed_at,
                             )?;
+                            for (evidence_kind, evidence_value) in &output_for_commit.extra_evidence
+                            {
+                                let _ = db::insert_execution_evidence(
+                                    conn,
+                                    "deal",
+                                    &deal_for_commit.deal_id,
+                                    evidence_kind,
+                                    evidence_value,
+                                    completed_at,
+                                )?;
+                            }
                             db::insert_artifact_document(
                                 conn,
                                 &receipt_for_db.hash,
@@ -6219,12 +7828,15 @@ async fn process_deal_with_reserved_permit(
 
                             deals::complete_deal_success(
                                 conn,
-                                &deal_for_commit.deal_id,
-                                &result_for_db,
-                                &receipt_for_db,
-                                Some(&result_evidence_hash),
-                                Some(&receipt_for_db.hash),
-                                completed_at,
+                                deals::DealSuccessPersistence {
+                                    deal_id: &deal_for_commit.deal_id,
+                                    result: &result_for_db,
+                                    explicit_result_hash: Some(&output_for_commit.result_hash),
+                                    receipt: &receipt_for_db,
+                                    result_evidence_hash: Some(&result_evidence_hash),
+                                    receipt_artifact_hash: Some(&receipt_for_db.hash),
+                                    now: completed_at,
+                                },
                             )?;
                             Ok(())
                         })();
@@ -6275,6 +7887,8 @@ async fn process_deal_with_reserved_permit(
                     execution_state: "failed",
                     bundle: bundle.as_ref(),
                     result_hash: None,
+                    result_format: None,
+                    result_envelope_hash: None,
                     failure: Some(failure.clone()),
                 },
             ) {
@@ -6369,7 +7983,7 @@ mod tests {
         identity::NodeIdentity,
         pricing::PricingTable,
         sandbox::WasmSandbox,
-        state::{MarketplaceStatus, TransportStatus},
+        state::{ReferenceDiscoveryStatus, TransportStatus},
         wasm::{ComputeWasmWorkload, FROGLET_SCHEMA_V1, WASM_SUBMISSION_TYPE_V1},
     };
     use axum::{body::Body, http::Request};
@@ -6405,6 +8019,7 @@ mod tests {
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:0".to_string(),
             runtime_allow_non_loopback: false,
+            http_ca_cert_path: None,
             tor: crate::config::TorSidecarConfig {
                 binary_path: "tor".to_string(),
                 backend_listen_addr: "127.0.0.1:0".to_string(),
@@ -6414,7 +8029,7 @@ mod tests {
             identity: IdentityConfig {
                 auto_generate: true,
             },
-            marketplace: None,
+            reference_discovery: None,
             pricing: PricingConfig {
                 events_query: 10,
                 execute_wasm: 30,
@@ -6445,6 +8060,11 @@ mod tests {
                 policy_path: None,
                 policy: None,
             },
+            confidential: crate::confidential::ConfidentialConfig {
+                policy_path: None,
+                policy: None,
+                session_ttl_secs: 300,
+            },
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
@@ -6456,15 +8076,16 @@ mod tests {
             transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
                 &node_config,
             ))),
-            marketplace_status: Arc::new(tokio::sync::Mutex::new(MarketplaceStatus::from_config(
-                &node_config,
-            ))),
+            reference_discovery_status: Arc::new(tokio::sync::Mutex::new(
+                ReferenceDiscoveryStatus::from_config(&node_config),
+            )),
             wasm_sandbox: Arc::new(WasmSandbox::new(4).expect("sandbox")),
             config: node_config.clone(),
             identity: Arc::new(identity),
             pricing: PricingTable::from_config(node_config.pricing),
             http_client: reqwest::Client::new(),
             wasm_host: None,
+            confidential_policy: None,
             runtime_auth_token: "test-runtime-token".to_string(),
             runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
@@ -6552,6 +8173,7 @@ mod tests {
                 expires_at,
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: "cc".repeat(32),
+                confidential_session_hash: None,
                 capabilities_granted: Vec::new(),
                 extension_refs: Vec::new(),
                 quote_use: None,
@@ -6628,6 +8250,36 @@ mod tests {
     }
 
     #[test]
+    fn lightning_runtime_deal_builder_clamps_to_quote_budget_after_delay() {
+        let quote_created_at = 1_700_000_000;
+        let deal_created_at = quote_created_at + 20;
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let quote = signed_quote(
+            requester_id,
+            quote_created_at,
+            quote_created_at + 150,
+            30_000,
+            30,
+            60,
+        );
+
+        let deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_key,
+            &"22".repeat(32),
+            deal_created_at,
+            true,
+        )
+        .expect("deal");
+
+        assert_eq!(deal.payload.admission_deadline, quote_created_at + 60);
+        assert_eq!(deal.payload.completion_deadline, quote_created_at + 90);
+        assert_eq!(deal.payload.acceptance_deadline, quote.payload.expires_at);
+        validate_deal_deadlines(&quote, &deal, deal_created_at, true).expect("deadlines valid");
+    }
+
+    #[test]
     fn validate_deal_deadlines_rejects_lightning_windows_that_outlive_the_quote() {
         let created_at = 1_700_000_000;
         let requester_key = crypto::generate_signing_key();
@@ -6650,6 +8302,7 @@ mod tests {
                 provider_id: quote.payload.provider_id.clone(),
                 quote_hash: quote.hash.clone(),
                 workload_hash: quote.payload.workload_hash.clone(),
+                confidential_session_hash: None,
                 extension_refs: Vec::new(),
                 authority_ref: None,
                 supersedes_deal_hash: None,
@@ -6668,15 +8321,17 @@ mod tests {
     }
 
     #[test]
-    fn runtime_buy_route_timeout_exceeds_the_max_wait_budget() {
-        assert_eq!(
-            runtime_buy_wait_timeout_secs(None),
-            DEFAULT_RUNTIME_WAIT_TIMEOUT_SECS
-        );
-        assert_eq!(
-            runtime_buy_wait_timeout_secs(Some(MAX_RUNTIME_WAIT_TIMEOUT_SECS + 10)),
-            MAX_RUNTIME_WAIT_TIMEOUT_SECS
-        );
+    fn attested_confidential_wasm_rejects_requested_capabilities() {
+        let mut submission = test_wasm_submission();
+        submission.workload.abi_version = crate::wasm::WASM_HOST_JSON_ABI_V1.to_string();
+        submission.workload.requested_capabilities = vec!["db.sqlite.query.read.demo".to_string()];
+
+        let verified = submission
+            .verify()
+            .expect("host abi submission with a generic capability should verify");
+        let error =
+            ensure_safe_attested_wasm_submission(&verified).expect_err("expected rejection");
+        assert!(error.contains("requested_capabilities"));
     }
 
     #[test]
@@ -7072,6 +8727,7 @@ mod tests {
                         &deal_id_for_seed,
                         &json!({ "ok": true }),
                         None,
+                        None,
                         now - 4,
                     )? {
                         return Err("failed to stage test deal as result_ready".to_string());
@@ -7163,6 +8819,7 @@ mod tests {
                         conn,
                         &deal_id_for_seed,
                         &json!({ "ok": true }),
+                        None,
                         None,
                         now - 4,
                     )? {

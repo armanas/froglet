@@ -1,9 +1,12 @@
 {
-  "name": "froglet-openclaw-plugin",
+  "name": "froglet",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Public OpenClaw plugin for Froglet discovery, provider reads, and optional local runtime helpers.",
+  "description": "Runtime-only OpenClaw plugin for Froglet requester workflows.",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "check": "node --check index.js",
     "test": "node --test test/plugin.test.js"

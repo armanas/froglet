@@ -1,10 +1,10 @@
 use crate::{
-    jobs::FaaSDescriptor,
-    marketplace::{
+    discovery::{
         HeartbeatRequest, NodeDescriptor, ReclaimChallengeRequest, ReclaimCompleteRequest,
         RegisterRequest, TransportDescriptor, descriptor_digest_hex, heartbeat_signing_payload,
         reclaim_signing_payload, register_signing_payload,
     },
+    jobs::FaaSDescriptor,
     settlement::current_unix_timestamp,
     state::AppState,
 };
@@ -24,9 +24,9 @@ pub async fn perform_initial_sync(state: Arc<AppState>) -> Result<String, String
 pub async fn run_sync_loop(state: Arc<AppState>, mut last_descriptor_hash: String) {
     let Some(heartbeat_interval) = state
         .config
-        .marketplace
+        .reference_discovery
         .as_ref()
-        .map(|marketplace| marketplace.heartbeat_interval_secs)
+        .map(|discovery| discovery.heartbeat_interval_secs)
     else {
         return;
     };
@@ -46,8 +46,8 @@ pub async fn run_sync_loop(state: Arc<AppState>, mut last_descriptor_hash: Strin
         let descriptor = match build_descriptor(state.as_ref()).await {
             Ok(descriptor) => descriptor,
             Err(e) => {
-                record_marketplace_error(state.as_ref(), &e).await;
-                warn!("Failed to build marketplace descriptor: {e}");
+                record_discovery_error(state.as_ref(), &e).await;
+                warn!("Failed to build discovery descriptor: {e}");
                 continue;
             }
         };
@@ -56,7 +56,7 @@ pub async fn run_sync_loop(state: Arc<AppState>, mut last_descriptor_hash: Strin
             Ok(hash) => hash,
             Err(e) => {
                 let message = e.to_string();
-                record_marketplace_error(state.as_ref(), &message).await;
+                record_discovery_error(state.as_ref(), &message).await;
                 continue;
             }
         };
@@ -70,8 +70,8 @@ pub async fn run_sync_loop(state: Arc<AppState>, mut last_descriptor_hash: Strin
         };
 
         if let Err(e) = result {
-            warn!("Marketplace sync failed: {e}");
-            record_marketplace_error(state.as_ref(), &e).await;
+            warn!("Reference discovery sync failed: {e}");
+            record_discovery_error(state.as_ref(), &e).await;
             consecutive_failures = consecutive_failures.saturating_add(1);
         } else {
             consecutive_failures = 0;
@@ -107,17 +107,17 @@ pub async fn heartbeat_node(state: &AppState) -> Result<(), String> {
 }
 
 pub async fn reclaim_node(state: &AppState) -> Result<(), String> {
-    let marketplace = state
+    let discovery = state
         .config
-        .marketplace
+        .reference_discovery
         .as_ref()
-        .ok_or_else(|| "marketplace is not configured".to_string())?;
+        .ok_or_else(|| "reference discovery is not configured".to_string())?;
 
     let challenge = state
         .http_client
         .post(format!(
-            "{}/v1/marketplace/reclaim/challenge",
-            marketplace.url
+            "{}/v1/discovery/providers/reclaim/challenge",
+            discovery.url
         ))
         .json(&ReclaimChallengeRequest {
             node_id: state.identity.node_id().to_string(),
@@ -134,7 +134,7 @@ pub async fn reclaim_node(state: &AppState) -> Result<(), String> {
         ));
     }
 
-    let challenge: crate::marketplace::ReclaimChallengeResponse = challenge
+    let challenge: crate::discovery::ReclaimChallengeResponse = challenge
         .json()
         .await
         .map_err(|e| format!("invalid challenge response: {e}"))?;
@@ -150,8 +150,8 @@ pub async fn reclaim_node(state: &AppState) -> Result<(), String> {
     let response = state
         .http_client
         .post(format!(
-            "{}/v1/marketplace/reclaim/complete",
-            marketplace.url
+            "{}/v1/discovery/providers/reclaim/complete",
+            discovery.url
         ))
         .json(&ReclaimCompleteRequest {
             node_id: state.identity.node_id().to_string(),
@@ -171,7 +171,7 @@ pub async fn reclaim_node(state: &AppState) -> Result<(), String> {
         ));
     }
 
-    info!("Marketplace reclaim completed successfully");
+    info!("Reference discovery reclaim completed successfully");
     Ok(())
 }
 
@@ -180,11 +180,11 @@ async fn register_node_inner(
     descriptor: NodeDescriptor,
     allow_reclaim: bool,
 ) -> Result<(), String> {
-    let marketplace = state
+    let discovery = state
         .config
-        .marketplace
+        .reference_discovery
         .as_ref()
-        .ok_or_else(|| "marketplace is not configured".to_string())?;
+        .ok_or_else(|| "reference discovery is not configured".to_string())?;
 
     let mut allow_reclaim = allow_reclaim;
     loop {
@@ -199,15 +199,15 @@ async fn register_node_inner(
 
         let response = state
             .http_client
-            .post(format!("{}/v1/marketplace/register", marketplace.url))
+            .post(format!("{}/v1/discovery/providers/register", discovery.url))
             .json(&payload)
             .send()
             .await
             .map_err(|e| format!("register request failed: {e}"))?;
 
         if response.status().is_success() {
-            mark_marketplace_success(state, true).await;
-            info!("Marketplace registration updated successfully");
+            mark_discovery_success(state, true).await;
+            info!("Reference discovery registration updated successfully");
             return Ok(());
         }
 
@@ -215,23 +215,23 @@ async fn register_node_inner(
         let body = response.text().await.unwrap_or_default();
         if allow_reclaim && reclaim_required(status, &body) {
             info!(
-                "Marketplace registration requires reclaim; attempting challenge-response recovery"
+                "Reference discovery registration requires reclaim; attempting challenge-response recovery"
             );
             reclaim_node(state).await?;
             allow_reclaim = false;
             continue;
         }
 
-        return Err(format!("marketplace register failed: {status} {body}"));
+        return Err(format!("discovery register failed: {status} {body}"));
     }
 }
 
 async fn heartbeat_node_inner(state: &AppState, allow_reclaim: bool) -> Result<(), String> {
-    let marketplace = state
+    let discovery = state
         .config
-        .marketplace
+        .reference_discovery
         .as_ref()
-        .ok_or_else(|| "marketplace is not configured".to_string())?;
+        .ok_or_else(|| "reference discovery is not configured".to_string())?;
     let mut allow_reclaim = allow_reclaim;
     loop {
         let timestamp = current_unix_timestamp();
@@ -244,14 +244,17 @@ async fn heartbeat_node_inner(state: &AppState, allow_reclaim: bool) -> Result<(
 
         let response = state
             .http_client
-            .post(format!("{}/v1/marketplace/heartbeat", marketplace.url))
+            .post(format!(
+                "{}/v1/discovery/providers/heartbeat",
+                discovery.url
+            ))
             .json(&payload)
             .send()
             .await
             .map_err(|e| format!("heartbeat request failed: {e}"))?;
 
         if response.status().is_success() {
-            mark_marketplace_success(state, false).await;
+            mark_discovery_success(state, false).await;
             return Ok(());
         }
 
@@ -264,13 +267,15 @@ async fn heartbeat_node_inner(state: &AppState, allow_reclaim: bool) -> Result<(
         }
 
         if allow_reclaim && reclaim_required(status, &body) {
-            info!("Marketplace heartbeat requires reclaim; attempting challenge-response recovery");
+            info!(
+                "Reference discovery heartbeat requires reclaim; attempting challenge-response recovery"
+            );
             reclaim_node(state).await?;
             allow_reclaim = false;
             continue;
         }
 
-        return Err(format!("marketplace heartbeat failed: {status} {body}"));
+        return Err(format!("discovery heartbeat failed: {status} {body}"));
     }
 }
 
@@ -278,19 +283,20 @@ fn reclaim_required(status: StatusCode, body: &str) -> bool {
     status == StatusCode::CONFLICT && body.contains(RECLAIM_REQUIRED_CODE)
 }
 
-async fn mark_marketplace_success(state: &AppState, registration: bool) {
+async fn mark_discovery_success(state: &AppState, registration: bool) {
     let now = current_unix_timestamp();
-    let mut status = state.marketplace_status.lock().await;
+    let mut status = state.reference_discovery_status.lock().await;
     status.connected = true;
     status.last_error = None;
     if registration {
         status.last_register_at = Some(now);
+    } else {
+        status.last_heartbeat_at = Some(now);
     }
-    status.last_heartbeat_at = Some(now);
 }
 
-async fn record_marketplace_error(state: &AppState, error_message: &str) {
-    let mut status = state.marketplace_status.lock().await;
+async fn record_discovery_error(state: &AppState, error_message: &str) {
+    let mut status = state.reference_discovery_status.lock().await;
     status.connected = false;
     status.last_error = Some(error_message.to_string());
     error!("{error_message}");

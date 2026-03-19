@@ -1,14 +1,15 @@
-use froglet::{
+use crate::{
     api,
-    config::NodeConfig,
+    config::{NodeConfig, PaymentBackend},
     db::DbPool,
+    discovery_client,
     identity::NodeIdentity,
     lnd::LndRestClient,
-    marketplace_client,
     pricing::PricingTable,
     runtime_auth, sandbox,
-    state::{AppState, MarketplaceStatus, TransportStatus},
+    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
     tls, tor,
+    wasm_host::WasmHostEnvironment,
 };
 use futures::FutureExt;
 use hyper::server::conn::http1;
@@ -66,8 +67,21 @@ struct HttpServeConfig {
     idle_timeout: Duration,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ServiceRole {
+    Provider,
+    Runtime,
+}
+
+pub async fn run_provider() -> Result<(), Box<dyn std::error::Error>> {
+    run(ServiceRole::Provider).await
+}
+
+pub async fn run_runtime() -> Result<(), Box<dyn std::error::Error>> {
+    run(ServiceRole::Runtime).await
+}
+
+async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     tls::ensure_rustls_crypto_provider();
 
@@ -85,7 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-
     let wasm_sandbox =
         Arc::new(sandbox::WasmSandbox::from_env().expect("Failed to initialize Wasmtime sandbox"));
     wasm_sandbox.warm_up();
@@ -120,15 +133,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     set_mode(&node_config.storage.db_path, 0o600)?;
     let events_query_capacity = db_pool.read_connection_count().max(1);
 
-    let http_client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let http_client = tls::build_reqwest_client(node_config.http_ca_cert_path.as_deref())
+        .map_err(|error| format!("Failed to initialize shared HTTP client: {error}"))?;
     let wasm_host = node_config
         .wasm
         .policy
         .clone()
-        .map(froglet::wasm_host::WasmHostEnvironment::from_policy)
+        .map(WasmHostEnvironment::from_policy)
         .transpose()
         .map(|environment| environment.map(Arc::new))?;
     let lnd_rest_client = node_config
@@ -143,15 +154,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         db: db_pool,
         transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&node_config))),
-        marketplace_status: Arc::new(TokioMutex::new(MarketplaceStatus::from_config(
-            &node_config,
-        ))),
+        reference_discovery_status: Arc::new(TokioMutex::new(
+            ReferenceDiscoveryStatus::from_config(&node_config),
+        )),
         wasm_sandbox,
         pricing: PricingTable::from_config(node_config.pricing),
         identity,
         config: node_config.clone(),
         http_client,
         wasm_host,
+        confidential_policy: node_config.confidential.policy.clone().map(Arc::new),
         runtime_auth_token: runtime_auth.token,
         runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
         events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
@@ -178,7 +190,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let public_app = api::public_router(state.clone());
     let runtime_app = api::runtime_router(state.clone());
-    let tor_backend_addr = if node_config.network_mode.should_start_tor() {
+    let tor_backend_addr = if service_role == ServiceRole::Provider
+        && node_config.network_mode.should_start_tor()
+    {
         let tor_backend_addr: SocketAddr = node_config
             .tor
             .backend_listen_addr
@@ -230,54 +244,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let runtime_addr: SocketAddr = node_config
-        .runtime_listen_addr
-        .parse()
-        .expect("Invalid runtime listen address format");
-    if !runtime_addr.ip().is_loopback() && !node_config.runtime_allow_non_loopback {
-        error!(
-            "FROGLET_RUNTIME_LISTEN_ADDR must bind to a loopback address, got {}",
-            node_config.runtime_listen_addr
-        );
-        std::process::exit(1);
-    }
-    if !runtime_addr.ip().is_loopback() {
-        warn!(
-            "Runtime API is binding a non-loopback address ({}) because FROGLET_RUNTIME_ALLOW_NON_LOOPBACK=true; restrict network access to trusted local callers",
-            node_config.runtime_listen_addr
+    if service_role == ServiceRole::Runtime {
+        let runtime_addr: SocketAddr = node_config
+            .runtime_listen_addr
+            .parse()
+            .expect("Invalid runtime listen address format");
+        if !runtime_addr.ip().is_loopback() && !node_config.runtime_allow_non_loopback {
+            error!(
+                "FROGLET_RUNTIME_LISTEN_ADDR must bind to a loopback address, got {}",
+                node_config.runtime_listen_addr
+            );
+            std::process::exit(1);
+        }
+        if !runtime_addr.ip().is_loopback() {
+            warn!(
+                "Runtime API is binding a non-loopback address ({}) because FROGLET_RUNTIME_ALLOW_NON_LOOPBACK=true; restrict network access to trusted local callers",
+                node_config.runtime_listen_addr
+            );
+        }
+
+        let runtime_listener = tokio::net::TcpListener::bind(runtime_addr).await?;
+        let bound_runtime_addr = runtime_listener.local_addr()?;
+        let initial_runtime_listener = Arc::new(TokioMutex::new(Some(runtime_listener)));
+        if runtime_addr.ip().is_loopback() {
+            println!(" 🔒 Local Runtime API: http://{}", bound_runtime_addr);
+        } else {
+            println!(" 🔒 Runtime API: http://{}", bound_runtime_addr);
+        }
+        spawn_supervised_task(
+            "runtime-api-listener",
+            restart_policy,
+            Arc::new(move || {
+                let initial_runtime_listener = initial_runtime_listener.clone();
+                let runtime_app = runtime_app.clone();
+                let serve_config = http_serve_config;
+                Box::pin(async move {
+                    let listener = take_or_bind_listener(
+                        initial_runtime_listener,
+                        bound_runtime_addr,
+                        "runtime API",
+                    )
+                    .await?;
+                    serve_http_listener(listener, runtime_app, serve_config)
+                        .await
+                        .map_err(|error| format!("error serving runtime API over TCP: {error}"))
+                })
+            }),
         );
     }
 
-    let runtime_listener = tokio::net::TcpListener::bind(runtime_addr).await?;
-    let bound_runtime_addr = runtime_listener.local_addr()?;
-    let initial_runtime_listener = Arc::new(TokioMutex::new(Some(runtime_listener)));
-    if runtime_addr.ip().is_loopback() {
-        println!(" 🔒 Local Runtime API: http://{}", bound_runtime_addr);
-    } else {
-        println!(" 🔒 Runtime API: http://{}", bound_runtime_addr);
-    }
-    spawn_supervised_task(
-        "runtime-api-listener",
-        restart_policy,
-        Arc::new(move || {
-            let initial_runtime_listener = initial_runtime_listener.clone();
-            let runtime_app = runtime_app.clone();
-            let serve_config = http_serve_config;
-            Box::pin(async move {
-                let listener = take_or_bind_listener(
-                    initial_runtime_listener,
-                    bound_runtime_addr,
-                    "runtime API",
-                )
-                .await?;
-                serve_http_listener(listener, runtime_app, serve_config)
-                    .await
-                    .map_err(|error| format!("error serving runtime API over TCP: {error}"))
-            })
-        }),
-    );
-
-    if node_config.network_mode.should_start_clearnet() {
+    if service_role == ServiceRole::Provider && node_config.network_mode.should_start_clearnet() {
         let addr: SocketAddr = node_config
             .listen_addr
             .parse()
@@ -318,15 +334,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             }),
         );
-    } else {
+    } else if service_role == ServiceRole::Provider {
         info!("Running in Tor-only mode. No clearnet server started.");
     }
 
-    api::recover_runtime_state_local(state.clone())
-        .await
-        .expect("Failed to recover local runtime state");
+    if service_role == ServiceRole::Provider {
+        api::recover_runtime_state_local(state.clone())
+            .await
+            .expect("Failed to recover local runtime state");
+    }
 
-    if node_config.payment_backend == froglet::config::PaymentBackend::Lightning {
+    if service_role == ServiceRole::Provider
+        && node_config.payment_backend == PaymentBackend::Lightning
+    {
         let recovery_state = state.clone();
         spawn_supervised_task(
             "lightning-remote-recovery",
@@ -356,7 +376,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    if let Some(tor_backend_addr) = tor_backend_addr {
+    if service_role == ServiceRole::Provider
+        && let Some(tor_backend_addr) = tor_backend_addr
+    {
         let tor_state = state.clone();
         let tor_required = node_config.network_mode.tor_required();
         let tor_binary = node_config.tor.binary_path.clone();
@@ -421,74 +443,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let marketplace_publish_enabled = node_config
-        .marketplace
+    let discovery_publish_enabled = node_config
+        .reference_discovery
         .as_ref()
-        .map(|marketplace| marketplace.publish)
+        .map(|discovery| discovery.publish)
         .unwrap_or(false);
-    let marketplace_required = node_config
-        .marketplace
+    let discovery_required = node_config
+        .reference_discovery
         .as_ref()
-        .map(|marketplace| marketplace.required)
+        .map(|discovery| discovery.required)
         .unwrap_or(false);
-    if marketplace_publish_enabled {
-        if marketplace_required {
-            let initial_marketplace_hash =
-                match marketplace_client::perform_initial_sync(state.clone()).await {
-                    Ok(hash) => hash,
-                    Err(e) => {
-                        warn!("Initial marketplace sync failed: {e}");
-                        {
-                            let mut status = state.marketplace_status.lock().await;
-                            status.last_error = Some(e.clone());
-                        }
-                        error!("Marketplace is required but initial registration failed. Exiting.");
-                        std::process::exit(1);
+    if service_role == ServiceRole::Provider && discovery_publish_enabled {
+        if discovery_required {
+            let initial_discovery_hash = match discovery_client::perform_initial_sync(state.clone())
+                .await
+            {
+                Ok(hash) => hash,
+                Err(e) => {
+                    warn!("Initial reference discovery sync failed: {e}");
+                    {
+                        let mut status = state.reference_discovery_status.lock().await;
+                        status.last_error = Some(e.clone());
                     }
-                };
+                    error!(
+                        "Reference discovery is required but initial registration failed. Exiting."
+                    );
+                    std::process::exit(1);
+                }
+            };
             let sync_state = state.clone();
-            let initial_marketplace_hash =
-                Arc::new(TokioMutex::new(Some(initial_marketplace_hash)));
+            let initial_discovery_hash = Arc::new(TokioMutex::new(Some(initial_discovery_hash)));
             spawn_supervised_task(
-                "marketplace-sync-loop",
+                "reference-discovery-sync-loop",
                 restart_policy,
                 Arc::new(move || {
                     let sync_state = sync_state.clone();
-                    let initial_marketplace_hash = initial_marketplace_hash.clone();
+                    let initial_discovery_hash = initial_discovery_hash.clone();
                     Box::pin(async move {
-                        let last_descriptor_hash = take_initial_hash_or_resync(
-                            sync_state.clone(),
-                            initial_marketplace_hash,
-                        )
-                        .await?;
-                        marketplace_client::run_sync_loop(sync_state, last_descriptor_hash).await;
-                        Err("marketplace sync loop exited unexpectedly".to_string())
+                        let last_descriptor_hash =
+                            take_initial_hash_or_resync(sync_state.clone(), initial_discovery_hash)
+                                .await?;
+                        discovery_client::run_sync_loop(sync_state, last_descriptor_hash).await;
+                        Err("reference discovery sync loop exited unexpectedly".to_string())
                     })
                 }),
             );
         } else {
             let sync_state = state.clone();
             spawn_supervised_task(
-                "marketplace-sync-loop",
+                "reference-discovery-sync-loop",
                 restart_policy,
                 Arc::new(move || {
                     let sync_state = sync_state.clone();
                     Box::pin(async move {
-                        let last_descriptor_hash = match marketplace_client::perform_initial_sync(
+                        let last_descriptor_hash = match discovery_client::perform_initial_sync(
                             sync_state.clone(),
                         )
                         .await
                         {
                             Ok(hash) => hash,
                             Err(error) => {
-                                warn!("Initial marketplace sync failed: {error}");
-                                let mut status = sync_state.marketplace_status.lock().await;
+                                warn!("Initial reference discovery sync failed: {error}");
+                                let mut status = sync_state.reference_discovery_status.lock().await;
                                 status.last_error = Some(error);
                                 String::new()
                             }
                         };
-                        marketplace_client::run_sync_loop(sync_state, last_descriptor_hash).await;
-                        Err("marketplace sync loop exited unexpectedly".to_string())
+                        discovery_client::run_sync_loop(sync_state, last_descriptor_hash).await;
+                        Err("reference discovery sync loop exited unexpectedly".to_string())
                     })
                 }),
             );
@@ -536,7 +558,7 @@ async fn log_startup_db_metrics(
     let db_path = db_path.to_path_buf();
     let metrics = state
         .db
-        .with_write_conn(move |conn| froglet::db::collect_wal_checkpoint_metrics(conn, &db_path))
+        .with_write_conn(move |conn| crate::db::collect_wal_checkpoint_metrics(conn, &db_path))
         .await?;
     info!(
         wal_size_bytes = metrics.wal_size_bytes,
@@ -552,7 +574,7 @@ async fn log_startup_db_metrics(
 async fn audit_duplicate_deal_hashes(state: Arc<AppState>) -> Result<(), String> {
     let duplicates = state
         .db
-        .with_read_conn(move |conn| froglet::db::list_duplicate_deal_artifact_hashes(conn, 10))
+        .with_read_conn(move |conn| crate::db::list_duplicate_deal_artifact_hashes(conn, 10))
         .await?;
     if duplicates.is_empty() {
         info!("No duplicate deal artifact hashes detected at startup");
@@ -668,7 +690,7 @@ async fn take_initial_hash_or_resync(
 
     match pending_hash {
         Some(hash) => Ok(hash),
-        None => marketplace_client::perform_initial_sync(state).await,
+        None => discovery_client::perform_initial_sync(state).await,
     }
 }
 

@@ -58,7 +58,7 @@ pub struct ReclaimCompleteRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MarketplaceNodeRecord {
+pub struct DiscoveryNodeRecord {
     pub descriptor: NodeDescriptor,
     pub status: String,
     pub registered_at: i64,
@@ -67,8 +67,8 @@ pub struct MarketplaceNodeRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MarketplaceSearchResponse {
-    pub nodes: Vec<MarketplaceNodeRecord>,
+pub struct DiscoverySearchResponse {
+    pub nodes: Vec<DiscoveryNodeRecord>,
 }
 
 pub fn register_signing_payload(

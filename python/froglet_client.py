@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -26,6 +27,14 @@ DEFAULT_HTTP_TIMEOUT = aiohttp.ClientTimeout(
 )
 _MAX_ERROR_BODY_CHARS = 2048
 _WAIT_BACKOFF_CAP_SECS = 2.0
+_FROGLET_SCHEMA_V1 = "froglet/v1"
+_CONFIDENTIAL_PROFILE_ARTIFACT = "confidential_profile"
+_CONFIDENTIAL_SESSION_ARTIFACT = "confidential_session"
+_CONFIDENTIAL_SERVICE_KIND = "confidential.service.v1"
+_CONFIDENTIAL_ATTESTED_WASM_KIND = "compute.wasm.attested.v1"
+_CONFIDENTIAL_ENVELOPE_TYPE = "encrypted_envelope"
+_CONFIDENTIAL_ENCRYPTION_ALGORITHM = "secp256k1_ecdh_aes_256_gcm_v1"
+_CONFIDENTIAL_EXECUTION_MODE = "tee"
 
 _SECP256K1_ORDER = int(
     "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
@@ -39,6 +48,17 @@ def _require_ecdsa() -> tuple[Any, Any]:
             "froglet_client requester helpers require the 'ecdsa' package"
         ) from exc
     return curves, ellipticcurve
+
+
+def _require_confidential_crypto() -> tuple[Any, Any]:
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:  # pragma: no cover - import guard
+        raise RuntimeError(
+            "confidential Froglet helpers require the 'cryptography' package"
+        ) from exc
+    return ec, AESGCM
 
 
 def _int_from_bytes(value: bytes) -> int:
@@ -70,6 +90,10 @@ def _canonical_json_bytes(value: object) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+def _canonical_json_hash(value: object) -> str:
+    return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
 
 
 def _seed_bytes(seed: bytes | str) -> bytes:
@@ -106,6 +130,19 @@ def _preimage_bytes(preimage: bytes | str) -> bytes:
     return preimage_bytes
 
 
+def _validate_public_key_hex(public_key_hex: str) -> str:
+    ec, _ = _require_confidential_crypto()
+    normalized = public_key_hex.strip().lower()
+    if len(normalized) not in (66, 130):
+        raise ValueError("public key hex must be 33-byte or 65-byte secp256k1 SEC1 encoding")
+    try:
+        encoded = bytes.fromhex(normalized)
+    except ValueError as exc:
+        raise ValueError("public key hex must be valid lowercase hex") from exc
+    ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), encoded)
+    return normalized
+
+
 def generate_requester_seed() -> bytes:
     while True:
         candidate = os.urandom(32)
@@ -122,6 +159,162 @@ def requester_id_from_seed(seed: bytes | str) -> str:
         raise ValueError("requester seed is not a valid secp256k1 secret key")
     point = scalar * curves.SECP256k1.generator
     return int(point.x()).to_bytes(32, "big").hex()
+
+
+def generate_confidential_keypair() -> dict[str, str]:
+    ec, _ = _require_confidential_crypto()
+    from cryptography.hazmat.primitives import serialization
+
+    private_key = ec.generate_private_key(ec.SECP256K1())
+    private_value = private_key.private_numbers().private_value
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.CompressedPoint,
+    )
+    return {
+        "private_key_hex": private_value.to_bytes(32, "big").hex(),
+        "public_key_hex": public_bytes.hex(),
+    }
+
+
+def _derive_confidential_key(
+    private_key_hex: str,
+    peer_public_key_hex: str,
+    confidential_session_hash: str,
+    direction: str,
+) -> bytes:
+    ec, _ = _require_confidential_crypto()
+    private_bytes = _seed_bytes(private_key_hex)
+    peer_public_key = ec.EllipticCurvePublicKey.from_encoded_point(
+        ec.SECP256K1(), bytes.fromhex(_validate_public_key_hex(peer_public_key_hex))
+    )
+    private_key = ec.derive_private_key(int.from_bytes(private_bytes, "big"), ec.SECP256K1())
+    shared_secret = private_key.exchange(ec.ECDH(), peer_public_key)
+    return hashlib.sha256(
+        b"froglet.confidential.v1"
+        + shared_secret
+        + confidential_session_hash.encode("utf-8")
+        + direction.encode("utf-8")
+    ).digest()
+
+
+def encrypt_confidential_payload(
+    confidential_session_hash: str,
+    sender_private_key_hex: str,
+    recipient_public_key_hex: str,
+    payload: Any,
+    *,
+    payload_format: str = "application/json+jcs",
+    direction: str = "request",
+) -> dict[str, Any]:
+    _, AESGCM = _require_confidential_crypto()
+    key = _derive_confidential_key(
+        sender_private_key_hex,
+        recipient_public_key_hex,
+        confidential_session_hash,
+        direction,
+    )
+    nonce = os.urandom(12)
+    aad = _canonical_json_bytes(
+        [
+            _FROGLET_SCHEMA_V1,
+            _CONFIDENTIAL_ENVELOPE_TYPE,
+            _CONFIDENTIAL_ENCRYPTION_ALGORITHM,
+            confidential_session_hash,
+            direction,
+            payload_format,
+        ]
+    )
+    ciphertext = AESGCM(key).encrypt(nonce, _canonical_json_bytes(payload), aad)
+    return {
+        "schema_version": _FROGLET_SCHEMA_V1,
+        "envelope_type": _CONFIDENTIAL_ENVELOPE_TYPE,
+        "algorithm": _CONFIDENTIAL_ENCRYPTION_ALGORITHM,
+        "confidential_session_hash": confidential_session_hash,
+        "direction": direction,
+        "payload_format": payload_format,
+        "nonce_b64": base64.b64encode(nonce).decode("ascii"),
+        "ciphertext_b64": base64.b64encode(ciphertext).decode("ascii"),
+    }
+
+
+def decrypt_confidential_envelope(
+    confidential_session_hash: str,
+    recipient_private_key_hex: str,
+    sender_public_key_hex: str,
+    envelope: dict[str, Any],
+    *,
+    expected_direction: str = "result",
+) -> Any:
+    _, AESGCM = _require_confidential_crypto()
+    if envelope.get("schema_version") != _FROGLET_SCHEMA_V1:
+        raise ValueError("confidential envelope has unsupported schema_version")
+    if envelope.get("envelope_type") != _CONFIDENTIAL_ENVELOPE_TYPE:
+        raise ValueError("confidential envelope has unsupported envelope_type")
+    if envelope.get("algorithm") != _CONFIDENTIAL_ENCRYPTION_ALGORITHM:
+        raise ValueError("confidential envelope has unsupported algorithm")
+    if envelope.get("confidential_session_hash") != confidential_session_hash:
+        raise ValueError("confidential envelope hash does not match expected session")
+    if envelope.get("direction") != expected_direction:
+        raise ValueError("confidential envelope direction does not match expected direction")
+    key = _derive_confidential_key(
+        recipient_private_key_hex,
+        sender_public_key_hex,
+        confidential_session_hash,
+        expected_direction,
+    )
+    nonce = base64.b64decode(envelope["nonce_b64"])
+    ciphertext = base64.b64decode(envelope["ciphertext_b64"])
+    aad = _canonical_json_bytes(
+        [
+            _FROGLET_SCHEMA_V1,
+            _CONFIDENTIAL_ENVELOPE_TYPE,
+            _CONFIDENTIAL_ENCRYPTION_ALGORITHM,
+            confidential_session_hash,
+            expected_direction,
+            envelope.get("payload_format", "application/json+jcs"),
+        ]
+    )
+    plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+    return json.loads(plaintext.decode("utf-8"))
+
+
+def verify_confidential_session_bundle(
+    profile: dict[str, Any],
+    session: dict[str, Any],
+    attestation: dict[str, Any],
+    *,
+    now: int | None = None,
+) -> None:
+    current_time = int(time.time()) if now is None else now
+    profile_payload = profile["payload"]
+    session_payload = session["payload"]
+    if session.get("artifact_type") != _CONFIDENTIAL_SESSION_ARTIFACT:
+        raise ValueError("session artifact_type must be confidential_session")
+    if profile.get("artifact_type") != _CONFIDENTIAL_PROFILE_ARTIFACT:
+        raise ValueError("profile artifact_type must be confidential_profile")
+    if session_payload["allowed_workload_kind"] != profile_payload["allowed_workload_kind"]:
+        raise ValueError("confidential session workload kind does not match profile")
+    if session_payload["execution_mode"] != _CONFIDENTIAL_EXECUTION_MODE:
+        raise ValueError("confidential session execution_mode must be tee")
+    if session_payload["attestation_platform"] != profile_payload["attestation_platform"]:
+        raise ValueError("confidential session attestation_platform does not match profile")
+    if session_payload["measurement"] != profile_payload["measurement"]:
+        raise ValueError("confidential session measurement does not match profile")
+    if session_payload["key_release_policy_hash"] != profile_payload["key_release_policy_hash"]:
+        raise ValueError("confidential session key_release_policy_hash does not match profile")
+    if attestation["platform"] != profile_payload["attestation_platform"]:
+        raise ValueError("attestation platform does not match profile")
+    if attestation["measurement"] != profile_payload["measurement"]:
+        raise ValueError("attestation measurement does not match profile")
+    if attestation["session_public_key"] != session_payload["session_public_key"]:
+        raise ValueError("attestation session_public_key does not match session")
+    if attestation["key_release_policy_hash"] != profile_payload["key_release_policy_hash"]:
+        raise ValueError("attestation key_release_policy_hash does not match profile")
+    if current_time > int(session_payload["expires_at"]) or current_time > int(attestation["expires_at"]):
+        raise ValueError("confidential session attestation is expired")
+    if _canonical_json_hash(attestation) != session_payload["attestation_evidence_hash"]:
+        raise ValueError("attestation hash does not match confidential session")
 
 
 def _schnorr_sign_message(secret_key: bytes | str, message: bytes) -> str:
@@ -245,6 +438,8 @@ def sign_deal_artifact_from_quote(
         "completion_deadline": completion_deadline,
         "acceptance_deadline": acceptance_deadline,
     }
+    if isinstance(quote.get("payload", {}).get("confidential_session_hash"), str):
+        payload["confidential_session_hash"] = quote["payload"]["confidential_session_hash"]
     return _sign_artifact(
         "deal",
         payload,
@@ -340,11 +535,41 @@ class _JsonApiClient:
 
 class ProviderClient(_JsonApiClient):
     async def descriptor(self) -> dict[str, Any]:
-        return await self._request_json("GET", "/v1/descriptor")
+        return await self._request_json("GET", "/v1/provider/descriptor")
 
     async def offers(self) -> list[dict[str, Any]]:
-        response = await self._request_json("GET", "/v1/offers")
+        response = await self._request_json("GET", "/v1/provider/offers")
         return response["offers"]
+
+    async def confidential_profile(self, artifact_hash: str) -> dict[str, Any]:
+        return await self._request_json(
+            "GET", f"/v1/provider/confidential/profiles/{artifact_hash}"
+        )
+
+    async def open_confidential_session(
+        self,
+        confidential_profile_hash: str,
+        *,
+        requester_id: str,
+        allowed_workload_kind: str,
+        requester_public_key: str,
+    ) -> dict[str, Any]:
+        return await self._request_json(
+            "POST",
+            "/v1/provider/confidential/sessions",
+            json_body={
+                "requester_id": requester_id,
+                "confidential_profile_hash": confidential_profile_hash,
+                "allowed_workload_kind": allowed_workload_kind,
+                "requester_public_key": requester_public_key,
+            },
+            expected_statuses=(201,),
+        )
+
+    async def confidential_session(self, session_id: str) -> dict[str, Any]:
+        return await self._request_json(
+            "GET", f"/v1/provider/confidential/sessions/{session_id}"
+        )
 
     async def create_quote(
         self,
@@ -363,7 +588,7 @@ class ProviderClient(_JsonApiClient):
             payload["max_price_sats"] = max_price_sats
         return await self._request_json(
             "POST",
-            "/v1/quotes",
+            "/v1/provider/quotes",
             json_body=payload,
             expected_statuses=(201,),
         )
@@ -384,16 +609,18 @@ class ProviderClient(_JsonApiClient):
             payload["payment"] = payment
         return await self._request_json(
             "POST",
-            "/v1/deals",
+            "/v1/provider/deals",
             json_body=payload,
             expected_statuses=(200, 202),
         )
 
     async def get_deal(self, deal_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"/v1/deals/{deal_id}")
+        return await self._request_json("GET", f"/v1/provider/deals/{deal_id}")
 
     async def get_invoice_bundle(self, deal_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"/v1/deals/{deal_id}/invoice-bundle")
+        return await self._request_json(
+            "GET", f"/v1/provider/deals/{deal_id}/invoice-bundle"
+        )
 
     async def verify_invoice_bundle(
         self,
@@ -445,7 +672,7 @@ class ProviderClient(_JsonApiClient):
             payload["expected_result_hash"] = expected_result_hash
         return await self._request_json(
             "POST",
-            f"/v1/deals/{deal_id}/release-preimage",
+            f"/v1/provider/deals/{deal_id}/accept",
             json_body=payload,
         )
 
@@ -479,171 +706,65 @@ class ProviderClient(_JsonApiClient):
 
 
 class RuntimeClient(_JsonApiClient):
-    def __init__(
-        self,
-        runtime_base_url: str,
-        token: str,
-        *,
-        provider_base_url: str | None = None,
-    ) -> None:
+    def __init__(self, runtime_base_url: str, token: str) -> None:
         super().__init__(runtime_base_url)
         self.token = token
-        self._provider_base_url = (
-            provider_base_url.rstrip("/") if provider_base_url is not None else None
-        )
-        self._provider: ProviderClient | None = None
 
     @classmethod
     def from_token_file(
         cls,
         runtime_base_url: str,
         token_path: str | Path,
-        *,
-        provider_base_url: str | None = None,
     ) -> "RuntimeClient":
         token = Path(token_path).read_text(encoding="utf-8").strip()
-        return cls(
-            runtime_base_url,
-            token,
-            provider_base_url=provider_base_url,
-        )
-
-    async def close(self) -> None:
-        if self._provider is not None:
-            await self._provider.close()
-            self._provider = None
-        await super().close()
+        return cls(runtime_base_url, token)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
 
-    def _provider_client(self) -> ProviderClient:
-        if self._provider is None:
-            if self._provider_base_url is None:
-                raise RuntimeError(
-                    "provider_base_url is required for quote/deal and verification helpers"
-                )
-            self._provider = ProviderClient(self._provider_base_url)
-        return self._provider
-
-    async def provider_start(self) -> dict[str, Any]:
-        return await self._request_json("POST", "/v1/runtime/provider/start")
-
     async def wallet_balance(self) -> dict[str, Any]:
         return await self._request_json("GET", "/v1/runtime/wallet/balance")
 
-    async def publish_services(self) -> dict[str, Any]:
-        return await self._request_json("POST", "/v1/runtime/services/publish")
+    async def search(
+        self, *, limit: int = 20, include_inactive: bool = False
+    ) -> list[dict[str, Any]]:
+        response = await self._request_json(
+            "POST",
+            "/v1/runtime/search",
+            json_body={
+                "limit": limit,
+                "include_inactive": include_inactive,
+            },
+        )
+        return response["nodes"]
+
+    async def get_provider(self, provider_id: str) -> dict[str, Any]:
+        return await self._request_json("GET", f"/v1/runtime/providers/{provider_id}")
 
     async def buy_service(
         self,
         request: dict[str, Any],
         *,
-        wait_for_receipt: bool = False,
-        wait_timeout_secs: int | None = None,
         include_payment_intent: bool = False,
     ) -> DealHandle:
-        payload = await self._prepare_buy_payload(request)
-        payload["wait_for_receipt"] = wait_for_receipt
-        if wait_timeout_secs is not None:
-            payload["wait_timeout_secs"] = wait_timeout_secs
         response = await self._request_json(
             "POST",
-            "/v1/runtime/services/buy",
-            json_body=payload,
+            "/v1/runtime/deals",
+            json_body=request,
         )
+        deal = response["deal"]
+        status = str(deal.get("status", ""))
         return DealHandle(
             quote=response["quote"],
-            deal=response["deal"],
-            terminal=response["terminal"],
+            deal=deal,
+            terminal=status in {"succeeded", "failed", "rejected"},
             payment_intent_path=response.get("payment_intent_path"),
             payment_intent=response.get("payment_intent") if include_payment_intent else None,
         )
 
-    async def _prepare_buy_payload(self, request: dict[str, Any]) -> dict[str, Any]:
-        payload = dict(request)
-        requester_seed = payload.pop("requester_seed_hex", None)
-        if requester_seed is None:
-            requester_seed = payload.pop("requester_seed", None)
-        requester_id = payload.pop("requester_id", None)
-        success_payment_hash = payload.pop("success_payment_hash", None)
-        if "quote" in payload and "deal" in payload:
-            return payload
-
-        offer_id = payload.pop("offer_id", None)
-        if offer_id is None:
-            raise ValueError("buy_service requires offer_id when quote/deal are not provided")
-
-        if requester_seed is None:
-            raise ValueError(
-                "buy_service requires requester_seed_hex (local-only) when quote/deal are not provided"
-            )
-
-        if success_payment_hash is None:
-            raise ValueError(
-                "buy_service requires success_payment_hash when quote/deal are not provided"
-            )
-
-        derived_requester_id = requester_id_from_seed(requester_seed)
-        if requester_id is not None and requester_id != derived_requester_id:
-            raise ValueError("requester_id does not match requester_seed_hex")
-        requester_id = requester_id or derived_requester_id
-
-        max_price_sats = payload.pop("max_price_sats", None)
-        runtime_fields = {}
-        for key in ("idempotency_key", "payment"):
-            if key in payload:
-                runtime_fields[key] = payload.pop(key)
-
-        quote = await self._provider_client().create_quote(
-            offer_id,
-            payload,
-            requester_id=requester_id,
-            max_price_sats=max_price_sats,
-        )
-        deal = sign_deal_artifact_from_quote(
-            quote,
-            requester_seed,
-            success_payment_hash=success_payment_hash,
-        )
-
-        return {
-            **payload,
-            **runtime_fields,
-            "quote": quote,
-            "deal": deal,
-        }
-
-    async def issue_curated_list(
-        self,
-        *,
-        expires_at: int,
-        entries: list[dict[str, Any]],
-        list_id: str | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "expires_at": expires_at,
-            "entries": entries,
-        }
-        if list_id is not None:
-            payload["list_id"] = list_id
-        response = await self._request_json(
-            "POST",
-            "/v1/runtime/discovery/curated-lists/issue",
-            json_body=payload,
-            expected_statuses=(201,),
-        )
-        return response["curated_list"]
-
-    async def nostr_provider_publications(self) -> dict[str, Any]:
-        return await self._request_json(
-            "GET", "/v1/runtime/nostr/publications/provider"
-        )
-
-    async def nostr_receipt_publication(self, deal_id: str) -> dict[str, Any]:
-        return await self._request_json(
-            "GET", f"/v1/runtime/nostr/publications/deals/{deal_id}/receipt"
-        )
+    async def get_deal(self, deal_id: str) -> dict[str, Any]:
+        response = await self._request_json("GET", f"/v1/runtime/deals/{deal_id}")
+        return response["deal"]
 
     async def payment_intent(self, deal_id: str) -> dict[str, Any]:
         response = await self._request_json(
@@ -656,22 +777,6 @@ class RuntimeClient(_JsonApiClient):
             "GET", f"/v1/runtime/archive/{subject_kind}/{subject_id}"
         )
 
-    async def set_mock_lightning_state(
-        self,
-        session_id: str,
-        *,
-        base_state: str,
-        success_state: str,
-    ) -> dict[str, Any]:
-        return await self._request_json(
-            "POST",
-            f"/v1/runtime/lightning/invoice-bundles/{session_id}/state",
-            json_body={
-                "base_state": base_state,
-                "success_state": success_state,
-            },
-        )
-
     async def wait_for_deal(
         self,
         deal_id: str,
@@ -680,49 +785,56 @@ class RuntimeClient(_JsonApiClient):
         timeout_secs: float = 15.0,
         poll_interval_secs: float = 0.2,
     ) -> dict[str, Any]:
-        return await self._provider_client().wait_for_deal(
-            deal_id,
-            statuses=statuses,
-            timeout_secs=timeout_secs,
-            poll_interval_secs=poll_interval_secs,
+        accepted_statuses = statuses or {"succeeded", "failed", "rejected"}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_secs
+        base_delay = max(0.01, poll_interval_secs)
+        max_delay = max(base_delay, min(_WAIT_BACKOFF_CAP_SECS, timeout_secs))
+        attempt = 0
+        while loop.time() < deadline:
+            deal = await self.get_deal(deal_id)
+            if deal["status"] in accepted_statuses:
+                return deal
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            sleep_secs = min(remaining, _next_wait_delay(base_delay, max_delay, attempt))
+            attempt += 1
+            await asyncio.sleep(sleep_secs)
+        raise TimeoutError(
+            f"timed out waiting for deal {deal_id} to reach {sorted(accepted_statuses)}"
         )
 
     async def accept_result(
         self,
         deal_id: str,
-        success_preimage: str,
         *,
         expected_result_hash: str | None = None,
     ) -> dict[str, Any]:
-        resolved_result_hash = expected_result_hash
-        if resolved_result_hash is None:
-            intent = await self.payment_intent(deal_id)
-            release_action = intent.get("release_action")
-            if release_action is not None:
-                resolved_result_hash = release_action.get("expected_result_hash")
-        return await self._provider_client().accept_result(
-            deal_id,
-            success_preimage,
-            expected_result_hash=resolved_result_hash,
+        response = await self._request_json(
+            "POST",
+            f"/v1/runtime/deals/{deal_id}/accept",
+            json_body={"expected_result_hash": expected_result_hash},
         )
-
-    async def verify_receipt(self, receipt: dict[str, Any]) -> dict[str, Any]:
-        return await self._provider_client().verify_receipt(receipt)
+        return response["deal"]
 
 
-class MarketplaceClient(_JsonApiClient):
+class DiscoveryClient(_JsonApiClient):
     async def search_nodes(
         self, *, limit: int = 20, include_inactive: bool = False
     ) -> list[dict[str, Any]]:
-        query = (
-            f"/v1/marketplace/search?limit={limit}"
-            f"&include_inactive={'true' if include_inactive else 'false'}"
+        response = await self._request_json(
+            "POST",
+            "/v1/discovery/search",
+            json_body={
+                "limit": limit,
+                "include_inactive": include_inactive,
+            },
         )
-        response = await self._request_json("GET", query)
         return response["nodes"]
 
     async def get_node(self, node_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"/v1/marketplace/nodes/{node_id}")
+        return await self._request_json("GET", f"/v1/discovery/providers/{node_id}")
 
 
 def _try_parse_json(raw_body: str) -> Any | None:

@@ -20,8 +20,13 @@ The following are intentionally moved out of the kernel and are defined in compa
 - layered product architecture: `docs/ARCHITECTURE.md`
 - transport and discovery adapters: `docs/ADAPTERS.md`
 - bot-facing localhost runtime: `docs/RUNTIME.md`
+- confidential execution companion extensions: `docs/CONFIDENTIAL.md`
 - Nostr publication behavior: `docs/NOSTR.md`
 - storage and archival profiles: `docs/STORAGE_PROFILE.md`
+
+The frozen kernel in this document defines the core fields and workload kinds below.
+Companion docs may define additive extension artifacts, workload kinds, and optional payload fields that travel inside the same signed envelopes without changing the kernel commitments defined here.
+The current reference implementation uses that mechanism for confidential execution.
 
 ## 1. Scope
 
@@ -198,6 +203,7 @@ Each `transport_endpoints[]` entry must contain:
 `Offer.payload` may additionally contain:
 
 - `terms_hash`: hash of additional machine-readable or human-readable policy text
+- `confidential_profile_hash`: optional companion-extension reference defined in `docs/CONFIDENTIAL.md`
 
 ### 3.3 Quote payload
 
@@ -236,6 +242,10 @@ Quote validation rules:
 - `settlement_terms.method` must equal `Offer.settlement_method`
 - `settlement_terms.base_fee_msat` and `settlement_terms.success_fee_msat` must equal `Offer.price_schedule`
 
+`Quote.payload` may additionally contain:
+
+- `confidential_session_hash`: optional companion-extension reference defined in `docs/CONFIDENTIAL.md`
+
 ### 3.4 Deal payload
 
 `Deal.payload` must contain:
@@ -257,6 +267,10 @@ Deal validation rules:
 - `admission_deadline` must be less than or equal to `Quote.payload.expires_at`
 - `completion_deadline` must be strictly greater than `admission_deadline`
 - `acceptance_deadline` must be greater than or equal to `completion_deadline`
+
+`Deal.payload` may additionally contain:
+
+- `confidential_session_hash`: optional companion-extension reference defined in `docs/CONFIDENTIAL.md`
 
 ### 3.5 Receipt payload
 
@@ -294,9 +308,13 @@ Deal validation rules:
 
 `Receipt.payload` may additionally contain:
 
+- `confidential_session_hash`: optional companion-extension reference defined in `docs/CONFIDENTIAL.md`
+- `result_envelope_hash`: optional companion-extension result-envelope hash defined in `docs/CONFIDENTIAL.md`
 - `failure_code`
 - `failure_message`
 - `result_ref`
+
+`Receipt.payload.executor` companion extensions may additionally include executor metadata such as `execution_mode`, `attestation_platform`, or `measurement` when defined by a companion profile outside this kernel.
 
 Receipt validation rules:
 
@@ -594,6 +612,8 @@ Current implementation notes:
 - Only anonymous (public) pulls are supported; authenticated registries require future work.
 - OCI module downloads are capped at 50 MB.
 - Both tag (`:tag`) and digest (`@sha256:...`) reference styles are supported.
+
+Companion workload kinds such as `confidential.service.v1` and `compute.wasm.attested.v1` are defined outside this kernel in `docs/CONFIDENTIAL.md`.
 
 ## 8. Wasm ABIs
 

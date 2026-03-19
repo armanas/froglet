@@ -1,373 +1,370 @@
 import asyncio
-import socket
-import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from aiohttp import web
 
 from froglet_client import (
+    DiscoveryClient,
     FrogletClientError,
-    MarketplaceClient,
     ProviderClient,
     RuntimeClient,
-    generate_requester_seed,
-    requester_id_from_seed,
-    runtime_requester_fields,
-)
-from test_support import (
-    FrogletAsyncTestCase,
-    VALID_WASM_HEX,
-    build_wasm_request,
-    listening_port,
-    sign_deal_artifact_from_quote,
-    sha256_hex,
-    verify_signed_artifact,
+    decrypt_confidential_envelope,
+    encrypt_confidential_payload,
+    generate_confidential_keypair,
 )
 
 
-class ClientSdkTests(FrogletAsyncTestCase):
-    async def test_sdk_management_clients_cover_offer_wallet_publish_and_lookup(self) -> None:
-        marketplace = await self.start_marketplace()
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_DISCOVERY_MODE": "marketplace",
-                "FROGLET_MARKETPLACE_URL": marketplace.base_url,
-                "FROGLET_MARKETPLACE_PUBLISH": "true",
-            }
-        )
-        runtime = RuntimeClient.from_token_file(
-            node.runtime_url,
-            node.data_dir / "runtime" / "auth.token",
-            provider_base_url=node.base_url,
-        )
+def listening_port(site: web.TCPSite) -> int:
+    server = getattr(site, "_server", None)
+    sockets = getattr(server, "sockets", None)
+    if not sockets:
+        raise RuntimeError("test server did not expose a bound socket")
+    return int(sockets[0].getsockname()[1])
 
-        async with ProviderClient(node.base_url) as provider, runtime, MarketplaceClient(
-            marketplace.base_url
-        ) as client:
+
+class ClientSdkTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._runner = None
+        self._site = None
+
+    async def asyncTearDown(self) -> None:
+        if self._runner is not None:
+            await self._runner.cleanup()
+
+    async def start_server(self, handler) -> str:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", handler)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, "127.0.0.1", 0)
+        await self._site.start()
+        return f"http://127.0.0.1:{listening_port(self._site)}"
+
+    async def test_provider_client_uses_provider_namespace(self) -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            seen.append((request.method, request.path))
+            if request.method == "GET" and request.path == "/v1/provider/descriptor":
+                return web.json_response({"payload": {"provider_id": "provider-1"}})
+            if request.method == "GET" and request.path == "/v1/provider/offers":
+                return web.json_response({"offers": [{"payload": {"offer_id": "execute.wasm"}}]})
+            if request.method == "POST" and request.path == "/v1/provider/quotes":
+                return web.json_response(
+                    {
+                        "hash": "quote-1",
+                        "payload": {
+                            "provider_id": "provider-1",
+                            "requester_id": "runtime-1",
+                            "offer_hash": "offer-1",
+                            "workload_hash": "workload-1",
+                            "settlement_terms": {
+                                "method": "lightning.base_fee_plus_success_fee.v1",
+                                "base_fee_msat": 0,
+                                "success_fee_msat": 10_000,
+                                "max_base_invoice_expiry_secs": 30,
+                                "max_success_hold_expiry_secs": 30,
+                                "min_final_cltv_expiry": 18,
+                            },
+                            "execution_limits": {
+                                "max_input_bytes": 1,
+                                "max_runtime_ms": 1000,
+                                "max_memory_bytes": 1,
+                                "max_output_bytes": 1,
+                                "fuel_limit": 1,
+                            },
+                            "expires_at": 9999999999,
+                            "workload_kind": "compute.wasm.v1",
+                        },
+                    },
+                    status=201,
+                )
+            if request.method == "POST" and request.path == "/v1/provider/deals":
+                return web.json_response(
+                    {
+                        "deal_id": "deal-1",
+                        "status": "payment_pending",
+                        "quote": {"hash": "quote-1"},
+                        "deal": {"hash": "deal-1"},
+                    }
+                )
+            if request.method == "GET" and request.path == "/v1/provider/deals/deal-1":
+                return web.json_response(
+                    {
+                        "deal_id": "deal-1",
+                        "status": "result_ready",
+                        "quote": {"hash": "quote-1"},
+                        "deal": {"hash": "deal-1"},
+                    }
+                )
+            if request.method == "POST" and request.path == "/v1/provider/deals/deal-1/accept":
+                return web.json_response(
+                    {
+                        "deal_id": "deal-1",
+                        "status": "succeeded",
+                        "receipt": {"hash": "receipt-1"},
+                    }
+                )
+            if request.method == "GET" and request.path == "/v1/provider/deals/deal-1/invoice-bundle":
+                return web.json_response({"session_id": "bundle-1"})
+            raise AssertionError(f"unexpected request {request.method} {request.path}")
+
+        base_url = await self.start_server(handler)
+        async with ProviderClient(base_url) as provider:
             descriptor = await provider.descriptor()
             offers = await provider.offers()
-            provider_snapshot = await runtime.provider_start()
-            published = await runtime.publish_services()
-            wallet = await runtime.wallet_balance()
-
-            nodes = []
-            for _ in range(20):
-                nodes = await client.search_nodes(limit=10)
-                if nodes:
-                    break
-                await asyncio.sleep(0.2)
-            self.assertTrue(nodes)
-
-            node_id = descriptor["payload"]["provider_id"]
-            node_record = await client.get_node(node_id)
-
-        self.assertTrue(any(offer["payload"]["offer_id"] == "execute.wasm" for offer in offers))
-        self.assertEqual(provider_snapshot["descriptor"]["hash"], published["descriptor"]["hash"])
-        self.assertEqual(
-            provider_snapshot["descriptor"]["payload"]["provider_id"],
-            descriptor["payload"]["provider_id"],
-        )
-        self.assertIn(wallet["backend"], {"none", "mock", "lightning"})
-        self.assertIn("accepted_payment_methods", wallet)
-        self.assertEqual(node_record["descriptor"]["node_id"], node_id)
-        self.assertEqual(node_record["descriptor"]["transports"]["clearnet_url"], node.base_url)
-
-    async def test_provider_client_supports_quote_deal_wait_accept_flow(self) -> None:
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PAYMENT_BACKEND": "lightning",
-                "FROGLET_LIGHTNING_MODE": "mock",
-                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
-            }
-        )
-        runtime = RuntimeClient.from_token_file(
-            node.runtime_url,
-            node.data_dir / "runtime" / "auth.token",
-            provider_base_url=node.base_url,
-        )
-        requester_key = generate_requester_seed()
-        requester_id = requester_id_from_seed(requester_key)
-        success_preimage = "11" * 32
-        success_payment_hash = sha256_hex(bytes.fromhex(success_preimage))
-        request = build_wasm_request(VALID_WASM_HEX)
-
-        async with ProviderClient(node.base_url) as provider:
             quote = await provider.create_quote(
-                "execute.wasm", request, requester_id=requester_id
-            )
-            signed_deal = sign_deal_artifact_from_quote(
-                quote,
-                requester_key,
-                success_payment_hash=success_payment_hash,
+                "execute.wasm",
+                {"submission": {"wasm_module_hex": "00"}},
+                requester_id="runtime-1",
             )
             deal = await provider.create_deal(
                 quote,
-                signed_deal,
-                request,
-                idempotency_key="sdk-provider-flow",
+                {"hash": "deal-1"},
+                {"submission": {"wasm_module_hex": "00"}},
             )
-            bundle = await provider.get_invoice_bundle(deal["deal_id"])
-            validation = await provider.verify_invoice_bundle(
-                bundle["bundle"],
-                quote,
-                deal["deal"],
-                requester_id=requester_id,
-            )
+            current = await provider.get_deal("deal-1")
+            bundle = await provider.get_invoice_bundle("deal-1")
+            terminal = await provider.accept_result("deal-1", "11" * 32)
 
-            async with runtime:
-                await runtime.set_mock_lightning_state(
-                    bundle["session_id"],
-                    base_state="settled",
-                    success_state="accepted",
-                )
-                result_ready = await provider.wait_for_deal(
-                    deal["deal_id"], statuses={"result_ready"}
-                )
-                terminal = await runtime.accept_result(
-                    deal["deal_id"], success_preimage
-                )
-                receipt_verification = await runtime.verify_receipt(terminal["receipt"])
-
-        self.assertTrue(validation["valid"])
-        self.assertEqual(result_ready["status"], "result_ready")
+        self.assertEqual(descriptor["payload"]["provider_id"], "provider-1")
+        self.assertEqual(offers[0]["payload"]["offer_id"], "execute.wasm")
+        self.assertEqual(deal["status"], "payment_pending")
+        self.assertEqual(current["status"], "result_ready")
+        self.assertEqual(bundle["session_id"], "bundle-1")
         self.assertEqual(terminal["status"], "succeeded")
-        self.assertTrue(verify_signed_artifact(terminal["receipt"]))
-        self.assertTrue(receipt_verification["valid"])
+        self.assertIn(("GET", "/v1/provider/descriptor"), seen)
+        self.assertIn(("POST", "/v1/provider/quotes"), seen)
 
-    async def test_runtime_client_hides_payment_intent_unless_requested(self) -> None:
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PAYMENT_BACKEND": "lightning",
-                "FROGLET_LIGHTNING_MODE": "mock",
-            }
-        )
-        runtime = RuntimeClient.from_token_file(
-            node.runtime_url,
-            node.data_dir / "runtime" / "auth.token",
-            provider_base_url=node.base_url,
-        )
+    async def test_runtime_client_uses_runtime_only_surface(self) -> None:
+        seen: list[tuple[str, str, str | None]] = []
 
-        async with runtime:
-            hidden_key = generate_requester_seed()
-            hidden = await runtime.buy_service(
-                {
-                    "offer_id": "execute.wasm",
-                    **build_wasm_request(VALID_WASM_HEX),
-                    "idempotency_key": "sdk-runtime-hidden",
-                    **runtime_requester_fields(
-                        hidden_key, b"sdk-runtime-hidden".rjust(32, b"\0")
-                    ),
-                }
+        async def handler(request: web.Request) -> web.StreamResponse:
+            seen.append(
+                (
+                    request.method,
+                    request.path,
+                    request.headers.get("Authorization"),
+                )
             )
-            visible_key = generate_requester_seed()
-            visible = await runtime.buy_service(
-                {
-                    "offer_id": "execute.wasm",
-                    **build_wasm_request(VALID_WASM_HEX),
-                    "idempotency_key": "sdk-runtime-visible",
-                    **runtime_requester_fields(
-                        visible_key, b"sdk-runtime-visible".rjust(32, b"\0")
-                    ),
-                },
-                include_payment_intent=True,
-            )
-            intent = await runtime.payment_intent(visible.deal["deal_id"])
-
-        self.assertFalse(hidden.terminal)
-        self.assertIsNone(hidden.payment_intent)
-        self.assertIsNotNone(hidden.payment_intent_path)
-        self.assertFalse(visible.terminal)
-        self.assertIsNotNone(visible.payment_intent)
-        self.assertEqual(intent["deal_id"], visible.deal["deal_id"])
-        self.assertEqual(intent["bundle_hash"], visible.payment_intent["bundle_hash"])
-
-    async def test_runtime_client_issues_curated_list_and_provider_client_verifies_it(self) -> None:
-        node = await self.start_node()
-        runtime = RuntimeClient.from_token_file(
-            node.runtime_url,
-            node.data_dir / "runtime" / "auth.token",
-            provider_base_url=node.base_url,
-        )
-
-        async with ProviderClient(node.base_url) as provider:
-            descriptor = await provider.descriptor()
-            async with runtime:
-                curated_list = await runtime.issue_curated_list(
-                    list_id="sdk-curated-list",
-                    expires_at=int(time.time()) + 60,
-                    entries=[
-                        {
-                            "provider_id": descriptor["payload"]["provider_id"],
-                            "descriptor_hash": descriptor["hash"],
-                            "tags": ["bootstrap", "local"],
-                            "note": "local test node",
+            if request.path == "/v1/runtime/wallet/balance":
+                return web.json_response(
+                    {
+                        "backend": "lightning",
+                        "mode": "mock",
+                        "balance_known": True,
+                        "balance_sats": 21,
+                        "accepted_payment_methods": ["lightning"],
+                        "reservations": True,
+                        "receipts": True,
+                    }
+                )
+            if request.path == "/v1/runtime/search":
+                return web.json_response({"nodes": [{"descriptor": {"node_id": "provider-1"}}]})
+            if request.path == "/v1/runtime/providers/provider-1":
+                return web.json_response(
+                    {
+                        "discovery": {"descriptor": {"node_id": "provider-1"}},
+                        "descriptor": {"payload": {"provider_id": "provider-1"}},
+                        "offers": [{"payload": {"offer_id": "execute.wasm"}}],
+                    }
+                )
+            if request.path == "/v1/runtime/deals" and request.method == "POST":
+                return web.json_response(
+                    {
+                        "quote": {"hash": "quote-1"},
+                        "deal": {
+                            "deal_id": "deal-1",
+                            "status": "payment_pending",
+                            "provider_id": "provider-1",
+                            "provider_url": "https://provider.example",
+                            "receipt": None,
+                            "result_hash": None,
+                        },
+                        "payment_intent_path": "/v1/runtime/deals/deal-1/payment-intent",
+                        "payment_intent": {"deal_id": "deal-1", "bundle_hash": "bundle-1"},
+                    }
+                )
+            if request.path == "/v1/runtime/deals/deal-1" and request.method == "GET":
+                return web.json_response(
+                    {
+                        "deal": {
+                            "deal_id": "deal-1",
+                            "status": "result_ready",
+                            "provider_id": "provider-1",
+                            "provider_url": "https://provider.example",
+                            "receipt": None,
+                            "result_hash": "ab" * 32,
                         }
-                    ],
+                    }
                 )
-            verification = await provider.verify_curated_list(curated_list)
-
-        self.assertTrue(verify_signed_artifact(curated_list))
-        self.assertEqual(curated_list["payload"]["list_id"], "sdk-curated-list")
-        self.assertEqual(curated_list["payload"]["entries"][0]["descriptor_hash"], descriptor["hash"])
-        self.assertTrue(verification["valid"])
-        self.assertEqual(verification["list_id"], "sdk-curated-list")
-
-    async def test_runtime_client_builds_nostr_publications_and_provider_verifies_them(self) -> None:
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PAYMENT_BACKEND": "lightning",
-                "FROGLET_LIGHTNING_MODE": "mock",
-                "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
-            }
-        )
-        runtime = RuntimeClient.from_token_file(
-            node.runtime_url,
-            node.data_dir / "runtime" / "auth.token",
-            provider_base_url=node.base_url,
-        )
-        success_preimage = "22" * 32
-
-        async with ProviderClient(node.base_url) as provider:
-            async with runtime:
-                descriptor = await provider.descriptor()
-                publications = await runtime.nostr_provider_publications()
-                descriptor_verification = await provider.verify_nostr_event(
-                    publications["descriptor_summary"]
+            if request.path == "/v1/runtime/deals/deal-1/payment-intent":
+                return web.json_response(
+                    {
+                        "payment_intent": {
+                            "deal_id": "deal-1",
+                            "bundle_hash": "bundle-1",
+                            "release_action": {
+                                "endpoint_path": "/v1/runtime/deals/deal-1/accept",
+                                "expected_result_hash": "ab" * 32,
+                            },
+                        }
+                    }
                 )
+            if request.path == "/v1/runtime/deals/deal-1/accept":
+                return web.json_response(
+                    {
+                        "deal": {
+                            "deal_id": "deal-1",
+                            "status": "succeeded",
+                            "provider_id": "provider-1",
+                            "provider_url": "https://provider.example",
+                            "receipt": {"hash": "receipt-1"},
+                            "result_hash": "ab" * 32,
+                        }
+                    }
+                )
+            raise AssertionError(f"unexpected request {request.method} {request.path}")
 
-                requester_key = generate_requester_seed()
+        runtime_url = await self.start_server(handler)
+        with TemporaryDirectory(prefix="froglet-runtime-client-") as temp_dir:
+            token_path = Path(temp_dir) / "auth.token"
+            token_path.write_text("runtime-test-token\n", encoding="utf-8")
+            async with RuntimeClient.from_token_file(runtime_url, token_path) as runtime:
+                wallet = await runtime.wallet_balance()
+                nodes = await runtime.search(limit=10)
+                provider = await runtime.get_provider("provider-1")
                 handle = await runtime.buy_service(
                     {
+                        "provider": {"provider_id": "provider-1"},
                         "offer_id": "execute.wasm",
-                        **build_wasm_request(VALID_WASM_HEX),
-                        "idempotency_key": "sdk-nostr-receipt",
-                        **runtime_requester_fields(
-                            requester_key,
-                            bytes.fromhex(success_preimage),
-                        ),
+                        "submission": {"wasm_module_hex": "00"},
                     },
                     include_payment_intent=True,
                 )
-                await runtime.set_mock_lightning_state(
-                    handle.payment_intent["session_id"],
-                    base_state="settled",
-                    success_state="accepted",
+                deal = await runtime.get_deal("deal-1")
+                waited = await runtime.wait_for_deal(
+                    "deal-1", statuses={"result_ready"}, timeout_secs=0.5, poll_interval_secs=0.01
                 )
-                result_ready = await runtime.wait_for_deal(
-                    handle.deal["deal_id"], statuses={"result_ready"}
-                )
-                await runtime.accept_result(
-                    handle.deal["deal_id"],
-                    success_preimage,
-                    expected_result_hash=result_ready["result_hash"],
-                )
-                receipt_publication = await runtime.nostr_receipt_publication(
-                    handle.deal["deal_id"]
-                )
+                intent = await runtime.payment_intent("deal-1")
+                terminal = await runtime.accept_result("deal-1")
 
-            receipt_verification = await provider.verify_nostr_event(
-                receipt_publication["receipt_summary"]
-            )
+        self.assertEqual(wallet["balance_sats"], 21)
+        self.assertEqual(nodes[0]["descriptor"]["node_id"], "provider-1")
+        self.assertEqual(provider["descriptor"]["payload"]["provider_id"], "provider-1")
+        self.assertFalse(handle.terminal)
+        self.assertEqual(handle.payment_intent["bundle_hash"], "bundle-1")
+        self.assertEqual(deal["status"], "result_ready")
+        self.assertEqual(waited["status"], "result_ready")
+        self.assertEqual(intent["deal_id"], "deal-1")
+        self.assertEqual(terminal["status"], "succeeded")
+        self.assertTrue(all(path.startswith("/v1/runtime/") for _, path, _ in seen))
+        self.assertTrue(all(auth == "Bearer runtime-test-token" for _, _, auth in seen))
 
-        publication_identity = descriptor["payload"]["linked_identities"][0]["identity"]
-        self.assertEqual(publications["descriptor_summary"]["pubkey"], publication_identity)
-        self.assertNotEqual(publication_identity, descriptor["signer"])
-        self.assertTrue(descriptor_verification["valid"])
-        self.assertGreaterEqual(len(publications["offer_summaries"]), 1)
-        self.assertTrue(receipt_verification["valid"])
-        self.assertEqual(receipt_publication["receipt_summary"]["kind"], 1390)
-        self.assertEqual(receipt_publication["receipt_summary"]["pubkey"], publication_identity)
+    async def test_discovery_client_uses_search_post_and_provider_lookup(self) -> None:
+        seen: list[tuple[str, str]] = []
 
-    async def test_marketplace_client_searches_registered_nodes(self) -> None:
-        marketplace = await self.start_marketplace()
-        node = await self.start_node(
-            extra_env={
-                "FROGLET_DISCOVERY_MODE": "marketplace",
-                "FROGLET_MARKETPLACE_URL": marketplace.base_url,
-                "FROGLET_MARKETPLACE_PUBLISH": "true",
-            }
+        async def handler(request: web.Request) -> web.StreamResponse:
+            seen.append((request.method, request.path))
+            if request.method == "POST" and request.path == "/v1/discovery/search":
+                return web.json_response({"nodes": [{"descriptor": {"node_id": "provider-1"}}]})
+            if request.method == "GET" and request.path == "/v1/discovery/providers/provider-1":
+                return web.json_response({"descriptor": {"node_id": "provider-1"}})
+            raise AssertionError(f"unexpected request {request.method} {request.path}")
+
+        base_url = await self.start_server(handler)
+        async with DiscoveryClient(base_url) as client:
+            nodes = await client.search_nodes(limit=5)
+            node = await client.get_node("provider-1")
+
+        self.assertEqual(nodes[0]["descriptor"]["node_id"], "provider-1")
+        self.assertEqual(node["descriptor"]["node_id"], "provider-1")
+        self.assertEqual(seen, [
+            ("POST", "/v1/discovery/search"),
+            ("GET", "/v1/discovery/providers/provider-1"),
+        ])
+
+    async def test_confidential_helpers_encrypt_verify_and_decrypt(self) -> None:
+        requester = generate_confidential_keypair()
+        provider = generate_confidential_keypair()
+        session_hash = "ab" * 32
+        payload = {"prompt": "hello"}
+
+        envelope = encrypt_confidential_payload(
+            session_hash,
+            requester["private_key_hex"],
+            provider["public_key_hex"],
+            payload,
+        )
+        decrypted = decrypt_confidential_envelope(
+            session_hash,
+            provider["private_key_hex"],
+            requester["public_key_hex"],
+            envelope,
+            expected_direction="request",
         )
 
-        async with MarketplaceClient(marketplace.base_url) as client:
-            nodes = await client.search_nodes(limit=10)
+        self.assertEqual(decrypted, payload)
 
-        self.assertTrue(nodes)
-        self.assertTrue(any(entry["descriptor"]["node_id"] for entry in nodes))
-        self.assertTrue(any(entry["descriptor"]["transports"]["clearnet_url"] == node.base_url for entry in nodes))
 
 class ClientSdkHardeningTests(unittest.IsolatedAsyncioTestCase):
-    async def test_sdk_client_sessions_use_explicit_timeouts(self) -> None:
-        client = ProviderClient("http://127.0.0.1:9")
-        session = await client._ensure_session()
-        try:
-            self.assertIsNotNone(session.timeout.total)
-            self.assertIsNotNone(session.timeout.connect)
-            self.assertIsNotNone(session.timeout.sock_connect)
-            self.assertIsNotNone(session.timeout.sock_read)
-        finally:
-            await client.close()
-
     async def test_non_json_error_bodies_raise_normalized_froglet_error(self) -> None:
-        async def descriptor_error(_: web.Request) -> web.Response:
-            return web.Response(status=502, text="upstream is down", content_type="text/plain")
-
         app = web.Application()
-        app.router.add_get("/v1/descriptor", descriptor_error)
+
+        async def handler(_request: web.Request) -> web.StreamResponse:
+            return web.Response(status=502, text="gateway exploded", content_type="text/plain")
+
+        app.router.add_route("*", "/{tail:.*}", handler)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
-        self.addAsyncCleanup(runner.cleanup)
-        port = listening_port(site)
-
-        async with ProviderClient(f"http://127.0.0.1:{port}") as client:
-            with self.assertRaises(FrogletClientError) as raised:
-                await client.descriptor()
+        base_url = f"http://127.0.0.1:{listening_port(site)}"
+        try:
+            async with ProviderClient(base_url) as provider:
+                with self.assertRaises(FrogletClientError) as raised:
+                    await provider.descriptor()
+        finally:
+            await runner.cleanup()
 
         self.assertEqual(raised.exception.status, 502)
         self.assertEqual(raised.exception.payload["error"], "non_json_error_response")
-        self.assertIn("upstream is down", raised.exception.payload["body"])
+        self.assertIn("gateway exploded", raised.exception.payload["body"])
+
+    async def test_sdk_client_sessions_use_explicit_timeouts(self) -> None:
+        async with ProviderClient("http://127.0.0.1:1") as provider:
+            session = await provider._ensure_session()
+            timeout = session.timeout
+
+        self.assertEqual(timeout.total, 30.0)
+        self.assertEqual(timeout.connect, 5.0)
+        self.assertEqual(timeout.sock_connect, 5.0)
+        self.assertEqual(timeout.sock_read, 30.0)
 
     async def test_wait_for_deal_uses_capped_backoff_with_jitter(self) -> None:
-        client = ProviderClient("http://127.0.0.1:9")
-        statuses = iter(
-            [
-                {"status": "running"},
-                {"status": "result_ready"},
-                {"status": "succeeded"},
-            ]
-        )
-        sleep_calls: list[float] = []
+        client = RuntimeClient("http://runtime.invalid", "token")
+        statuses = [
+            {"deal_id": "deal-1", "status": "payment_pending"},
+            {"deal_id": "deal-1", "status": "payment_pending"},
+            {"deal_id": "deal-1", "status": "succeeded"},
+        ]
 
-        async def fake_get_deal(_: str) -> dict[str, str]:
-            return next(statuses)
-
-        async def fake_sleep(delay: float) -> None:
-            sleep_calls.append(delay)
+        async def fake_get_deal(_deal_id: str) -> dict:
+            return statuses.pop(0)
 
         with mock.patch.object(client, "get_deal", side_effect=fake_get_deal), mock.patch(
-            "froglet_client.asyncio.sleep",
-            side_effect=fake_sleep,
-        ), mock.patch(
             "froglet_client.random.uniform",
-            side_effect=lambda lower, upper: upper,
-        ):
+            side_effect=lambda low, high: (low + high) / 2,
+        ), mock.patch("asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
             terminal = await client.wait_for_deal(
                 "deal-1",
                 statuses={"succeeded"},
-                timeout_secs=5.0,
-                poll_interval_secs=0.2,
+                timeout_secs=2.0,
+                poll_interval_secs=0.1,
             )
 
         self.assertEqual(terminal["status"], "succeeded")
-        self.assertEqual(len(sleep_calls), 2)
-        self.assertAlmostEqual(sleep_calls[0], 0.2)
-        self.assertAlmostEqual(sleep_calls[1], 0.4)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+        self.assertEqual(sleep_mock.await_count, 2)

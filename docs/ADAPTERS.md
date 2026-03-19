@@ -2,7 +2,8 @@
 
 Status: non-normative supporting document
 
-This document captures adapter-level behavior that is intentionally outside the kernel frozen in [`../SPEC.md`](../SPEC.md).
+This document captures adapter-level behavior that is intentionally outside the
+kernel defined in [`../SPEC.md`](../SPEC.md).
 
 ## 1. Transport
 
@@ -16,7 +17,8 @@ How clients prioritize, retry, or rotate across those endpoints is adapter behav
 
 ## 2. Transport-level `wasm_submission`
 
-The kernel freezes the canonical `compute.wasm.v1` workload object, but not the upload wrapper used to carry execution material.
+The kernel defines the canonical `compute.wasm.v1` workload object, but not
+the upload wrapper used to carry execution material.
 
 The reference transport object is `wasm_submission`:
 

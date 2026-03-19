@@ -2,57 +2,40 @@
   "id": "froglet",
   "name": "Froglet",
   "version": "0.1.0",
-  "description": "Public Froglet discovery, provider, and optional local runtime tools for OpenClaw.",
+  "description": "Runtime-only Froglet tools for OpenClaw and NemoClaw.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
+    "required": ["runtimeUrl", "runtimeAuthTokenPath"],
     "properties": {
-      "marketplaceUrl": {
-        "type": "string",
-        "description": "Base URL for the Froglet marketplace, for example http://127.0.0.1:9090."
-      },
       "requestTimeoutMs": {
         "type": "integer",
         "minimum": 1000,
         "maximum": 60000,
         "default": 10000,
-        "description": "HTTP timeout for marketplace and provider requests."
+        "description": "HTTP timeout for runtime requests."
       },
       "defaultSearchLimit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
         "default": 10,
-        "description": "Default marketplace search size when the tool caller omits a limit."
+        "description": "Default discovery search size when the tool caller omits a limit."
       },
       "maxSearchLimit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 200,
         "default": 50,
-        "description": "Hard ceiling applied to marketplace search limits."
-      },
-      "enablePrivilegedRuntimeTools": {
-        "type": "boolean",
-        "default": false,
-        "description": "Register optional local runtime buy, payment-intent, accept-result, and publish tools."
-      },
-      "providerUrl": {
-        "type": "string",
-        "description": "Default public Froglet provider base URL, for example http://127.0.0.1:8080."
+        "description": "Hard ceiling applied to discovery search limits."
       },
       "runtimeUrl": {
         "type": "string",
-        "description": "Default Froglet runtime base URL, for example http://127.0.0.1:8081."
+        "description": "Default local Froglet runtime base URL, for example http://127.0.0.1:8081."
       },
       "runtimeAuthTokenPath": {
         "type": "string",
         "description": "Default Froglet runtime auth token path, for example /absolute/path/to/data/runtime/auth.token."
-      },
-      "pythonExecutable": {
-        "type": "string",
-        "default": "python3",
-        "description": "Python command used to run the public Froglet runtime bridge."
       }
     }
   }

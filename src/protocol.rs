@@ -1,4 +1,16 @@
-use crate::{canonical_json, crypto, jobs::JobSpec, pricing::ServiceId, wasm::WasmSubmission};
+use crate::{
+    canonical_json,
+    confidential::{
+        ARTIFACT_TYPE_CONFIDENTIAL_PROFILE as CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_PROFILE,
+        ARTIFACT_TYPE_CONFIDENTIAL_SESSION as CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_SESSION,
+        EncryptedEnvelope, WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1,
+        WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1,
+    },
+    crypto,
+    jobs::JobSpec,
+    pricing::ServiceId,
+    wasm::WasmSubmission,
+};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -11,6 +23,10 @@ pub const ARTIFACT_TYPE_QUOTE: &str = "quote";
 pub const ARTIFACT_TYPE_DEAL: &str = "deal";
 pub const ARTIFACT_TYPE_RECEIPT: &str = "receipt";
 pub const ARTIFACT_TYPE_CURATED_LIST: &str = "curated_list";
+pub const ARTIFACT_TYPE_CONFIDENTIAL_PROFILE: &str =
+    CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_PROFILE;
+pub const ARTIFACT_TYPE_CONFIDENTIAL_SESSION: &str =
+    CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_SESSION;
 pub const TRANSPORT_TYPE_INVOICE_BUNDLE: &str = "invoice_bundle";
 
 pub const ARTIFACT_KIND_DESCRIPTOR: &str = ARTIFACT_TYPE_DESCRIPTOR;
@@ -19,6 +35,8 @@ pub const ARTIFACT_KIND_QUOTE: &str = ARTIFACT_TYPE_QUOTE;
 pub const ARTIFACT_KIND_DEAL: &str = ARTIFACT_TYPE_DEAL;
 pub const ARTIFACT_KIND_RECEIPT: &str = ARTIFACT_TYPE_RECEIPT;
 pub const ARTIFACT_KIND_CURATED_LIST: &str = ARTIFACT_TYPE_CURATED_LIST;
+pub const ARTIFACT_KIND_CONFIDENTIAL_PROFILE: &str = ARTIFACT_TYPE_CONFIDENTIAL_PROFILE;
+pub const ARTIFACT_KIND_CONFIDENTIAL_SESSION: &str = ARTIFACT_TYPE_CONFIDENTIAL_SESSION;
 pub const TRANSPORT_KIND_INVOICE_BUNDLE: &str = TRANSPORT_TYPE_INVOICE_BUNDLE;
 
 pub const LINKED_IDENTITY_KIND_NOSTR: &str = "nostr";
@@ -156,6 +174,8 @@ pub struct OfferPayload {
     pub price_schedule: OfferPriceSchedule,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terms_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidential_profile_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +230,8 @@ pub struct QuotePayload {
     pub expires_at: i64,
     pub workload_kind: String,
     pub workload_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidential_session_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities_granted: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -258,6 +280,8 @@ pub struct DealPayload {
     pub provider_id: String,
     pub quote_hash: String,
     pub workload_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidential_session_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extension_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,6 +335,12 @@ pub struct ReceiptExecutor {
     pub runtime: String,
     pub runtime_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation_platform: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub abi_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_hash: Option<String>,
@@ -355,6 +385,10 @@ pub struct ReceiptPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidential_session_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_envelope_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result_format: Option<String>,
     pub executor: ReceiptExecutor,
     pub limits_applied: ExecutionLimits,
@@ -376,6 +410,15 @@ pub enum WorkloadSpec {
     OciWasm {
         submission: Box<crate::wasm::OciWasmSubmission>,
     },
+    ConfidentialService {
+        confidential_session_hash: String,
+        service_id: String,
+        request_envelope: Box<EncryptedEnvelope>,
+    },
+    AttestedWasm {
+        confidential_session_hash: String,
+        request_envelope: Box<EncryptedEnvelope>,
+    },
     EventsQuery {
         kinds: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -388,6 +431,8 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { .. } => "wasm",
             WorkloadSpec::OciWasm { .. } => "oci_wasm",
+            WorkloadSpec::ConfidentialService { .. } => "confidential_service",
+            WorkloadSpec::AttestedWasm { .. } => "attested_wasm",
             WorkloadSpec::EventsQuery { .. } => "events_query",
         }
     }
@@ -396,6 +441,8 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
             WorkloadSpec::OciWasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1,
+            WorkloadSpec::ConfidentialService { .. } => WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1,
+            WorkloadSpec::AttestedWasm { .. } => WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1,
             WorkloadSpec::EventsQuery { .. } => "events.query",
         }
     }
@@ -404,6 +451,8 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { .. } => ServiceId::ExecuteWasm,
             WorkloadSpec::OciWasm { .. } => ServiceId::ExecuteWasm,
+            WorkloadSpec::ConfidentialService { .. } => ServiceId::ExecuteWasm,
+            WorkloadSpec::AttestedWasm { .. } => ServiceId::ExecuteWasm,
             WorkloadSpec::EventsQuery { .. } => ServiceId::EventsQuery,
         }
     }
@@ -413,6 +462,8 @@ impl WorkloadSpec {
             WorkloadSpec::EventsQuery { .. } => "data",
             WorkloadSpec::Wasm { .. } => "compute",
             WorkloadSpec::OciWasm { .. } => "compute",
+            WorkloadSpec::ConfidentialService { .. } => "confidential",
+            WorkloadSpec::AttestedWasm { .. } => "confidential",
         }
     }
 
@@ -420,6 +471,8 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { .. } => Some("wasm"),
             WorkloadSpec::OciWasm { .. } => Some("wasm"),
+            WorkloadSpec::ConfidentialService { .. } => None,
+            WorkloadSpec::AttestedWasm { .. } => Some("tee.wasm"),
             WorkloadSpec::EventsQuery { .. } => None,
         }
     }
@@ -428,6 +481,8 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { submission } => Some(submission.workload.abi_version.as_str()),
             WorkloadSpec::OciWasm { submission } => Some(submission.workload.abi_version.as_str()),
+            WorkloadSpec::ConfidentialService { .. } => None,
+            WorkloadSpec::AttestedWasm { .. } => None,
             WorkloadSpec::EventsQuery { .. } => None,
         }
     }
@@ -436,6 +491,12 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { submission } => submission.workload_hash(),
             WorkloadSpec::OciWasm { submission } => submission.workload_hash(),
+            WorkloadSpec::ConfidentialService {
+                request_envelope, ..
+            } => request_envelope.envelope_hash(),
+            WorkloadSpec::AttestedWasm {
+                request_envelope, ..
+            } => request_envelope.envelope_hash(),
             WorkloadSpec::EventsQuery { .. } => {
                 let encoded = canonical_json::to_vec(self).map_err(|e| e.to_string())?;
                 Ok(crypto::sha256_hex(encoded))
@@ -447,7 +508,25 @@ impl WorkloadSpec {
         match self {
             WorkloadSpec::Wasm { submission } => &submission.workload.requested_capabilities,
             WorkloadSpec::OciWasm { submission } => &submission.workload.requested_capabilities,
+            WorkloadSpec::ConfidentialService { .. } => &[],
+            WorkloadSpec::AttestedWasm { .. } => &[],
             WorkloadSpec::EventsQuery { .. } => &[],
+        }
+    }
+
+    pub fn confidential_session_hash(&self) -> Option<&str> {
+        match self {
+            WorkloadSpec::ConfidentialService {
+                confidential_session_hash,
+                ..
+            } => Some(confidential_session_hash.as_str()),
+            WorkloadSpec::AttestedWasm {
+                confidential_session_hash,
+                ..
+            } => Some(confidential_session_hash.as_str()),
+            WorkloadSpec::Wasm { .. }
+            | WorkloadSpec::OciWasm { .. }
+            | WorkloadSpec::EventsQuery { .. } => None,
         }
     }
 }
@@ -652,6 +731,7 @@ mod tests {
                 expires_at: 456,
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: "44".repeat(32),
+                confidential_session_hash: None,
                 capabilities_granted: Vec::new(),
                 extension_refs: Vec::new(),
                 quote_use: None,
@@ -696,6 +776,7 @@ mod tests {
                 expires_at: 456,
                 workload_kind: "compute.wasm.v1".to_string(),
                 workload_hash: "44".repeat(32),
+                confidential_session_hash: None,
                 capabilities_granted: Vec::new(),
                 extension_refs: Vec::new(),
                 quote_use: None,
@@ -787,6 +868,7 @@ mod tests {
                     expires_at: 1_700_000_100 + iteration,
                     workload_kind: "compute.wasm.v1".to_string(),
                     workload_hash: random_hex(&mut rng, 32),
+                    confidential_session_hash: None,
                     capabilities_granted: Vec::new(),
                     extension_refs: Vec::new(),
                     quote_use: None,

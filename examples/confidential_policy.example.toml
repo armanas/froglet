@@ -1,0 +1,45 @@
+[backend]
+kind = "nvidia.confidential_compute.v1"
+platform = "nvidia"
+
+[verifier]
+mode = "nvidia.mock.v1"
+
+[key_release]
+provider = "mock_external_kms.v1"
+
+[connectors.inline_docs]
+kind = "inline_json"
+documents = [
+  { id = "doc-1", title = "Froglet confidential search", body = "Provider-defined confidential search over protected documents." },
+  { id = "doc-2", title = "NemoClaw integration", body = "NemoClaw can open a confidential session, verify attestation, encrypt input, and decrypt the result." },
+  { id = "doc-3", title = "Enterprise boundary", body = "Provider-private data stays behind confidential services instead of generic requester-controlled database handles." }
+]
+
+[profiles.confidential_search]
+offer_id = "confidential.search"
+allowed_workload_kind = "confidential.service.v1"
+measurement = "1111111111111111111111111111111111111111111111111111111111111111"
+key_release_policy_hash = "2222222222222222222222222222222222222222222222222222222222222222"
+service_id = "json_search"
+allowed_connectors = ["inline_docs"]
+max_input_bytes = 4096
+max_runtime_ms = 2000
+max_output_bytes = 16384
+price_sats = 25
+
+[profiles.attested_wasm]
+offer_id = "attested.execute.wasm"
+allowed_workload_kind = "compute.wasm.attested.v1"
+measurement = "3333333333333333333333333333333333333333333333333333333333333333"
+key_release_policy_hash = "4444444444444444444444444444444444444444444444444444444444444444"
+max_input_bytes = 65536
+max_runtime_ms = 5000
+max_output_bytes = 65536
+price_sats = 50
+
+[services.json_search]
+profile = "confidential_search"
+handler = "json_search"
+connector = "inline_docs"
+max_results = 10

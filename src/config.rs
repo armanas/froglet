@@ -1,3 +1,4 @@
+use crate::confidential::{self, ConfidentialConfig, ConfidentialPolicy};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -53,14 +54,14 @@ impl NetworkMode {
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryMode {
     None,
-    Marketplace,
+    Reference,
 }
 
 impl fmt::Display for DiscoveryMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DiscoveryMode::None => write!(f, "none"),
-            DiscoveryMode::Marketplace => write!(f, "marketplace"),
+            DiscoveryMode::Reference => write!(f, "reference"),
         }
     }
 }
@@ -69,9 +70,9 @@ impl DiscoveryMode {
     fn parse(s: &str) -> Result<Self, String> {
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
-            "marketplace" => Ok(Self::Marketplace),
+            "reference" => Ok(Self::Reference),
             _ => Err(format!(
-                "Invalid FROGLET_DISCOVERY_MODE value: '{s}'. Allowed values: none, marketplace"
+                "Invalid FROGLET_DISCOVERY_MODE value: '{s}'. Allowed values: none, reference"
             )),
         }
     }
@@ -139,7 +140,7 @@ pub struct IdentityConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct MarketplaceConfig {
+pub struct ReferenceDiscoveryConfig {
     pub url: String,
     pub publish: bool,
     pub required: bool,
@@ -303,16 +304,18 @@ pub struct NodeConfig {
     pub public_base_url: Option<String>,
     pub runtime_listen_addr: String,
     pub runtime_allow_non_loopback: bool,
+    pub http_ca_cert_path: Option<PathBuf>,
     pub tor: TorSidecarConfig,
     pub discovery_mode: DiscoveryMode,
     pub identity: IdentityConfig,
-    pub marketplace: Option<MarketplaceConfig>,
+    pub reference_discovery: Option<ReferenceDiscoveryConfig>,
     pub pricing: PricingConfig,
     pub payment_backend: PaymentBackend,
     pub execution_timeout_secs: u64,
     pub lightning: LightningConfig,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
+    pub confidential: ConfidentialConfig,
 }
 
 impl NodeConfig {
@@ -331,6 +334,9 @@ impl NodeConfig {
         let runtime_listen_addr = env::var("FROGLET_RUNTIME_LISTEN_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8081".to_string());
         let runtime_allow_non_loopback = env_bool("FROGLET_RUNTIME_ALLOW_NON_LOOPBACK", false)?;
+        let http_ca_cert_path = env::var("FROGLET_HTTP_CA_CERT_PATH")
+            .ok()
+            .map(PathBuf::from);
         let tor = TorSidecarConfig {
             binary_path: env::var("FROGLET_TOR_BINARY").unwrap_or_else(|_| "tor".to_string()),
             backend_listen_addr: env::var("FROGLET_TOR_BACKEND_LISTEN_ADDR")
@@ -343,36 +349,32 @@ impl NodeConfig {
             execute_wasm: env_u64("FROGLET_PRICE_EXEC_WASM", 0)?,
         };
 
-        let marketplace_url = env::var("FROGLET_MARKETPLACE_URL").ok();
-        let publish = env_bool("FROGLET_MARKETPLACE_PUBLISH", false)?;
-        let required = env_bool("FROGLET_MARKETPLACE_REQUIRED", false)?;
+        let discovery_url = env::var("FROGLET_DISCOVERY_URL").ok();
+        let publish = env_bool("FROGLET_DISCOVERY_PUBLISH", false)?;
+        let required = env_bool("FROGLET_DISCOVERY_REQUIRED", false)?;
         let discovery_mode = match env::var("FROGLET_DISCOVERY_MODE") {
             Ok(val) => DiscoveryMode::parse(&val)?,
-            Err(_) if publish || marketplace_url.is_some() => DiscoveryMode::Marketplace,
+            Err(_) if publish || discovery_url.is_some() => DiscoveryMode::Reference,
             Err(_) => DiscoveryMode::None,
         };
 
         if required && !publish {
             return Err(
-                "FROGLET_MARKETPLACE_REQUIRED=true requires FROGLET_MARKETPLACE_PUBLISH=true"
-                    .into(),
+                "FROGLET_DISCOVERY_REQUIRED=true requires FROGLET_DISCOVERY_PUBLISH=true".into(),
             );
         }
 
-        let marketplace = if discovery_mode == DiscoveryMode::Marketplace || publish {
-            let url = marketplace_url.ok_or_else(|| {
-                "FROGLET_MARKETPLACE_URL is required when marketplace discovery or publishing is enabled"
+        let reference_discovery = if discovery_mode == DiscoveryMode::Reference || publish {
+            let url = discovery_url.ok_or_else(|| {
+                "FROGLET_DISCOVERY_URL is required when reference discovery or publishing is enabled"
                     .to_string()
             })?;
 
-            Some(MarketplaceConfig {
+            Some(ReferenceDiscoveryConfig {
                 url,
                 publish,
                 required,
-                heartbeat_interval_secs: env_u64(
-                    "FROGLET_MARKETPLACE_HEARTBEAT_INTERVAL_SECS",
-                    30,
-                )?,
+                heartbeat_interval_secs: env_u64("FROGLET_DISCOVERY_HEARTBEAT_INTERVAL_SECS", 30)?,
             })
         } else {
             None
@@ -472,6 +474,13 @@ impl NodeConfig {
             Some(path) => Some(load_wasm_policy(path, &db_path)?),
             None => None,
         };
+        let confidential_policy_path = env::var("FROGLET_CONFIDENTIAL_POLICY_PATH")
+            .ok()
+            .map(PathBuf::from);
+        let confidential_policy = match confidential_policy_path.as_ref() {
+            Some(path) => Some(load_confidential_policy(path, &db_path)?),
+            None => None,
+        };
 
         Ok(Self {
             network_mode,
@@ -479,12 +488,13 @@ impl NodeConfig {
             public_base_url,
             runtime_listen_addr,
             runtime_allow_non_loopback,
+            http_ca_cert_path,
             tor,
             discovery_mode,
             identity: IdentityConfig {
                 auto_generate: env_bool("FROGLET_IDENTITY_AUTO_GENERATE", true)?,
             },
-            marketplace,
+            reference_discovery,
             pricing,
             payment_backend,
             execution_timeout_secs,
@@ -502,6 +512,12 @@ impl NodeConfig {
             wasm: WasmConfig {
                 policy_path: wasm_policy_path,
                 policy: wasm_policy,
+            },
+            confidential: ConfidentialConfig {
+                policy_path: confidential_policy_path,
+                policy: confidential_policy,
+                session_ttl_secs: env_u64("FROGLET_CONFIDENTIAL_SESSION_TTL_SECS", 300)?
+                    .clamp(30, 3600),
             },
         })
     }
@@ -602,6 +618,13 @@ fn load_wasm_policy(path: &Path, internal_db_path: &Path) -> Result<WasmPolicy, 
     })?;
     validate_wasm_policy(&policy, internal_db_path)?;
     Ok(policy)
+}
+
+fn load_confidential_policy(
+    path: &Path,
+    internal_db_path: &Path,
+) -> Result<ConfidentialPolicy, String> {
+    confidential::load_policy(path, internal_db_path)
 }
 
 /// Validates a Wasm policy at load time.

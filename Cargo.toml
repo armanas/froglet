@@ -2,6 +2,19 @@
 name = "froglet"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[bin]]
+name = "froglet-provider"
+path = "src/bin/froglet-provider.rs"
+
+[[bin]]
+name = "froglet-runtime"
+path = "src/bin/froglet-runtime.rs"
+
+[[bin]]
+name = "froglet-discovery"
+path = "src/bin/discovery.rs"
 
 [dependencies]
 # Async Runtime & Web Framework
@@ -12,7 +25,7 @@ tower = { version = "0.4", features = ["util", "limit", "timeout"] }
 hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 futures = "0.3"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "socks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # Serialization & Deserialization
@@ -23,12 +36,13 @@ serde_json_canonicalizer = "0.3.2"
 # External Tor sidecar integration
 
 # Cryptography
-k256 = { version = "0.13", features = ["schnorr"] }
+k256 = { version = "0.13", features = ["schnorr", "ecdh"] }
 rand = "0.8"
 hex = "0.4"
 sha2 = "0.10"
 base64 = "0.22"
 lightning-invoice = { version = "0.34", features = ["std"] }
+aes-gcm-siv = "0.11"
 
 # Security Sandbox (WASM)
 wasmtime = "41.0.4"
@@ -46,7 +60,10 @@ once_cell = "1"
 subtle = "2"
 toml = "0.9"
 oci-registry-client = "0.2.3"
+urlencoding = "2.1"
 
 [dev-dependencies]
 bitcoin = "0.32.8"
+rcgen = "0.13"
+tokio-rustls = "0.26"
 wat = "1"

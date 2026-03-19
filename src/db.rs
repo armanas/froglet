@@ -221,6 +221,25 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             updated_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_deals_status_updated_at ON deals (status, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS requester_deals (
+            deal_id TEXT PRIMARY KEY,
+            idempotency_key TEXT UNIQUE,
+            provider_id TEXT NOT NULL,
+            provider_url TEXT NOT NULL,
+            spec_json TEXT NOT NULL,
+            quote_json TEXT NOT NULL,
+            deal_artifact_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            result_hash TEXT,
+            error TEXT,
+            receipt_artifact_json TEXT,
+            success_preimage TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_requester_deals_status_updated_at
+            ON requester_deals (status, updated_at DESC);
         COMMIT;",
     )?;
     ensure_column(conn, "jobs", "workload_evidence_hash", "TEXT")?;

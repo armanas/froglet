@@ -76,16 +76,28 @@ export function formatTimestamp(seconds) {
   return new Date(seconds * 1000).toISOString()
 }
 
-export async function fetchJson(url, timeoutMs) {
+export async function requestJson(
+  url,
+  {
+    method = "GET",
+    timeoutMs,
+    headers = {},
+    jsonBody,
+    expectedStatuses = [200]
+  } = {}
+) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
     const response = await fetch(url, {
-      method: "GET",
+      method,
       headers: {
-        Accept: "application/json"
+        Accept: "application/json",
+        ...(jsonBody !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...headers
       },
+      ...(jsonBody !== undefined ? { body: JSON.stringify(jsonBody) } : {}),
       signal: controller.signal
     })
 
@@ -97,7 +109,7 @@ export async function fetchJson(url, timeoutMs) {
       throw new Error(`Expected JSON from ${url}, got invalid payload: ${error.message}`)
     }
 
-    if (!response.ok) {
+    if (!expectedStatuses.includes(response.status)) {
       throw new Error(
         `Request to ${url} failed with ${response.status}: ${JSON.stringify(payload)}`
       )
@@ -112,4 +124,12 @@ export async function fetchJson(url, timeoutMs) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+export async function fetchJson(url, timeoutMs) {
+  return requestJson(url, {
+    method: "GET",
+    timeoutMs,
+    expectedStatuses: [200]
+  })
 }

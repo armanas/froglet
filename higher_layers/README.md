@@ -1,38 +1,43 @@
-# Higher-Layer Planning
+# Higher-Layer Index
 
-This directory is a staging area for product-layer work that is intentionally
-outside the frozen Froglet kernel and bot/runtime core.
+This directory is the staging area for product-layer work that sits above the
+public Froglet kernel, runtime, SDKs, and conformance surfaces.
 
-It exists inside this repo for now so marketplace and addon ideas can be
-aligned before they are moved into separate repositories.
+The canonical boundary document is [REPO_STRATEGY.md](REPO_STRATEGY.md).
 
-Boundary rules:
+## Service Directories
 
-- Do not widen `SPEC.md` for work tracked here unless there is a clear kernel
-  interoperability requirement.
-- Treat Froglet as the source of signed artifacts, not as the home for
-  marketplace policy, ranking, ownership profiles, or exchange logic.
-- Prefer consuming public Froglet APIs and signed artifacts over coupling to
-  private runtime internals or direct SQLite reads.
-- Assume everything here is portable and should be easy to extract later.
+- [marketplace/README.md](marketplace/README.md): staged notes for the split
+  between the public reference-discovery surface and later private
+  marketplace/catalog layers
+- [indexer/README.md](indexer/README.md): ingest and projection notes for
+  signed artifacts and feeds
+- [broker/README.md](broker/README.md): org-purchase, funding, and billing
+  notes for higher-layer broker flows
+- [trust/README.md](trust/README.md): ranking, reputation, ownership, and
+  issuer-overlay notes
+- [operator/README.md](operator/README.md): hosted control-plane and admin
+  tooling notes
+- [openclaw/README.md](openclaw/README.md): first-party OpenClaw integration
+  notes that should stay out of the public plugin boundary
 
-Current topics:
+## Legacy Planning Notes
 
-- [MARKETPLACE.md](MARKETPLACE.md): service split and scope for discovery,
-  indexing, catalog, broker, and reputation layers
-- [EXECUTION_PLAN.md](EXECUTION_PLAN.md): phased implementation order for the
-  open core, open integration tooling, and closed higher-layer services
-- [REPO_STRATEGY.md](REPO_STRATEGY.md): public/private repo split, license
-  position, and temporary ignored `private/` incubation rules
-- [OWNERSHIP.md](OWNERSHIP.md): ownership and issuer-model notes that do not
-  require kernel changes today
-- [CHECKLIST.md](CHECKLIST.md): separate execution checklist for marketplace and
-  addon work
-- [DECISIONS.md](DECISIONS.md): decisions already made about repo boundaries
-  and higher-layer services
+The older flat planning files remain in this directory only as compatibility
+notes while the service directories become the canonical home:
 
-Related core docs:
+- [MARKETPLACE.md](MARKETPLACE.md)
+- [EXECUTION_PLAN.md](EXECUTION_PLAN.md)
+- [OWNERSHIP.md](OWNERSHIP.md)
+- [CHECKLIST.md](CHECKLIST.md)
+- [DECISIONS.md](DECISIONS.md)
 
-- [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)
+Focused active note retained beside the service directories:
+
+- [BROKER_SPONSORED_ORG_PURCHASE.md](BROKER_SPONSORED_ORG_PURCHASE.md)
+
+## Related Core Docs
+
 - [../docs/IMPLEMENTATION_CHECKLIST.md](../docs/IMPLEMENTATION_CHECKLIST.md)
+- [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)
 - [../docs/REMOTE_AGENT_LAYER.md](../docs/REMOTE_AGENT_LAYER.md)

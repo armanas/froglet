@@ -1,7 +1,7 @@
 # Release
 
-This repo now has a minimal tagged release path for the current Docker and
-OpenClaw alpha surface.
+This repo now has a minimal tagged release path for the current Docker,
+reference discovery, and OpenClaw alpha surface.
 
 ## Versioning
 
@@ -19,12 +19,14 @@ The release workflow checks this and fails if they diverge.
 
 Pushing a matching tag triggers
 [../.github/workflows/release.yml](../.github/workflows/release.yml), which
-publishes:
+publishes the three role-specific images:
 
-- `ghcr.io/<owner>/froglet:<version>`
-- `ghcr.io/<owner>/froglet:<sha-tag>`
-- `ghcr.io/<owner>/froglet-marketplace:<version>`
-- `ghcr.io/<owner>/froglet-marketplace:<sha-tag>`
+- `ghcr.io/<owner>/froglet-provider:<version>`
+- `ghcr.io/<owner>/froglet-provider:<sha-tag>`
+- `ghcr.io/<owner>/froglet-runtime:<version>`
+- `ghcr.io/<owner>/froglet-runtime:<sha-tag>`
+- `ghcr.io/<owner>/froglet-discovery:<version>`
+- `ghcr.io/<owner>/froglet-discovery:<sha-tag>`
 
 ## Alpha Cut Checklist
 
@@ -48,7 +50,7 @@ the release notes should call out:
 
 - official Docker starter
 - public OpenClaw integration
-- reference marketplace discovery
+- reference discovery
 - mock-Lightning local development path
 - any intentionally deferred layers, especially broker and closed higher-layer
   services

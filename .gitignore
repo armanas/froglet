@@ -37,6 +37,8 @@ venv/
 /node.db-*
 /marketplace.db
 /marketplace.db-*
+/_tmp/
+/higher_layers/
 
 # Private higher-layer incubation
 private/**
