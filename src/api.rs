@@ -287,6 +287,11 @@ pub struct ReleaseDealPreimageRequest {
     pub expected_result_hash: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MockPayDealRequest {
+    pub success_preimage: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RuntimeWalletBalanceResponse {
     pub backend: String,
@@ -356,6 +361,15 @@ pub struct RuntimeDealResponse {
 #[derive(Debug, Serialize)]
 pub struct RuntimeAcceptDealResponse {
     pub deal: requester_deals::RequesterDealRecord,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RuntimeMockPayDealResponse {
+    pub deal: requester_deals::RequesterDealRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_intent_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_intent: Option<settlement::LightningWalletIntent>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -518,6 +532,7 @@ fn provider_routes() -> Router<Arc<AppState>> {
             "/v1/provider/deals/:deal_id/accept",
             post(release_deal_preimage),
         )
+        .route("/v1/provider/deals/:deal_id/mock-pay", post(mock_pay_deal))
         .route(
             "/v1/provider/deals/:deal_id/invoice-bundle",
             get(get_deal_invoice_bundle),
@@ -549,6 +564,10 @@ fn runtime_routes() -> Router<Arc<AppState>> {
         .route(
             "/v1/runtime/deals/:deal_id/payment-intent",
             get(runtime_deal_payment_intent),
+        )
+        .route(
+            "/v1/runtime/deals/:deal_id/mock-pay",
+            post(runtime_mock_pay_deal),
         )
         .route(
             "/v1/runtime/deals/:deal_id/accept",
@@ -759,6 +778,20 @@ where
     T: DeserializeOwned,
     B: Serialize + ?Sized,
 {
+    remote_json_request_with_client_error_passthrough(state, method, url, body, false).await
+}
+
+async fn remote_json_request_with_client_error_passthrough<T, B>(
+    state: &AppState,
+    method: reqwest::Method,
+    url: String,
+    body: Option<&B>,
+    preserve_client_errors: bool,
+) -> Result<T, ApiFailure>
+where
+    T: DeserializeOwned,
+    B: Serialize + ?Sized,
+{
     let mut request = state.http_client.request(method, &url);
     if let Some(body) = body {
         request = request.json(body);
@@ -778,6 +811,19 @@ where
         )
     })?;
     if !status.is_success() {
+        if preserve_client_errors && status.is_client_error() {
+            if let Ok(payload) = serde_json::from_str::<Value>(&body_text) {
+                return Err((status, payload));
+            }
+            return Err((
+                status,
+                json!({
+                    "error": "upstream client error",
+                    "upstream_body": body_text,
+                    "url": url,
+                }),
+            ));
+        }
         return Err((
             StatusCode::BAD_GATEWAY,
             json!({
@@ -1032,10 +1078,9 @@ fn build_runtime_requester_deal_artifact(
     let requester_id = state.identity.node_id().to_string();
     let execution_window_secs = deal_execution_window_secs(&quote.payload.execution_limits);
     let admission_deadline = if uses_lightning_bundle {
-        lightning_quote_max_admission_deadline(quote).min(
-            created_at
-                .saturating_add(lightning_admission_window_secs(&quote.payload.settlement_terms) as i64),
-        )
+        lightning_quote_max_admission_deadline(quote).min(created_at.saturating_add(
+            lightning_admission_window_secs(&quote.payload.settlement_terms) as i64,
+        ))
     } else {
         quote.payload.expires_at
     };
@@ -1594,6 +1639,95 @@ pub async fn runtime_get_deal(
     }
 }
 
+pub async fn runtime_mock_pay_deal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(deal_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+
+    if state.config.payment_backend != PaymentBackend::Lightning
+        || state.config.lightning.mode != LightningMode::Mock
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "runtime mock-pay is only available for lightning mock mode",
+                "deal_id": deal_id,
+            }),
+        );
+    }
+
+    let stored = match sync_requester_deal_from_provider(state.clone(), &deal_id).await {
+        Ok(deal) => deal,
+        Err(error) => return error_json(error.0, error.1),
+    };
+
+    if !quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "deal does not expose a lightning mock payment flow",
+                "deal_id": deal_id,
+            }),
+        );
+    }
+
+    let remote = match remote_json_request::<deals::DealRecord, _>(
+        state.as_ref(),
+        reqwest::Method::POST,
+        format!(
+            "{}/v1/provider/deals/{}/mock-pay",
+            stored.provider_url,
+            urlencoding::encode(&deal_id)
+        ),
+        Some(&MockPayDealRequest {
+            success_preimage: stored.success_preimage.clone(),
+        }),
+    )
+    .await
+    {
+        Ok(remote) => remote,
+        Err(error) => return error_json(error.0, error.1),
+    };
+
+    if remote.quote.hash != stored.quote.hash || remote.deal.hash != stored.deal.hash {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider mock-pay response does not match local requester deal" }),
+        );
+    }
+    if let Some(receipt) = remote.receipt.as_ref()
+        && let Err(error) = verify_provider_receipt_artifact(
+            receipt,
+            &stored.quote,
+            &stored.deal,
+            &stored.provider_id,
+            &stored.deal.payload.requester_id,
+            remote.result.as_ref(),
+            remote.result_hash.as_deref(),
+        )
+    {
+        return error_json(error.0, error.1);
+    }
+
+    match load_runtime_requester_deal_and_payment_intent(state, &deal_id).await {
+        Ok((deal, payment_intent)) => (
+            StatusCode::OK,
+            Json(json!(RuntimeMockPayDealResponse {
+                deal,
+                payment_intent_path: payment_intent
+                    .as_ref()
+                    .map(|intent| runtime_payment_intent_path(&intent.deal_id)),
+                payment_intent,
+            })),
+        ),
+        Err(error) => error_json(error.0, error.1),
+    }
+}
+
 pub async fn runtime_accept_deal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1612,7 +1746,7 @@ pub async fn runtime_accept_deal(
         .expected_result_hash
         .or_else(|| stored.result_hash.clone());
 
-    let terminal = match remote_json_request::<deals::DealRecord, _>(
+    let terminal = match remote_json_request_with_client_error_passthrough::<deals::DealRecord, _>(
         state.as_ref(),
         reqwest::Method::POST,
         format!(
@@ -1624,6 +1758,7 @@ pub async fn runtime_accept_deal(
             success_preimage: stored.success_preimage.clone(),
             expected_result_hash,
         }),
+        true,
     )
     .await
     {
@@ -1781,10 +1916,9 @@ fn build_requester_signed_deal_artifact(
     let requester_id = crypto::public_key_hex(requester_signing_key);
     let execution_window_secs = deal_execution_window_secs(&quote.payload.execution_limits);
     let admission_deadline = if uses_lightning_bundle {
-        lightning_quote_max_admission_deadline(quote).min(
-            created_at
-                .saturating_add(lightning_admission_window_secs(&quote.payload.settlement_terms) as i64),
-        )
+        lightning_quote_max_admission_deadline(quote).min(created_at.saturating_add(
+            lightning_admission_window_secs(&quote.payload.settlement_terms) as i64,
+        ))
     } else {
         quote.payload.expires_at
     };
@@ -2280,16 +2414,161 @@ pub async fn get_deal_invoice_bundle(
     }
 }
 
+pub async fn mock_pay_deal(
+    State(state): State<Arc<AppState>>,
+    Path(deal_id): Path<String>,
+    Json(payload): Json<MockPayDealRequest>,
+) -> impl IntoResponse {
+    if state.config.payment_backend != PaymentBackend::Lightning
+        || state.config.lightning.mode != LightningMode::Mock
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "provider mock-pay is only available for lightning mock mode",
+                "deal_id": deal_id,
+            }),
+        );
+    }
+
+    let lookup_deal_id = deal_id.clone();
+    let deal = match state
+        .db
+        .with_read_conn(move |conn| deals::get_deal(conn, &lookup_deal_id))
+        .await
+    {
+        Ok(Some(deal)) => deal,
+        Ok(None) => {
+            return error_json(StatusCode::NOT_FOUND, json!({ "error": "deal not found" }));
+        }
+        Err(error) => {
+            tracing::error!("Failed to load deal {deal_id} for mock pay: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "database error" }),
+            );
+        }
+    };
+
+    if deal.payment_method.as_deref() != Some("lightning") {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "deal does not use lightning settlement", "deal_id": deal_id }),
+        );
+    }
+
+    let (_success_preimage, _payment_lock) =
+        match validate_success_preimage_for_deal(&deal_id, &deal, payload.success_preimage) {
+            Ok(validated) => validated,
+            Err(error) => return error_json(error.0, error.1),
+        };
+
+    let bundle =
+        match load_validated_lightning_bundle_for_deal(state.clone(), &deal_id, &deal).await {
+            Ok(bundle) => bundle,
+            Err(error) => return error_json(error.0, error.1),
+        };
+
+    if deal.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+        if settlement::lightning_bundle_is_funded(&bundle) {
+            let reload_deal_id = deal_id.clone();
+            return match state
+                .db
+                .with_read_conn(move |conn| deals::get_deal(conn, &reload_deal_id))
+                .await
+            {
+                Ok(Some(updated)) => (StatusCode::OK, Json(json!(updated.public_record()))),
+                Ok(None) => error_json(StatusCode::NOT_FOUND, json!({ "error": "deal not found" })),
+                Err(error) => {
+                    tracing::error!("Failed to reload deal {deal_id} after mock pay: {error}");
+                    error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "database error" }),
+                    )
+                }
+            };
+        }
+
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "deal is not waiting for mock lightning admission",
+                "deal_id": deal_id,
+                "status": deal.status,
+            }),
+        );
+    }
+
+    let funded_bundle = if bundle.base_state == InvoiceBundleLegState::Settled
+        && matches!(
+            bundle.success_state,
+            InvoiceBundleLegState::Accepted | InvoiceBundleLegState::Settled
+        ) {
+        bundle
+    } else {
+        match settlement::update_lightning_invoice_bundle_states(
+            state.as_ref(),
+            &bundle.session_id,
+            InvoiceBundleLegState::Settled,
+            InvoiceBundleLegState::Accepted,
+        )
+        .await
+        {
+            Ok(Some(updated)) => updated,
+            Ok(None) => {
+                return error_json(
+                    StatusCode::NOT_FOUND,
+                    json!({
+                        "error": "lightning invoice bundle disappeared during mock payment",
+                        "deal_id": deal_id,
+                    }),
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    "Failed to update Lightning bundle during mock pay for deal {deal_id}: {error}"
+                );
+                return error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "failed to mark lightning bundle as funded" }),
+                );
+            }
+        }
+    };
+
+    if let Err(error) = promote_lightning_deal_if_funded(state.clone(), &deal, &funded_bundle).await
+    {
+        tracing::error!("Failed to promote mock-funded deal {deal_id}: {error}");
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "failed to promote lightning deal after mock payment" }),
+        );
+    }
+
+    let reload_deal_id = deal_id.clone();
+    match state
+        .db
+        .with_read_conn(move |conn| deals::get_deal(conn, &reload_deal_id))
+        .await
+    {
+        Ok(Some(updated)) => (StatusCode::OK, Json(json!(updated.public_record()))),
+        Ok(None) => error_json(StatusCode::NOT_FOUND, json!({ "error": "deal not found" })),
+        Err(error) => {
+            tracing::error!("Failed to reload deal {deal_id} after mock pay: {error}");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "database error" }),
+            )
+        }
+    }
+}
+
 pub async fn release_deal_preimage(
     State(state): State<Arc<AppState>>,
     Path(deal_id): Path<String>,
     Json(payload): Json<ReleaseDealPreimageRequest>,
 ) -> impl IntoResponse {
-    let success_preimage =
-        match normalize_hex_value("success_preimage", payload.success_preimage, 64) {
-            Ok(preimage) => preimage,
-            Err(error) => return error_json(StatusCode::BAD_REQUEST, error),
-        };
+    let success_preimage = payload.success_preimage;
     let expected_result_hash = match payload.expected_result_hash {
         Some(expected_result_hash) => {
             match normalize_hex_value("expected_result_hash", expected_result_hash, 64) {
@@ -2372,62 +2651,17 @@ pub async fn release_deal_preimage(
         );
     }
 
-    let Some(payment_lock) = deal.payment_lock() else {
-        return error_json(
-            StatusCode::CONFLICT,
-            json!({ "error": "deal is missing its lightning payment lock", "deal_id": deal_id }),
-        );
-    };
-    let Ok(success_preimage_bytes) = hex::decode(&success_preimage) else {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "success_preimage must be valid lowercase hex" }),
-        );
-    };
-    let computed_payment_hash = crypto::sha256_hex(&success_preimage_bytes);
-    if computed_payment_hash != payment_lock.token_hash {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({
-                "error": "success_preimage does not match the deal payment lock",
-                "deal_id": deal_id,
-            }),
-        );
-    }
+    let (success_preimage, payment_lock) =
+        match validate_success_preimage_for_deal(&deal_id, &deal, success_preimage) {
+            Ok(validated) => validated,
+            Err(error) => return error_json(error.0, error.1),
+        };
 
-    let synced_bundle = match sync_and_maybe_promote_lightning_deal(state.clone(), &deal).await {
-        Ok(bundle) => bundle,
-        Err(error) => {
-            tracing::error!("Failed to sync Lightning bundle for deal {deal_id}: {error}");
-            return error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": "failed to sync lightning settlement state" }),
-            );
-        }
-    };
-    let Some(bundle) = synced_bundle else {
-        return error_json(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "lightning invoice bundle not found", "deal_id": deal_id }),
-        );
-    };
-
-    let report = settlement::validate_lightning_invoice_bundle(
-        &bundle.bundle,
-        &deal.quote,
-        &deal.artifact,
-        None,
-    );
-    if !report.valid {
-        return error_json(
-            StatusCode::CONFLICT,
-            json!({
-                "error": "stored lightning invoice bundle failed commitment validation",
-                "deal_id": deal_id,
-                "validation": report,
-            }),
-        );
-    }
+    let bundle =
+        match load_validated_lightning_bundle_for_deal(state.clone(), &deal_id, &deal).await {
+            Ok(bundle) => bundle,
+            Err(error) => return error_json(error.0, error.1),
+        };
 
     if !settlement::lightning_bundle_can_settle_success(&bundle) {
         return error_json(
@@ -5271,6 +5505,83 @@ fn normalize_hex_value(
     Ok(normalized)
 }
 
+fn validate_success_preimage_for_deal(
+    deal_id: &str,
+    deal: &deals::StoredDeal,
+    success_preimage: String,
+) -> Result<(String, crate::protocol::PaymentLock), ApiFailure> {
+    let success_preimage = match normalize_hex_value("success_preimage", success_preimage, 64) {
+        Ok(preimage) => preimage,
+        Err(error) => return Err((StatusCode::BAD_REQUEST, error)),
+    };
+
+    let Some(payment_lock) = deal.payment_lock() else {
+        return Err((
+            StatusCode::CONFLICT,
+            json!({ "error": "deal is missing its lightning payment lock", "deal_id": deal_id }),
+        ));
+    };
+    let Ok(success_preimage_bytes) = hex::decode(&success_preimage) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "success_preimage must be valid lowercase hex" }),
+        ));
+    };
+    let computed_payment_hash = crypto::sha256_hex(&success_preimage_bytes);
+    if computed_payment_hash != payment_lock.token_hash {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "success_preimage does not match the deal payment lock",
+                "deal_id": deal_id,
+            }),
+        ));
+    }
+
+    Ok((success_preimage, payment_lock))
+}
+
+async fn load_validated_lightning_bundle_for_deal(
+    state: Arc<AppState>,
+    deal_id: &str,
+    deal: &deals::StoredDeal,
+) -> Result<settlement::LightningInvoiceBundleSession, ApiFailure> {
+    let synced_bundle = sync_and_maybe_promote_lightning_deal(state.clone(), deal)
+        .await
+        .map_err(|error| {
+            tracing::error!("Failed to sync Lightning bundle for deal {deal_id}: {error}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to sync lightning settlement state" }),
+            )
+        })?;
+    let Some(bundle) = synced_bundle else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            json!({ "error": "lightning invoice bundle not found", "deal_id": deal_id }),
+        ));
+    };
+
+    let report = settlement::validate_lightning_invoice_bundle(
+        &bundle.bundle,
+        &deal.quote,
+        &deal.artifact,
+        None,
+    );
+    if !report.valid {
+        return Err((
+            StatusCode::CONFLICT,
+            json!({
+                "error": "stored lightning invoice bundle failed commitment validation",
+                "deal_id": deal_id,
+                "validation": report,
+            }),
+        ));
+    }
+
+    Ok(bundle)
+}
+
 async fn deal_lightning_invoice_bundle(
     state: &AppState,
     deal: &deals::StoredDeal,
@@ -5337,6 +5648,9 @@ async fn load_runtime_requester_deal_and_payment_intent(
         stored.result_hash.as_deref(),
         &bundle,
     );
+    if let Some(mock_action) = payment_intent.mock_action.as_mut() {
+        mock_action.endpoint_path = format!("/v1/runtime/deals/{deal_id}/mock-pay");
+    }
     if let Some(release_action) = payment_intent.release_action.as_mut() {
         release_action.endpoint_path = format!("/v1/runtime/deals/{deal_id}/accept");
     }
@@ -6341,8 +6655,12 @@ async fn classify_deal_recovery(
 
         let settled_success_can_finish_on_recovery = deal.status == deals::DEAL_STATUS_RESULT_READY
             && matches!(synced_bundle.success_state, InvoiceBundleLegState::Settled);
+        let payment_pending_can_wait_for_funding = deal.status
+            == deals::DEAL_STATUS_PAYMENT_PENDING
+            && !settlement::lightning_bundle_is_funded(&synced_bundle);
 
         if !settled_success_can_finish_on_recovery
+            && !payment_pending_can_wait_for_funding
             && (matches!(synced_bundle.success_state, InvoiceBundleLegState::Settled)
                 || !settlement::lightning_bundle_is_funded(&synced_bundle))
         {
@@ -6761,10 +7079,20 @@ where
 async fn fetch_oci_wasm_module(
     submission: &crate::wasm::OciWasmSubmission,
 ) -> Result<Vec<u8>, String> {
-    // 1. Parse OCI reference: e.g. "ghcr.io/armanas/namespace/image:tag"
-    //    or "ghcr.io/armanas/namespace/image@sha256:abc123"
-    let oci_ref = &submission.workload.oci_reference;
-    let parts: Vec<&str> = oci_ref.split('/').collect();
+    // Parse OCI references such as:
+    // - "ghcr.io/org/module:tag"
+    // - "ghcr.io/org/module@sha256:abc123"
+    // - "http://127.0.0.1:5000/module:tag" for explicit local/test registries
+    let oci_ref = submission.workload.oci_reference.trim();
+    let (explicit_scheme, remainder) = if let Some(rest) = oci_ref.strip_prefix("https://") {
+        (Some("https"), rest)
+    } else if let Some(rest) = oci_ref.strip_prefix("http://") {
+        (Some("http"), rest)
+    } else {
+        (None, oci_ref)
+    };
+
+    let parts: Vec<&str> = remainder.split('/').collect();
     if parts.len() < 2 {
         return Err("invalid oci_reference format, expected at least host/image".to_string());
     }
@@ -6784,7 +7112,12 @@ async fn fetch_oci_wasm_module(
     };
 
     // Registry URL mappings; fall back to https://{host} for OCI-compliant registries
-    let (api_url, auth_url) = if host == "registry.hub.docker.com"
+    let (api_url, auth_url) = if let Some(scheme) = explicit_scheme {
+        (
+            format!("{scheme}://{host}"),
+            format!("{scheme}://{host}/token"),
+        )
+    } else if host == "registry.hub.docker.com"
         || host == "docker.io"
         || host == "registry-1.docker.io"
     {
@@ -7984,17 +8317,27 @@ mod tests {
         pricing::PricingTable,
         sandbox::WasmSandbox,
         state::{ReferenceDiscoveryStatus, TransportStatus},
-        wasm::{ComputeWasmWorkload, FROGLET_SCHEMA_V1, WASM_SUBMISSION_TYPE_V1},
+        wasm::{
+            ComputeWasmWorkload, FROGLET_SCHEMA_V1, JCS_JSON_FORMAT, OciWasmSubmission,
+            OciWasmWorkload, WASM_MODULE_OCI_FORMAT, WASM_OCI_SUBMISSION_TYPE_V1,
+            WASM_RUN_JSON_ABI_V1, WASM_SUBMISSION_TYPE_V1, WORKLOAD_KIND_COMPUTE_WASM_OCI_V1,
+        },
     };
-    use axum::{body::Body, http::Request};
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Method, Request, StatusCode, header},
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     };
+    use tokio::net::TcpListener;
     use tower::ServiceExt;
 
     static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
+    const TEST_CONFIDENTIAL_POLICY_TOML: &str =
+        include_str!("../examples/confidential_policy.example.toml");
 
     fn unique_temp_dir(label: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
@@ -8008,7 +8351,10 @@ mod tests {
         ))
     }
 
-    fn test_app_state(payment_backend: PaymentBackend) -> Arc<AppState> {
+    fn test_app_state_with_lightning_mode(
+        payment_backend: PaymentBackend,
+        lightning_mode: LightningMode,
+    ) -> Arc<AppState> {
         let temp_dir = unique_temp_dir("runtime-recovery");
         let db_path = temp_dir.join("node.db");
         std::fs::create_dir_all(&temp_dir).expect("temp dir");
@@ -8037,8 +8383,9 @@ mod tests {
             payment_backend,
             execution_timeout_secs: 5,
             lightning: LightningConfig {
-                mode: LightningMode::Mock,
-                destination_identity: None,
+                mode: lightning_mode.clone(),
+                destination_identity: matches!(lightning_mode, LightningMode::LndRest)
+                    .then(|| format!("02{}", "99".repeat(32))),
                 base_invoice_expiry_secs: 300,
                 success_hold_expiry_secs: 300,
                 min_final_cltv_expiry: 18,
@@ -8092,6 +8439,33 @@ mod tests {
             lnd_rest_client: None,
             lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         })
+    }
+
+    fn test_app_state(payment_backend: PaymentBackend) -> Arc<AppState> {
+        test_app_state_with_lightning_mode(payment_backend, LightningMode::Mock)
+    }
+
+    fn test_confidential_policy() -> crate::confidential::ConfidentialPolicy {
+        let mut policy: crate::confidential::ConfidentialPolicy =
+            toml::from_str(TEST_CONFIDENTIAL_POLICY_TOML).expect("parse confidential policy");
+        if let Some(profile) = policy.profiles.get_mut("confidential_search") {
+            profile.price_sats = 0;
+        }
+        if let Some(profile) = policy.profiles.get_mut("attested_wasm") {
+            profile.price_sats = 0;
+        }
+        policy
+    }
+
+    fn test_app_state_with_confidential_policy(payment_backend: PaymentBackend) -> Arc<AppState> {
+        let mut state = test_app_state(payment_backend);
+        let policy = test_confidential_policy();
+        crate::confidential::validate_policy(&policy, &state.config.storage.db_path)
+            .expect("validate confidential policy");
+        let state_mut = Arc::get_mut(&mut state).expect("unique app state");
+        state_mut.config.confidential.policy = Some(policy.clone());
+        state_mut.confidential_policy = Some(Arc::new(policy));
+        state
     }
 
     fn test_wasm_submission() -> crate::wasm::WasmSubmission {
@@ -8228,6 +8602,396 @@ mod tests {
         .expect("bundle")
     }
 
+    fn signed_lightning_quote_for_state(
+        state: &AppState,
+        requester_id: String,
+        created_at: i64,
+        expires_at: i64,
+        max_runtime_ms: u64,
+        max_base_invoice_expiry_secs: u64,
+        max_success_hold_expiry_secs: u64,
+    ) -> SignedArtifact<QuotePayload> {
+        let submission = test_wasm_submission();
+        let spec = WorkloadSpec::Wasm {
+            submission: Box::new(submission),
+        };
+        let workload_hash = spec.request_hash().expect("quote workload hash");
+
+        sign_node_artifact(
+            state,
+            ARTIFACT_KIND_QUOTE,
+            created_at,
+            QuotePayload {
+                provider_id: state.identity.node_id().to_string(),
+                requester_id,
+                descriptor_hash: "aa".repeat(32),
+                offer_hash: "bb".repeat(32),
+                expires_at,
+                workload_kind: "compute.wasm.v1".to_string(),
+                workload_hash,
+                confidential_session_hash: None,
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
+                settlement_terms: QuoteSettlementTerms {
+                    method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+                    destination_identity: state.identity.compressed_public_key_hex().to_string(),
+                    base_fee_msat: 1_000,
+                    success_fee_msat: 9_000,
+                    max_base_invoice_expiry_secs,
+                    max_success_hold_expiry_secs,
+                    min_final_cltv_expiry: 18,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1024,
+                    max_runtime_ms,
+                    max_memory_bytes: 4096,
+                    max_output_bytes: 1024,
+                    fuel_limit: 10_000,
+                },
+            },
+        )
+        .expect("quote")
+    }
+
+    struct SeededMockLightningDeal {
+        deal_id: String,
+        success_preimage: String,
+    }
+
+    struct TestHttpServer {
+        base_url: String,
+        join_handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for TestHttpServer {
+        fn drop(&mut self) {
+            self.join_handle.abort();
+        }
+    }
+
+    async fn spawn_http_test_server(app: Router) -> TestHttpServer {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("test server addr");
+        let base_url = format!("http://{addr}");
+        let join_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        TestHttpServer {
+            base_url,
+            join_handle,
+        }
+    }
+
+    async fn spawn_public_test_server(state: Arc<AppState>) -> TestHttpServer {
+        spawn_http_test_server(public_router(state)).await
+    }
+
+    #[derive(Clone)]
+    struct OciRegistryState {
+        module_bytes: Arc<Vec<u8>>,
+        layer_digest: String,
+        expected_image: String,
+        expected_reference: String,
+    }
+
+    struct OciRegistryFixture {
+        _server: TestHttpServer,
+        oci_reference: String,
+        oci_digest: String,
+        module_bytes: Vec<u8>,
+    }
+
+    async fn oci_registry_token() -> impl IntoResponse {
+        (
+            StatusCode::OK,
+            Json(json!({
+                "token": "test-token",
+                "access_token": "test-token"
+            })),
+        )
+    }
+
+    async fn oci_registry_manifest(
+        State(state): State<Arc<OciRegistryState>>,
+        Path((image, reference)): Path<(String, String)>,
+    ) -> impl IntoResponse {
+        assert_eq!(image, state.expected_image);
+        assert_eq!(reference, state.expected_reference);
+        (
+            StatusCode::OK,
+            Json(json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {
+                    "mediaType": "application/vnd.oci.image.config.v1+json",
+                    "size": 2,
+                    "digest": format!("sha256:{}", "00".repeat(32)),
+                },
+                "layers": [{
+                    "mediaType": wasm::WASM_MODULE_FORMAT,
+                    "size": state.module_bytes.len(),
+                    "digest": state.layer_digest,
+                }]
+            })),
+        )
+    }
+
+    async fn oci_registry_blob(
+        State(state): State<Arc<OciRegistryState>>,
+        Path((image, digest)): Path<(String, String)>,
+    ) -> impl IntoResponse {
+        assert_eq!(image, state.expected_image);
+        assert_eq!(digest, state.layer_digest);
+        (
+            [(header::CONTENT_TYPE, wasm::WASM_MODULE_FORMAT)],
+            (*state.module_bytes).clone(),
+        )
+    }
+
+    async fn spawn_oci_registry_fixture(module_bytes: Vec<u8>) -> OciRegistryFixture {
+        let expected_image = "module".to_string();
+        let expected_reference = "latest".to_string();
+        let layer_digest = format!("sha256:{}", crypto::sha256_hex(&module_bytes));
+        let state = Arc::new(OciRegistryState {
+            module_bytes: Arc::new(module_bytes.clone()),
+            layer_digest: layer_digest.clone(),
+            expected_image: expected_image.clone(),
+            expected_reference: expected_reference.clone(),
+        });
+        let app = Router::new()
+            .route("/token", get(oci_registry_token))
+            .route(
+                "/v2/:image/manifests/:reference",
+                get(oci_registry_manifest),
+            )
+            .route("/v2/:image/blobs/:digest", get(oci_registry_blob))
+            .with_state(state);
+        let server = spawn_http_test_server(app).await;
+        OciRegistryFixture {
+            oci_reference: format!("{}/{expected_image}:{expected_reference}", server.base_url),
+            oci_digest: crypto::sha256_hex(&module_bytes),
+            module_bytes,
+            _server: server,
+        }
+    }
+
+    fn test_oci_wasm_submission(oci_reference: &str, oci_digest: &str) -> OciWasmSubmission {
+        let input = Value::Null;
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).expect("canonical input"));
+        OciWasmSubmission {
+            schema_version: FROGLET_SCHEMA_V1.to_string(),
+            submission_type: WASM_OCI_SUBMISSION_TYPE_V1.to_string(),
+            workload: OciWasmWorkload {
+                schema_version: FROGLET_SCHEMA_V1.to_string(),
+                workload_kind: WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
+                abi_version: WASM_RUN_JSON_ABI_V1.to_string(),
+                module_format: WASM_MODULE_OCI_FORMAT.to_string(),
+                oci_reference: oci_reference.to_string(),
+                oci_digest: oci_digest.to_string(),
+                input_format: JCS_JSON_FORMAT.to_string(),
+                input_hash,
+                requested_capabilities: Vec::new(),
+            },
+            input,
+        }
+    }
+
+    fn runtime_request(
+        method: Method,
+        uri: &str,
+        runtime_auth_token: Option<&str>,
+        body: Option<Value>,
+    ) -> Request<Body> {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(token) = runtime_auth_token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let body = if let Some(payload) = body {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(serde_json::to_vec(&payload).expect("serialize request body"))
+        } else {
+            Body::empty()
+        };
+        builder.body(body).expect("build runtime request")
+    }
+
+    async fn response_json<T: serde::de::DeserializeOwned>(
+        response: axum::response::Response,
+    ) -> (StatusCode, T) {
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!(
+                "failed to decode JSON response {status}: {error}; body={}",
+                String::from_utf8_lossy(&bytes)
+            )
+        });
+        (status, payload)
+    }
+
+    async fn seed_mock_lightning_runtime_deal(
+        state: &Arc<AppState>,
+        provider_url: &str,
+    ) -> SeededMockLightningDeal {
+        let now = settlement::current_unix_timestamp();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            requester_id.clone(),
+            now - 5,
+            now + 180,
+            30_000,
+            60,
+            60,
+        );
+        let success_preimage = "66".repeat(32);
+        let success_payment_hash =
+            crypto::sha256_hex(hex::decode(&success_preimage).expect("success preimage bytes"));
+        let deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_key,
+            &success_payment_hash,
+            now - 5,
+            true,
+        )
+        .expect("deal");
+        let bundle = test_lightning_bundle(state.as_ref(), &quote, &deal, &requester_id, now - 5);
+        let deal_id = protocol::new_artifact_id();
+        let deal_id_for_provider = deal_id.clone();
+        let deal_id_for_requester = deal_id.clone();
+        let provider_id = state.identity.node_id().to_string();
+        let provider_url = provider_url.to_string();
+        let spec = WorkloadSpec::Wasm {
+            submission: Box::new(test_wasm_submission()),
+        };
+
+        state
+            .db
+            .with_write_conn({
+                let quote = quote.clone();
+                let deal = deal.clone();
+                let bundle = bundle.clone();
+                let provider_id = provider_id.clone();
+                let provider_url = provider_url.clone();
+                let spec = spec.clone();
+                move |conn| -> Result<(), String> {
+                    deals::insert_or_get_deal(
+                        conn,
+                        NewDeal {
+                            deal_id: deal_id_for_provider.clone(),
+                            idempotency_key: Some(format!("provider-{}", deal_id_for_provider)),
+                            quote: quote.clone(),
+                            spec: spec.clone(),
+                            artifact: deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal.hash.clone(),
+                            payment_method: Some("lightning".to_string()),
+                            payment_token_hash: Some(deal.payload.success_payment_hash.clone()),
+                            payment_amount_sats: Some(lightning_payment_amount_sats(&quote)),
+                            initial_status: deals::DEAL_STATUS_PAYMENT_PENDING.to_string(),
+                            created_at: now - 5,
+                        },
+                    )?;
+                    requester_deals::insert_or_get_requester_deal(
+                        conn,
+                        NewRequesterDeal {
+                            deal_id: deal_id_for_requester.clone(),
+                            idempotency_key: Some(format!("requester-{}", deal_id_for_requester)),
+                            provider_id,
+                            provider_url,
+                            spec,
+                            quote,
+                            deal: deal.clone(),
+                            status: deals::DEAL_STATUS_PAYMENT_PENDING.to_string(),
+                            success_preimage,
+                            created_at: now - 5,
+                        },
+                    )?;
+                    db::insert_lightning_invoice_bundle(
+                        conn,
+                        &bundle.session_id,
+                        &bundle.bundle,
+                        InvoiceBundleLegState::Open,
+                        InvoiceBundleLegState::Open,
+                        now - 5,
+                    )?;
+                    Ok(())
+                }
+            })
+            .await
+            .expect("seed mock lightning runtime deal");
+
+        SeededMockLightningDeal {
+            deal_id,
+            success_preimage: "66".repeat(32),
+        }
+    }
+
+    #[tokio::test]
+    async fn oci_wasm_fetch_supports_explicit_http_registry_refs() {
+        let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
+        let fixture = spawn_oci_registry_fixture(module_bytes.clone()).await;
+        let submission = test_oci_wasm_submission(&fixture.oci_reference, &fixture.oci_digest);
+
+        let fetched = fetch_oci_wasm_module(&submission)
+            .await
+            .expect("fetch OCI wasm module");
+
+        assert_eq!(fetched, fixture.module_bytes);
+    }
+
+    #[tokio::test]
+    async fn oci_wasm_fetch_rejects_digest_mismatch() {
+        let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
+        let fixture = spawn_oci_registry_fixture(module_bytes).await;
+        let submission =
+            test_oci_wasm_submission(&fixture.oci_reference, &format!("{}1", "00".repeat(31)));
+
+        let error = fetch_oci_wasm_module(&submission)
+            .await
+            .expect_err("digest mismatch should fail");
+
+        assert!(
+            error.contains("OCI layer digest mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oci_wasm_execution_matches_inline_wasm_execution() {
+        let state = test_app_state(PaymentBackend::None);
+        let inline_submission = test_wasm_submission();
+        let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
+        let fixture = spawn_oci_registry_fixture(module_bytes).await;
+        let oci_submission = test_oci_wasm_submission(&fixture.oci_reference, &fixture.oci_digest);
+
+        let inline_result = run_job_spec_now(
+            state.as_ref(),
+            JobSpec::Wasm {
+                submission: inline_submission,
+            },
+        )
+        .await
+        .expect("inline wasm execution");
+        let oci_result = run_job_spec_now(
+            state.as_ref(),
+            JobSpec::OciWasm {
+                submission: oci_submission,
+            },
+        )
+        .await
+        .expect("OCI wasm execution");
+
+        assert_eq!(oci_result, inline_result);
+    }
+
     #[test]
     fn lightning_runtime_deal_builder_aligns_deadlines_with_quote_expiry() {
         let created_at = 1_700_000_000;
@@ -8320,6 +9084,234 @@ mod tests {
         assert!(error.1.contains("acceptance_deadline"));
     }
 
+    #[tokio::test]
+    async fn provider_mock_pay_rejects_wrong_preimage() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let seeded = seed_mock_lightning_runtime_deal(&state, "https://provider.example").await;
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/deals/{}/mock-pay", seeded.deal_id),
+                None,
+                Some(json!({ "success_preimage": "11".repeat(32) })),
+            ))
+            .await
+            .expect("provider mock-pay response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("success_preimage does not match the deal payment lock")
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_mock_pay_marks_bundle_funded_and_starts_execution() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let seeded = seed_mock_lightning_runtime_deal(&state, "https://provider.example").await;
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/deals/{}/mock-pay", seeded.deal_id),
+                None,
+                Some(json!({ "success_preimage": seeded.success_preimage })),
+            ))
+            .await
+            .expect("provider mock-pay response");
+        let (status, payload): (StatusCode, deals::DealRecord) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(payload.status, deals::DEAL_STATUS_PAYMENT_PENDING);
+
+        let result_ready =
+            wait_for_deal_status(&state, &seeded.deal_id, deals::DEAL_STATUS_RESULT_READY).await;
+        let bundle = deal_lightning_invoice_bundle(state.as_ref(), &result_ready)
+            .await
+            .expect("load lightning bundle")
+            .expect("lightning bundle exists");
+        assert_eq!(bundle.base_state, InvoiceBundleLegState::Settled);
+        assert_eq!(bundle.success_state, InvoiceBundleLegState::Accepted);
+    }
+
+    #[tokio::test]
+    async fn provider_mock_pay_is_idempotent_after_progress() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let seeded = seed_mock_lightning_runtime_deal(&state, "https://provider.example").await;
+
+        let first = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/deals/{}/mock-pay", seeded.deal_id),
+                None,
+                Some(json!({ "success_preimage": seeded.success_preimage.clone() })),
+            ))
+            .await
+            .expect("first provider mock-pay response");
+        let (first_status, _): (StatusCode, deals::DealRecord) = response_json(first).await;
+        assert_eq!(first_status, StatusCode::OK);
+
+        let _ =
+            wait_for_deal_status(&state, &seeded.deal_id, deals::DEAL_STATUS_RESULT_READY).await;
+
+        let second = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/deals/{}/mock-pay", seeded.deal_id),
+                None,
+                Some(json!({ "success_preimage": seeded.success_preimage })),
+            ))
+            .await
+            .expect("second provider mock-pay response");
+        let (second_status, payload): (StatusCode, deals::DealRecord) = response_json(second).await;
+
+        assert_eq!(second_status, StatusCode::OK);
+        assert_eq!(payload.status, deals::DEAL_STATUS_RESULT_READY);
+    }
+
+    #[tokio::test]
+    async fn runtime_mock_pay_requires_runtime_auth() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let provider = spawn_public_test_server(state.clone()).await;
+        let seeded = seed_mock_lightning_runtime_deal(&state, &provider.base_url).await;
+        let runtime = runtime_router(state.clone());
+
+        let missing = runtime
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/runtime/deals/{}/mock-pay", seeded.deal_id),
+                None,
+                None,
+            ))
+            .await
+            .expect("missing-auth response");
+        let (missing_status, _): (StatusCode, Value) = response_json(missing).await;
+        assert_eq!(missing_status, StatusCode::UNAUTHORIZED);
+
+        let invalid = runtime
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/runtime/deals/{}/mock-pay", seeded.deal_id),
+                Some("wrong-token"),
+                None,
+            ))
+            .await
+            .expect("invalid-auth response");
+        let (invalid_status, _): (StatusCode, Value) = response_json(invalid).await;
+        assert_eq!(invalid_status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn runtime_mock_pay_rejects_lnd_rest_mode() {
+        let state =
+            test_app_state_with_lightning_mode(PaymentBackend::Lightning, LightningMode::LndRest);
+        let runtime = runtime_router(state);
+        let response = runtime
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/runtime/deals/deal-1/mock-pay",
+                Some("test-runtime-token"),
+                None,
+            ))
+            .await
+            .expect("runtime mock-pay response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("runtime mock-pay is only available for lightning mock mode")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_mock_pay_rejects_missing_bundle() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let provider = spawn_public_test_server(state.clone()).await;
+        let seeded = seed_mock_lightning_runtime_deal(&state, &provider.base_url).await;
+        state
+            .db
+            .with_write_conn(|conn| -> Result<(), String> {
+                conn.execute("DELETE FROM lightning_invoice_bundles", [])
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .await
+            .expect("delete lightning bundles");
+
+        let response = runtime_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/runtime/deals/{}/mock-pay", seeded.deal_id),
+                Some("test-runtime-token"),
+                None,
+            ))
+            .await
+            .expect("runtime mock-pay response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("upstream request failed")
+        );
+        assert_eq!(
+            payload.get("upstream_status").and_then(Value::as_u64),
+            Some(404)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_mock_pay_succeeds_and_is_idempotent() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let provider = spawn_public_test_server(state.clone()).await;
+        let seeded = seed_mock_lightning_runtime_deal(&state, &provider.base_url).await;
+
+        let first = runtime_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/runtime/deals/{}/mock-pay", seeded.deal_id),
+                Some("test-runtime-token"),
+                None,
+            ))
+            .await
+            .expect("first runtime mock-pay response");
+        let (first_status, first_payload): (StatusCode, RuntimeMockPayDealResponse) =
+            response_json(first).await;
+        assert_eq!(first_status, StatusCode::OK);
+        assert_ne!(
+            first_payload.deal.status,
+            deals::DEAL_STATUS_PAYMENT_PENDING
+        );
+        let expected_payment_intent_path =
+            format!("/v1/runtime/deals/{}/payment-intent", seeded.deal_id);
+        assert_eq!(
+            first_payload.payment_intent_path.as_deref(),
+            Some(expected_payment_intent_path.as_str())
+        );
+
+        let _ =
+            wait_for_deal_status(&state, &seeded.deal_id, deals::DEAL_STATUS_RESULT_READY).await;
+
+        let second = runtime_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/runtime/deals/{}/mock-pay", seeded.deal_id),
+                Some("test-runtime-token"),
+                None,
+            ))
+            .await
+            .expect("second runtime mock-pay response");
+        let (second_status, second_payload): (StatusCode, RuntimeMockPayDealResponse) =
+            response_json(second).await;
+        assert_eq!(second_status, StatusCode::OK);
+        assert_eq!(second_payload.deal.status, deals::DEAL_STATUS_RESULT_READY);
+        assert!(second_payload.payment_intent.is_some());
+    }
+
     #[test]
     fn attested_confidential_wasm_rejects_requested_capabilities() {
         let mut submission = test_wasm_submission();
@@ -8332,6 +9324,389 @@ mod tests {
         let error =
             ensure_safe_attested_wasm_submission(&verified).expect_err("expected rejection");
         assert!(error.contains("requested_capabilities"));
+    }
+
+    #[tokio::test]
+    async fn attested_confidential_wasm_executes_via_provider_session_and_deal_flow() {
+        #[derive(serde::Deserialize)]
+        struct OffersResponse {
+            offers: Vec<SignedArtifact<OfferPayload>>,
+        }
+
+        let state = test_app_state_with_confidential_policy(PaymentBackend::None);
+        let public = public_router(state.clone());
+        let inline_submission = test_wasm_submission();
+        let inline_result = run_job_spec_now(
+            state.as_ref(),
+            JobSpec::Wasm {
+                submission: inline_submission.clone(),
+            },
+        )
+        .await
+        .expect("inline wasm execution");
+
+        let offers_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/offers",
+                None,
+                None,
+            ))
+            .await
+            .expect("offers response");
+        let (offers_status, offers_payload): (StatusCode, OffersResponse) =
+            response_json(offers_response).await;
+        assert_eq!(offers_status, StatusCode::OK);
+        let offer = offers_payload
+            .offers
+            .into_iter()
+            .find(|offer| {
+                offer.payload.offer_kind
+                    == crate::confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1
+            })
+            .expect("attested wasm offer");
+        let confidential_profile_hash = offer
+            .payload
+            .confidential_profile_hash
+            .clone()
+            .expect("offer confidential profile hash");
+
+        let profile_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                &format!(
+                    "/v1/provider/confidential/profiles/{}",
+                    confidential_profile_hash
+                ),
+                None,
+                None,
+            ))
+            .await
+            .expect("profile response");
+        let (profile_status, profile): (
+            StatusCode,
+            SignedArtifact<crate::confidential::ConfidentialProfilePayload>,
+        ) = response_json(profile_response).await;
+        assert_eq!(profile_status, StatusCode::OK);
+        assert_eq!(
+            profile.payload.allowed_workload_kind,
+            crate::confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1
+        );
+
+        let requester_signing_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_signing_key);
+        let (requester_private_key, requester_public_key) = crate::confidential::generate_keypair();
+        let open_session_request = crate::confidential::ConfidentialSessionOpenRequest {
+            requester_id: requester_id.clone(),
+            confidential_profile_hash: confidential_profile_hash.clone(),
+            allowed_workload_kind: crate::confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1
+                .to_string(),
+            requester_public_key: requester_public_key.clone(),
+        };
+
+        let open_session_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/confidential/sessions",
+                None,
+                Some(
+                    serde_json::to_value(&open_session_request)
+                        .expect("serialize confidential session request"),
+                ),
+            ))
+            .await
+            .expect("open session response");
+        let (open_status, opened_session): (
+            StatusCode,
+            crate::confidential::ConfidentialSessionOpenResponse,
+        ) = response_json(open_session_response).await;
+        assert_eq!(open_status, StatusCode::CREATED);
+        assert_eq!(opened_session.profile.hash, profile.hash);
+        crate::confidential::verify_attestation_bundle(
+            &opened_session.profile.payload,
+            &opened_session.session,
+            &opened_session.attestation,
+            settlement::current_unix_timestamp(),
+        )
+        .expect("valid confidential attestation");
+
+        let session_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                &format!(
+                    "/v1/provider/confidential/sessions/{}",
+                    opened_session.session.payload.session_id
+                ),
+                None,
+                None,
+            ))
+            .await
+            .expect("get session response");
+        let (session_status, persisted_session): (
+            StatusCode,
+            crate::confidential::ConfidentialSessionOpenResponse,
+        ) = response_json(session_response).await;
+        assert_eq!(session_status, StatusCode::OK);
+        assert_eq!(persisted_session.session.hash, opened_session.session.hash);
+
+        let request_envelope = crate::confidential::encrypt_request_envelope(
+            &opened_session.session.hash,
+            &requester_private_key,
+            &opened_session.session.payload.session_public_key,
+            &inline_submission,
+            JCS_JSON_FORMAT,
+        )
+        .expect("encrypt attested wasm request");
+        let spec = WorkloadSpec::AttestedWasm {
+            confidential_session_hash: opened_session.session.hash.clone(),
+            request_envelope: Box::new(request_envelope),
+        };
+
+        let quote = create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: offer.payload.offer_id.clone(),
+                requester_id: requester_id.clone(),
+                spec: spec.clone(),
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .expect("create attested wasm quote");
+        assert_eq!(
+            quote.payload.confidential_session_hash.as_deref(),
+            Some(opened_session.session.hash.as_str())
+        );
+
+        let created_at = settlement::current_unix_timestamp();
+        let deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_signing_key,
+            &"77".repeat(32),
+            created_at,
+            false,
+        )
+        .expect("attested wasm deal");
+        let (accepted, status) = create_deal_record(
+            state.clone(),
+            CreateDealRequest {
+                quote: quote.clone(),
+                deal,
+                spec,
+                idempotency_key: Some("attested-confidential-wasm-e2e".to_string()),
+                payment: None,
+            },
+        )
+        .await
+        .expect("create attested wasm deal");
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(accepted.status, deals::DEAL_STATUS_ACCEPTED);
+
+        let succeeded =
+            wait_for_deal_status(&state, &accepted.deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
+        let result_envelope: crate::confidential::EncryptedEnvelope =
+            serde_json::from_value(succeeded.result.clone().expect("encrypted result envelope"))
+                .expect("decode encrypted result envelope");
+        let decrypted_result: Value = crate::confidential::decrypt_result_envelope(
+            &opened_session.session.hash,
+            &requester_private_key,
+            &opened_session.session.payload.session_public_key,
+            &result_envelope,
+        )
+        .expect("decrypt confidential result");
+        assert_eq!(decrypted_result, inline_result);
+        assert_eq!(
+            succeeded.result_hash.as_deref(),
+            Some(canonical_result_hash(&inline_result).as_str())
+        );
+        assert!(succeeded.receipt.is_some(), "expected success receipt");
+    }
+
+    #[tokio::test]
+    async fn confidential_service_executes_via_provider_session_and_deal_flow() {
+        #[derive(serde::Deserialize)]
+        struct OffersResponse {
+            offers: Vec<SignedArtifact<OfferPayload>>,
+        }
+
+        let state = test_app_state_with_confidential_policy(PaymentBackend::None);
+        let public = public_router(state.clone());
+
+        let offers_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/offers",
+                None,
+                None,
+            ))
+            .await
+            .expect("offers response");
+        let (offers_status, offers_payload): (StatusCode, OffersResponse) =
+            response_json(offers_response).await;
+        assert_eq!(offers_status, StatusCode::OK);
+        let offer = offers_payload
+            .offers
+            .into_iter()
+            .find(|offer| {
+                offer.payload.offer_kind == crate::confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1
+            })
+            .expect("confidential service offer");
+        let confidential_profile_hash = offer
+            .payload
+            .confidential_profile_hash
+            .clone()
+            .expect("offer confidential profile hash");
+
+        let profile_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                &format!(
+                    "/v1/provider/confidential/profiles/{}",
+                    confidential_profile_hash
+                ),
+                None,
+                None,
+            ))
+            .await
+            .expect("profile response");
+        let (profile_status, profile): (
+            StatusCode,
+            SignedArtifact<crate::confidential::ConfidentialProfilePayload>,
+        ) = response_json(profile_response).await;
+        assert_eq!(profile_status, StatusCode::OK);
+        assert_eq!(
+            profile.payload.allowed_workload_kind,
+            crate::confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1
+        );
+        assert_eq!(profile.payload.service_id.as_deref(), Some("json_search"));
+
+        let requester_signing_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_signing_key);
+        let (requester_private_key, requester_public_key) = crate::confidential::generate_keypair();
+        let open_session_request = crate::confidential::ConfidentialSessionOpenRequest {
+            requester_id: requester_id.clone(),
+            confidential_profile_hash: confidential_profile_hash.clone(),
+            allowed_workload_kind: crate::confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1
+                .to_string(),
+            requester_public_key: requester_public_key.clone(),
+        };
+
+        let open_session_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/confidential/sessions",
+                None,
+                Some(
+                    serde_json::to_value(&open_session_request)
+                        .expect("serialize confidential session request"),
+                ),
+            ))
+            .await
+            .expect("open session response");
+        let (open_status, opened_session): (
+            StatusCode,
+            crate::confidential::ConfidentialSessionOpenResponse,
+        ) = response_json(open_session_response).await;
+        assert_eq!(open_status, StatusCode::CREATED);
+        crate::confidential::verify_attestation_bundle(
+            &opened_session.profile.payload,
+            &opened_session.session,
+            &opened_session.attestation,
+            settlement::current_unix_timestamp(),
+        )
+        .expect("valid confidential attestation");
+
+        let request_payload = json!({
+            "query": "NemoClaw",
+            "limit": 10,
+        });
+        let request_envelope = crate::confidential::encrypt_request_envelope(
+            &opened_session.session.hash,
+            &requester_private_key,
+            &opened_session.session.payload.session_public_key,
+            &request_payload,
+            JCS_JSON_FORMAT,
+        )
+        .expect("encrypt confidential service request");
+        let spec = WorkloadSpec::ConfidentialService {
+            confidential_session_hash: opened_session.session.hash.clone(),
+            service_id: "json_search".to_string(),
+            request_envelope: Box::new(request_envelope),
+        };
+
+        let quote = create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: offer.payload.offer_id.clone(),
+                requester_id: requester_id.clone(),
+                spec: spec.clone(),
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .expect("create confidential service quote");
+        assert_eq!(
+            quote.payload.confidential_session_hash.as_deref(),
+            Some(opened_session.session.hash.as_str())
+        );
+
+        let created_at = settlement::current_unix_timestamp();
+        let deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_signing_key,
+            &"88".repeat(32),
+            created_at,
+            false,
+        )
+        .expect("confidential service deal");
+        let (accepted, status) = create_deal_record(
+            state.clone(),
+            CreateDealRequest {
+                quote: quote.clone(),
+                deal,
+                spec,
+                idempotency_key: Some("confidential-service-e2e".to_string()),
+                payment: None,
+            },
+        )
+        .await
+        .expect("create confidential service deal");
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(accepted.status, deals::DEAL_STATUS_ACCEPTED);
+
+        let succeeded =
+            wait_for_deal_status(&state, &accepted.deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
+        let result_envelope: crate::confidential::EncryptedEnvelope = serde_json::from_value(
+            succeeded.result.clone().expect("encrypted result envelope"),
+        )
+        .expect("decode encrypted result envelope");
+        let decrypted_result: Value = crate::confidential::decrypt_result_envelope(
+            &opened_session.session.hash,
+            &requester_private_key,
+            &opened_session.session.payload.session_public_key,
+            &result_envelope,
+        )
+        .expect("decrypt confidential result");
+
+        assert_eq!(decrypted_result["query"], "NemoClaw");
+        assert_eq!(decrypted_result["returned"], 1);
+        assert_eq!(decrypted_result["matches"][0]["id"], "doc-2");
+        assert_eq!(
+            decrypted_result["matches"][0]["title"],
+            "NemoClaw integration"
+        );
+        assert_eq!(
+            succeeded.result_hash.as_deref(),
+            Some(canonical_result_hash(&decrypted_result).as_str())
+        );
+        assert!(succeeded.receipt.is_some(), "expected success receipt");
     }
 
     #[test]
@@ -8674,6 +10049,111 @@ mod tests {
         assert!(
             resumed_deal.result.is_some(),
             "expected preserved execution result"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_runtime_state_keeps_unfunded_payment_pending_lightning_deals_recoverable() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let now = settlement::current_unix_timestamp();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let quote = signed_quote(requester_id.clone(), now - 5, now + 180, 30_000, 30, 60);
+        let deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_key,
+            &"34".repeat(32),
+            now - 5,
+            true,
+        )
+        .expect("deal");
+        let bundle = test_lightning_bundle(state.as_ref(), &quote, &deal, &requester_id, now - 5);
+        let deal_id = protocol::new_artifact_id();
+        let deal_id_for_seed = deal_id.clone();
+
+        state
+            .db
+            .with_write_conn({
+                let quote = quote.clone();
+                let deal = deal.clone();
+                let bundle = bundle.clone();
+                move |conn| -> Result<(), String> {
+                    deals::insert_or_get_deal(
+                        conn,
+                        NewDeal {
+                            deal_id: deal_id_for_seed.clone(),
+                            idempotency_key: Some("lightning-payment-pending-unfunded".to_string()),
+                            quote: quote.clone(),
+                            spec: WorkloadSpec::Wasm {
+                                submission: Box::new(test_wasm_submission()),
+                            },
+                            artifact: deal.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal.hash.clone(),
+                            payment_method: Some("lightning".to_string()),
+                            payment_token_hash: Some(deal.payload.success_payment_hash.clone()),
+                            payment_amount_sats: Some(lightning_payment_amount_sats(&quote)),
+                            initial_status: deals::DEAL_STATUS_PAYMENT_PENDING.to_string(),
+                            created_at: now - 5,
+                        },
+                    )?;
+                    db::insert_lightning_invoice_bundle(
+                        conn,
+                        &bundle.session_id,
+                        &bundle.bundle,
+                        InvoiceBundleLegState::Open,
+                        InvoiceBundleLegState::Open,
+                        now - 5,
+                    )?;
+                    Ok(())
+                }
+            })
+            .await
+            .expect("seed unfunded lightning deal");
+
+        recover_runtime_state(state.clone())
+            .await
+            .expect("recover runtime state");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let recovered_deal = state
+            .db
+            .with_read_conn({
+                let deal_id = deal_id.clone();
+                move |conn| deals::get_deal(conn, &deal_id)
+            })
+            .await
+            .expect("load recovered deal")
+            .expect("recovered deal");
+        assert_eq!(recovered_deal.status, deals::DEAL_STATUS_PAYMENT_PENDING);
+        assert!(recovered_deal.error.is_none(), "unexpected recovery error");
+        assert!(
+            recovered_deal.receipt.is_none(),
+            "unexpected recovery receipt"
+        );
+
+        let funded_bundle = settlement::update_lightning_invoice_bundle_states(
+            state.as_ref(),
+            &bundle.session_id,
+            InvoiceBundleLegState::Settled,
+            InvoiceBundleLegState::Accepted,
+        )
+        .await
+        .expect("fund bundle")
+        .expect("updated bundle");
+        let promoted =
+            promote_lightning_deal_if_funded(state.clone(), &recovered_deal, &funded_bundle)
+                .await
+                .expect("promote funded deal");
+        assert!(promoted, "expected funded recovered deal to promote");
+
+        let resumed_deal =
+            wait_for_deal_status(&state, &deal_id, deals::DEAL_STATUS_RESULT_READY).await;
+        assert_eq!(resumed_deal.status, deals::DEAL_STATUS_RESULT_READY);
+        assert!(
+            resumed_deal.result.is_some(),
+            "expected recovered deal to execute after funding"
         );
     }
 

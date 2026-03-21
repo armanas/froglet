@@ -121,6 +121,35 @@ export async function buyWithRuntime({
   }
 }
 
+export async function eventsQueryWithRuntime({
+  runtimeUrl,
+  runtimeAuthTokenPath,
+  provider,
+  kinds,
+  limit,
+  maxPriceSats,
+  requestTimeoutMs
+}) {
+  const request = {
+    provider,
+    offer_id: "events.query",
+    kind: "events_query",
+    kinds
+  }
+  if (limit !== undefined) {
+    request.limit = limit
+  }
+  if (maxPriceSats !== undefined) {
+    request.max_price_sats = maxPriceSats
+  }
+  return buyWithRuntime({
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    request,
+    requestTimeoutMs
+  })
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -195,6 +224,29 @@ export async function paymentIntentForDeal({
     runtime_url: runtimeUrl,
     deal_id: dealId,
     payment_intent: response.payment_intent
+  }
+}
+
+export async function mockPayForDeal({
+  dealId,
+  runtimeUrl,
+  runtimeAuthTokenPath,
+  requestTimeoutMs
+}) {
+  const token = await readRuntimeToken(runtimeAuthTokenPath)
+  const response = await runtimeRequest(
+    runtimeUrl,
+    token,
+    requestTimeoutMs,
+    "POST",
+    `/v1/runtime/deals/${encodeURIComponent(dealId)}/mock-pay`
+  )
+  return {
+    runtime_url: runtimeUrl,
+    deal_id: dealId,
+    deal: response.deal,
+    payment_intent_path: response.payment_intent_path ?? null,
+    payment_intent: response.payment_intent ?? null
   }
 }
 

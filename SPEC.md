@@ -609,6 +609,7 @@ The submission envelope for this workload kind is `wasm_oci_submission` and does
 Current implementation notes:
 
 - Known registries (`ghcr.io`, Docker Hub) have explicit URL mappings; other OCI-compliant registries use a generic `https://{host}` fallback.
+- References prefixed with `http://` or `https://` use that exact registry base. This is intended for deterministic local or test registries without changing the canonical workload object shape.
 - Only anonymous (public) pulls are supported; authenticated registries require future work.
 - OCI module downloads are capped at 50 MB.
 - Both tag (`:tag`) and digest (`@sha256:...`) reference styles are supported.

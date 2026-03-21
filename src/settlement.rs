@@ -108,6 +108,11 @@ pub struct LightningWalletReleaseAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LightningWalletMockAction {
+    pub endpoint_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LightningWalletIntent {
     pub backend: String,
     pub mode: String,
@@ -122,6 +127,8 @@ pub struct LightningWalletIntent {
     pub result_ready: bool,
     pub can_release_preimage: bool,
     pub payment_requests: Vec<LightningWalletPaymentRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mock_action: Option<LightningWalletMockAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_action: Option<LightningWalletReleaseAction>,
 }
@@ -978,6 +985,12 @@ pub fn build_lightning_wallet_intent(
 
     let result_ready = deal_status == deals::DEAL_STATUS_RESULT_READY;
     let can_release_preimage = result_ready && lightning_bundle_can_settle_success(session);
+    let mock_action = matches!(state.config.lightning.mode, LightningMode::Mock)
+        .then(|| deal_status == deals::DEAL_STATUS_PAYMENT_PENDING)
+        .unwrap_or(false)
+        .then(|| LightningWalletMockAction {
+            endpoint_path: format!("/v1/provider/deals/{deal_id}/mock-pay"),
+        });
     let release_action = can_release_preimage.then(|| LightningWalletReleaseAction {
         endpoint_path: format!("/v1/provider/deals/{deal_id}/accept"),
         payment_hash: session.bundle.payload.success_fee.payment_hash.clone(),
@@ -1001,6 +1014,7 @@ pub fn build_lightning_wallet_intent(
         result_ready,
         can_release_preimage,
         payment_requests,
+        mock_action,
         release_action,
     }
 }

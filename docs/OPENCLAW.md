@@ -9,8 +9,9 @@ OpenClaw talks to a local `froglet-runtime`. The runtime talks to remote provide
 - `froglet_search`
 - `froglet_get_provider`
 - `froglet_buy`
-- `froglet_wait_deal`
 - `froglet_payment_intent`
+- `froglet_mock_pay`
+- `froglet_wait_deal`
 - `froglet_accept_result`
 - `froglet_wallet_balance`
 
@@ -57,9 +58,10 @@ curl -H "Authorization: Bearer $TOKEN" \
 1. `froglet_search`
 2. `froglet_get_provider`
 3. `froglet_buy`
-4. `froglet_wait_deal`
-5. `froglet_payment_intent`
-6. `froglet_accept_result`
+4. `froglet_payment_intent`
+5. `froglet_mock_pay` when the returned intent exposes a mock action
+6. `froglet_wait_deal`
+7. `froglet_accept_result`
 
 ## Verification
 

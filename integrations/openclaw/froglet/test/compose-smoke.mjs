@@ -143,6 +143,7 @@ async function main() {
     "froglet_search",
     "froglet_get_provider",
     "froglet_buy",
+    "froglet_mock_pay",
     "froglet_wait_deal",
     "froglet_payment_intent",
     "froglet_accept_result",
@@ -232,6 +233,37 @@ async function main() {
   )
   assert.equal(paymentIntentRaw.payment_intent.deal_id, buyRaw.deal.deal_id)
   assert.equal(paymentIntentRaw.payment_intent.backend, "lightning")
+
+  if (paymentIntentRaw.payment_intent.mock_action?.endpoint_path) {
+    const mockPay = await tools.get("froglet_mock_pay").definition.execute("mock-pay", {
+      deal_id: buyRaw.deal.deal_id,
+      include_raw: true
+    })
+    const mockPayRaw = extractJsonSection(mockPay.content[0].text, "mock_pay_response_json:")
+    assert.equal(mockPayRaw.deal.deal_id, buyRaw.deal.deal_id)
+
+    const settled = await tools.get("froglet_wait_deal").definition.execute("wait-after-mock", {
+      deal_id: buyRaw.deal.deal_id,
+      wait_statuses: ["result_ready", "succeeded", "failed", "rejected"],
+      timeout_secs: 15,
+      poll_interval_secs: 0.2,
+      include_raw: true
+    })
+    const settledRaw = extractJsonSection(settled.content[0].text, "wait_response_json:")
+    assert.ok(
+      ["result_ready", "succeeded", "failed", "rejected"].includes(settledRaw.deal.status),
+      `unexpected post-mock status ${settledRaw.deal.status}`
+    )
+
+    if (settledRaw.deal.status === "result_ready") {
+      const accepted = await tools.get("froglet_accept_result").definition.execute("accept", {
+        deal_id: buyRaw.deal.deal_id,
+        include_raw: true
+      })
+      const acceptedRaw = extractJsonSection(accepted.content[0].text, "accept_response_json:")
+      assert.equal(acceptedRaw.deal.status, "succeeded")
+    }
+  }
 }
 
 main().catch((error) => {

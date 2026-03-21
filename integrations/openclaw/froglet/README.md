@@ -9,8 +9,9 @@ This plugin is runtime-only. It does not call provider or discovery APIs directl
 - `froglet_search`
 - `froglet_get_provider`
 - `froglet_buy`
-- `froglet_wait_deal`
 - `froglet_payment_intent`
+- `froglet_mock_pay`
+- `froglet_wait_deal`
 - `froglet_accept_result`
 - `froglet_wallet_balance`
 

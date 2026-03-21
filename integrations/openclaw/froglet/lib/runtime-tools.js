@@ -5,7 +5,9 @@ import {
   DEFAULT_WAIT_STATUSES,
   acceptResultForDeal,
   buyWithRuntime,
+  eventsQueryWithRuntime,
   getProvider,
+  mockPayForDeal,
   paymentIntentForDeal,
   searchRuntime,
   waitForDeal,
@@ -55,17 +57,31 @@ function summarizePaymentIntent(intent) {
   if (intent === null || typeof intent !== "object") {
     return ["payment_intent: none"]
   }
+  const mockAction = intent.mock_action ?? null
   const releaseAction = intent.release_action ?? null
   return [
     `payment_backend: ${intent.backend ?? "unknown"}`,
+    `payment_mode: ${intent.mode ?? "unknown"}`,
     `payment_session_id: ${intent.session_id ?? "unknown"}`,
     `deal_status: ${intent.deal_status ?? "unknown"}`,
     `admission_ready: ${intent.admission_ready === true}`,
     `result_ready: ${intent.result_ready === true}`,
     `can_release_preimage: ${intent.can_release_preimage === true}`,
     `payment_requests: ${summarizePaymentRequests(intent)}`,
+    `mock_payment_endpoint: ${mockAction?.endpoint_path ?? "none"}`,
     `release_endpoint: ${releaseAction?.endpoint_path ?? "none"}`,
     `release_expected_result_hash: ${releaseAction?.expected_result_hash ?? "none"}`
+  ]
+}
+
+function summarizeEventsQueryResult(result) {
+  if (result === null || typeof result !== "object") {
+    return ["events_returned: unknown", "cursor: none"]
+  }
+  const events = Array.isArray(result.events) ? result.events : []
+  return [
+    `events_returned: ${events.length}`,
+    `cursor: ${result.cursor ?? "none"}`
   ]
 }
 
@@ -87,6 +103,90 @@ function normalizeStatuses(value) {
 }
 
 export function registerRuntimeTools(api, config) {
+  api.registerTool(
+    {
+      name: "froglet_events_query",
+      description:
+        "Run an `events.query` workload through the authenticated local runtime using the provider's advertised events offer.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kinds"],
+        properties: {
+          provider_id: {
+            type: "string",
+            description: "Froglet provider_id to query."
+          },
+          provider_url: {
+            type: "string",
+            description: "Optional direct provider_url override."
+          },
+          kinds: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string" },
+            description: "Event kinds to query."
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            description: "Optional result limit."
+          },
+          max_price_sats: {
+            type: "integer",
+            minimum: 0,
+            description: "Optional maximum acceptable price in sats."
+          },
+          runtime_url: {
+            type: "string",
+            description: "Optional runtime base URL override."
+          },
+          runtime_auth_token_path: {
+            type: "string",
+            description: "Optional runtime auth token path override."
+          },
+          include_raw: {
+            type: "boolean",
+            description: "Include the raw runtime events-query response JSON."
+          }
+        }
+      },
+      async execute(_id, args = {}) {
+        if (typeof args.provider_id !== "string" && typeof args.provider_url !== "string") {
+          throw new Error("froglet_events_query requires either provider_id or provider_url")
+        }
+        const includeRaw = args.include_raw === true
+        const provider = {}
+        if (typeof args.provider_id === "string") {
+          provider.provider_id = args.provider_id
+        }
+        if (typeof args.provider_url === "string") {
+          provider.provider_url = args.provider_url
+        }
+        const response = await eventsQueryWithRuntime({
+          ...buildRuntimeContext(config, args),
+          provider,
+          kinds: args.kinds,
+          limit: args.limit,
+          maxPriceSats: args.max_price_sats,
+          requestTimeoutMs: config.requestTimeoutMs
+        })
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          ...summarizeDeal(response.deal),
+          `terminal: ${response.terminal === true}`,
+          ...summarizeEventsQueryResult(response.deal?.result),
+          `payment_intent_path: ${response.payment_intent_path ?? "none"}`,
+          ...summarizePaymentIntent(response.payment_intent)
+        ]
+        return toolTextResult(
+          appendRaw(lines, "events_query_response_json:", response, includeRaw).join("\n")
+        )
+      }
+    },
+    { optional: true }
+  )
+
   api.registerTool(
     {
       name: "froglet_search",
@@ -359,6 +459,56 @@ export function registerRuntimeTools(api, config) {
         ]
         return toolTextResult(
           appendRaw(lines, "payment_intent_response_json:", response, includeRaw).join("\n")
+        )
+      }
+    },
+    { optional: true }
+  )
+
+  api.registerTool(
+    {
+      name: "froglet_mock_pay",
+      description:
+        "Advance a mock-Lightning Froglet deal through the authenticated local runtime. This is only valid when the runtime payment backend is lightning mock mode.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["deal_id"],
+        properties: {
+          deal_id: {
+            type: "string",
+            description: "Runtime deal_id to mark as mock-funded."
+          },
+          runtime_url: {
+            type: "string",
+            description: "Optional runtime base URL override."
+          },
+          runtime_auth_token_path: {
+            type: "string",
+            description: "Optional runtime auth token path override."
+          },
+          include_raw: {
+            type: "boolean",
+            description: "Include the raw mock-pay response JSON."
+          }
+        }
+      },
+      async execute(_id, args = {}) {
+        const includeRaw = args.include_raw === true
+        const response = await mockPayForDeal({
+          ...buildRuntimeContext(config, args),
+          dealId: args.deal_id,
+          requestTimeoutMs: config.requestTimeoutMs
+        })
+        const lines = [
+          `runtime_url: ${response.runtime_url}`,
+          `deal_id: ${response.deal_id}`,
+          ...summarizeDeal(response.deal),
+          `payment_intent_path: ${response.payment_intent_path ?? "none"}`,
+          ...summarizePaymentIntent(response.payment_intent)
+        ]
+        return toolTextResult(
+          appendRaw(lines, "mock_pay_response_json:", response, includeRaw).join("\n")
         )
       }
     },

@@ -665,12 +665,23 @@ async fn provider_accept(
         crypto::sha256_hex(decrypted),
         record.deal.payload.success_payment_hash
     );
-    let _ = payload.expected_result_hash;
-
     let result = json!({"accepted": true});
     let result_hash = Some(crypto::sha256_hex(
         canonical_json::to_vec(&result).expect("canonical result"),
     ));
+    if let Some(expected_result_hash) = payload.expected_result_hash.as_deref()
+        && Some(expected_result_hash) != result_hash.as_deref()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "expected_result_hash does not match the persisted deal result",
+                "expected_result_hash": expected_result_hash,
+                "result_hash": result_hash,
+            })),
+        )
+            .into_response();
+    }
     let receipt = sign_receipt(
         &state.provider_key,
         &state.provider_id,
@@ -695,7 +706,7 @@ async fn provider_accept(
     record.updated_at = 1_700_000_350;
     *state.current_deal.lock().await = Some(record.clone());
 
-    (StatusCode::OK, Json(record))
+    (StatusCode::OK, Json(record)).into_response()
 }
 
 async fn discovery_search(State(state): State<Arc<DiscoveryState>>) -> impl IntoResponse {
@@ -1341,6 +1352,54 @@ async fn runtime_accept_deal_rejects_tampered_provider_receipt() {
         accept_response["error"],
         Value::String("provider receipt signature verification failed".to_string())
     );
+}
+
+#[tokio::test]
+async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_hash_mismatch() {
+    let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+    let state = Arc::new(create_test_state(None));
+    let app = runtime_router(state);
+
+    let create_request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/deals",
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
+                provider_id: None,
+                provider_url: Some(provider_server.base_url.clone()),
+            }))
+            .expect("serialize request"),
+        ),
+    );
+    let (create_status, create_response): (StatusCode, RuntimeCreateDealResponseView) =
+        call_json(app.clone(), create_request).await;
+    assert_eq!(create_status, StatusCode::OK);
+    assert_eq!(create_response.provider_id, provider_state.provider_id);
+
+    let accept_request = runtime_request(
+        axum::http::Method::POST,
+        &format!("/v1/runtime/deals/{}/accept", create_response.deal.deal_id),
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(RuntimeAcceptDealRequest {
+                expected_result_hash: Some("00".repeat(32)),
+            })
+            .expect("serialize request"),
+        ),
+    );
+    let (accept_status, accept_response): (StatusCode, Value) =
+        call_json(app, accept_request).await;
+    assert_eq!(accept_status, StatusCode::CONFLICT);
+    assert_eq!(
+        accept_response["error"],
+        Value::String("expected_result_hash does not match the persisted deal result".to_string())
+    );
+    assert_eq!(
+        accept_response["expected_result_hash"],
+        Value::String("00".repeat(32))
+    );
+    assert!(accept_response["result_hash"].as_str().is_some());
 }
 
 #[tokio::test]

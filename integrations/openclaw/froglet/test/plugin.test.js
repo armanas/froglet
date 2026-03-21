@@ -62,7 +62,9 @@ test("registers only runtime-centric Froglet tools", async () => {
       [
         "froglet_accept_result",
         "froglet_buy",
+        "froglet_events_query",
         "froglet_get_provider",
+        "froglet_mock_pay",
         "froglet_payment_intent",
         "froglet_search",
         "froglet_wait_deal",
@@ -188,10 +190,97 @@ test("froglet_search and froglet_get_provider go through the local runtime", asy
   }
 })
 
-test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpoints", async () => {
+test("froglet_events_query wraps the runtime deal flow for events.query", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  const seen = []
+  try {
+    const tokenPath = path.join(tempDir, "auth.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    await withRuntimeServer(async (req, res) => {
+      const body = await readJsonRequest(req)
+      seen.push({ method: req.method, url: req.url, body, auth: req.headers.authorization })
+      if (req.method === "POST" && req.url === "/v1/runtime/deals") {
+        return jsonResponse(res, 200, {
+          quote: { hash: "quote-events-1" },
+          deal: {
+            deal_id: "deal-events-1",
+            provider_id: "provider-1",
+            provider_url: "https://provider.example",
+            status: "succeeded",
+            receipt: { hash: "receipt-events-1" },
+            result_hash: "cd".repeat(32),
+            result: {
+              events: [
+                { id: "evt-1", kind: "market.listing", content: "listing-1" },
+                { id: "evt-2", kind: "market.listing", content: "listing-2" }
+              ],
+              cursor: null
+            }
+          }
+        })
+      }
+      res.statusCode = 404
+      res.end()
+    }, async (runtimeUrl) => {
+      const tools = buildTestApi({
+        runtimeUrl,
+        runtimeAuthTokenPath: tokenPath
+      })
+
+      const query = await tools.get("froglet_events_query").definition.execute("events-1", {
+        provider_id: "provider-1",
+        kinds: ["market.listing"],
+        limit: 2,
+        max_price_sats: 5,
+        include_raw: true
+      })
+
+      const queryRaw = extractJsonSection(query.content[0].text, "events_query_response_json:")
+
+      assert.equal(queryRaw.deal.deal_id, "deal-events-1")
+      assert.equal(queryRaw.deal.status, "succeeded")
+      assert.equal(queryRaw.deal.result.events.length, 2)
+
+      assertAgentTranscript(query.content[0].text, {
+        mustContain: [
+          "deal_id: deal-events-1",
+          "status: succeeded",
+          "events_returned: 2",
+          "payment_intent_path: none"
+        ],
+        mustContainOrdered: [
+          "runtime_url:",
+          "deal_id: deal-events-1",
+          "status: succeeded",
+          "events_returned: 2"
+        ]
+      })
+    })
+
+    assert.deepEqual(seen, [
+      {
+        method: "POST",
+        url: "/v1/runtime/deals",
+        body: {
+          provider: { provider_id: "provider-1" },
+          offer_id: "events.query",
+          kind: "events_query",
+          kinds: ["market.listing"],
+          limit: 2,
+          max_price_sats: 5
+        },
+        auth: "Bearer froglet-test-token"
+      }
+    ])
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("buy, mock-pay, wait, payment intent, accept, and wallet tools use runtime-only endpoints", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
   const dealStates = [
-    { status: "payment_pending", result_hash: null, receipt: null },
+    { status: "accepted", result_hash: null, receipt: null },
     { status: "result_ready", result_hash: "ab".repeat(32), receipt: null },
     {
       status: "succeeded",
@@ -200,6 +289,7 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
     }
   ]
   let dealReads = 0
+  let mockPaid = false
   const seen = []
   try {
     const tokenPath = path.join(tempDir, "auth.token")
@@ -230,12 +320,16 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
           payment_intent_path: "/v1/runtime/deals/deal-1/payment-intent",
           payment_intent: {
             backend: "lightning",
+            mode: "mock_hold_invoice",
             session_id: "session-1",
             deal_status: "payment_pending",
             admission_ready: false,
             result_ready: false,
             can_release_preimage: false,
             payment_requests: [],
+            mock_action: {
+              endpoint_path: "/v1/runtime/deals/deal-1/mock-pay"
+            },
             release_action: null
           }
         })
@@ -258,16 +352,48 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
         return jsonResponse(res, 200, {
           payment_intent: {
             backend: "lightning",
+            mode: "mock_hold_invoice",
             session_id: "session-1",
-            deal_status: "result_ready",
-            admission_ready: true,
-            result_ready: true,
-            can_release_preimage: true,
+            deal_status: mockPaid ? "result_ready" : "payment_pending",
+            admission_ready: mockPaid,
+            result_ready: mockPaid,
+            can_release_preimage: mockPaid,
             payment_requests: [],
+            mock_action: mockPaid
+              ? null
+              : {
+                  endpoint_path: "/v1/runtime/deals/deal-1/mock-pay"
+                },
             release_action: {
               endpoint_path: "/v1/runtime/deals/deal-1/accept",
               expected_result_hash: "ab".repeat(32)
             }
+          }
+        })
+      }
+      if (req.method === "POST" && req.url === "/v1/runtime/deals/deal-1/mock-pay") {
+        mockPaid = true
+        return jsonResponse(res, 200, {
+          deal: {
+            deal_id: "deal-1",
+            provider_id: "provider-1",
+            provider_url: "https://provider.example",
+            status: "accepted",
+            receipt: null,
+            result_hash: null
+          },
+          payment_intent_path: "/v1/runtime/deals/deal-1/payment-intent",
+          payment_intent: {
+            backend: "lightning",
+            mode: "mock_hold_invoice",
+            session_id: "session-1",
+            deal_status: "accepted",
+            admission_ready: true,
+            result_ready: false,
+            can_release_preimage: false,
+            payment_requests: [],
+            mock_action: null,
+            release_action: null
           }
         })
       }
@@ -302,22 +428,27 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
         },
         include_raw: true
       })
-      const wait = await tools.get("froglet_wait_deal").definition.execute("3", {
+      const mockPay = await tools.get("froglet_mock_pay").definition.execute("3", {
+        deal_id: "deal-1",
+        include_raw: true
+      })
+      const wait = await tools.get("froglet_wait_deal").definition.execute("4", {
         deal_id: "deal-1",
         wait_statuses: ["result_ready"],
         include_raw: true
       })
-      const intent = await tools.get("froglet_payment_intent").definition.execute("4", {
+      const intent = await tools.get("froglet_payment_intent").definition.execute("5", {
         deal_id: "deal-1",
         include_raw: true
       })
-      const accept = await tools.get("froglet_accept_result").definition.execute("5", {
+      const accept = await tools.get("froglet_accept_result").definition.execute("6", {
         deal_id: "deal-1",
         include_raw: true
       })
 
       const walletRaw = extractJsonSection(wallet.content[0].text, "wallet_balance_response_json:")
       const buyRaw = extractJsonSection(buy.content[0].text, "buy_response_json:")
+      const mockPayRaw = extractJsonSection(mockPay.content[0].text, "mock_pay_response_json:")
       const waitRaw = extractJsonSection(wait.content[0].text, "wait_response_json:")
       const intentRaw = extractJsonSection(intent.content[0].text, "payment_intent_response_json:")
       const acceptRaw = extractJsonSection(accept.content[0].text, "accept_response_json:")
@@ -326,8 +457,11 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
       assert.equal(walletRaw.balance_sats, 21)
       assert.equal(buyRaw.deal.deal_id, "deal-1")
       assert.equal(buyRaw.payment_intent_path, "/v1/runtime/deals/deal-1/payment-intent")
+      assert.equal(buyRaw.payment_intent.mock_action.endpoint_path, "/v1/runtime/deals/deal-1/mock-pay")
+      assert.equal(mockPayRaw.deal.status, "accepted")
       assert.equal(waitRaw.deal.status, "result_ready")
       assert.equal(intentRaw.payment_intent.release_action.endpoint_path, "/v1/runtime/deals/deal-1/accept")
+      assert.equal(intentRaw.payment_intent.mock_action, null)
       assert.equal(acceptRaw.deal.status, "succeeded")
 
       assertAgentTranscript(wallet.content[0].text, {
@@ -335,8 +469,12 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
         mustContainOrdered: ["runtime_url:", "backend: lightning", "balance_sats: 21"]
       })
       assertAgentTranscript(buy.content[0].text, {
-        mustContain: ["deal_id: deal-1", "status: payment_pending", "payment_intent_path: /v1/runtime/deals/deal-1/payment-intent"],
+        mustContain: ["deal_id: deal-1", "status: payment_pending", "payment_intent_path: /v1/runtime/deals/deal-1/payment-intent", "mock_payment_endpoint: /v1/runtime/deals/deal-1/mock-pay"],
         mustContainOrdered: ["runtime_url:", "deal_id: deal-1", "status: payment_pending"]
+      })
+      assertAgentTranscript(mockPay.content[0].text, {
+        mustContain: ["deal_id: deal-1", "status: accepted", "payment_intent_path: /v1/runtime/deals/deal-1/payment-intent"],
+        mustContainOrdered: ["runtime_url:", "deal_id: deal-1", "status: accepted"]
       })
       assertAgentTranscript(wait.content[0].text, {
         mustContain: ["deal_id: deal-1", "status: result_ready"],
@@ -356,6 +494,37 @@ test("buy, wait, payment intent, accept, and wallet tools use runtime-only endpo
     assert.ok(seen.every((entry) => !String(entry.url).includes("/v1/discovery/")))
     const token = await readFile(tokenPath, "utf8")
     assert.match(token, /froglet-test-token/)
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("froglet_mock_pay fails clearly outside lightning mock mode", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  try {
+    const tokenPath = path.join(tempDir, "auth.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    await withRuntimeServer(async (req, res) => {
+      if (req.method === "POST" && req.url === "/v1/runtime/deals/deal-1/mock-pay") {
+        return jsonResponse(res, 400, {
+          error: "runtime mock-pay is only available for lightning mock mode",
+          deal_id: "deal-1"
+        })
+      }
+      res.statusCode = 404
+      res.end()
+    }, async (runtimeUrl) => {
+      const tools = buildTestApi({
+        runtimeUrl,
+        runtimeAuthTokenPath: tokenPath
+      })
+      await assert.rejects(
+        tools.get("froglet_mock_pay").definition.execute("mock-pay", {
+          deal_id: "deal-1"
+        }),
+        /lightning mock mode/
+      )
+    })
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
