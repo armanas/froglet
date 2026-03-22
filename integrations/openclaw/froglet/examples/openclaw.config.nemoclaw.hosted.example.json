@@ -1,0 +1,60 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "external/your-model-id"
+      },
+      "models": {
+        "external/your-model-id": {
+          "alias": "froglet-hosted"
+        }
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "external": {
+        "baseUrl": "https://your-model-provider.example/v1",
+        "apiKey": "set-me-out-of-band",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "your-model-id",
+            "name": "Your Hosted Model",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 32768,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "load": {
+      "paths": [
+        "/sandbox/froglet/integrations/openclaw/froglet"
+      ]
+    },
+    "entries": {
+      "froglet": {
+        "enabled": true,
+        "config": {
+          "runtimeUrl": "https://consumer.example",
+          "runtimeAuthTokenPath": "/sandbox/.openclaw/froglet-runtime.token",
+          "requestTimeoutMs": 15000,
+          "defaultSearchLimit": 10,
+          "maxSearchLimit": 50
+        }
+      }
+    }
+  }
+}

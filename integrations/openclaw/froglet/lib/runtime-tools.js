@@ -303,7 +303,7 @@ export function registerRuntimeTools(api, config) {
     {
       name: "froglet_buy",
       description:
-        "Create a Froglet deal through the authenticated local runtime. The runtime owns requester identity, deal signing, and payment preimage management.",
+        "Create a Froglet deal through the authenticated local runtime. The runtime owns requester identity, deal signing, and payment preimage management. For the standard execute.wasm flow, the minimal shorthand request is {\"provider\":{\"provider_id\":\"<provider_id>\"},\"offer_id\":\"execute.wasm\",\"submission\":{\"wasm_module_hex\":\"<valid_wasm_module_hex>\"}}.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -312,8 +312,63 @@ export function registerRuntimeTools(api, config) {
           request: {
             type: "object",
             additionalProperties: true,
+            properties: {
+              provider: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  provider_id: {
+                    type: "string",
+                    description: "Preferred provider reference returned by froglet_search/froglet_get_provider."
+                  },
+                  provider_url: {
+                    type: "string",
+                    description: "Optional direct provider_url override."
+                  }
+                },
+                description: "Provider reference. Include provider_id for discovery-based flows."
+              },
+              offer_id: {
+                type: "string",
+                description: "Offer identifier to buy. For the standard compute flow use execute.wasm."
+              },
+              submission: {
+                type: "object",
+                additionalProperties: true,
+                properties: {
+                  wasm_module_hex: {
+                    type: "string",
+                    description: "Hex-encoded WebAssembly module bytes for execute.wasm."
+                  }
+                },
+                description: "Workload submission payload. For execute.wasm use {\"wasm_module_hex\":\"<valid_wasm_module_hex>\"}."
+              },
+              idempotency_key: {
+                type: "string",
+                description: "Optional idempotency key."
+              },
+              kind: {
+                type: "string",
+                description: "Optional workload kind override for non-execute.wasm flows."
+              },
+              kinds: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional event kinds for events.query."
+              },
+              limit: {
+                type: "integer",
+                minimum: 1,
+                description: "Optional result limit for events.query."
+              },
+              max_price_sats: {
+                type: "integer",
+                minimum: 0,
+                description: "Optional maximum acceptable price for events.query."
+              }
+            },
             description:
-              "Runtime deal request. It must include a provider reference, offer_id, and workload fields."
+              "Runtime deal request. It must include a provider reference, offer_id, and workload fields. Example execute.wasm shorthand: {\"provider\":{\"provider_id\":\"provider-1\"},\"offer_id\":\"execute.wasm\",\"submission\":{\"wasm_module_hex\":\"<valid_wasm_module_hex>\"}}."
           },
           runtime_url: {
             type: "string",
@@ -355,7 +410,7 @@ export function registerRuntimeTools(api, config) {
     {
       name: "froglet_wait_deal",
       description:
-        "Poll the authenticated local runtime until a Froglet deal reaches one of the requested statuses.",
+        "Poll the authenticated local runtime until a Froglet deal reaches one of the requested statuses. By default this only stops on terminal statuses (succeeded, failed, rejected). For an accept flow you must pass wait_statuses including result_ready.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -368,7 +423,7 @@ export function registerRuntimeTools(api, config) {
           wait_statuses: {
             type: "array",
             items: { type: "string" },
-            description: "Statuses that should stop polling."
+            description: "Statuses that should stop polling. Include result_ready before calling froglet_accept_result."
           },
           timeout_secs: {
             type: "number",

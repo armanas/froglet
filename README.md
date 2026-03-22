@@ -127,6 +127,20 @@ Tool surface:
 - `froglet_accept_result`
 - `froglet_wallet_balance`
 
+Minimal `froglet_buy` request for the standard `execute.wasm` path:
+
+```json
+{
+  "request": {
+    "provider": { "provider_id": "provider-1" },
+    "offer_id": "execute.wasm",
+    "submission": { "wasm_module_hex": "<valid_wasm_module_hex>" }
+  }
+}
+```
+
+For accept flows, `froglet_wait_deal` must be called with `wait_statuses` including `result_ready`; the default wait behavior only stops on terminal statuses.
+
 OpenClaw setup is documented in [docs/OPENCLAW.md](docs/OPENCLAW.md). NemoClaw setup is documented in [docs/NEMOCLAW.md](docs/NEMOCLAW.md).
 
 ## Confidential Execution

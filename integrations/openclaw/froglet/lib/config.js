@@ -11,6 +11,17 @@ import {
   normalizeFilesystemPath
 } from "./shared.js"
 
+function resolvePluginSetting(configValue, envName) {
+  if (typeof configValue === "string" && configValue.trim().length > 0) {
+    return configValue
+  }
+  const envValue = process.env[envName]
+  if (typeof envValue === "string" && envValue.trim().length > 0) {
+    return envValue
+  }
+  return configValue
+}
+
 export function readPluginConfig(api) {
   const config = api?.config ?? {}
   const maxSearchLimit = clampInteger(
@@ -21,9 +32,15 @@ export function readPluginConfig(api) {
   )
 
   return {
-    runtimeUrl: normalizeBaseUrl(config.runtimeUrl, "runtimeUrl"),
+    runtimeUrl: normalizeBaseUrl(
+      resolvePluginSetting(config.runtimeUrl, "FROGLET_RUNTIME_URL"),
+      "runtimeUrl"
+    ),
     runtimeAuthTokenPath: normalizeFilesystemPath(
-      config.runtimeAuthTokenPath,
+      resolvePluginSetting(
+        config.runtimeAuthTokenPath,
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH"
+      ),
       "runtimeAuthTokenPath"
     ),
     requestTimeoutMs: clampInteger(

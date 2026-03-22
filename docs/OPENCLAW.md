@@ -60,8 +60,22 @@ curl -H "Authorization: Bearer $TOKEN" \
 3. `froglet_buy`
 4. `froglet_payment_intent`
 5. `froglet_mock_pay` when the returned intent exposes a mock action
-6. `froglet_wait_deal`
+6. `froglet_wait_deal` with `wait_statuses=["result_ready","succeeded","failed","rejected"]` for accept flows
 7. `froglet_accept_result`
+
+For the standard `execute.wasm` flow, use this minimal buy request:
+
+```json
+{
+  "request": {
+    "provider": { "provider_id": "provider-1" },
+    "offer_id": "execute.wasm",
+    "submission": { "wasm_module_hex": "<valid_wasm_module_hex>" }
+  }
+}
+```
+
+`wasm_module_hex` must be a valid hex-encoded Wasm module, not just arbitrary hex bytes.
 
 ## Verification
 

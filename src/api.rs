@@ -9553,7 +9553,8 @@ mod tests {
             .offers
             .into_iter()
             .find(|offer| {
-                offer.payload.offer_kind == crate::confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1
+                offer.payload.offer_kind
+                    == crate::confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1
             })
             .expect("confidential service offer");
         let confidential_profile_hash = offer
@@ -9683,10 +9684,9 @@ mod tests {
 
         let succeeded =
             wait_for_deal_status(&state, &accepted.deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
-        let result_envelope: crate::confidential::EncryptedEnvelope = serde_json::from_value(
-            succeeded.result.clone().expect("encrypted result envelope"),
-        )
-        .expect("decode encrypted result envelope");
+        let result_envelope: crate::confidential::EncryptedEnvelope =
+            serde_json::from_value(succeeded.result.clone().expect("encrypted result envelope"))
+                .expect("decode encrypted result envelope");
         let decrypted_result: Value = crate::confidential::decrypt_result_envelope(
             &opened_session.session.hash,
             &requester_private_key,

@@ -106,7 +106,10 @@ export async function requestJson(
     try {
       payload = body.length > 0 ? JSON.parse(body) : null
     } catch (error) {
-      throw new Error(`Expected JSON from ${url}, got invalid payload: ${error.message}`)
+      const preview = body.length > 0 ? body.slice(0, 200) : "<empty>"
+      throw new Error(
+        `Expected JSON from ${url}, got invalid payload: ${error.message}; body=${JSON.stringify(preview)}`
+      )
     }
 
     if (!expectedStatuses.includes(response.status)) {

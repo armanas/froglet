@@ -15,6 +15,20 @@ This plugin is runtime-only. It does not call provider or discovery APIs directl
 - `froglet_accept_result`
 - `froglet_wallet_balance`
 
+Minimal `execute.wasm` buy request:
+
+```json
+{
+  "request": {
+    "provider": { "provider_id": "provider-1" },
+    "offer_id": "execute.wasm",
+    "submission": { "wasm_module_hex": "<valid_wasm_module_hex>" }
+  }
+}
+```
+
+For accept flows, call `froglet_wait_deal` with `wait_statuses` including `result_ready`; the default wait behavior only stops on terminal statuses.
+
 ## Config
 
 - [examples/openclaw.config.example.json](examples/openclaw.config.example.json)

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import http from "node:http"
 import os from "node:os"
@@ -23,6 +24,10 @@ function buildTestApi(config = {}) {
 function jsonResponse(res, statusCode, payload) {
   res.writeHead(statusCode, { "content-type": "application/json" })
   res.end(JSON.stringify(payload))
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex")
 }
 
 async function readJsonRequest(req) {
@@ -72,6 +77,46 @@ test("registers only runtime-centric Froglet tools", async () => {
       ]
     )
   } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("falls back to shell runtime settings when plugin config is missing in local agent mode", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  const previousRuntimeUrl = process.env.FROGLET_RUNTIME_URL
+  const previousTokenPath = process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH
+  try {
+    const tokenPath = path.join(tempDir, "auth.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    process.env.FROGLET_RUNTIME_URL = "http://127.0.0.1:8081"
+    process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH = tokenPath
+
+    const tools = buildTestApi({})
+    assert.deepEqual(
+      [...tools.keys()].sort(),
+      [
+        "froglet_accept_result",
+        "froglet_buy",
+        "froglet_events_query",
+        "froglet_get_provider",
+        "froglet_mock_pay",
+        "froglet_payment_intent",
+        "froglet_search",
+        "froglet_wait_deal",
+        "froglet_wallet_balance"
+      ]
+    )
+  } finally {
+    if (previousRuntimeUrl === undefined) {
+      delete process.env.FROGLET_RUNTIME_URL
+    } else {
+      process.env.FROGLET_RUNTIME_URL = previousRuntimeUrl
+    }
+    if (previousTokenPath === undefined) {
+      delete process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH
+    } else {
+      process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH = previousTokenPath
+    }
     await rm(tempDir, { recursive: true, force: true })
   }
 })
@@ -279,6 +324,9 @@ test("froglet_events_query wraps the runtime deal flow for events.query", async 
 
 test("buy, mock-pay, wait, payment intent, accept, and wallet tools use runtime-only endpoints", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  const validWasmHex = (
+    await readFile(path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures/valid-wasm.hex"), "utf8")
+  ).trim()
   const dealStates = [
     { status: "accepted", result_hash: null, receipt: null },
     { status: "result_ready", result_hash: "ab".repeat(32), receipt: null },
@@ -424,7 +472,7 @@ test("buy, mock-pay, wait, payment intent, accept, and wallet tools use runtime-
         request: {
           provider: { provider_id: "provider-1" },
           offer_id: "execute.wasm",
-          submission: { wasm_module_hex: "00" }
+          submission: { wasm_module_hex: validWasmHex }
         },
         include_raw: true
       })
@@ -490,10 +538,126 @@ test("buy, mock-pay, wait, payment intent, accept, and wallet tools use runtime-
       })
     })
 
+    const buyRequest = seen.find((entry) => entry.method === "POST" && entry.url === "/v1/runtime/deals")
+    assert.ok(buyRequest, "expected runtime buy request")
+    assert.equal(buyRequest.body.offer_id, "execute.wasm")
+    assert.equal(buyRequest.body.kind, "wasm")
+    assert.equal(buyRequest.body.submission.schema_version, "froglet/v1")
+    assert.equal(buyRequest.body.submission.submission_type, "wasm_submission")
+    assert.equal(buyRequest.body.submission.module_bytes_hex, validWasmHex)
+    assert.equal(buyRequest.body.submission.input, null)
+    assert.equal(buyRequest.body.submission.workload.workload_kind, "compute.wasm.v1")
+    assert.equal(buyRequest.body.submission.workload.abi_version, "froglet.wasm.run_json.v1")
+    assert.equal(buyRequest.body.submission.workload.module_format, "application/wasm")
+    assert.equal(typeof buyRequest.body.submission.workload.module_hash, "string")
+    assert.equal(typeof buyRequest.body.submission.workload.input_hash, "string")
     assert.ok(seen.every((entry) => !String(entry.url).includes("/v1/provider/")))
     assert.ok(seen.every((entry) => !String(entry.url).includes("/v1/discovery/")))
     const token = await readFile(tokenPath, "utf8")
     assert.match(token, /froglet-test-token/)
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("froglet_buy shorthand canonicalizes structured input before sending it to the runtime", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  const validWasmHex = (
+    await readFile(path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures/valid-wasm.hex"), "utf8")
+  ).trim()
+  const seen = []
+  try {
+    const tokenPath = path.join(tempDir, "auth.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    await withRuntimeServer(async (req, res) => {
+      const body = await readJsonRequest(req)
+      seen.push({ method: req.method, url: req.url, body })
+      if (req.method === "POST" && req.url === "/v1/runtime/deals") {
+        return jsonResponse(res, 200, {
+          quote: { hash: "quote-structured-input-1" },
+          deal: {
+            deal_id: "deal-structured-input-1",
+            provider_id: "provider-1",
+            provider_url: "https://provider.example",
+            status: "payment_pending",
+            receipt: null,
+            result_hash: null
+          }
+        })
+      }
+      res.statusCode = 404
+      res.end()
+    }, async (runtimeUrl) => {
+      const tools = buildTestApi({
+        runtimeUrl,
+        runtimeAuthTokenPath: tokenPath
+      })
+
+      await tools.get("froglet_buy").definition.execute("structured-input", {
+        request: {
+          provider: { provider_id: "provider-1" },
+          offer_id: "execute.wasm",
+          submission: {
+            wasm_module_hex: validWasmHex,
+            input: {
+              z: [3, null],
+              a: {
+                d: false,
+                c: "x"
+              }
+            }
+          }
+        }
+      })
+    })
+
+    const buyRequest = seen.find((entry) => entry.method === "POST" && entry.url === "/v1/runtime/deals")
+    assert.ok(buyRequest, "expected runtime buy request")
+    assert.deepEqual(buyRequest.body.submission.input, {
+      z: [3, null],
+      a: {
+        d: false,
+        c: "x"
+      }
+    })
+    assert.equal(
+      buyRequest.body.submission.workload.input_hash,
+      sha256Hex('{"a":{"c":"x","d":false},"z":[3,null]}')
+    )
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("froglet_buy shorthand rejects invalid wasm bytes before calling the runtime", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  const seen = []
+  try {
+    const tokenPath = path.join(tempDir, "auth.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    await withRuntimeServer(async (req, res) => {
+      const body = await readJsonRequest(req)
+      seen.push({ method: req.method, url: req.url, body })
+      res.statusCode = 404
+      res.end()
+    }, async (runtimeUrl) => {
+      const tools = buildTestApi({
+        runtimeUrl,
+        runtimeAuthTokenPath: tokenPath
+      })
+
+      await assert.rejects(
+        tools.get("froglet_buy").definition.execute("invalid-wasm", {
+          request: {
+            provider: { provider_id: "provider-1" },
+            offer_id: "execute.wasm",
+            submission: { wasm_module_hex: "00" }
+          }
+        }),
+        /valid WebAssembly module/
+      )
+    })
+    assert.equal(seen.length, 0)
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
