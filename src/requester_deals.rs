@@ -149,6 +149,43 @@ pub fn get_requester_deal(
     .map_err(|error| error.to_string())
 }
 
+pub fn list_recent_requester_deals(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<StoredRequesterDeal>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT
+                deal_id,
+                idempotency_key,
+                provider_id,
+                provider_url,
+                spec_json,
+                quote_json,
+                deal_artifact_json,
+                status,
+                result_json,
+                result_hash,
+                error,
+                receipt_artifact_json,
+                success_preimage,
+                created_at,
+                updated_at
+             FROM requester_deals
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![limit as i64], map_requester_deal_row)
+        .map_err(|error| error.to_string())?;
+    let mut deals = Vec::new();
+    for row in rows {
+        deals.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(deals)
+}
+
 pub fn find_requester_deal_by_idempotency_key(
     conn: &Connection,
     idempotency_key: &str,

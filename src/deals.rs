@@ -888,6 +888,48 @@ pub fn list_lightning_watch_deals(conn: &Connection) -> Result<Vec<StoredDeal>, 
     Ok(deals)
 }
 
+pub fn list_recent_deals(conn: &Connection, limit: usize) -> Result<Vec<StoredDeal>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                deal_id,
+                idempotency_key,
+                quote_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
+                spec_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
+                deal_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
+                status,
+                result_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
+                result_hash,
+                error,
+                payment_method,
+                payment_token_hash,
+                payment_amount_sats,
+                receipt_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
+                created_at,
+                updated_at
+             FROM deals
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![limit.clamp(1, 100) as i64], decode_deal_row)
+        .map_err(|e| e.to_string())?;
+
+    let mut deals = Vec::new();
+    for row in rows {
+        deals.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(deals)
+}
+
 fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
     let quote_json: String = row.get(2)?;
     let quote_document_json: Option<String> = row.get(3)?;

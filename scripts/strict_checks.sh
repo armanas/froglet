@@ -22,7 +22,11 @@ if command -v node >/dev/null 2>&1; then
   if [ "$node_major" -ge 18 ] 2>/dev/null; then
     echo "[strict] OpenClaw plugin checks"
     node --check integrations/openclaw/froglet/index.js
-    node --test integrations/openclaw/froglet/test/plugin.test.js
+    node --check integrations/openclaw/froglet/scripts/doctor.mjs
+    node --test integrations/openclaw/froglet/test/plugin.test.js \
+      integrations/openclaw/froglet/test/config-profiles.test.mjs \
+      integrations/openclaw/froglet/test/doctor.test.mjs \
+      integrations/openclaw/froglet/test/froglet-client.test.mjs
   else
     echo "[strict] skipping OpenClaw plugin checks: node $node_major < 18"
   fi

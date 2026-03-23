@@ -424,6 +424,17 @@ fn concurrency_limit(name: &str, default: usize) -> usize {
     }
 }
 
+pub fn validate_module_bytes_for_abi(module_bytes: &[u8], abi_version: &str) -> Result<(), String> {
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    config.epoch_interruption(true);
+    let engine = Engine::new(&config)
+        .map_err(|error| format!("failed to initialize Wasmtime engine: {error}"))?;
+    let module = Module::new(&engine, module_bytes)
+        .map_err(|error| format!("invalid Wasm module: {error}"))?;
+    validate_module_policy(&module, abi_version).map_err(|error| error.to_string())
+}
+
 pub fn wasm_concurrency_limit() -> usize {
     concurrency_limit("FROGLET_WASM_CONCURRENCY_LIMIT", 16)
 }

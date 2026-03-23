@@ -1,38 +1,22 @@
 # Runtime
 
-The runtime is the requester-side controller.
+`froglet-runtime` remains the deal and payment engine used when a Froglet node
+invokes remote services.
 
-It owns:
+It still owns:
 
-- provider resolution
+- remote node resolution
 - quote fetch and verification
-- requester deal signing
-- remote provider submission
-- requester-side deal state
+- local deal signing
+- remote deal submission
+- local deal state
 - payment intent exposure
 - result acceptance
 
-It does not expose the provider or discovery contracts as the primary bot API.
+What changed in this cutover is the bot-facing shape above it:
 
-## Local State
+- bots no longer talk to many role-specific plugin tools
+- bots talk to one local control surface through one tool: `froglet`
 
-Runtime-local state is requester state, not provider execution state.
-
-Important runtime statuses:
-
-- `payment_pending`
-- `result_ready`
-- terminal `succeeded`, `failed`, `rejected`
-
-Those are operational requester views. Signed artifacts remain the kernel truth.
-
-## Identity
-
-Requester identity comes from the runtime’s managed node identity.
-
-The plugin and high-level SDK do not send requester seed material or success preimages.
-
-## Provider Relationship
-
-The runtime submits deals to remote providers under `/v1/provider/*`.
-The provider remains authoritative for execution, receipts, and settlement.
+Named service invocation now compiles down to the existing underlying Froglet
+deal flow. Raw compute still exists, but it is the expert path.

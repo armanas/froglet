@@ -187,6 +187,8 @@ pub struct StorageConfig {
     pub nostr_publication_seed_path: PathBuf,
     pub runtime_dir: PathBuf,
     pub runtime_auth_token_path: PathBuf,
+    pub consumer_control_auth_token_path: PathBuf,
+    pub provider_control_auth_token_path: PathBuf,
     pub tor_dir: PathBuf,
 }
 
@@ -304,6 +306,8 @@ pub struct NodeConfig {
     pub public_base_url: Option<String>,
     pub runtime_listen_addr: String,
     pub runtime_allow_non_loopback: bool,
+    pub provider_control_listen_addr: String,
+    pub provider_control_allow_non_loopback: bool,
     pub http_ca_cert_path: Option<PathBuf>,
     pub tor: TorSidecarConfig,
     pub discovery_mode: DiscoveryMode,
@@ -334,6 +338,10 @@ impl NodeConfig {
         let runtime_listen_addr = env::var("FROGLET_RUNTIME_LISTEN_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8081".to_string());
         let runtime_allow_non_loopback = env_bool("FROGLET_RUNTIME_ALLOW_NON_LOOPBACK", false)?;
+        let provider_control_listen_addr = env::var("FROGLET_PROVIDER_CONTROL_LISTEN_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:9191".to_string());
+        let provider_control_allow_non_loopback =
+            env_bool("FROGLET_PROVIDER_CONTROL_ALLOW_NON_LOOPBACK", false)?;
         let http_ca_cert_path = env::var("FROGLET_HTTP_CA_CERT_PATH")
             .ok()
             .map(PathBuf::from);
@@ -467,6 +475,8 @@ impl NodeConfig {
         let nostr_publication_seed_path = identity_dir.join("nostr-publication.secp256k1.seed");
         let runtime_dir = data_dir.join("runtime");
         let runtime_auth_token_path = runtime_dir.join("auth.token");
+        let consumer_control_auth_token_path = runtime_dir.join("consumerctl.token");
+        let provider_control_auth_token_path = runtime_dir.join("froglet-control.token");
         let tor_dir = data_dir.join("tor");
         let db_path = data_dir.join("node.db");
         let wasm_policy_path = env::var("FROGLET_WASM_POLICY_PATH").ok().map(PathBuf::from);
@@ -488,6 +498,8 @@ impl NodeConfig {
             public_base_url,
             runtime_listen_addr,
             runtime_allow_non_loopback,
+            provider_control_listen_addr,
+            provider_control_allow_non_loopback,
             http_ca_cert_path,
             tor,
             discovery_mode,
@@ -507,6 +519,8 @@ impl NodeConfig {
                 nostr_publication_seed_path,
                 runtime_dir,
                 runtime_auth_token_path,
+                consumer_control_auth_token_path,
+                provider_control_auth_token_path,
                 tor_dir,
             },
             wasm: WasmConfig {

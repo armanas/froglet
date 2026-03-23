@@ -81,6 +81,7 @@ pub async fn run_sync_loop(state: Arc<AppState>, mut last_descriptor_hash: Strin
 
 pub async fn build_descriptor(state: &AppState) -> Result<NodeDescriptor, String> {
     let transport_status = state.transport_status.lock().await.clone();
+    let services = crate::api::current_advertised_services(state).await?;
 
     Ok(NodeDescriptor {
         node_id: state.identity.node_id().to_string(),
@@ -92,7 +93,7 @@ pub async fn build_descriptor(state: &AppState) -> Result<NodeDescriptor, String
             onion_url: transport_status.tor_onion_url,
             tor_status: transport_status.tor_status,
         },
-        services: state.pricing.services(),
+        services,
         faas: FaaSDescriptor::standard(),
         updated_at: None,
     })

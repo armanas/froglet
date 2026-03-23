@@ -11,7 +11,9 @@ import {
   normalizeFilesystemPath
 } from "./shared.js"
 
-function resolvePluginSetting(configValue, envName) {
+const HOST_PRODUCTS = new Set(["openclaw", "nemoclaw"])
+
+function resolveConfigValue(configValue, envName) {
   if (typeof configValue === "string" && configValue.trim().length > 0) {
     return configValue
   }
@@ -22,55 +24,54 @@ function resolvePluginSetting(configValue, envName) {
   return configValue
 }
 
+function normalizeHostProduct(value) {
+  const normalized =
+    typeof value === "string" && value.trim().length > 0
+      ? value.trim().toLowerCase()
+      : "openclaw"
+  if (!HOST_PRODUCTS.has(normalized)) {
+    throw new Error(`hostProduct must be one of ${[...HOST_PRODUCTS].join(", ")}`)
+  }
+  return normalized
+}
+
 export function readPluginConfig(api) {
   const config = api?.config ?? {}
+  const hostProduct = normalizeHostProduct(
+    resolveConfigValue(config.hostProduct, "FROGLET_HOST_PRODUCT")
+  )
+
+  const baseUrl = normalizeBaseUrl(
+    resolveConfigValue(config.baseUrl, "FROGLET_BASE_URL"),
+    "baseUrl"
+  )
+  const authTokenPath = normalizeFilesystemPath(
+    resolveConfigValue(config.authTokenPath, "FROGLET_AUTH_TOKEN_PATH"),
+    "authTokenPath"
+  )
   const maxSearchLimit = clampInteger(
-    config.maxSearchLimit,
+    config.maxSearchLimit ?? process.env.FROGLET_MAX_SEARCH_LIMIT,
     DEFAULT_MAX_SEARCH_LIMIT,
     MIN_SEARCH_LIMIT,
     ABSOLUTE_MAX_SEARCH_LIMIT
   )
 
   return {
-    runtimeUrl: normalizeBaseUrl(
-      resolvePluginSetting(config.runtimeUrl, "FROGLET_RUNTIME_URL"),
-      "runtimeUrl"
-    ),
-    runtimeAuthTokenPath: normalizeFilesystemPath(
-      resolvePluginSetting(
-        config.runtimeAuthTokenPath,
-        "FROGLET_RUNTIME_AUTH_TOKEN_PATH"
-      ),
-      "runtimeAuthTokenPath"
-    ),
+    hostProduct,
+    baseUrl,
+    authTokenPath,
     requestTimeoutMs: clampInteger(
-      config.requestTimeoutMs,
+      config.requestTimeoutMs ?? process.env.FROGLET_REQUEST_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS,
       MIN_TIMEOUT_MS,
       MAX_TIMEOUT_MS
     ),
     defaultSearchLimit: clampInteger(
-      config.defaultSearchLimit,
+      config.defaultSearchLimit ?? process.env.FROGLET_DEFAULT_SEARCH_LIMIT,
       DEFAULT_SEARCH_LIMIT,
       MIN_SEARCH_LIMIT,
       maxSearchLimit
     ),
     maxSearchLimit
   }
-}
-
-export function resolveRuntimeUrl(config, overrideUrl, options = {}) {
-  const fieldName = options.fieldName ?? "runtime_url"
-  if (overrideUrl !== undefined) {
-    return normalizeBaseUrl(overrideUrl, fieldName)
-  }
-  return config.runtimeUrl
-}
-
-export function resolveRuntimeAuthTokenPath(config, overridePath, options = {}) {
-  const fieldName = options.fieldName ?? "runtime_auth_token_path"
-  if (overridePath !== undefined) {
-    return normalizeFilesystemPath(overridePath, fieldName)
-  }
-  return config.runtimeAuthTokenPath
 }

@@ -9,8 +9,9 @@
       "froglet": {
         "enabled": true,
         "config": {
-          "runtimeUrl": "http://127.0.0.1:8081",
-          "runtimeAuthTokenPath": "/absolute/path/to/froglet/data/runtime/auth.token",
+          "hostProduct": "openclaw",
+          "baseUrl": "http://127.0.0.1:9191",
+          "authTokenPath": "/absolute/path/to/froglet/data/runtime/froglet-control.token",
           "requestTimeoutMs": 10000,
           "defaultSearchLimit": 10,
           "maxSearchLimit": 50

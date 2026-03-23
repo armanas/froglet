@@ -64,7 +64,11 @@ jobs:
       - name: Verify OpenClaw plugin on supported minimum Node
         run: |
           node --check integrations/openclaw/froglet/index.js
-          node --test integrations/openclaw/froglet/test/plugin.test.js
+          node --check integrations/openclaw/froglet/scripts/doctor.mjs
+          node --test integrations/openclaw/froglet/test/plugin.test.js \
+            integrations/openclaw/froglet/test/config-profiles.test.mjs \
+            integrations/openclaw/froglet/test/doctor.test.mjs \
+            integrations/openclaw/froglet/test/froglet-client.test.mjs
 
   docker-three-role:
     name: Docker Three Role

@@ -8,30 +8,46 @@ pub struct LocalRuntimeAuth {
 }
 
 pub fn load_or_create_local_runtime_auth(config: &NodeConfig) -> Result<LocalRuntimeAuth, String> {
-    ensure_dir(&config.storage.runtime_dir, 0o700)?;
-
-    let token = if config.storage.runtime_auth_token_path.exists() {
-        load_token(&config.storage.runtime_auth_token_path)?
-    } else {
-        let token = generate_token();
-        persist_token(&config.storage.runtime_auth_token_path, &token)?;
-        token
-    };
+    let token = load_or_create_token(
+        &config.storage.runtime_dir,
+        &config.storage.runtime_auth_token_path,
+        "runtime auth token",
+    )?;
 
     Ok(LocalRuntimeAuth { token })
 }
 
-fn load_token(path: &Path) -> Result<String, String> {
+pub fn load_or_create_local_token(
+    dir_path: &Path,
+    token_path: &Path,
+    label: &str,
+) -> Result<String, String> {
+    load_or_create_token(dir_path, token_path, label)
+}
+
+fn load_or_create_token(dir_path: &Path, token_path: &Path, label: &str) -> Result<String, String> {
+    ensure_dir(dir_path, 0o700)?;
+
+    if token_path.exists() {
+        load_token(token_path, label)
+    } else {
+        let token = generate_token();
+        persist_token(token_path, &token, label)?;
+        Ok(token)
+    }
+}
+
+fn load_token(path: &Path, label: &str) -> Result<String, String> {
     let token = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read runtime auth token {}: {e}", path.display()))?;
+        .map_err(|e| format!("Failed to read {label} {}: {e}", path.display()))?;
     let token = token.trim().to_string();
     if token.is_empty() {
-        return Err(format!("Runtime auth token {} is empty", path.display()));
+        return Err(format!("{label} {} is empty", path.display()));
     }
     Ok(token)
 }
 
-fn persist_token(path: &Path, token: &str) -> Result<(), String> {
+fn persist_token(path: &Path, token: &str, label: &str) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -42,19 +58,15 @@ fn persist_token(path: &Path, token: &str) -> Result<(), String> {
             .mode(0o600)
             .open(path)
             .map_err(|e| {
-                format!(
-                    "Failed to create runtime auth token {}: {e}",
-                    path.display()
-                )
+                format!("Failed to create {label} {}: {e}", path.display())
             })?;
         file.write_all(token.as_bytes())
-            .map_err(|e| format!("Failed to write runtime auth token {}: {e}", path.display()))?;
+            .map_err(|e| format!("Failed to write {label} {}: {e}", path.display()))?;
     }
 
     #[cfg(not(unix))]
     {
-        fs::write(path, token)
-            .map_err(|e| format!("Failed to write runtime auth token {}: {e}", path.display()))?;
+        fs::write(path, token).map_err(|e| format!("Failed to write {label} {}: {e}", path.display()))?;
     }
 
     Ok(())

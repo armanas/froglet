@@ -3,21 +3,25 @@
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
 
-Froglet is a signed-deal execution system with one supported topology:
+Froglet is a signed-deal execution protocol with a simple bot-facing model:
 
-- `froglet-runtime`: local requester runtime for bots
-- `froglet-provider`: remote execution provider
-- `froglet-discovery`: remote reference discovery
+- one OpenClaw/NemoClaw plugin id: `froglet`
+- one bot tool: `froglet`
+- named services plus expert raw compute
+- services are just code/projects, not templates
+- any Froglet node can publish services and invoke services
 
-Bots talk only to the local runtime. The runtime discovers providers, requests quotes, signs requester deals, submits them to remote providers, tracks requester-side state, exposes payment intent, and accepts results.
-
-## Binaries
+## Core Binaries
 
 | Binary | Purpose |
-|---|---|
-| `froglet-runtime` | Local bot-facing runtime on loopback |
-| `froglet-provider` | Public provider API |
-| `froglet-discovery` | Public reference discovery |
+| --- | --- |
+| `froglet-runtime` | deal and payment engine used when a node invokes remote services |
+| `froglet-provider` | public service API used when a node serves local services |
+| `froglet-discovery` | public discovery service |
+| `froglet-operator` | host-side `/v1/froglet/*` control API |
+
+Marketplace is no longer a special product binary. It is just Froglet services
+published by a Froglet node.
 
 ## Quick Start
 
@@ -27,7 +31,7 @@ Start discovery:
 cargo run --bin froglet-discovery
 ```
 
-Start a provider and publish it to discovery:
+Start the public node API:
 
 ```bash
 FROGLET_DISCOVERY_MODE=reference \
@@ -39,7 +43,7 @@ FROGLET_LIGHTNING_MODE=mock \
 cargo run --bin froglet-provider
 ```
 
-Start a local runtime for bots:
+Start the deal/payment runtime:
 
 ```bash
 FROGLET_DISCOVERY_MODE=reference \
@@ -49,126 +53,54 @@ FROGLET_LIGHTNING_MODE=mock \
 cargo run --bin froglet-runtime
 ```
 
-## Docker
+The same node can run both `froglet-provider` and `froglet-runtime`. That is
+the normal model: one Froglet node can publish local services and invoke remote
+services.
 
-The default Compose file is a local three-role stack:
+Start the local control API:
 
 ```bash
-docker compose up --build
+cargo run --bin froglet-operator
 ```
 
-That publishes:
+## OpenClaw And NemoClaw
 
-- discovery on `http://127.0.0.1:9090`
-- provider on `http://127.0.0.1:8080`
-- runtime on `http://127.0.0.1:8081`
-- runtime token on `./data/runtime/auth.token`
+Use the shared plugin package in
+[integrations/openclaw/froglet](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet).
 
-Role-specific Compose files are also included:
+The plugin config is now unified:
 
-- `compose.discovery.yaml`
-- `compose.provider.yaml`
-- `compose.runtime.yaml`
+- `hostProduct`
+- `baseUrl`
+- `authTokenPath`
+- `requestTimeoutMs`
+- `defaultSearchLimit`
+- `maxSearchLimit`
 
-See [docs/DOCKER.md](docs/DOCKER.md).
+The tool surface is unified too. The one `froglet` tool supports actions for:
 
-## Bot Surface
+- service discovery and invocation
+- local service inspection and publication
+- project authoring
+- build/test/publish
+- status/logs/restart
+- task polling
+- raw compute
 
-Supported runtime routes:
+See:
 
-- `GET /v1/runtime/wallet/balance`
-- `POST /v1/runtime/search`
-- `GET /v1/runtime/providers/:provider_id`
-- `POST /v1/runtime/deals`
-- `GET /v1/runtime/deals/:deal_id`
-- `GET /v1/runtime/deals/:deal_id/payment-intent`
-- `POST /v1/runtime/deals/:deal_id/accept`
-- `GET /v1/runtime/archive/:subject_kind/:subject_id`
-
-Supported provider routes:
-
-- `GET /v1/provider/descriptor`
-- `GET /v1/provider/offers`
-- `POST /v1/provider/quotes`
-- `POST /v1/provider/deals`
-- `GET /v1/provider/deals/:deal_id`
-- `POST /v1/provider/deals/:deal_id/accept`
-- `GET /v1/provider/deals/:deal_id/invoice-bundle`
-- `GET /v1/provider/confidential/profiles/:artifact_hash`
-- `POST /v1/provider/confidential/sessions`
-- `GET /v1/provider/confidential/sessions/:session_id`
-
-Supported discovery routes:
-
-- `POST /v1/discovery/search`
-- `GET /v1/discovery/providers/:provider_id`
-
-Verification routes remain public:
-
-- `POST /v1/invoice-bundles/verify`
-- `POST /v1/curated-lists/verify`
-- `POST /v1/nostr/events/verify`
-- `POST /v1/receipts/verify`
-
-## OpenClaw and NemoClaw
-
-The public Froglet OpenClaw plugin is runtime-only and shared by OpenClaw and
-NemoClaw. The plugin contract is the same in both products. Profile-specific
-differences are limited to plugin load path, runtime URL, runtime token path,
-and non-Froglet top-level config such as model/provider settings.
-
-Supported profiles:
-
-| Profile | Runtime placement | Notes |
-| --- | --- | --- |
-| `openclaw-local` | local host runtime | baseline local OpenClaw workflow |
-| `nemoclaw-local-runtime` | runtime inside the sandbox | compatibility path when the sandbox-local runtime is intentional |
-| `nemoclaw-hosted-runtime` | runtime on the consumer host over HTTPS | supported NemoClaw baseline |
-
-The checked-in example JSON files under [`integrations/openclaw/froglet/examples`](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet/examples) are complete user-edited configs, not rendered fragments.
-
-The Froglet-owned plugin keys are:
-
-- `runtimeUrl`
-- `runtimeAuthTokenPath`
-
-Tool surface:
-
-- `froglet_search`
-- `froglet_get_provider`
-- `froglet_events_query`
-- `froglet_buy`
-- `froglet_mock_pay`
-- `froglet_wait_deal`
-- `froglet_payment_intent`
-- `froglet_accept_result`
-- `froglet_wallet_balance`
-
-Minimal `froglet_buy` request for the standard `execute.wasm` path:
-
-```json
-{
-  "request": {
-    "provider": { "provider_id": "provider-1" },
-    "offer_id": "execute.wasm",
-    "submission": { "wasm_module_hex": "<valid_wasm_module_hex>" }
-  }
-}
-```
-
-For accept flows, `froglet_wait_deal` must be called with `wait_statuses` including `result_ready`; the default wait behavior only stops on terminal statuses.
-
-OpenClaw setup is documented in [docs/OPENCLAW.md](docs/OPENCLAW.md). NemoClaw setup is documented in [docs/NEMOCLAW.md](docs/NEMOCLAW.md).
-
-## Confidential Execution
-
-Confidential execution is an additive provider/runtime extension. It does not change the requester-runtime topology above. See [docs/CONFIDENTIAL.md](docs/CONFIDENTIAL.md).
-
-## More Docs
-
-- [docs/BOT_RUNTIME_ALPHA.md](docs/BOT_RUNTIME_ALPHA.md)
-- [docs/RUNTIME.md](docs/RUNTIME.md)
-- [docs/DOCKER.md](docs/DOCKER.md)
 - [docs/OPENCLAW.md](docs/OPENCLAW.md)
 - [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
-- [examples/README.md](examples/README.md)
+- [docs/OPERATOR.md](docs/OPERATOR.md)
+
+## Verification
+
+```bash
+cargo check -q
+cargo test -q --lib
+node --check integrations/openclaw/froglet/index.js
+node --check integrations/openclaw/froglet/scripts/doctor.mjs
+node --test integrations/openclaw/froglet/test/plugin.test.js \
+  integrations/openclaw/froglet/test/config-profiles.test.mjs \
+  integrations/openclaw/froglet/test/doctor.test.mjs
+```

@@ -1,6 +1,6 @@
 use crate::{
     confidential::ConfidentialPolicy, config::NodeConfig, db::DbPool, identity::NodeIdentity,
-    lnd::LndRestClient, pricing::PricingTable, sandbox::WasmSandbox,
+    lnd::LndRestClient, pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, tls,
     wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
@@ -112,9 +112,91 @@ pub struct AppState {
     pub confidential_policy: Option<Arc<ConfidentialPolicy>>,
     pub runtime_auth_token: String,
     pub runtime_auth_token_path: PathBuf,
+    pub consumer_control_auth_token: String,
+    pub consumer_control_auth_token_path: PathBuf,
+    pub provider_control_auth_token: String,
+    pub provider_control_auth_token_path: PathBuf,
     pub events_query_semaphore: Arc<Semaphore>,
     pub lnd_rest_client: Option<Arc<LndRestClient>>,
     pub lightning_destination_identity: Arc<OnceCell<String>>,
+}
+
+pub fn ensure_storage_dirs(config: &NodeConfig) -> Result<(), String> {
+    for path in [
+        &config.storage.data_dir,
+        &config.storage.runtime_dir,
+        &config.storage.tor_dir,
+        &config.storage.identity_dir,
+    ] {
+        std::fs::create_dir_all(path)
+            .map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
+    tls::ensure_rustls_crypto_provider();
+    ensure_storage_dirs(&config)?;
+
+    let wasm_sandbox = Arc::new(WasmSandbox::from_env()?);
+    wasm_sandbox.warm_up();
+
+    let identity = Arc::new(NodeIdentity::load_or_create(&config)?);
+    let runtime_auth = runtime_auth::load_or_create_local_runtime_auth(&config)?;
+    let consumer_control_auth_token = runtime_auth::load_or_create_local_token(
+        &config.storage.runtime_dir,
+        &config.storage.consumer_control_auth_token_path,
+        "consumer control auth token",
+    )?;
+    let provider_control_auth_token = runtime_auth::load_or_create_local_token(
+        &config.storage.runtime_dir,
+        &config.storage.provider_control_auth_token_path,
+        "provider control auth token",
+    )?;
+    let db_pool = DbPool::open(&config.storage.db_path)
+        .map_err(|error| format!("failed to initialize SQLite DB pool: {error}"))?;
+    let events_query_capacity = db_pool.read_connection_count().max(1);
+    let http_client = tls::build_reqwest_client(config.http_ca_cert_path.as_deref())
+        .map_err(|error| format!("failed to initialize shared HTTP client: {error}"))?;
+    let wasm_host = config
+        .wasm
+        .policy
+        .clone()
+        .map(WasmHostEnvironment::from_policy)
+        .transpose()
+        .map(|environment| environment.map(Arc::new))?;
+    let lnd_rest_client = config
+        .lightning
+        .lnd_rest
+        .as_ref()
+        .map(LndRestClient::from_config)
+        .transpose()
+        .map_err(|error| format!("failed to initialize cached LND REST client: {error}"))?
+        .map(Arc::new);
+
+    Ok(Arc::new(AppState {
+        db: db_pool,
+        transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&config))),
+        reference_discovery_status: Arc::new(TokioMutex::new(
+            ReferenceDiscoveryStatus::from_config(&config),
+        )),
+        wasm_sandbox,
+        pricing: PricingTable::from_config(config.pricing.clone()),
+        identity,
+        config: config.clone(),
+        http_client,
+        wasm_host,
+        confidential_policy: config.confidential.policy.clone().map(Arc::new),
+        runtime_auth_token: runtime_auth.token,
+        runtime_auth_token_path: config.storage.runtime_auth_token_path.clone(),
+        consumer_control_auth_token,
+        consumer_control_auth_token_path: config.storage.consumer_control_auth_token_path.clone(),
+        provider_control_auth_token,
+        provider_control_auth_token_path: config.storage.provider_control_auth_token_path.clone(),
+        events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
+        lnd_rest_client,
+        lightning_destination_identity: Arc::new(OnceCell::new()),
+    }))
 }
 
 #[cfg(test)]
@@ -132,6 +214,8 @@ mod tests {
             public_base_url: public_base_url.map(str::to_string),
             runtime_listen_addr: "127.0.0.1:8081".to_string(),
             runtime_allow_non_loopback: false,
+            provider_control_listen_addr: "127.0.0.1:9191".to_string(),
+            provider_control_allow_non_loopback: false,
             http_ca_cert_path: None,
             tor: TorSidecarConfig {
                 binary_path: "tor".to_string(),
@@ -168,6 +252,10 @@ mod tests {
                 ),
                 runtime_dir: PathBuf::from("./data/runtime"),
                 runtime_auth_token_path: PathBuf::from("./data/runtime/auth.token"),
+                consumer_control_auth_token_path: PathBuf::from(
+                    "./data/runtime/consumerctl.token",
+                ),
+                provider_control_auth_token_path: PathBuf::from("./data/runtime/froglet-control.token"),
                 tor_dir: PathBuf::from("./data/tor"),
             },
             wasm: WasmConfig {

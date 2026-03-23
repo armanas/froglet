@@ -16,6 +16,10 @@ path = "src/bin/froglet-runtime.rs"
 name = "froglet-discovery"
 path = "src/bin/discovery.rs"
 
+[[bin]]
+name = "froglet-operator"
+path = "src/bin/froglet-operator.rs"
+
 [dependencies]
 # Async Runtime & Web Framework
 tokio = { version = "1.37", features = ["full"] }
@@ -61,9 +65,9 @@ subtle = "2"
 toml = "0.9"
 oci-registry-client = "0.2.3"
 urlencoding = "2.1"
+wat = "1"
 
 [dev-dependencies]
 bitcoin = "0.32.8"
 rcgen = "0.13"
 tokio-rustls = "0.26"
-wat = "1"

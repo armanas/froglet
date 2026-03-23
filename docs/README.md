@@ -1,11 +1,9 @@
 # Docs
 
-- [BOT_RUNTIME_ALPHA.md](BOT_RUNTIME_ALPHA.md): supported bot-facing runtime contract
-- [RUNTIME.md](RUNTIME.md): runtime behavior and state model
-- [DOCKER.md](DOCKER.md): provider/runtime/discovery images and Compose files
-- [OPENCLAW.md](OPENCLAW.md): runtime-only OpenClaw plugin setup
-- [NEMOCLAW.md](NEMOCLAW.md): runtime-inside-sandbox NemoClaw topology
-- [ROLE_TOOL_ARCHITECTURE.md](ROLE_TOOL_ARCHITECTURE.md): proposed role-based OpenClaw/NemoClaw attachment architecture
+- [OPENCLAW.md](OPENCLAW.md): OpenClaw setup for the single `froglet` tool
+- [NEMOCLAW.md](NEMOCLAW.md): NemoClaw setup for the same tool contract
+- [OPERATOR.md](OPERATOR.md): host-side `/v1/froglet/*` control API
+- [RUNTIME.md](RUNTIME.md): deal/payment runtime behavior under the new tool model
+- [ROLE_TOOL_ARCHITECTURE.md](ROLE_TOOL_ARCHITECTURE.md): implemented service-tool architecture
+- [DOCKER.md](DOCKER.md): local compose and image notes
 - [CONFIDENTIAL.md](CONFIDENTIAL.md): confidential execution extension
-- [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md): project status
-- [STORAGE_PROFILE.md](STORAGE_PROFILE.md): storage invariants and retention notes

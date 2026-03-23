@@ -79,6 +79,14 @@ pub struct DealSettlementMaterializationRecord {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProviderManagedOfferRecord {
+    pub offer_id: String,
+    pub definition: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct WalCheckpointMetrics {
     pub wal_size_bytes: u64,
@@ -221,7 +229,7 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             updated_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_deals_status_updated_at ON deals (status, updated_at DESC);
-        CREATE TABLE IF NOT EXISTS requester_deals (
+         CREATE TABLE IF NOT EXISTS requester_deals (
             deal_id TEXT PRIMARY KEY,
             idempotency_key TEXT UNIQUE,
             provider_id TEXT NOT NULL,
@@ -240,6 +248,14 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_requester_deals_status_updated_at
             ON requester_deals (status, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS provider_managed_offers (
+            offer_id TEXT PRIMARY KEY,
+            definition_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_managed_offers_updated_at
+            ON provider_managed_offers (updated_at DESC);
         COMMIT;",
     )?;
     ensure_column(conn, "jobs", "workload_evidence_hash", "TEXT")?;
@@ -1071,6 +1087,92 @@ pub fn delete_deal_settlement_materialization(
         )
         .map_err(|error| error.to_string())?;
     Ok(deleted > 0)
+}
+
+pub fn upsert_provider_managed_offer(
+    conn: &Connection,
+    offer_id: &str,
+    definition_json: &str,
+    now: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO provider_managed_offers (
+            offer_id,
+            definition_json,
+            created_at,
+            updated_at
+         ) VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(offer_id) DO UPDATE SET
+            definition_json = excluded.definition_json,
+            updated_at = excluded.updated_at",
+        params![offer_id, definition_json, now],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn get_provider_managed_offer(
+    conn: &Connection,
+    offer_id: &str,
+) -> Result<Option<ProviderManagedOfferRecord>, String> {
+    conn.query_row(
+        "SELECT offer_id, definition_json, created_at, updated_at
+         FROM provider_managed_offers
+         WHERE offer_id = ?1",
+        params![offer_id],
+        |row| {
+            let definition_json: String = row.get(1)?;
+            let definition = serde_json::from_str(&definition_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
+            Ok(ProviderManagedOfferRecord {
+                offer_id: row.get(0)?,
+                definition,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+pub fn list_provider_managed_offers(conn: &Connection) -> Result<Vec<ProviderManagedOfferRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT offer_id, definition_json, created_at, updated_at
+             FROM provider_managed_offers
+             ORDER BY updated_at DESC, offer_id ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let definition_json: String = row.get(1)?;
+            let definition = serde_json::from_str(&definition_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
+            Ok(ProviderManagedOfferRecord {
+                offer_id: row.get(0)?,
+                definition,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut offers = Vec::new();
+    for row in rows {
+        offers.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(offers)
 }
 
 pub fn list_duplicate_deal_artifact_hashes(

@@ -2,40 +2,42 @@
   "id": "froglet",
   "name": "Froglet",
   "version": "0.1.0",
-  "description": "Runtime-only Froglet tools for OpenClaw and NemoClaw.",
+  "description": "Single-tool Froglet integration for OpenClaw and NemoClaw.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["runtimeUrl", "runtimeAuthTokenPath"],
+    "required": ["baseUrl", "authTokenPath"],
     "properties": {
+      "hostProduct": {
+        "type": "string",
+        "enum": ["openclaw", "nemoclaw"],
+        "default": "openclaw"
+      },
+      "baseUrl": {
+        "type": "string",
+        "description": "Unified Froglet control API base URL."
+      },
+      "authTokenPath": {
+        "type": "string",
+        "description": "Filesystem path to the Froglet control API bearer token."
+      },
       "requestTimeoutMs": {
         "type": "integer",
         "minimum": 1000,
         "maximum": 60000,
-        "default": 10000,
-        "description": "HTTP timeout for runtime requests."
+        "default": 10000
       },
       "defaultSearchLimit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
-        "default": 10,
-        "description": "Default discovery search size when the tool caller omits a limit."
+        "default": 10
       },
       "maxSearchLimit": {
         "type": "integer",
         "minimum": 1,
         "maximum": 200,
-        "default": 50,
-        "description": "Hard ceiling applied to discovery search limits."
-      },
-      "runtimeUrl": {
-        "type": "string",
-        "description": "Default local Froglet runtime base URL, for example http://127.0.0.1:8081."
-      },
-      "runtimeAuthTokenPath": {
-        "type": "string",
-        "description": "Default Froglet runtime auth token path, for example /absolute/path/to/data/runtime/auth.token."
+        "default": 50
       }
     }
   }

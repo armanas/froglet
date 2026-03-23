@@ -11,9 +11,7 @@ use rand::RngCore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::error::Error as StdError;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::BTreeMap, error::Error as StdError, fs, sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
@@ -320,7 +318,7 @@ pub struct RuntimeSearchRequest {
     pub include_inactive: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeProviderDetailsResponse {
     pub discovery: DiscoveryNodeRecord,
     pub descriptor: SignedArtifact<DescriptorPayload>,
@@ -341,7 +339,7 @@ pub struct RuntimeCreateDealRequest {
     pub payment: Option<ProvidedPayment>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeCreateDealResponse {
     pub provider_id: String,
     pub provider_url: String,
@@ -353,7 +351,7 @@ pub struct RuntimeCreateDealResponse {
     pub payment_intent: Option<settlement::LightningWalletIntent>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeDealResponse {
     pub deal: requester_deals::RequesterDealRecord,
 }
@@ -434,6 +432,173 @@ pub struct RuntimeDealPaymentIntentResponse {
     pub payment_intent: settlement::LightningWalletIntent,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderManagedOfferDefinition {
+    pub offer_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub offer_kind: String,
+    pub runtime: String,
+    pub execution_kind: String,
+    pub abi_version: String,
+    #[serde(default = "default_service_mode")]
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    pub max_input_bytes: usize,
+    pub max_runtime_ms: u64,
+    pub max_memory_bytes: usize,
+    pub max_output_bytes: usize,
+    pub fuel_limit: u64,
+    pub price_sats: u64,
+    #[serde(default = "default_offer_publication_state")]
+    pub publication_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_bytes_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci_reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidential_profile_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderControlOfferRecord {
+    pub publication_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub source_kind: String,
+    pub execution_kind: String,
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    pub offer: SignedArtifact<OfferPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderControlPublishArtifactRequest {
+    pub service_id: String,
+    #[serde(default)]
+    pub offer_id: Option<String>,
+    #[serde(default)]
+    pub artifact_path: Option<String>,
+    #[serde(default)]
+    pub wasm_module_hex: Option<String>,
+    #[serde(default)]
+    pub oci_reference: Option<String>,
+    #[serde(default)]
+    pub oci_digest: Option<String>,
+    #[serde(default)]
+    pub execution_kind: Option<String>,
+    #[serde(default)]
+    pub abi_version: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    pub price_sats: u64,
+    #[serde(default)]
+    pub publication_state: Option<String>,
+    #[serde(default)]
+    pub input_schema: Option<Value>,
+    #[serde(default)]
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderControlArtifactRef {
+    pub kind: String,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderControlEvidence {
+    pub provider_id: String,
+    pub descriptor_hash: String,
+    pub offer_hash: String,
+    pub offer_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderControlMutationResponse {
+    pub request_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    pub summary: String,
+    pub artifacts: Vec<ProviderControlArtifactRef>,
+    pub evidence: ProviderControlEvidence,
+    pub offer: ProviderControlOfferRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderServiceRecord {
+    pub service_id: String,
+    pub offer_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub summary: String,
+    pub execution_kind: String,
+    pub abi_version: String,
+    pub mode: String,
+    pub price_sats: u64,
+    pub publication_state: String,
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_bytes_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oci_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oci_digest: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderServicesResponse {
+    pub services: Vec<ProviderServiceRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderServiceResponse {
+    pub service: ProviderServiceRecord,
+}
+
 const MAX_BODY_BYTES: usize = 1_048_576;
 const MAX_EVENT_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_WASM_HEX_BYTES: usize = 512 * 1024;
@@ -445,6 +610,35 @@ const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 type ApiFailure = (StatusCode, serde_json::Value);
+
+fn default_offer_publication_state() -> String {
+    "active".to_string()
+}
+
+fn default_service_mode() -> String {
+    "sync".to_string()
+}
+
+pub(crate) fn normalize_offer_publication_state(value: Option<&str>) -> Result<String, String> {
+    let normalized = value.unwrap_or("active").trim();
+    match normalized {
+        "active" | "hidden" => Ok(normalized.to_string()),
+        _ => Err(format!(
+            "publication_state must be one of active or hidden, got {normalized}"
+        )),
+    }
+}
+
+pub(crate) fn normalize_offer_id(offer_id: &str) -> Result<String, String> {
+    let trimmed = offer_id.trim();
+    if trimmed.is_empty() {
+        return Err("offer_id must be a non-empty string".to_string());
+    }
+    if trimmed.len() > 128 {
+        return Err("offer_id must be 128 bytes or fewer".to_string());
+    }
+    Ok(trimmed.to_string())
+}
 
 fn publish_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -511,6 +705,8 @@ fn provider_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/provider/descriptor", get(protocol_descriptor))
         .route("/v1/provider/offers", get(list_offers))
+        .route("/v1/provider/services", get(list_provider_services))
+        .route("/v1/provider/services/:service_id", get(get_provider_service))
         .route("/v1/feed", get(get_feed))
         .route("/v1/artifacts/:artifact_hash", get(get_artifact))
         .route(
@@ -2184,6 +2380,39 @@ pub async fn list_offers(State(state): State<Arc<AppState>>) -> impl IntoRespons
     }
 }
 
+pub async fn list_provider_services(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match current_service_records(state.as_ref(), false, false).await {
+        Ok(services) => (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response(),
+        Err(error) => {
+            tracing::error!("Failed to build provider services: {error}");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to build provider services" }),
+            ).into_response()
+        }
+    }
+}
+
+pub async fn get_provider_service(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+) -> impl IntoResponse {
+    match provider_service_record(state.as_ref(), &service_id, true).await {
+        Ok(Some(service)) => (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response(),
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "service not found", "service_id": service_id }),
+        ).into_response(),
+        Err(error) => {
+            tracing::error!("Failed to build provider service {service_id}: {error}");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load provider service" }),
+            ).into_response()
+        }
+    }
+}
+
 pub async fn get_feed(
     State(state): State<Arc<AppState>>,
     Query(query): Query<FeedQuery>,
@@ -3751,18 +3980,19 @@ async fn current_descriptor_artifact(
             ],
         });
     }
-    let confidential_profiles = current_confidential_profile_artifacts(state).await?;
-    let mut service_kinds = vec![
-        crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
-        "events.query".to_string(),
-    ];
-    let mut execution_runtimes = vec!["wasm".to_string()];
-    if !confidential_profiles.is_empty() {
-        execution_runtimes.push("tee".to_string());
-        for profile in &confidential_profiles {
-            service_kinds.push(profile.artifact.payload.allowed_workload_kind.clone());
-        }
-    }
+    let active_offer_definitions = current_offer_definitions(state)
+        .await?
+        .into_iter()
+        .filter(|definition| definition.publication_state == "active")
+        .collect::<Vec<_>>();
+    let mut service_kinds = active_offer_definitions
+        .iter()
+        .map(|definition| definition.offer_kind.clone())
+        .collect::<Vec<_>>();
+    let mut execution_runtimes = active_offer_definitions
+        .iter()
+        .map(|definition| definition.runtime.clone())
+        .collect::<Vec<_>>();
     service_kinds.sort();
     service_kinds.dedup();
     execution_runtimes.sort();
@@ -3806,171 +4036,20 @@ async fn current_descriptor_artifact(
 async fn current_offer_artifacts(
     state: &AppState,
 ) -> Result<Vec<SignedArtifact<OfferPayload>>, String> {
-    let descriptor = current_descriptor_artifact(state).await?;
-    let descriptor_hash = descriptor.hash.clone();
-    let confidential_profiles = current_confidential_profile_artifacts(state).await?;
-    let mut offers = Vec::new();
-    for payload in current_offer_payloads(state, &descriptor_hash, &confidential_profiles) {
-        offers.push(persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await?);
-    }
-    Ok(offers)
+    Ok(current_offer_records(state, false)
+        .await?
+        .into_iter()
+        .map(|record| record.offer)
+        .collect())
 }
 
 async fn lookup_offer(
     state: &AppState,
     offer_id: &str,
 ) -> Result<Option<SignedArtifact<OfferPayload>>, String> {
-    let offers = current_offer_artifacts(state).await?;
-    Ok(offers
-        .into_iter()
-        .find(|offer| offer.payload.offer_id == offer_id))
-}
-
-fn current_offer_payloads(
-    state: &AppState,
-    descriptor_hash: &str,
-    confidential_profiles: &[ResolvedConfidentialProfile],
-) -> Vec<OfferPayload> {
-    let provider_id = state.identity.node_id().to_string();
-    let wasm_host_capabilities = state
-        .wasm_host
-        .as_ref()
-        .map(|host| host.advertised_capabilities())
-        .unwrap_or_default();
-    let priced_offer = |offer_id: &str,
-                        service_id: ServiceId,
-                        offer_kind: &str,
-                        runtime: &str,
-                        abi_version: &str,
-                        capabilities: Vec<String>,
-                        max_input_bytes: usize,
-                        max_runtime_ms: u64,
-                        max_memory_bytes: usize,
-                        max_output_bytes: usize,
-                        fuel_limit: u64| {
-        let price_sats = state.pricing.price_for(service_id);
-        OfferPayload {
-            provider_id: provider_id.clone(),
-            offer_id: offer_id.to_string(),
-            descriptor_hash: descriptor_hash.to_string(),
-            expires_at: None,
-            offer_kind: offer_kind.to_string(),
-            settlement_method: "lightning.base_fee_plus_success_fee.v1".to_string(),
-            quote_ttl_secs: advertised_offer_timeout_secs(
-                state,
-                service_id,
-                price_sats,
-                &accepted_payment_methods(state),
-            ),
-            execution_profile: protocol::OfferExecutionProfile {
-                runtime: runtime.to_string(),
-                abi_version: abi_version.to_string(),
-                capabilities,
-                max_input_bytes,
-                max_runtime_ms,
-                max_memory_bytes,
-                max_output_bytes,
-                fuel_limit,
-            },
-            price_schedule: protocol::OfferPriceSchedule {
-                base_fee_msat: 0,
-                success_fee_msat: price_sats.saturating_mul(1_000),
-            },
-            terms_hash: None,
-            confidential_profile_hash: None,
-        }
-    };
-
-    let mut offers = vec![
-        priced_offer(
-            ServiceId::EventsQuery.as_str(),
-            ServiceId::EventsQuery,
-            "events.query",
-            "events_query",
-            "froglet.events.query.v1",
-            Vec::new(),
-            MAX_BODY_BYTES,
-            state.config.execution_timeout_secs.saturating_mul(1_000),
-            0,
-            MAX_BODY_BYTES,
-            0,
-        ),
-        priced_offer(
-            ServiceId::ExecuteWasm.as_str(),
-            ServiceId::ExecuteWasm,
-            crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
-            "wasm",
-            crate::wasm::WASM_RUN_JSON_ABI_V1,
-            Vec::new(),
-            MAX_WASM_INPUT_BYTES,
-            state.config.execution_timeout_secs.saturating_mul(1_000),
-            sandbox::WASM_MAX_MEMORY_BYTES,
-            sandbox::WASM_MAX_OUTPUT_BYTES,
-            sandbox::WASM_FUEL_LIMIT,
-        ),
-    ];
-    if !wasm_host_capabilities.is_empty() {
-        offers.push(priced_offer(
-            "execute.wasm.host",
-            ServiceId::ExecuteWasm,
-            crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
-            "wasm",
-            crate::wasm::WASM_HOST_JSON_ABI_V1,
-            wasm_host_capabilities,
-            MAX_WASM_INPUT_BYTES,
-            state.config.execution_timeout_secs.saturating_mul(1_000),
-            sandbox::WASM_MAX_MEMORY_BYTES,
-            sandbox::WASM_MAX_OUTPUT_BYTES,
-            sandbox::WASM_FUEL_LIMIT,
-        ));
-    }
-    for profile in confidential_profiles {
-        let runtime = match profile.config.allowed_workload_kind.as_str() {
-            confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => "tee.service",
-            confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => "tee.wasm",
-            _ => continue,
-        };
-        let abi_version = match profile.config.allowed_workload_kind.as_str() {
-            confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => {
-                "froglet.confidential.service.v1"
-            }
-            confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => {
-                "froglet.confidential.attested_wasm.v1"
-            }
-            _ => continue,
-        };
-        offers.push(OfferPayload {
-            provider_id: provider_id.clone(),
-            offer_id: profile.config.offer_id.clone(),
-            descriptor_hash: descriptor_hash.to_string(),
-            expires_at: None,
-            offer_kind: profile.config.allowed_workload_kind.clone(),
-            settlement_method: "lightning.base_fee_plus_success_fee.v1".to_string(),
-            quote_ttl_secs: advertised_offer_timeout_secs(
-                state,
-                ServiceId::ExecuteWasm,
-                profile.config.price_sats,
-                &accepted_payment_methods(state),
-            ),
-            execution_profile: protocol::OfferExecutionProfile {
-                runtime: runtime.to_string(),
-                abi_version: abi_version.to_string(),
-                capabilities: Vec::new(),
-                max_input_bytes: profile.config.max_input_bytes,
-                max_runtime_ms: profile.config.max_runtime_ms,
-                max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
-                max_output_bytes: profile.config.max_output_bytes,
-                fuel_limit: sandbox::WASM_FUEL_LIMIT,
-            },
-            price_schedule: protocol::OfferPriceSchedule {
-                base_fee_msat: 0,
-                success_fee_msat: profile.config.price_sats.saturating_mul(1_000),
-            },
-            terms_hash: profile.config.terms_hash.clone(),
-            confidential_profile_hash: Some(profile.artifact.hash.clone()),
-        });
-    }
-    offers
+    Ok(provider_control_offer_record(state, offer_id, false)
+        .await?
+        .map(|record| record.offer))
 }
 
 fn accepted_payment_methods(state: &AppState) -> Vec<String> {
@@ -4187,42 +4266,723 @@ async fn find_existing_deal_by_artifact_hash(
         })
 }
 
-fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
+fn require_bearer_token(
+    headers: &HeaderMap,
+    expected_token: &str,
+    scope: &str,
+) -> Result<(), ApiFailure> {
     let Some(value) = headers.get(header::AUTHORIZATION) else {
         return Err((
             StatusCode::UNAUTHORIZED,
-            json!({ "error": "missing runtime authorization" }),
+            json!({ "error": format!("missing {scope} authorization") }),
         ));
     };
 
     let Ok(value) = value.to_str() else {
         return Err((
             StatusCode::UNAUTHORIZED,
-            json!({ "error": "invalid runtime authorization header" }),
+            json!({ "error": format!("invalid {scope} authorization header") }),
         ));
     };
 
     let Some(token) = value.strip_prefix("Bearer ") else {
         return Err((
             StatusCode::UNAUTHORIZED,
-            json!({ "error": "runtime authorization must use bearer auth" }),
+            json!({ "error": format!("{scope} authorization must use bearer auth") }),
         ));
     };
 
-    let valid = token.len() == state.runtime_auth_token.len()
-        && token
-            .as_bytes()
-            .ct_eq(state.runtime_auth_token.as_bytes())
-            .unwrap_u8()
-            == 1;
+    let valid = token.len() == expected_token.len()
+        && token.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1;
     if !valid {
         return Err((
             StatusCode::UNAUTHORIZED,
-            json!({ "error": "invalid runtime authorization token" }),
+            json!({ "error": format!("invalid {scope} authorization token") }),
         ));
     }
 
     Ok(())
+}
+
+fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
+    require_bearer_token(headers, &state.runtime_auth_token, "runtime")
+}
+
+pub(crate) fn require_provider_control_auth(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), ApiFailure> {
+    require_bearer_token(headers, &state.provider_control_auth_token, "provider control")
+}
+
+pub(crate) fn provider_offer_limits(
+    state: &AppState,
+    runtime: &str,
+) -> (usize, u64, usize, usize, u64) {
+    match runtime {
+        "events_query" => (
+            MAX_BODY_BYTES,
+            state.config.execution_timeout_secs.saturating_mul(1_000),
+            0,
+            MAX_BODY_BYTES,
+            0,
+        ),
+        _ => (
+            MAX_WASM_INPUT_BYTES,
+            state.config.execution_timeout_secs.saturating_mul(1_000),
+            sandbox::WASM_MAX_MEMORY_BYTES,
+            sandbox::WASM_MAX_OUTPUT_BYTES,
+            sandbox::WASM_FUEL_LIMIT,
+        ),
+    }
+}
+
+pub(crate) fn validate_provider_offer_definition(
+    definition: &ProviderManagedOfferDefinition,
+) -> Result<(), String> {
+    normalize_offer_id(&definition.offer_id)?;
+    normalize_offer_publication_state(Some(&definition.publication_state))?;
+    if let Some(service_id) = definition.service_id.as_deref() {
+        normalize_offer_id(service_id)?;
+    }
+    if let Some(project_id) = definition.project_id.as_deref() {
+        normalize_offer_id(project_id)?;
+    }
+    if definition.offer_kind.trim().is_empty() {
+        return Err("offer_kind must be a non-empty string".to_string());
+    }
+    if definition.runtime.trim().is_empty() {
+        return Err("runtime must be a non-empty string".to_string());
+    }
+    if definition.execution_kind != "wasm_inline"
+        && definition.execution_kind != "wasm_oci"
+        && definition.execution_kind != "builtin"
+    {
+        return Err("execution_kind must be wasm_inline, wasm_oci, or builtin".to_string());
+    }
+    if definition.mode != "sync" && definition.mode != "async" {
+        return Err("mode must be sync or async".to_string());
+    }
+    if definition.abi_version.trim().is_empty() {
+        return Err("abi_version must be a non-empty string".to_string());
+    }
+    if definition.source_kind.trim().is_empty() {
+        return Err("source_kind must be a non-empty string".to_string());
+    }
+    if definition.runtime == "events_query" && definition.offer_kind != "events.query" {
+        return Err("events_query runtime requires offer_kind=events.query".to_string());
+    }
+    if definition.abi_version == wasm::WASM_RUN_JSON_ABI_V1 && !definition.capabilities.is_empty() {
+        return Err(format!(
+            "{} does not permit requested capabilities",
+            wasm::WASM_RUN_JSON_ABI_V1
+        ));
+    }
+    Ok(())
+}
+
+fn offer_service_id(definition: &ProviderManagedOfferDefinition) -> String {
+    definition
+        .service_id
+        .clone()
+        .unwrap_or_else(|| definition.offer_id.clone())
+}
+
+fn service_id_for_offer_definition(definition: &ProviderManagedOfferDefinition) -> ServiceId {
+    match definition.runtime.as_str() {
+        "events_query" => ServiceId::EventsQuery,
+        _ => ServiceId::ExecuteWasm,
+    }
+}
+
+fn payload_from_provider_offer_definition(
+    state: &AppState,
+    descriptor_hash: &str,
+    definition: &ProviderManagedOfferDefinition,
+) -> OfferPayload {
+    let service_id = service_id_for_offer_definition(definition);
+    OfferPayload {
+        provider_id: state.identity.node_id().to_string(),
+        offer_id: definition.offer_id.clone(),
+        descriptor_hash: descriptor_hash.to_string(),
+        expires_at: None,
+        offer_kind: definition.offer_kind.clone(),
+        settlement_method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+        quote_ttl_secs: advertised_offer_timeout_secs(
+            state,
+            service_id,
+            definition.price_sats,
+            &accepted_payment_methods(state),
+        ),
+        execution_profile: protocol::OfferExecutionProfile {
+            runtime: definition.runtime.clone(),
+            abi_version: definition.abi_version.clone(),
+            capabilities: definition.capabilities.clone(),
+            max_input_bytes: definition.max_input_bytes,
+            max_runtime_ms: definition.max_runtime_ms,
+            max_memory_bytes: definition.max_memory_bytes,
+            max_output_bytes: definition.max_output_bytes,
+            fuel_limit: definition.fuel_limit,
+        },
+        price_schedule: protocol::OfferPriceSchedule {
+            base_fee_msat: 0,
+            success_fee_msat: definition.price_sats.saturating_mul(1_000),
+        },
+        terms_hash: definition.terms_hash.clone(),
+        confidential_profile_hash: definition.confidential_profile_hash.clone(),
+    }
+}
+
+pub(crate) fn provider_offer_record_from_parts(
+    definition: &ProviderManagedOfferDefinition,
+    offer: SignedArtifact<OfferPayload>,
+) -> ProviderControlOfferRecord {
+    ProviderControlOfferRecord {
+        publication_state: definition.publication_state.clone(),
+        service_id: definition.service_id.clone(),
+        project_id: definition.project_id.clone(),
+        source_kind: definition.source_kind.clone(),
+        execution_kind: definition.execution_kind.clone(),
+        mode: definition.mode.clone(),
+        summary: definition.summary.clone(),
+        module_hash: definition.module_hash.clone(),
+        starter: definition.starter.clone(),
+        input_schema: definition.input_schema.clone(),
+        output_schema: definition.output_schema.clone(),
+        offer,
+    }
+}
+
+fn builtin_provider_offer_definitions(
+    state: &AppState,
+    confidential_profiles: &[ResolvedConfidentialProfile],
+) -> Vec<ProviderManagedOfferDefinition> {
+    let wasm_host_capabilities = state
+        .wasm_host
+        .as_ref()
+        .map(|host| host.advertised_capabilities())
+        .unwrap_or_default();
+    let builtin = |offer_id: &str,
+                   offer_kind: &str,
+                   runtime: &str,
+                   abi_version: &str,
+                   capabilities: Vec<String>,
+                   price_sats: u64,
+                   source_kind: &str,
+                   summary: &str| {
+        let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
+            provider_offer_limits(state, runtime);
+        ProviderManagedOfferDefinition {
+            offer_id: offer_id.to_string(),
+            service_id: None,
+            project_id: None,
+            offer_kind: offer_kind.to_string(),
+            runtime: runtime.to_string(),
+            execution_kind: "builtin".to_string(),
+            abi_version: abi_version.to_string(),
+            mode: default_service_mode(),
+            capabilities,
+            max_input_bytes,
+            max_runtime_ms,
+            max_memory_bytes,
+            max_output_bytes,
+            fuel_limit,
+            price_sats,
+            publication_state: default_offer_publication_state(),
+            starter: None,
+            module_hash: None,
+            module_bytes_hex: None,
+            oci_reference: None,
+            oci_digest: None,
+            source_path: None,
+            source_kind: source_kind.to_string(),
+            summary: Some(summary.to_string()),
+            input_schema: None,
+            output_schema: None,
+            terms_hash: None,
+            confidential_profile_hash: None,
+        }
+    };
+
+    let mut definitions = vec![
+        builtin(
+            ServiceId::EventsQuery.as_str(),
+            "events.query",
+            "events_query",
+            "froglet.events.query.v1",
+            Vec::new(),
+            state.pricing.price_for(ServiceId::EventsQuery),
+            "builtin",
+            "Query Froglet events from the provider's local event store.",
+        ),
+        builtin(
+            ServiceId::ExecuteWasm.as_str(),
+            wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
+            "wasm",
+            wasm::WASM_RUN_JSON_ABI_V1,
+            Vec::new(),
+            state.pricing.price_for(ServiceId::ExecuteWasm),
+            "builtin",
+            "Run an arbitrary Wasm module that implements froglet.wasm.run_json.v1.",
+        ),
+    ];
+    if !wasm_host_capabilities.is_empty() {
+        definitions.push(builtin(
+            "execute.wasm.host",
+            wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
+            "wasm",
+            wasm::WASM_HOST_JSON_ABI_V1,
+            wasm_host_capabilities,
+            state.pricing.price_for(ServiceId::ExecuteWasm),
+            "builtin",
+            "Run Wasm with host capabilities enabled using froglet.wasm.host_json.v1.",
+        ));
+    }
+    for profile in confidential_profiles {
+        let (runtime, abi_version, summary) = match profile.config.allowed_workload_kind.as_str() {
+            confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => (
+                "tee.service",
+                "froglet.confidential.service.v1",
+                "Confidential service execution offer",
+            ),
+            confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => (
+                "tee.wasm",
+                "froglet.confidential.attested_wasm.v1",
+                "Confidential attested Wasm execution offer",
+            ),
+            _ => continue,
+        };
+        definitions.push(ProviderManagedOfferDefinition {
+            offer_id: profile.config.offer_id.clone(),
+            service_id: None,
+            project_id: None,
+            offer_kind: profile.config.allowed_workload_kind.clone(),
+            runtime: runtime.to_string(),
+            execution_kind: "builtin".to_string(),
+            abi_version: abi_version.to_string(),
+            mode: default_service_mode(),
+            capabilities: Vec::new(),
+            max_input_bytes: profile.config.max_input_bytes,
+            max_runtime_ms: profile.config.max_runtime_ms,
+            max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
+            max_output_bytes: profile.config.max_output_bytes,
+            fuel_limit: sandbox::WASM_FUEL_LIMIT,
+            price_sats: profile.config.price_sats,
+            publication_state: default_offer_publication_state(),
+            starter: None,
+            module_hash: None,
+            module_bytes_hex: None,
+            oci_reference: None,
+            oci_digest: None,
+            source_path: None,
+            source_kind: "confidential_profile".to_string(),
+            summary: Some(summary.to_string()),
+            input_schema: None,
+            output_schema: None,
+            terms_hash: profile.config.terms_hash.clone(),
+            confidential_profile_hash: Some(profile.artifact.hash.clone()),
+        });
+    }
+    definitions
+}
+
+pub(crate) async fn current_offer_definitions(
+    state: &AppState,
+) -> Result<Vec<ProviderManagedOfferDefinition>, String> {
+    let confidential_profiles = current_confidential_profile_artifacts(state).await?;
+    let mut definitions = BTreeMap::new();
+    for definition in builtin_provider_offer_definitions(state, &confidential_profiles) {
+        definitions.insert(definition.offer_id.clone(), definition);
+    }
+    let managed = state
+        .db
+        .with_read_conn(db::list_provider_managed_offers)
+        .await?;
+    for record in managed {
+        let definition: ProviderManagedOfferDefinition =
+            serde_json::from_value(record.definition).map_err(|error| {
+                format!(
+                    "provider_managed_offers {} contains invalid JSON: {error}",
+                    record.offer_id
+                )
+            })?;
+        validate_provider_offer_definition(&definition)?;
+        definitions.insert(definition.offer_id.clone(), definition);
+    }
+    Ok(definitions.into_values().collect())
+}
+
+pub async fn current_advertised_services(
+    state: &AppState,
+) -> Result<Vec<crate::pricing::ServicePriceInfo>, String> {
+    let mut services = current_offer_definitions(state)
+        .await?
+        .into_iter()
+        .filter(|definition| definition.publication_state == "active")
+        .map(|definition| crate::pricing::ServicePriceInfo {
+            service_id: offer_service_id(&definition),
+            price_sats: definition.price_sats,
+            payment_required: definition.price_sats > 0,
+        })
+        .collect::<Vec<_>>();
+    services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+    Ok(services)
+}
+
+pub(crate) async fn current_offer_records(
+    state: &AppState,
+    include_hidden: bool,
+) -> Result<Vec<ProviderControlOfferRecord>, String> {
+    let descriptor = current_descriptor_artifact(state).await?;
+    let descriptor_hash = descriptor.hash;
+    let mut records = Vec::new();
+    for definition in current_offer_definitions(state).await? {
+        if !include_hidden && definition.publication_state == "hidden" {
+            continue;
+        }
+        let payload = payload_from_provider_offer_definition(state, &descriptor_hash, &definition);
+        let offer = persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await?;
+        records.push(provider_offer_record_from_parts(&definition, offer));
+    }
+    Ok(records)
+}
+
+fn inline_module_bytes_hex(definition: &ProviderManagedOfferDefinition) -> Result<Option<String>, String> {
+    if let Some(module_bytes_hex) = definition.module_bytes_hex.clone() {
+        return Ok(Some(module_bytes_hex));
+    }
+    if definition.execution_kind != "wasm_inline" {
+        return Ok(None);
+    }
+    let Some(source_path) = definition.source_path.as_ref() else {
+        return Ok(None);
+    };
+    let module_bytes = fs::read(source_path)
+        .map_err(|error| format!("failed to read service artifact {}: {error}", source_path))?;
+    Ok(Some(hex::encode(module_bytes)))
+}
+
+fn provider_service_from_definition(
+    state: &AppState,
+    definition: &ProviderManagedOfferDefinition,
+    include_binding: bool,
+) -> Result<Option<ProviderServiceRecord>, String> {
+    let Some(service_id) = definition.service_id.clone() else {
+        return Ok(None);
+    };
+    Ok(Some(ProviderServiceRecord {
+        service_id,
+        offer_id: definition.offer_id.clone(),
+        project_id: definition.project_id.clone(),
+        summary: definition
+            .summary
+            .clone()
+            .unwrap_or_else(|| format!("Froglet service {}", definition.offer_id)),
+        execution_kind: definition.execution_kind.clone(),
+        abi_version: definition.abi_version.clone(),
+        mode: definition.mode.clone(),
+        price_sats: definition.price_sats,
+        publication_state: definition.publication_state.clone(),
+        provider_id: state.identity.node_id().to_string(),
+        module_hash: definition.module_hash.clone(),
+        input_schema: definition.input_schema.clone(),
+        output_schema: definition.output_schema.clone(),
+        module_bytes_hex: if include_binding {
+            inline_module_bytes_hex(definition)?
+        } else {
+            None
+        },
+        oci_reference: if include_binding {
+            definition.oci_reference.clone()
+        } else {
+            None
+        },
+        oci_digest: if include_binding {
+            definition.oci_digest.clone()
+        } else {
+            None
+        },
+    }))
+}
+
+pub(crate) async fn current_service_records(
+    state: &AppState,
+    include_hidden: bool,
+    include_binding: bool,
+) -> Result<Vec<ProviderServiceRecord>, String> {
+    let mut services = Vec::new();
+    for definition in current_offer_definitions(state).await? {
+        if !include_hidden && definition.publication_state == "hidden" {
+            continue;
+        }
+        if let Some(service) = provider_service_from_definition(state, &definition, include_binding)? {
+            services.push(service);
+        }
+    }
+    services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+    Ok(services)
+}
+
+pub(crate) async fn provider_service_record(
+    state: &AppState,
+    service_id: &str,
+    include_binding: bool,
+) -> Result<Option<ProviderServiceRecord>, String> {
+    let normalized_service_id = normalize_offer_id(service_id)?;
+    let services = current_service_records(state, true, include_binding).await?;
+    Ok(services
+        .into_iter()
+        .find(|service| service.service_id == normalized_service_id))
+}
+
+pub(crate) async fn provider_control_offer_record(
+    state: &AppState,
+    offer_id: &str,
+    include_hidden: bool,
+) -> Result<Option<ProviderControlOfferRecord>, String> {
+    let normalized_offer_id = normalize_offer_id(offer_id)?;
+    let offers = current_offer_records(state, include_hidden).await?;
+    Ok(offers
+        .into_iter()
+        .find(|record| record.offer.payload.offer_id == normalized_offer_id))
+}
+
+pub(crate) fn persist_provider_offer_definition(
+    conn: &rusqlite::Connection,
+    definition: &ProviderManagedOfferDefinition,
+    now: i64,
+) -> Result<(), String> {
+    let definition_json = serde_json::to_string(definition).map_err(|error| error.to_string())?;
+    db::upsert_provider_managed_offer(conn, &definition.offer_id, &definition_json, now)
+}
+
+pub(crate) fn artifact_provider_offer_definition(
+    state: &AppState,
+    payload: ProviderControlPublishArtifactRequest,
+) -> Result<ProviderManagedOfferDefinition, ApiFailure> {
+    let service_id = normalize_offer_id(&payload.service_id)
+        .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    let offer_id = normalize_offer_id(payload.offer_id.as_deref().unwrap_or(&service_id))
+        .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    let publication_state = normalize_offer_publication_state(payload.publication_state.as_deref())
+        .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    let abi_version = payload
+        .abi_version
+        .unwrap_or_else(|| wasm::WASM_RUN_JSON_ABI_V1.to_string());
+    let execution_kind = payload
+        .execution_kind
+        .unwrap_or_else(|| {
+            if payload.oci_reference.is_some() || payload.oci_digest.is_some() {
+                "wasm_oci".to_string()
+            } else {
+                "wasm_inline".to_string()
+            }
+        });
+    let (offer_kind, runtime, module_hash, module_bytes_hex, source_path, source_kind, oci_reference, oci_digest) =
+        match execution_kind.as_str() {
+            "wasm_inline" => {
+                let module_bytes = match (
+                    payload.artifact_path.as_ref(),
+                    payload.wasm_module_hex.as_ref(),
+                    payload.oci_reference.as_ref(),
+                    payload.oci_digest.as_ref(),
+                ) {
+                    (Some(path), None, None, None) => fs::read(path).map_err(|error| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            json!({
+                                "error": "failed to read artifact_path",
+                                "artifact_path": path,
+                                "details": error.to_string(),
+                            }),
+                        )
+                    })?,
+                    (None, Some(module_hex), None, None) => hex::decode(module_hex).map_err(|error| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": format!("invalid wasm_module_hex: {error}") }),
+                        )
+                    })?,
+                    (Some(_), Some(_), _, _) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "provide either artifact_path or wasm_module_hex, not both" }),
+                        ));
+                    }
+                    (_, _, Some(_), _) | (_, _, _, Some(_)) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "oci_reference and oci_digest require execution_kind=wasm_oci" }),
+                        ));
+                    }
+                    _ => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "artifact_path or wasm_module_hex is required for wasm_inline" }),
+                        ));
+                    }
+                };
+                sandbox::validate_module_bytes_for_abi(&module_bytes, &abi_version).map_err(|error| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        json!({
+                            "error": "artifact validation failed",
+                            "details": error,
+                            "abi_version": abi_version,
+                        }),
+                    )
+                })?;
+                (
+                    wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
+                    "wasm".to_string(),
+                    Some(crypto::sha256_hex(&module_bytes)),
+                    Some(
+                        payload
+                            .wasm_module_hex
+                            .unwrap_or_else(|| hex::encode(&module_bytes)),
+                    ),
+                    payload.artifact_path,
+                    "artifact".to_string(),
+                    None,
+                    None,
+                )
+            }
+            "wasm_oci" => {
+                let Some(oci_reference) = payload.oci_reference else {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "oci_reference is required for wasm_oci" }),
+                    ));
+                };
+                let Some(oci_digest) = payload.oci_digest else {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "oci_digest is required for wasm_oci" }),
+                    ));
+                };
+                if payload.artifact_path.is_some() || payload.wasm_module_hex.is_some() {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "artifact_path and wasm_module_hex are not used for wasm_oci" }),
+                    ));
+                }
+                (
+                    wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
+                    "wasm".to_string(),
+                    Some(oci_digest.clone()),
+                    None,
+                    None,
+                    "oci".to_string(),
+                    Some(oci_reference),
+                    Some(oci_digest),
+                )
+            }
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "execution_kind must be wasm_inline or wasm_oci" }),
+                ));
+            }
+        };
+
+    let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
+        provider_offer_limits(state, "wasm");
+    let definition = ProviderManagedOfferDefinition {
+        offer_id: offer_id.clone(),
+        service_id: Some(service_id),
+        project_id: None,
+        offer_kind,
+        runtime,
+        execution_kind,
+        abi_version,
+        mode: payload.mode.unwrap_or_else(default_service_mode),
+        capabilities: Vec::new(),
+        max_input_bytes,
+        max_runtime_ms,
+        max_memory_bytes,
+        max_output_bytes,
+        fuel_limit,
+        price_sats: payload.price_sats,
+        publication_state,
+        starter: None,
+        module_hash,
+        module_bytes_hex,
+        oci_reference,
+        oci_digest,
+        source_path,
+        source_kind,
+        summary: Some(
+            payload
+                .summary
+                .unwrap_or_else(|| format!("Froglet service {}", offer_id)),
+        ),
+        input_schema: payload.input_schema,
+        output_schema: payload.output_schema,
+        terms_hash: None,
+        confidential_profile_hash: None,
+    };
+    validate_provider_offer_definition(&definition)
+        .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    Ok(definition)
+}
+
+pub(crate) async fn persist_provider_offer_mutation(
+    state: &AppState,
+    definition: ProviderManagedOfferDefinition,
+    status_code: StatusCode,
+    summary: String,
+) -> Result<(StatusCode, Json<ProviderControlMutationResponse>), ApiFailure> {
+    let now = settlement::current_unix_timestamp();
+    let persisted_definition = definition.clone();
+    state
+        .db
+        .with_write_conn(move |conn| persist_provider_offer_definition(conn, &persisted_definition, now))
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to persist provider offer", "details": error }),
+            )
+        })?;
+    let Some(offer_record) = provider_control_offer_record(state, &definition.offer_id, true)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to materialize provider offer", "details": error }),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "provider offer missing after persistence" }),
+        ));
+    };
+    let response = ProviderControlMutationResponse {
+        request_id: protocol::new_artifact_id(),
+        status: "passed".to_string(),
+        failure_kind: None,
+        summary,
+        artifacts: vec![
+            ProviderControlArtifactRef {
+                kind: ARTIFACT_KIND_DESCRIPTOR.to_string(),
+                hash: offer_record.offer.payload.descriptor_hash.clone(),
+            },
+            ProviderControlArtifactRef {
+                kind: ARTIFACT_KIND_OFFER.to_string(),
+                hash: offer_record.offer.hash.clone(),
+            },
+        ],
+        evidence: ProviderControlEvidence {
+            provider_id: offer_record.offer.payload.provider_id.clone(),
+            descriptor_hash: offer_record.offer.payload.descriptor_hash.clone(),
+            offer_hash: offer_record.offer.hash.clone(),
+            offer_id: offer_record.offer.payload.offer_id.clone(),
+            service_id: offer_record.service_id.clone(),
+        },
+        offer: offer_record,
+    };
+    Ok((status_code, Json(response)))
 }
 
 async fn create_quote_record(
@@ -8365,6 +9125,8 @@ mod tests {
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:0".to_string(),
             runtime_allow_non_loopback: false,
+            provider_control_listen_addr: "127.0.0.1:0".to_string(),
+            provider_control_allow_non_loopback: false,
             http_ca_cert_path: None,
             tor: crate::config::TorSidecarConfig {
                 binary_path: "tor".to_string(),
@@ -8401,6 +9163,8 @@ mod tests {
                     .join("identity/nostr-publication.secp256k1.seed"),
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+                consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+                provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
                 tor_dir: temp_dir.join("tor"),
             },
             wasm: WasmConfig {
@@ -8435,6 +9199,16 @@ mod tests {
             confidential_policy: None,
             runtime_auth_token: "test-runtime-token".to_string(),
             runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
+            consumer_control_auth_token: "test-consumer-control-token".to_string(),
+            consumer_control_auth_token_path: node_config
+                .storage
+                .consumer_control_auth_token_path
+                .clone(),
+            provider_control_auth_token: "test-provider-control-token".to_string(),
+            provider_control_auth_token_path: node_config
+                .storage
+                .provider_control_auth_token_path
+                .clone(),
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
             lnd_rest_client: None,
             lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),

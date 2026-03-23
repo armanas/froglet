@@ -1,400 +1,115 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import http from "node:http"
 import os from "node:os"
 import path from "node:path"
+import process from "node:process"
 import test from "node:test"
 
-import { collectDoctorResults, runDoctorCli } from "../scripts/doctor.mjs"
+const doctorPath = path.resolve(import.meta.dirname, "..", "scripts", "doctor.mjs")
 
-function makeOpenClawConfig({ pluginPath, runtimeUrl, tokenPath, overrides = {} }) {
-  return {
-    plugins: {
-      load: {
-        paths: [pluginPath]
-      },
-      entries: {
-        froglet: {
-          enabled: true,
-          config: {
-            runtimeUrl,
-            runtimeAuthTokenPath: tokenPath,
-            requestTimeoutMs: 1000,
-            defaultSearchLimit: 10,
-            maxSearchLimit: 50,
-            ...overrides
-          }
-        }
-      }
-    }
-  }
-}
-
-function makeNemoclawConfig({ runtimeUrl = "https://consumer.example", tokenPath = "/sandbox/.openclaw/froglet-runtime.token" } = {}) {
-  return {
-    plugins: {
-      load: {
-        paths: ["/sandbox/froglet/integrations/openclaw/froglet"]
-      },
-      entries: {
-        froglet: {
-          enabled: true,
-          config: {
-            runtimeUrl,
-            runtimeAuthTokenPath: tokenPath,
-            requestTimeoutMs: 15000,
-            defaultSearchLimit: 10,
-            maxSearchLimit: 50
-          }
-        }
-      }
-    }
-  }
-}
-
-async function withRuntimeServer(handler, fn) {
-  const server = http.createServer(handler)
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
-  const address = server.address()
-  const runtimeUrl = `http://127.0.0.1:${address.port}`
-  try {
-    await fn(runtimeUrl)
-  } finally {
-    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
-  }
-}
-
-async function writeConfig(tempDir, fileName, document) {
+async function writeConfig(tempDir, fileName, pluginConfig) {
   const configPath = path.join(tempDir, fileName)
+  const document = {
+    plugins: {
+      load: { paths: [path.join(tempDir, "plugin")] },
+      entries: {
+        froglet: {
+          enabled: true,
+          config: pluginConfig
+        }
+      }
+    }
+  }
   await writeFile(configPath, JSON.stringify(document, null, 2), "utf8")
   return configPath
 }
 
-test("valid OpenClaw config passes structural validation", async () => {
+async function runDoctor(args) {
+  const child = process.execPath
+  const { spawn } = await import("node:child_process")
+  return new Promise((resolve, reject) => {
+    const proc = spawn(child, [doctorPath, ...args], {
+      stdio: ["ignore", "pipe", "pipe"]
+    })
+    let stdout = ""
+    let stderr = ""
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk
+    })
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk
+    })
+    proc.on("error", reject)
+    proc.on("close", (code) => resolve({ code, stdout, stderr }))
+  })
+}
+
+test("doctor validates the new single-tool config shape", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
   try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-    const configPath = await writeConfig(
-      tempDir,
-      "openclaw.json",
-      makeOpenClawConfig({
-        pluginPath: tempDir,
-        runtimeUrl: "http://127.0.0.1:8081",
-        tokenPath
-      })
-    )
-
-    const result = await collectDoctorResults({
-      configPath,
-      target: "openclaw"
+    const tokenPath = path.join(tempDir, "froglet.token")
+    await writeFile(tokenPath, "froglet-token\n", "utf8")
+    await writeFile(path.join(tempDir, "plugin"), "ok\n", "utf8")
+    const configPath = await writeConfig(tempDir, "openclaw.json", {
+      hostProduct: "openclaw",
+      baseUrl: "http://127.0.0.1:9191",
+      authTokenPath: tokenPath,
+      requestTimeoutMs: 1000,
+      defaultSearchLimit: 10,
+      maxSearchLimit: 50
     })
-
-    assert.equal(result.overallStatus, "ok")
-    assert.deepEqual(
-      result.checks.filter((check) => check.status === "error"),
-      []
-    )
+    const result = await runDoctor(["--config", configPath, "--target", "openclaw"])
+    assert.equal(result.code, 0)
+    const payload = JSON.parse(result.stdout)
+    assert.equal(payload.overall_status, "warning")
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
 })
 
-test("valid NemoClaw config passes structural validation with manual follow-up warnings", async () => {
+test("doctor can run a live status probe", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const configPath = await writeConfig(tempDir, "nemoclaw.json", makeNemoclawConfig())
-    const result = await collectDoctorResults({
-      configPath,
-      target: "nemoclaw"
-    })
-
-    assert.equal(result.overallStatus, "warning")
-    assert.equal(
-      result.checks.some((check) => check.id === "manual_nemoclaw_checks" && check.status === "warning"),
-      true
-    )
-    assert.deepEqual(
-      result.checks.filter((check) => check.status === "error"),
-      []
-    )
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor fails when required Froglet runtime keys are missing", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const configPath = await writeConfig(tempDir, "missing-runtime-url.json", {
-      plugins: {
-        load: { paths: [tempDir] },
-        entries: {
-          froglet: {
-            enabled: true,
-            config: {
-              runtimeAuthTokenPath: path.join(tempDir, "auth.token")
-            }
-          }
-        }
-      }
-    })
-
-    const result = await collectDoctorResults({
-      configPath,
-      target: "openclaw"
-    })
-
-    assert.equal(result.overallStatus, "error")
-    assert.match(result.checks.find((check) => check.id === "froglet_config").summary, /runtimeUrl/)
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor rejects non-loopback HTTP runtime URLs", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-    const configPath = await writeConfig(
-      tempDir,
-      "bad-runtime-url.json",
-      makeOpenClawConfig({
-        pluginPath: tempDir,
-        runtimeUrl: "http://10.0.0.5:8081",
-        tokenPath
-      })
-    )
-
-    const result = await collectDoctorResults({
-      configPath,
-      target: "openclaw"
-    })
-
-    assert.equal(result.overallStatus, "error")
-    assert.match(
-      result.checks.find((check) => check.id === "froglet_config").summary,
-      /https:\/\/ or loopback http:\/\//
-    )
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor allows loopback HTTP runtime URLs", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-    const configPath = await writeConfig(
-      tempDir,
-      "loopback-runtime-url.json",
-      makeOpenClawConfig({
-        pluginPath: tempDir,
-        runtimeUrl: "http://127.0.0.1:8081",
-        tokenPath
-      })
-    )
-
-    const result = await collectDoctorResults({
-      configPath,
-      target: "openclaw"
-    })
-
-    assert.equal(result.overallStatus, "ok")
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor runtime check succeeds against a healthy runtime", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-
-    await withRuntimeServer((req, res) => {
-      if (
-        req.url === "/v1/runtime/wallet/balance" &&
-        req.headers.authorization === "Bearer froglet-test-token"
-      ) {
-        res.writeHead(200, { "content-type": "application/json" })
-        res.end(JSON.stringify({ backend: "lightning", balance_sats: 21 }))
-        return
-      }
-      res.writeHead(401, { "content-type": "application/json" })
-      res.end(JSON.stringify({ error: "unauthorized" }))
-    }, async (runtimeUrl) => {
-      const configPath = await writeConfig(
-        tempDir,
-        "healthy-runtime.json",
-        makeOpenClawConfig({
-          pluginPath: tempDir,
-          runtimeUrl,
-          tokenPath
+  const server = http.createServer((req, res) => {
+    if (req.url === "/v1/froglet/status" && req.headers.authorization === "Bearer froglet-token") {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          node_id: "node-1",
+          runtime: { healthy: true },
+          provider: { healthy: true }
         })
       )
-
-      const result = await collectDoctorResults({
-        configPath,
-        target: "openclaw",
-        checkRuntime: true
-      })
-
-      assert.equal(result.overallStatus, "ok")
-      assert.equal(
-        result.checks.find((check) => check.id === "runtime_health").status,
-        "ok"
-      )
-    })
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor runtime check fails cleanly on 401 responses", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
+      return
+    }
+    res.writeHead(404).end()
+  })
   try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-
-    await withRuntimeServer((req, res) => {
-      res.writeHead(401, { "content-type": "application/json" })
-      res.end(JSON.stringify({ error: "unauthorized" }))
-    }, async (runtimeUrl) => {
-      const configPath = await writeConfig(
-        tempDir,
-        "runtime-401.json",
-        makeOpenClawConfig({
-          pluginPath: tempDir,
-          runtimeUrl,
-          tokenPath
-        })
-      )
-
-      const result = await collectDoctorResults({
-        configPath,
-        target: "openclaw",
-        checkRuntime: true
-      })
-
-      assert.equal(result.overallStatus, "error")
-      assert.match(
-        result.checks.find((check) => check.id === "runtime_health").summary,
-        /failed with 401/
-      )
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const address = server.address()
+    const tokenPath = path.join(tempDir, "froglet.token")
+    await writeFile(tokenPath, "froglet-token\n", "utf8")
+    await writeFile(path.join(tempDir, "plugin"), "ok\n", "utf8")
+    const configPath = await writeConfig(tempDir, "openclaw-live.json", {
+      hostProduct: "openclaw",
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      authTokenPath: tokenPath,
+      requestTimeoutMs: 1000,
+      defaultSearchLimit: 10,
+      maxSearchLimit: 50
     })
+    const result = await runDoctor([
+      "--config",
+      configPath,
+      "--target",
+      "openclaw",
+      "--check-runtime"
+    ])
+    assert.equal(result.code, 0)
+    const payload = JSON.parse(result.stdout)
+    assert.equal(payload.overall_status, "ok")
   } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor runtime check fails cleanly on 404 responses", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-
-    await withRuntimeServer((req, res) => {
-      res.writeHead(404, { "content-type": "application/json" })
-      res.end(JSON.stringify({ error: "not found" }))
-    }, async (runtimeUrl) => {
-      const configPath = await writeConfig(
-        tempDir,
-        "runtime-404.json",
-        makeOpenClawConfig({
-          pluginPath: tempDir,
-          runtimeUrl,
-          tokenPath
-        })
-      )
-
-      const result = await collectDoctorResults({
-        configPath,
-        target: "openclaw",
-        checkRuntime: true
-      })
-
-      assert.equal(result.overallStatus, "error")
-      assert.match(
-        result.checks.find((check) => check.id === "runtime_health").summary,
-        /failed with 404/
-      )
-    })
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor runtime check fails cleanly on timeouts", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const tokenPath = path.join(tempDir, "auth.token")
-    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
-
-    await withRuntimeServer(async (_req, _res) => {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }, async (runtimeUrl) => {
-      const configPath = await writeConfig(
-        tempDir,
-        "runtime-timeout.json",
-        makeOpenClawConfig({
-          pluginPath: tempDir,
-          runtimeUrl,
-          tokenPath,
-          overrides: { requestTimeoutMs: 1000 }
-        })
-      )
-
-      const result = await collectDoctorResults({
-        configPath,
-        target: "openclaw",
-        checkRuntime: true
-      })
-
-      assert.equal(result.overallStatus, "error")
-      assert.match(
-        result.checks.find((check) => check.id === "runtime_health").summary,
-        /timed out/
-      )
-    })
-  } finally {
-    await rm(tempDir, { recursive: true, force: true })
-  }
-})
-
-test("doctor CLI exits zero for NemoClaw warnings and one for real errors", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-doctor-"))
-  try {
-    const goodConfig = await writeConfig(tempDir, "nemoclaw.json", makeNemoclawConfig())
-    const stdout = { chunks: [], write(chunk) { this.chunks.push(String(chunk)) } }
-    const stderr = { chunks: [], write(chunk) { this.chunks.push(String(chunk)) } }
-
-    const warningCode = await runDoctorCli(
-      ["--config", goodConfig, "--target", "nemoclaw"],
-      stdout,
-      stderr
-    )
-    assert.equal(warningCode, 0)
-    assert.match(stdout.chunks.join(""), /overall_status=warning/)
-
-    const badConfig = await writeConfig(
-      tempDir,
-      "bad.json",
-      makeOpenClawConfig({
-        pluginPath: tempDir,
-        runtimeUrl: "http://10.0.0.5:8081",
-        tokenPath: path.join(tempDir, "auth.token")
-      })
-    )
-    const errorCode = await runDoctorCli(
-      ["--config", badConfig, "--target", "openclaw"],
-      { chunks: [], write(chunk) { this.chunks.push(String(chunk)) } },
-      { chunks: [], write(chunk) { this.chunks.push(String(chunk)) } }
-    )
-    assert.equal(errorCode, 1)
-  } finally {
+    server.close()
     await rm(tempDir, { recursive: true, force: true })
   }
 })

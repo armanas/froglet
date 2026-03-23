@@ -3,14 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Runtime-only OpenClaw plugin for Froglet requester workflows.",
+  "description": "Single-tool OpenClaw/NemoClaw plugin for Froglet services and raw compute.",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "check": "node --check index.js",
     "doctor": "node scripts/doctor.mjs",
-    "test": "node --test test/plugin.test.js test/matrix-assertions.test.mjs test/sandbox-smoke-phases.test.mjs test/config-profiles.test.mjs test/doctor.test.mjs"
+    "test": "node --test test/plugin.test.js test/config-profiles.test.mjs test/doctor.test.mjs test/froglet-client.test.mjs"
   },
   "openclaw": {
     "extensions": [

@@ -1,109 +1,58 @@
 # OpenClaw
 
-Froglet’s public OpenClaw plugin is runtime-only.
+OpenClaw uses the shared `froglet` plugin and exposes one bot tool: `froglet`.
 
-OpenClaw talks to a local `froglet-runtime`. The runtime talks to remote provider and discovery services. OpenClaw does not call provider or discovery directly.
-The same Froglet plugin contract is also used by NemoClaw; only the deployment
-profile changes.
+## Deployment
 
-## Supported Profiles
+OpenClaw runs the plugin on the host. The plugin talks to a local Froglet
+control API, usually:
 
-| Profile | Runtime placement | This page |
-| --- | --- | --- |
-| `openclaw-local` | local host runtime | baseline covered here |
-| `nemoclaw-local-runtime` | runtime inside the sandbox | see [NEMOCLAW.md](NEMOCLAW.md) |
-| `nemoclaw-hosted-runtime` | runtime on the consumer host over HTTPS | see [NEMOCLAW.md](NEMOCLAW.md) |
+- `http://127.0.0.1:9191`
 
-## Tools
+Use the checked-in example config:
 
-- `froglet_search`
-- `froglet_get_provider`
-- `froglet_events_query`
-- `froglet_buy`
-- `froglet_payment_intent`
-- `froglet_mock_pay`
-- `froglet_wait_deal`
-- `froglet_accept_result`
-- `froglet_wallet_balance`
+- [integrations/openclaw/froglet/examples/openclaw.config.example.json](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet/examples/openclaw.config.example.json)
 
-## Config
+## What The Tool Does
 
-Start from [../integrations/openclaw/froglet/examples/openclaw.config.example.json](../integrations/openclaw/froglet/examples/openclaw.config.example.json).
-This checked-in JSON file is a complete user-edited config, not a fragment.
+`froglet` covers the full node workflow:
 
-Required plugin config:
+- discover and invoke remote services
+- inspect local services
+- create/edit/build/test/publish local projects
+- inspect status and logs
+- restart managed node processes
+- run expert raw compute
 
-```json
-{
-  "plugins": {
-    "entries": {
-      "froglet": {
-        "enabled": true,
-        "config": {
-          "runtimeUrl": "http://127.0.0.1:8081",
-          "runtimeAuthTokenPath": "/absolute/path/to/froglet/data/runtime/auth.token"
-        }
-      }
-    }
-  }
-}
-```
-
-## Local Stack
-
-Run the local three-role stack:
-
-```bash
-docker compose up --build
-```
-
-Then verify the runtime:
-
-```bash
-TOKEN=$(cat ./data/runtime/auth.token)
-curl -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8081/v1/runtime/wallet/balance
-```
+The default path is named services. `run_compute` is the low-level fallback.
 
 ## Typical Flow
 
-1. `froglet_search`
-2. `froglet_get_provider`
-3. `froglet_buy`
-4. `froglet_payment_intent`
-5. `froglet_mock_pay` when the returned intent exposes a mock action
-6. `froglet_wait_deal` with `wait_statuses=["result_ready","succeeded","failed","rejected"]` for accept flows
-7. `froglet_accept_result`
+1. `froglet` with `action=discover_services`
+2. `froglet` with `action=get_service`
+3. `froglet` with `action=invoke_service`
 
-For the standard `execute.wasm` flow, use this minimal buy request:
+Publishing from the same node:
 
-```json
-{
-  "request": {
-    "provider": { "provider_id": "provider-1" },
-    "offer_id": "execute.wasm",
-    "submission": { "wasm_module_hex": "<valid_wasm_module_hex>" }
-  }
-}
-```
+1. `create_project`
+2. `write_file`
+3. `build_project`
+4. `test_project`
+5. `publish_project`
 
-`wasm_module_hex` must be a valid hex-encoded Wasm module, not just arbitrary hex bytes.
+Useful defaults:
 
-## Verification
+- `create_project` may use `name` instead of explicit ids
+- `create_project` may use `result_json` for a simple fixed-response service
+- `create_project` auto-publishes when `publication_state=active`
+- `invoke_service` can resolve a unique `service_id` automatically
 
-```bash
-node --check integrations/openclaw/froglet/index.js
-node --test integrations/openclaw/froglet/test/plugin.test.js \
-  integrations/openclaw/froglet/test/config-profiles.test.mjs \
-  integrations/openclaw/froglet/test/doctor.test.mjs
-```
+## Managed Launcher
 
-Optional Froglet-owned config validation after you replace the placeholder paths:
+For Froglet-managed OpenClaw hosts:
 
 ```bash
-node integrations/openclaw/froglet/scripts/doctor.mjs \
-  --config /absolute/path/to/openclaw.config.json \
-  --target openclaw
+./integrations/openclaw/froglet/scripts/install-openclaw-launcher.sh
 ```
 
-For NemoClaw, see [NEMOCLAW.md](NEMOCLAW.md).
+That makes plain `openclaw` open a local Froglet chat loop.

@@ -48,8 +48,9 @@
       "froglet": {
         "enabled": true,
         "config": {
-          "runtimeUrl": "https://consumer.example",
-          "runtimeAuthTokenPath": "/sandbox/.openclaw/froglet-runtime.token",
+          "hostProduct": "nemoclaw",
+          "baseUrl": "https://node.example",
+          "authTokenPath": "/sandbox/.openclaw/froglet-control.token",
           "requestTimeoutMs": 15000,
           "defaultSearchLimit": 10,
           "maxSearchLimit": 50

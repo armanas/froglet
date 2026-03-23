@@ -1,15 +1,9 @@
 use crate::{
     api,
     config::{NodeConfig, PaymentBackend},
-    db::DbPool,
     discovery_client,
-    identity::NodeIdentity,
-    lnd::LndRestClient,
-    pricing::PricingTable,
-    runtime_auth, sandbox,
-    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
+    state::{self, AppState},
     tls, tor,
-    wasm_host::WasmHostEnvironment,
 };
 use futures::FutureExt;
 use hyper::server::conn::http1;
@@ -99,77 +93,23 @@ async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>
             std::process::exit(1);
         }
     };
-    let wasm_sandbox =
-        Arc::new(sandbox::WasmSandbox::from_env().expect("Failed to initialize Wasmtime sandbox"));
-    wasm_sandbox.warm_up();
-
-    ensure_dir(&node_config.storage.data_dir)?;
-    ensure_dir(&node_config.storage.runtime_dir)?;
-    ensure_dir(&node_config.storage.tor_dir)?;
-
-    let identity = match NodeIdentity::load_or_create(&node_config) {
-        Ok(identity) => Arc::new(identity),
-        Err(e) => {
-            error!("{e}");
+    let state = match state::build_app_state(node_config.clone()) {
+        Ok(state) => state,
+        Err(error) => {
+            error!("{error}");
             std::process::exit(1);
         }
     };
-    info!("Node identity: {}", identity.node_id());
-
-    let runtime_auth = match runtime_auth::load_or_create_local_runtime_auth(&node_config) {
-        Ok(runtime_auth) => runtime_auth,
-        Err(e) => {
-            error!("{e}");
-            std::process::exit(1);
-        }
-    };
+    info!("Node identity: {}", state.identity.node_id());
     info!(
         "Runtime auth token file: {}",
-        node_config.storage.runtime_auth_token_path.display()
+        state.runtime_auth_token_path.display()
     );
-
-    let db_pool =
-        DbPool::open(&node_config.storage.db_path).expect("Failed to initialize SQLite DB pool");
+    info!(
+        "Froglet control auth token file: {}",
+        state.provider_control_auth_token_path.display()
+    );
     set_mode(&node_config.storage.db_path, 0o600)?;
-    let events_query_capacity = db_pool.read_connection_count().max(1);
-
-    let http_client = tls::build_reqwest_client(node_config.http_ca_cert_path.as_deref())
-        .map_err(|error| format!("Failed to initialize shared HTTP client: {error}"))?;
-    let wasm_host = node_config
-        .wasm
-        .policy
-        .clone()
-        .map(WasmHostEnvironment::from_policy)
-        .transpose()
-        .map(|environment| environment.map(Arc::new))?;
-    let lnd_rest_client = node_config
-        .lightning
-        .lnd_rest
-        .as_ref()
-        .map(LndRestClient::from_config)
-        .transpose()
-        .map_err(|error| format!("Failed to initialize cached LND REST client: {error}"))?
-        .map(Arc::new);
-
-    let state = Arc::new(AppState {
-        db: db_pool,
-        transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&node_config))),
-        reference_discovery_status: Arc::new(TokioMutex::new(
-            ReferenceDiscoveryStatus::from_config(&node_config),
-        )),
-        wasm_sandbox,
-        pricing: PricingTable::from_config(node_config.pricing),
-        identity,
-        config: node_config.clone(),
-        http_client,
-        wasm_host,
-        confidential_policy: node_config.confidential.policy.clone().map(Arc::new),
-        runtime_auth_token: runtime_auth.token,
-        runtime_auth_token_path: node_config.storage.runtime_auth_token_path.clone(),
-        events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
-        lnd_rest_client,
-        lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
-    });
 
     log_startup_db_metrics(state.clone(), &node_config.storage.db_path)
         .await
@@ -531,12 +471,6 @@ fn init_logging() {
         .without_time()
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-}
-
-fn ensure_dir(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(path)?;
-    set_mode(path, 0o700)?;
-    Ok(())
 }
 
 fn set_mode(path: &std::path::Path, mode: u32) -> Result<(), Box<dyn std::error::Error>> {

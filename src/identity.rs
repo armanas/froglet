@@ -198,6 +198,8 @@ mod tests {
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:8081".into(),
             runtime_allow_non_loopback: false,
+            provider_control_listen_addr: "127.0.0.1:9191".into(),
+            provider_control_allow_non_loopback: false,
             http_ca_cert_path: None,
             tor: TorSidecarConfig {
                 binary_path: "tor".into(),
@@ -233,6 +235,8 @@ mod tests {
                     .join("identity/nostr-publication.secp256k1.seed"),
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+                consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+                provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
                 tor_dir: temp_dir.join("tor"),
             },
             wasm: WasmConfig {
