@@ -5,6 +5,7 @@
 - [DOCKER.md](DOCKER.md): provider/runtime/discovery images and Compose files
 - [OPENCLAW.md](OPENCLAW.md): runtime-only OpenClaw plugin setup
 - [NEMOCLAW.md](NEMOCLAW.md): runtime-inside-sandbox NemoClaw topology
+- [ROLE_TOOL_ARCHITECTURE.md](ROLE_TOOL_ARCHITECTURE.md): proposed role-based OpenClaw/NemoClaw attachment architecture
 - [CONFIDENTIAL.md](CONFIDENTIAL.md): confidential execution extension
 - [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md): project status
 - [STORAGE_PROFILE.md](STORAGE_PROFILE.md): storage invariants and retention notes
