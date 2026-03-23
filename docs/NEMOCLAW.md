@@ -8,10 +8,22 @@ requester topology is stricter:
 - remote `froglet-discovery` stays outside the sandbox
 - the bot talks only to the consumer-host runtime over HTTPS
 
+These checked-in JSON files are complete user-edited configs, not rendered
+fragments.
+
+## Supported Profiles
+
+| Profile | Runtime placement | Status |
+| --- | --- | --- |
+| `openclaw-local` | local host runtime | see [OPENCLAW.md](OPENCLAW.md) |
+| `nemoclaw-local-runtime` | runtime inside the sandbox | compatibility path only |
+| `nemoclaw-hosted-runtime` | runtime on the consumer host over HTTPS | supported baseline |
+
 ## Supported Baseline
 
 The supported baseline for NemoClaw is:
 
+- Linux consumer hosts and Linux remote gateways first
 - consumer-host runtime on normal HTTPS, for example
   `https://consumer.example`
 - runtime auth token staged into the sandbox, for example
@@ -20,6 +32,9 @@ The supported baseline for NemoClaw is:
 - model provider over normal outbound HTTPS
 
 This is the baseline used by the matrix bring-up under `/_tmp`.
+
+macOS and WSL remain compatibility paths until upstream platform behavior is
+proven stable there.
 
 Start from
 [../integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.hosted.example.json](../integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.hosted.example.json).
@@ -65,6 +80,47 @@ credential in the shell. For example:
 - Anthropic: `ANTHROPIC_API_KEY=...`
 
 The matrix runner exports those for NemoClaw hosted-model rows.
+
+Hosted model/provider configuration lives outside the Froglet plugin contract.
+Froglet owns only the plugin load path and the `runtimeUrl` /
+`runtimeAuthTokenPath` pair.
+
+## Native Staging
+
+Use documented OpenShell and NemoClaw commands for staging. Do not rely on
+generated SSH config as the supported integration path.
+
+Upload the Froglet plugin directory into the sandbox:
+
+```bash
+openshell sandbox upload my-assistant \
+  /absolute/path/to/froglet/integrations/openclaw/froglet \
+  /sandbox/froglet/integrations/openclaw/froglet
+```
+
+Upload the runtime auth token into the sandbox:
+
+```bash
+openshell sandbox upload my-assistant \
+  /absolute/path/to/froglet-runtime.token \
+  /sandbox/.openclaw/froglet-runtime.token
+```
+
+If the runtime uses a private CA, upload that as well:
+
+```bash
+openshell sandbox upload my-assistant \
+  /absolute/path/to/froglet-root-ca.pem \
+  /sandbox/froglet/runtime-ca.pem
+```
+
+Then use native status and connection commands:
+
+```bash
+nemoclaw my-assistant status
+openshell sandbox get my-assistant
+nemoclaw my-assistant connect
+```
 
 ## Compatibility Paths
 
@@ -112,7 +168,7 @@ curl --cacert /sandbox/froglet/_tmp/runs/current/froglet-root-ca.pem \
 
 Before any agent prompt is trusted, the baseline bring-up should also verify:
 
-- the rendered OpenClaw/NemoClaw config is valid JSON
+- the OpenClaw/NemoClaw config is valid JSON
 - the Froglet plugin config contains non-empty `runtimeUrl` and
   `runtimeAuthTokenPath`
 - the model provider can answer one tiny prompt over HTTPS
@@ -122,6 +178,14 @@ Once those checks are green, the first agent gate is:
 
 - `froglet_search`
 - `froglet_get_provider`
+
+Optional Froglet-owned config validation on the host:
+
+```bash
+node integrations/openclaw/froglet/scripts/doctor.mjs \
+  --config /absolute/path/to/openclaw.config.nemoclaw.json \
+  --target nemoclaw
+```
 
 ## Three-Window Usage
 

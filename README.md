@@ -112,7 +112,22 @@ Verification routes remain public:
 
 ## OpenClaw and NemoClaw
 
-The public OpenClaw plugin is runtime-only. It needs:
+The public Froglet OpenClaw plugin is runtime-only and shared by OpenClaw and
+NemoClaw. The plugin contract is the same in both products. Profile-specific
+differences are limited to plugin load path, runtime URL, runtime token path,
+and non-Froglet top-level config such as model/provider settings.
+
+Supported profiles:
+
+| Profile | Runtime placement | Notes |
+| --- | --- | --- |
+| `openclaw-local` | local host runtime | baseline local OpenClaw workflow |
+| `nemoclaw-local-runtime` | runtime inside the sandbox | compatibility path when the sandbox-local runtime is intentional |
+| `nemoclaw-hosted-runtime` | runtime on the consumer host over HTTPS | supported NemoClaw baseline |
+
+The checked-in example JSON files under [`integrations/openclaw/froglet/examples`](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet/examples) are complete user-edited configs, not rendered fragments.
+
+The Froglet-owned plugin keys are:
 
 - `runtimeUrl`
 - `runtimeAuthTokenPath`
@@ -121,7 +136,9 @@ Tool surface:
 
 - `froglet_search`
 - `froglet_get_provider`
+- `froglet_events_query`
 - `froglet_buy`
+- `froglet_mock_pay`
 - `froglet_wait_deal`
 - `froglet_payment_intent`
 - `froglet_accept_result`

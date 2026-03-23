@@ -9,7 +9,8 @@
   },
   "scripts": {
     "check": "node --check index.js",
-    "test": "node --test test/plugin.test.js"
+    "doctor": "node scripts/doctor.mjs",
+    "test": "node --test test/plugin.test.js test/matrix-assertions.test.mjs test/sandbox-smoke-phases.test.mjs test/config-profiles.test.mjs test/doctor.test.mjs"
   },
   "openclaw": {
     "extensions": [

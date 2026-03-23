@@ -3,11 +3,22 @@
 Froglet’s public OpenClaw plugin is runtime-only.
 
 OpenClaw talks to a local `froglet-runtime`. The runtime talks to remote provider and discovery services. OpenClaw does not call provider or discovery directly.
+The same Froglet plugin contract is also used by NemoClaw; only the deployment
+profile changes.
+
+## Supported Profiles
+
+| Profile | Runtime placement | This page |
+| --- | --- | --- |
+| `openclaw-local` | local host runtime | baseline covered here |
+| `nemoclaw-local-runtime` | runtime inside the sandbox | see [NEMOCLAW.md](NEMOCLAW.md) |
+| `nemoclaw-hosted-runtime` | runtime on the consumer host over HTTPS | see [NEMOCLAW.md](NEMOCLAW.md) |
 
 ## Tools
 
 - `froglet_search`
 - `froglet_get_provider`
+- `froglet_events_query`
 - `froglet_buy`
 - `froglet_payment_intent`
 - `froglet_mock_pay`
@@ -18,6 +29,7 @@ OpenClaw talks to a local `froglet-runtime`. The runtime talks to remote provide
 ## Config
 
 Start from [../integrations/openclaw/froglet/examples/openclaw.config.example.json](../integrations/openclaw/froglet/examples/openclaw.config.example.json).
+This checked-in JSON file is a complete user-edited config, not a fragment.
 
 Required plugin config:
 
@@ -81,7 +93,17 @@ For the standard `execute.wasm` flow, use this minimal buy request:
 
 ```bash
 node --check integrations/openclaw/froglet/index.js
-node --test integrations/openclaw/froglet/test/plugin.test.js
+node --test integrations/openclaw/froglet/test/plugin.test.js \
+  integrations/openclaw/froglet/test/config-profiles.test.mjs \
+  integrations/openclaw/froglet/test/doctor.test.mjs
+```
+
+Optional Froglet-owned config validation after you replace the placeholder paths:
+
+```bash
+node integrations/openclaw/froglet/scripts/doctor.mjs \
+  --config /absolute/path/to/openclaw.config.json \
+  --target openclaw
 ```
 
 For NemoClaw, see [NEMOCLAW.md](NEMOCLAW.md).
