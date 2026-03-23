@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::process::Command;
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use crate::{
     api::{
@@ -283,54 +282,34 @@ struct FrogletTaskResponse {
 }
 
 fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let subscriber = FmtSubscriber::builder()
-        .with_env_filter(filter)
-        .with_target(false)
-        .without_time()
-        .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    crate::init_logging();
 }
 
 fn error_json(status: StatusCode, body: serde_json::Value) -> Response {
-    (status, Json(body)).into_response()
+    let (status, json) = api::error_json(status, body);
+    (status, json).into_response()
 }
 
 fn require_provider_control_auth(headers: &HeaderMap, state: &OperatorState) -> Result<(), Response> {
-    match api::require_provider_control_auth(headers, state.app_state.as_ref()) {
-        Ok(()) => Ok(()),
-        Err((status, body)) => Err(error_json(status, body)),
-    }
+    api::require_provider_control_auth(headers, state.app_state.as_ref())
+        .map_err(|(status, body)| error_json(status, body))
 }
 
 fn require_froglet_auth(headers: &HeaderMap, state: &OperatorState) -> Result<(), Response> {
-    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
-        return Err(error_json(
-            StatusCode::UNAUTHORIZED,
-            json!({ "error": "missing froglet authorization" }),
-        ));
-    };
-    let Ok(value) = value.to_str() else {
-        return Err(error_json(
-            StatusCode::UNAUTHORIZED,
-            json!({ "error": "invalid froglet authorization header" }),
-        ));
-    };
-    let Some(token) = value.strip_prefix("Bearer ") else {
-        return Err(error_json(
-            StatusCode::UNAUTHORIZED,
-            json!({ "error": "froglet authorization must use bearer auth" }),
-        ));
-    };
-    if token == state.app_state.consumer_control_auth_token
-        || token == state.app_state.provider_control_auth_token
-    {
+    let consumer = api::require_bearer_token(
+        headers,
+        &state.app_state.consumer_control_auth_token,
+        "froglet",
+    );
+    if consumer.is_ok() {
         return Ok(());
     }
-    Err(error_json(
-        StatusCode::UNAUTHORIZED,
-        json!({ "error": "invalid froglet authorization token" }),
-    ))
+    api::require_bearer_token(
+        headers,
+        &state.app_state.provider_control_auth_token,
+        "froglet",
+    )
+    .map_err(|(status, body)| error_json(status, body))
 }
 
 fn loopback_base_url(listen_addr: &str) -> Result<String, String> {
@@ -425,16 +404,25 @@ fn truncate_preview(value: &str) -> Option<String> {
 }
 
 fn read_tail_lines(path: &Path, requested_lines: Option<usize>) -> Result<Vec<String>, String> {
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader};
+
     let limit = requested_lines
         .unwrap_or(DEFAULT_TAIL_LINES)
         .clamp(1, MAX_TAIL_LINES);
-    let contents = std::fs::read_to_string(path)
+    let file = std::fs::File::open(path)
         .map_err(|error| format!("failed to read log file {}: {error}", path.display()))?;
-    let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
-    if lines.len() > limit {
-        lines.drain(0..(lines.len() - limit));
+    let mut ring = VecDeque::with_capacity(limit);
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|error| {
+            format!("failed to read log file {}: {error}", path.display())
+        })?;
+        if ring.len() == limit {
+            ring.pop_front();
+        }
+        ring.push_back(line);
     }
-    Ok(lines)
+    Ok(ring.into())
 }
 
 async fn run_restart_command(command: Option<&str>, service: &'static str) -> Response {
@@ -568,6 +556,16 @@ async fn provider_create_project(
     };
     let summary = default_project_summary(&payload, &service_id);
     let scaffold_result_json = infer_static_result_json(&payload);
+    let has_result_json = scaffold_result_json.is_some();
+    let overrides = provider_projects::CreateProjectOverrides {
+        mode: payload.mode.clone(),
+        clear_starter: has_result_json,
+        input_schema: payload.input_schema.clone(),
+        output_schema: payload
+            .output_schema
+            .clone()
+            .or_else(|| scaffold_result_json.clone().map(|value| json!({ "const": value }))),
+    };
     match provider_projects::create_project(
         &state.projects_root,
         &project_id,
@@ -577,13 +575,10 @@ async fn provider_create_project(
         &summary,
         payload.price_sats.unwrap_or(0),
         &publication_state,
+        overrides,
     ) {
-        Ok(_) => {
-            let project_dir = match provider_projects::project_dir(&state.projects_root, &project_id) {
-                Ok(path) => path,
-                Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
-            };
-            if let Some(result_json) = scaffold_result_json.clone() {
+        Ok(project) => {
+            if let Some(result_json) = scaffold_result_json {
                 if let Err(error) =
                     provider_projects::write_static_result_project(&state.projects_root, &project_id, &result_json)
                 {
@@ -593,36 +588,7 @@ async fn provider_create_project(
                     );
                 }
             }
-            let mut manifest = match provider_projects::load_manifest(&project_dir) {
-                Ok(manifest) => manifest,
-                Err(error) => {
-                    return error_json(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        json!({ "error": "failed to reload provider project manifest", "details": error }),
-                    )
-                }
-            };
-            if let Some(mode) = payload.mode.clone() {
-                manifest.mode = mode;
-            }
-            if scaffold_result_json.is_some() {
-                manifest.starter = None;
-            }
-            manifest.input_schema = payload.input_schema.clone();
-            manifest.output_schema = payload
-                .output_schema
-                .clone()
-                .or_else(|| scaffold_result_json.clone().map(|value| json!({ "const": value })));
-            if let Err(error) = provider_projects::save_manifest(&project_dir, &manifest) {
-                return error_json(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": "failed to update provider project manifest", "details": error }),
-                );
-            }
-            match provider_projects::get_project(&state.projects_root, &project_id) {
-                Ok(project) => (StatusCode::CREATED, Json(ProviderProjectResponse { project })).into_response(),
-                Err(error) => error_json(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
-            }
+            (StatusCode::CREATED, Json(ProviderProjectResponse { project })).into_response()
         }
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
@@ -1245,24 +1211,34 @@ async fn froglet_discover_services(
         Err(response) => return response,
     };
     let query = payload.query.map(|value| value.to_lowercase());
+    let provider_urls: Vec<String> = search
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.descriptor
+                .transports
+                .clearnet_url
+                .clone()
+                .or_else(|| node.descriptor.transports.onion_url.clone())
+        })
+        .collect();
+    let fetches = provider_urls.into_iter().map(|provider_url| {
+        let state = state.clone();
+        async move {
+            let response: Result<ProviderServicesResponse, Response> = local_json_request(
+                state.as_ref(),
+                &state.app_state.runtime_auth_token,
+                reqwest::Method::GET,
+                format!("{provider_url}/v1/provider/services"),
+                Option::<&Value>::None,
+            )
+            .await;
+            response.ok()
+        }
+    });
+    let results = futures::future::join_all(fetches).await;
     let mut services = Vec::new();
-    for node in search.nodes {
-        let provider_url = node
-            .descriptor
-            .transports
-            .clearnet_url
-            .clone()
-            .or_else(|| node.descriptor.transports.onion_url.clone());
-        let Some(provider_url) = provider_url else { continue };
-        let response: Result<ProviderServicesResponse, Response> = local_json_request(
-            state.as_ref(),
-            &state.app_state.runtime_auth_token,
-            reqwest::Method::GET,
-            format!("{provider_url}/v1/provider/services"),
-            Option::<&Value>::None,
-        )
-        .await;
-        let Ok(response) = response else { continue };
+    for response in results.into_iter().flatten() {
         for service in response.services {
             if let Some(query) = query.as_ref()
                 && !service.service_id.to_lowercase().contains(query)

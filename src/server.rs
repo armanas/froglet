@@ -22,7 +22,6 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex as TokioMutex, Semaphore};
 use tower::Service;
 use tracing::{error, info, warn};
-use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 const SUPERVISOR_RESTART_MIN_DELAY_SECS: u64 = 1;
 const SUPERVISOR_RESTART_MAX_DELAY_SECS: u64 = 30;
@@ -463,14 +462,7 @@ async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let subscriber = FmtSubscriber::builder()
-        .with_env_filter(filter)
-        .with_target(false)
-        .without_time()
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    crate::init_logging();
 }
 
 fn set_mode(path: &std::path::Path, mode: u32) -> Result<(), Box<dyn std::error::Error>> {

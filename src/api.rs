@@ -609,7 +609,7 @@ const BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS: u64 = 1;
 const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
-type ApiFailure = (StatusCode, serde_json::Value);
+pub(crate) type ApiFailure = (StatusCode, serde_json::Value);
 
 fn default_offer_publication_state() -> String {
     "active".to_string()
@@ -629,7 +629,7 @@ pub(crate) fn normalize_offer_publication_state(value: Option<&str>) -> Result<S
     }
 }
 
-pub(crate) fn normalize_offer_id(offer_id: &str) -> Result<String, String> {
+pub(crate) fn normalize_short_id(offer_id: &str) -> Result<String, String> {
     let trimmed = offer_id.trim();
     if trimmed.is_empty() {
         return Err("offer_id must be a non-empty string".to_string());
@@ -3396,7 +3396,7 @@ pub async fn get_job_status(
     }
 }
 
-fn error_json(
+pub(crate) fn error_json(
     status: StatusCode,
     body: serde_json::Value,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -4266,7 +4266,7 @@ async fn find_existing_deal_by_artifact_hash(
         })
 }
 
-fn require_bearer_token(
+pub(crate) fn require_bearer_token(
     headers: &HeaderMap,
     expected_token: &str,
     scope: &str,
@@ -4340,13 +4340,13 @@ pub(crate) fn provider_offer_limits(
 pub(crate) fn validate_provider_offer_definition(
     definition: &ProviderManagedOfferDefinition,
 ) -> Result<(), String> {
-    normalize_offer_id(&definition.offer_id)?;
+    normalize_short_id(&definition.offer_id)?;
     normalize_offer_publication_state(Some(&definition.publication_state))?;
     if let Some(service_id) = definition.service_id.as_deref() {
-        normalize_offer_id(service_id)?;
+        normalize_short_id(service_id)?;
     }
     if let Some(project_id) = definition.project_id.as_deref() {
-        normalize_offer_id(project_id)?;
+        normalize_short_id(project_id)?;
     }
     if definition.offer_kind.trim().is_empty() {
         return Err("offer_kind must be a non-empty string".to_string());
@@ -4728,7 +4728,7 @@ pub(crate) async fn provider_service_record(
     service_id: &str,
     include_binding: bool,
 ) -> Result<Option<ProviderServiceRecord>, String> {
-    let normalized_service_id = normalize_offer_id(service_id)?;
+    let normalized_service_id = normalize_short_id(service_id)?;
     let services = current_service_records(state, true, include_binding).await?;
     Ok(services
         .into_iter()
@@ -4740,7 +4740,7 @@ pub(crate) async fn provider_control_offer_record(
     offer_id: &str,
     include_hidden: bool,
 ) -> Result<Option<ProviderControlOfferRecord>, String> {
-    let normalized_offer_id = normalize_offer_id(offer_id)?;
+    let normalized_offer_id = normalize_short_id(offer_id)?;
     let offers = current_offer_records(state, include_hidden).await?;
     Ok(offers
         .into_iter()
@@ -4760,9 +4760,9 @@ pub(crate) fn artifact_provider_offer_definition(
     state: &AppState,
     payload: ProviderControlPublishArtifactRequest,
 ) -> Result<ProviderManagedOfferDefinition, ApiFailure> {
-    let service_id = normalize_offer_id(&payload.service_id)
+    let service_id = normalize_short_id(&payload.service_id)
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
-    let offer_id = normalize_offer_id(payload.offer_id.as_deref().unwrap_or(&service_id))
+    let offer_id = normalize_short_id(payload.offer_id.as_deref().unwrap_or(&service_id))
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     let publication_state = normalize_offer_publication_state(payload.publication_state.as_deref())
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;

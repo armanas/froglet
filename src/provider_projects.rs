@@ -288,6 +288,15 @@ pub fn list_projects(root: &Path) -> Result<Vec<ProviderProjectRecord>, String> 
     Ok(projects)
 }
 
+/// Optional overrides applied at creation time to avoid post-create load-mutate-save cycles.
+#[derive(Default)]
+pub struct CreateProjectOverrides {
+    pub mode: Option<String>,
+    pub clear_starter: bool,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+}
+
 pub fn create_project(
     root: &Path,
     project_id: &str,
@@ -297,6 +306,7 @@ pub fn create_project(
     summary: &str,
     price_sats: u64,
     publication_state: &str,
+    overrides: CreateProjectOverrides,
 ) -> Result<ProviderProjectRecord, String> {
     let project_dir = validate_project_dir(root, project_id)?;
     if project_dir.exists() {
@@ -304,6 +314,11 @@ pub fn create_project(
     }
     fs::create_dir_all(project_dir.join("source"))
         .map_err(|error| format!("failed to create project directories: {error}"))?;
+    let effective_starter = if overrides.clear_starter {
+        None
+    } else {
+        starter.map(|value| value.id().to_string())
+    };
     let manifest = ProviderProjectManifest {
         schema_version: PROJECT_SCHEMA_VERSION.to_string(),
         project_id: project_id.to_string(),
@@ -315,14 +330,14 @@ pub fn create_project(
             .unwrap_or(ProviderProjectStarter::BlankRunJson)
             .abi_version()
             .to_string(),
-        mode: "sync".to_string(),
+        mode: overrides.mode.unwrap_or_else(|| "sync".to_string()),
         source_kind: "wat".to_string(),
         entrypoint: DEFAULT_ENTRYPOINT.to_string(),
         price_sats,
         publication_state: publication_state.to_string(),
-        starter: starter.map(|value| value.id().to_string()),
-        input_schema: None,
-        output_schema: None,
+        starter: effective_starter,
+        input_schema: overrides.input_schema,
+        output_schema: overrides.output_schema,
     };
     save_manifest(&project_dir, &manifest)?;
     let source = starter
@@ -717,6 +732,7 @@ mod tests {
             "Hello World service",
             0,
             "active",
+            CreateProjectOverrides::default(),
         )
         .expect("create project");
 
@@ -740,6 +756,7 @@ mod tests {
             "Echo JSON service",
             0,
             "active",
+            CreateProjectOverrides::default(),
         )
         .expect("create project");
 
@@ -762,6 +779,7 @@ mod tests {
             "Returns lol",
             0,
             "active",
+            CreateProjectOverrides::default(),
         )
         .expect("create project");
         write_static_result_project(&root, "lol", &json!("lol")).expect("write static result");
@@ -784,6 +802,7 @@ mod tests {
             "HTTP fetch passthrough",
             0,
             "active",
+            CreateProjectOverrides::default(),
         )
         .expect("create project");
 
@@ -804,6 +823,7 @@ mod tests {
             "Blank project",
             0,
             "active",
+            CreateProjectOverrides::default(),
         )
         .expect("create project");
 

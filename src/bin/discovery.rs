@@ -3,7 +3,6 @@ use froglet::{
     discovery_server::{self, DiscoveryAppState},
 };
 use std::path::PathBuf;
-use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,11 +66,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let subscriber = FmtSubscriber::builder()
-        .with_env_filter(filter)
-        .with_target(false)
-        .without_time()
-        .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    froglet::init_logging();
 }

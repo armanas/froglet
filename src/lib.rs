@@ -1,4 +1,17 @@
 pub mod api;
+
+/// Initialize tracing with an env-filter default of `info`.
+/// Safe to call multiple times; subsequent calls are silently ignored.
+pub fn init_logging() {
+    use tracing_subscriber::{EnvFilter, FmtSubscriber};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let subscriber = FmtSubscriber::builder()
+        .with_env_filter(filter)
+        .with_target(false)
+        .without_time()
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
 pub mod canonical_json;
 pub mod confidential;
 pub mod config;
