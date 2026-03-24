@@ -2,10 +2,11 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
 import register from "../index.js"
 
-const pluginRoot = path.resolve(import.meta.dirname, "..")
+const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const exampleFiles = [
   "openclaw.config.example.json",
   "openclaw.config.nemoclaw.example.json",

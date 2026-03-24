@@ -5,8 +5,14 @@ import os from "node:os"
 import path from "node:path"
 import process from "node:process"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
-const doctorPath = path.resolve(import.meta.dirname, "..", "scripts", "doctor.mjs")
+const doctorPath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "scripts",
+  "doctor.mjs"
+)
 
 async function writeConfig(tempDir, fileName, pluginConfig) {
   const configPath = path.join(tempDir, fileName)
