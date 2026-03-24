@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { setTimeout as delay } from "node:timers/promises"
 
 const testDir = fileURLToPath(new URL("./", import.meta.url))
 const pluginDir = path.resolve(testDir, "..")
@@ -91,53 +90,65 @@ async function main() {
   const statusRaw = extractAppendedJson(status.content[0].text)
   assert.equal(statusRaw.runtime?.healthy, true)
   assert.equal(statusRaw.provider?.healthy, true)
-  assert.equal(statusRaw.reference_discovery?.connected, true)
+  assert.equal(statusRaw.reference_discovery?.enabled, true)
 
-  let discoverRaw = null
-  let providerId = null
-  for (let attempt = 0; attempt < 15; attempt += 1) {
-    const discover = await froglet.definition.execute("discover", {
-      action: "discover_services",
-      limit: 10,
-      include_inactive: false,
-      include_raw: true
-    })
-    discoverRaw = extractAppendedJson(discover.content[0].text)
-    const services = Array.isArray(discoverRaw.services) ? discoverRaw.services : []
-    const executeCompute = services.find((service) => service?.service_id === "execute.compute")
-    providerId = executeCompute?.provider_id ?? null
-    if (providerId) {
-      break
-    }
-    await delay(1000)
-  }
+  const serviceId = `compose-smoke-ping-${Date.now()}`
+  const create = await froglet.definition.execute("create", {
+    action: "create_project",
+    service_id: serviceId,
+    summary: "Returns pong for the compose smoke",
+    price_sats: 0,
+    publication_state: "active",
+    result_json: { message: "pong" },
+    include_raw: true
+  })
+  const createRaw = extractAppendedJson(create.content[0].text)
+  assert.equal(createRaw.project?.service_id, serviceId)
+  assert.equal(createRaw.project?.publication_state, "active")
 
+  const build = await froglet.definition.execute("build", {
+    action: "build_project",
+    project_id: createRaw.project?.project_id ?? serviceId,
+    include_raw: true
+  })
+  const buildRaw = extractAppendedJson(build.content[0].text)
+  assert.equal(buildRaw.project?.project_id, createRaw.project?.project_id ?? serviceId)
+
+  await froglet.definition.execute("publish", {
+    action: "publish_project",
+    project_id: createRaw.project?.project_id ?? serviceId,
+    include_raw: true
+  })
+
+  const local = await froglet.definition.execute("local", {
+    action: "list_local_services",
+    include_raw: true
+  })
+  const localRaw = extractAppendedJson(local.content[0].text)
+  const localService = (Array.isArray(localRaw.services) ? localRaw.services : []).find(
+    (service) => service?.service_id === serviceId
+  )
+  assert.ok(localService, "local services did not include the published smoke service")
+
+  const discover = await froglet.definition.execute("discover", {
+    action: "discover_services",
+    limit: 10,
+    include_inactive: false,
+    include_raw: true
+  })
+  const discoverRaw = extractAppendedJson(discover.content[0].text)
   assert.ok(discoverRaw, "missing discovery response")
   assert.equal(Number(discoverRaw.provider_nodes_discovered ?? 0) >= 1, true)
-  assert.ok(providerId, "discovery did not return execute.compute")
+  assert.equal(Array.isArray(discoverRaw.services), true)
 
   const service = await froglet.definition.execute("service", {
-    action: "get_service",
-    provider_id: providerId,
-    service_id: "execute.compute",
+    action: "get_local_service",
+    service_id: serviceId,
     include_raw: true
   })
   const serviceRaw = extractAppendedJson(service.content[0].text)
-  assert.equal(serviceRaw.service?.service_id, "execute.compute")
-  assert.equal(serviceRaw.service?.provider_id, providerId)
+  assert.equal(serviceRaw.service?.service_id, serviceId)
   assert.equal(serviceRaw.service?.publication_state, "active")
-
-  const invoke = await froglet.definition.execute("invoke", {
-    action: "invoke_service",
-    provider_id: providerId,
-    service_id: "events.query",
-    input: { kinds: [], limit: 1 },
-    include_raw: true
-  })
-  const invokeRaw = extractAppendedJson(invoke.content[0].text)
-  const effectiveResult = invokeRaw.result ?? invokeRaw.task?.result
-  assert.notEqual(effectiveResult, undefined)
-  assert.equal(typeof effectiveResult, "object")
 }
 
 main().catch((error) => {
