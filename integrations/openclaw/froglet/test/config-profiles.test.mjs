@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 
 import register from "../index.js"
 
-const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+const pluginRoot = fileURLToPath(new URL("..", import.meta.url))
 const exampleFiles = [
   "openclaw.config.example.json",
   "openclaw.config.nemoclaw.example.json",

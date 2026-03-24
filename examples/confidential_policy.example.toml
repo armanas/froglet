@@ -29,7 +29,7 @@ max_output_bytes = 16384
 price_sats = 25
 
 [profiles.attested_wasm]
-offer_id = "attested.execute.wasm"
+offer_id = "attested.execute.compute"
 allowed_workload_kind = "compute.wasm.attested.v1"
 measurement = "3333333333333333333333333333333333333333333333333333333333333333"
 key_release_policy_hash = "4444444444444444444444444444444444444444444444444444444444444444"

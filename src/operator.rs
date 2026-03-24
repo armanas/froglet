@@ -1,4 +1,10 @@
-use std::{net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
+#![allow(clippy::result_large_err)]
+
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
@@ -7,6 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::process::Command;
@@ -14,9 +21,8 @@ use tracing::{info, warn};
 
 use crate::{
     api::{
-        self, DiscoveryInfo, ProviderControlPublishArtifactRequest,
-        ProviderServiceRecord, ProviderServiceResponse, ProviderServicesResponse,
-        ReferenceDiscoveryInfo,
+        self, DiscoveryInfo, ProviderControlPublishArtifactRequest, ProviderServiceRecord,
+        ProviderServiceResponse, ProviderServicesResponse, ReferenceDiscoveryInfo,
         RuntimeCreateDealRequest, RuntimeCreateDealResponse, RuntimeDealResponse,
         RuntimeProviderDetailsResponse, RuntimeProviderRef, RuntimeSearchRequest,
         artifact_provider_offer_definition, current_service_records,
@@ -29,9 +35,11 @@ use crate::{
         CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionEntrypointKind,
         ExecutionMount, ExecutionPackageKind, ExecutionRuntime, ExecutionWorkload,
     },
-    provider_projects::{self, ProviderProjectBuildRecord, ProviderProjectRecord, ProviderProjectStarter, ProviderProjectTestRecord},
-    requester_deals,
-    runtime_auth,
+    provider_projects::{
+        self, ProviderProjectBuildRecord, ProviderProjectRecord, ProviderProjectStarter,
+        ProviderProjectTestRecord,
+    },
+    requester_deals, runtime_auth,
     state::{self, AppState},
     tls,
 };
@@ -337,7 +345,10 @@ fn error_json(status: StatusCode, body: serde_json::Value) -> Response {
     (status, json).into_response()
 }
 
-fn require_provider_control_auth(headers: &HeaderMap, state: &OperatorState) -> Result<(), Response> {
+fn require_provider_control_auth(
+    headers: &HeaderMap,
+    state: &OperatorState,
+) -> Result<(), Response> {
     api::require_provider_control_auth(headers, state.app_state.as_ref())
         .map_err(|(status, body)| error_json(status, body))
 }
@@ -365,12 +376,37 @@ fn loopback_base_url(listen_addr: &str) -> Result<String, String> {
         .map_err(|error| format!("invalid listen address {listen_addr}: {error}"))?;
     let host = if addr.ip().is_unspecified() {
         "127.0.0.1".to_string()
-    } else if addr.ip().is_loopback() {
-        addr.ip().to_string()
     } else {
         addr.ip().to_string()
     };
     Ok(format!("http://{}:{}", host, addr.port()))
+}
+
+fn configured_base_url(env_key: &str) -> Result<Option<String>, Response> {
+    let Some(raw) = std::env::var(env_key).ok() else {
+        return Ok(None);
+    };
+
+    let parsed = Url::parse(&raw).map_err(|error| {
+        error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("invalid {env_key}"), "details": error.to_string(), "value": raw }),
+        )
+    })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("{env_key} must use http:// or https://"), "value": raw }),
+        ));
+    }
+    if parsed.path() != "/" {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("{env_key} must not include a path"), "value": raw }),
+        ));
+    }
+
+    Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
 }
 
 async fn health_reachable(state: &OperatorState, url: &str) -> bool {
@@ -419,9 +455,9 @@ where
         )
     })?;
     if !status.is_success() {
-        let payload = serde_json::from_str::<Value>(&body_text).unwrap_or_else(|_| {
-            json!({ "error": "upstream request failed", "body": body_text, "url": url })
-        });
+        let payload = serde_json::from_str::<Value>(&body_text).unwrap_or_else(
+            |_| json!({ "error": "upstream request failed", "body": body_text, "url": url }),
+        );
         return Err(error_json(status, payload));
     }
     serde_json::from_str(&body_text).map_err(|error| {
@@ -447,11 +483,19 @@ async fn response_payload(response: Response) -> (StatusCode, Value) {
 }
 
 fn runtime_base_url(state: &OperatorState) -> Result<String, Response> {
+    if let Some(base_url) = configured_base_url("FROGLET_OPERATOR_RUNTIME_BASE_URL")? {
+        return Ok(base_url);
+    }
+
     loopback_base_url(&state.app_state.config.runtime_listen_addr)
         .map_err(|error| error_json(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })))
 }
 
 fn provider_base_url(state: &OperatorState) -> Result<String, Response> {
+    if let Some(base_url) = configured_base_url("FROGLET_OPERATOR_PROVIDER_BASE_URL")? {
+        return Ok(base_url);
+    }
+
     loopback_base_url(&state.app_state.config.listen_addr)
         .map_err(|error| error_json(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })))
 }
@@ -475,9 +519,8 @@ fn read_tail_lines(path: &Path, requested_lines: Option<usize>) -> Result<Vec<St
         .map_err(|error| format!("failed to read log file {}: {error}", path.display()))?;
     let mut ring = VecDeque::with_capacity(limit);
     for line in BufReader::new(file).lines() {
-        let line = line.map_err(|error| {
-            format!("failed to read log file {}: {error}", path.display())
-        })?;
+        let line =
+            line.map_err(|error| format!("failed to read log file {}: {error}", path.display()))?;
         if ring.len() == limit {
             ring.pop_front();
         }
@@ -512,7 +555,7 @@ async fn run_restart_command(command: Option<&str>, service: &'static str) -> Re
             return error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": format!("failed to execute restart command: {error}") }),
-            )
+            );
         }
     };
     let status = if output.status.success() {
@@ -594,7 +637,9 @@ async fn provider_list_projects(
         return response;
     }
     match provider_projects::list_projects(&state.projects_root) {
-        Ok(projects) => (StatusCode::OK, Json(ProviderProjectsResponse { projects })).into_response(),
+        Ok(projects) => {
+            (StatusCode::OK, Json(ProviderProjectsResponse { projects })).into_response()
+        }
         Err(error) => error_json(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
     }
 }
@@ -614,10 +659,11 @@ async fn provider_create_project(
         },
         None => None,
     };
-    let publication_state = match normalize_offer_publication_state(payload.publication_state.as_deref()) {
-        Ok(value) => value,
-        Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
-    };
+    let publication_state =
+        match normalize_offer_publication_state(payload.publication_state.as_deref()) {
+            Ok(value) => value,
+            Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        };
     if let Err(response) = validate_create_project_request(&payload, &publication_state) {
         return response;
     }
@@ -632,10 +678,11 @@ async fn provider_create_project(
         mode: payload.mode.clone(),
         clear_starter: has_result_json,
         input_schema: payload.input_schema.clone(),
-        output_schema: payload
-            .output_schema
-            .clone()
-            .or_else(|| scaffold_result_json.clone().map(|value| json!({ "const": value }))),
+        output_schema: payload.output_schema.clone().or_else(|| {
+            scaffold_result_json
+                .clone()
+                .map(|value| json!({ "const": value }))
+        }),
         runtime: payload.runtime.clone(),
         package_kind: payload.package_kind.clone(),
         entrypoint_kind: payload.entrypoint_kind.clone(),
@@ -656,32 +703,38 @@ async fn provider_create_project(
     ) {
         Ok(project) => {
             if let Some(result_json) = scaffold_result_json {
-                if let Err(error) =
-                    provider_projects::write_static_result_project(&state.projects_root, &project_id, &result_json)
-                {
+                if let Err(error) = provider_projects::write_static_result_project(
+                    &state.projects_root,
+                    &project_id,
+                    &result_json,
+                ) {
                     return error_json(
                         StatusCode::BAD_REQUEST,
                         json!({ "error": "failed to scaffold static result project", "details": error }),
                     );
                 }
-            } else if let Some(inline_source) = payload.inline_source.as_ref() {
-                if let Err(error) = provider_projects::write_project_file(
+            } else if let Some(inline_source) = payload.inline_source.as_ref()
+                && let Err(error) = provider_projects::write_project_file(
                     &state.projects_root,
                     &project_id,
                     &project.entrypoint,
                     inline_source,
-                ) {
-                    return error_json(
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "failed to scaffold inline source", "details": error }),
-                    );
-                }
+                )
+            {
+                return error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "failed to scaffold inline source", "details": error }),
+                );
             }
             let project = match provider_projects::get_project(&state.projects_root, &project_id) {
                 Ok(project) => project,
                 Err(_) => project,
             };
-            (StatusCode::CREATED, Json(ProviderProjectResponse { project })).into_response()
+            (
+                StatusCode::CREATED,
+                Json(ProviderProjectResponse { project }),
+            )
+                .into_response()
         }
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
@@ -697,8 +750,14 @@ async fn provider_get_project(
     }
     match provider_projects::get_project(&state.projects_root, &project_id) {
         Ok(project) => (StatusCode::OK, Json(ProviderProjectResponse { project })).into_response(),
-        Err(error) if error.contains("No such file") || error.contains("failed to read project manifest") => {
-            error_json(StatusCode::NOT_FOUND, json!({ "error": "project not found", "project_id": project_id }))
+        Err(error)
+            if error.contains("No such file")
+                || error.contains("failed to read project manifest") =>
+        {
+            error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "project not found", "project_id": project_id }),
+            )
         }
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
@@ -807,7 +866,7 @@ async fn provider_publish_project(
             return error_json(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "provider project build failed", "details": error }),
-            )
+            );
         }
     };
     let definition = match project_definition_from_build(state.as_ref(), &build) {
@@ -820,8 +879,7 @@ async fn provider_publish_project(
         StatusCode::CREATED,
         format!(
             "published provider project {} from project {}",
-            definition.offer_id,
-            build.project.project_id
+            definition.offer_id, build.project.project_id
         ),
     )
     .await
@@ -862,7 +920,11 @@ async fn build_consumer_status(state: &OperatorState) -> Result<ConsumerStatusRe
         service: "consumer",
         healthy: health_reachable(state, &runtime_url).await,
         runtime_url,
-        runtime_auth_token_path: state.app_state.runtime_auth_token_path.display().to_string(),
+        runtime_auth_token_path: state
+            .app_state
+            .runtime_auth_token_path
+            .display()
+            .to_string(),
         control_auth_token_path: state
             .app_state
             .consumer_control_auth_token_path
@@ -936,15 +998,23 @@ async fn fetch_remote_provider_services(
             error: format!("upstream request failed: {error}"),
         })?;
     let status = response.status();
-    let body_text = response.text().await.map_err(|error| FrogletServiceDiscoverFailure {
-        provider_url: provider_url.clone(),
-        status: Some(status.as_u16()),
-        error: format!("failed to read upstream response: {error}"),
-    })?;
+    let body_text = response
+        .text()
+        .await
+        .map_err(|error| FrogletServiceDiscoverFailure {
+            provider_url: provider_url.clone(),
+            status: Some(status.as_u16()),
+            error: format!("failed to read upstream response: {error}"),
+        })?;
     if !status.is_success() {
         let error = serde_json::from_str::<Value>(&body_text)
             .ok()
-            .and_then(|payload| payload.get("error").and_then(Value::as_str).map(str::to_string))
+            .and_then(|payload| {
+                payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or(body_text);
         return Err(FrogletServiceDiscoverFailure {
             provider_url,
@@ -1000,7 +1070,10 @@ async fn resolve_provider_reference(
         Option::<&Value>::None,
     )
     .await?;
-    Ok((Some(provider_id.to_string()), preferred_provider_url(&details)?))
+    Ok((
+        Some(provider_id.to_string()),
+        preferred_provider_url(&details)?,
+    ))
 }
 
 async fn fetch_provider_service(
@@ -1088,7 +1161,10 @@ async fn fetch_provider_service(
     Ok(response.service)
 }
 
-async fn get_runtime_task(state: &OperatorState, deal_id: &str) -> Result<requester_deals::RequesterDealRecord, Response> {
+async fn get_runtime_task(
+    state: &OperatorState,
+    deal_id: &str,
+) -> Result<requester_deals::RequesterDealRecord, Response> {
     let runtime_url = runtime_base_url(state)?;
     let response: RuntimeDealResponse = local_json_request(
         state,
@@ -1133,7 +1209,9 @@ fn slugify_identifier(value: &str) -> String {
     slug
 }
 
-fn derive_project_identifiers(payload: &CreateProjectRequest) -> Result<(String, String, String), Response> {
+fn derive_project_identifiers(
+    payload: &CreateProjectRequest,
+) -> Result<(String, String, String), Response> {
     let seed = payload
         .project_id
         .as_deref()
@@ -1155,8 +1233,14 @@ fn derive_project_identifiers(payload: &CreateProjectRequest) -> Result<(String,
         ));
     }
     Ok((
-        payload.project_id.clone().unwrap_or_else(|| derived.clone()),
-        payload.service_id.clone().unwrap_or_else(|| derived.clone()),
+        payload
+            .project_id
+            .clone()
+            .unwrap_or_else(|| derived.clone()),
+        payload
+            .service_id
+            .clone()
+            .unwrap_or_else(|| derived.clone()),
         payload.offer_id.clone().unwrap_or(derived),
     ))
 }
@@ -1182,7 +1266,12 @@ fn validate_create_project_request(
 }
 
 fn default_project_summary(payload: &CreateProjectRequest, service_id: &str) -> String {
-    if let Some(summary) = payload.summary.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+    if let Some(summary) = payload
+        .summary
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         return summary.to_string();
     }
     if let Some(result_json) = payload.result_json.as_ref() {
@@ -1318,7 +1407,9 @@ async fn froglet_list_local_services(
         return response;
     }
     match current_service_records(state.app_state.as_ref(), true, true).await {
-        Ok(services) => (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response(),
+        Ok(services) => {
+            (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response()
+        }
         Err(error) => error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": "failed to list local services", "details": error }),
@@ -1335,7 +1426,9 @@ async fn froglet_get_local_service(
         return response;
     }
     match provider_service_record(state.app_state.as_ref(), &service_id, true).await {
-        Ok(Some(service)) => (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response(),
+        Ok(Some(service)) => {
+            (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response()
+        }
         Ok(None) => error_json(
             StatusCode::NOT_FOUND,
             json!({ "error": "service not found", "service_id": service_id }),
@@ -1514,8 +1607,12 @@ fn build_oci_wasm_submission(
             json!({ "error": "service is missing oci_digest binding", "service_id": service.service_id }),
         ));
     };
-    let input_bytes = crate::canonical_json::to_vec(&input)
-        .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error.to_string() })))?;
+    let input_bytes = crate::canonical_json::to_vec(&input).map_err(|error| {
+        error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        )
+    })?;
     Ok(crate::wasm::OciWasmSubmission {
         schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
         submission_type: crate::wasm::WASM_OCI_SUBMISSION_TYPE_V1.to_string(),
@@ -1584,10 +1681,16 @@ fn default_contract_version_for(
     entrypoint_kind: &ExecutionEntrypointKind,
 ) -> &'static str {
     match (runtime, package_kind, entrypoint_kind) {
-        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, ExecutionEntrypointKind::Script)
-        | (ExecutionRuntime::TeePython, ExecutionPackageKind::InlineSource, ExecutionEntrypointKind::Script) => {
-            CONTRACT_PYTHON_SCRIPT_JSON_V1
-        }
+        (
+            ExecutionRuntime::Python,
+            ExecutionPackageKind::InlineSource,
+            ExecutionEntrypointKind::Script,
+        )
+        | (
+            ExecutionRuntime::TeePython,
+            ExecutionPackageKind::InlineSource,
+            ExecutionEntrypointKind::Script,
+        ) => CONTRACT_PYTHON_SCRIPT_JSON_V1,
         (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _)
         | (ExecutionRuntime::TeePython, ExecutionPackageKind::InlineSource, _) => {
             CONTRACT_PYTHON_HANDLER_JSON_V1
@@ -1603,7 +1706,9 @@ fn default_contract_version_for(
     }
 }
 
-fn parse_builtin_events_query_input(input: Value) -> Result<(Vec<String>, Option<usize>), Response> {
+fn parse_builtin_events_query_input(
+    input: Value,
+) -> Result<(Vec<String>, Option<usize>), Response> {
     let Value::Object(object) = input else {
         return Err(error_json(
             StatusCode::BAD_REQUEST,
@@ -1626,28 +1731,25 @@ fn parse_builtin_events_query_input(input: Value) -> Result<(Vec<String>, Option
             return Err(error_json(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "builtin events.query kinds must be an array of strings" }),
-            ))
+            ));
         }
         None => Vec::new(),
     };
     let limit = match object.get("limit") {
-        Some(Value::Number(number)) => Some(
-            number
-                .as_u64()
-                .map(|value| value as usize)
-                .ok_or_else(|| {
-                    error_json(
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "builtin events.query limit must be a non-negative integer" }),
-                    )
-                })?,
-        ),
+        Some(Value::Number(number)) => {
+            Some(number.as_u64().map(|value| value as usize).ok_or_else(|| {
+                error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "builtin events.query limit must be a non-negative integer" }),
+                )
+            })?)
+        }
         Some(Value::Null) | None => None,
         Some(_) => {
             return Err(error_json(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "builtin events.query limit must be a non-negative integer" }),
-            ))
+            ));
         }
     };
     Ok((kinds, limit))
@@ -1677,14 +1779,20 @@ fn build_execution_from_service(
         runtime_from_legacy_execution_kind(&service.execution_kind)?
     } else {
         ExecutionRuntime::parse(&service.runtime).map_err(|error| {
-            error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+            error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": error, "service_id": service.service_id }),
+            )
         })?
     };
     let package_kind = if service.package_kind.trim().is_empty() {
         package_kind_from_legacy_execution_kind(&service.execution_kind)?
     } else {
         ExecutionPackageKind::parse(&service.package_kind).map_err(|error| {
-            error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+            error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": error, "service_id": service.service_id }),
+            )
         })?
     };
     let entrypoint_kind = if service.entrypoint_kind.trim().is_empty() {
@@ -1694,7 +1802,10 @@ fn build_execution_from_service(
         }
     } else {
         ExecutionEntrypointKind::parse(&service.entrypoint_kind).map_err(|error| {
-            error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+            error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": error, "service_id": service.service_id }),
+            )
         })?
     };
     let entrypoint = if service.entrypoint.trim().is_empty() {
@@ -1716,13 +1827,19 @@ fn build_execution_from_service(
         (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
             let submission = build_inline_wasm_submission(service, input)?;
             ExecutionWorkload::from_wasm_submission(submission).map_err(|error| {
-                error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+                error_json(
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "error": error, "service_id": service.service_id }),
+                )
             })?
         }
         (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage) => {
             let submission = build_oci_wasm_submission(service, input)?;
             ExecutionWorkload::from_oci_wasm_submission(submission).map_err(|error| {
-                error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+                error_json(
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "error": error, "service_id": service.service_id }),
+                )
             })?
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
@@ -1735,17 +1852,19 @@ fn build_execution_from_service(
             match entrypoint_kind {
                 ExecutionEntrypointKind::Script => {
                     ExecutionWorkload::python_inline_script(source, input).map_err(|error| {
-                        error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
-                    })?
-                }
-                _ => ExecutionWorkload::python_inline_handler(source, entrypoint.clone(), input).map_err(
-                    |error| {
                         error_json(
                             StatusCode::BAD_GATEWAY,
                             json!({ "error": error, "service_id": service.service_id }),
                         )
-                    },
-                )?,
+                    })?
+                }
+                _ => ExecutionWorkload::python_inline_handler(source, entrypoint.clone(), input)
+                    .map_err(|error| {
+                        error_json(
+                            StatusCode::BAD_GATEWAY,
+                            json!({ "error": error, "service_id": service.service_id }),
+                        )
+                    })?,
             }
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
@@ -1771,7 +1890,10 @@ fn build_execution_from_service(
                 input,
             )
             .map_err(|error| {
-                error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+                error_json(
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "error": error, "service_id": service.service_id }),
+                )
             })?
         }
         (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
@@ -1787,7 +1909,10 @@ fn build_execution_from_service(
             }
             let (kinds, limit) = parse_builtin_events_query_input(input)?;
             ExecutionWorkload::builtin_events_query(kinds, limit).map_err(|error| {
-                error_json(StatusCode::BAD_GATEWAY, json!({ "error": error, "service_id": service.service_id }))
+                error_json(
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "error": error, "service_id": service.service_id }),
+                )
             })?
         }
         _ => {
@@ -1799,7 +1924,7 @@ fn build_execution_from_service(
                     "runtime": runtime.as_str(),
                     "package_kind": package_kind.as_str()
                 }),
-            ))
+            ));
         }
     };
 
@@ -1812,9 +1937,8 @@ fn build_execution_from_compute_request(
     let input = payload.input.unwrap_or(Value::Null);
     let execution_kind = payload.execution_kind.clone();
     let runtime = if let Some(runtime) = payload.runtime.as_deref() {
-        ExecutionRuntime::parse(runtime).map_err(|error| {
-            error_json(StatusCode::BAD_REQUEST, json!({ "error": error }))
-        })?
+        ExecutionRuntime::parse(runtime)
+            .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
     } else if let Some(execution_kind) = execution_kind.as_deref() {
         runtime_from_legacy_execution_kind(execution_kind)?
     } else if payload.wasm_module_hex.is_some() {
@@ -1831,9 +1955,8 @@ fn build_execution_from_compute_request(
         ));
     };
     let package_kind = if let Some(package_kind) = payload.package_kind.as_deref() {
-        ExecutionPackageKind::parse(package_kind).map_err(|error| {
-            error_json(StatusCode::BAD_REQUEST, json!({ "error": error }))
-        })?
+        ExecutionPackageKind::parse(package_kind)
+            .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
     } else if let Some(execution_kind) = execution_kind.as_deref() {
         package_kind_from_legacy_execution_kind(execution_kind)?
     } else if payload.inline_source.is_some() {
@@ -1852,18 +1975,18 @@ fn build_execution_from_compute_request(
         ));
     };
     let entrypoint_kind = if let Some(entrypoint_kind) = payload.entrypoint_kind.as_deref() {
-        ExecutionEntrypointKind::parse(entrypoint_kind).map_err(|error| {
-            error_json(StatusCode::BAD_REQUEST, json!({ "error": error }))
-        })?
+        ExecutionEntrypointKind::parse(entrypoint_kind)
+            .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
     } else {
         match runtime {
             ExecutionRuntime::Builtin => ExecutionEntrypointKind::Builtin,
             _ => ExecutionEntrypointKind::Handler,
         }
     };
-    let entrypoint = payload.entrypoint.clone().unwrap_or_else(|| {
-        default_entrypoint_for(&runtime, &entrypoint_kind).to_string()
-    });
+    let entrypoint = payload
+        .entrypoint
+        .clone()
+        .unwrap_or_else(|| default_entrypoint_for(&runtime, &entrypoint_kind).to_string());
     let contract_version = payload
         .contract_version
         .clone()
@@ -1913,8 +2036,12 @@ fn build_execution_from_compute_request(
                     json!({ "error": "oci_digest is required for OCI Wasm compute" }),
                 ));
             };
-            let input_bytes = crate::canonical_json::to_vec(&input)
-                .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error.to_string() })))?;
+            let input_bytes = crate::canonical_json::to_vec(&input).map_err(|error| {
+                error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": error.to_string() }),
+                )
+            })?;
             let submission = crate::wasm::OciWasmSubmission {
                 schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
                 submission_type: crate::wasm::WASM_OCI_SUBMISSION_TYPE_V1.to_string(),
@@ -1942,10 +2069,15 @@ fn build_execution_from_compute_request(
                 ));
             };
             match entrypoint_kind {
-                ExecutionEntrypointKind::Script => ExecutionWorkload::python_inline_script(source, input)
-                    .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?,
+                ExecutionEntrypointKind::Script => {
+                    ExecutionWorkload::python_inline_script(source, input).map_err(|error| {
+                        error_json(StatusCode::BAD_REQUEST, json!({ "error": error }))
+                    })?
+                }
                 _ => ExecutionWorkload::python_inline_handler(source, entrypoint.clone(), input)
-                    .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?,
+                    .map_err(|error| {
+                        error_json(StatusCode::BAD_REQUEST, json!({ "error": error }))
+                    })?,
             }
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
@@ -1980,7 +2112,7 @@ fn build_execution_from_compute_request(
                     "runtime": runtime.as_str(),
                     "package_kind": package_kind.as_str()
                 }),
-            ))
+            ));
         }
     };
 
@@ -2023,7 +2155,8 @@ async fn invoke_or_run_compute(
             task: Some(task),
         });
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.unwrap_or(15));
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.unwrap_or(15));
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         task = get_runtime_task(state, &task.deal_id).await?;
@@ -2068,7 +2201,10 @@ async fn froglet_invoke_service(
     };
     match invoke_or_run_compute(
         state.as_ref(),
-        payload.provider_id.as_deref().or(Some(service.provider_id.as_str())),
+        payload
+            .provider_id
+            .as_deref()
+            .or(Some(service.provider_id.as_str())),
         payload.provider_url.as_deref(),
         &service.offer_id,
         spec,
@@ -2136,7 +2272,8 @@ async fn froglet_wait_task(
     }
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_secs(payload.timeout_secs.unwrap_or(15));
-    let poll_interval = std::time::Duration::from_secs_f64(payload.poll_interval_secs.unwrap_or(0.25));
+    let poll_interval =
+        std::time::Duration::from_secs_f64(payload.poll_interval_secs.unwrap_or(0.25));
     loop {
         let task = match get_runtime_task(state.as_ref(), &task_id).await {
             Ok(task) => task,
@@ -2155,25 +2292,46 @@ pub fn router(state: Arc<OperatorState>) -> Router {
         .route("/v1/froglet/status", get(froglet_status))
         .route("/v1/froglet/logs", get(froglet_tail_logs))
         .route("/v1/froglet/restart", post(froglet_restart))
-        .route("/v1/froglet/projects", get(provider_list_projects).post(provider_create_project))
-        .route("/v1/froglet/projects/:project_id", get(provider_get_project))
+        .route(
+            "/v1/froglet/projects",
+            get(provider_list_projects).post(provider_create_project),
+        )
+        .route(
+            "/v1/froglet/projects/:project_id",
+            get(provider_get_project),
+        )
         .route(
             "/v1/froglet/projects/:project_id/files/*path",
             get(provider_read_file).put(provider_write_file),
         )
-        .route("/v1/froglet/projects/:project_id/build", post(provider_build_project))
-        .route("/v1/froglet/projects/:project_id/test", post(provider_test_project))
+        .route(
+            "/v1/froglet/projects/:project_id/build",
+            post(provider_build_project),
+        )
+        .route(
+            "/v1/froglet/projects/:project_id/test",
+            post(provider_test_project),
+        )
         .route(
             "/v1/froglet/projects/:project_id/publish",
             post(provider_publish_project),
         )
-        .route("/v1/froglet/artifacts/publish", post(provider_publish_artifact))
-        .route("/v1/froglet/services/local", get(froglet_list_local_services))
+        .route(
+            "/v1/froglet/artifacts/publish",
+            post(provider_publish_artifact),
+        )
+        .route(
+            "/v1/froglet/services/local",
+            get(froglet_list_local_services),
+        )
         .route(
             "/v1/froglet/services/local/:service_id",
             get(froglet_get_local_service),
         )
-        .route("/v1/froglet/services/discover", post(froglet_discover_services))
+        .route(
+            "/v1/froglet/services/discover",
+            post(froglet_discover_services),
+        )
         .route("/v1/froglet/services/get", post(froglet_get_service))
         .route("/v1/froglet/services/invoke", post(froglet_invoke_service))
         .route("/v1/froglet/compute/run", post(froglet_run_compute))
@@ -2198,7 +2356,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(false);
     let projects_root = std::env::var("FROGLET_PROVIDER_PROJECTS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| provider_projects::projects_root_from_data_dir(&node_config.storage.data_dir));
+        .unwrap_or_else(|_| {
+            provider_projects::projects_root_from_data_dir(&node_config.storage.data_dir)
+        });
     std::fs::create_dir_all(&projects_root)?;
     let consumer_control_auth_token = runtime_auth::load_or_create_local_token(
         &node_config.storage.runtime_dir,
@@ -2263,8 +2423,8 @@ mod tests {
     };
 
     use axum::{
-        body::{Body, to_bytes},
         Json as AxumJson, Router,
+        body::{Body, to_bytes},
         http::{Method, Request, header},
         routing::{get, post},
     };
@@ -2334,7 +2494,8 @@ mod tests {
                 db_path: temp_dir.join("node.db"),
                 identity_dir: temp_dir.join("identity"),
                 identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
-                nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+                nostr_publication_seed_path: temp_dir
+                    .join("identity/nostr-publication.secp256k1.seed"),
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
@@ -2356,7 +2517,9 @@ mod tests {
     fn test_operator_state_with_config(node_config: NodeConfig) -> Arc<OperatorState> {
         let app_state = state::build_app_state(node_config).expect("build app state");
         Arc::new(OperatorState {
-            projects_root: provider_projects::projects_root_from_data_dir(&app_state.config.storage.data_dir),
+            projects_root: provider_projects::projects_root_from_data_dir(
+                &app_state.config.storage.data_dir,
+            ),
             app_state,
             runtime_log_path: None,
             provider_log_path: None,
@@ -2595,7 +2758,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(payload["provider_nodes_discovered"], 2);
         assert_eq!(payload["services"][0]["service_id"], "remote-pong");
-        assert_eq!(payload["provider_fetch_failures"][0]["error"], "provider unhealthy");
+        assert_eq!(
+            payload["provider_fetch_failures"][0]["error"],
+            "provider unhealthy"
+        );
     }
 
     #[tokio::test]
@@ -2625,7 +2791,10 @@ mod tests {
         let (unauthorized_status, unauthorized_payload): (StatusCode, Value) =
             response_json(unauthorized_response).await;
         assert_eq!(unauthorized_status, StatusCode::UNAUTHORIZED);
-        assert_eq!(unauthorized_payload["error"], "invalid provider control authorization token");
+        assert_eq!(
+            unauthorized_payload["error"],
+            "invalid provider control authorization token"
+        );
 
         let authorized_response = router(state)
             .oneshot(operator_request(
@@ -2640,7 +2809,10 @@ mod tests {
             response_json(authorized_response).await;
         assert_eq!(authorized_status, StatusCode::CREATED);
         assert_eq!(authorized_payload["status"], "passed");
-        assert_eq!(authorized_payload["evidence"]["service_id"], "artifact-inline");
+        assert_eq!(
+            authorized_payload["evidence"]["service_id"],
+            "artifact-inline"
+        );
     }
 
     #[tokio::test]
@@ -2665,7 +2837,8 @@ mod tests {
             ))
             .await
             .expect("create project response");
-        let (create_status, create_payload): (StatusCode, Value) = response_json(create_response).await;
+        let (create_status, create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
         assert_eq!(create_status, StatusCode::CREATED);
         assert_eq!(create_payload["project"]["project_id"], "hello-world");
 
@@ -2694,7 +2867,10 @@ mod tests {
         let (publish_status, publish_payload): (StatusCode, Value) =
             response_json(publish_response).await;
         assert_eq!(publish_status, StatusCode::CREATED);
-        assert_eq!(publish_payload["offer"]["offer"]["payload"]["offer_id"], "hello-world");
+        assert_eq!(
+            publish_payload["offer"]["offer"]["payload"]["offer_id"],
+            "hello-world"
+        );
 
         let services_response = router(state)
             .oneshot(operator_request(
@@ -2738,7 +2914,8 @@ mod tests {
             ))
             .await
             .expect("create project response");
-        let (create_status, create_payload): (StatusCode, Value) = response_json(create_response).await;
+        let (create_status, create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
         assert_eq!(create_status, StatusCode::CREATED);
         assert_eq!(create_payload["project"]["project_id"], "lol-service");
         assert_eq!(create_payload["project"]["service_id"], "lol-service");
@@ -2776,7 +2953,8 @@ mod tests {
             ))
             .await
             .expect("create project response");
-        let (create_status, create_payload): (StatusCode, Value) = response_json(create_response).await;
+        let (create_status, create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
         assert_eq!(create_status, StatusCode::BAD_REQUEST);
         assert_eq!(
             create_payload["error"],
@@ -2802,7 +2980,8 @@ mod tests {
             ))
             .await
             .expect("create project response");
-        let (create_status, _create_payload): (StatusCode, Value) = response_json(create_response).await;
+        let (create_status, _create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
         assert_eq!(create_status, StatusCode::CREATED);
 
         let publish_response = router(state)
@@ -2814,7 +2993,8 @@ mod tests {
             ))
             .await
             .expect("publish project response");
-        let (publish_status, publish_payload): (StatusCode, Value) = response_json(publish_response).await;
+        let (publish_status, publish_payload): (StatusCode, Value) =
+            response_json(publish_response).await;
         assert_eq!(publish_status, StatusCode::BAD_REQUEST);
         assert_eq!(
             publish_payload["error"],

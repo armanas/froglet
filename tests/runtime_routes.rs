@@ -24,6 +24,7 @@ use froglet::{
     discovery::{
         DiscoveryNodeRecord, DiscoverySearchResponse, NodeDescriptor, TransportDescriptor,
     },
+    execution::ExecutionRuntime,
     jobs::FaaSDescriptor,
     pricing::ServicePriceInfo,
     protocol::{
@@ -99,7 +100,7 @@ fn fixed_wasm_submission() -> WasmSubmission {
 fn build_runtime_request(provider: RuntimeProviderRef) -> RuntimeCreateDealRequest {
     RuntimeCreateDealRequest {
         provider,
-        offer_id: "execute.wasm".to_string(),
+        offer_id: "execute.compute".to_string(),
         spec: WorkloadSpec::Wasm {
             submission: Box::new(fixed_wasm_submission()),
         },
@@ -118,6 +119,8 @@ fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
         public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
+        provider_control_listen_addr: "127.0.0.1:0".to_string(),
+        provider_control_allow_non_loopback: false,
         http_ca_cert_path: None,
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
@@ -157,6 +160,8 @@ fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
             nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
             runtime_dir: temp_dir.join("runtime"),
             runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             tor_dir: temp_dir.join("tor"),
         },
         wasm: WasmConfig {
@@ -196,6 +201,10 @@ fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
         confidential_policy: None,
         runtime_auth_token: "test-runtime-token".to_string(),
         runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+        consumer_control_auth_token: "test-consumer-token".to_string(),
+        consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+        provider_control_auth_token: "test-provider-token".to_string(),
+        provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
@@ -378,14 +387,17 @@ fn sign_offer(
         created_at,
         OfferPayload {
             provider_id: provider_id.to_string(),
-            offer_id: "execute.wasm".to_string(),
+            offer_id: "execute.compute".to_string(),
             descriptor_hash: descriptor_hash.to_string(),
             expires_at: None,
             offer_kind: WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
             settlement_method: "none.v1".to_string(),
             quote_ttl_secs: 300,
             execution_profile: OfferExecutionProfile {
-                runtime: "wasm".to_string(),
+                runtime: ExecutionRuntime::Wasm,
+                package_kind: "inline_module".to_string(),
+                contract_version: WASM_RUN_JSON_ABI_V1.to_string(),
+                access_handles: Vec::new(),
                 abi_version: WASM_RUN_JSON_ABI_V1.to_string(),
                 capabilities: Vec::new(),
                 max_input_bytes: 128 * 1024,
@@ -452,6 +464,7 @@ fn sign_quote(
     .expect("sign quote")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sign_receipt(
     provider_key: &crypto::NodeSigningKey,
     provider_id: &str,
@@ -566,7 +579,7 @@ async fn provider_quote(
     State(state): State<Arc<ProviderState>>,
     Json(payload): Json<CreateQuoteRequest>,
 ) -> impl IntoResponse {
-    assert_eq!(payload.offer_id, "execute.wasm");
+    assert_eq!(payload.offer_id, "execute.compute");
     let submission_hash = payload.spec.request_hash().expect("quote request hash");
     let workload_hash = if state.tamper_quote_workload_hash {
         crypto::sha256_hex(b"tampered-request")
@@ -823,7 +836,7 @@ async fn build_discovery_fixture_with_transports(
                 tor_status: tor_status.to_string(),
             },
             services: vec![ServicePriceInfo {
-                service_id: "execute.wasm".to_string(),
+                service_id: "execute.compute".to_string(),
                 price_sats: 0,
                 payment_required: false,
             }],
@@ -1009,7 +1022,10 @@ async fn reference_discovery_runtime_search_and_details_succeed() {
         provider_state.provider_id
     );
     assert_eq!(details_response.offers.len(), 1);
-    assert_eq!(details_response.offers[0].payload.offer_id, "execute.wasm");
+    assert_eq!(
+        details_response.offers[0].payload.offer_id,
+        "execute.compute"
+    );
 
     let create_request = runtime_request(
         axum::http::Method::POST,

@@ -273,6 +273,7 @@ pub fn insert_or_get_requester_deal(
         .ok_or_else(|| "requester deal disappeared after insert".to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_requester_deal_state(
     conn: &Connection,
     deal_id: &str,

@@ -181,7 +181,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
             ReferenceDiscoveryStatus::from_config(&config),
         )),
         wasm_sandbox,
-        pricing: PricingTable::from_config(config.pricing.clone()),
+        pricing: PricingTable::from_config(config.pricing),
         identity,
         config: config.clone(),
         http_client,
@@ -252,10 +252,10 @@ mod tests {
                 ),
                 runtime_dir: PathBuf::from("./data/runtime"),
                 runtime_auth_token_path: PathBuf::from("./data/runtime/auth.token"),
-                consumer_control_auth_token_path: PathBuf::from(
-                    "./data/runtime/consumerctl.token",
+                consumer_control_auth_token_path: PathBuf::from("./data/runtime/consumerctl.token"),
+                provider_control_auth_token_path: PathBuf::from(
+                    "./data/runtime/froglet-control.token",
                 ),
-                provider_control_auth_token_path: PathBuf::from("./data/runtime/froglet-control.token"),
                 tor_dir: PathBuf::from("./data/tor"),
             },
             wasm: WasmConfig {

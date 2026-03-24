@@ -37,13 +37,11 @@ fn apply_env_proxies(builder: ClientBuilder) -> Result<ClientBuilder, String> {
         configured_specific_proxy = true;
     }
 
-    if !configured_specific_proxy {
-        if let Some(proxy_url) = env_var(&["ALL_PROXY", "all_proxy"]) {
-            let proxy = Proxy::all(&proxy_url)
-                .map_err(|error| format!("Failed to parse ALL_PROXY {proxy_url}: {error}"))?
-                .no_proxy(NoProxy::from_env());
-            builder = builder.proxy(proxy);
-        }
+    if !configured_specific_proxy && let Some(proxy_url) = env_var(&["ALL_PROXY", "all_proxy"]) {
+        let proxy = Proxy::all(&proxy_url)
+            .map_err(|error| format!("Failed to parse ALL_PROXY {proxy_url}: {error}"))?
+            .no_proxy(NoProxy::from_env());
+        builder = builder.proxy(proxy);
     }
 
     Ok(builder)
@@ -181,6 +179,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn build_reqwest_client_accepts_custom_ca_certificate() {
         let _guard = PROXY_ENV_LOCK.lock().unwrap();
         clear_proxy_env();
@@ -199,6 +198,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn build_reqwest_client_uses_default_trust_store_when_no_custom_ca_is_set() {
         let _guard = PROXY_ENV_LOCK.lock().unwrap();
         clear_proxy_env();

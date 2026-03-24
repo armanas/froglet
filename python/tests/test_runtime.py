@@ -129,7 +129,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertEqual(provider_view["descriptor"]["payload"]["provider_id"], provider_id)
         self.assertEqual(
             {offer["payload"]["offer_id"] for offer in provider_view["offers"]},
-            {"events.query", "execute.wasm"},
+            {"events.query", "execute.compute"},
         )
 
     async def test_runtime_creates_remote_deal_and_persists_requester_state(self) -> None:
@@ -163,7 +163,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 headers=headers,
                 json={
                     "provider": {"provider_id": provider_id},
-                    "offer_id": "execute.wasm",
+                    "offer_id": "execute.compute",
                     **build_wasm_request(VALID_WASM_HEX),
                     "idempotency_key": "runtime-remote-deal",
                 },
@@ -205,7 +205,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                         "provider_id": "wrong-provider-id",
                         "provider_url": provider.base_url,
                     },
-                    "offer_id": "execute.wasm",
+                    "offer_id": "execute.compute",
                     **build_wasm_request(VALID_WASM_HEX),
                 },
             ) as resp:
@@ -249,7 +249,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 headers=headers,
                 json={
                     "provider": {"provider_id": provider_id},
-                    "offer_id": "execute.wasm",
+                    "offer_id": "execute.compute",
                     **build_wasm_request(VALID_WASM_HEX),
                     "idempotency_key": "runtime-priced-deal",
                 },

@@ -1141,7 +1141,9 @@ pub fn get_provider_managed_offer(
     .map_err(|error| error.to_string())
 }
 
-pub fn list_provider_managed_offers(conn: &Connection) -> Result<Vec<ProviderManagedOfferRecord>, String> {
+pub fn list_provider_managed_offers(
+    conn: &Connection,
+) -> Result<Vec<ProviderManagedOfferRecord>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT offer_id, definition_json, created_at, updated_at

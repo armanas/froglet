@@ -5,11 +5,11 @@ services:
       target: discovery
     image: froglet-discovery:local
     environment:
-      FROGLET_DISCOVERY_DB_PATH: /discovery-data/discovery.db
+      FROGLET_DISCOVERY_DB_PATH: /data/discovery.db
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
-      - ./data/discovery:/discovery-data
+      - ./data/discovery:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9090/health >/dev/null"]
       interval: 10s
@@ -39,6 +39,39 @@ services:
       - ./data/provider:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  operator:
+    build:
+      context: .
+      target: operator
+    image: froglet-operator:local
+    depends_on:
+      discovery:
+        condition: service_healthy
+      provider:
+        condition: service_healthy
+      runtime:
+        condition: service_healthy
+    environment:
+      FROGLET_OPERATOR_LISTEN_ADDR: 0.0.0.0:9191
+      FROGLET_OPERATOR_ALLOW_NON_LOOPBACK: "true"
+      FROGLET_OPERATOR_PROVIDER_BASE_URL: http://provider:8080
+      FROGLET_OPERATOR_RUNTIME_BASE_URL: http://runtime:8081
+      FROGLET_DISCOVERY_MODE: reference
+      FROGLET_DISCOVERY_URL: http://discovery:9090
+      FROGLET_DISCOVERY_PUBLISH: "true"
+      FROGLET_PAYMENT_BACKEND: lightning
+      FROGLET_LIGHTNING_MODE: mock
+    ports:
+      - "127.0.0.1:9191:9191"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9191/health >/dev/null"]
       interval: 10s
       timeout: 3s
       retries: 10

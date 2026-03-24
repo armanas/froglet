@@ -40,7 +40,7 @@ class HardeningTests(FrogletAsyncTestCase):
         wasm_offer = next(
             offer
             for offer in offers["offers"]
-            if offer["payload"]["offer_id"] == "execute.wasm"
+            if offer["payload"]["offer_id"] == "execute.compute"
         )
         self.assertEqual(
             wasm_offer["payload"]["execution_profile"]["max_runtime_ms"], 120_000
@@ -60,7 +60,7 @@ class HardeningTests(FrogletAsyncTestCase):
             wasm_offer = next(
                 offer
                 for offer in offers["offers"]
-                if offer["payload"]["offer_id"] == "execute.wasm"
+                if offer["payload"]["offer_id"] == "execute.compute"
             )
             self.assertEqual(
                 wasm_offer["payload"]["execution_profile"]["max_runtime_ms"], 1_000
@@ -95,7 +95,7 @@ class HardeningTests(FrogletAsyncTestCase):
             quote = await create_protocol_quote(
                 session,
                 provider,
-                offer_id="execute.wasm",
+                offer_id="execute.compute",
                 request=build_wasm_request(LONG_RUNNING_WASM_HEX),
                 requester_secret_key=requester_key,
             )

@@ -226,29 +226,34 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
         )
 
     async def test_external_adapter_publishes_terminal_receipts_to_relay(self) -> None:
-        node = await self.start_node(
+        discovery = await self.start_discovery()
+        provider = await self.start_node(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
                 "FROGLET_LIGHTNING_MODE": "mock",
                 "FROGLET_LIGHTNING_SYNC_INTERVAL_MS": "100",
+                "FROGLET_DISCOVERY_MODE": "reference",
+                "FROGLET_DISCOVERY_URL": discovery.base_url,
+                "FROGLET_DISCOVERY_PUBLISH": "true",
             }
         )
-        runtime = RuntimeClient.from_token_file(
-            node.runtime_url,
-            _runtime_token_path(node),
-            provider_base_url=node.base_url,
+        runtime_client = RuntimeClient.from_token_file(
+            provider.runtime_url,
+            _runtime_token_path(provider),
+            provider_base_url=provider.base_url,
         )
         success_preimage = "44" * 32
 
-        async with ProviderClient(node.base_url) as provider:
-            descriptor = await provider.descriptor()
+        async with ProviderClient(provider.base_url) as provider_client:
+            descriptor = await provider_client.descriptor()
 
-        async with runtime:
+        async with runtime_client:
             requester_key = generate_schnorr_signing_key()
-            handle = await runtime.buy_service(
+            handle = await runtime_client.buy_service(
                 {
-                    "offer_id": "execute.wasm",
+                    "provider": {"provider_id": descriptor["payload"]["provider_id"]},
+                    "offer_id": "execute.compute",
                     **build_wasm_request(VALID_WASM_HEX),
                     "idempotency_key": "relay-adapter-receipt",
                     **_runtime_requester_fields(
@@ -258,25 +263,22 @@ class NostrRelayAdapterTests(FrogletAsyncTestCase):
                 },
                 include_payment_intent=True,
             )
-            await runtime.set_mock_lightning_state(
-                handle.payment_intent["session_id"],
-                base_state="settled",
-                success_state="accepted",
+            await runtime_client.mock_pay_deal(
+                handle.deal["deal_id"], success_preimage
             )
-            result_ready = await runtime.wait_for_deal(
+            result_ready = await runtime_client.wait_for_deal(
                 handle.deal["deal_id"], statuses={"result_ready"}
             )
-            await runtime.accept_result(
+            await runtime_client.accept_result(
                 handle.deal["deal_id"],
-                success_preimage,
                 expected_result_hash=result_ready["result_hash"],
             )
 
         adapter = FrogletNostrRelayAdapter.from_token_file(
-            node.runtime_url,
-            _runtime_token_path(node),
+            provider.runtime_url,
+            _runtime_token_path(provider),
             [self.relay.url],
-            provider_base_url=node.base_url,
+            provider_base_url=provider.base_url,
         )
         async with adapter:
             publish_results = await adapter.publish_receipt_event(handle.deal["deal_id"])

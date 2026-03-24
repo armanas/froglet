@@ -13,7 +13,11 @@ ensure_dir() {
 umask 077
 
 case "$cmd" in
-  froglet-provider|froglet-runtime|froglet-discovery)
+  froglet-discovery)
+    db_path="${FROGLET_DISCOVERY_DB_PATH:-/data/discovery.db}"
+    ensure_dir "$(dirname "$db_path")"
+    ;;
+  froglet-provider|froglet-runtime|froglet-operator)
     data_dir="${FROGLET_DATA_DIR:-/data}"
     ensure_dir "$data_dir"
     ;;

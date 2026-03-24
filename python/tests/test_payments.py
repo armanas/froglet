@@ -54,7 +54,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
 
         self.assertEqual(resp.status, 409)
         self.assertTrue(payload["requires_protocol_deal"])
-        self.assertEqual(payload["service_id"], "execute.wasm")
+        self.assertEqual(payload["service_id"], "execute.compute")
         self.assertEqual(payload["legacy_endpoint"], "/v1/node/execute/wasm")
 
     async def test_lightning_priced_job_helper_requires_protocol_deal_flow(self) -> None:
@@ -75,7 +75,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
 
         self.assertEqual(resp.status, 409)
         self.assertTrue(payload["requires_protocol_deal"])
-        self.assertEqual(payload["service_id"], "execute.wasm")
+        self.assertEqual(payload["service_id"], "execute.compute")
         self.assertEqual(payload["legacy_endpoint"], "/v1/node/jobs")
 
 

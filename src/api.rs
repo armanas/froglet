@@ -12,12 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
-    error::Error as StdError,
-    fs,
-    io::Write,
-    process::Stdio,
-    sync::Arc,
+    collections::BTreeMap, error::Error as StdError, fs, io::Write, process::Stdio, sync::Arc,
     time::Duration,
 };
 use subtle::ConstantTimeEq;
@@ -771,7 +766,10 @@ fn provider_routes() -> Router<Arc<AppState>> {
         .route("/v1/provider/descriptor", get(protocol_descriptor))
         .route("/v1/provider/offers", get(list_offers))
         .route("/v1/provider/services", get(list_provider_services))
-        .route("/v1/provider/services/:service_id", get(get_provider_service))
+        .route(
+            "/v1/provider/services/:service_id",
+            get(get_provider_service),
+        )
         .route("/v1/feed", get(get_feed))
         .route("/v1/artifacts/:artifact_hash", get(get_artifact))
         .route(
@@ -1791,8 +1789,8 @@ pub async fn runtime_create_deal(
             json!({ "error": "provider deal response does not match submitted artifacts" }),
         );
     }
-    if let Some(receipt) = remote_deal.receipt.as_ref() {
-        if let Err(error) = verify_provider_receipt_artifact(
+    if let Some(receipt) = remote_deal.receipt.as_ref()
+        && let Err(error) = verify_provider_receipt_artifact(
             receipt,
             &quote,
             &deal_artifact,
@@ -1800,9 +1798,9 @@ pub async fn runtime_create_deal(
             &deal_artifact.payload.requester_id,
             remote_deal.result.as_ref(),
             remote_deal.result_hash.as_deref(),
-        ) {
-            return error_json(error.0, error.1);
-        }
+        )
+    {
+        return error_json(error.0, error.1);
     }
 
     if let Err(error) = persist_requester_artifacts(
@@ -2447,13 +2445,16 @@ pub async fn list_offers(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 pub async fn list_provider_services(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match current_service_records(state.as_ref(), false, false).await {
-        Ok(services) => (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response(),
+        Ok(services) => {
+            (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response()
+        }
         Err(error) => {
             tracing::error!("Failed to build provider services: {error}");
             error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": "failed to build provider services" }),
-            ).into_response()
+            )
+            .into_response()
         }
     }
 }
@@ -2463,17 +2464,21 @@ pub async fn get_provider_service(
     Path(service_id): Path<String>,
 ) -> impl IntoResponse {
     match provider_service_record(state.as_ref(), &service_id, true).await {
-        Ok(Some(service)) => (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response(),
+        Ok(Some(service)) => {
+            (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response()
+        }
         Ok(None) => error_json(
             StatusCode::NOT_FOUND,
             json!({ "error": "service not found", "service_id": service_id }),
-        ).into_response(),
+        )
+        .into_response(),
         Err(error) => {
             tracing::error!("Failed to build provider service {service_id}: {error}");
             error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": "failed to load provider service" }),
-            ).into_response()
+            )
+            .into_response()
         }
     }
 }
@@ -4358,7 +4363,11 @@ pub(crate) fn require_bearer_token(
     };
 
     let valid = token.len() == expected_token.len()
-        && token.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1;
+        && token
+            .as_bytes()
+            .ct_eq(expected_token.as_bytes())
+            .unwrap_u8()
+            == 1;
     if !valid {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -4377,7 +4386,11 @@ pub(crate) fn require_provider_control_auth(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<(), ApiFailure> {
-    require_bearer_token(headers, &state.provider_control_auth_token, "provider control")
+    require_bearer_token(
+        headers,
+        &state.provider_control_auth_token,
+        "provider control",
+    )
 }
 
 pub(crate) fn provider_offer_limits(
@@ -4486,8 +4499,7 @@ fn payload_from_provider_offer_definition(
             &accepted_payment_methods(state),
         ),
         execution_profile: protocol::OfferExecutionProfile {
-            runtime: ExecutionRuntime::parse(&definition.runtime)
-                .unwrap_or(ExecutionRuntime::Wasm),
+            runtime: ExecutionRuntime::parse(&definition.runtime).unwrap_or(ExecutionRuntime::Wasm),
             package_kind: match definition.execution_kind.as_str() {
                 "wasm_oci" => "oci_image".to_string(),
                 "builtin" => "builtin".to_string(),
@@ -4559,6 +4571,7 @@ fn builtin_provider_offer_definitions(
                    price_sats: u64,
                    source_kind: &str,
                    summary: &str| {
+        let is_events_query = offer_id == ServiceId::EventsQuery.as_str();
         let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
             provider_offer_limits(state, runtime);
         ProviderManagedOfferDefinition {
@@ -4567,17 +4580,17 @@ fn builtin_provider_offer_definitions(
             project_id: None,
             offer_kind: offer_kind.to_string(),
             runtime: runtime.to_string(),
-            package_kind: if runtime == "events_query" {
+            package_kind: if is_events_query {
                 "builtin".to_string()
             } else {
                 "inline_module".to_string()
             },
-            entrypoint_kind: if runtime == "events_query" {
+            entrypoint_kind: if is_events_query {
                 "builtin".to_string()
             } else {
                 "handler".to_string()
             },
-            entrypoint: if runtime == "events_query" {
+            entrypoint: if is_events_query {
                 "events.query".to_string()
             } else {
                 "run".to_string()
@@ -4615,8 +4628,8 @@ fn builtin_provider_offer_definitions(
         builtin(
             ServiceId::EventsQuery.as_str(),
             "events.query",
-            "events_query",
-            "froglet.events.query.v1",
+            "builtin",
+            CONTRACT_BUILTIN_EVENTS_QUERY_V1,
             Vec::new(),
             state.pricing.price_for(ServiceId::EventsQuery),
             "builtin",
@@ -4716,8 +4729,8 @@ pub(crate) async fn current_offer_definitions(
         .with_read_conn(db::list_provider_managed_offers)
         .await?;
     for record in managed {
-        let definition: ProviderManagedOfferDefinition =
-            serde_json::from_value(record.definition).map_err(|error| {
+        let definition: ProviderManagedOfferDefinition = serde_json::from_value(record.definition)
+            .map_err(|error| {
                 format!(
                     "provider_managed_offers {} contains invalid JSON: {error}",
                     record.offer_id
@@ -4764,7 +4777,9 @@ pub(crate) async fn current_offer_records(
     Ok(records)
 }
 
-fn inline_module_bytes_hex(definition: &ProviderManagedOfferDefinition) -> Result<Option<String>, String> {
+fn inline_module_bytes_hex(
+    definition: &ProviderManagedOfferDefinition,
+) -> Result<Option<String>, String> {
     if let Some(module_bytes_hex) = definition.module_bytes_hex.clone() {
         return Ok(Some(module_bytes_hex));
     }
@@ -4847,7 +4862,9 @@ pub(crate) async fn current_service_records(
         if !include_hidden && definition.publication_state == "hidden" {
             continue;
         }
-        if let Some(service) = provider_service_from_definition(state, &definition, include_binding)? {
+        if let Some(service) =
+            provider_service_from_definition(state, &definition, include_binding)?
+        {
             services.push(service);
         }
     }
@@ -4939,193 +4956,208 @@ pub(crate) fn artifact_provider_offer_definition(
             "run".to_string()
         }
     });
-    let execution_kind = payload.execution_kind.unwrap_or_else(|| {
-        match (runtime.as_str(), package_kind.as_str()) {
-            ("python", "inline_source") => "python_inline".to_string(),
-            ("python", "oci_image") => "python_oci".to_string(),
-            ("container", "oci_image") => "container_oci".to_string(),
-            (_, "oci_image") => "wasm_oci".to_string(),
-            ("builtin", _) => "builtin".to_string(),
-            _ => "wasm_inline".to_string(),
-        }
-    });
-    let (offer_kind, runtime, module_hash, module_bytes_hex, inline_source, source_path, source_kind, oci_reference, oci_digest) =
-        match execution_kind.as_str() {
-            "wasm_inline" => {
-                let module_bytes = match (
-                    payload.artifact_path.as_ref(),
-                    payload.wasm_module_hex.as_ref(),
-                    payload.oci_reference.as_ref(),
-                    payload.oci_digest.as_ref(),
-                ) {
-                    (Some(path), None, None, None) => fs::read(path).map_err(|error| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            json!({
-                                "error": "failed to read artifact_path",
-                                "artifact_path": path,
-                                "details": error.to_string(),
-                            }),
-                        )
-                    })?,
-                    (None, Some(module_hex), None, None) => hex::decode(module_hex).map_err(|error| {
+    let execution_kind =
+        payload
+            .execution_kind
+            .unwrap_or_else(|| match (runtime.as_str(), package_kind.as_str()) {
+                ("python", "inline_source") => "python_inline".to_string(),
+                ("python", "oci_image") => "python_oci".to_string(),
+                ("container", "oci_image") => "container_oci".to_string(),
+                (_, "oci_image") => "wasm_oci".to_string(),
+                ("builtin", _) => "builtin".to_string(),
+                _ => "wasm_inline".to_string(),
+            });
+    let (
+        offer_kind,
+        runtime,
+        module_hash,
+        module_bytes_hex,
+        inline_source,
+        source_path,
+        source_kind,
+        oci_reference,
+        oci_digest,
+    ) = match execution_kind.as_str() {
+        "wasm_inline" => {
+            let module_bytes = match (
+                payload.artifact_path.as_ref(),
+                payload.wasm_module_hex.as_ref(),
+                payload.oci_reference.as_ref(),
+                payload.oci_digest.as_ref(),
+            ) {
+                (Some(path), None, None, None) => fs::read(path).map_err(|error| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        json!({
+                            "error": "failed to read artifact_path",
+                            "artifact_path": path,
+                            "details": error.to_string(),
+                        }),
+                    )
+                })?,
+                (None, Some(module_hex), None, None) => {
+                    hex::decode(module_hex).map_err(|error| {
                         (
                             StatusCode::BAD_REQUEST,
                             json!({ "error": format!("invalid wasm_module_hex: {error}") }),
                         )
-                    })?,
-                    (Some(_), Some(_), _, _) => {
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            json!({ "error": "provide either artifact_path or wasm_module_hex, not both" }),
-                        ));
-                    }
-                    (_, _, Some(_), _) | (_, _, _, Some(_)) => {
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            json!({ "error": "oci_reference and oci_digest require execution_kind=wasm_oci" }),
-                        ));
-                    }
-                    _ => {
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            json!({ "error": "artifact_path or wasm_module_hex is required for wasm_inline" }),
-                        ));
-                    }
-                };
-                sandbox::validate_module_bytes_for_abi(&module_bytes, &contract_version).map_err(
-                    |error| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            json!({
-                                "error": "artifact validation failed",
-                                "details": error,
-                                "contract_version": contract_version,
-                            }),
-                        )
-                    },
-                )?;
-                (
-                    wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
-                    "wasm".to_string(),
-                    Some(crypto::sha256_hex(&module_bytes)),
-                    Some(
-                        payload
-                            .wasm_module_hex
-                            .unwrap_or_else(|| hex::encode(&module_bytes)),
-                    ),
-                    None,
-                    payload.artifact_path,
-                    "artifact".to_string(),
-                    None,
-                    None,
-                )
-            }
-            "wasm_oci" => {
-                let Some(oci_reference) = payload.oci_reference else {
+                    })?
+                }
+                (Some(_), Some(_), _, _) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "oci_reference is required for wasm_oci" }),
-                    ));
-                };
-                let Some(oci_digest) = payload.oci_digest else {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "oci_digest is required for wasm_oci" }),
-                    ));
-                };
-                if payload.artifact_path.is_some() || payload.wasm_module_hex.is_some() {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "artifact_path and wasm_module_hex are not used for wasm_oci" }),
+                        json!({ "error": "provide either artifact_path or wasm_module_hex, not both" }),
                     ));
                 }
-                (
-                    wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
-                    "wasm".to_string(),
-                    Some(oci_digest.clone()),
-                    None,
-                    None,
-                    None,
-                    "oci".to_string(),
-                    Some(oci_reference),
-                    Some(oci_digest),
-                )
-            }
-            "python_inline" => {
-                let source_text = match (payload.inline_source.as_ref(), payload.artifact_path.as_ref()) {
-                    (Some(source), None) => source.clone(),
-                    (None, Some(path)) => fs::read_to_string(path).map_err(|error| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            json!({
-                                "error": "failed to read artifact_path",
-                                "artifact_path": path,
-                                "details": error.to_string(),
-                            }),
-                        )
-                    })?,
-                    (Some(_), Some(_)) => {
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            json!({ "error": "provide either artifact_path or inline_source, not both" }),
-                        ));
-                    }
-                    _ => {
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            json!({ "error": "artifact_path or inline_source is required for python_inline" }),
-                        ));
-                    }
-                };
-                (
-                    crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
-                    "python".to_string(),
-                    Some(crypto::sha256_hex(source_text.as_bytes())),
-                    None,
-                    Some(source_text),
-                    payload.artifact_path,
-                    "python".to_string(),
-                    None,
-                    None,
-                )
-            }
-            "python_oci" | "container_oci" => {
-                let Some(oci_reference) = payload.oci_reference else {
+                (_, _, Some(_), _) | (_, _, _, Some(_)) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "oci_reference is required for OCI execution" }),
+                        json!({ "error": "oci_reference and oci_digest require execution_kind=wasm_oci" }),
                     ));
-                };
-                let Some(oci_digest) = payload.oci_digest else {
+                }
+                _ => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "oci_digest is required for OCI execution" }),
+                        json!({ "error": "artifact_path or wasm_module_hex is required for wasm_inline" }),
                     ));
-                };
-                (
-                    crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
-                    if execution_kind == "python_oci" {
-                        "python".to_string()
-                    } else {
-                        "container".to_string()
-                    },
-                    Some(oci_digest.clone()),
-                    None,
-                    None,
-                    None,
-                    "oci".to_string(),
-                    Some(oci_reference),
-                    Some(oci_digest),
-                )
-            }
-            _ => {
+                }
+            };
+            sandbox::validate_module_bytes_for_abi(&module_bytes, &contract_version).map_err(
+                |error| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        json!({
+                            "error": "artifact validation failed",
+                            "details": error,
+                            "contract_version": contract_version,
+                        }),
+                    )
+                },
+            )?;
+            (
+                wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
+                "wasm".to_string(),
+                Some(crypto::sha256_hex(&module_bytes)),
+                Some(
+                    payload
+                        .wasm_module_hex
+                        .unwrap_or_else(|| hex::encode(&module_bytes)),
+                ),
+                None,
+                payload.artifact_path,
+                "artifact".to_string(),
+                None,
+                None,
+            )
+        }
+        "wasm_oci" => {
+            let Some(oci_reference) = payload.oci_reference else {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "unsupported execution_kind", "execution_kind": execution_kind }),
+                    json!({ "error": "oci_reference is required for wasm_oci" }),
+                ));
+            };
+            let Some(oci_digest) = payload.oci_digest else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "oci_digest is required for wasm_oci" }),
+                ));
+            };
+            if payload.artifact_path.is_some() || payload.wasm_module_hex.is_some() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "artifact_path and wasm_module_hex are not used for wasm_oci" }),
                 ));
             }
-        };
+            (
+                wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
+                "wasm".to_string(),
+                Some(oci_digest.clone()),
+                None,
+                None,
+                None,
+                "oci".to_string(),
+                Some(oci_reference),
+                Some(oci_digest),
+            )
+        }
+        "python_inline" => {
+            let source_text = match (
+                payload.inline_source.as_ref(),
+                payload.artifact_path.as_ref(),
+            ) {
+                (Some(source), None) => source.clone(),
+                (None, Some(path)) => fs::read_to_string(path).map_err(|error| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        json!({
+                            "error": "failed to read artifact_path",
+                            "artifact_path": path,
+                            "details": error.to_string(),
+                        }),
+                    )
+                })?,
+                (Some(_), Some(_)) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "provide either artifact_path or inline_source, not both" }),
+                    ));
+                }
+                _ => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "artifact_path or inline_source is required for python_inline" }),
+                    ));
+                }
+            };
+            (
+                crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
+                "python".to_string(),
+                Some(crypto::sha256_hex(source_text.as_bytes())),
+                None,
+                Some(source_text),
+                payload.artifact_path,
+                "python".to_string(),
+                None,
+                None,
+            )
+        }
+        "python_oci" | "container_oci" => {
+            let Some(oci_reference) = payload.oci_reference else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "oci_reference is required for OCI execution" }),
+                ));
+            };
+            let Some(oci_digest) = payload.oci_digest else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "oci_digest is required for OCI execution" }),
+                ));
+            };
+            (
+                crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
+                if execution_kind == "python_oci" {
+                    "python".to_string()
+                } else {
+                    "container".to_string()
+                },
+                Some(oci_digest.clone()),
+                None,
+                None,
+                None,
+                "oci".to_string(),
+                Some(oci_reference),
+                Some(oci_digest),
+            )
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "unsupported execution_kind", "execution_kind": execution_kind }),
+            ));
+        }
+    };
 
     let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
         provider_offer_limits(state, &runtime);
@@ -5184,7 +5216,9 @@ pub(crate) async fn persist_provider_offer_mutation(
     let persisted_definition = definition.clone();
     state
         .db
-        .with_write_conn(move |conn| persist_provider_offer_definition(conn, &persisted_definition, now))
+        .with_write_conn(move |conn| {
+            persist_provider_offer_definition(conn, &persisted_definition, now)
+        })
         .await
         .map_err(|error| {
             (
@@ -6420,7 +6454,9 @@ fn validate_execution_workload(
                         }),
                     ));
                 }
-                if let Some(limit) = limit && limit > 500 {
+                if let Some(limit) = limit
+                    && limit > 500
+                {
                     return Err(error_json(
                         StatusCode::BAD_REQUEST,
                         json!({ "error": "events query limit exceeds maximum", "max_limit": 500 }),
@@ -6534,9 +6570,11 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         "froglet-python-{}",
         crate::discovery::random_hex(16)
     ));
-    fs::create_dir_all(&tempdir).map_err(|error| format!("failed to create python tempdir: {error}"))?;
+    fs::create_dir_all(&tempdir)
+        .map_err(|error| format!("failed to create python tempdir: {error}"))?;
     let source_path = tempdir.join("main.py");
-    fs::write(&source_path, source).map_err(|error| format!("failed to write python source: {error}"))?;
+    fs::write(&source_path, source)
+        .map_err(|error| format!("failed to write python source: {error}"))?;
     let context = json!({
         "mounts": mount_context,
     });
@@ -6599,8 +6637,9 @@ async fn run_container_execution(
     granted_access: &[String],
     timeout: Duration,
 ) -> Result<Value, String> {
-    let runner = detect_container_runner()
-        .ok_or_else(|| "no supported OCI/container runtime found (expected docker or podman)".to_string())?;
+    let runner = detect_container_runner().ok_or_else(|| {
+        "no supported OCI/container runtime found (expected docker or podman)".to_string()
+    })?;
     let image = execution
         .oci_reference
         .as_ref()
@@ -8590,15 +8629,16 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                 let declared_capabilities = crate::wasm::normalize_requested_capabilities(
                     &submission.workload.requested_capabilities,
                 )?;
-                let (capabilities_granted, host_environment) = local_wasm_capabilities_for_submission(
-                    state,
-                    &crate::wasm::VerifiedWasmSubmission {
-                        module_bytes: module_bytes.clone(),
-                        input: submission.input.clone(),
-                        abi_version: submission.workload.abi_version.clone(),
-                        requested_capabilities: declared_capabilities,
-                    },
-                )?;
+                let (capabilities_granted, host_environment) =
+                    local_wasm_capabilities_for_submission(
+                        state,
+                        &crate::wasm::VerifiedWasmSubmission {
+                            module_bytes: module_bytes.clone(),
+                            input: submission.input.clone(),
+                            abi_version: submission.workload.abi_version.clone(),
+                            requested_capabilities: declared_capabilities,
+                        },
+                    )?;
                 let wasm_sandbox = state.wasm_sandbox.clone();
                 let abi_version = submission.workload.abi_version.clone();
                 let input = submission.input.clone();
@@ -8899,105 +8939,112 @@ async fn run_workload_spec_with_admission(
 ) -> Result<WorkloadRunOutput, String> {
     let timeout = workload_execution_timeout(state, &spec, payment_method);
     match (spec, permit) {
-        (WorkloadSpec::Execution { execution }, permit) => match (&execution.runtime, &execution.package_kind, permit) {
-            (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule, Some(permit)) => {
-                let submission = execution.to_wasm_submission()?;
-                let verified = submission.verify()?;
-                let (_, host_environment) = local_wasm_capabilities_for_submission(state, &verified)?;
-                let wasm_sandbox = state.wasm_sandbox.clone();
-                let result = run_wasm_with_timeout(timeout, move || {
-                    wasm_sandbox.execute_module_with_options_and_permit(
-                        &verified.module_bytes,
-                        &verified.input,
-                        sandbox::WasmExecutionOptions {
-                            abi_version: verified.abi_version.clone(),
-                            capabilities_granted,
-                            host_environment,
+        (WorkloadSpec::Execution { execution }, permit) => {
+            match (&execution.runtime, &execution.package_kind, permit) {
+                (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule, Some(permit)) => {
+                    let submission = execution.to_wasm_submission()?;
+                    let verified = submission.verify()?;
+                    let (_, host_environment) =
+                        local_wasm_capabilities_for_submission(state, &verified)?;
+                    let wasm_sandbox = state.wasm_sandbox.clone();
+                    let result = run_wasm_with_timeout(timeout, move || {
+                        wasm_sandbox.execute_module_with_options_and_permit(
+                            &verified.module_bytes,
+                            &verified.input,
+                            sandbox::WasmExecutionOptions {
+                                abi_version: verified.abi_version.clone(),
+                                capabilities_granted,
+                                host_environment,
+                            },
+                            permit,
+                            timeout,
+                        )
+                    })
+                    .await?;
+                    Ok(run_output_for_plain_result(result))
+                }
+                (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule, None) => {
+                    Err("Wasm workloads require an execution permit".to_string())
+                }
+                (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage, permit) => {
+                    let execution_clone = execution.as_ref().clone();
+                    let result = run_job_spec_now(
+                        state,
+                        JobSpec::Execution {
+                            execution: Box::new(execution_clone),
                         },
-                        permit,
-                        timeout,
                     )
-                })
-                .await?;
-                Ok(run_output_for_plain_result(result))
+                    .await?;
+                    drop(permit);
+                    Ok(run_output_for_plain_result(result))
+                }
+                (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _) => {
+                    let result =
+                        run_python_execution(execution.as_ref(), &capabilities_granted, timeout)
+                            .await?;
+                    Ok(run_output_for_plain_result(result))
+                }
+                (ExecutionRuntime::Python, ExecutionPackageKind::OciImage, _)
+                | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage, _) => {
+                    let result =
+                        run_container_execution(execution.as_ref(), &capabilities_granted, timeout)
+                            .await?;
+                    Ok(run_output_for_plain_result(result))
+                }
+                (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
+                    let Some((kinds, limit)) = execution.events_query_params() else {
+                        return Err("unsupported builtin execution".to_string());
+                    };
+                    let events = query_events_with_capacity(state, kinds, limit).await?;
+                    Ok(run_output_for_plain_result(json!({
+                        "events": events,
+                        "cursor": null
+                    })))
+                }
+                (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, Some(_)) => {
+                    Err("builtin workloads do not use execution permits".to_string())
+                }
+                (ExecutionRuntime::TeeService, ExecutionPackageKind::Builtin, None) => {
+                    let security = &execution.security;
+                    run_confidential_service_workload(
+                        state,
+                        security
+                            .confidential_session_hash
+                            .as_deref()
+                            .ok_or_else(|| "missing confidential_session_hash".to_string())?,
+                        security
+                            .service_id
+                            .as_deref()
+                            .ok_or_else(|| "missing tee service_id".to_string())?,
+                        security
+                            .request_envelope
+                            .as_ref()
+                            .ok_or_else(|| "missing request_envelope".to_string())?,
+                    )
+                    .await
+                }
+                (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule, Some(permit)) => {
+                    let security = &execution.security;
+                    run_attested_wasm_workload(
+                        state,
+                        security
+                            .confidential_session_hash
+                            .as_deref()
+                            .ok_or_else(|| "missing confidential_session_hash".to_string())?,
+                        security
+                            .request_envelope
+                            .as_ref()
+                            .ok_or_else(|| "missing request_envelope".to_string())?,
+                        permit,
+                    )
+                    .await
+                }
+                (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule, None) => Err(
+                    "attested confidential wasm workloads require an execution permit".to_string(),
+                ),
+                _ => Err("unsupported execution runtime/package combination".to_string()),
             }
-            (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule, None) => {
-                Err("Wasm workloads require an execution permit".to_string())
-            }
-            (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage, permit) => {
-                let execution_clone = execution.as_ref().clone();
-                let result = run_job_spec_now(
-                    state,
-                    JobSpec::Execution {
-                        execution: execution_clone,
-                    },
-                )
-                .await?;
-                drop(permit);
-                Ok(run_output_for_plain_result(result))
-            }
-            (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _) => {
-                let result = run_python_execution(execution.as_ref(), &capabilities_granted, timeout).await?;
-                Ok(run_output_for_plain_result(result))
-            }
-            (ExecutionRuntime::Python, ExecutionPackageKind::OciImage, _)
-            | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage, _) => {
-                let result = run_container_execution(execution.as_ref(), &capabilities_granted, timeout).await?;
-                Ok(run_output_for_plain_result(result))
-            }
-            (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
-                let Some((kinds, limit)) = execution.events_query_params() else {
-                    return Err("unsupported builtin execution".to_string());
-                };
-                let events = query_events_with_capacity(state, kinds, limit).await?;
-                Ok(run_output_for_plain_result(json!({
-                    "events": events,
-                    "cursor": null
-                })))
-            }
-            (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, Some(_)) => {
-                Err("builtin workloads do not use execution permits".to_string())
-            }
-            (ExecutionRuntime::TeeService, ExecutionPackageKind::Builtin, None) => {
-                let security = &execution.security;
-                run_confidential_service_workload(
-                    state,
-                    security
-                        .confidential_session_hash
-                        .as_deref()
-                        .ok_or_else(|| "missing confidential_session_hash".to_string())?,
-                    security
-                        .service_id
-                        .as_deref()
-                        .ok_or_else(|| "missing tee service_id".to_string())?,
-                    security
-                        .request_envelope
-                        .as_ref()
-                        .ok_or_else(|| "missing request_envelope".to_string())?,
-                )
-                .await
-            }
-            (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule, Some(permit)) => {
-                let security = &execution.security;
-                run_attested_wasm_workload(
-                    state,
-                    security
-                        .confidential_session_hash
-                        .as_deref()
-                        .ok_or_else(|| "missing confidential_session_hash".to_string())?,
-                    security
-                        .request_envelope
-                        .as_ref()
-                        .ok_or_else(|| "missing request_envelope".to_string())?,
-                    permit,
-                )
-                .await
-            }
-            (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule, None) => {
-                Err("attested confidential wasm workloads require an execution permit".to_string())
-            }
-            _ => Err("unsupported execution runtime/package combination".to_string()),
-        },
+        }
         (WorkloadSpec::Wasm { submission }, Some(permit)) => {
             let verified = submission.verify()?;
             let (_, host_environment) = local_wasm_capabilities_for_submission(state, &verified)?;
@@ -9945,7 +9992,7 @@ mod tests {
             payment_backend,
             execution_timeout_secs: 5,
             lightning: LightningConfig {
-                mode: lightning_mode.clone(),
+                mode: lightning_mode,
                 destination_identity: matches!(lightning_mode, LightningMode::LndRest)
                     .then(|| format!("02{}", "99".repeat(32))),
                 base_invoice_expiry_secs: 300,

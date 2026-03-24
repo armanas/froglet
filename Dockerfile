@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN cargo build --release --locked --bin froglet-provider --bin froglet-runtime --bin froglet-discovery
+RUN cargo build --release --locked --bin froglet-provider --bin froglet-runtime --bin froglet-discovery --bin froglet-operator
 
 FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update \
@@ -63,3 +63,22 @@ VOLUME ["/data"]
 EXPOSE 9090
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["froglet-discovery"]
+
+FROM runtime-base AS operator
+COPY --from=builder /app/target/release/froglet-operator /usr/local/bin/froglet-operator
+
+ENV FROGLET_DATA_DIR=/data \
+    FROGLET_OPERATOR_LISTEN_ADDR=0.0.0.0:9191 \
+    FROGLET_OPERATOR_ALLOW_NON_LOOPBACK=true \
+    FROGLET_OPERATOR_PROVIDER_BASE_URL=http://provider:8080 \
+    FROGLET_OPERATOR_RUNTIME_BASE_URL=http://runtime:8081 \
+    FROGLET_DISCOVERY_MODE=reference \
+    FROGLET_DISCOVERY_URL=http://discovery:9090 \
+    FROGLET_DISCOVERY_PUBLISH=true \
+    FROGLET_PAYMENT_BACKEND=lightning \
+    FROGLET_LIGHTNING_MODE=mock
+
+VOLUME ["/data"]
+EXPOSE 9191
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["froglet-operator"]

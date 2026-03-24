@@ -85,7 +85,7 @@ class ExampleScriptTests(FrogletAsyncTestCase):
         )
 
         self.assertEqual(output["provider_id"], provider_caps["identity"]["node_id"])
-        self.assertEqual(set(output["offer_ids"]), {"events.query", "execute.wasm"})
+        self.assertEqual(set(output["offer_ids"]), {"events.query", "execute.compute"})
         self.assertTrue(output["deal_id"])
         self.assertIn(
             output["deal_status"], {"running", "accepted", "result_ready", "succeeded"}

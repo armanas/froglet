@@ -456,6 +456,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
+        provider_control_listen_addr: "127.0.0.1:0".to_string(),
+        provider_control_allow_non_loopback: false,
         http_ca_cert_path: None,
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
@@ -495,6 +497,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
             runtime_dir: temp_dir.join("runtime"),
             runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             tor_dir: temp_dir.join("tor"),
         },
         wasm: WasmConfig {
@@ -536,6 +540,10 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         confidential_policy: None,
         runtime_auth_token: "test-runtime-token".to_string(),
         runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+        consumer_control_auth_token: "test-consumer-token".to_string(),
+        consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+        provider_control_auth_token: "test-provider-token".to_string(),
+        provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: Some(Arc::new(lnd_rest_client)),
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),

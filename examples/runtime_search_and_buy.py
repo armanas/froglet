@@ -24,7 +24,7 @@ def build_request(provider_id: str) -> dict[str, object]:
     module_bytes = bytes.fromhex(VALID_WASM_HEX)
     return {
         "provider": {"provider_id": provider_id},
-        "offer_id": "execute.wasm",
+        "offer_id": "execute.compute",
         "kind": "wasm",
         "submission": {
             "schema_version": "froglet/v1",

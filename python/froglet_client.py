@@ -706,18 +706,25 @@ class ProviderClient(_JsonApiClient):
 
 
 class RuntimeClient(_JsonApiClient):
-    def __init__(self, runtime_base_url: str, token: str) -> None:
+    def __init__(
+        self,
+        runtime_base_url: str,
+        token: str,
+        provider_base_url: str | None = None,
+    ) -> None:
         super().__init__(runtime_base_url)
         self.token = token
+        self.provider_base_url = provider_base_url.rstrip("/") if provider_base_url else None
 
     @classmethod
     def from_token_file(
         cls,
         runtime_base_url: str,
         token_path: str | Path,
+        provider_base_url: str | None = None,
     ) -> "RuntimeClient":
         token = Path(token_path).read_text(encoding="utf-8").strip()
-        return cls(runtime_base_url, token)
+        return cls(runtime_base_url, token, provider_base_url=provider_base_url)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
@@ -740,6 +747,81 @@ class RuntimeClient(_JsonApiClient):
 
     async def get_provider(self, provider_id: str) -> dict[str, Any]:
         return await self._request_json("GET", f"/v1/runtime/providers/{provider_id}")
+
+    async def nostr_provider_publications(self) -> dict[str, Any]:
+        provider = await self._resolve_local_provider()
+        descriptor = provider["descriptor"]
+        linked_identities = descriptor.get("payload", {}).get("linked_identities", [])
+        publication_pubkey = (
+            linked_identities[0]["identity"]
+            if linked_identities
+            else descriptor.get("signer", "")
+        )
+        descriptor_summary = _build_nostr_summary_event(
+            kind=30390,
+            pubkey=publication_pubkey,
+            subject_kind="descriptor",
+            subject_id=str(descriptor.get("payload", {}).get("provider_id", "")),
+            content=descriptor,
+        )
+        offer_summaries = [
+            _build_nostr_summary_event(
+                kind=30391,
+                pubkey=publication_pubkey,
+                subject_kind="offer",
+                subject_id=str(offer.get("payload", {}).get("offer_id", "")),
+                content=offer,
+            )
+            for offer in provider.get("offers", [])
+        ]
+        return {
+            "descriptor_summary": descriptor_summary,
+            "offer_summaries": offer_summaries,
+        }
+
+    async def nostr_receipt_publication(self, deal_id: str) -> dict[str, Any]:
+        provider = await self._resolve_local_provider()
+        descriptor = provider["descriptor"]
+        linked_identities = descriptor.get("payload", {}).get("linked_identities", [])
+        publication_pubkey = (
+            linked_identities[0]["identity"]
+            if linked_identities
+            else descriptor.get("signer", "")
+        )
+        deal = await self.get_deal(deal_id)
+        receipt = deal.get("receipt")
+        if receipt is None:
+            raise FrogletClientError(
+                409,
+                {"error": "deal does not have a terminal receipt yet", "deal_id": deal_id},
+            )
+        return {
+            "receipt_summary": _build_nostr_summary_event(
+                kind=1390,
+                pubkey=publication_pubkey,
+                subject_kind="receipt",
+                subject_id=deal_id,
+                content=receipt,
+            )
+        }
+
+    async def _resolve_local_provider(self) -> dict[str, Any]:
+        if self.provider_base_url is not None:
+            async with ProviderClient(self.provider_base_url) as provider:
+                descriptor = await provider.descriptor()
+                offers = await provider.offers()
+            return {
+                "descriptor": descriptor,
+                "offers": offers,
+            }
+        nodes = await self.search(limit=1)
+        if not nodes:
+            raise FrogletClientError(
+                404,
+                {"error": "no providers available for Nostr publication"},
+            )
+        provider_id = nodes[0]["descriptor"]["node_id"]
+        return await self.get_provider(provider_id)
 
     async def buy_service(
         self,
@@ -805,6 +887,14 @@ class RuntimeClient(_JsonApiClient):
             f"timed out waiting for deal {deal_id} to reach {sorted(accepted_statuses)}"
         )
 
+    async def mock_pay_deal(self, deal_id: str, success_preimage: str) -> dict[str, Any]:
+        response = await self._request_json(
+            "POST",
+            f"/v1/runtime/deals/{deal_id}/mock-pay",
+            json_body={"success_preimage": success_preimage},
+        )
+        return response["deal"]
+
     async def accept_result(
         self,
         deal_id: str,
@@ -855,3 +945,28 @@ def _truncate_error_body(raw_body: str) -> str:
 def _next_wait_delay(base_delay: float, max_delay: float, attempt: int) -> float:
     exponential = min(max_delay, base_delay * (2**attempt))
     return random.uniform(exponential * 0.5, exponential)
+
+
+def _build_nostr_summary_event(
+    *,
+    kind: int,
+    pubkey: str,
+    subject_kind: str,
+    subject_id: str,
+    content: Any,
+) -> dict[str, Any]:
+    created_at = int(time.time())
+    content_json = json.dumps(content, separators=(",", ":"), sort_keys=True)
+    tags = [["subject", subject_kind], ["subject_id", subject_id]]
+    event_id = hashlib.sha256(
+        _canonical_json_bytes([pubkey, created_at, kind, tags, content_json])
+    ).hexdigest()
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+        "content": content_json,
+        "sig": hashlib.sha256(f"{event_id}:{pubkey}".encode("utf-8")).hexdigest(),
+    }

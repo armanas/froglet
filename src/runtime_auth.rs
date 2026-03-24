@@ -57,16 +57,15 @@ fn persist_token(path: &Path, token: &str, label: &str) -> Result<(), String> {
             .create_new(true)
             .mode(0o600)
             .open(path)
-            .map_err(|e| {
-                format!("Failed to create {label} {}: {e}", path.display())
-            })?;
+            .map_err(|e| format!("Failed to create {label} {}: {e}", path.display()))?;
         file.write_all(token.as_bytes())
             .map_err(|e| format!("Failed to write {label} {}: {e}", path.display()))?;
     }
 
     #[cfg(not(unix))]
     {
-        fs::write(path, token).map_err(|e| format!("Failed to write {label} {}: {e}", path.display()))?;
+        fs::write(path, token)
+            .map_err(|e| format!("Failed to write {label} {}: {e}", path.display()))?;
     }
 
     Ok(())

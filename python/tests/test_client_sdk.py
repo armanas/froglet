@@ -51,7 +51,7 @@ class ClientSdkTests(unittest.IsolatedAsyncioTestCase):
             if request.method == "GET" and request.path == "/v1/provider/descriptor":
                 return web.json_response({"payload": {"provider_id": "provider-1"}})
             if request.method == "GET" and request.path == "/v1/provider/offers":
-                return web.json_response({"offers": [{"payload": {"offer_id": "execute.wasm"}}]})
+                return web.json_response({"offers": [{"payload": {"offer_id": "execute.compute"}}]})
             if request.method == "POST" and request.path == "/v1/provider/quotes":
                 return web.json_response(
                     {
@@ -117,7 +117,7 @@ class ClientSdkTests(unittest.IsolatedAsyncioTestCase):
             descriptor = await provider.descriptor()
             offers = await provider.offers()
             quote = await provider.create_quote(
-                "execute.wasm",
+                "execute.compute",
                 {"submission": {"wasm_module_hex": "00"}},
                 requester_id="runtime-1",
             )
@@ -131,7 +131,7 @@ class ClientSdkTests(unittest.IsolatedAsyncioTestCase):
             terminal = await provider.accept_result("deal-1", "11" * 32)
 
         self.assertEqual(descriptor["payload"]["provider_id"], "provider-1")
-        self.assertEqual(offers[0]["payload"]["offer_id"], "execute.wasm")
+        self.assertEqual(offers[0]["payload"]["offer_id"], "execute.compute")
         self.assertEqual(deal["status"], "payment_pending")
         self.assertEqual(current["status"], "result_ready")
         self.assertEqual(bundle["session_id"], "bundle-1")
@@ -169,7 +169,7 @@ class ClientSdkTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "discovery": {"descriptor": {"node_id": "provider-1"}},
                         "descriptor": {"payload": {"provider_id": "provider-1"}},
-                        "offers": [{"payload": {"offer_id": "execute.wasm"}}],
+                        "offers": [{"payload": {"offer_id": "execute.compute"}}],
                     }
                 )
             if request.path == "/v1/runtime/deals" and request.method == "POST":
@@ -240,7 +240,7 @@ class ClientSdkTests(unittest.IsolatedAsyncioTestCase):
                 handle = await runtime.buy_service(
                     {
                         "provider": {"provider_id": "provider-1"},
-                        "offer_id": "execute.wasm",
+                        "offer_id": "execute.compute",
                         "submission": {"wasm_module_hex": "00"},
                     },
                     include_payment_intent=True,

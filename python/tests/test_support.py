@@ -57,6 +57,14 @@ def ensure_binaries() -> None:
     _BUILD_DONE = True
 
 
+def _clean_froglet_env() -> dict[str, str]:
+    return {
+        key: value
+        for key, value in os.environ.copy().items()
+        if not key.startswith("FROGLET_")
+    }
+
+
 def listening_port(site: web.TCPSite) -> int:
     server = getattr(site, "_server", None)
     sockets = getattr(server, "sockets", None)
@@ -208,6 +216,30 @@ class FrogletRuntime(ManagedProcess):
 
     def url(self, path: str) -> str:
         return f"{self.runtime_url}{path}"
+
+
+class FrogletNode:
+    def __init__(self, provider: FrogletProvider, runtime: FrogletRuntime):
+        self.provider = provider
+        self.runtime = runtime
+        self.process = provider.process
+        self.log_path = provider.log_path
+        self.temp_root = provider.temp_root
+        self.port = provider.port
+        self.base_url = provider.base_url
+        self.runtime_port = runtime.runtime_port
+        self.runtime_url = runtime.runtime_url
+        self.data_dir = provider.data_dir
+
+    def url(self, path: str) -> str:
+        return self.provider.url(path)
+
+    def output(self) -> str:
+        return self.provider.output()
+
+    async def stop(self) -> None:
+        await self.runtime.stop()
+        await self.provider.stop()
 
 
 class DiscoveryServer(ManagedProcess):
@@ -678,7 +710,7 @@ async def start_discovery(*, port: Optional[int] = None, extra_env: Optional[dic
     log_path = temp_root / "discovery.log"
     db_path = temp_root / "discovery.db"
 
-    env = os.environ.copy()
+    env = _clean_froglet_env()
     env.update(
         {
             "FROGLET_DISCOVERY_LISTEN_ADDR": f"127.0.0.1:{port}",
@@ -754,7 +786,7 @@ async def start_provider(
     log_path = temp_root / "froglet.log"
     data_dir = data_dir or (temp_root / "data")
 
-    env = os.environ.copy()
+    env = _clean_froglet_env()
     env.update(
         {
             "FROGLET_NETWORK_MODE": "clearnet",
@@ -831,7 +863,7 @@ async def start_runtime(
     log_path = temp_root / "froglet-runtime.log"
     data_dir = data_dir or (temp_root / "data")
 
-    env = os.environ.copy()
+    env = _clean_froglet_env()
     env.update(
         {
             "FROGLET_NETWORK_MODE": "clearnet",
@@ -893,8 +925,25 @@ async def start_runtime(
     return runtime
 
 
-async def start_node(**kwargs) -> FrogletProvider:
-    return await start_provider(**kwargs)
+async def start_node(**kwargs) -> FrogletNode:
+    kwargs = dict(kwargs)
+    extra_env = kwargs.pop("extra_env", None)
+    data_dir = kwargs.pop("data_dir", None)
+    shared_data_dir = data_dir or (Path(tempfile.mkdtemp(prefix="froglet-shared-node-")) / "data")
+    provider = await start_provider(
+        data_dir=shared_data_dir,
+        extra_env=extra_env,
+        **kwargs,
+    )
+    try:
+        runtime = await start_runtime(
+            data_dir=shared_data_dir,
+            extra_env=extra_env,
+        )
+    except Exception:
+        await provider.stop()
+        raise
+    return FrogletNode(provider, runtime)
 
 
 SECP256K1 = curves.SECP256k1
@@ -1325,8 +1374,10 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(provider.stop)
         return provider
 
-    async def start_node(self, **kwargs) -> FrogletProvider:
-        return await self.start_provider(**kwargs)
+    async def start_node(self, **kwargs) -> FrogletNode:
+        node = await start_node(**kwargs)
+        self.addAsyncCleanup(node.stop)
+        return node
 
     async def start_runtime(self, **kwargs) -> FrogletRuntime:
         runtime = await start_runtime(**kwargs)

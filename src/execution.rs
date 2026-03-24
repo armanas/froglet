@@ -5,9 +5,7 @@ use crate::{
         WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1,
     },
     crypto,
-    wasm::{
-        self, ComputeWasmWorkload, OciWasmSubmission, OciWasmWorkload, WasmSubmission,
-    },
+    wasm::{self, ComputeWasmWorkload, OciWasmSubmission, OciWasmWorkload, WasmSubmission},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -215,8 +213,8 @@ impl ExecutionWorkload {
                 let Some(module_bytes_hex) = self.module_bytes_hex.as_ref() else {
                     return Err("inline Wasm execution requires module_bytes_hex".to_string());
                 };
-                let module_bytes =
-                    hex::decode(module_bytes_hex).map_err(|error| format!("invalid module hex: {error}"))?;
+                let module_bytes = hex::decode(module_bytes_hex)
+                    .map_err(|error| format!("invalid module hex: {error}"))?;
                 let computed_hash = crypto::sha256_hex(&module_bytes);
                 if self.module_hash.as_deref() != Some(computed_hash.as_str()) {
                     return Err("module hash does not match module bytes".to_string());
@@ -233,7 +231,13 @@ impl ExecutionWorkload {
                 }
             }
             (_, ExecutionPackageKind::OciImage) => {
-                if self.oci_reference.as_deref().unwrap_or("").trim().is_empty() {
+                if self
+                    .oci_reference
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                {
                     return Err("oci_image execution requires oci_reference".to_string());
                 }
                 if self.oci_digest.as_deref().unwrap_or("").trim().is_empty() {
@@ -249,14 +253,17 @@ impl ExecutionWorkload {
             _ => {}
         }
         if self.security.mode == ExecutionSecurityMode::Tee {
-            let Some(confidential_session_hash) = self.security.confidential_session_hash.as_ref() else {
+            let Some(confidential_session_hash) = self.security.confidential_session_hash.as_ref()
+            else {
                 return Err("tee execution requires confidential_session_hash".to_string());
             };
             if confidential_session_hash.trim().is_empty() {
                 return Err("tee execution requires confidential_session_hash".to_string());
             }
-            if matches!(self.runtime, ExecutionRuntime::TeeService | ExecutionRuntime::TeeWasm)
-                && self.security.request_envelope.is_none()
+            if matches!(
+                self.runtime,
+                ExecutionRuntime::TeeService | ExecutionRuntime::TeeWasm
+            ) && self.security.request_envelope.is_none()
             {
                 return Err("tee execution requires request_envelope".to_string());
             }
@@ -266,10 +273,12 @@ impl ExecutionWorkload {
 
     pub fn resource_kind(&self) -> &'static str {
         match self.runtime {
-            ExecutionRuntime::Builtin if self.builtin_name.as_deref() == Some("events.query") => "data",
-            ExecutionRuntime::TeeService | ExecutionRuntime::TeeWasm | ExecutionRuntime::TeePython => {
-                "confidential"
+            ExecutionRuntime::Builtin if self.builtin_name.as_deref() == Some("events.query") => {
+                "data"
             }
+            ExecutionRuntime::TeeService
+            | ExecutionRuntime::TeeWasm
+            | ExecutionRuntime::TeePython => "confidential",
             _ => "compute",
         }
     }
@@ -291,7 +300,10 @@ impl ExecutionWorkload {
     }
 
     pub fn requires_wasm_permit(&self) -> bool {
-        matches!(self.runtime, ExecutionRuntime::Wasm | ExecutionRuntime::TeeWasm)
+        matches!(
+            self.runtime,
+            ExecutionRuntime::Wasm | ExecutionRuntime::TeeWasm
+        )
     }
 
     pub fn from_wasm_submission(submission: WasmSubmission) -> Result<Self, String> {
@@ -323,7 +335,9 @@ impl ExecutionWorkload {
     }
 
     pub fn to_wasm_submission(&self) -> Result<WasmSubmission, String> {
-        if self.runtime != ExecutionRuntime::Wasm || self.package_kind != ExecutionPackageKind::InlineModule {
+        if self.runtime != ExecutionRuntime::Wasm
+            || self.package_kind != ExecutionPackageKind::InlineModule
+        {
             return Err("execution workload is not an inline Wasm submission".to_string());
         }
         let module_bytes_hex = self
@@ -381,7 +395,9 @@ impl ExecutionWorkload {
     }
 
     pub fn to_oci_wasm_submission(&self) -> Result<OciWasmSubmission, String> {
-        if self.runtime != ExecutionRuntime::Wasm || self.package_kind != ExecutionPackageKind::OciImage {
+        if self.runtime != ExecutionRuntime::Wasm
+            || self.package_kind != ExecutionPackageKind::OciImage
+        {
             return Err("execution workload is not an OCI Wasm submission".to_string());
         }
         let oci_reference = self
@@ -410,11 +426,14 @@ impl ExecutionWorkload {
         })
     }
 
-    pub fn python_inline_handler(source: String, entrypoint: String, input: Value) -> Result<Self, String> {
+    pub fn python_inline_handler(
+        source: String,
+        entrypoint: String,
+        input: Value,
+    ) -> Result<Self, String> {
         let source_hash = crypto::sha256_hex(source.as_bytes());
-        let input_hash = crypto::sha256_hex(
-            canonical_json::to_vec(&input).map_err(|error| error.to_string())?,
-        );
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).map_err(|error| error.to_string())?);
         Ok(Self {
             schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
             workload_kind: WORKLOAD_KIND_EXECUTION_V1.to_string(),
@@ -443,9 +462,8 @@ impl ExecutionWorkload {
 
     pub fn python_inline_script(source: String, input: Value) -> Result<Self, String> {
         let source_hash = crypto::sha256_hex(source.as_bytes());
-        let input_hash = crypto::sha256_hex(
-            canonical_json::to_vec(&input).map_err(|error| error.to_string())?,
-        );
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).map_err(|error| error.to_string())?);
         Ok(Self {
             schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
             workload_kind: WORKLOAD_KIND_EXECUTION_V1.to_string(),
@@ -480,9 +498,8 @@ impl ExecutionWorkload {
         entrypoint: String,
         input: Value,
     ) -> Result<Self, String> {
-        let input_hash = crypto::sha256_hex(
-            canonical_json::to_vec(&input).map_err(|error| error.to_string())?,
-        );
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).map_err(|error| error.to_string())?);
         Ok(Self {
             schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
             workload_kind: WORKLOAD_KIND_EXECUTION_V1.to_string(),
@@ -514,9 +531,8 @@ impl ExecutionWorkload {
             "kinds": kinds,
             "limit": limit,
         });
-        let input_hash = crypto::sha256_hex(
-            canonical_json::to_vec(&input).map_err(|error| error.to_string())?,
-        );
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).map_err(|error| error.to_string())?);
         Ok(Self {
             schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
             workload_kind: "events.query".to_string(),
@@ -615,7 +631,9 @@ impl ExecutionWorkload {
     }
 
     pub fn events_query_params(&self) -> Option<(Vec<String>, Option<usize>)> {
-        if self.runtime != ExecutionRuntime::Builtin || self.builtin_name.as_deref() != Some("events.query") {
+        if self.runtime != ExecutionRuntime::Builtin
+            || self.builtin_name.as_deref() != Some("events.query")
+        {
             return None;
         }
         let kinds = self

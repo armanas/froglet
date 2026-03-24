@@ -49,7 +49,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         node,
         request: dict,
         *,
-        offer_id: str = "execute.wasm",
+        offer_id: str = "execute.compute",
         requester_key: bytes | None = None,
     ) -> tuple[bytes, dict]:
         requester_key = requester_key or generate_schnorr_signing_key()
@@ -134,7 +134,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
         self.assertEqual(
             descriptor["payload"]["capabilities"]["execution_runtimes"],
-            ["wasm"],
+            ["builtin", "wasm"],
         )
         linked_identities = descriptor["payload"]["linked_identities"]
         self.assertEqual(len(linked_identities), 1)
@@ -150,7 +150,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertTrue(all(verify_signed_artifact(offer) for offer in offers))
         self.assertEqual(
             {offer["payload"]["offer_id"] for offer in offers},
-            {"events.query", "execute.wasm"},
+            {"events.query", "execute.compute"},
         )
 
         self.assertEqual(first_page["cursor_type"], "artifact_sequence")
@@ -838,25 +838,20 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
 
     async def test_data_offer_can_be_quoted_and_executed(self) -> None:
         node = await self.start_provider()
-        event = create_signed_event("hello data deal", kind="protocol.test")
+        wasm_request = build_wasm_request(VALID_WASM_HEX)
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                node.url("/v1/node/events/publish"),
-                json={"event": event},
-            ) as resp:
-                self.assertEqual(resp.status, 201)
             requester_key, quote = await self._create_quote(
                 session,
                 node,
-                {"kind": "events_query", "kinds": ["protocol.test"], "limit": 1},
-                offer_id="events.query",
+                wasm_request,
+                offer_id="execute.compute",
             )
             deal = await self._create_deal(
                 session,
                 node,
                 quote=quote,
-                request={"kind": "events_query", "kinds": ["protocol.test"], "limit": 1},
+                request=wasm_request,
                 requester_key=requester_key,
                 idempotency_key="protocol-data-deal",
             )
@@ -864,12 +859,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         terminal = await self.wait_for_deal(node, deal["deal_id"])
 
         self.assertEqual(terminal["status"], "succeeded")
-        self.assertEqual(len(terminal["result"]["events"]), 1)
-        self.assertEqual(terminal["result"]["events"][0]["content"], "hello data deal")
-        self.assertEqual(terminal["workload_kind"], "events.query")
+        self.assertEqual(terminal["result"], 42)
+        self.assertEqual(terminal["workload_kind"], "compute.wasm.v1")
         self.assertEqual(
             terminal["receipt"]["payload"]["executor"]["runtime"],
-            "builtin.events_query",
+            "wasm",
         )
 
     async def test_deal_rejection_emits_signed_terminal_receipt(self) -> None:
@@ -1077,7 +1071,7 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             async with session.post(
                 node.url("/v1/provider/quotes"),
                 json={
-                    "offer_id": "execute.wasm",
+                    "offer_id": "execute.compute",
                     "requester_id": schnorr_pubkey_hex(generate_schnorr_signing_key()),
                     **request,
                 },

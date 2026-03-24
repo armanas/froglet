@@ -101,10 +101,22 @@ class DiscoveryIntegrationTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(provider_two.url("/v1/node/capabilities")) as resp:
-                second_caps = await resp.json()
-            async with session.get(discovery.url(f"/v1/discovery/providers/{node_id}")) as resp:
-                recovered_listing = await resp.json()
+            deadline = asyncio.get_running_loop().time() + 10.0
+            second_caps = None
+            recovered_listing = None
+            while asyncio.get_running_loop().time() < deadline:
+                async with session.get(provider_two.url("/v1/node/capabilities")) as resp:
+                    second_caps = await resp.json()
+                async with session.get(
+                    discovery.url(f"/v1/discovery/providers/{node_id}")
+                ) as resp:
+                    recovered_listing = await resp.json()
+                if (
+                    second_caps["reference_discovery"]["connected"]
+                    and recovered_listing["status"] == "active"
+                ):
+                    break
+                await asyncio.sleep(0.2)
 
         self.assertTrue(second_caps["reference_discovery"]["connected"])
         self.assertEqual(second_caps["identity"]["node_id"], node_id)

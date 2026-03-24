@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    canonical_json,
-    crypto, sandbox,
+    canonical_json, crypto,
     execution::{CONTRACT_PYTHON_HANDLER_JSON_V1, ExecutionMount},
+    sandbox,
     state::AppState,
     wasm::{WASM_HOST_JSON_ABI_V1, WASM_RUN_JSON_ABI_V1},
 };
@@ -273,8 +273,8 @@ fn wat_data_string(bytes: &[u8]) -> String {
 }
 
 pub fn static_json_wat(value: &Value) -> Result<String, String> {
-    let bytes =
-        canonical_json::to_vec(value).map_err(|error| format!("failed to encode static JSON: {error}"))?;
+    let bytes = canonical_json::to_vec(value)
+        .map_err(|error| format!("failed to encode static JSON: {error}"))?;
     let len = bytes.len();
     let data = wat_data_string(&bytes);
     Ok(format!(
@@ -332,7 +332,8 @@ pub fn list_projects(root: &Path) -> Result<Vec<ProviderProjectRecord>, String> 
         return Ok(Vec::new());
     }
     let mut projects = Vec::new();
-    let entries = fs::read_dir(root).map_err(|error| format!("failed to read projects root: {error}"))?;
+    let entries =
+        fs::read_dir(root).map_err(|error| format!("failed to read projects root: {error}"))?;
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
@@ -361,6 +362,7 @@ pub struct CreateProjectOverrides {
     pub mounts: Option<Vec<ExecutionMount>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_project(
     root: &Path,
     project_id: &str,
@@ -387,11 +389,7 @@ pub fn create_project(
         if let Some(starter) = starter {
             (
                 "wasm".to_string(),
-                if starter == ProviderProjectStarter::HttpFetchPassthrough {
-                    "inline_module".to_string()
-                } else {
-                    "inline_module".to_string()
-                },
+                "inline_module".to_string(),
                 "handler".to_string(),
                 starter.abi_version().to_string(),
                 "wat".to_string(),
@@ -400,7 +398,10 @@ pub fn create_project(
             )
         } else {
             (
-                overrides.runtime.clone().unwrap_or_else(default_project_runtime),
+                overrides
+                    .runtime
+                    .clone()
+                    .unwrap_or_else(default_project_runtime),
                 overrides
                     .package_kind
                     .clone()
@@ -437,11 +438,7 @@ pub fn create_project(
         } else {
             "python_inline".to_string()
         },
-        abi_version: if source_kind == "wat" {
-            contract_version.clone()
-        } else {
-            contract_version.clone()
-        },
+        abi_version: contract_version.clone(),
         mode: overrides.mode.unwrap_or_else(|| "sync".to_string()),
         source_kind,
         entrypoint: entrypoint.clone(),
@@ -462,11 +459,19 @@ pub fn get_project(root: &Path, project_id: &str) -> Result<ProviderProjectRecor
     project_record(&project_dir, manifest)
 }
 
-pub fn read_project_file(root: &Path, project_id: &str, relative_path: &str) -> Result<String, String> {
+pub fn read_project_file(
+    root: &Path,
+    project_id: &str,
+    relative_path: &str,
+) -> Result<String, String> {
     let project_dir = validate_project_dir(root, project_id)?;
     let full_path = resolve_relative_path(&project_dir, relative_path)?;
-    let contents = fs::read_to_string(&full_path)
-        .map_err(|error| format!("failed to read project file {}: {error}", full_path.display()))?;
+    let contents = fs::read_to_string(&full_path).map_err(|error| {
+        format!(
+            "failed to read project file {}: {error}",
+            full_path.display()
+        )
+    })?;
     Ok(contents)
 }
 
@@ -483,8 +488,12 @@ pub fn write_project_file(
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create project directories: {error}"))?;
     }
-    fs::write(&full_path, contents)
-        .map_err(|error| format!("failed to write project file {}: {error}", full_path.display()))
+    fs::write(&full_path, contents).map_err(|error| {
+        format!(
+            "failed to write project file {}: {error}",
+            full_path.display()
+        )
+    })
 }
 
 pub fn write_static_result_project(
@@ -507,24 +516,41 @@ pub fn build_project(root: &Path, project_id: &str) -> Result<ProviderProjectBui
     let manifest = load_manifest(&project_dir)?;
     let entrypoint = resolve_relative_path(&project_dir, &manifest.entrypoint)?;
     let build_dir = project_dir.join(BUILD_DIR_NAME);
-    fs::create_dir_all(&build_dir).map_err(|error| format!("failed to create build directory: {error}"))?;
+    fs::create_dir_all(&build_dir)
+        .map_err(|error| format!("failed to create build directory: {error}"))?;
     let (build_artifact_path, module_hash) = if manifest.source_kind == "wat" {
-        let wat_source = fs::read_to_string(&entrypoint)
-            .map_err(|error| format!("failed to read WAT source {}: {error}", entrypoint.display()))?;
+        let wat_source = fs::read_to_string(&entrypoint).map_err(|error| {
+            format!(
+                "failed to read WAT source {}: {error}",
+                entrypoint.display()
+            )
+        })?;
         let module_bytes = wat::parse_str(&wat_source)
             .map_err(|error| format!("failed to compile WAT source: {error}"))?;
         sandbox::validate_module_bytes_for_abi(&module_bytes, &manifest.abi_version)
             .map_err(|error| format!("build validation failed: {error}"))?;
         let build_artifact_path = build_dir.join(BUILD_ARTIFACT_NAME);
-        fs::write(&build_artifact_path, &module_bytes)
-            .map_err(|error| format!("failed to write build artifact {}: {error}", build_artifact_path.display()))?;
+        fs::write(&build_artifact_path, &module_bytes).map_err(|error| {
+            format!(
+                "failed to write build artifact {}: {error}",
+                build_artifact_path.display()
+            )
+        })?;
         (build_artifact_path, crypto::sha256_hex(&module_bytes))
     } else if manifest.source_kind == "python" {
-        let source = fs::read_to_string(&entrypoint)
-            .map_err(|error| format!("failed to read Python source {}: {error}", entrypoint.display()))?;
+        let source = fs::read_to_string(&entrypoint).map_err(|error| {
+            format!(
+                "failed to read Python source {}: {error}",
+                entrypoint.display()
+            )
+        })?;
         let build_artifact_path = build_dir.join(BUILD_PYTHON_ARTIFACT_NAME);
-        fs::write(&build_artifact_path, &source)
-            .map_err(|error| format!("failed to write build artifact {}: {error}", build_artifact_path.display()))?;
+        fs::write(&build_artifact_path, &source).map_err(|error| {
+            format!(
+                "failed to write build artifact {}: {error}",
+                build_artifact_path.display()
+            )
+        })?;
         (build_artifact_path, crypto::sha256_hex(source.as_bytes()))
     } else {
         return Err(format!(
@@ -548,8 +574,12 @@ pub fn reject_blank_scaffold_publication(root: &Path, project_id: &str) -> Resul
         return Ok(());
     }
     let entrypoint = resolve_relative_path(&project_dir, &manifest.entrypoint)?;
-    let source = fs::read_to_string(&entrypoint)
-        .map_err(|error| format!("failed to read project source {}: {error}", entrypoint.display()))?;
+    let source = fs::read_to_string(&entrypoint).map_err(|error| {
+        format!(
+            "failed to read project source {}: {error}",
+            entrypoint.display()
+        )
+    })?;
     if (manifest.source_kind == "wat" && source.trim() == BLANK_RUN_JSON_WAT.trim())
         || (manifest.source_kind == "python" && source.trim() == BLANK_PYTHON_SOURCE.trim())
     {
@@ -674,10 +704,14 @@ json.dump(result, sys.stdout, separators=(",", ":"))
 
 pub fn load_manifest(project_dir: &Path) -> Result<ProviderProjectManifest, String> {
     let manifest_path = project_dir.join(MANIFEST_FILE_NAME);
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("failed to read project manifest {}: {error}", manifest_path.display()))?;
-    let mut manifest: ProviderProjectManifest =
-        toml::from_str(&manifest_text).map_err(|error| format!("invalid project manifest: {error}"))?;
+    let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
+        format!(
+            "failed to read project manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let mut manifest: ProviderProjectManifest = toml::from_str(&manifest_text)
+        .map_err(|error| format!("invalid project manifest: {error}"))?;
     if manifest.schema_version == "froglet-service/v1" {
         manifest = migrate_manifest_v1(manifest);
         let _ = save_manifest(project_dir, &manifest);
@@ -688,14 +722,16 @@ pub fn load_manifest(project_dir: &Path) -> Result<ProviderProjectManifest, Stri
 
 pub fn save_manifest(project_dir: &Path, manifest: &ProviderProjectManifest) -> Result<(), String> {
     validate_manifest(manifest)?;
-    let manifest_text =
-        toml::to_string_pretty(manifest).map_err(|error| format!("failed to encode project manifest: {error}"))?;
+    let manifest_text = toml::to_string_pretty(manifest)
+        .map_err(|error| format!("failed to encode project manifest: {error}"))?;
     fs::write(project_dir.join(MANIFEST_FILE_NAME), manifest_text)
         .map_err(|error| format!("failed to write project manifest: {error}"))
 }
 
 fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
-    if manifest.schema_version != PROJECT_SCHEMA_VERSION && manifest.schema_version != "froglet-service/v1" {
+    if manifest.schema_version != PROJECT_SCHEMA_VERSION
+        && manifest.schema_version != "froglet-service/v1"
+    {
         return Err(format!(
             "unsupported project schema_version: {}",
             manifest.schema_version
@@ -716,10 +752,14 @@ fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
     if manifest.publication_state != "active" && manifest.publication_state != "hidden" {
         return Err("provider project publication_state must be active or hidden".to_string());
     }
-    if manifest.execution_kind != "wasm_inline" && manifest.execution_kind != "wasm_oci" {
-        if manifest.execution_kind != "python_inline" {
-            return Err("provider project execution_kind must be wasm_inline, wasm_oci, or python_inline".to_string());
-        }
+    if manifest.execution_kind != "wasm_inline"
+        && manifest.execution_kind != "wasm_oci"
+        && manifest.execution_kind != "python_inline"
+    {
+        return Err(
+            "provider project execution_kind must be wasm_inline, wasm_oci, or python_inline"
+                .to_string(),
+        );
     }
     if manifest.mode != "sync" && manifest.mode != "async" {
         return Err("provider project mode must be sync or async".to_string());
@@ -779,10 +819,11 @@ fn validate_slug(value: &str, field_name: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{field_name} must not be empty"));
     }
-    if value
-        .chars()
-        .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || matches!(character, '-' | '_' | '.'))
-    {
+    if value.chars().all(|character| {
+        character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || matches!(character, '-' | '_' | '.')
+    }) {
         Ok(())
     } else {
         Err(format!(
@@ -791,7 +832,10 @@ fn validate_slug(value: &str, field_name: &str) -> Result<(), String> {
     }
 }
 
-fn project_record(project_dir: &Path, manifest: ProviderProjectManifest) -> Result<ProviderProjectRecord, String> {
+fn project_record(
+    project_dir: &Path,
+    manifest: ProviderProjectManifest,
+) -> Result<ProviderProjectRecord, String> {
     let build_name = if manifest.source_kind == "python" {
         BUILD_PYTHON_ARTIFACT_NAME
     } else {
@@ -799,8 +843,12 @@ fn project_record(project_dir: &Path, manifest: ProviderProjectManifest) -> Resu
     };
     let build_path = project_dir.join(BUILD_DIR_NAME).join(build_name);
     let (build_artifact_path, module_hash) = if build_path.is_file() {
-        let bytes = fs::read(&build_path)
-            .map_err(|error| format!("failed to read build artifact {}: {error}", build_path.display()))?;
+        let bytes = fs::read(&build_path).map_err(|error| {
+            format!(
+                "failed to read build artifact {}: {error}",
+                build_path.display()
+            )
+        })?;
         (
             Some(build_path.display().to_string()),
             Some(crypto::sha256_hex(bytes)),
@@ -850,7 +898,9 @@ fn validate_relative_file_path(value: &str, field_name: &str) -> Result<(), Stri
         match component {
             Component::Normal(_) => {}
             Component::CurDir => {}
-            Component::ParentDir => return Err(format!("{field_name} must not traverse parent directories")),
+            Component::ParentDir => {
+                return Err(format!("{field_name} must not traverse parent directories"));
+            }
             Component::RootDir | Component::Prefix(_) => {
                 return Err(format!("{field_name} must be a relative path"));
             }
@@ -904,8 +954,8 @@ mod tests {
     use crate::{
         confidential::ConfidentialConfig,
         config::{
-            DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode,
-            NodeConfig, PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
+            DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+            PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
         },
         state,
     };
@@ -966,7 +1016,8 @@ mod tests {
                 db_path: temp_dir.join("node.db"),
                 identity_dir: temp_dir.join("identity"),
                 identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
-                nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+                nostr_publication_seed_path: temp_dir
+                    .join("identity/nostr-publication.secp256k1.seed"),
                 runtime_dir: temp_dir.join("runtime"),
                 runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
                 consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
@@ -1006,7 +1057,8 @@ mod tests {
         let build = build_project(&root, "hello-world").expect("build project");
         assert!(Path::new(&build.build_artifact_path).is_file());
 
-        let result = test_project(&root, state.as_ref(), "hello-world", None).expect("test project");
+        let result =
+            test_project(&root, state.as_ref(), "hello-world", None).expect("test project");
         assert_eq!(result.output, json!({ "message": "Hello World" }));
     }
 
@@ -1028,8 +1080,8 @@ mod tests {
         .expect("create project");
 
         let input = json!({ "hello": "world", "count": 2 });
-        let result =
-            test_project(&root, state.as_ref(), "echo-json", Some(input.clone())).expect("test project");
+        let result = test_project(&root, state.as_ref(), "echo-json", Some(input.clone()))
+            .expect("test project");
         assert_eq!(result.output, input);
     }
 
@@ -1051,8 +1103,13 @@ mod tests {
         .expect("create project");
         write_static_result_project(&root, "lol", &json!("lol")).expect("write static result");
 
-        let result = test_project(&root, state.as_ref(), "lol", Some(json!({"input": "ignored"})))
-            .expect("test project");
+        let result = test_project(
+            &root,
+            state.as_ref(),
+            "lol",
+            Some(json!({"input": "ignored"})),
+        )
+        .expect("test project");
         assert_eq!(result.output, json!("lol"));
     }
 
@@ -1073,7 +1130,8 @@ mod tests {
         )
         .expect("create project");
 
-        let error = test_project(&root, state.as_ref(), "http-fetch", None).expect_err("expected host capability error");
+        let error = test_project(&root, state.as_ref(), "http-fetch", None)
+            .expect_err("expected host capability error");
         assert!(error.contains("unsupported_capability"));
     }
 

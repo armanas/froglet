@@ -566,9 +566,7 @@ impl WorkloadSpec {
 impl From<JobSpec> for WorkloadSpec {
     fn from(value: JobSpec) -> Self {
         match value {
-            JobSpec::Execution { execution } => WorkloadSpec::Execution {
-                execution: Box::new(execution),
-            },
+            JobSpec::Execution { execution } => WorkloadSpec::Execution { execution },
             JobSpec::Wasm { submission } => WorkloadSpec::Wasm {
                 submission: Box::new(submission),
             },

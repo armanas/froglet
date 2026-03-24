@@ -1,7 +1,5 @@
 import assert from "node:assert/strict"
-import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
+import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
@@ -10,71 +8,10 @@ const testDir = fileURLToPath(new URL("./", import.meta.url))
 const pluginDir = path.resolve(testDir, "..")
 const repoRoot = path.resolve(pluginDir, "../../..")
 
-function sha256Hex(value) {
-  return createHash("sha256").update(value).digest("hex")
-}
-
-function canonicalJson(value) {
-  if (value === null) {
-    return "null"
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`
-  }
-  switch (typeof value) {
-    case "boolean":
-      return value ? "true" : "false"
-    case "number":
-      if (!Number.isFinite(value)) {
-        throw new Error("Canonical JSON does not allow non-finite numbers")
-      }
-      return JSON.stringify(value)
-    case "string":
-      return JSON.stringify(value)
-    case "object": {
-      const keys = Object.keys(value).sort()
-      return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`
-    }
-    default:
-      throw new Error(`Canonical JSON does not support ${typeof value}`)
-  }
-}
-
-function buildComputeRequest(moduleHex, providerId) {
-  const artifactBytes = Buffer.from(moduleHex, "hex")
-  const inputValue = null
-  return {
-    provider: { provider_id: providerId },
-    offer_id: "execute.compute",
-    kind: "compute",
-    submission: {
-      schema_version: "froglet/v2",
-      submission_type: "compute_submission",
-      workload: {
-        schema_version: "froglet/v2",
-        workload_kind: "compute.generic.v1",
-        runtime: "wasm",
-        package_kind: "inline_module",
-        entrypoint_kind: "handler",
-        entrypoint: "handler.py",
-        contract_version: "froglet.compute.v1",
-        artifact_format: "application/octet-stream",
-        artifact_hash: sha256Hex(artifactBytes),
-        input_format: "application/json+jcs",
-        input_hash: sha256Hex(Buffer.from(canonicalJson(inputValue), "utf8")),
-        requested_access: []
-      },
-      artifact_bytes_hex: moduleHex,
-      input: inputValue
-    }
-  }
-}
-
-function extractJsonSection(text, label) {
-  const marker = `${label}\n`
-  const index = text.indexOf(marker)
-  assert.notEqual(index, -1, `missing ${label} in tool output`)
-  return JSON.parse(text.slice(index + marker.length))
+function extractAppendedJson(text) {
+  const start = Math.max(text.lastIndexOf("\n{"), text.lastIndexOf("\n["))
+  assert.notEqual(start, -1, "missing appended JSON payload in tool output")
+  return JSON.parse(text.slice(start + 1))
 }
 
 function assertConfigValueMatchesSchema(key, value, schema) {
@@ -92,11 +29,10 @@ function assertConfigValueMatchesSchema(key, value, schema) {
 }
 
 async function loadPluginFromPackageMetadata() {
-  const [packageJson, pluginManifest, exampleConfig, moduleHex] = await Promise.all([
+  const [packageJson, pluginManifest, exampleConfig] = await Promise.all([
     readFile(path.join(pluginDir, "package.json"), "utf8").then(JSON.parse),
     readFile(path.join(pluginDir, "openclaw.plugin.json"), "utf8").then(JSON.parse),
-    readFile(path.join(pluginDir, "examples/openclaw.config.example.json"), "utf8").then(JSON.parse),
-    readFile(path.join(testDir, "fixtures/valid-wasm.hex"), "utf8").then((value) => value.trim())
+    readFile(path.join(pluginDir, "examples/openclaw.config.example.json"), "utf8").then(JSON.parse)
   ])
 
   const pluginId = pluginManifest.id
@@ -111,7 +47,9 @@ async function loadPluginFromPackageMetadata() {
 
   const schemaProperties = pluginManifest.configSchema?.properties ?? {}
   const pluginConfig = structuredClone(configuredPlugin.config)
-  pluginConfig.runtimeAuthTokenPath = path.join(repoRoot, "data/runtime/auth.token")
+  pluginConfig.authTokenPath = path.resolve(
+    pluginConfig.authTokenPath.replace("/absolute/path/to/froglet", repoRoot)
+  )
   for (const [key, value] of Object.entries(pluginConfig)) {
     assert.ok(schemaProperties[key], `unknown plugin config key ${key}`)
     assertConfigValueMatchesSchema(key, value, schemaProperties[key])
@@ -123,14 +61,13 @@ async function loadPluginFromPackageMetadata() {
   assert.equal(typeof registerModule.default, "function")
 
   return {
-    moduleHex,
     pluginConfig,
     register: registerModule.default
   }
 }
 
 async function main() {
-  const { moduleHex, pluginConfig, register } = await loadPluginFromPackageMetadata()
+  const { pluginConfig, register } = await loadPluginFromPackageMetadata()
 
   const tools = new Map()
   register({
@@ -143,131 +80,64 @@ async function main() {
     }
   })
 
-  const expectedTools = [
-    "froglet_search",
-    "froglet_get_provider",
-    "froglet_buy",
-    "froglet_mock_pay",
-    "froglet_wait_deal",
-    "froglet_payment_intent",
-    "froglet_accept_result",
-    "froglet_wallet_balance"
-  ]
-  for (const toolName of expectedTools) {
-    assert.ok(tools.has(toolName), `missing tool ${toolName}`)
-  }
+  assert.deepEqual([...tools.keys()], ["froglet"])
 
-  const invalidTokenDir = await mkdtemp(path.join(os.tmpdir(), "froglet-openclaw-smoke-"))
-  try {
-    const invalidTokenPath = path.join(invalidTokenDir, "auth.token")
-    await writeFile(invalidTokenPath, "invalid-runtime-token\n", "utf8")
-    await assert.rejects(
-      tools.get("froglet_wallet_balance").definition.execute("wallet", {
-        runtime_auth_token_path: invalidTokenPath
-      }),
-      /failed with 401/
-    )
-  } finally {
-    await rm(invalidTokenDir, { recursive: true, force: true })
-  }
+  const froglet = tools.get("froglet")
 
-  const wallet = await tools.get("froglet_wallet_balance").definition.execute("wallet", {
+  const status = await froglet.definition.execute("status", {
+    action: "status",
     include_raw: true
   })
-  const walletRaw = extractJsonSection(wallet.content[0].text, "wallet_balance_response_json:")
-  assert.equal(walletRaw.backend, "lightning")
+  const statusRaw = extractAppendedJson(status.content[0].text)
+  assert.equal(statusRaw.runtime?.healthy, true)
+  assert.equal(statusRaw.provider?.healthy, true)
+  assert.equal(statusRaw.reference_discovery?.connected, true)
 
-  let search
+  let discoverRaw = null
   let providerId = null
   for (let attempt = 0; attempt < 15; attempt += 1) {
-    search = await tools.get("froglet_search").definition.execute("search", {
-      limit: 5,
+    const discover = await froglet.definition.execute("discover", {
+      action: "discover_services",
+      limit: 10,
+      include_inactive: false,
       include_raw: true
     })
-    const raw = extractJsonSection(search.content[0].text, "search_response_json:")
-    const first = Array.isArray(raw.nodes) ? raw.nodes[0] : null
-    providerId = first?.descriptor?.node_id ?? null
+    discoverRaw = extractAppendedJson(discover.content[0].text)
+    const services = Array.isArray(discoverRaw.services) ? discoverRaw.services : []
+    const executeCompute = services.find((service) => service?.service_id === "execute.compute")
+    providerId = executeCompute?.provider_id ?? null
     if (providerId) {
       break
     }
     await delay(1000)
   }
-  assert.ok(providerId, "runtime search did not return a provider")
 
-  const provider = await tools.get("froglet_get_provider").definition.execute("provider", {
+  assert.ok(discoverRaw, "missing discovery response")
+  assert.equal(Number(discoverRaw.provider_nodes_discovered ?? 0) >= 1, true)
+  assert.ok(providerId, "discovery did not return execute.compute")
+
+  const service = await froglet.definition.execute("service", {
+    action: "get_service",
     provider_id: providerId,
+    service_id: "execute.compute",
     include_raw: true
   })
-  const providerRaw = extractJsonSection(provider.content[0].text, "provider_response_json:")
-  assert.equal(providerRaw.descriptor.payload.provider_id, providerId)
-  assert.ok(
-    providerRaw.offers.some((offer) => offer?.payload?.offer_id === "execute.compute"),
-    "provider does not advertise execute.compute"
-  )
+  const serviceRaw = extractAppendedJson(service.content[0].text)
+  assert.equal(serviceRaw.service?.service_id, "execute.compute")
+  assert.equal(serviceRaw.service?.provider_id, providerId)
+  assert.equal(serviceRaw.service?.publication_state, "active")
 
-  const buy = await tools.get("froglet_buy").definition.execute("buy", {
-    request: {
-      ...buildComputeRequest(moduleHex, providerId),
-      idempotency_key: "compose-smoke-runtime-buy"
-    },
+  const invoke = await froglet.definition.execute("invoke", {
+    action: "invoke_service",
+    provider_id: providerId,
+    service_id: "events.query",
+    input: { kinds: [], limit: 1 },
     include_raw: true
   })
-  const buyRaw = extractJsonSection(buy.content[0].text, "buy_response_json:")
-  assert.equal(buyRaw.deal.provider_id, providerId)
-  assert.equal(buyRaw.deal.status, "payment_pending")
-  assert.ok(buyRaw.payment_intent_path)
-
-  const waited = await tools.get("froglet_wait_deal").definition.execute("wait", {
-    deal_id: buyRaw.deal.deal_id,
-    wait_statuses: ["payment_pending"],
-    timeout_secs: 5,
-    poll_interval_secs: 0.2,
-    include_raw: true
-  })
-  const waitRaw = extractJsonSection(waited.content[0].text, "wait_response_json:")
-  assert.equal(waitRaw.deal.status, "payment_pending")
-
-  const paymentIntent = await tools.get("froglet_payment_intent").definition.execute("payment", {
-    deal_id: buyRaw.deal.deal_id,
-    include_raw: true
-  })
-  const paymentIntentRaw = extractJsonSection(
-    paymentIntent.content[0].text,
-    "payment_intent_response_json:"
-  )
-  assert.equal(paymentIntentRaw.payment_intent.deal_id, buyRaw.deal.deal_id)
-  assert.equal(paymentIntentRaw.payment_intent.backend, "lightning")
-
-  if (paymentIntentRaw.payment_intent.mock_action?.endpoint_path) {
-    const mockPay = await tools.get("froglet_mock_pay").definition.execute("mock-pay", {
-      deal_id: buyRaw.deal.deal_id,
-      include_raw: true
-    })
-    const mockPayRaw = extractJsonSection(mockPay.content[0].text, "mock_pay_response_json:")
-    assert.equal(mockPayRaw.deal.deal_id, buyRaw.deal.deal_id)
-
-    const settled = await tools.get("froglet_wait_deal").definition.execute("wait-after-mock", {
-      deal_id: buyRaw.deal.deal_id,
-      wait_statuses: ["result_ready", "succeeded", "failed", "rejected"],
-      timeout_secs: 15,
-      poll_interval_secs: 0.2,
-      include_raw: true
-    })
-    const settledRaw = extractJsonSection(settled.content[0].text, "wait_response_json:")
-    assert.ok(
-      ["result_ready", "succeeded", "failed", "rejected"].includes(settledRaw.deal.status),
-      `unexpected post-mock status ${settledRaw.deal.status}`
-    )
-
-    if (settledRaw.deal.status === "result_ready") {
-      const accepted = await tools.get("froglet_accept_result").definition.execute("accept", {
-        deal_id: buyRaw.deal.deal_id,
-        include_raw: true
-      })
-      const acceptedRaw = extractJsonSection(accepted.content[0].text, "accept_response_json:")
-      assert.equal(acceptedRaw.deal.status, "succeeded")
-    }
-  }
+  const invokeRaw = extractAppendedJson(invoke.content[0].text)
+  const effectiveResult = invokeRaw.result ?? invokeRaw.task?.result
+  assert.notEqual(effectiveResult, undefined)
+  assert.equal(typeof effectiveResult, "object")
 }
 
 main().catch((error) => {

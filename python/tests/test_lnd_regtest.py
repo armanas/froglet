@@ -47,7 +47,7 @@ class LndRegtestIntegrationTests(FrogletAsyncTestCase):
             quote = await create_protocol_quote(
                 session,
                 self.node,
-                offer_id="execute.wasm",
+                offer_id="execute.compute",
                 request=build_wasm_request(VALID_WASM_HEX),
                 requester_secret_key=requester_key,
             )

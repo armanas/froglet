@@ -35,10 +35,11 @@ impl FaaSDescriptor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobSpec {
     Execution {
-        execution: ExecutionWorkload,
+        execution: Box<ExecutionWorkload>,
     },
     Wasm {
         submission: WasmSubmission,
