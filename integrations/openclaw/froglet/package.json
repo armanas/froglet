@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Single-tool OpenClaw/NemoClaw plugin for Froglet services and raw compute.",
+  "description": "Single-tool OpenClaw/NemoClaw plugin for Froglet services and generic compute.",
   "engines": {
     "node": ">=18"
   },

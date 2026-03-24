@@ -3,20 +3,29 @@
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
 
-Froglet is a signed-deal execution protocol with a simple bot-facing model:
+Froglet is a signed-deal resource protocol with a simple bot-facing model:
 
 - one OpenClaw/NemoClaw plugin id: `froglet`
 - one bot tool: `froglet`
-- named services plus expert raw compute
+- named services, data services, and open-ended compute all use the same
+  primitive
 - services are just code/projects, not templates
-- any Froglet node can publish services and invoke services
+- any Froglet node can publish resources and invoke resources
+- discovery is the authoritative remote listing path
+
+Current implementation note:
+
+- the checked-in execution profiles are reference implementations
+- the public model is broader than any single runtime
+- the documentation now treats interpreted and container-backed compute as
+  first-class execution profiles over the same deal primitive
 
 ## Core Binaries
 
 | Binary | Purpose |
 | --- | --- |
-| `froglet-runtime` | deal and payment engine used when a node invokes remote services |
-| `froglet-provider` | public service API used when a node serves local services |
+| `froglet-runtime` | deal and payment engine used when a node invokes remote resources |
+| `froglet-provider` | public node API used when a node serves published resources |
 | `froglet-discovery` | public discovery service |
 | `froglet-operator` | host-side `/v1/froglet/*` control API |
 
@@ -54,8 +63,8 @@ cargo run --bin froglet-runtime
 ```
 
 The same node can run both `froglet-provider` and `froglet-runtime`. That is
-the normal model: one Froglet node can publish local services and invoke remote
-services.
+the normal model: one Froglet node can publish local resources and invoke
+remote ones.
 
 Start the local control API:
 
@@ -80,12 +89,21 @@ The plugin config is now unified:
 The tool surface is unified too. The one `froglet` tool supports actions for:
 
 - service discovery and invocation
-- local service inspection and publication
+- local resource inspection and publication
 - project authoring
 - build/test/publish
 - status/logs/restart
 - task polling
 - raw compute
+
+Important behavior:
+
+- `summary` is descriptive metadata only; it does not generate code
+- `starter` and `result_json` are the only built-in scaffolding inputs
+- blank projects are allowed, but they are scaffolds only and should stay hidden
+  until they are edited, built, tested, and published
+- the current code path is still evolving toward generic execution profiles,
+  but that is an implementation detail rather than the permanent Froglet model
 
 See:
 

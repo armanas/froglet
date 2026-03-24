@@ -54,7 +54,7 @@ test("createPaymentIntentPhase stops after payment intent and emits machine-read
       froglet_get_provider: () =>
         ({ content: [{ text: jsonText("provider_response_json:", {
           descriptor: { payload: { provider_id: "provider-1" } },
-          offers: [{ payload: { offer_id: "execute.wasm" } }]
+          offers: [{ payload: { offer_id: "execute.compute" } }]
         }) }] }),
       froglet_buy: () =>
         ({ content: [{ text: jsonText("buy_response_json:", {

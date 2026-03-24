@@ -8,7 +8,8 @@ This is the implemented cutover architecture.
 - a Froglet node can both consume and provide
 - a published thing is either:
   - a named service
-  - raw compute
+  - data access
+  - open-ended compute
 - marketplace is not a special product; it is just Froglet services published by
   another Froglet node
 
@@ -26,8 +27,10 @@ This is the implemented cutover architecture.
    - `service_id`
    - `offer_id`
    - `summary`
-   - `execution_kind`
-   - `abi_version`
+   - `runtime`
+   - `package_kind`
+   - `entrypoint_kind`
+   - `entrypoint`
    - `mode`
    - price and publication state
    - optional schemas

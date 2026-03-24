@@ -2,7 +2,10 @@
 
 Status: supported bot-facing product surface
 
-The only supported bot contract is the local requester runtime.
+The supported bot contract is the local runtime surface.
+
+A Froglet node can act as both publisher and invoker across different deals.
+The runtime is the convenience layer for bots, not a permanent node class.
 
 Bots do not:
 

@@ -3,7 +3,10 @@
 This checklist is reset around the narrowed version 1 direction.
 Prototype features outside that path are not treated as roadmap anchors.
 
-Froglet version 1 should be a small, solid economic primitive for AI agents: signed artifacts, Lightning-backed conditional settlement, a Wasm-first public execution surface, optional Tor transport, and optional Nostr publication.
+Froglet version 1 should be a small, solid economic primitive for AI agents:
+signed artifacts, Lightning-backed conditional settlement, optional Tor
+transport, optional Nostr publication, and one execution/resource primitive that
+can back named services, data services, and open-ended compute.
 
 Status legend:
 
@@ -70,12 +73,13 @@ checklist can stay focused on the kernel/runtime boundary.
 - [x] Define conservative maximum job duration and chunking guidance for longer work
 - [x] Add adversarial tests for requester preimage withholding and provider cancel failures
 
-## Phase 4: Wasm-First Execution Core
+## Phase 4: Current Reference Execution Profiles
 
-- [x] Collapse the public remote execution surface to Wasm only
+- [x] Keep the current reference implementation available while the broader
+      execution-profile cutover remains under review
 - [x] Remove Lua from the v1 code and protocol surface
-- [x] Define the v1 Wasm ABI and canonical workload object
-- [x] Align API request/response shapes with `compute.wasm.v1` and `wasm_submission`
+- [x] Define the current Wasm ABI and canonical workload object
+- [x] Align API request/response shapes with the current reference execution profiles
 - [x] Enforce memory, fuel, epoch, output-size, and wall-clock limits
 - [x] Make host calls explicit, capability-scoped, and time-bounded by rejecting all public v1 host imports
 - [x] Emit executor metadata in receipts

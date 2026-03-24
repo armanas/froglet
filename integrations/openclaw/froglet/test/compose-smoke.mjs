@@ -40,27 +40,31 @@ function canonicalJson(value) {
   }
 }
 
-function buildWasmRequest(moduleHex, providerId) {
-  const moduleBytes = Buffer.from(moduleHex, "hex")
+function buildComputeRequest(moduleHex, providerId) {
+  const artifactBytes = Buffer.from(moduleHex, "hex")
   const inputValue = null
   return {
     provider: { provider_id: providerId },
-    offer_id: "execute.wasm",
-    kind: "wasm",
+    offer_id: "execute.compute",
+    kind: "compute",
     submission: {
-      schema_version: "froglet/v1",
-      submission_type: "wasm_submission",
+      schema_version: "froglet/v2",
+      submission_type: "compute_submission",
       workload: {
-        schema_version: "froglet/v1",
-        workload_kind: "compute.wasm.v1",
-        abi_version: "froglet.wasm.run_json.v1",
-        module_format: "application/wasm",
-        module_hash: sha256Hex(moduleBytes),
+        schema_version: "froglet/v2",
+        workload_kind: "compute.generic.v1",
+        runtime: "wasm",
+        package_kind: "inline_module",
+        entrypoint_kind: "handler",
+        entrypoint: "handler.py",
+        contract_version: "froglet.compute.v1",
+        artifact_format: "application/octet-stream",
+        artifact_hash: sha256Hex(artifactBytes),
         input_format: "application/json+jcs",
         input_hash: sha256Hex(Buffer.from(canonicalJson(inputValue), "utf8")),
-        requested_capabilities: []
+        requested_access: []
       },
-      module_bytes_hex: moduleHex,
+      artifact_bytes_hex: moduleHex,
       input: inputValue
     }
   }
@@ -197,13 +201,13 @@ async function main() {
   const providerRaw = extractJsonSection(provider.content[0].text, "provider_response_json:")
   assert.equal(providerRaw.descriptor.payload.provider_id, providerId)
   assert.ok(
-    providerRaw.offers.some((offer) => offer?.payload?.offer_id === "execute.wasm"),
-    "provider does not advertise execute.wasm"
+    providerRaw.offers.some((offer) => offer?.payload?.offer_id === "execute.compute"),
+    "provider does not advertise execute.compute"
   )
 
   const buy = await tools.get("froglet_buy").definition.execute("buy", {
     request: {
-      ...buildWasmRequest(moduleHex, providerId),
+      ...buildComputeRequest(moduleHex, providerId),
       idempotency_key: "compose-smoke-runtime-buy"
     },
     include_raw: true

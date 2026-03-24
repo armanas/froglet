@@ -27,13 +27,13 @@ test("assertAgentTranscript validates ordered runtime summaries", () => {
     "node_id: provider-1",
     "status: active",
     "provider_id: provider-1",
-    "offer_id=execute.wasm",
+    "offer_id=execute.compute",
     "terminal: false"
   ].join("\n")
 
   const result = assertAgentTranscript(transcript, {
     mustContain: ["runtime_url: http://127.0.0.1:8081", "provider_id: provider-1"],
-    mustContainOrdered: ["returned_nodes: 1", "node_id: provider-1", "offer_id=execute.wasm"],
+    mustContainOrdered: ["returned_nodes: 1", "node_id: provider-1", "offer_id=execute.compute"],
     mustNotContain: ["unexpected failure"]
   })
 

@@ -12,8 +12,7 @@ Froglet is intentionally split into four layers:
 - economic kernel
 - adapters
 - bot-facing localhost runtime
-- higher-layer discovery, indexer, broker, trust, operator, and OpenClaw
-  services
+- higher-layer discovery, indexers, brokers, operators, and bot integrations
 
 The kernel is the smallest irreversible surface.
 Everything above it may evolve without changing how hashes, signatures, deals, or receipts work.
@@ -30,7 +29,16 @@ It contains:
 - cross-artifact commitments
 - canonical deal, execution, and settlement states
 - Lightning settlement binding rules
-- the canonical Wasm workload objects (`compute.wasm.v1` and `compute.wasm.oci.v1`) and ABIs
+- the signed execution/request commitments that every execution profile must use
+
+The current codebase still ships Wasm reference profiles, but the product
+model is broader:
+
+- a predefined service
+- a predefined data service
+- open-ended compute
+
+are all the same Froglet primitive with different product-layer bindings.
 
 ## 3. Adapters
 
@@ -42,8 +50,9 @@ Examples:
 - Lightning node drivers such as mock mode or LND REST
 - Nostr publication and relay behavior
 - discovery bootstrap formats
-- runtime submission helpers such as transport-level Wasm uploads
-- OCI registry pulls for `compute.wasm.oci.v1` workloads
+- execution-material delivery such as module uploads, interpreted source
+  bundles, or container/image references
+- registry pulls for runtime-specific packaged workloads
 
 Adapters may change, and implementations may support more than one adapter, as long as they preserve kernel semantics.
 
@@ -51,7 +60,8 @@ Adapters may change, and implementations may support more than one adapter, as l
 
 The bot runtime is the primary product surface for agent developers.
 
-Its purpose is to make the signed kernel usable through a simpler localhost workflow:
+Its purpose is to make the signed kernel usable through a simpler localhost
+workflow:
 
 - search
 - quote
@@ -60,6 +70,15 @@ Its purpose is to make the signed kernel usable through a simpler localhost work
 - accept or reject
 - receipt
 
+At the product surface, this should feel like one thing:
+
+- discover a resource
+- invoke a named service
+- invoke a data service
+- send open-ended compute
+
+Those are UX distinctions over the same underlying deal flow.
+
 The runtime may expose local handles, helper endpoints, polling views, wallet-facing payment intents, and compatibility routes.
 Those are product decisions, not protocol commitments.
 
@@ -67,9 +86,8 @@ The planned evolution from this runtime toward fuller long-running agent workflo
 
 ## 5. Reference Discovery and Higher Layers
 
-Froglet's long-term reference discovery and commercial product layers should
-be composed from ordinary Froglet-consuming services rather than privileged
-protocol actors.
+Froglet's long-term discovery and commercial product layers should be composed
+from ordinary Froglet services rather than privileged protocol actors.
 
 Examples:
 
@@ -77,6 +95,9 @@ Examples:
 - catalogs built from indexed descriptors and offers
 - brokers that aggregate or route quotes
 - reputation services that interpret receipt history
+- marketplaces that publish search, listing, or routing services
+- resource providers that publish named services, data services, or open-ended
+  compute through the same deal primitive
 
 These services consume signed artifacts.
 They are not themselves the source of truth.
@@ -91,7 +112,7 @@ The kernel should not hardwire:
 - a single transport stack
 - a single storage engine
 - runtime HTTP endpoint shapes
-- Python helper ergonomics
+- a single execution runtime or packaging format
 - reference-discovery, ranking, or broker logic
 - archive bundle layout
 - long-running session semantics

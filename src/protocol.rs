@@ -7,6 +7,7 @@ use crate::{
         WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1,
     },
     crypto,
+    execution::{ExecutionRuntime, ExecutionWorkload},
     jobs::JobSpec,
     pricing::ServiceId,
     wasm::WasmSubmission,
@@ -133,7 +134,14 @@ pub struct DescriptorPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfferExecutionProfile {
-    pub runtime: String,
+    pub runtime: ExecutionRuntime,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub contract_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_handles: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub abi_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
@@ -404,6 +412,9 @@ pub struct ReceiptPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkloadSpec {
+    Execution {
+        execution: Box<ExecutionWorkload>,
+    },
     Wasm {
         submission: Box<WasmSubmission>,
     },
@@ -429,6 +440,7 @@ pub enum WorkloadSpec {
 impl WorkloadSpec {
     pub fn kind(&self) -> &'static str {
         match self {
+            WorkloadSpec::Execution { .. } => "execution",
             WorkloadSpec::Wasm { .. } => "wasm",
             WorkloadSpec::OciWasm { .. } => "oci_wasm",
             WorkloadSpec::ConfidentialService { .. } => "confidential_service",
@@ -437,8 +449,9 @@ impl WorkloadSpec {
         }
     }
 
-    pub fn workload_kind(&self) -> &'static str {
+    pub fn workload_kind(&self) -> &str {
         match self {
+            WorkloadSpec::Execution { execution } => execution.workload_kind.as_str(),
             WorkloadSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
             WorkloadSpec::OciWasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1,
             WorkloadSpec::ConfidentialService { .. } => WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1,
@@ -449,6 +462,15 @@ impl WorkloadSpec {
 
     pub fn service_id(&self) -> ServiceId {
         match self {
+            WorkloadSpec::Execution { execution } => {
+                if execution.runtime == ExecutionRuntime::Builtin
+                    && execution.builtin_name.as_deref() == Some("events.query")
+                {
+                    ServiceId::EventsQuery
+                } else {
+                    ServiceId::ExecuteWasm
+                }
+            }
             WorkloadSpec::Wasm { .. } => ServiceId::ExecuteWasm,
             WorkloadSpec::OciWasm { .. } => ServiceId::ExecuteWasm,
             WorkloadSpec::ConfidentialService { .. } => ServiceId::ExecuteWasm,
@@ -459,6 +481,7 @@ impl WorkloadSpec {
 
     pub fn resource_kind(&self) -> &'static str {
         match self {
+            WorkloadSpec::Execution { execution } => execution.resource_kind(),
             WorkloadSpec::EventsQuery { .. } => "data",
             WorkloadSpec::Wasm { .. } => "compute",
             WorkloadSpec::OciWasm { .. } => "compute",
@@ -467,28 +490,35 @@ impl WorkloadSpec {
         }
     }
 
-    pub fn runtime(&self) -> Option<&'static str> {
+    pub fn runtime(&self) -> Option<&str> {
         match self {
+            WorkloadSpec::Execution { execution } => Some(execution.runtime_name()),
             WorkloadSpec::Wasm { .. } => Some("wasm"),
             WorkloadSpec::OciWasm { .. } => Some("wasm"),
             WorkloadSpec::ConfidentialService { .. } => None,
             WorkloadSpec::AttestedWasm { .. } => Some("tee.wasm"),
-            WorkloadSpec::EventsQuery { .. } => None,
+            WorkloadSpec::EventsQuery { .. } => Some("builtin"),
+        }
+    }
+
+    pub fn contract_version(&self) -> Option<&str> {
+        match self {
+            WorkloadSpec::Execution { execution } => Some(execution.contract_version()),
+            WorkloadSpec::Wasm { submission } => Some(submission.workload.abi_version.as_str()),
+            WorkloadSpec::OciWasm { submission } => Some(submission.workload.abi_version.as_str()),
+            WorkloadSpec::ConfidentialService { .. } => Some("froglet.confidential.service.v1"),
+            WorkloadSpec::AttestedWasm { .. } => Some("froglet.confidential.attested_wasm.v1"),
+            WorkloadSpec::EventsQuery { .. } => Some("froglet.builtin.events_query.v1"),
         }
     }
 
     pub fn abi_version(&self) -> Option<&str> {
-        match self {
-            WorkloadSpec::Wasm { submission } => Some(submission.workload.abi_version.as_str()),
-            WorkloadSpec::OciWasm { submission } => Some(submission.workload.abi_version.as_str()),
-            WorkloadSpec::ConfidentialService { .. } => None,
-            WorkloadSpec::AttestedWasm { .. } => None,
-            WorkloadSpec::EventsQuery { .. } => None,
-        }
+        self.contract_version()
     }
 
     pub fn request_hash(&self) -> Result<String, String> {
         match self {
+            WorkloadSpec::Execution { execution } => execution.request_hash(),
             WorkloadSpec::Wasm { submission } => submission.workload_hash(),
             WorkloadSpec::OciWasm { submission } => submission.workload_hash(),
             WorkloadSpec::ConfidentialService {
@@ -506,6 +536,7 @@ impl WorkloadSpec {
 
     pub fn requested_capabilities(&self) -> &[String] {
         match self {
+            WorkloadSpec::Execution { execution } => execution.requested_access(),
             WorkloadSpec::Wasm { submission } => &submission.workload.requested_capabilities,
             WorkloadSpec::OciWasm { submission } => &submission.workload.requested_capabilities,
             WorkloadSpec::ConfidentialService { .. } => &[],
@@ -516,6 +547,7 @@ impl WorkloadSpec {
 
     pub fn confidential_session_hash(&self) -> Option<&str> {
         match self {
+            WorkloadSpec::Execution { execution } => execution.confidential_session_hash(),
             WorkloadSpec::ConfidentialService {
                 confidential_session_hash,
                 ..
@@ -534,6 +566,9 @@ impl WorkloadSpec {
 impl From<JobSpec> for WorkloadSpec {
     fn from(value: JobSpec) -> Self {
         match value {
+            JobSpec::Execution { execution } => WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
             JobSpec::Wasm { submission } => WorkloadSpec::Wasm {
                 submission: Box::new(submission),
             },

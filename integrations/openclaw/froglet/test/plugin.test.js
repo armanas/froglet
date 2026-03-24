@@ -89,11 +89,17 @@ test("create_project auto-publishes active services", async () => {
               service_id: "lol5",
               offer_id: "lol5",
               summary: "Returns \"lol5\"",
-              execution_kind: "wasm_inline",
+              runtime: "python",
+              package_kind: "inline_source",
+              entrypoint_kind: "handler",
+              entrypoint: "handler.py",
+              contract_version: "froglet.compute.python.v1",
+              mounts: [],
               mode: "sync",
               price_sats: 0,
               publication_state: "active",
-              entrypoint: "source/main.wat"
+              input_schema: null,
+              output_schema: { const: "lol5" }
             }
           }),
           { status: 201, headers: { "Content-Type": "application/json" } }
@@ -124,6 +130,108 @@ test("create_project auto-publishes active services", async () => {
     assert.match(text, /published: true/)
     assert.match(text, /published_service_id: lol5/)
     assert.equal(callCount, 2)
+  } finally {
+    global.fetch = previousFetch
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("plugin description points the model at canonical froglet actions", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  try {
+    const tokenPath = path.join(tempDir, "froglet.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    const tools = buildTools({
+      hostProduct: "openclaw",
+      baseUrl: "http://127.0.0.1:9191",
+      authTokenPath: tokenPath,
+      requestTimeoutMs: 1000,
+      defaultSearchLimit: 10,
+      maxSearchLimit: 50
+    })
+    const froglet = tools.get("froglet")
+    assert.match(froglet.definition.description, /list_local_services/)
+    assert.match(froglet.definition.description, /discover_services/)
+    assert.match(froglet.definition.description, /invoke_service/)
+    assert.match(froglet.definition.description, /result_json="pong"/)
+    assert.match(froglet.definition.description, /runtime/)
+    assert.match(froglet.definition.description, /package_kind/)
+    assert.match(froglet.definition.description, /entrypoint_kind/)
+    assert.match(froglet.definition.description, /contract_version/)
+    assert.match(froglet.definition.description, /mounts/)
+    assert.match(froglet.definition.parameters.properties.action.description, /Do not invent actions/)
+    assert.match(
+      froglet.definition.parameters.properties.summary.description,
+      /Summary never generates code/
+    )
+    assert.match(
+      froglet.definition.parameters.properties.result_json.description,
+      /Use this for simple constant-return services/
+    )
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("get_local_service output stays authoritative and schema-based", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
+  const previousFetch = global.fetch
+  try {
+    const tokenPath = path.join(tempDir, "froglet.token")
+    await writeFile(tokenPath, "froglet-test-token\n", "utf8")
+    const tools = buildTools({
+      hostProduct: "openclaw",
+      baseUrl: "http://127.0.0.1:9191",
+      authTokenPath: tokenPath,
+      requestTimeoutMs: 1000,
+      defaultSearchLimit: 10,
+      maxSearchLimit: 50
+    })
+    global.fetch = async (url) => {
+      if (String(url).endsWith("/v1/froglet/services/local/ping")) {
+        return new Response(
+          JSON.stringify({
+            service: {
+              service_id: "ping",
+              offer_id: "ping",
+              project_id: "ping",
+              summary: "Returns pong",
+              runtime: "python",
+              package_kind: "inline_source",
+              entrypoint_kind: "handler",
+              entrypoint: "handler.py",
+              contract_version: "froglet.compute.python.v1",
+              mounts: [{ kind: "filesystem", name: "workspace" }],
+              mode: "sync",
+              price_sats: 0,
+              publication_state: "active",
+              provider_id: "provider-1",
+              input_schema: null,
+              output_schema: { const: "pong" }
+            }
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      }
+      throw new Error(`unexpected URL ${url}`)
+    }
+    const froglet = tools.get("froglet")
+    const result = await froglet.definition.execute("tool-2", {
+      action: "get_local_service",
+      service_id: "ping"
+    })
+    const text = result.content?.[0]?.text ?? ""
+    assert.match(text, /runtime: python/)
+    assert.match(text, /package_kind: inline_source/)
+    assert.match(text, /entrypoint_kind: handler/)
+    assert.match(text, /contract_version: froglet\.compute\.python\.v1/)
+    assert.match(text, /mounts: \[\{"kind":"filesystem","name":"workspace"\}\]/)
+    assert.match(text, /input_schema: null/)
+    assert.match(text, /output_schema: {"const":"pong"}/)
+    assert.match(text, /Only listed fields are authoritative/)
+    assert.doesNotMatch(text, /template/i)
+    assert.doesNotMatch(text, /execution_kind/i)
+    assert.doesNotMatch(text, /abi_version/i)
   } finally {
     global.fetch = previousFetch
     await rm(tempDir, { recursive: true, force: true })

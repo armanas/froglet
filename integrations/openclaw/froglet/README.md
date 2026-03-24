@@ -9,7 +9,10 @@ difference is where the Froglet control API runs:
 - NemoClaw: HTTPS from the sandbox to the host
 
 The node model is the same in both products: a Froglet node can publish local
-services and invoke remote services through the same single tool.
+resources and invoke remote ones through the same single tool.
+
+Named services, data services, and open-ended compute are all product-layer
+bindings over the same Froglet primitive.
 
 ## Config
 
@@ -54,15 +57,26 @@ The plugin registers one tool named `froglet`. It supports these actions:
 
 Named services are the default UX. Raw compute is the expert path.
 
+Current implementation note:
+
+- the checked-in execution profiles are current reference implementations
+- the current implementation state is not the intended permanent Froglet
+  boundary
+
+Discovery is the authoritative remote-listing path. `discover_services` should
+be used for registry-backed remote listings. If discovery is misconfigured or
+unhealthy, Froglet returns a structured error instead of pretending there are no
+services.
+
 ## Authoring Model
 
-Service authoring is WAT-first in this cutover:
+The current checked-in authoring implementation is project-first:
 
 - create a project
 - edit source
-- build a real Wasm artifact
+- build a real artifact for the chosen execution profile
 - test locally
-- publish a named service
+- publish a named service or compute binding
 
 Starter templates are only scaffolding. They are not first-class tool actions.
 
@@ -72,9 +86,17 @@ Practical shortcuts:
   `name` when explicit ids are omitted.
 - `create_project` accepts optional `result_json` to scaffold a simple static
   JSON response service.
-- `create_project` auto-publishes when `publication_state=active`.
+- `create_project` and `publish_artifact` accept explicit execution metadata
+  such as `runtime`, `package_kind`, `entrypoint_kind`, `entrypoint`,
+  `contract_version`, and `mounts`.
+- `create_project` auto-publishes only when `publication_state=active` and an
+  explicit runnable scaffold is provided via `starter` or `result_json`.
+- blank projects are scaffolds only; create them with `publication_state=hidden`
+  and then `write_file`, `build_project`, `test_project`, and `publish_project`.
 - `invoke_service` waits briefly by default for sync services and can resolve a
   unique `service_id` without an explicit provider reference.
+
+`summary` is descriptive metadata only. It never generates code implicitly.
 
 ## Managed Host Launcher
 

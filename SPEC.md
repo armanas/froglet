@@ -1,10 +1,10 @@
 # Froglet v1 Economic Kernel Specification
 
-Status: draft v1 kernel freeze
+Status: draft v1 kernel revision, freeze reopened for execution-profile cutover
 
 This document is normative for the irreversible Froglet kernel only.
 
-It freezes:
+It currently freezes:
 
 - the signed artifact envelope
 - canonical hashing and signing bytes
@@ -12,8 +12,7 @@ It freezes:
 - the hash-chain and verification rules between those artifacts
 - the canonical deal, execution, and settlement states
 - the Lightning settlement binding rules that a receipt relies on
-- the canonical `compute.wasm.v1` workload object and the `froglet.wasm.run_json.v1` / `froglet.wasm.host_json.v1` ABIs
-- the canonical `compute.wasm.oci.v1` workload object for OCI-referenced Wasm modules
+- the core deal/settlement primitive that every execution profile must use
 
 The following are intentionally moved out of the kernel and are defined in companion docs:
 
@@ -24,13 +23,34 @@ The following are intentionally moved out of the kernel and are defined in compa
 - Nostr publication behavior: `docs/NOSTR.md`
 - storage and archival profiles: `docs/STORAGE_PROFILE.md`
 
-The frozen kernel in this document defines the core fields and workload kinds below.
-Companion docs may define additive extension artifacts, workload kinds, and optional payload fields that travel inside the same signed envelopes without changing the kernel commitments defined here.
-The current reference implementation uses that mechanism for confidential execution.
+The signed artifact chain in this document remains the core Froglet primitive.
+The execution-profile model is being reopened in this revision so Froglet can
+support predefined services, data services, and open-ended compute through the
+same economic flow without freezing the product to Wasm-only execution.
+
+Current implementation note:
+
+- the checked-in code still uses Wasm reference execution profiles
+- the current reference execution profiles are documented later in this file
+- those reference profiles are not the sole intended product contract
 
 ## 1. Scope
 
-Froglet version 1 is a small economic primitive for short-lived, bounded, fixed-price deals.
+Froglet version 1 is a small economic primitive for short-lived, bounded,
+fixed-price resource deals.
+
+A Froglet deal may represent:
+
+- a predefined named service
+- a predefined data service
+- open-ended compute supplied by the requester
+
+These are product-layer distinctions over the same signed economic primitive.
+They are not different deal types in the kernel.
+
+`provider_id` and `requester_id` in this specification describe the role played
+in a specific interaction. They are not node classes. A single Froglet node may
+act as both provider and requester across different deals.
 
 The kernel defines a signed evidence chain:
 
@@ -161,8 +181,8 @@ For v1 Nostr linkage, `linked_signature` is a BIP340 Schnorr signature over the 
 - `linked_identities`: array of linked publication identities
 - `transport_endpoints`: array of transport endpoint objects
 - `capabilities`: object with:
-  - `service_kinds`: array such as `compute.wasm.v1` or `compute.wasm.oci.v1`
-  - `execution_runtimes`: array; public v1 remote execution should only advertise `wasm`
+  - `service_kinds`: provider-defined identifiers for the kinds of resources this node serves; current implementation examples include `compute.wasm.v1` and `compute.wasm.oci.v1`
+  - `execution_runtimes`: provider-defined runtime families such as `wasm`, `python`, or `container`
   - `max_concurrent_deals`: integer or `null`
 
 Each `transport_endpoints[]` entry must contain:
@@ -184,13 +204,13 @@ Each `transport_endpoints[]` entry must contain:
 - `offer_id`: stable provider-chosen identifier for the offer
 - `descriptor_hash`: `artifact_hash` of the descriptor the offer is published under
 - `expires_at`: Unix timestamp in seconds or `null`
-- `offer_kind`: service kind identifier; public v1 remote compute uses `compute.wasm.v1` or `compute.wasm.oci.v1`
+- `offer_kind`: service kind identifier chosen by the provider for the published resource
 - `settlement_method`: must be `lightning.base_fee_plus_success_fee.v1` for v1 paid remote execution
 - `quote_ttl_secs`: maximum lifetime of quotes issued from this offer
 - `execution_profile`: object with:
-  - `runtime`: must be `wasm` for public v1 remote compute
-  - `abi_version`: supported v1 public compute ABIs are `froglet.wasm.run_json.v1` and `froglet.wasm.host_json.v1`
-  - `capabilities`: array of capability strings; `froglet.wasm.run_json.v1` offers must publish `[]`, while `froglet.wasm.host_json.v1` offers may publish a provider-defined allowlist such as `net.http.fetch`, `net.http.fetch.auth.<profile>`, or `db.sqlite.query.read.<handle>`
+  - `runtime`: runtime family identifier for the published resource
+  - `abi_version`: runtime-specific ABI or contract version string
+  - `capabilities`: provider-defined allowlist of runtime capabilities granted through this offer
   - `max_input_bytes`
   - `max_runtime_ms`
   - `max_memory_bytes`
@@ -214,7 +234,7 @@ Each `transport_endpoints[]` entry must contain:
 - `descriptor_hash`: descriptor hash used when the quote was issued
 - `offer_hash`: `artifact_hash` of the referenced offer
 - `expires_at`: Unix timestamp in seconds
-- `workload_kind`: workload kind identifier; public v1 remote compute uses `compute.wasm.v1`
+- `workload_kind`: workload kind identifier for the requested execution or service invocation
 - `workload_hash`: hash of the canonical workload object
 - `capabilities_granted`: capability strings granted for this quoted execution; must be a subset of both `Offer.execution_profile.capabilities` and the workload's `requested_capabilities`
 - `settlement_terms`: object with:
@@ -547,9 +567,17 @@ Examples:
 - base fee `settled`, success fee `expired` -> `settlement_state = expired`
 - no `invoice_bundle` -> `settlement_state = none`
 
-## 7. Canonical `compute.wasm.v1` Workload
+## 7. Current Reference Execution Profiles
 
-The canonical public compute workload kind for v1 is `compute.wasm.v1`.
+The current checked-in implementation still uses Wasm reference execution
+profiles. Those profiles are preserved here as the reference implementation
+contract while the broader execution-profile cutover is reviewed.
+
+They are not the only intended long-term Froglet execution model.
+
+### 7.1 Reference `compute.wasm.v1` Workload
+
+The current reference public compute workload kind is `compute.wasm.v1`.
 
 The canonical workload object must contain:
 
@@ -576,9 +604,9 @@ The canonical workload object does not include:
 
 Those belong to adapters and runtime surfaces, not to the kernel.
 
-## 7b. Canonical `compute.wasm.oci.v1` Workload
+### 7.2 Reference `compute.wasm.oci.v1` Workload
 
-The OCI-referenced compute workload kind for v1 is `compute.wasm.oci.v1`.
+The current reference OCI-backed compute workload kind is `compute.wasm.oci.v1`.
 
 This workload kind is identical to `compute.wasm.v1` except that the Wasm module is referenced by an OCI image rather than by inline bytes. The canonical workload object must contain:
 
@@ -614,9 +642,11 @@ Current implementation notes:
 - OCI module downloads are capped at 50 MB.
 - Both tag (`:tag`) and digest (`@sha256:...`) reference styles are supported.
 
-Companion workload kinds such as `confidential.service.v1` and `compute.wasm.attested.v1` are defined outside this kernel in `docs/CONFIDENTIAL.md`.
+Companion execution profiles such as `confidential.service.v1` and
+`compute.wasm.attested.v1` are defined outside this kernel in
+`docs/CONFIDENTIAL.md`.
 
-## 8. Wasm ABIs
+## 8. Current Reference Wasm ABIs
 
 ### 8.1 `froglet.wasm.run_json.v1`
 
@@ -688,13 +718,15 @@ The initial capability namespace is:
 
 ## 9. Conformance Expectations
 
-Milestone 1 is only complete when the frozen kernel is backed by golden vectors for:
+Milestone 1 is only complete when the stable signed-artifact chain is backed by
+golden vectors for:
 
 - envelope signing and `artifact_hash` derivation
 - Nostr linked-identity challenge signing
 - `Quote -> Deal -> Receipt` verification
 - `invoice_bundle` verification
-- `compute.wasm.v1` and `compute.wasm.oci.v1` workload hashing and receipt `result_hash` derivation
+- each execution profile claimed by the implementation, including the current
+  `compute.wasm.v1` and `compute.wasm.oci.v1` reference profiles
 
 Those vectors are intentionally separate from this specification so they can evolve into an executable conformance suite without changing the kernel contract.
 

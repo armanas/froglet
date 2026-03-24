@@ -9,6 +9,7 @@ It exposes one public control surface:
 That surface covers:
 
 - local status
+- discovery status and last discovery error
 - bounded log tails
 - managed restarts
 - local project workspaces
@@ -17,6 +18,9 @@ That surface covers:
 - remote service discovery and invocation
 - task polling
 - expert raw compute
+
+It is the local control surface for the generic Froglet execution primitive,
+not a role-specific node API.
 
 ## Important Paths
 
@@ -53,5 +57,11 @@ Notes:
 
 - `POST /v1/froglet/projects` can derive ids from `name` if explicit ids are omitted
 - `POST /v1/froglet/projects` can scaffold a fixed JSON response via `result_json`
+- `POST /v1/froglet/projects` rejects `publication_state=active` unless you provide
+  `starter` or `result_json`
+- blank projects are scaffolds only; they must remain hidden until source is
+  written and published explicitly
 - `POST /v1/froglet/services/invoke` waits briefly by default for sync services
 - `POST /v1/froglet/services/invoke` resolves a unique `service_id` automatically when possible
+- `GET /v1/froglet/status` includes discovery mode, reference discovery wiring,
+  and the last discovery error when present

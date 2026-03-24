@@ -21,6 +21,7 @@ pub mod deals;
 pub mod discovery;
 pub mod discovery_client;
 pub mod discovery_server;
+pub mod execution;
 pub mod identity;
 pub mod jobs;
 pub mod lnd;

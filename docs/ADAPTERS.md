@@ -15,27 +15,34 @@ A `Quote`, `Deal`, `invoice_bundle`, or `Receipt` must mean the same thing wheth
 `Descriptor.transport_endpoints[]` is the kernel binding for reachability.
 How clients prioritize, retry, or rotate across those endpoints is adapter behavior.
 
-## 2. Transport-level `wasm_submission`
+## 2. Execution Material Delivery
 
-The kernel defines the canonical `compute.wasm.v1` workload object, but not
-the upload wrapper used to carry execution material.
+The kernel carries a workload hash and signed economic state, but it does not
+hardwire one transport wrapper for execution material.
 
-The reference transport object is `wasm_submission`:
+During the current cutover, Froglet should be understood as supporting one
+primitive that may be bound to:
 
-- `schema_version`: `froglet/v1`
-- `submission_type`: `wasm_submission`
-- `workload`: canonical `compute.wasm.v1` workload object
-- `module_bytes_hex`: hex-encoded Wasm module bytes
-- `input`: JSON value whose JCS hash must equal `workload.input_hash`
+- provider-defined named services
+- provider-defined data services
+- open-ended compute supplied by the requester
 
-Before execution, providers should verify:
+The execution material for those bindings may eventually be delivered as:
 
-- `SHA256(module_bytes) == workload.module_hash`
-- `SHA256(JCS(input)) == workload.input_hash`
-- `workload.abi_version` is supported
-- `requested_capabilities` is acceptable under the active offer and quote
+- module uploads
+- interpreted source bundles
+- container or image references
+- other runtime-specific submission wrappers
 
-Cached-module flows, alternate upload encodings, or multipart delivery are adapter decisions as long as they satisfy the same workload hash.
+Current implementation note:
+
+- the checked-in reference implementation still uses Wasm-oriented submission
+  wrappers for the current execution profiles
+- those wrappers are reference adapters, not the permanent product boundary
+
+Longer-term delivery formats may include interpreted source bundles and
+container or image references as first-class execution profiles over the same
+Froglet primitive.
 
 ## 3. Invoice Bundle Delivery
 
@@ -72,7 +79,8 @@ They are not production settlement finality.
 
 ## 5. Discovery Bootstrap
 
-Direct peers, allowlists, curated lists, private catalogs, and private brokers are all valid discovery adapters.
+Direct peers, allowlists, curated lists, private catalogs, private brokers, and
+marketplace services are all valid discovery adapters.
 
 One useful bootstrap format is a signed `curated_list` object:
 
@@ -91,3 +99,7 @@ One useful bootstrap format is a signed `curated_list` object:
 
 Curated lists are signed recommendations.
 They are not canonical economic state.
+
+A marketplace is not a special protocol actor.
+It is just another Froglet node or service that consumes signed Froglet
+artifacts and republishes higher-layer discovery information.

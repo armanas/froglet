@@ -10,15 +10,42 @@ use serde_json::{Value, json};
 use crate::{
     canonical_json,
     crypto, sandbox,
+    execution::{CONTRACT_PYTHON_HANDLER_JSON_V1, ExecutionMount},
     state::AppState,
     wasm::{WASM_HOST_JSON_ABI_V1, WASM_RUN_JSON_ABI_V1},
 };
 
-pub const PROJECT_SCHEMA_VERSION: &str = "froglet-service/v1";
+pub const PROJECT_SCHEMA_VERSION: &str = "froglet-service/v2";
 const MANIFEST_FILE_NAME: &str = "froglet-service.toml";
 const DEFAULT_ENTRYPOINT: &str = "source/main.wat";
+const DEFAULT_PYTHON_ENTRYPOINT: &str = "source/main.py";
 const BUILD_DIR_NAME: &str = "build";
 const BUILD_ARTIFACT_NAME: &str = "module.wasm";
+const BUILD_PYTHON_ARTIFACT_NAME: &str = "main.py";
+
+fn default_project_runtime() -> String {
+    "python".to_string()
+}
+
+fn default_project_package_kind() -> String {
+    "inline_source".to_string()
+}
+
+fn default_project_entrypoint_kind() -> String {
+    "handler".to_string()
+}
+
+fn default_project_contract_version() -> String {
+    CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()
+}
+
+fn default_execution_kind() -> String {
+    "wasm_inline".to_string()
+}
+
+fn default_abi_version() -> String {
+    WASM_RUN_JSON_ABI_V1.to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderProjectManifest {
@@ -27,7 +54,19 @@ pub struct ProviderProjectManifest {
     pub service_id: String,
     pub offer_id: String,
     pub summary: String,
+    #[serde(default = "default_project_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_project_package_kind")]
+    pub package_kind: String,
+    #[serde(default = "default_project_entrypoint_kind")]
+    pub entrypoint_kind: String,
+    #[serde(default = "default_project_contract_version")]
+    pub contract_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mounts: Vec<ExecutionMount>,
+    #[serde(default = "default_execution_kind")]
     pub execution_kind: String,
+    #[serde(default = "default_abi_version")]
     pub abi_version: String,
     pub mode: String,
     pub source_kind: String,
@@ -48,6 +87,12 @@ pub struct ProviderProjectRecord {
     pub service_id: String,
     pub offer_id: String,
     pub summary: String,
+    pub runtime: String,
+    pub package_kind: String,
+    pub entrypoint_kind: String,
+    pub contract_version: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mounts: Vec<ExecutionMount>,
     pub execution_kind: String,
     pub abi_version: String,
     pub mode: String,
@@ -73,6 +118,7 @@ pub struct ProviderProjectBuildRecord {
     pub build_artifact_path: String,
     pub module_hash: String,
     pub abi_version: String,
+    pub contract_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,7 +130,7 @@ pub struct ProviderProjectTestRecord {
     pub output: Value,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderProjectStarter {
     #[serde(rename = "blank")]
     BlankRunJson,
@@ -209,6 +255,10 @@ const HTTP_FETCH_PASSTHROUGH_WAT: &str = r#"(module
     local.get $len
     call $call_json))"#;
 
+const BLANK_PYTHON_SOURCE: &str = r#"def handler(event, context):
+    return None
+"#;
+
 fn wat_data_string(bytes: &[u8]) -> String {
     let mut encoded = String::new();
     for byte in bytes {
@@ -244,6 +294,14 @@ pub fn static_json_wat(value: &Value) -> Result<String, String> {
   (func (export "run") (param i32 i32) (result i64)
     i64.const {len})
   (data (i32.const 0) "{data}"))"#
+    ))
+}
+
+pub fn static_json_python(value: &Value) -> Result<String, String> {
+    let encoded = canonical_json::to_string(value)
+        .map_err(|error| format!("failed to encode static JSON: {error}"))?;
+    Ok(format!(
+        "import json\n\n_STATIC = json.loads({encoded:?})\n\ndef handler(event, context):\n    return _STATIC\n"
     ))
 }
 
@@ -295,6 +353,12 @@ pub struct CreateProjectOverrides {
     pub clear_starter: bool,
     pub input_schema: Option<Value>,
     pub output_schema: Option<Value>,
+    pub runtime: Option<String>,
+    pub package_kind: Option<String>,
+    pub entrypoint_kind: Option<String>,
+    pub entrypoint: Option<String>,
+    pub contract_version: Option<String>,
+    pub mounts: Option<Vec<ExecutionMount>>,
 }
 
 pub fn create_project(
@@ -319,20 +383,68 @@ pub fn create_project(
     } else {
         starter.map(|value| value.id().to_string())
     };
+    let (runtime, package_kind, entrypoint_kind, contract_version, source_kind, entrypoint, source) =
+        if let Some(starter) = starter {
+            (
+                "wasm".to_string(),
+                if starter == ProviderProjectStarter::HttpFetchPassthrough {
+                    "inline_module".to_string()
+                } else {
+                    "inline_module".to_string()
+                },
+                "handler".to_string(),
+                starter.abi_version().to_string(),
+                "wat".to_string(),
+                DEFAULT_ENTRYPOINT.to_string(),
+                starter.initial_source().to_string(),
+            )
+        } else {
+            (
+                overrides.runtime.clone().unwrap_or_else(default_project_runtime),
+                overrides
+                    .package_kind
+                    .clone()
+                    .unwrap_or_else(default_project_package_kind),
+                overrides
+                    .entrypoint_kind
+                    .clone()
+                    .unwrap_or_else(default_project_entrypoint_kind),
+                overrides
+                    .contract_version
+                    .clone()
+                    .unwrap_or_else(default_project_contract_version),
+                "python".to_string(),
+                overrides
+                    .entrypoint
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_PYTHON_ENTRYPOINT.to_string()),
+                BLANK_PYTHON_SOURCE.to_string(),
+            )
+        };
     let manifest = ProviderProjectManifest {
         schema_version: PROJECT_SCHEMA_VERSION.to_string(),
         project_id: project_id.to_string(),
         service_id: service_id.to_string(),
         offer_id: offer_id.to_string(),
         summary: summary.trim().to_string(),
-        execution_kind: "wasm_inline".to_string(),
-        abi_version: starter
-            .unwrap_or(ProviderProjectStarter::BlankRunJson)
-            .abi_version()
-            .to_string(),
+        runtime,
+        package_kind,
+        entrypoint_kind,
+        contract_version: contract_version.clone(),
+        mounts: overrides.mounts.unwrap_or_default(),
+        execution_kind: if source_kind == "wat" {
+            "wasm_inline".to_string()
+        } else {
+            "python_inline".to_string()
+        },
+        abi_version: if source_kind == "wat" {
+            contract_version.clone()
+        } else {
+            contract_version.clone()
+        },
         mode: overrides.mode.unwrap_or_else(|| "sync".to_string()),
-        source_kind: "wat".to_string(),
-        entrypoint: DEFAULT_ENTRYPOINT.to_string(),
+        source_kind,
+        entrypoint: entrypoint.clone(),
         price_sats,
         publication_state: publication_state.to_string(),
         starter: effective_starter,
@@ -340,10 +452,7 @@ pub fn create_project(
         output_schema: overrides.output_schema,
     };
     save_manifest(&project_dir, &manifest)?;
-    let source = starter
-        .unwrap_or(ProviderProjectStarter::BlankRunJson)
-        .initial_source();
-    write_project_file(root, project_id, DEFAULT_ENTRYPOINT, source)?;
+    write_project_file(root, project_id, &entrypoint, &source)?;
     project_record(&project_dir, manifest)
 }
 
@@ -383,38 +492,73 @@ pub fn write_static_result_project(
     project_id: &str,
     result: &Value,
 ) -> Result<(), String> {
-    let wat = static_json_wat(result)?;
-    write_project_file(root, project_id, DEFAULT_ENTRYPOINT, &wat)
+    let project_dir = validate_project_dir(root, project_id)?;
+    let manifest = load_manifest(&project_dir)?;
+    let source = if manifest.source_kind == "python" {
+        static_json_python(result)?
+    } else {
+        static_json_wat(result)?
+    };
+    write_project_file(root, project_id, &manifest.entrypoint, &source)
 }
 
 pub fn build_project(root: &Path, project_id: &str) -> Result<ProviderProjectBuildRecord, String> {
     let project_dir = validate_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
-    if manifest.source_kind != "wat" {
+    let entrypoint = resolve_relative_path(&project_dir, &manifest.entrypoint)?;
+    let build_dir = project_dir.join(BUILD_DIR_NAME);
+    fs::create_dir_all(&build_dir).map_err(|error| format!("failed to create build directory: {error}"))?;
+    let (build_artifact_path, module_hash) = if manifest.source_kind == "wat" {
+        let wat_source = fs::read_to_string(&entrypoint)
+            .map_err(|error| format!("failed to read WAT source {}: {error}", entrypoint.display()))?;
+        let module_bytes = wat::parse_str(&wat_source)
+            .map_err(|error| format!("failed to compile WAT source: {error}"))?;
+        sandbox::validate_module_bytes_for_abi(&module_bytes, &manifest.abi_version)
+            .map_err(|error| format!("build validation failed: {error}"))?;
+        let build_artifact_path = build_dir.join(BUILD_ARTIFACT_NAME);
+        fs::write(&build_artifact_path, &module_bytes)
+            .map_err(|error| format!("failed to write build artifact {}: {error}", build_artifact_path.display()))?;
+        (build_artifact_path, crypto::sha256_hex(&module_bytes))
+    } else if manifest.source_kind == "python" {
+        let source = fs::read_to_string(&entrypoint)
+            .map_err(|error| format!("failed to read Python source {}: {error}", entrypoint.display()))?;
+        let build_artifact_path = build_dir.join(BUILD_PYTHON_ARTIFACT_NAME);
+        fs::write(&build_artifact_path, &source)
+            .map_err(|error| format!("failed to write build artifact {}: {error}", build_artifact_path.display()))?;
+        (build_artifact_path, crypto::sha256_hex(source.as_bytes()))
+    } else {
         return Err(format!(
             "unsupported provider project source_kind: {}",
             manifest.source_kind
         ));
-    }
-    let entrypoint = resolve_relative_path(&project_dir, &manifest.entrypoint)?;
-    let wat_source = fs::read_to_string(&entrypoint)
-        .map_err(|error| format!("failed to read WAT source {}: {error}", entrypoint.display()))?;
-    let module_bytes = wat::parse_str(&wat_source)
-        .map_err(|error| format!("failed to compile WAT source: {error}"))?;
-    sandbox::validate_module_bytes_for_abi(&module_bytes, &manifest.abi_version)
-        .map_err(|error| format!("build validation failed: {error}"))?;
-    let build_dir = project_dir.join(BUILD_DIR_NAME);
-    fs::create_dir_all(&build_dir).map_err(|error| format!("failed to create build directory: {error}"))?;
-    let build_artifact_path = build_dir.join(BUILD_ARTIFACT_NAME);
-    fs::write(&build_artifact_path, &module_bytes)
-        .map_err(|error| format!("failed to write build artifact {}: {error}", build_artifact_path.display()))?;
-    let module_hash = crypto::sha256_hex(&module_bytes);
+    };
     Ok(ProviderProjectBuildRecord {
         project: project_record(&project_dir, manifest.clone())?,
         build_artifact_path: build_artifact_path.display().to_string(),
         module_hash,
         abi_version: manifest.abi_version,
+        contract_version: manifest.contract_version,
     })
+}
+
+pub fn reject_blank_scaffold_publication(root: &Path, project_id: &str) -> Result<(), String> {
+    let project_dir = validate_project_dir(root, project_id)?;
+    let manifest = load_manifest(&project_dir)?;
+    if manifest.starter.is_some() {
+        return Ok(());
+    }
+    let entrypoint = resolve_relative_path(&project_dir, &manifest.entrypoint)?;
+    let source = fs::read_to_string(&entrypoint)
+        .map_err(|error| format!("failed to read project source {}: {error}", entrypoint.display()))?;
+    if (manifest.source_kind == "wat" && source.trim() == BLANK_RUN_JSON_WAT.trim())
+        || (manifest.source_kind == "python" && source.trim() == BLANK_PYTHON_SOURCE.trim())
+    {
+        return Err(
+            "blank projects are scaffolds only; write source or provide result_json before publishing"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub fn test_project(
@@ -433,7 +577,70 @@ pub fn test_project(
     let project_dir = validate_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
     let input = input.unwrap_or_else(|| default_project_input(&manifest));
-    let output = if manifest.abi_version == WASM_HOST_JSON_ABI_V1 {
+    let output = if manifest.source_kind == "python" {
+        let source = fs::read_to_string(&build.build_artifact_path).map_err(|error| {
+            format!(
+                "failed to read build artifact {}: {error}",
+                build.build_artifact_path
+            )
+        })?;
+        let tempdir = std::env::temp_dir().join(format!(
+            "froglet-project-python-{}",
+            crate::discovery::random_hex(16)
+        ));
+        fs::create_dir_all(&tempdir)
+            .map_err(|error| format!("failed to create python tempdir: {error}"))?;
+        let source_path = tempdir.join("main.py");
+        fs::write(&source_path, &source)
+            .map_err(|error| format!("failed to write python source: {error}"))?;
+        let input_bytes = canonical_json::to_vec(&input).map_err(|error| error.to_string())?;
+        let runner = r#"
+import json, os, sys
+source_path = sys.argv[1]
+namespace = {"__name__": "__froglet__", "__file__": source_path}
+event = json.load(sys.stdin)
+with open(source_path, "r", encoding="utf-8") as handle:
+    source = handle.read()
+exec(compile(source, source_path, "exec"), namespace)
+handler = namespace.get("handler")
+if callable(handler):
+    result = handler(event, {"mounts": {}})
+elif "result" in namespace:
+    result = namespace["result"]
+elif callable(namespace.get("main")):
+    result = namespace["main"](event, {"mounts": {}})
+else:
+    raise RuntimeError("python project must define handler, main, or result")
+json.dump(result, sys.stdout, separators=(",", ":"))
+"#;
+        let mut child = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg(runner)
+            .arg(source_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn python3: {error}"))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write as _;
+            stdin
+                .write_all(&input_bytes)
+                .map_err(|error| format!("failed to write python input: {error}"))?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| format!("failed waiting for python execution: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "python execution failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        serde_json::from_slice::<Value>(&output.stdout)
+            .map_err(|error| format!("python execution returned invalid JSON: {error}"))?
+    } else if manifest.abi_version == WASM_HOST_JSON_ABI_V1 {
         let Some(host_environment) = state.wasm_host.clone() else {
             return Err("unsupported_capability: froglet.wasm.host_json.v1 requires a configured Wasm host environment".to_string());
         };
@@ -469,8 +676,12 @@ pub fn load_manifest(project_dir: &Path) -> Result<ProviderProjectManifest, Stri
     let manifest_path = project_dir.join(MANIFEST_FILE_NAME);
     let manifest_text = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("failed to read project manifest {}: {error}", manifest_path.display()))?;
-    let manifest: ProviderProjectManifest =
+    let mut manifest: ProviderProjectManifest =
         toml::from_str(&manifest_text).map_err(|error| format!("invalid project manifest: {error}"))?;
+    if manifest.schema_version == "froglet-service/v1" {
+        manifest = migrate_manifest_v1(manifest);
+        let _ = save_manifest(project_dir, &manifest);
+    }
     validate_manifest(&manifest)?;
     Ok(manifest)
 }
@@ -484,16 +695,19 @@ pub fn save_manifest(project_dir: &Path, manifest: &ProviderProjectManifest) -> 
 }
 
 fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
-    if manifest.schema_version != PROJECT_SCHEMA_VERSION {
+    if manifest.schema_version != PROJECT_SCHEMA_VERSION && manifest.schema_version != "froglet-service/v1" {
         return Err(format!(
             "unsupported project schema_version: {}",
             manifest.schema_version
         ));
     }
-    if manifest.source_kind != "wat" {
-        return Err("provider project source_kind must be wat".to_string());
+    if manifest.source_kind != "wat" && manifest.source_kind != "python" {
+        return Err("provider project source_kind must be wat or python".to_string());
     }
-    if manifest.abi_version != WASM_RUN_JSON_ABI_V1 && manifest.abi_version != WASM_HOST_JSON_ABI_V1 {
+    if manifest.source_kind == "wat"
+        && manifest.abi_version != WASM_RUN_JSON_ABI_V1
+        && manifest.abi_version != WASM_HOST_JSON_ABI_V1
+    {
         return Err(format!(
             "unsupported provider project abi_version: {}",
             manifest.abi_version
@@ -503,7 +717,9 @@ fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
         return Err("provider project publication_state must be active or hidden".to_string());
     }
     if manifest.execution_kind != "wasm_inline" && manifest.execution_kind != "wasm_oci" {
-        return Err("provider project execution_kind must be wasm_inline or wasm_oci".to_string());
+        if manifest.execution_kind != "python_inline" {
+            return Err("provider project execution_kind must be wasm_inline, wasm_oci, or python_inline".to_string());
+        }
     }
     if manifest.mode != "sync" && manifest.mode != "async" {
         return Err("provider project mode must be sync or async".to_string());
@@ -516,6 +732,47 @@ fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
     }
     validate_relative_file_path(&manifest.entrypoint, "entrypoint")?;
     Ok(())
+}
+
+fn migrate_manifest_v1(mut manifest: ProviderProjectManifest) -> ProviderProjectManifest {
+    manifest.schema_version = PROJECT_SCHEMA_VERSION.to_string();
+    if manifest.runtime.trim().is_empty() {
+        manifest.runtime = if manifest.source_kind == "python" {
+            "python".to_string()
+        } else if manifest.execution_kind == "builtin" {
+            "builtin".to_string()
+        } else {
+            "wasm".to_string()
+        };
+    }
+    if manifest.package_kind.trim().is_empty() {
+        manifest.package_kind = match manifest.execution_kind.as_str() {
+            "wasm_oci" => "oci_image".to_string(),
+            "builtin" => "builtin".to_string(),
+            _ => {
+                if manifest.source_kind == "python" {
+                    "inline_source".to_string()
+                } else {
+                    "inline_module".to_string()
+                }
+            }
+        };
+    }
+    if manifest.entrypoint_kind.trim().is_empty() {
+        manifest.entrypoint_kind = if manifest.runtime == "builtin" {
+            "builtin".to_string()
+        } else {
+            "handler".to_string()
+        };
+    }
+    if manifest.contract_version.trim().is_empty() {
+        manifest.contract_version = if manifest.source_kind == "python" {
+            CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()
+        } else {
+            manifest.abi_version.clone()
+        };
+    }
+    manifest
 }
 
 fn validate_slug(value: &str, field_name: &str) -> Result<(), String> {
@@ -535,7 +792,12 @@ fn validate_slug(value: &str, field_name: &str) -> Result<(), String> {
 }
 
 fn project_record(project_dir: &Path, manifest: ProviderProjectManifest) -> Result<ProviderProjectRecord, String> {
-    let build_path = project_dir.join(BUILD_DIR_NAME).join(BUILD_ARTIFACT_NAME);
+    let build_name = if manifest.source_kind == "python" {
+        BUILD_PYTHON_ARTIFACT_NAME
+    } else {
+        BUILD_ARTIFACT_NAME
+    };
+    let build_path = project_dir.join(BUILD_DIR_NAME).join(build_name);
     let (build_artifact_path, module_hash) = if build_path.is_file() {
         let bytes = fs::read(&build_path)
             .map_err(|error| format!("failed to read build artifact {}: {error}", build_path.display()))?;
@@ -551,6 +813,11 @@ fn project_record(project_dir: &Path, manifest: ProviderProjectManifest) -> Resu
         service_id: manifest.service_id,
         offer_id: manifest.offer_id,
         summary: manifest.summary,
+        runtime: manifest.runtime,
+        package_kind: manifest.package_kind,
+        entrypoint_kind: manifest.entrypoint_kind,
+        contract_version: manifest.contract_version,
+        mounts: manifest.mounts,
         execution_kind: manifest.execution_kind,
         abi_version: manifest.abi_version,
         mode: manifest.mode,

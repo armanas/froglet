@@ -28,6 +28,26 @@ async function frogletRequest(baseUrl, tokenPath, timeoutMs, method, path, { jso
   })
 }
 
+function normalizeLegacyExecutionFields(request = {}) {
+  const body = { ...request }
+
+  if (body.execution_kind === undefined) {
+    if (body.runtime === "wasm" && body.package_kind === "inline_module") {
+      body.execution_kind = "wasm_inline"
+    } else if (body.runtime === "wasm" && body.package_kind === "oci_image") {
+      body.execution_kind = "wasm_oci"
+    } else if (body.runtime === "builtin") {
+      body.execution_kind = "builtin"
+    }
+  }
+
+  if (body.abi_version === undefined && typeof body.contract_version === "string") {
+    body.abi_version = body.contract_version
+  }
+
+  return body
+}
+
 export async function frogletStatus({ baseUrl, authTokenPath, requestTimeoutMs }) {
   return frogletRequest(baseUrl, authTokenPath, requestTimeoutMs, "GET", "/v1/froglet/status")
 }
@@ -78,7 +98,7 @@ export async function createProject({
   request
 }) {
   return frogletRequest(baseUrl, authTokenPath, requestTimeoutMs, "POST", "/v1/froglet/projects", {
-    jsonBody: request,
+    jsonBody: normalizeLegacyExecutionFields(request),
     expectedStatuses: [200, 201]
   })
 }
@@ -197,7 +217,7 @@ export async function publishArtifact({
     "POST",
     "/v1/froglet/artifacts/publish",
     {
-      jsonBody: request,
+      jsonBody: normalizeLegacyExecutionFields(request),
       expectedStatuses: [200, 201]
     }
   )
@@ -296,7 +316,7 @@ export async function runCompute({
     requestTimeoutMs,
     "POST",
     "/v1/froglet/compute/run",
-    { jsonBody: request }
+    { jsonBody: normalizeLegacyExecutionFields(request) }
   )
 }
 

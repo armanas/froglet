@@ -11,7 +11,7 @@ impl ServiceId {
     pub fn as_str(&self) -> &'static str {
         match self {
             ServiceId::EventsQuery => "events.query",
-            ServiceId::ExecuteWasm => "execute.wasm",
+            ServiceId::ExecuteWasm => "execute.compute",
         }
     }
 }

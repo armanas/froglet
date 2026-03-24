@@ -1,4 +1,4 @@
-use crate::{pricing::ServiceId, wasm::WasmSubmission};
+use crate::{execution::ExecutionWorkload, pricing::ServiceId, wasm::WasmSubmission};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,15 @@ impl FaaSDescriptor {
         Self {
             jobs_api: true,
             idempotency_keys: true,
-            runtimes: vec!["wasm".to_string()],
+            runtimes: vec![
+                "wasm".to_string(),
+                "python".to_string(),
+                "container".to_string(),
+                "builtin".to_string(),
+                "tee.service".to_string(),
+                "tee.wasm".to_string(),
+                "tee.python".to_string(),
+            ],
         }
     }
 }
@@ -29,6 +37,9 @@ impl FaaSDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobSpec {
+    Execution {
+        execution: ExecutionWorkload,
+    },
     Wasm {
         submission: WasmSubmission,
     },
@@ -40,6 +51,13 @@ pub enum JobSpec {
 impl JobSpec {
     pub fn service_id(&self) -> ServiceId {
         match self {
+            JobSpec::Execution { execution } => {
+                if execution.builtin_name.as_deref() == Some("events.query") {
+                    ServiceId::EventsQuery
+                } else {
+                    ServiceId::ExecuteWasm
+                }
+            }
             JobSpec::Wasm { .. } => ServiceId::ExecuteWasm,
             JobSpec::OciWasm { .. } => ServiceId::ExecuteWasm,
         }
@@ -47,13 +65,15 @@ impl JobSpec {
 
     pub fn kind(&self) -> &'static str {
         match self {
+            JobSpec::Execution { .. } => "execution",
             JobSpec::Wasm { .. } => "wasm",
             JobSpec::OciWasm { .. } => "oci_wasm",
         }
     }
 
-    pub fn workload_kind(&self) -> &'static str {
+    pub fn workload_kind(&self) -> &str {
         match self {
+            JobSpec::Execution { execution } => execution.workload_kind.as_str(),
             JobSpec::Wasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1,
             JobSpec::OciWasm { .. } => crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1,
         }
@@ -61,6 +81,7 @@ impl JobSpec {
 
     pub fn request_hash(&self) -> Result<String, String> {
         match self {
+            JobSpec::Execution { execution } => execution.request_hash(),
             JobSpec::Wasm { submission } => submission.workload_hash(),
             JobSpec::OciWasm { submission } => submission.workload_hash(),
         }

@@ -6,6 +6,17 @@ The node model is the same too: a Froglet node can publish local services and
 invoke remote services. NemoClaw only changes where the plugin runs and how it
 reaches the Froglet control API.
 
+Named services, data services, and open-ended compute are all the same Froglet
+primitive at the deal layer.
+
+Current implementation note:
+
+- the checked-in execution profiles are current reference implementations
+- broader interpreted/container compute is part of the same Froglet primitive
+
+Remote service listing still goes through Froglet discovery. If discovery is
+misconfigured or unhealthy, `discover_services` returns a structured error.
+
 ## Deployment
 
 In NemoClaw the plugin runs inside the sandbox and talks to the host-side
@@ -65,3 +76,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 The bot-facing tool contract is identical to OpenClaw: one tool named
 `froglet`.
+
+The same project rules apply as OpenClaw:
+
+- `summary` is metadata only
+- `starter` and `result_json` are the explicit scaffolding inputs
+- blank projects stay hidden until you write/build/test/publish real code

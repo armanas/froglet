@@ -913,7 +913,7 @@ mod tests {
                 tor_status: "disabled".to_string(),
             },
             services: vec![ServicePriceInfo {
-                service_id: "execute.wasm".to_string(),
+                service_id: "execute.compute".to_string(),
                 price_sats: 0,
                 payment_required: false,
             }],

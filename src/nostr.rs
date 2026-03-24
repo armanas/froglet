@@ -170,7 +170,7 @@ pub fn build_offer_summary_event(
         artifact_hash: offer.hash.clone(),
         descriptor_hash: descriptor.hash.clone(),
         resource_kind: resource_kind.clone(),
-        runtime: Some(offer.payload.execution_profile.runtime.clone()),
+        runtime: Some(offer.payload.execution_profile.runtime.as_str().to_string()),
         payment_required: price_sats > 0,
         payment_methods: vec![offer.payload.settlement_method.clone()],
         price_sats,
@@ -190,11 +190,15 @@ pub fn build_offer_summary_event(
     ];
     tags.push(vec![
         "t".to_string(),
-        offer.payload.execution_profile.runtime.clone(),
+        offer.payload.execution_profile.runtime.as_str().to_string(),
     ]);
     tags.push(vec![
         "t".to_string(),
-        offer.payload.execution_profile.abi_version.clone(),
+        if offer.payload.execution_profile.contract_version.is_empty() {
+            offer.payload.execution_profile.abi_version.clone()
+        } else {
+            offer.payload.execution_profile.contract_version.clone()
+        },
     ]);
     let settlement_method = offer.payload.settlement_method.clone();
     tags.push(vec!["t".to_string(), settlement_method]);

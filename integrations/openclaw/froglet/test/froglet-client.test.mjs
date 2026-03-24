@@ -20,17 +20,35 @@ async function withTokenPath(fn) {
 test("createProject accepts HTTP 201 responses", async () => {
   await withTokenPath(async (tokenPath) => {
     const previousFetch = global.fetch
-    global.fetch = async () =>
-      new Response(JSON.stringify({ project: { project_id: "lol" } }), {
+    global.fetch = async (_url, options = {}) => {
+      const body = JSON.parse(options.body)
+      assert.equal(body.name, "lol")
+      assert.equal(body.runtime, "python")
+      assert.equal(body.package_kind, "inline_source")
+      assert.equal(body.entrypoint_kind, "handler")
+      assert.equal(body.entrypoint, "handler.py")
+      assert.equal(body.contract_version, "froglet.compute.python.v1")
+      assert.equal(body.abi_version, "froglet.compute.python.v1")
+      assert.equal(body.execution_kind, undefined)
+      return new Response(JSON.stringify({ project: { project_id: "lol" } }), {
         status: 201,
         headers: { "Content-Type": "application/json" }
       })
+    }
     try {
       const response = await createProject({
         baseUrl: "http://127.0.0.1:9191",
         authTokenPath: tokenPath,
         requestTimeoutMs: 1000,
-        request: { name: "lol", result_json: "lol" }
+        request: {
+          name: "lol",
+          result_json: "lol",
+          runtime: "python",
+          package_kind: "inline_source",
+          entrypoint_kind: "handler",
+          entrypoint: "handler.py",
+          contract_version: "froglet.compute.python.v1"
+        }
       })
       assert.equal(response.project.project_id, "lol")
     } finally {
@@ -43,8 +61,21 @@ test("publish endpoints accept HTTP 201 responses", async () => {
   await withTokenPath(async (tokenPath) => {
     const previousFetch = global.fetch
     let callCount = 0
-    global.fetch = async () => {
+    global.fetch = async (_url, options = {}) => {
       callCount += 1
+      if (callCount === 1) {
+        assert.equal(options.body, undefined)
+      } else {
+        const body = JSON.parse(options.body)
+        assert.equal(body.runtime, "wasm")
+        assert.equal(body.package_kind, "inline_module")
+        assert.equal(body.entrypoint_kind, "handler")
+        assert.equal(body.entrypoint, "source/main.wat")
+        assert.equal(body.contract_version, "froglet.compute.v1")
+        assert.equal(body.execution_kind, "wasm_inline")
+        assert.equal(body.abi_version, "froglet.compute.v1")
+        assert.equal(body.wasm_module_hex, undefined)
+      }
       return new Response(JSON.stringify({ status: "passed" }), {
         status: 201,
         headers: { "Content-Type": "application/json" }
@@ -64,8 +95,12 @@ test("publish endpoints accept HTTP 201 responses", async () => {
         request: {
           service_id: "lol",
           offer_id: "lol",
-          execution_kind: "wasm_inline",
-          wasm_module_hex: "0061736d01000000"
+          runtime: "wasm",
+          package_kind: "inline_module",
+          entrypoint_kind: "handler",
+          entrypoint: "source/main.wat",
+          contract_version: "froglet.compute.v1",
+          artifact_path: "/tmp/lol.wasm"
         }
       })
       assert.equal(projectResponse.status, "passed")

@@ -25,6 +25,17 @@ Use the checked-in example config:
 - run expert raw compute
 
 The default path is named services. `run_compute` is the low-level fallback.
+Named services, data services, and open-ended compute are all the same Froglet
+primitive at the deal layer.
+
+Current implementation note:
+
+- the checked-in execution profiles are current reference implementations
+- broader interpreted/container compute is part of the generic Froglet
+  execution model, not a separate product line
+
+Remote discovery is authoritative: `discover_services` should list remote
+services through Froglet discovery rather than by direct peer guessing.
 
 ## Typical Flow
 
@@ -44,8 +55,12 @@ Useful defaults:
 
 - `create_project` may use `name` instead of explicit ids
 - `create_project` may use `result_json` for a simple fixed-response service
-- `create_project` auto-publishes when `publication_state=active`
+- `create_project` auto-publishes only when `publication_state=active` and you
+  provided `starter` or `result_json`
+- blank projects are scaffolds only; use `publication_state=hidden` until you
+  have written real source
 - `invoke_service` can resolve a unique `service_id` automatically
+- `summary` is metadata only; it does not generate service code
 
 ## Managed Launcher
 
