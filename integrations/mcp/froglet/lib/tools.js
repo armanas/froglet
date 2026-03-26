@@ -399,6 +399,7 @@ async function handleCompute(args, config) {
       provider_id: args.provider_id,
       provider_url: args.provider_url,
       input: args.input,
+      artifact_path: args.artifact_path,
       wasm_module_hex: args.wasm_module_hex,
       inline_source: args.inline_source,
       oci_reference: args.oci_reference,
@@ -534,7 +535,7 @@ export function buildToolDefinitions(config) {
           entrypoint: { type: "string" },
           contract_version: { type: "string" },
           mounts: { description: "Mount handles or bindings." },
-          wasm_module_hex: { type: "string", description: "Inline Wasm module bytes in hex for publish_artifact." },
+          wasm_module_hex: { type: "string", description: "Inline Wasm module bytes in hex for publish_artifact. Low-level escape hatch — prefer artifact_path." },
           inline_source: { type: "string", description: "Inline source text for Python-backed authored services." },
           starter: { type: "string" },
           result_json: { description: "Static JSON result for simple constant-return services." },
@@ -572,12 +573,13 @@ export function buildToolDefinitions(config) {
     {
       name: "froglet_compute",
       description:
-        "Execute open-ended compute on a Froglet provider without a registered service. You must target a provider with provider_id or provider_url because service discovery/listing does not expose this path automatically; it uses the provider's direct compute offer. Current supported inputs are inline Wasm via wasm_module_hex, inline Python via inline_source, OCI-backed Wasm, and OCI image execution for python/container profiles. Zip archives are not yet supported.",
+        "Execute open-ended compute on a Froglet provider without a registered service. You must target a provider with provider_id or provider_url because service discovery/listing does not expose this path automatically; it uses the provider's direct compute offer. Preferred input for Wasm is artifact_path (a local filesystem path to a .wasm file); wasm_module_hex is a low-level escape hatch. Also supports inline Python via inline_source, OCI-backed Wasm, and OCI image execution for python/container profiles. Zip archives are not yet supported.",
       inputSchema: {
         type: "object",
         properties: {
           input: { description: "Input payload for the compute workload." },
-          wasm_module_hex: { type: "string", description: "Inline Wasm module bytes in hex for runtime=wasm package_kind=inline_module." },
+          artifact_path: { type: "string", description: "Local filesystem path to a .wasm module file. Preferred over wasm_module_hex for Wasm compute." },
+          wasm_module_hex: { type: "string", description: "Inline Wasm module bytes in hex. Low-level escape hatch — prefer artifact_path." },
           inline_source: { type: "string", description: "Inline Python source for runtime=python package_kind=inline_source." },
           oci_reference: { type: "string" },
           oci_digest: { type: "string" },

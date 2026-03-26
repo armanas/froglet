@@ -233,6 +233,8 @@ struct RunComputeRequest {
     #[serde(default)]
     input: Option<Value>,
     #[serde(default)]
+    artifact_path: Option<String>,
+    #[serde(default)]
     wasm_module_hex: Option<String>,
     #[serde(default)]
     inline_source: Option<String>,
@@ -2045,7 +2047,7 @@ fn build_execution_from_compute_request(
     let runtime = if let Some(runtime) = payload.runtime.as_deref() {
         ExecutionRuntime::parse(runtime)
             .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
-    } else if payload.wasm_module_hex.is_some() {
+    } else if payload.wasm_module_hex.is_some() || payload.artifact_path.is_some() {
         ExecutionRuntime::Wasm
     } else if payload.inline_source.is_some() {
         ExecutionRuntime::Python
@@ -2062,7 +2064,7 @@ fn build_execution_from_compute_request(
             StatusCode::BAD_REQUEST,
             json!({
                 "error": "runtime is required when execution cannot be inferred",
-                "details": "set runtime/package_kind or provide inline_source/wasm_module_hex"
+                "details": "set runtime/package_kind or provide artifact_path/inline_source/wasm_module_hex"
             }),
         ));
     };
@@ -2071,7 +2073,7 @@ fn build_execution_from_compute_request(
             .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
     } else if payload.inline_source.is_some() {
         ExecutionPackageKind::InlineSource
-    } else if payload.wasm_module_hex.is_some() {
+    } else if payload.wasm_module_hex.is_some() || payload.artifact_path.is_some() {
         ExecutionPackageKind::InlineModule
     } else if payload.oci_reference.is_some() || payload.oci_digest.is_some() {
         ExecutionPackageKind::OciImage
@@ -2080,7 +2082,7 @@ fn build_execution_from_compute_request(
             StatusCode::BAD_REQUEST,
             json!({
                 "error": "package_kind is required when execution cannot be inferred",
-                "details": "set package_kind or provide inline_source/wasm_module_hex/oci_reference"
+                "details": "set package_kind or provide artifact_path/inline_source/wasm_module_hex/oci_reference"
             }),
         ));
     };
@@ -2101,18 +2103,46 @@ fn build_execution_from_compute_request(
 
     let execution = match (&runtime, &package_kind) {
         (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
-            let Some(module_bytes_hex) = payload.wasm_module_hex.clone() else {
-                return Err(error_json(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": "wasm_module_hex is required for inline Wasm compute" }),
-                ));
+            let (module_bytes, module_bytes_hex) = match (
+                payload.artifact_path.as_ref(),
+                payload.wasm_module_hex.as_ref(),
+            ) {
+                (Some(path), None) => {
+                    let bytes = std::fs::read(path).map_err(|error| {
+                        error_json(
+                            StatusCode::BAD_REQUEST,
+                            json!({
+                                "error": "failed to read artifact_path",
+                                "artifact_path": path,
+                                "details": error.to_string(),
+                            }),
+                        )
+                    })?;
+                    let hex_str = hex::encode(&bytes);
+                    (bytes, hex_str)
+                }
+                (None, Some(hex_str)) => {
+                    let bytes = hex::decode(hex_str).map_err(|error| {
+                        error_json(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": format!("invalid wasm_module_hex: {error}") }),
+                        )
+                    })?;
+                    (bytes, hex_str.clone())
+                }
+                (Some(_), Some(_)) => {
+                    return Err(error_json(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "provide artifact_path or wasm_module_hex, not both" }),
+                    ));
+                }
+                (None, None) => {
+                    return Err(error_json(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "artifact_path or wasm_module_hex is required for inline Wasm compute" }),
+                    ));
+                }
             };
-            let module_bytes = hex::decode(&module_bytes_hex).map_err(|error| {
-                error_json(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": format!("invalid wasm_module_hex: {error}") }),
-                )
-            })?;
             let mut workload = crate::wasm::ComputeWasmWorkload::new(&module_bytes, &input)
                 .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?;
             workload.abi_version = contract_version.clone();

@@ -116,7 +116,7 @@ export function registerFrogletTool(api, config) {
           wasm_module_hex: {
             type: "string",
             description:
-              "Optional inline Wasm module bytes in hex. Use this for direct inline Wasm compute or publish_artifact with runtime=wasm package_kind=inline_module."
+              "Optional inline Wasm module bytes in hex. Low-level escape hatch for direct inline Wasm compute or publish_artifact. Prefer artifact_path instead."
           },
           inline_source: {
             type: "string",
@@ -533,6 +533,7 @@ export function registerFrogletTool(api, config) {
                 provider_id: args.provider_id,
                 provider_url: args.provider_url,
                 input: args.input,
+                artifact_path: args.artifact_path,
                 wasm_module_hex: args.wasm_module_hex,
                 inline_source: args.inline_source,
                 oci_reference: args.oci_reference,

@@ -55,7 +55,7 @@ async function callResponses(body) {
   return json
 }
 
-async function runScenario(froglet, name, prompt, requiredActions = []) {
+async function runScenario(froglet, name, prompt, requiredActions = [], { injectBeforeExecute } = {}) {
   const toolCalls = []
   const toolOutputs = []
   let previousResponseId = null
@@ -108,6 +108,9 @@ async function runScenario(froglet, name, prompt, requiredActions = []) {
         service_id: args.service_id ?? null,
         project_id: args.project_id ?? null
       })
+      if (injectBeforeExecute) {
+        injectBeforeExecute(args)
+      }
       try {
         const result = await froglet.execute(call.name, args)
         const output = result.content?.[0]?.text ?? ""
@@ -165,18 +168,17 @@ async function main() {
       requiredActions: ["list_projects", "get_local_service", "tail_logs"]
     },
     {
-      name: "direct_compute_python",
+      name: "direct_compute_wasm",
       prompt:
-        'Call froglet exactly once with these exact JSON arguments: ' +
-        JSON.stringify({
-          action: "run_compute",
-          provider_url: "http://127.0.0.1:8080",
-          runtime: "wasm",
-          package_kind: "inline_module",
-          wasm_module_hex: validWasmHex
-        }) +
-        ". Return the compute result.",
-      requiredActions: ["run_compute"]
+        'Call froglet exactly once with action "run_compute", provider_url "http://127.0.0.1:8080", ' +
+        'runtime "wasm", and package_kind "inline_module". Do NOT supply wasm_module_hex — the harness ' +
+        "will inject it. Return the compute result.",
+      requiredActions: ["run_compute"],
+      injectBeforeExecute(args) {
+        if (args.action === "run_compute" && !args.wasm_module_hex) {
+          args.wasm_module_hex = validWasmHex
+        }
+      }
     },
     {
       name: "expected_missing_service_error",
@@ -190,7 +192,9 @@ async function main() {
   const results = []
   for (const scenario of scenarios) {
     results.push(
-      await runScenario(froglet, scenario.name, scenario.prompt, scenario.requiredActions)
+      await runScenario(froglet, scenario.name, scenario.prompt, scenario.requiredActions, {
+        injectBeforeExecute: scenario.injectBeforeExecute
+      })
     )
   }
 
