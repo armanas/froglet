@@ -139,9 +139,12 @@ async function runScenario(froglet, name, prompt, requiredActions = [], { inject
 }
 
 async function main() {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required")
+  const apiKey = process.env.OPENCLAW_API_KEY || process.env.OPENAI_API_KEY
+  if (!apiKey) {
+    throw new Error("OPENCLAW_API_KEY or OPENAI_API_KEY is required")
   }
+  // Normalize to OPENAI_API_KEY for the callResponses function
+  process.env.OPENAI_API_KEY = apiKey
 
   const froglet = loadFrogletTool()
   const suffix = Date.now()

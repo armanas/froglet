@@ -79,10 +79,11 @@ At the product surface, this should feel like one thing:
 
 Those are UX distinctions over the same underlying deal flow.
 
-The runtime may expose local handles, helper endpoints, polling views, wallet-facing payment intents, and compatibility routes.
+The runtime may expose local handles, helper endpoints, polling views,
+wallet-facing payment intents, and compatibility routes.
 Those are product decisions, not protocol commitments.
-
-The planned evolution from this runtime toward fuller long-running agent workflows is described in `REMOTE_AGENT_LAYER.md`.
+Longer-running agent workflows should stay above the runtime and reuse ordinary
+Froglet deals rather than widening the kernel.
 
 ## 5. Reference Discovery and Higher Layers
 
@@ -101,9 +102,8 @@ Examples:
 
 These services consume signed artifacts.
 They are not themselves the source of truth.
-Detailed staged planning for this layer may live under `../higher_layers/`
-during open incubation or outside the core repo for private or closed-source
-deployments. The core repo only defines the boundary and shared contract.
+The core repo defines the boundary and shared contract; product-specific
+planning should live with the owning service or deployment.
 
 ## 6. What Stays Out of the Kernel
 

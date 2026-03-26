@@ -45,8 +45,8 @@ Intentionally outside this repo or later:
 
 - marketplace or catalog products, which may live out-of-tree or be closed
   source
-- long-running batch orchestration, which belongs in the planned remote-agent
-  layer
+- long-running batch orchestration, which remains out of scope for the current
+  v1 runtime surface
 - native deployment adapters for AWS, GCP, OVH, and similar cloud providers
 - zip or archive packaging as a first-class execution submission format
 
@@ -208,5 +208,4 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - [docs/OPERATOR.md](docs/OPERATOR.md)
 - [docs/OPENCLAW.md](docs/OPENCLAW.md)
 - [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
-- [docs/REMOTE_AGENT_LAYER.md](docs/REMOTE_AGENT_LAYER.md)
 - [SPEC.md](SPEC.md)

@@ -289,10 +289,13 @@ run_smoke() {
 run_agentic() {
   banner "agentic"
 
-  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-    skip_warn "agentic tests require OPENAI_API_KEY"
+  # Support OPENCLAW_API_KEY with OPENAI_API_KEY fallback
+  local api_key="${OPENCLAW_API_KEY:-${OPENAI_API_KEY:-}}"
+  if [[ -z "$api_key" ]]; then
+    skip_warn "agentic tests require OPENCLAW_API_KEY or OPENAI_API_KEY"
     return 0
   fi
+  export OPENAI_API_KEY="$api_key"
   if ! has_node; then
     skip_warn "agentic tests require node >= 18"
     return 0
@@ -304,14 +307,319 @@ run_agentic() {
 }
 
 # ---------------------------------------------------------------------------
-# Category: pentest (placeholder)
+# Category: pentest
 # ---------------------------------------------------------------------------
 run_pentest() {
   banner "pentest"
-  echo "  Penetration testing is a placeholder category."
-  echo "  Future scripts should be added to tests/pentest/."
-  echo "  See tests/README.md for conventions."
-  return 0
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_pentest -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: performance (API benchmarking)
+# ---------------------------------------------------------------------------
+run_performance() {
+  banner "performance"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_bench_api -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: spike (sudden traffic surges)
+# ---------------------------------------------------------------------------
+run_spike() {
+  banner "spike"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_spike -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: soak (endurance / stability)
+# ---------------------------------------------------------------------------
+run_soak() {
+  banner "soak"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_soak -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: fuzz (HTTP API fuzzing)
+# ---------------------------------------------------------------------------
+run_fuzz() {
+  banner "fuzz"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_fuzz_api -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: blackbox (public API testing without internal knowledge)
+# ---------------------------------------------------------------------------
+run_blackbox() {
+  banner "blackbox"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_blackbox -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: graybox (blackbox + selected white-box unit tests)
+# ---------------------------------------------------------------------------
+run_graybox() {
+  banner "graybox"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest \
+      python.tests.test_blackbox \
+      python.tests.test_security -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: acceptance (UAT scenarios)
+# ---------------------------------------------------------------------------
+run_acceptance() {
+  banner "acceptance"
+  local rc=0
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_acceptance -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: chaos (Docker failure injection)
+# ---------------------------------------------------------------------------
+run_chaos() {
+  banner "chaos"
+
+  if ! has_docker; then
+    skip_warn "chaos tests require Docker"
+    return 0
+  fi
+
+  local rc=0
+  step bash tests/chaos/chaos_runner.sh || rc=1
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: exploratory (AI-driven exploratory testing)
+# ---------------------------------------------------------------------------
+run_exploratory() {
+  banner "exploratory"
+
+  local api_key="${OPENCLAW_API_KEY:-${OPENAI_API_KEY:-}}"
+  if [[ -z "$api_key" ]]; then
+    skip_warn "exploratory tests require OPENCLAW_API_KEY or OPENAI_API_KEY"
+    return 0
+  fi
+  if ! has_node; then
+    skip_warn "exploratory tests require node >= 18"
+    return 0
+  fi
+
+  local rc=0
+  export OPENAI_API_KEY="$api_key"
+  step node tests/e2e/agentic_exploratory.mjs || rc=1
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: mutation (cargo-mutants)
+# ---------------------------------------------------------------------------
+has_cargo_mutants() { command -v cargo-mutants >/dev/null 2>&1; }
+
+run_mutation() {
+  banner "mutation"
+
+  if ! has_cargo; then
+    skip_warn "cargo not found"
+    return 0
+  fi
+  if ! has_cargo_mutants; then
+    skip_warn "cargo-mutants not installed (cargo install cargo-mutants)"
+    return 0
+  fi
+
+  local rc=0
+  step cargo mutants --timeout 60 --jobs 4 || rc=1
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: vulnscan (dependency vulnerability scanning)
+# ---------------------------------------------------------------------------
+run_vulnscan() {
+  banner "vulnscan"
+  local rc=0
+
+  if has_cargo_audit; then
+    step cargo audit || rc=1
+  else
+    skip_warn "cargo-audit not installed"
+  fi
+
+  if has_npm; then
+    step npm audit --prefix integrations/mcp/froglet --audit-level=high || true
+  else
+    skip_warn "npm not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: sanity (quick health check)
+# ---------------------------------------------------------------------------
+run_sanity() {
+  banner "sanity"
+  local rc=0
+
+  if has_cargo; then
+    step cargo test --lib -- --test-threads=1 crypto::tests || rc=1
+  else
+    skip_warn "cargo not found"
+  fi
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_client_sdk -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: regression (all + baseline comparison)
+# ---------------------------------------------------------------------------
+run_regression() {
+  banner "regression"
+  local rc=0
+  for cat in unit integration sast security conformance blackbox acceptance; do
+    run_category "$cat" || rc=1
+  done
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: e2e (complete user workflows)
+# ---------------------------------------------------------------------------
+run_e2e() {
+  banner "e2e"
+  local rc=0
+  for cat in smoke blackbox acceptance; do
+    run_category "$cat" || rc=1
+  done
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Category: canary (acceptance on partial deploy — provider+discovery only)
+# ---------------------------------------------------------------------------
+run_canary() {
+  banner "canary"
+  local rc=0
+
+  if ! has_docker; then
+    skip_warn "canary tests require Docker"
+    return 0
+  fi
+
+  # Start only discovery + provider (no operator, no runtime)
+  step docker compose up --build -d --wait discovery provider || { return 1; }
+
+  if has_python; then
+    step python3 -W error -m unittest python.tests.test_blackbox -v || rc=1
+  else
+    skip_warn "python3 not found"
+  fi
+
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Meta-category: gcp_rig (GCP-backed test execution on ephemeral VM)
+# ---------------------------------------------------------------------------
+run_gcp_rig() {
+  banner "gcp_rig"
+
+  if [[ -z "${FROGLET_GCP_PROJECT:-}" ]]; then
+    skip_warn "gcp_rig requires FROGLET_GCP_PROJECT"
+    return 0
+  fi
+  if ! command -v gcloud >/dev/null 2>&1; then
+    skip_warn "gcp_rig requires gcloud CLI"
+    return 0
+  fi
+
+  # Source GCP instance manager
+  source "$repo_root/scripts/gcp_instance.sh"
+
+  local rc=0
+
+  # Step 1: Create and provision the VM
+  step gcp_create_instance
+  step gcp_wait_ready
+  step gcp_deploy_stack
+
+  # Step 2: Run test categories on the VM
+  local categories="${GCP_RIG_CATEGORIES:-performance spike fuzz blackbox acceptance pentest}"
+  step gcp_run_test_on_vm "$categories" || rc=1
+
+  # Step 3: Cleanup is handled by EXIT trap in gcp_instance.sh
+
+  return $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -350,7 +658,9 @@ run_full() {
 run_category() {
   local cat="$1"
   case "$cat" in
-    unit|integration|sast|security|conformance|stress|smoke|agentic|pentest|all|full)
+    unit|integration|sast|security|conformance|stress|smoke|agentic|pentest|\
+    performance|spike|soak|fuzz|blackbox|graybox|acceptance|chaos|exploratory|\
+    mutation|vulnscan|sanity|regression|e2e|canary|gcp_rig|all|full)
       if ! "run_$cat"; then
         FAILURES+=("$cat")
         return 1
@@ -371,25 +681,54 @@ show_list() {
   cat <<'EOF'
 Available test categories:
 
+  Core:
   unit          Rust unit tests (--lib), Python unit tests, Node OpenClaw + MCP unit tests
   integration   Rust integration tests (--tests), Python integration tests
   sast          Static analysis: cargo fmt, clippy, node --check, py_compile
   security      Python security/privacy/hardening, Rust crypto tests, cargo-audit, npm audit
   conformance   Kernel conformance vectors (Rust + Python)
-  stress        Python stress tests
+  stress        Python stress tests (concurrent publish + query)
   smoke         Docker Compose E2E: OpenClaw + MCP compose-smoke (requires Docker)
-  agentic       OpenAI Responses smoke test (requires OPENAI_API_KEY + running operator)
-  pentest       Placeholder for future penetration testing scripts
+  agentic       OpenAI Responses smoke test (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
 
-Meta-categories:
+  Extended:
+  performance   API latency benchmarking (p50/p95/p99) and throughput
+  spike         Sudden traffic surge testing and recovery measurement
+  soak          Endurance testing (sustained load, degradation detection)
+  fuzz          HTTP API fuzzing with malformed/oversized/injection payloads
+  blackbox      Black box API testing (no internal knowledge)
+  graybox       Black box + selected white-box tests
+  acceptance    User acceptance testing (UAT business scenarios)
+  pentest       Automated penetration testing (auth bypass, injection, replay)
+  chaos         Docker failure injection (kill services, network partitions)
+  exploratory   AI-driven exploratory testing (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
+  mutation      Mutation testing via cargo-mutants (requires cargo-mutants)
+  vulnscan      Dependency vulnerability scanning (cargo-audit, npm audit)
+  sanity        Quick health check (crypto tests + client SDK)
+  canary        Acceptance tests on partial deploy (provider + discovery only)
+
+  Meta-categories:
   all           unit + integration + sast + security + conformance
   full          all + stress + smoke + agentic + tor(if env) + lnd-regtest(if env)
+  regression    all + blackbox + acceptance
+  e2e           smoke + blackbox + acceptance
+  gcp_rig       Provision GCP VM, deploy stack, run extended tests on-VM
+                (requires FROGLET_GCP_PROJECT + gcloud CLI)
+
+  Env vars:
+  OPENCLAW_API_KEY / OPENAI_API_KEY   For agentic + exploratory tests
+  FROGLET_GCP_PROJECT                 GCP project ID for gcp_rig
+  FROGLET_PERF_REQUESTS               Benchmark request count (default 500)
+  FROGLET_SOAK_DURATION_MINUTES       Soak test duration (default 5)
+  GCP_RIG_CATEGORIES                  Categories to run on GCP VM
 
 Usage:
   ./scripts/test_suite.sh                     # runs "all"
   ./scripts/test_suite.sh unit security       # run specific categories
   ./scripts/test_suite.sh --dry-run full      # preview commands without executing
   ./scripts/test_suite.sh --list              # this help
+  ./scripts/test_suite.sh fuzz pentest        # run fuzz + penetration tests
+  ./scripts/test_suite.sh gcp_rig             # full GCP-backed test rig
 EOF
 }
 

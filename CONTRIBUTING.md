@@ -35,6 +35,6 @@ Or run the full matrix in one shot:
 ## Guidelines
 
 - Keep the kernel small — new features belong in adapters or higher layers unless they require a signed artifact or a state transition.
-- Public code in this repo must not depend on ignored `private/` incubations; private higher-layer services should consume only public APIs, signed artifacts, or documented external contracts.
+- Public code in this repo must not depend on private or unpublished higher-layer services; those services should consume only public APIs, signed artifacts, or documented external contracts.
 - Prefer editing existing files over adding new ones.
 - Match the existing code style; the formatter and linter enforce the rest.

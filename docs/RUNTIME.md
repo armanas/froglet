@@ -30,8 +30,8 @@ At the product surface:
   metadata
 - open-ended compute uses the provider's direct compute offer
 - bounded async execution is exposed through task polling
-- longer-running orchestration, batch workflows, and checkpoint/resume remain a
-  higher-layer concern described in `REMOTE_AGENT_LAYER.md`
+- longer-running orchestration, batch workflows, and checkpoint/resume remain
+  higher-layer concerns above the runtime
 
 Current implementation note:
 
