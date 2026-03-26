@@ -31,6 +31,7 @@ The execution material for those bindings may eventually be delivered as:
 
 - module uploads
 - interpreted source bundles
+- archive bundles such as zip files
 - container or image references
 - other runtime-specific submission wrappers
 
@@ -40,9 +41,9 @@ Current implementation note:
   wrappers for the current execution profiles
 - those wrappers are reference adapters, not the permanent product boundary
 
-Longer-term delivery formats may include interpreted source bundles and
-container or image references as first-class execution profiles over the same
-Froglet primitive.
+Longer-term delivery formats may include interpreted source bundles, archive
+bundles such as zip files, and container or image references as first-class
+execution profiles over the same Froglet primitive.
 
 ## 3. Invoice Bundle Delivery
 
@@ -103,3 +104,23 @@ They are not canonical economic state.
 A marketplace is not a special protocol actor.
 It is just another Froglet node or service that consumes signed Froglet
 artifacts and republishes higher-layer discovery information.
+Marketplace implementations may be shipped in this repo, in separate repos, or
+as closed-source services. The protocol boundary stays the same either way.
+
+## 6. Deployment Adapters
+
+How a provider or operator stack is deployed is also an adapter boundary.
+
+Examples:
+
+- local Docker Compose or systemd deployments
+- Kubernetes or Nomad packaging
+- native cloud implementations for AWS, GCP, OVH, or similar providers
+
+These deployment adapters may choose their own storage, secret management,
+image, and networking conventions, but they must preserve:
+
+- the same kernel semantics
+- the same signed artifact verification rules
+- the same `/v1/froglet/*` bot/operator contract
+- the same clearnet or Tor reachability semantics once endpoints are published

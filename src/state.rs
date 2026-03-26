@@ -147,11 +147,15 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         &config.storage.runtime_dir,
         &config.storage.consumer_control_auth_token_path,
         "consumer control auth token",
+        config.storage.runtime_dir_mode(),
+        0o600,
     )?;
     let provider_control_auth_token = runtime_auth::load_or_create_local_token(
         &config.storage.runtime_dir,
         &config.storage.provider_control_auth_token_path,
         "provider control auth token",
+        config.storage.runtime_dir_mode(),
+        config.storage.provider_control_token_mode(),
     )?;
     let db_pool = DbPool::open(&config.storage.db_path)
         .map_err(|error| format!("failed to initialize SQLite DB pool: {error}"))?;
@@ -206,6 +210,7 @@ mod tests {
         DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
         PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_config(network_mode: NetworkMode, public_base_url: Option<&str>) -> NodeConfig {
         NodeConfig {
@@ -257,6 +262,7 @@ mod tests {
                     "./data/runtime/froglet-control.token",
                 ),
                 tor_dir: PathBuf::from("./data/tor"),
+                host_readable_control_token: false,
             },
             wasm: WasmConfig {
                 policy_path: None,
@@ -310,6 +316,50 @@ mod tests {
             status.clearnet_url.as_deref(),
             Some("http://127.0.0.1:49152")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_app_state_keeps_provider_control_token_host_readable_when_enabled() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("valid time")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("froglet-state-host-readable-{unique}"));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+
+        let mut config = test_config(NetworkMode::Clearnet, None);
+        config.storage = StorageConfig {
+            data_dir: temp_dir.clone(),
+            db_path: temp_dir.join("node.db"),
+            identity_dir: temp_dir.join("identity"),
+            identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+            runtime_dir: temp_dir.join("runtime"),
+            runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+            tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: true,
+        };
+
+        let state = build_app_state(config).expect("app state");
+        let data_mode =
+            std::fs::metadata(&state.config.storage.data_dir).expect("data dir metadata");
+        let runtime_mode =
+            std::fs::metadata(&state.config.storage.runtime_dir).expect("runtime dir metadata");
+        let provider_token_mode =
+            std::fs::metadata(&state.config.storage.provider_control_auth_token_path)
+                .expect("provider control token metadata");
+        let runtime_token_mode = std::fs::metadata(&state.config.storage.runtime_auth_token_path)
+            .expect("runtime token metadata");
+
+        assert_eq!(data_mode.permissions().mode() & 0o777, 0o755);
+        assert_eq!(runtime_mode.permissions().mode() & 0o777, 0o755);
+        assert_eq!(provider_token_mode.permissions().mode() & 0o777, 0o644);
+        assert_eq!(runtime_token_mode.permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

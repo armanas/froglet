@@ -500,6 +500,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
             provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: false,
         },
         wasm: WasmConfig {
             policy_path: None,

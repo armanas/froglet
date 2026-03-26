@@ -3,24 +3,59 @@
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
 
-Froglet is a signed-deal resource protocol with a simple bot-facing model:
+Froglet is a signed-deal resource protocol for bots and remote agents.
+It gives one economic primitive for three product shapes:
+
+- named services
+- data-backed services
+- open-ended compute
+
+The bot-facing contract is intentionally simple:
 
 - one OpenClaw/NemoClaw plugin id: `froglet`
 - one bot tool: `froglet`
-- named services, data services, and open-ended compute all use the same
-  primitive
-- services are just code/projects, not templates
-- any Froglet node can publish resources and invoke resources
-- discovery is the authoritative remote listing path
+- one MCP server for external agent hosts under `integrations/mcp/froglet/`
 
-Current implementation note:
+## Product Model
 
-- the checked-in execution profiles are reference implementations
-- the public model is broader than any single runtime
-- the documentation now treats interpreted and container-backed compute as
-  first-class execution profiles over the same deal primitive
+- any Froglet node can publish resources and invoke remote resources
+- published resources are execution bindings backed by projects or explicit
+  artifacts
+- identity is first-class in signed artifacts
+- marketplace, ranking, incentive, and broker policy live above the protocol
+- named services and data services are discovered through discovery
+- open-ended compute uses the provider's direct compute offer via
+  `run_compute`, targeted with `provider_id` or `provider_url`
+- the same signed deals can be served over clearnet HTTPS or Tor onion
+  endpoints
 
-## Core Binaries
+## Current Scope
+
+In this repo now:
+
+- runtime, provider, discovery, and operator binaries
+- OpenClaw and NemoClaw bot integration
+- MCP server for external agent hosts
+- local project authoring, build, test, and publish flows
+- direct artifact publication for prebuilt Wasm and OCI-backed profiles
+- reference execution profiles for Wasm, Python, container, and confidential
+  execution paths
+
+Intentionally outside this repo or later:
+
+- marketplace or catalog products, which may live out-of-tree or be closed
+  source
+- long-running batch orchestration, which belongs in the planned remote-agent
+  layer
+- native deployment adapters for AWS, GCP, OVH, and similar cloud providers
+- zip or archive packaging as a first-class execution submission format
+
+Execution hardening today is not uniform across all runtimes.
+The strongest isolation paths are Wasm sandbox execution and confidential/TEE
+profiles; Python and OCI/container execution are supported profiles but inherit
+host or container isolation characteristics.
+
+## Components
 
 | Binary | Purpose |
 | --- | --- |
@@ -29,18 +64,33 @@ Current implementation note:
 | `froglet-discovery` | public discovery service |
 | `froglet-operator` | host-side `/v1/froglet/*` control API |
 
-Marketplace is no longer a special product binary. It is just Froglet services
-published by a Froglet node.
+Marketplace is not a special protocol binary.
+It is just another higher-layer service consuming signed Froglet artifacts.
 
-## Quick Start
+## Fastest Local Start
 
-Start discovery:
+Bring up the default local stack:
+
+```bash
+docker compose up --build -d
+```
+
+That starts:
+
+- discovery on `127.0.0.1:9090`
+- provider on `127.0.0.1:8080`
+- runtime on `127.0.0.1:8081`
+- operator on `127.0.0.1:9191`
+
+Bot-facing local control token:
+
+- `./data/runtime/froglet-control.token`
+
+If you want to run the binaries directly instead of Compose:
 
 ```bash
 cargo run --bin froglet-discovery
 ```
-
-Start the public node API:
 
 ```bash
 FROGLET_DISCOVERY_MODE=reference \
@@ -52,8 +102,6 @@ FROGLET_LIGHTNING_MODE=mock \
 cargo run --bin froglet-provider
 ```
 
-Start the deal/payment runtime:
-
 ```bash
 FROGLET_DISCOVERY_MODE=reference \
 FROGLET_DISCOVERY_URL=http://127.0.0.1:9090 \
@@ -62,22 +110,21 @@ FROGLET_LIGHTNING_MODE=mock \
 cargo run --bin froglet-runtime
 ```
 
-The same node can run both `froglet-provider` and `froglet-runtime`. That is
-the normal model: one Froglet node can publish local resources and invoke
-remote ones.
-
-Start the local control API:
-
 ```bash
 cargo run --bin froglet-operator
 ```
 
-## OpenClaw And NemoClaw
+The normal model is one node running both `froglet-provider` and
+`froglet-runtime`, so it can publish local resources and invoke remote ones.
+
+## Bot Surfaces
+
+### OpenClaw And NemoClaw
 
 Use the shared plugin package in
-[integrations/openclaw/froglet](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet).
+[integrations/openclaw/froglet](integrations/openclaw/froglet).
 
-The plugin config is now unified:
+Unified config keys:
 
 - `hostProduct`
 - `baseUrl`
@@ -86,32 +133,41 @@ The plugin config is now unified:
 - `defaultSearchLimit`
 - `maxSearchLimit`
 
-The tool surface is unified too. The one `froglet` tool supports actions for:
+The one `froglet` tool covers:
 
 - service discovery and invocation
 - local resource inspection and publication
 - project authoring
-- build/test/publish
-- status/logs/restart
+- build, test, and publish
+- status, logs, and restart
 - task polling
 - raw compute
 
 Important behavior:
 
-- `summary` is descriptive metadata only; it does not generate code
-- `starter` and `result_json` are the only built-in scaffolding inputs
-- blank projects are allowed, but they are scaffolds only and should stay hidden
-  until they are edited, built, tested, and published
-- the current code path is still evolving toward generic execution profiles,
-  but that is an implementation detail rather than the permanent Froglet model
+- `summary` is metadata only; it does not generate code
+- `starter` and `result_json` are built-in scaffolding inputs
+- `inline_source` is the explicit direct-code input for authored inline-source
+  services
+- blank projects are scaffolds only and should stay hidden until edited,
+  tested, and published
+- `run_compute` is the low-level path for open-ended compute and should include
+  `provider_id` or `provider_url`
 
-See:
+### MCP Server
 
-- [docs/OPENCLAW.md](docs/OPENCLAW.md)
-- [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
-- [docs/OPERATOR.md](docs/OPERATOR.md)
+External bot hosts can use the MCP server instead of the OpenClaw or NemoClaw
+plugin:
+
+```bash
+node integrations/mcp/froglet/server.js
+```
+
+It exposes the same Froglet control surface over MCP stdio.
 
 ## Verification
+
+Targeted checks:
 
 ```bash
 cargo check -q
@@ -120,5 +176,37 @@ node --check integrations/openclaw/froglet/index.js
 node --check integrations/openclaw/froglet/scripts/doctor.mjs
 node --test integrations/openclaw/froglet/test/plugin.test.js \
   integrations/openclaw/froglet/test/config-profiles.test.mjs \
-  integrations/openclaw/froglet/test/doctor.test.mjs
+  integrations/openclaw/froglet/test/doctor.test.mjs \
+  integrations/openclaw/froglet/test/froglet-client.test.mjs
+node --check integrations/mcp/froglet/server.js
+node --test integrations/mcp/froglet/test/server.test.mjs
 ```
+
+Full repo checks:
+
+```bash
+./scripts/strict_checks.sh
+```
+
+Optional compose-backed bot-surface smoke coverage:
+
+```bash
+FROGLET_RUN_COMPOSE_SMOKE=1 ./scripts/strict_checks.sh
+```
+
+Manual compose-backed smoke commands:
+
+```bash
+node integrations/openclaw/froglet/test/compose-smoke.mjs
+node integrations/mcp/froglet/test/compose-smoke.mjs
+```
+
+## Docs
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/ADAPTERS.md](docs/ADAPTERS.md)
+- [docs/OPERATOR.md](docs/OPERATOR.md)
+- [docs/OPENCLAW.md](docs/OPENCLAW.md)
+- [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
+- [docs/REMOTE_AGENT_LAYER.md](docs/REMOTE_AGENT_LAYER.md)
+- [SPEC.md](SPEC.md)

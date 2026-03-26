@@ -80,5 +80,11 @@ The bot-facing tool contract is identical to OpenClaw: one tool named
 The same project rules apply as OpenClaw:
 
 - `summary` is metadata only
-- `starter` and `result_json` are the explicit scaffolding inputs
+- `starter` and `result_json` are the explicit built-in scaffolding inputs
+- `inline_source` is the explicit direct-code input for authored inline-source
+  services
 - blank projects stay hidden until you write/build/test/publish real code
+- service metadata exposes `offer_kind` and `resource_kind`; direct compute
+  still goes through `run_compute` rather than service listing
+- `run_compute` should include `provider_id` or `provider_url` because direct
+  compute is provider-targeted rather than service-discovered

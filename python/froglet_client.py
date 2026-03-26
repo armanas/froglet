@@ -5,6 +5,7 @@ import json
 import os
 import random
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -470,9 +471,27 @@ class DealHandle:
     payment_intent: dict[str, Any] | None = None
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _validate_base_url(base_url: str, *, allow_insecure: bool = False) -> str:
+    parsed = urllib.parse.urlparse(base_url.rstrip("/"))
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"base_url must use http or https, got {parsed.scheme!r}")
+    if (
+        not allow_insecure
+        and parsed.scheme == "http"
+        and parsed.hostname not in _LOOPBACK_HOSTS
+    ):
+        raise ValueError(
+            "base_url must use https:// (http:// is only allowed for loopback addresses)"
+        )
+    return base_url.rstrip("/")
+
+
 class _JsonApiClient:
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str, *, allow_insecure: bool = False) -> None:
+        self.base_url = _validate_base_url(base_url, allow_insecure=allow_insecure)
         self._session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> "_JsonApiClient":
@@ -711,10 +730,16 @@ class RuntimeClient(_JsonApiClient):
         runtime_base_url: str,
         token: str,
         provider_base_url: str | None = None,
+        *,
+        allow_insecure: bool = False,
     ) -> None:
-        super().__init__(runtime_base_url)
+        super().__init__(runtime_base_url, allow_insecure=allow_insecure)
         self.token = token
-        self.provider_base_url = provider_base_url.rstrip("/") if provider_base_url else None
+        self.provider_base_url = (
+            _validate_base_url(provider_base_url, allow_insecure=allow_insecure)
+            if provider_base_url
+            else None
+        )
 
     @classmethod
     def from_token_file(
@@ -722,9 +747,16 @@ class RuntimeClient(_JsonApiClient):
         runtime_base_url: str,
         token_path: str | Path,
         provider_base_url: str | None = None,
+        *,
+        allow_insecure: bool = False,
     ) -> "RuntimeClient":
         token = Path(token_path).read_text(encoding="utf-8").strip()
-        return cls(runtime_base_url, token, provider_base_url=provider_base_url)
+        return cls(
+            runtime_base_url,
+            token,
+            provider_base_url=provider_base_url,
+            allow_insecure=allow_insecure,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}

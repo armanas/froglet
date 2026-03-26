@@ -13,7 +13,7 @@ pub struct NodeIdentity {
 
 impl NodeIdentity {
     pub fn load_or_create(config: &NodeConfig) -> Result<Self, String> {
-        ensure_dir(&config.storage.data_dir, 0o700)?;
+        ensure_dir(&config.storage.data_dir, config.storage.data_dir_mode())?;
         ensure_dir(&config.storage.identity_dir, 0o700)?;
 
         let signing_key = load_or_create_signing_key(
@@ -238,6 +238,7 @@ mod tests {
                 consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
                 provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
                 tor_dir: temp_dir.join("tor"),
+                host_readable_control_token: false,
             },
             wasm: WasmConfig {
                 policy_path: None,

@@ -190,6 +190,33 @@ pub struct StorageConfig {
     pub consumer_control_auth_token_path: PathBuf,
     pub provider_control_auth_token_path: PathBuf,
     pub tor_dir: PathBuf,
+    pub host_readable_control_token: bool,
+}
+
+impl StorageConfig {
+    pub fn data_dir_mode(&self) -> u32 {
+        if self.host_readable_control_token {
+            0o755
+        } else {
+            0o700
+        }
+    }
+
+    pub fn runtime_dir_mode(&self) -> u32 {
+        if self.host_readable_control_token {
+            0o755
+        } else {
+            0o700
+        }
+    }
+
+    pub fn provider_control_token_mode(&self) -> u32 {
+        if self.host_readable_control_token {
+            0o644
+        } else {
+            0o600
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -470,6 +497,7 @@ impl NodeConfig {
 
         let data_dir =
             PathBuf::from(env::var("FROGLET_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
+        let host_readable_control_token = env_bool("FROGLET_HOST_READABLE_CONTROL_TOKEN", false)?;
         let identity_dir = data_dir.join("identity");
         let identity_seed_path = identity_dir.join("secp256k1.seed");
         let nostr_publication_seed_path = identity_dir.join("nostr-publication.secp256k1.seed");
@@ -522,6 +550,7 @@ impl NodeConfig {
                 consumer_control_auth_token_path,
                 provider_control_auth_token_path,
                 tor_dir,
+                host_readable_control_token,
             },
             wasm: WasmConfig {
                 policy_path: wasm_policy_path,

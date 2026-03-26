@@ -1,6 +1,6 @@
 # Remote Agent Layer
 
-Status: planned post-alpha product layer
+Status: planned later, post-alpha product layer for batch and orchestration work
 
 This document defines how Froglet should grow into fuller remote-agent execution without widening the version 1 economic kernel.
 
@@ -8,6 +8,7 @@ This document defines how Froglet should grow into fuller remote-agent execution
 
 The goal is to support richer agent behavior:
 
+- batch processing
 - longer-running tasks
 - multi-step workflows
 - resumable sessions

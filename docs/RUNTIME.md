@@ -24,6 +24,15 @@ What changed in this cutover is the bot-facing shape above it:
 Named services, data services, and open-ended compute all compile down to the
 same underlying Froglet deal flow.
 
+At the product surface:
+
+- named and data-service bindings are discovered and invoked through service
+  metadata
+- open-ended compute uses the provider's direct compute offer
+- bounded async execution is exposed through task polling
+- longer-running orchestration, batch workflows, and checkpoint/resume remain a
+  higher-layer concern described in `REMOTE_AGENT_LAYER.md`
+
 Current implementation note:
 
 - the checked-in execution profiles are current reference implementations

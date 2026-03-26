@@ -163,6 +163,7 @@ fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
             consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
             provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: false,
         },
         wasm: WasmConfig {
             policy_path: None,
@@ -735,8 +736,14 @@ async fn discovery_provider(
     State(state): State<Arc<DiscoveryState>>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
-    assert_eq!(state.record.descriptor.node_id, node_id);
-    (StatusCode::OK, Json(state.record.clone()))
+    if state.record.descriptor.node_id != node_id {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "node not found" })),
+        )
+            .into_response();
+    }
+    (StatusCode::OK, Json(state.record.clone())).into_response()
 }
 
 struct TestServer {
@@ -1181,6 +1188,28 @@ async fn runtime_provider_details_should_reject_tampered_provider_descriptor() {
     );
     let (status, _response): (StatusCode, Value) = call_json(app, request).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn runtime_provider_details_returns_not_found_for_missing_provider() {
+    let (_provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+    let discovery_server = build_discovery_fixture(&provider_state).await;
+    let state = Arc::new(create_test_state(Some(discovery_server.base_url.clone())));
+    let app = runtime_router(state);
+    let missing_provider_id = "00".repeat(32);
+
+    let request = runtime_request(
+        axum::http::Method::GET,
+        &format!("/v1/runtime/providers/{missing_provider_id}"),
+        Some("Bearer test-runtime-token"),
+        None,
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        response["error"],
+        Value::String("node not found".to_string())
+    );
 }
 
 #[tokio::test]

@@ -19,6 +19,7 @@ pub const CONTRACT_PYTHON_SCRIPT_JSON_V1: &str = "froglet.python.script_json.v1"
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionRuntime {
+    Any,
     Wasm,
     Python,
     Container,
@@ -31,6 +32,7 @@ pub enum ExecutionRuntime {
 impl ExecutionRuntime {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim() {
+            "any" => Ok(Self::Any),
             "wasm" => Ok(Self::Wasm),
             "python" => Ok(Self::Python),
             "container" => Ok(Self::Container),
@@ -44,6 +46,7 @@ impl ExecutionRuntime {
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Any => "any",
             Self::Wasm => "wasm",
             Self::Python => "python",
             Self::Container => "container",
@@ -109,6 +112,58 @@ impl ExecutionEntrypointKind {
             Self::Script => "script",
             Self::Builtin => "builtin",
         }
+    }
+}
+
+pub fn default_entrypoint_kind_for(runtime: &ExecutionRuntime) -> ExecutionEntrypointKind {
+    match runtime {
+        ExecutionRuntime::Builtin => ExecutionEntrypointKind::Builtin,
+        _ => ExecutionEntrypointKind::Handler,
+    }
+}
+
+pub fn default_entrypoint_for(
+    runtime: &ExecutionRuntime,
+    entrypoint_kind: &ExecutionEntrypointKind,
+) -> &'static str {
+    match (runtime, entrypoint_kind) {
+        (ExecutionRuntime::Builtin, _) => "events.query",
+        (ExecutionRuntime::Any, _) => "",
+        (_, ExecutionEntrypointKind::Script) => "__main__",
+        (ExecutionRuntime::Python, _) | (ExecutionRuntime::TeePython, _) => "handler",
+        _ => "run",
+    }
+}
+
+pub fn default_contract_version_for(
+    runtime: &ExecutionRuntime,
+    package_kind: &ExecutionPackageKind,
+    entrypoint_kind: &ExecutionEntrypointKind,
+) -> &'static str {
+    match (runtime, package_kind, entrypoint_kind) {
+        (ExecutionRuntime::Any, _, _) => "",
+        (
+            ExecutionRuntime::Python,
+            ExecutionPackageKind::InlineSource,
+            ExecutionEntrypointKind::Script,
+        )
+        | (
+            ExecutionRuntime::TeePython,
+            ExecutionPackageKind::InlineSource,
+            ExecutionEntrypointKind::Script,
+        ) => CONTRACT_PYTHON_SCRIPT_JSON_V1,
+        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _)
+        | (ExecutionRuntime::TeePython, ExecutionPackageKind::InlineSource, _) => {
+            CONTRACT_PYTHON_HANDLER_JSON_V1
+        }
+        (ExecutionRuntime::Container, ExecutionPackageKind::OciImage, _)
+        | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage, _) => {
+            CONTRACT_CONTAINER_JSON_V1
+        }
+        (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, _) => {
+            CONTRACT_BUILTIN_EVENTS_QUERY_V1
+        }
+        _ => wasm::WASM_RUN_JSON_ABI_V1,
     }
 }
 
@@ -208,6 +263,9 @@ impl ExecutionWorkload {
             return Err("input hash does not match canonical input".to_string());
         }
         match (&self.runtime, &self.package_kind) {
+            (ExecutionRuntime::Any, _) => {
+                return Err("wildcard runtime is only valid in offer metadata".to_string());
+            }
             (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule)
             | (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule) => {
                 let Some(module_bytes_hex) = self.module_bytes_hex.as_ref() else {

@@ -22,6 +22,13 @@ That surface covers:
 It is the local control surface for the generic Froglet execution primitive,
 not a role-specific node API.
 
+At this layer:
+
+- named and data-service bindings are listed through `/services/*`
+- direct open-ended compute goes through `/compute/run`
+- service detail responses include `offer_kind` plus a coarse `resource_kind`
+  helper so bot hosts do not need to guess from runtime fields alone
+
 ## Important Paths
 
 - runtime auth token: `./data/runtime/auth.token`
@@ -58,10 +65,17 @@ Notes:
 - `POST /v1/froglet/projects` can derive ids from `name` if explicit ids are omitted
 - `POST /v1/froglet/projects` can scaffold a fixed JSON response via `result_json`
 - `POST /v1/froglet/projects` rejects `publication_state=active` unless you provide
-  `starter` or `result_json`
+  `starter`, `result_json`, or `inline_source`
 - blank projects are scaffolds only; they must remain hidden until source is
   written and published explicitly
+- project authoring currently covers inline-source Python and project-backed
+  WAT->Wasm workflows; `POST /v1/froglet/artifacts/publish` is the direct
+  publication path for prebuilt Wasm modules and OCI-backed/container profiles
 - `POST /v1/froglet/services/invoke` waits briefly by default for sync services
 - `POST /v1/froglet/services/invoke` resolves a unique `service_id` automatically when possible
+- `POST /v1/froglet/compute/run` is the direct compute path and currently accepts
+  inline Wasm, inline Python, OCI-backed Wasm, and OCI-backed python/container
+  execution inputs; it expects `provider_id` or `provider_url` so the runtime
+  knows which provider to target, and zip/archive packaging is future work
 - `GET /v1/froglet/status` includes discovery mode, reference discovery wiring,
   and the last discovery error when present

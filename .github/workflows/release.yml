@@ -144,6 +144,23 @@ jobs:
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
 
+      - name: Build and push operator image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          OWNER_LC: ${{ steps.meta.outputs.owner_lc }}
+          SHA_TAG: ${{ steps.meta.outputs.sha_tag }}
+        run: |
+          image="ghcr.io/${OWNER_LC}/froglet-operator"
+          docker build \
+            --target operator \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            -t "${image}:${VERSION}" \
+            -t "${image}:${SHA_TAG}" \
+            .
+          docker push "${image}:${VERSION}"
+          docker push "${image}:${SHA_TAG}"
+
       - name: Write release summary
         env:
           VERSION: ${{ steps.meta.outputs.version }}
@@ -159,4 +176,6 @@ jobs:
             echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-discovery:${VERSION}"
             echo "- ghcr.io/${OWNER_LC}/froglet-discovery:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-operator:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-operator:${SHA_TAG}"
           } >> "$GITHUB_STEP_SUMMARY"

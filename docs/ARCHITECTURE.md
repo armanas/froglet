@@ -51,7 +51,7 @@ Examples:
 - Nostr publication and relay behavior
 - discovery bootstrap formats
 - execution-material delivery such as module uploads, interpreted source
-  bundles, or container/image references
+  bundles, archive bundles such as zip files, or container/image references
 - registry pulls for runtime-specific packaged workloads
 
 Adapters may change, and implementations may support more than one adapter, as long as they preserve kernel semantics.
@@ -101,8 +101,9 @@ Examples:
 
 These services consume signed artifacts.
 They are not themselves the source of truth.
-Detailed staged planning for this layer lives under `../higher_layers/` while it
-is incubated beside the core repo.
+Detailed staged planning for this layer may live under `../higher_layers/`
+during open incubation or outside the core repo for private or closed-source
+deployments. The core repo only defines the boundary and shared contract.
 
 ## 6. What Stays Out of the Kernel
 
@@ -116,6 +117,7 @@ The kernel should not hardwire:
 - reference-discovery, ranking, or broker logic
 - archive bundle layout
 - long-running session semantics
+- cloud-provider-specific deployment behavior
 
 That boundary is deliberate.
 The best core implementation is the smallest irreversible surface.

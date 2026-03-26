@@ -57,6 +57,10 @@ The plugin registers one tool named `froglet`. It supports these actions:
 
 Named services are the default UX. Raw compute is the expert path.
 
+Listed services are named/data service bindings. Open-ended compute is not a
+service listing; it uses the provider's direct compute offer through
+`run_compute`.
+
 Current implementation note:
 
 - the checked-in execution profiles are current reference implementations
@@ -74,9 +78,16 @@ The current checked-in authoring implementation is project-first:
 
 - create a project
 - edit source
-- build a real artifact for the chosen execution profile
+- build a real artifact for the current project-backed profiles
 - test locally
 - publish a named service or compute binding
+
+Current implementation note:
+
+- project authoring currently covers inline-source Python and project-backed
+  WAT->Wasm
+- OCI-backed Wasm and OCI/container profiles are published directly through
+  `publish_artifact`
 
 Starter templates are only scaffolding. They are not first-class tool actions.
 
@@ -86,13 +97,18 @@ Practical shortcuts:
   `name` when explicit ids are omitted.
 - `create_project` accepts optional `result_json` to scaffold a simple static
   JSON response service.
+- `create_project` accepts optional `inline_source` when you want to provide
+  explicit source at creation time.
 - `create_project` and `publish_artifact` accept explicit execution metadata
   such as `runtime`, `package_kind`, `entrypoint_kind`, `entrypoint`,
   `contract_version`, and `mounts`.
 - `create_project` auto-publishes only when `publication_state=active` and an
-  explicit runnable scaffold is provided via `starter` or `result_json`.
+  explicit runnable scaffold is provided via `starter`, `result_json`, or
+  `inline_source`.
 - blank projects are scaffolds only; create them with `publication_state=hidden`
   and then `write_file`, `build_project`, `test_project`, and `publish_project`.
+- service detail output includes `offer_kind` and `resource_kind` so bot hosts
+  can distinguish listed service bindings from direct compute.
 - `invoke_service` waits briefly by default for sync services and can resolve a
   unique `service_id` without an explicit provider reference.
 

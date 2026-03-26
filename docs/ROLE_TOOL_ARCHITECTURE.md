@@ -5,13 +5,18 @@ This is the implemented cutover architecture.
 ## Product Model
 
 - OpenClaw and NemoClaw expose one tool: `froglet`
+- external agent hosts can expose the same surface through the MCP server
 - a Froglet node can both consume and provide
 - a published thing is either:
   - a named service
-  - data access
-  - open-ended compute
+  - a data-service binding
+  - a direct compute offer
+- named/data service discovery flows through `discover_services`
+- open-ended compute uses the direct compute offer and `run_compute`
 - marketplace is not a special product; it is just Froglet services published by
   another Froglet node
+- identity is part of the core signed protocol; marketplace ranking, incentive,
+  and trust policy are higher-layer behavior
 
 ## Layers
 
@@ -26,6 +31,8 @@ This is the implemented cutover architecture.
 2. Service manifest layer
    - `service_id`
    - `offer_id`
+   - `offer_kind`
+   - `resource_kind`
    - `summary`
    - `runtime`
    - `package_kind`

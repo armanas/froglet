@@ -345,7 +345,7 @@ class ClientSdkHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(timeout.sock_read, 30.0)
 
     async def test_wait_for_deal_uses_capped_backoff_with_jitter(self) -> None:
-        client = RuntimeClient("http://runtime.invalid", "token")
+        client = RuntimeClient("http://runtime.invalid", "token", allow_insecure=True)
         statuses = [
             {"deal_id": "deal-1", "status": "payment_pending"},
             {"deal_id": "deal-1", "status": "payment_pending"},

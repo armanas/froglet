@@ -17,14 +17,15 @@ Use the checked-in example config:
 
 `froglet` covers the full node workflow:
 
-- discover and invoke remote services
+- discover and invoke remote named/data services
 - inspect local services
 - create/edit/build/test/publish local projects
 - inspect status and logs
 - restart managed node processes
-- run expert raw compute
+- run expert raw compute through the direct compute offer
 
-The default path is named services. `run_compute` is the low-level fallback.
+The default path is named services. `run_compute` is the low-level fallback and
+should include `provider_id` or `provider_url`.
 Named services, data services, and open-ended compute are all the same Froglet
 primitive at the deal layer.
 
@@ -55,11 +56,21 @@ Useful defaults:
 
 - `create_project` may use `name` instead of explicit ids
 - `create_project` may use `result_json` for a simple fixed-response service
+- `create_project` may use `inline_source` when you want to provide explicit
+  authored source up front
 - `create_project` auto-publishes only when `publication_state=active` and you
-  provided `starter` or `result_json`
+  provided `starter`, `result_json`, or `inline_source`
 - blank projects are scaffolds only; use `publication_state=hidden` until you
   have written real source
+- `publish_artifact` is the direct publication path for prebuilt Wasm modules
+  and OCI-backed/container profiles
+- local and remote service detail views expose `offer_kind` and `resource_kind`
+  so models can distinguish a listed service binding from direct compute
 - `invoke_service` can resolve a unique `service_id` automatically
+- `run_compute` is the direct path for open-ended compute and currently supports
+  inline Wasm, inline Python, OCI-backed Wasm, and OCI-backed python/container
+  execution inputs; it targets an explicit provider rather than discovery by
+  service id
 - `summary` is metadata only; it does not generate service code
 
 ## Managed Launcher
