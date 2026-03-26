@@ -31,9 +31,9 @@ use crate::{
     },
     config::NodeConfig,
     execution::{
-        CONTRACT_BUILTIN_EVENTS_QUERY_V1, CONTRACT_CONTAINER_JSON_V1,
-        CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionEntrypointKind,
-        ExecutionMount, ExecutionPackageKind, ExecutionRuntime, ExecutionWorkload,
+        ExecutionEntrypointKind, ExecutionMount, ExecutionPackageKind, ExecutionRuntime,
+        ExecutionWorkload, default_contract_version_for, default_entrypoint_for,
+        default_entrypoint_kind_for,
     },
     provider_projects::{
         self, ProviderProjectBuildRecord, ProviderProjectRecord, ProviderProjectStarter,
@@ -241,10 +241,6 @@ struct RunComputeRequest {
     #[serde(default)]
     oci_digest: Option<String>,
     #[serde(default)]
-    execution_kind: Option<String>,
-    #[serde(default)]
-    abi_version: Option<String>,
-    #[serde(default)]
     runtime: Option<String>,
     #[serde(default)]
     package_kind: Option<String>,
@@ -409,6 +405,67 @@ fn configured_base_url(env_key: &str) -> Result<Option<String>, Response> {
     Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
 }
 
+const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
+
+/// Validates a provider URL: must be https, or http only to loopback/.onion hosts.
+pub fn validate_provider_url(raw_url: &str) -> Result<String, Response> {
+    let parsed = Url::parse(raw_url).map_err(|error| {
+        error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid provider URL", "details": error.to_string(), "value": raw_url }),
+        )
+    })?;
+    match parsed.scheme() {
+        "https" => {}
+        "http" => {
+            let host = parsed.host_str().unwrap_or("");
+            if !LOOPBACK_HOSTS.contains(&host) && !host.ends_with(".onion") {
+                return Err(error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "provider URL must use https:// (http:// is only allowed for loopback and .onion addresses)",
+                        "value": raw_url,
+                    }),
+                ));
+            }
+        }
+        _ => {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "provider URL must use http:// or https://", "value": raw_url }),
+            ));
+        }
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+fn operator_accessible_provider_url(
+    state: &OperatorState,
+    raw_url: &str,
+    provider_id: Option<&str>,
+) -> Result<String, Response> {
+    let validated = validate_provider_url(raw_url)?;
+    let parsed = Url::parse(&validated).map_err(|error| {
+        error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "invalid provider URL",
+                "details": error.to_string(),
+                "value": raw_url,
+            }),
+        )
+    })?;
+    if parsed.scheme() == "http" {
+        let host = parsed.host_str().unwrap_or("");
+        if LOOPBACK_HOSTS.contains(&host)
+            && provider_id.is_none_or(|value| value == state.app_state.identity.node_id())
+        {
+            return provider_base_url(state);
+        }
+    }
+    Ok(validated)
+}
+
 async fn health_reachable(state: &OperatorState, url: &str) -> bool {
     match state
         .app_state
@@ -438,6 +495,48 @@ where
         .http_client
         .request(method, &url)
         .bearer_auth(bearer_token);
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    let response = request.send().await.map_err(|error| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "upstream request failed", "details": error.to_string(), "url": url }),
+        )
+    })?;
+    let status = response.status();
+    let body_text = response.text().await.map_err(|error| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "failed to read upstream response", "details": error.to_string(), "url": url }),
+        )
+    })?;
+    if !status.is_success() {
+        let payload = serde_json::from_str::<Value>(&body_text).unwrap_or_else(
+            |_| json!({ "error": "upstream request failed", "body": body_text, "url": url }),
+        );
+        return Err(error_json(status, payload));
+    }
+    serde_json::from_str(&body_text).map_err(|error| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "failed to decode upstream JSON", "details": error.to_string(), "url": url }),
+        )
+    })
+}
+
+/// Like `local_json_request` but without bearer auth — for calls to external provider endpoints.
+async fn unauthenticated_json_request<T, B>(
+    state: &OperatorState,
+    method: reqwest::Method,
+    url: String,
+    body: Option<&B>,
+) -> Result<T, Response>
+where
+    T: serde::de::DeserializeOwned,
+    B: serde::Serialize + ?Sized,
+{
+    let mut request = state.app_state.http_client.request(method, &url);
     if let Some(body) = body {
         request = request.json(body);
     }
@@ -601,8 +700,6 @@ fn project_definition_from_build(
             contract_version: Some(build.project.contract_version.clone()),
             mounts: Some(build.project.mounts.clone()),
             inline_source: None,
-            execution_kind: Some(build.project.execution_kind.clone()),
-            abi_version: Some(build.contract_version.clone()),
             summary: Some(build.project.summary.clone()),
             mode: Some(build.project.mode.clone()),
             price_sats: build.project.price_sats,
@@ -725,6 +822,50 @@ async fn provider_create_project(
                     StatusCode::BAD_REQUEST,
                     json!({ "error": "failed to scaffold inline source", "details": error }),
                 );
+            }
+            if publication_state == "active" {
+                if let Err(error) = provider_projects::set_project_publication_state(
+                    &state.projects_root,
+                    &project_id,
+                    "active",
+                ) {
+                    return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
+                }
+                if let Err(error) = provider_projects::reject_blank_scaffold_publication(
+                    &state.projects_root,
+                    &project_id,
+                ) {
+                    return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
+                }
+                let build = match provider_projects::build_project(
+                    &state.projects_root,
+                    &project_id,
+                ) {
+                    Ok(build) => build,
+                    Err(error) => {
+                        return error_json(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "provider project build failed", "details": error }),
+                        );
+                    }
+                };
+                let definition = match project_definition_from_build(state.as_ref(), &build) {
+                    Ok(definition) => definition,
+                    Err(response) => return response,
+                };
+                if let Err((status, body)) = persist_provider_offer_mutation(
+                    state.app_state.as_ref(),
+                    definition,
+                    StatusCode::CREATED,
+                    format!(
+                        "published provider project {} from project {}",
+                        build.project.offer_id, build.project.project_id
+                    ),
+                )
+                .await
+                {
+                    return error_json(status, body);
+                }
             }
             let project = match provider_projects::get_project(&state.projects_root, &project_id) {
                 Ok(project) => project,
@@ -860,6 +1001,13 @@ async fn provider_publish_project(
     {
         return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
     }
+    if let Err(error) = provider_projects::set_project_publication_state(
+        &state.projects_root,
+        &project_id,
+        "active",
+    ) {
+        return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
+    }
     let build = match provider_projects::build_project(&state.projects_root, &project_id) {
         Ok(build) => build,
         Err(error) => {
@@ -989,7 +1137,6 @@ async fn fetch_remote_provider_services(
         .app_state
         .http_client
         .get(&url)
-        .bearer_auth(&state.app_state.runtime_auth_token)
         .send()
         .await
         .map_err(|error| FrogletServiceDiscoverFailure {
@@ -1031,8 +1178,11 @@ async fn fetch_remote_provider_services(
     })
 }
 
-fn preferred_provider_url(details: &RuntimeProviderDetailsResponse) -> Result<String, Response> {
-    details
+fn preferred_provider_url(
+    state: &OperatorState,
+    details: &RuntimeProviderDetailsResponse,
+) -> Result<String, Response> {
+    let raw = details
         .discovery
         .descriptor
         .transports
@@ -1044,7 +1194,8 @@ fn preferred_provider_url(details: &RuntimeProviderDetailsResponse) -> Result<St
                 StatusCode::BAD_GATEWAY,
                 json!({ "error": "provider discovery record does not expose a usable URL" }),
             )
-        })
+        })?;
+    operator_accessible_provider_url(state, &raw, Some(&details.discovery.descriptor.node_id))
 }
 
 async fn resolve_provider_reference(
@@ -1053,7 +1204,8 @@ async fn resolve_provider_reference(
     provider_url: Option<&str>,
 ) -> Result<(Option<String>, String), Response> {
     if let Some(url) = provider_url {
-        return Ok((provider_id.map(str::to_string), url.to_string()));
+        let validated = operator_accessible_provider_url(state, url, provider_id)?;
+        return Ok((provider_id.map(str::to_string), validated));
     }
     let Some(provider_id) = provider_id else {
         return Err(error_json(
@@ -1061,6 +1213,9 @@ async fn resolve_provider_reference(
             json!({ "error": "provider_id or provider_url is required" }),
         ));
     };
+    if provider_id == state.app_state.identity.node_id() {
+        return Ok((Some(provider_id.to_string()), provider_base_url(state)?));
+    }
     let runtime_url = runtime_base_url(state)?;
     let details: RuntimeProviderDetailsResponse = local_json_request(
         state,
@@ -1072,7 +1227,7 @@ async fn resolve_provider_reference(
     .await?;
     Ok((
         Some(provider_id.to_string()),
-        preferred_provider_url(&details)?,
+        preferred_provider_url(state, &details)?,
     ))
 }
 
@@ -1103,18 +1258,25 @@ async fn fetch_provider_service(
         .await?;
         let mut matches = Vec::new();
         for node in search.nodes {
-            let provider_url = node
+            let raw_url = node
                 .descriptor
                 .transports
                 .clearnet_url
                 .clone()
                 .or_else(|| node.descriptor.transports.onion_url.clone());
-            let Some(provider_url) = provider_url else {
+            let Some(raw_url) = raw_url else {
                 continue;
             };
-            let response: Result<ProviderServiceResponse, Response> = local_json_request(
+            let provider_url = match operator_accessible_provider_url(
                 state,
-                &state.app_state.runtime_auth_token,
+                &raw_url,
+                Some(&node.descriptor.node_id),
+            ) {
+                Ok(url) => url,
+                Err(_) => continue,
+            };
+            let response: Result<ProviderServiceResponse, Response> = unauthenticated_json_request(
+                state,
                 reqwest::Method::GET,
                 format!(
                     "{}/v1/provider/services/{}",
@@ -1146,9 +1308,8 @@ async fn fetch_provider_service(
     }
     let (_, resolved_provider_url) =
         resolve_provider_reference(state, provider_id, provider_url).await?;
-    let response: ProviderServiceResponse = local_json_request(
+    let response: ProviderServiceResponse = unauthenticated_json_request(
         state,
-        &state.app_state.runtime_auth_token,
         reqwest::Method::GET,
         format!(
             "{}/v1/provider/services/{}",
@@ -1499,6 +1660,14 @@ async fn froglet_discover_services(
                 .clearnet_url
                 .clone()
                 .or_else(|| node.descriptor.transports.onion_url.clone())
+                .and_then(|url| {
+                    operator_accessible_provider_url(
+                        state.as_ref(),
+                        &url,
+                        Some(&node.descriptor.node_id),
+                    )
+                    .ok()
+                })
         })
         .collect();
     provider_urls.sort();
@@ -1518,6 +1687,9 @@ async fn froglet_discover_services(
                     if let Some(query) = query.as_ref()
                         && !service.service_id.to_lowercase().contains(query)
                         && !service.summary.to_lowercase().contains(query)
+                        && !service.offer_kind.to_lowercase().contains(query)
+                        && !service.resource_kind.to_lowercase().contains(query)
+                        && !service.runtime.to_lowercase().contains(query)
                     {
                         continue;
                     }
@@ -1582,7 +1754,7 @@ fn build_inline_wasm_submission(
         schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
         submission_type: crate::wasm::WASM_SUBMISSION_TYPE_V1.to_string(),
         workload: crate::wasm::ComputeWasmWorkload {
-            abi_version: service.abi_version.clone(),
+            abi_version: service.contract_version.clone(),
             requested_capabilities: Vec::new(),
             ..workload
         },
@@ -1619,7 +1791,7 @@ fn build_oci_wasm_submission(
         workload: crate::wasm::OciWasmWorkload {
             schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
             workload_kind: crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
-            abi_version: service.abi_version.clone(),
+            abi_version: service.contract_version.clone(),
             module_format: crate::wasm::WASM_MODULE_OCI_FORMAT.to_string(),
             oci_reference,
             oci_digest,
@@ -1632,78 +1804,17 @@ fn build_oci_wasm_submission(
 }
 
 fn execution_access_handles(mounts: &[ExecutionMount]) -> Vec<String> {
-    mounts.iter().map(|mount| mount.handle.clone()).collect()
-}
-
-fn runtime_from_legacy_execution_kind(execution_kind: &str) -> Result<ExecutionRuntime, Response> {
-    match execution_kind {
-        "wasm_inline" | "wasm_oci" => Ok(ExecutionRuntime::Wasm),
-        "python_inline" | "python_oci" => Ok(ExecutionRuntime::Python),
-        "container_oci" => Ok(ExecutionRuntime::Container),
-        "builtin" => Ok(ExecutionRuntime::Builtin),
-        other => Err(error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "unsupported execution_kind", "execution_kind": other }),
-        )),
-    }
-}
-
-fn package_kind_from_legacy_execution_kind(
-    execution_kind: &str,
-) -> Result<ExecutionPackageKind, Response> {
-    match execution_kind {
-        "wasm_inline" => Ok(ExecutionPackageKind::InlineModule),
-        "wasm_oci" | "python_oci" | "container_oci" => Ok(ExecutionPackageKind::OciImage),
-        "python_inline" => Ok(ExecutionPackageKind::InlineSource),
-        "builtin" => Ok(ExecutionPackageKind::Builtin),
-        other => Err(error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "unsupported execution_kind", "execution_kind": other }),
-        )),
-    }
-}
-
-fn default_entrypoint_for(
-    runtime: &ExecutionRuntime,
-    entrypoint_kind: &ExecutionEntrypointKind,
-) -> &'static str {
-    match (runtime, entrypoint_kind) {
-        (ExecutionRuntime::Builtin, _) => "events.query",
-        (_, ExecutionEntrypointKind::Script) => "__main__",
-        (ExecutionRuntime::Python, _) | (ExecutionRuntime::TeePython, _) => "handler",
-        _ => "run",
-    }
-}
-
-fn default_contract_version_for(
-    runtime: &ExecutionRuntime,
-    package_kind: &ExecutionPackageKind,
-    entrypoint_kind: &ExecutionEntrypointKind,
-) -> &'static str {
-    match (runtime, package_kind, entrypoint_kind) {
-        (
-            ExecutionRuntime::Python,
-            ExecutionPackageKind::InlineSource,
-            ExecutionEntrypointKind::Script,
-        )
-        | (
-            ExecutionRuntime::TeePython,
-            ExecutionPackageKind::InlineSource,
-            ExecutionEntrypointKind::Script,
-        ) => CONTRACT_PYTHON_SCRIPT_JSON_V1,
-        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _)
-        | (ExecutionRuntime::TeePython, ExecutionPackageKind::InlineSource, _) => {
-            CONTRACT_PYTHON_HANDLER_JSON_V1
-        }
-        (ExecutionRuntime::Container, ExecutionPackageKind::OciImage, _)
-        | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage, _) => {
-            CONTRACT_CONTAINER_JSON_V1
-        }
-        (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, _) => {
-            CONTRACT_BUILTIN_EVENTS_QUERY_V1
-        }
-        _ => crate::wasm::WASM_RUN_JSON_ABI_V1,
-    }
+    mounts
+        .iter()
+        .map(|mount| {
+            format!(
+                "mount.{}.{}.{}",
+                mount.kind,
+                if mount.read_only { "read" } else { "write" },
+                mount.handle
+            )
+        })
+        .collect()
 }
 
 fn parse_builtin_events_query_input(
@@ -1775,31 +1886,20 @@ fn build_execution_from_service(
     service: &ProviderServiceRecord,
     input: Value,
 ) -> Result<crate::protocol::WorkloadSpec, Response> {
-    let runtime = if service.runtime.trim().is_empty() {
-        runtime_from_legacy_execution_kind(&service.execution_kind)?
-    } else {
-        ExecutionRuntime::parse(&service.runtime).map_err(|error| {
-            error_json(
-                StatusCode::BAD_GATEWAY,
-                json!({ "error": error, "service_id": service.service_id }),
-            )
-        })?
-    };
-    let package_kind = if service.package_kind.trim().is_empty() {
-        package_kind_from_legacy_execution_kind(&service.execution_kind)?
-    } else {
-        ExecutionPackageKind::parse(&service.package_kind).map_err(|error| {
-            error_json(
-                StatusCode::BAD_GATEWAY,
-                json!({ "error": error, "service_id": service.service_id }),
-            )
-        })?
-    };
+    let runtime = ExecutionRuntime::parse(&service.runtime).map_err(|error| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": error, "service_id": service.service_id }),
+        )
+    })?;
+    let package_kind = ExecutionPackageKind::parse(&service.package_kind).map_err(|error| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": error, "service_id": service.service_id }),
+        )
+    })?;
     let entrypoint_kind = if service.entrypoint_kind.trim().is_empty() {
-        match runtime {
-            ExecutionRuntime::Builtin => ExecutionEntrypointKind::Builtin,
-            _ => ExecutionEntrypointKind::Handler,
-        }
+        default_entrypoint_kind_for(&runtime)
     } else {
         ExecutionEntrypointKind::parse(&service.entrypoint_kind).map_err(|error| {
             error_json(
@@ -1814,11 +1914,7 @@ fn build_execution_from_service(
         service.entrypoint.clone()
     };
     let contract_version = if service.contract_version.trim().is_empty() {
-        if service.abi_version.trim().is_empty() {
-            default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
-        } else {
-            service.abi_version.clone()
-        }
+        default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
     } else {
         service.contract_version.clone()
     };
@@ -1858,13 +1954,24 @@ fn build_execution_from_service(
                         )
                     })?
                 }
-                _ => ExecutionWorkload::python_inline_handler(source, entrypoint.clone(), input)
-                    .map_err(|error| {
-                        error_json(
-                            StatusCode::BAD_GATEWAY,
-                            json!({ "error": error, "service_id": service.service_id }),
-                        )
-                    })?,
+                _ => {
+                    let handler_name = if entrypoint.contains('/')
+                        || entrypoint.ends_with(".py")
+                        || entrypoint.contains('\\')
+                    {
+                        default_entrypoint_for(&runtime, &entrypoint_kind).to_string()
+                    } else {
+                        entrypoint.clone()
+                    };
+                    ExecutionWorkload::python_inline_handler(source, handler_name, input).map_err(
+                        |error| {
+                            error_json(
+                                StatusCode::BAD_GATEWAY,
+                                json!({ "error": error, "service_id": service.service_id }),
+                            )
+                        },
+                    )?
+                }
             }
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
@@ -1935,30 +2042,33 @@ fn build_execution_from_compute_request(
     payload: RunComputeRequest,
 ) -> Result<crate::protocol::WorkloadSpec, Response> {
     let input = payload.input.unwrap_or(Value::Null);
-    let execution_kind = payload.execution_kind.clone();
     let runtime = if let Some(runtime) = payload.runtime.as_deref() {
         ExecutionRuntime::parse(runtime)
             .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
-    } else if let Some(execution_kind) = execution_kind.as_deref() {
-        runtime_from_legacy_execution_kind(execution_kind)?
     } else if payload.wasm_module_hex.is_some() {
         ExecutionRuntime::Wasm
     } else if payload.inline_source.is_some() {
         ExecutionRuntime::Python
+    } else if payload.oci_reference.is_some() || payload.oci_digest.is_some() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "runtime is required for OCI compute",
+                "details": "set runtime to python or container when using oci_reference/oci_digest"
+            }),
+        ));
     } else {
         return Err(error_json(
             StatusCode::BAD_REQUEST,
             json!({
                 "error": "runtime is required when execution cannot be inferred",
-                "details": "set runtime/package_kind or provide execution_kind"
+                "details": "set runtime/package_kind or provide inline_source/wasm_module_hex"
             }),
         ));
     };
     let package_kind = if let Some(package_kind) = payload.package_kind.as_deref() {
         ExecutionPackageKind::parse(package_kind)
             .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
-    } else if let Some(execution_kind) = execution_kind.as_deref() {
-        package_kind_from_legacy_execution_kind(execution_kind)?
     } else if payload.inline_source.is_some() {
         ExecutionPackageKind::InlineSource
     } else if payload.wasm_module_hex.is_some() {
@@ -1970,7 +2080,7 @@ fn build_execution_from_compute_request(
             StatusCode::BAD_REQUEST,
             json!({
                 "error": "package_kind is required when execution cannot be inferred",
-                "details": "set package_kind or provide execution_kind"
+                "details": "set package_kind or provide inline_source/wasm_module_hex/oci_reference"
             }),
         ));
     };
@@ -1978,22 +2088,15 @@ fn build_execution_from_compute_request(
         ExecutionEntrypointKind::parse(entrypoint_kind)
             .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?
     } else {
-        match runtime {
-            ExecutionRuntime::Builtin => ExecutionEntrypointKind::Builtin,
-            _ => ExecutionEntrypointKind::Handler,
-        }
+        default_entrypoint_kind_for(&runtime)
     };
     let entrypoint = payload
         .entrypoint
         .clone()
         .unwrap_or_else(|| default_entrypoint_for(&runtime, &entrypoint_kind).to_string());
-    let contract_version = payload
-        .contract_version
-        .clone()
-        .or(payload.abi_version.clone())
-        .unwrap_or_else(|| {
-            default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
-        });
+    let contract_version = payload.contract_version.clone().unwrap_or_else(|| {
+        default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
+    });
     let mounts = payload.mounts.unwrap_or_default();
 
     let execution = match (&runtime, &package_kind) {
@@ -2127,6 +2230,8 @@ async fn invoke_or_run_compute(
     spec: crate::protocol::WorkloadSpec,
     timeout_secs: Option<u64>,
 ) -> Result<FrogletServiceActionResponse, Response> {
+    let (resolved_provider_id, resolved_provider_url) =
+        resolve_provider_reference(state, provider_id, provider_url).await?;
     let runtime_url = runtime_base_url(state)?;
     let response: RuntimeCreateDealResponse = local_json_request(
         state,
@@ -2135,8 +2240,8 @@ async fn invoke_or_run_compute(
         format!("{runtime_url}/v1/runtime/deals"),
         Some(&RuntimeCreateDealRequest {
             provider: RuntimeProviderRef {
-                provider_id: provider_id.map(str::to_string),
-                provider_url: provider_url.map(str::to_string),
+                provider_id: resolved_provider_id,
+                provider_url: Some(resolved_provider_url),
             },
             offer_id: offer_id.to_string(),
             spec,
@@ -2364,6 +2469,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         &node_config.storage.runtime_dir,
         &node_config.storage.consumer_control_auth_token_path,
         "consumer control auth token",
+        node_config.storage.runtime_dir_mode(),
+        0o600,
     )
     .map_err(std::io::Error::other)?;
     if consumer_control_auth_token != app_state.consumer_control_auth_token {
@@ -2418,7 +2525,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use std::{
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -2438,6 +2548,7 @@ mod tests {
             PaymentBackend, PricingConfig, ReferenceDiscoveryConfig, StorageConfig,
             TorSidecarConfig, WasmConfig,
         },
+        protocol::WorkloadSpec,
     };
 
     static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2501,6 +2612,7 @@ mod tests {
                 consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
                 provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
                 tor_dir: temp_dir.join("tor"),
+                host_readable_control_token: false,
             },
             wasm: WasmConfig {
                 policy_path: None,
@@ -2580,6 +2692,84 @@ mod tests {
         (status, payload)
     }
 
+    fn test_signed_artifact(artifact_type: &str, payload: Value) -> Value {
+        json!({
+            "artifact_type": artifact_type,
+            "schema_version": "froglet.test.v1",
+            "signer": "test-signer",
+            "created_at": 1,
+            "payload_hash": "11".repeat(32),
+            "hash": "22".repeat(32),
+            "payload": payload,
+            "signature": "test-signature"
+        })
+    }
+
+    fn test_runtime_create_deal_response(
+        provider_id: &str,
+        provider_url: &str,
+        result: Value,
+    ) -> Value {
+        let quote = test_signed_artifact(
+            "quote",
+            json!({
+                "provider_id": provider_id,
+                "requester_id": "requester-node",
+                "descriptor_hash": "33".repeat(32),
+                "offer_hash": "44".repeat(32),
+                "expires_at": 60,
+                "workload_kind": "execution",
+                "workload_hash": "55".repeat(32),
+                "settlement_terms": {
+                    "method": "none",
+                    "destination_identity": provider_id,
+                    "base_fee_msat": 0,
+                    "success_fee_msat": 0,
+                    "max_base_invoice_expiry_secs": 60,
+                    "max_success_hold_expiry_secs": 60,
+                    "min_final_cltv_expiry": 18
+                },
+                "execution_limits": {
+                    "max_input_bytes": 1024,
+                    "max_runtime_ms": 1000,
+                    "max_memory_bytes": 1024,
+                    "max_output_bytes": 1024,
+                    "fuel_limit": 1000
+                }
+            }),
+        );
+        let deal = test_signed_artifact(
+            "deal",
+            json!({
+                "requester_id": "requester-node",
+                "provider_id": provider_id,
+                "quote_hash": "22".repeat(32),
+                "workload_hash": "55".repeat(32),
+                "success_payment_hash": "66".repeat(32),
+                "admission_deadline": 60,
+                "completion_deadline": 120,
+                "acceptance_deadline": 60
+            }),
+        );
+        json!({
+            "provider_id": provider_id,
+            "provider_url": provider_url,
+            "quote": quote.clone(),
+            "deal": {
+                "deal_id": "deal-1",
+                "provider_id": provider_id,
+                "provider_url": provider_url,
+                "status": "succeeded",
+                "workload_kind": "execution",
+                "quote": quote,
+                "deal": deal,
+                "result": result,
+                "created_at": 1,
+                "updated_at": 1
+            }
+        })
+    }
+
     #[tokio::test]
     async fn froglet_status_requires_auth() {
         let state = test_operator_state();
@@ -2647,8 +2837,11 @@ mod tests {
                             "service_id": "remote-pong",
                             "offer_id": "remote-pong",
                             "summary": "Returns remote pong",
-                            "execution_kind": "wasm_inline",
-                            "abi_version": "froglet.wasm.run_json.v1",
+                            "runtime": "wasm",
+                            "package_kind": "inline_module",
+                            "entrypoint_kind": "handler",
+                            "entrypoint": "run",
+                            "contract_version": "froglet.wasm.run_json.v1",
                             "mode": "sync",
                             "price_sats": 0,
                             "publication_state": "active",
@@ -2765,6 +2958,386 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discover_services_uses_local_provider_base_url_for_local_loopback_records() {
+        let provider_app = Router::new().route(
+            "/v1/provider/services",
+            get(|| async {
+                AxumJson(json!({
+                    "services": [
+                        {
+                            "service_id": "local-pong",
+                            "offer_id": "local-pong",
+                            "summary": "Returns local pong",
+                            "runtime": "wasm",
+                            "package_kind": "inline_module",
+                            "entrypoint_kind": "handler",
+                            "entrypoint": "run",
+                            "contract_version": "froglet.wasm.run_json.v1",
+                            "mode": "sync",
+                            "price_sats": 0,
+                            "publication_state": "active",
+                            "provider_id": "local-provider",
+                            "output_schema": { "const": "local-pong" }
+                        }
+                    ]
+                }))
+            }),
+        );
+        let (provider_url, provider_handle) = spawn_test_server(provider_app).await;
+
+        let temp_dir = unique_temp_dir("discover-local-loopback");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut node_config = test_node_config(temp_dir);
+        node_config.listen_addr = provider_url
+            .strip_prefix("http://")
+            .expect("provider url")
+            .to_string();
+        let state = test_operator_state_with_config(node_config);
+        let local_node_id = state.app_state.identity.node_id().to_string();
+        let token = state.app_state.consumer_control_auth_token.clone();
+
+        let runtime_app = Router::new().route(
+            "/v1/runtime/search",
+            post({
+                let local_node_id = local_node_id.clone();
+                move || {
+                    let local_node_id = local_node_id.clone();
+                    async move {
+                        AxumJson(json!({
+                            "nodes": [
+                                {
+                                    "descriptor": {
+                                        "node_id": local_node_id,
+                                        "pubkey": "pubkey-1",
+                                        "version": "0.1.0",
+                                        "discovery_mode": "reference",
+                                        "transports": {
+                                            "clearnet_url": "http://127.0.0.1:9999",
+                                            "onion_url": null,
+                                            "tor_status": "disabled"
+                                        },
+                                        "services": []
+                                    },
+                                    "status": "active",
+                                    "registered_at": 1,
+                                    "updated_at": 1,
+                                    "last_seen_at": 1
+                                }
+                            ]
+                        }))
+                    }
+                }
+            }),
+        );
+        let (runtime_url, runtime_handle) = spawn_test_server(runtime_app).await;
+
+        let mut state_config = state.app_state.config.clone();
+        state_config.runtime_listen_addr = runtime_url
+            .strip_prefix("http://")
+            .expect("runtime url")
+            .to_string();
+        state_config.reference_discovery = Some(ReferenceDiscoveryConfig {
+            url: "http://127.0.0.1:9090".to_string(),
+            publish: true,
+            required: false,
+            heartbeat_interval_secs: 30,
+        });
+        let state = test_operator_state_with_config(state_config);
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/discover",
+                Some(&token),
+                Some(json!({ "limit": 10 })),
+            ))
+            .await
+            .expect("discover services response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        provider_handle.abort();
+        runtime_handle.abort();
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["provider_nodes_discovered"], 1);
+        assert_eq!(
+            payload["provider_fetch_failures"]
+                .as_array()
+                .map_or(0, std::vec::Vec::len),
+            0
+        );
+        assert_eq!(payload["services"][0]["service_id"], "local-pong");
+    }
+
+    #[tokio::test]
+    async fn invoke_service_uses_local_provider_base_url_for_runtime_deals() {
+        let provider_app = Router::new().route(
+            "/v1/provider/services/:service_id",
+            get({
+                move |AxumPath(service_id): AxumPath<String>| async move {
+                    AxumJson(json!({
+                        "service": {
+                            "service_id": service_id,
+                            "offer_id": "invoke-loopback",
+                            "offer_kind": "compute.execution.v1",
+                            "resource_kind": "service",
+                            "summary": "Returns pong",
+                            "runtime": "python",
+                            "package_kind": "inline_source",
+                            "entrypoint_kind": "handler",
+                            "entrypoint": "source/main.py",
+                            "contract_version": "froglet.python.handler_json.v1",
+                            "mounts": [],
+                            "mode": "sync",
+                            "price_sats": 0,
+                            "publication_state": "active",
+                            "provider_id": "placeholder",
+                            "output_schema": { "const": { "message": "pong" } },
+                            "inline_source": "def handler(event, context):\n    return {\"message\": \"pong\"}\n"
+                        }
+                    }))
+                }
+            }),
+        );
+        let (provider_url, provider_handle) = spawn_test_server(provider_app).await;
+
+        let temp_dir = unique_temp_dir("invoke-local-loopback");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut node_config = test_node_config(temp_dir);
+        node_config.listen_addr = provider_url
+            .strip_prefix("http://")
+            .expect("provider url")
+            .to_string();
+
+        let state = test_operator_state_with_config(node_config.clone());
+        let local_node_id = state.app_state.identity.node_id().to_string();
+        let token = state.app_state.consumer_control_auth_token.clone();
+        let expected_provider_url = provider_url.clone();
+        let captured_deal_request = Arc::new(Mutex::new(None::<Value>));
+
+        let runtime_app = Router::new().route(
+            "/v1/runtime/deals",
+            post({
+                let captured_deal_request = captured_deal_request.clone();
+                let expected_provider_url = expected_provider_url.clone();
+                let local_node_id = local_node_id.clone();
+                move |AxumJson(payload): AxumJson<Value>| {
+                    let captured_deal_request = captured_deal_request.clone();
+                    let expected_provider_url = expected_provider_url.clone();
+                    let local_node_id = local_node_id.clone();
+                    async move {
+                        *captured_deal_request
+                            .lock()
+                            .expect("lock captured deal request") = Some(payload);
+                        AxumJson(test_runtime_create_deal_response(
+                            &local_node_id,
+                            &expected_provider_url,
+                            json!({ "message": "pong" }),
+                        ))
+                    }
+                }
+            }),
+        );
+        let (runtime_url, runtime_handle) = spawn_test_server(runtime_app).await;
+
+        let mut state_config = state.app_state.config.clone();
+        state_config.runtime_listen_addr = runtime_url
+            .strip_prefix("http://")
+            .expect("runtime url")
+            .to_string();
+        let state = test_operator_state_with_config(state_config);
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/invoke",
+                Some(&token),
+                Some(json!({
+                    "provider_id": local_node_id,
+                    "service_id": "invoke-loopback",
+                    "input": { "ping": true }
+                })),
+            ))
+            .await
+            .expect("invoke response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        provider_handle.abort();
+        runtime_handle.abort();
+
+        let captured = captured_deal_request
+            .lock()
+            .expect("lock captured deal request")
+            .clone()
+            .expect("captured runtime deal request");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "succeeded");
+        assert_eq!(payload["result"], json!({ "message": "pong" }));
+        assert_eq!(captured["provider"]["provider_id"], local_node_id);
+        assert_eq!(
+            captured["provider"]["provider_url"],
+            Value::String(expected_provider_url)
+        );
+    }
+
+    #[tokio::test]
+    async fn run_compute_uses_local_provider_base_url_for_local_loopback_provider_id() {
+        let temp_dir = unique_temp_dir("run-compute-local-loopback");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut node_config = test_node_config(temp_dir);
+        node_config.listen_addr = "127.0.0.1:43123".to_string();
+
+        let state = test_operator_state_with_config(node_config);
+        let local_node_id = state.app_state.identity.node_id().to_string();
+        let token = state.app_state.consumer_control_auth_token.clone();
+        let expected_provider_url = "http://127.0.0.1:43123".to_string();
+        let captured_deal_request = Arc::new(Mutex::new(None::<Value>));
+
+        let runtime_app = Router::new().route(
+            "/v1/runtime/deals",
+            post({
+                let captured_deal_request = captured_deal_request.clone();
+                let local_node_id = local_node_id.clone();
+                let expected_provider_url = expected_provider_url.clone();
+                move |AxumJson(payload): AxumJson<Value>| {
+                    let captured_deal_request = captured_deal_request.clone();
+                    let local_node_id = local_node_id.clone();
+                    let expected_provider_url = expected_provider_url.clone();
+                    async move {
+                        *captured_deal_request
+                            .lock()
+                            .expect("lock captured deal request") = Some(payload);
+                        AxumJson(test_runtime_create_deal_response(
+                            &local_node_id,
+                            &expected_provider_url,
+                            json!({ "message": "pong" }),
+                        ))
+                    }
+                }
+            }),
+        );
+        let (runtime_url, runtime_handle) = spawn_test_server(runtime_app).await;
+
+        let mut state_config = state.app_state.config.clone();
+        state_config.runtime_listen_addr = runtime_url
+            .strip_prefix("http://")
+            .expect("runtime url")
+            .to_string();
+        let state = test_operator_state_with_config(state_config);
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/compute/run",
+                Some(&token),
+                Some(json!({
+                    "provider_id": local_node_id,
+                    "runtime": "wasm",
+                    "package_kind": "inline_module",
+                    "wasm_module_hex": "0061736d01000000"
+                })),
+            ))
+            .await
+            .expect("run compute response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        runtime_handle.abort();
+
+        let captured = captured_deal_request
+            .lock()
+            .expect("lock captured deal request")
+            .clone()
+            .expect("captured runtime deal request");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "succeeded");
+        assert_eq!(captured["provider"]["provider_id"], local_node_id);
+        assert_eq!(
+            captured["provider"]["provider_url"],
+            Value::String(expected_provider_url)
+        );
+    }
+
+    #[tokio::test]
+    async fn run_compute_uses_local_provider_base_url_for_local_loopback_provider_url() {
+        let provider_app = Router::new();
+        let (provider_url, provider_handle) = spawn_test_server(provider_app).await;
+
+        let temp_dir = unique_temp_dir("run-compute-local-loopback-url");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut node_config = test_node_config(temp_dir);
+        node_config.listen_addr = provider_url
+            .strip_prefix("http://")
+            .expect("provider url")
+            .to_string();
+
+        let state = test_operator_state_with_config(node_config);
+        let local_node_id = state.app_state.identity.node_id().to_string();
+        let token = state.app_state.consumer_control_auth_token.clone();
+        let expected_provider_url = provider_url.clone();
+        let captured_deal_request = Arc::new(Mutex::new(None::<Value>));
+
+        let runtime_app = Router::new().route(
+            "/v1/runtime/deals",
+            post({
+                let captured_deal_request = captured_deal_request.clone();
+                let local_node_id = local_node_id.clone();
+                let expected_provider_url = expected_provider_url.clone();
+                move |AxumJson(payload): AxumJson<Value>| {
+                    let captured_deal_request = captured_deal_request.clone();
+                    let local_node_id = local_node_id.clone();
+                    let expected_provider_url = expected_provider_url.clone();
+                    async move {
+                        *captured_deal_request
+                            .lock()
+                            .expect("lock captured deal request") = Some(payload);
+                        AxumJson(test_runtime_create_deal_response(
+                            &local_node_id,
+                            &expected_provider_url,
+                            json!({ "message": "pong" }),
+                        ))
+                    }
+                }
+            }),
+        );
+        let (runtime_url, runtime_handle) = spawn_test_server(runtime_app).await;
+
+        let mut state_config = state.app_state.config.clone();
+        state_config.runtime_listen_addr = runtime_url
+            .strip_prefix("http://")
+            .expect("runtime url")
+            .to_string();
+        let state = test_operator_state_with_config(state_config);
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/compute/run",
+                Some(&token),
+                Some(json!({
+                    "provider_url": "http://127.0.0.1:8080",
+                    "runtime": "wasm",
+                    "package_kind": "inline_module",
+                    "wasm_module_hex": "0061736d01000000"
+                })),
+            ))
+            .await
+            .expect("run compute response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        provider_handle.abort();
+        runtime_handle.abort();
+
+        let captured = captured_deal_request
+            .lock()
+            .expect("lock captured deal request")
+            .clone()
+            .expect("captured runtime deal request");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "succeeded");
+        assert_eq!(captured["provider"]["provider_id"], Value::Null);
+        assert_eq!(
+            captured["provider"]["provider_url"],
+            Value::String(expected_provider_url)
+        );
+    }
+
+    #[tokio::test]
     async fn publish_artifact_requires_provider_control_auth() {
         let state = test_operator_state();
         let consumer_token = state.app_state.consumer_control_auth_token.clone();
@@ -2775,7 +3348,11 @@ mod tests {
             "summary": "Inline Wasm artifact",
             "price_sats": 0,
             "publication_state": "active",
-            "execution_kind": "wasm_inline",
+            "runtime": "wasm",
+            "package_kind": "inline_module",
+            "entrypoint_kind": "handler",
+            "entrypoint": "run",
+            "contract_version": "froglet.wasm.run_json.v1",
             "wasm_module_hex": "0061736d01000000"
         });
 
@@ -2920,7 +3497,7 @@ mod tests {
         assert_eq!(create_payload["project"]["project_id"], "lol-service");
         assert_eq!(create_payload["project"]["service_id"], "lol-service");
 
-        let test_response = router(state)
+        let test_response = router(state.clone())
             .oneshot(operator_request(
                 Method::POST,
                 "/v1/froglet/projects/lol-service/test",
@@ -2932,6 +3509,111 @@ mod tests {
         let (test_status, test_payload): (StatusCode, Value) = response_json(test_response).await;
         assert_eq!(test_status, StatusCode::OK);
         assert_eq!(test_payload["output"], json!("lol"));
+
+        let services_response = router(state)
+            .oneshot(operator_request(
+                Method::GET,
+                "/v1/froglet/services/local",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("list local services response");
+        let (services_status, services_payload): (StatusCode, Value) =
+            response_json(services_response).await;
+        assert_eq!(services_status, StatusCode::OK);
+        assert!(
+            services_payload["services"]
+                .as_array()
+                .expect("services array")
+                .iter()
+                .any(|service| service["service_id"] == "lol-service"),
+            "expected lol-service in local services: {services_payload}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_project_accepts_active_inline_source_scaffold() {
+        let state = test_operator_state();
+        let token = state.app_state.provider_control_auth_token.clone();
+
+        let create_response = router(state.clone())
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/projects",
+                Some(&token),
+                Some(json!({
+                    "name": "Inline Echo",
+                    "summary": "Echoes the input",
+                    "runtime": "python",
+                    "package_kind": "inline_source",
+                    "entrypoint_kind": "handler",
+                    "entrypoint": "source/main.py",
+                    "contract_version": "froglet.python.handler_json.v1",
+                    "inline_source": "def handler(event, context):\n    return event\n",
+                    "price_sats": 0,
+                    "publication_state": "active"
+                })),
+            ))
+            .await
+            .expect("create project response");
+        let (create_status, create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
+        assert_eq!(create_status, StatusCode::CREATED);
+        assert_eq!(create_payload["project"]["project_id"], "inline-echo");
+        assert_eq!(create_payload["project"]["publication_state"], "active");
+
+        let test_response = router(state.clone())
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/projects/inline-echo/test",
+                Some(&token),
+                Some(json!({ "input": { "ok": true } })),
+            ))
+            .await
+            .expect("test project response");
+        let (test_status, test_payload): (StatusCode, Value) = response_json(test_response).await;
+        assert_eq!(test_status, StatusCode::OK);
+        assert_eq!(test_payload["output"], json!({ "ok": true }));
+    }
+
+    #[test]
+    fn build_execution_from_python_service_normalizes_file_entrypoint_to_handler() {
+        let service = ProviderServiceRecord {
+            service_id: "python-ping".to_string(),
+            offer_id: "python-ping".to_string(),
+            offer_kind: crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
+            resource_kind: "service".to_string(),
+            project_id: Some("python-ping".to_string()),
+            summary: "Returns pong".to_string(),
+            runtime: "python".to_string(),
+            package_kind: "inline_source".to_string(),
+            entrypoint_kind: "handler".to_string(),
+            entrypoint: "source/main.py".to_string(),
+            contract_version: "froglet.python.handler_json.v1".to_string(),
+            mounts: vec![],
+            mode: "sync".to_string(),
+            price_sats: 0,
+            publication_state: "active".to_string(),
+            provider_id: "provider-1".to_string(),
+            module_hash: None,
+            input_schema: None,
+            output_schema: Some(json!({ "const": "pong" })),
+            module_bytes_hex: None,
+            inline_source: Some("def handler(event, context):\n    return \"pong\"\n".to_string()),
+            oci_reference: None,
+            oci_digest: None,
+        };
+
+        let workload = build_execution_from_service(&service, Value::Null)
+            .expect("python service workload should build");
+        let workload = match workload {
+            WorkloadSpec::Execution { execution } => execution,
+            other => panic!("expected generic execution workload, got {other:?}"),
+        };
+
+        assert_eq!(workload.entrypoint.kind, ExecutionEntrypointKind::Handler);
+        assert_eq!(workload.entrypoint.value, "handler");
     }
 
     #[tokio::test]
@@ -2999,6 +3681,98 @@ mod tests {
         assert_eq!(
             publish_payload["error"],
             "blank projects are scaffolds only; write source or provide result_json before publishing"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_project_promotes_hidden_project_to_active_service() {
+        let state = test_operator_state();
+        let token = state.app_state.provider_control_auth_token.clone();
+
+        let create_response = router(state.clone())
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/projects",
+                Some(&token),
+                Some(json!({
+                    "name": "Hidden Math",
+                    "summary": "Adds one",
+                    "runtime": "python",
+                    "package_kind": "inline_source",
+                    "entrypoint_kind": "handler",
+                    "entrypoint": "source/main.py",
+                    "publication_state": "hidden",
+                    "price_sats": 0
+                })),
+            ))
+            .await
+            .expect("create project response");
+        let (create_status, _create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
+        assert_eq!(create_status, StatusCode::CREATED);
+
+        let write_response = router(state.clone())
+            .oneshot(operator_request(
+                Method::PUT,
+                "/v1/froglet/projects/hidden-math/files/source%2Fmain.py",
+                Some(&token),
+                Some(json!({
+                    "contents": "def handler(event, context):\n    return {\"sum\": event[\"a\"] + 1}\n"
+                })),
+            ))
+            .await
+            .expect("write project file response");
+        let (write_status, _write_payload): (StatusCode, Value) =
+            response_json(write_response).await;
+        assert_eq!(write_status, StatusCode::OK);
+
+        let publish_response = router(state.clone())
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/projects/hidden-math/publish",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("publish project response");
+        let (publish_status, publish_payload): (StatusCode, Value) =
+            response_json(publish_response).await;
+        assert_eq!(publish_status, StatusCode::CREATED);
+        assert_eq!(publish_payload["offer"]["publication_state"], "active");
+
+        let project_response = router(state.clone())
+            .oneshot(operator_request(
+                Method::GET,
+                "/v1/froglet/projects/hidden-math",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("get project response");
+        let (project_status, project_payload): (StatusCode, Value) =
+            response_json(project_response).await;
+        assert_eq!(project_status, StatusCode::OK);
+        assert_eq!(project_payload["project"]["publication_state"], "active");
+
+        let services_response = router(state)
+            .oneshot(operator_request(
+                Method::GET,
+                "/v1/froglet/services/local",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("list local services response");
+        let (services_status, services_payload): (StatusCode, Value) =
+            response_json(services_response).await;
+        assert_eq!(services_status, StatusCode::OK);
+        assert!(
+            services_payload["services"]
+                .as_array()
+                .expect("services array")
+                .iter()
+                .any(|service| service["service_id"] == "hidden-math"),
+            "expected hidden-math in local services: {services_payload}"
         );
     }
 }

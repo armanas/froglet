@@ -4,6 +4,23 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+ensure_mcp_dependencies() {
+  local package_dir="integrations/mcp/froglet"
+  local marker="${package_dir}/node_modules/@modelcontextprotocol/sdk/package.json"
+
+  if [[ -f "$marker" ]]; then
+    return
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[strict] MCP checks require npm to install dependencies" >&2
+    exit 1
+  fi
+
+  echo "[strict] installing MCP server dependencies"
+  npm ci --prefix "$package_dir"
+}
+
 echo "[strict] cargo fmt --check"
 cargo fmt --all --check
 
@@ -20,6 +37,8 @@ fi
 if command -v node >/dev/null 2>&1; then
   node_major=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')
   if [ "$node_major" -ge 18 ] 2>/dev/null; then
+    ensure_mcp_dependencies
+
     echo "[strict] OpenClaw plugin checks"
     node --check integrations/openclaw/froglet/index.js
     node --check integrations/openclaw/froglet/scripts/doctor.mjs
@@ -27,11 +46,30 @@ if command -v node >/dev/null 2>&1; then
       integrations/openclaw/froglet/test/config-profiles.test.mjs \
       integrations/openclaw/froglet/test/doctor.test.mjs \
       integrations/openclaw/froglet/test/froglet-client.test.mjs
+
+    echo "[strict] MCP server checks"
+    node --check integrations/mcp/froglet/server.js
+    node --test integrations/mcp/froglet/test/server.test.mjs
+
+    if [[ "${FROGLET_RUN_COMPOSE_SMOKE:-0}" == "1" ]]; then
+      if ! command -v docker >/dev/null 2>&1; then
+        echo "[strict] compose smoke requested but docker is not installed" >&2
+        exit 1
+      fi
+
+      echo "[strict] compose-backed bot-surface smoke"
+      docker compose down --remove-orphans
+      docker compose up --build -d
+      trap 'docker compose down --remove-orphans' EXIT
+
+      node integrations/openclaw/froglet/test/compose-smoke.mjs
+      node integrations/mcp/froglet/test/compose-smoke.mjs
+    fi
   else
-    echo "[strict] skipping OpenClaw plugin checks: node $node_major < 18"
+    echo "[strict] skipping Node integration checks: node $node_major < 18"
   fi
 else
-  echo "[strict] skipping OpenClaw plugin checks: node is not installed"
+  echo "[strict] skipping Node integration checks: node is not installed"
 fi
 
 echo "[strict] python unittest with warnings as errors"

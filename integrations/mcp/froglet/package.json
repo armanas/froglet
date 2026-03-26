@@ -1,0 +1,22 @@
+{
+  "name": "@froglet/mcp-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MCP server for Froglet services, projects, and compute.",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "froglet-mcp": "./server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "scripts": {
+    "check": "node --check server.js",
+    "smoke:compose": "node test/compose-smoke.mjs",
+    "test": "node --test test/server.test.mjs",
+    "start": "node server.js"
+  }
+}

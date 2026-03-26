@@ -21,138 +21,15 @@ import {
   writeProjectFile
 } from "./froglet-client.js"
 import { toolTextResult } from "./shared.js"
-
-function appendRaw(lines, payload, includeRaw) {
-  if (!includeRaw) {
-    return lines
-  }
-  return [...lines, "", JSON.stringify(payload, null, 2)]
-}
-
-function formatObject(value) {
-  return JSON.stringify(value ?? null)
-}
-
-function normalizeRuntime(service) {
-  if (typeof service?.runtime === "string" && service.runtime.trim().length > 0) {
-    return service.runtime
-  }
-  switch (service?.execution_kind) {
-    case "wasm_inline":
-    case "wasm_oci":
-      return "wasm"
-    case "builtin":
-      return "builtin"
-    default:
-      return "unknown"
-  }
-}
-
-function normalizePackageKind(service) {
-  if (typeof service?.package_kind === "string" && service.package_kind.trim().length > 0) {
-    return service.package_kind
-  }
-  switch (service?.execution_kind) {
-    case "wasm_inline":
-      return "inline_module"
-    case "wasm_oci":
-      return "oci_image"
-    case "builtin":
-      return "builtin"
-    default:
-      return "unknown"
-  }
-}
-
-function normalizeEntrypointKind(service) {
-  if (typeof service?.entrypoint_kind === "string" && service.entrypoint_kind.trim().length > 0) {
-    return service.entrypoint_kind
-  }
-  if (normalizeRuntime(service) === "builtin") {
-    return "builtin"
-  }
-  return "unknown"
-}
-
-function normalizeContractVersion(service) {
-  if (typeof service?.contract_version === "string" && service.contract_version.trim().length > 0) {
-    return service.contract_version
-  }
-  if (typeof service?.abi_version === "string" && service.abi_version.trim().length > 0) {
-    return service.abi_version
-  }
-  return "unknown"
-}
-
-function normalizeMounts(service) {
-  if (service?.mounts !== undefined) {
-    return service.mounts
-  }
-  if (service?.requested_access !== undefined) {
-    return service.requested_access
-  }
-  return []
-}
-
-function summarizeService(service) {
-  return [
-    `service_id: ${service?.service_id ?? "unknown"}`,
-    `offer_id: ${service?.offer_id ?? "unknown"}`,
-    `project_id: ${service?.project_id ?? "none"}`,
-    `summary: ${service?.summary ?? "none"}`,
-    `runtime: ${normalizeRuntime(service)}`,
-    `package_kind: ${normalizePackageKind(service)}`,
-    `entrypoint_kind: ${normalizeEntrypointKind(service)}`,
-    `entrypoint: ${service?.entrypoint ?? "unknown"}`,
-    `contract_version: ${normalizeContractVersion(service)}`,
-    `mounts: ${formatObject(normalizeMounts(service))}`,
-    `mode: ${service?.mode ?? "unknown"}`,
-    `price_sats: ${service?.price_sats ?? "unknown"}`,
-    `publication_state: ${service?.publication_state ?? "unknown"}`,
-    `provider_id: ${service?.provider_id ?? "unknown"}`,
-    `input_schema: ${formatObject(service?.input_schema)}`,
-    `output_schema: ${formatObject(service?.output_schema)}`
-  ]
-}
-
-function summarizeProject(project) {
-  return [
-    `project_id: ${project?.project_id ?? "unknown"}`,
-    `service_id: ${project?.service_id ?? "unknown"}`,
-    `offer_id: ${project?.offer_id ?? "unknown"}`,
-    `summary: ${project?.summary ?? "none"}`,
-    `runtime: ${normalizeRuntime(project)}`,
-    `package_kind: ${normalizePackageKind(project)}`,
-    `entrypoint_kind: ${normalizeEntrypointKind(project)}`,
-    `entrypoint: ${project?.entrypoint ?? "unknown"}`,
-    `contract_version: ${normalizeContractVersion(project)}`,
-    `mounts: ${formatObject(normalizeMounts(project))}`,
-    `mode: ${project?.mode ?? "unknown"}`,
-    `price_sats: ${project?.price_sats ?? "unknown"}`,
-    `publication_state: ${project?.publication_state ?? "unknown"}`,
-    `build_artifact_path: ${project?.build_artifact_path ?? "none"}`,
-    `module_hash: ${project?.module_hash ?? "none"}`
-  ]
-}
-
-function summarizeTask(task) {
-  return [
-    `task_id: ${task?.task_id ?? task?.deal_id ?? "unknown"}`,
-    `status: ${task?.status ?? "unknown"}`,
-    `provider_id: ${task?.provider_id ?? "unknown"}`,
-    `result: ${formatObject(task?.result)}`,
-    `error: ${task?.error ?? "none"}`
-  ]
-}
-
-function serviceAuthorityNotes(service) {
-  return [
-    service?.input_schema == null
-      ? "input_contract: no input_schema is declared; Froglet may forward any JSON input and the service may ignore it."
-      : "input_contract: input_schema is declared; stay within that contract when invoking the service.",
-    "Only listed fields are authoritative; do not infer behavior beyond runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, input_schema, and output_schema."
-  ]
-}
+import {
+  appendRaw,
+  firstDefined,
+  formatObject,
+  serviceAuthorityNotes,
+  summarizeProject,
+  summarizeService,
+  summarizeTask
+} from "../../../shared/froglet-lib/summarize.js"
 
 function context(config) {
   return {
@@ -162,21 +39,12 @@ function context(config) {
   }
 }
 
-function firstDefined(...values) {
-  for (const value of values) {
-    if (value !== undefined) {
-      return value
-    }
-  }
-  return undefined
-}
-
 export function registerFrogletTool(api, config) {
   api.registerTool(
     {
       name: "froglet",
       description:
-        "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For remote discovery-backed services use discover_services or get_service. For named service use invoke_service. For simple fixed-response services, use create_project with result_json, price_sats, and publication_state=active. Example: if the user says create a service called ping which just returns \"pong\" for free, use action=create_project, name=ping, result_json=\"pong\", price_sats=0, publication_state=active. For authored services use create_project, write_file, build_project, test_project, and publish_project. Prefer runtime, package_kind, entrypoint_kind, entrypoint, contract_version, and mounts when the user asks for explicit execution metadata. Use run_compute only for direct execution.",
+        "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For remote discovery-backed services use discover_services or get_service. For named or data-service bindings use invoke_service. For simple fixed-response services, use create_project with result_json, price_sats, and publication_state=active. Example: if the user says create a service called ping which just returns \"pong\" for free, use action=create_project, name=ping, result_json=\"pong\", price_sats=0, publication_state=active. For authored services use create_project, write_file, build_project, test_project, and publish_project. Prefer runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, and explicit artifact fields when the user asks for execution metadata. Use run_compute for open-ended compute through the provider's direct compute offer, and include provider_id or provider_url.",
       parameters: {
         type: "object",
         additionalProperties: true,
@@ -185,7 +53,7 @@ export function registerFrogletTool(api, config) {
           action: {
             type: "string",
             description:
-              "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote discovery-backed listings, get_local_service/get_service for authoritative details, invoke_service for named service execution, and create_project plus explicit result_json or the project build flow for authoring.",
+              "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote discovery-backed listings, get_local_service/get_service for authoritative details, invoke_service for named or data-service execution, create_project plus explicit result_json/inline_source or the project build flow for authoring, and run_compute for open-ended compute with an explicit provider_id or provider_url.",
             enum: [
               "discover_services",
               "get_service",
@@ -223,12 +91,11 @@ export function registerFrogletTool(api, config) {
           },
           runtime: {
             type: "string",
-            description:
-              "Execution runtime for the service or compute request. Prefer this over execution_kind."
+            description: "Execution runtime for the service or compute request, for example wasm, python, or container."
           },
           package_kind: {
             type: "string",
-            description: "Execution package kind for the workload."
+            description: "Execution package kind for the workload, for example inline_module, inline_source, or oci_image."
           },
           entrypoint_kind: {
             type: "string",
@@ -246,10 +113,15 @@ export function registerFrogletTool(api, config) {
             description:
               "Optional mount handles or bindings required by the workload. Keep this as the provider-defined mount payload."
           },
+          wasm_module_hex: {
+            type: "string",
+            description:
+              "Optional inline Wasm module bytes in hex. Use this for direct inline Wasm compute or publish_artifact with runtime=wasm package_kind=inline_module."
+          },
           inline_source: {
             type: "string",
             description:
-              "Optional inline source for a new project or compute request. Use this when you want Froglet to author or run explicit source text."
+              "Optional inline source for a new project or compute request. Use this when you want Froglet to author or run explicit source text, typically for runtime=python package_kind=inline_source."
           },
           starter: {
             type: "string",
@@ -270,13 +142,21 @@ export function registerFrogletTool(api, config) {
             type: "string",
             enum: ["active", "hidden"],
             description:
-              "Use active only when the request also includes starter or result_json, or when a built project is already ready to publish. Blank projects should remain hidden."
+              "Use active only when the request also includes starter, result_json, or inline_source, or when a built project is already ready to publish. Blank projects should remain hidden."
           },
           mode: { type: "string", enum: ["sync", "async"] },
           target: { type: "string", enum: ["runtime", "provider", "all"] },
           lines: { type: "integer", minimum: 1, maximum: 500 },
-          provider_id: { type: "string" },
-          provider_url: { type: "string" },
+          provider_id: {
+            type: "string",
+            description:
+              "Target provider node ID. Required for run_compute unless provider_url is supplied."
+          },
+          provider_url: {
+            type: "string",
+            description:
+              "Target provider base URL. Required for run_compute unless provider_id is supplied."
+          },
           limit: {
             type: "integer",
             minimum: 1,
@@ -396,29 +276,19 @@ export function registerFrogletTool(api, config) {
             })
             const project = response.project ?? {}
             const lines = [...summarizeProject(project)]
-            let finalPayload = response
             if (project.project_id && project.publication_state === "active") {
-              const publication = await publishProject({
-                ...clientContext,
-                projectId: project.project_id
-              })
               lines.push("")
               lines.push("published: true")
-              lines.push(`request_id: ${publication.request_id ?? "unknown"}`)
-              lines.push(`publish_status: ${publication.status ?? "unknown"}`)
-              lines.push(`published_service_id: ${publication.evidence?.service_id ?? project.service_id ?? "unknown"}`)
-              lines.push(`published_offer_id: ${publication.evidence?.offer_id ?? project.offer_id ?? "unknown"}`)
-              finalPayload = {
-                project: response.project,
-                publication
-              }
+              lines.push("publish_status: already_published")
+              lines.push(`published_service_id: ${project.service_id ?? "unknown"}`)
+              lines.push(`published_offer_id: ${project.offer_id ?? "unknown"}`)
             } else {
               lines.push("")
               lines.push("published: false")
               lines.push("next_step: write_file, build_project, test_project, then publish_project when the service is ready")
             }
             return toolTextResult(
-              appendRaw(lines, finalPayload, includeRaw).join("\n")
+              appendRaw(lines, response, includeRaw).join("\n")
             )
           }
           case "get_project": {
@@ -517,6 +387,7 @@ export function registerFrogletTool(api, config) {
                 offer_id: args.offer_id,
                 summary: args.summary,
                 artifact_path: args.artifact_path,
+                wasm_module_hex: args.wasm_module_hex,
                 inline_source: args.inline_source,
                 oci_reference: args.oci_reference,
                 oci_digest: args.oci_digest,
@@ -662,6 +533,7 @@ export function registerFrogletTool(api, config) {
                 provider_id: args.provider_id,
                 provider_url: args.provider_url,
                 input: args.input,
+                wasm_module_hex: args.wasm_module_hex,
                 inline_source: args.inline_source,
                 oci_reference: args.oci_reference,
                 oci_digest: args.oci_digest,

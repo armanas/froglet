@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
 
@@ -37,12 +37,17 @@ jobs:
           python3 -m pip install -r python/requirements.txt
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: integrations/mcp/froglet/package-lock.json
+
+      - name: Install MCP server dependencies
+        run: npm ci --prefix integrations/mcp/froglet
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Run strict verification matrix
         run: ./scripts/strict_checks.sh
@@ -57,7 +62,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "18"
 
@@ -78,6 +83,21 @@ jobs:
     steps:
       - name: Check out repo
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: integrations/mcp/froglet/package-lock.json
+
+      - name: Install MCP server dependencies
+        run: npm ci --prefix integrations/mcp/froglet
 
       - name: Validate Compose configuration
         run: docker compose config
@@ -148,6 +168,9 @@ jobs:
 
       - name: Smoke test OpenClaw plugin against compose-backed Froglet
         run: node integrations/openclaw/froglet/test/compose-smoke.mjs
+
+      - name: Smoke test MCP server against compose-backed Froglet
+        run: node integrations/mcp/froglet/test/compose-smoke.mjs
 
       - name: Show container status
         if: always()

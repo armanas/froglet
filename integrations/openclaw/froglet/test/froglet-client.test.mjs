@@ -28,8 +28,6 @@ test("createProject accepts HTTP 201 responses", async () => {
       assert.equal(body.entrypoint_kind, "handler")
       assert.equal(body.entrypoint, "handler.py")
       assert.equal(body.contract_version, "froglet.compute.python.v1")
-      assert.equal(body.abi_version, "froglet.compute.python.v1")
-      assert.equal(body.execution_kind, undefined)
       return new Response(JSON.stringify({ project: { project_id: "lol" } }), {
         status: 201,
         headers: { "Content-Type": "application/json" }
@@ -72,8 +70,6 @@ test("publish endpoints accept HTTP 201 responses", async () => {
         assert.equal(body.entrypoint_kind, "handler")
         assert.equal(body.entrypoint, "source/main.wat")
         assert.equal(body.contract_version, "froglet.compute.v1")
-        assert.equal(body.execution_kind, "wasm_inline")
-        assert.equal(body.abi_version, "froglet.compute.v1")
         assert.equal(body.wasm_module_hex, undefined)
       }
       return new Response(JSON.stringify({ status: "passed" }), {

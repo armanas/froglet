@@ -25,6 +25,15 @@ htmlcov/
 venv/
 .python-version
 
+# Node dependencies and logs
+node_modules/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+
 # Local environment files
 .env
 .env.*

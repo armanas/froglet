@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 
 use crate::{
     canonical_json, crypto,
-    execution::{CONTRACT_PYTHON_HANDLER_JSON_V1, ExecutionMount},
+    execution::{
+        CONTRACT_PYTHON_HANDLER_JSON_V1, ExecutionEntrypointKind, ExecutionMount,
+        ExecutionPackageKind, ExecutionRuntime,
+    },
     sandbox,
     state::AppState,
     wasm::{WASM_HOST_JSON_ABI_V1, WASM_RUN_JSON_ABI_V1},
@@ -39,11 +42,11 @@ fn default_project_contract_version() -> String {
     CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()
 }
 
-fn default_execution_kind() -> String {
+fn default_v1_execution_kind() -> String {
     "wasm_inline".to_string()
 }
 
-fn default_abi_version() -> String {
+fn default_v1_abi_version() -> String {
     WASM_RUN_JSON_ABI_V1.to_string()
 }
 
@@ -64,10 +67,6 @@ pub struct ProviderProjectManifest {
     pub contract_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
-    #[serde(default = "default_execution_kind")]
-    pub execution_kind: String,
-    #[serde(default = "default_abi_version")]
-    pub abi_version: String,
     pub mode: String,
     pub source_kind: String,
     pub entrypoint: String,
@@ -93,8 +92,6 @@ pub struct ProviderProjectRecord {
     pub contract_version: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
-    pub execution_kind: String,
-    pub abi_version: String,
     pub mode: String,
     pub source_kind: String,
     pub entrypoint: String,
@@ -117,8 +114,45 @@ pub struct ProviderProjectBuildRecord {
     pub project: ProviderProjectRecord,
     pub build_artifact_path: String,
     pub module_hash: String,
-    pub abi_version: String,
     pub contract_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProviderProjectManifestV1 {
+    pub project_id: String,
+    pub service_id: String,
+    pub offer_id: String,
+    pub summary: String,
+    #[serde(default)]
+    pub runtime: String,
+    #[serde(default)]
+    pub package_kind: String,
+    #[serde(default)]
+    pub entrypoint_kind: String,
+    #[serde(default)]
+    pub contract_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mounts: Vec<ExecutionMount>,
+    #[serde(default = "default_v1_execution_kind")]
+    pub execution_kind: String,
+    #[serde(default = "default_v1_abi_version")]
+    pub abi_version: String,
+    pub mode: String,
+    pub source_kind: String,
+    pub entrypoint: String,
+    pub price_sats: u64,
+    pub publication_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectManifestVersionProbe {
+    pub schema_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -433,12 +467,6 @@ pub fn create_project(
         entrypoint_kind,
         contract_version: contract_version.clone(),
         mounts: overrides.mounts.unwrap_or_default(),
-        execution_kind: if source_kind == "wat" {
-            "wasm_inline".to_string()
-        } else {
-            "python_inline".to_string()
-        },
-        abi_version: contract_version.clone(),
         mode: overrides.mode.unwrap_or_else(|| "sync".to_string()),
         source_kind,
         entrypoint: entrypoint.clone(),
@@ -456,6 +484,23 @@ pub fn create_project(
 pub fn get_project(root: &Path, project_id: &str) -> Result<ProviderProjectRecord, String> {
     let project_dir = validate_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
+    project_record(&project_dir, manifest)
+}
+
+pub fn set_project_publication_state(
+    root: &Path,
+    project_id: &str,
+    publication_state: &str,
+) -> Result<ProviderProjectRecord, String> {
+    if publication_state != "active" && publication_state != "hidden" {
+        return Err(format!(
+            "provider project publication_state must be active or hidden, got {publication_state}"
+        ));
+    }
+    let project_dir = validate_project_dir(root, project_id)?;
+    let mut manifest = load_manifest(&project_dir)?;
+    manifest.publication_state = publication_state.to_string();
+    save_manifest(&project_dir, &manifest)?;
     project_record(&project_dir, manifest)
 }
 
@@ -527,7 +572,7 @@ pub fn build_project(root: &Path, project_id: &str) -> Result<ProviderProjectBui
         })?;
         let module_bytes = wat::parse_str(&wat_source)
             .map_err(|error| format!("failed to compile WAT source: {error}"))?;
-        sandbox::validate_module_bytes_for_abi(&module_bytes, &manifest.abi_version)
+        sandbox::validate_module_bytes_for_abi(&module_bytes, &manifest.contract_version)
             .map_err(|error| format!("build validation failed: {error}"))?;
         let build_artifact_path = build_dir.join(BUILD_ARTIFACT_NAME);
         fs::write(&build_artifact_path, &module_bytes).map_err(|error| {
@@ -562,7 +607,6 @@ pub fn build_project(root: &Path, project_id: &str) -> Result<ProviderProjectBui
         project: project_record(&project_dir, manifest.clone())?,
         build_artifact_path: build_artifact_path.display().to_string(),
         module_hash,
-        abi_version: manifest.abi_version,
         contract_version: manifest.contract_version,
     })
 }
@@ -653,11 +697,28 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|error| format!("failed to spawn python3: {error}"))?;
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write as _;
             stdin
                 .write_all(&input_bytes)
                 .map_err(|error| format!("failed to write python input: {error}"))?;
+        }
+        let deadline = std::time::Duration::from_secs(state.config.execution_timeout_secs);
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() > deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "python test execution timed out after {}s",
+                        deadline.as_secs()
+                    ));
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(error) => return Err(format!("failed waiting for python execution: {error}")),
+            }
         }
         let output = child
             .wait_with_output()
@@ -670,7 +731,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         }
         serde_json::from_slice::<Value>(&output.stdout)
             .map_err(|error| format!("python execution returned invalid JSON: {error}"))?
-    } else if manifest.abi_version == WASM_HOST_JSON_ABI_V1 {
+    } else if manifest.contract_version == WASM_HOST_JSON_ABI_V1 {
         let Some(host_environment) = state.wasm_host.clone() else {
             return Err("unsupported_capability: froglet.wasm.host_json.v1 requires a configured Wasm host environment".to_string());
         };
@@ -680,7 +741,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
                 &module_bytes,
                 &input,
                 sandbox::WasmExecutionOptions {
-                    abi_version: manifest.abi_version.clone(),
+                    abi_version: manifest.contract_version.clone(),
                     capabilities_granted: host_environment.advertised_capabilities(),
                     host_environment: Some(host_environment),
                 },
@@ -710,10 +771,18 @@ pub fn load_manifest(project_dir: &Path) -> Result<ProviderProjectManifest, Stri
             manifest_path.display()
         )
     })?;
-    let mut manifest: ProviderProjectManifest = toml::from_str(&manifest_text)
+    let probe: ProjectManifestVersionProbe = toml::from_str(&manifest_text)
         .map_err(|error| format!("invalid project manifest: {error}"))?;
-    if manifest.schema_version == "froglet-service/v1" {
-        manifest = migrate_manifest_v1(manifest);
+    let is_legacy_v1 = probe.schema_version == "froglet-service/v1";
+    let manifest = if is_legacy_v1 {
+        let legacy: ProviderProjectManifestV1 = toml::from_str(&manifest_text)
+            .map_err(|error| format!("invalid project manifest: {error}"))?;
+        migrate_manifest_v1(legacy)
+    } else {
+        toml::from_str::<ProviderProjectManifest>(&manifest_text)
+            .map_err(|error| format!("invalid project manifest: {error}"))?
+    };
+    if is_legacy_v1 {
         let _ = save_manifest(project_dir, &manifest);
     }
     validate_manifest(&manifest)?;
@@ -729,37 +798,52 @@ pub fn save_manifest(project_dir: &Path, manifest: &ProviderProjectManifest) -> 
 }
 
 fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
-    if manifest.schema_version != PROJECT_SCHEMA_VERSION
-        && manifest.schema_version != "froglet-service/v1"
-    {
+    if manifest.schema_version != PROJECT_SCHEMA_VERSION {
         return Err(format!(
             "unsupported project schema_version: {}",
             manifest.schema_version
         ));
     }
+    let runtime = ExecutionRuntime::parse(&manifest.runtime)?;
+    let package_kind = ExecutionPackageKind::parse(&manifest.package_kind)?;
+    let entrypoint_kind = ExecutionEntrypointKind::parse(&manifest.entrypoint_kind)?;
     if manifest.source_kind != "wat" && manifest.source_kind != "python" {
         return Err("provider project source_kind must be wat or python".to_string());
     }
     if manifest.source_kind == "wat"
-        && manifest.abi_version != WASM_RUN_JSON_ABI_V1
-        && manifest.abi_version != WASM_HOST_JSON_ABI_V1
+        && manifest.contract_version != WASM_RUN_JSON_ABI_V1
+        && manifest.contract_version != WASM_HOST_JSON_ABI_V1
     {
         return Err(format!(
-            "unsupported provider project abi_version: {}",
-            manifest.abi_version
+            "unsupported provider project contract_version: {}",
+            manifest.contract_version
         ));
+    }
+    if manifest.source_kind == "wat"
+        && (runtime != ExecutionRuntime::Wasm || package_kind != ExecutionPackageKind::InlineModule)
+    {
+        return Err(
+            "WAT provider projects must use runtime=wasm and package_kind=inline_module"
+                .to_string(),
+        );
+    }
+    if manifest.source_kind == "python"
+        && (runtime != ExecutionRuntime::Python
+            || package_kind != ExecutionPackageKind::InlineSource)
+    {
+        return Err(
+            "Python provider projects must use runtime=python and package_kind=inline_source"
+                .to_string(),
+        );
+    }
+    if runtime == ExecutionRuntime::Builtin || package_kind == ExecutionPackageKind::Builtin {
+        return Err("provider projects cannot use builtin execution".to_string());
+    }
+    if entrypoint_kind == ExecutionEntrypointKind::Builtin {
+        return Err("provider projects cannot use entrypoint_kind=builtin".to_string());
     }
     if manifest.publication_state != "active" && manifest.publication_state != "hidden" {
         return Err("provider project publication_state must be active or hidden".to_string());
-    }
-    if manifest.execution_kind != "wasm_inline"
-        && manifest.execution_kind != "wasm_oci"
-        && manifest.execution_kind != "python_inline"
-    {
-        return Err(
-            "provider project execution_kind must be wasm_inline, wasm_oci, or python_inline"
-                .to_string(),
-        );
     }
     if manifest.mode != "sync" && manifest.mode != "async" {
         return Err("provider project mode must be sync or async".to_string());
@@ -774,19 +858,20 @@ fn validate_manifest(manifest: &ProviderProjectManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn migrate_manifest_v1(mut manifest: ProviderProjectManifest) -> ProviderProjectManifest {
-    manifest.schema_version = PROJECT_SCHEMA_VERSION.to_string();
-    if manifest.runtime.trim().is_empty() {
-        manifest.runtime = if manifest.source_kind == "python" {
+fn migrate_manifest_v1(manifest: ProviderProjectManifestV1) -> ProviderProjectManifest {
+    let runtime = if manifest.runtime.trim().is_empty() {
+        if manifest.source_kind == "python" {
             "python".to_string()
         } else if manifest.execution_kind == "builtin" {
             "builtin".to_string()
         } else {
             "wasm".to_string()
-        };
-    }
-    if manifest.package_kind.trim().is_empty() {
-        manifest.package_kind = match manifest.execution_kind.as_str() {
+        }
+    } else {
+        manifest.runtime
+    };
+    let package_kind = if manifest.package_kind.trim().is_empty() {
+        match manifest.execution_kind.as_str() {
             "wasm_oci" => "oci_image".to_string(),
             "builtin" => "builtin".to_string(),
             _ => {
@@ -796,23 +881,48 @@ fn migrate_manifest_v1(mut manifest: ProviderProjectManifest) -> ProviderProject
                     "inline_module".to_string()
                 }
             }
-        };
-    }
-    if manifest.entrypoint_kind.trim().is_empty() {
-        manifest.entrypoint_kind = if manifest.runtime == "builtin" {
+        }
+    } else {
+        manifest.package_kind
+    };
+    let entrypoint_kind = if manifest.entrypoint_kind.trim().is_empty() {
+        if runtime == "builtin" {
             "builtin".to_string()
         } else {
             "handler".to_string()
-        };
-    }
-    if manifest.contract_version.trim().is_empty() {
-        manifest.contract_version = if manifest.source_kind == "python" {
+        }
+    } else {
+        manifest.entrypoint_kind
+    };
+    let contract_version = if manifest.contract_version.trim().is_empty() {
+        if manifest.source_kind == "python" {
             CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()
         } else {
             manifest.abi_version.clone()
-        };
+        }
+    } else {
+        manifest.contract_version
+    };
+    ProviderProjectManifest {
+        schema_version: PROJECT_SCHEMA_VERSION.to_string(),
+        project_id: manifest.project_id,
+        service_id: manifest.service_id,
+        offer_id: manifest.offer_id,
+        summary: manifest.summary,
+        runtime,
+        package_kind,
+        entrypoint_kind,
+        contract_version,
+        mounts: manifest.mounts,
+        mode: manifest.mode,
+        source_kind: manifest.source_kind,
+        entrypoint: manifest.entrypoint,
+        price_sats: manifest.price_sats,
+        publication_state: manifest.publication_state,
+        starter: manifest.starter,
+        input_schema: manifest.input_schema,
+        output_schema: manifest.output_schema,
     }
-    manifest
 }
 
 fn validate_slug(value: &str, field_name: &str) -> Result<(), String> {
@@ -866,8 +976,6 @@ fn project_record(
         entrypoint_kind: manifest.entrypoint_kind,
         contract_version: manifest.contract_version,
         mounts: manifest.mounts,
-        execution_kind: manifest.execution_kind,
-        abi_version: manifest.abi_version,
         mode: manifest.mode,
         source_kind: manifest.source_kind,
         entrypoint: manifest.entrypoint,
@@ -914,6 +1022,15 @@ fn resolve_relative_path(root: &Path, relative_path: &str) -> Result<PathBuf, St
     let joined = root.join(relative_path);
     if let Some(parent) = joined.parent() {
         ensure_non_symlink_tree(root, parent)?;
+    }
+    // Reject symlink leaves to prevent escaping the project root.
+    if let Ok(metadata) = fs::symlink_metadata(&joined)
+        && metadata.file_type().is_symlink()
+    {
+        return Err(format!(
+            "symlink paths are not allowed in provider projects: {}",
+            joined.display()
+        ));
     }
     Ok(joined)
 }
@@ -1023,6 +1140,7 @@ mod tests {
                 consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
                 provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
                 tor_dir: temp_dir.join("tor"),
+                host_readable_control_token: false,
             },
             wasm: WasmConfig {
                 policy_path: None,

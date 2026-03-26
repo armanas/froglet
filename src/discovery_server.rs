@@ -125,14 +125,32 @@ struct EndpointClaims {
 }
 
 impl EndpointClaims {
-    fn from_descriptor(descriptor: &NodeDescriptor) -> Self {
+    fn from_descriptor(descriptor: &NodeDescriptor) -> Result<Self, String> {
+        Ok(Self {
+            clearnet_url: normalize_endpoint(descriptor.transports.clearnet_url.clone())?,
+            onion_url: normalize_endpoint(descriptor.transports.onion_url.clone())?,
+        })
+    }
+
+    fn from_descriptor_for_startup(node_id: &str, descriptor: &NodeDescriptor) -> Self {
         Self {
-            clearnet_url: normalize_endpoint(descriptor.transports.clearnet_url.clone()),
-            onion_url: normalize_endpoint(descriptor.transports.onion_url.clone()),
+            clearnet_url: normalize_legacy_endpoint_claim(
+                node_id,
+                "clearnet_url",
+                descriptor.transports.clearnet_url.clone(),
+            ),
+            onion_url: normalize_legacy_endpoint_claim(
+                node_id,
+                "onion_url",
+                descriptor.transports.onion_url.clone(),
+            ),
         }
     }
 
-    fn from_descriptor_json(descriptor_json: &str) -> rusqlite::Result<Self> {
+    fn from_descriptor_json_for_startup(
+        node_id: &str,
+        descriptor_json: &str,
+    ) -> rusqlite::Result<Self> {
         let descriptor: NodeDescriptor =
             serde_json::from_str(descriptor_json).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
@@ -141,7 +159,7 @@ impl EndpointClaims {
                     Box::new(error),
                 )
             })?;
-        Ok(Self::from_descriptor(&descriptor))
+        Ok(Self::from_descriptor_for_startup(node_id, &descriptor))
     }
 
     fn keys(&self) -> impl Iterator<Item = String> + '_ {
@@ -164,11 +182,49 @@ struct EndpointConflictRecord {
     endpoint: String,
 }
 
-fn normalize_endpoint(endpoint: Option<String>) -> Option<String> {
-    endpoint.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    })
+fn normalize_endpoint(endpoint: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = endpoint else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed =
+        reqwest::Url::parse(trimmed).map_err(|error| format!("invalid endpoint URL: {error}"))?;
+    match parsed.scheme() {
+        "https" => {}
+        "http" => {
+            let host = parsed.host_str().unwrap_or("");
+            const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
+            if !LOOPBACK_HOSTS.contains(&host) && !host.ends_with(".onion") {
+                return Err(format!(
+                    "endpoint must use https:// (http:// is only allowed for loopback and .onion addresses), got {trimmed}"
+                ));
+            }
+        }
+        other => return Err(format!("endpoint must use http or https, got {other}")),
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_legacy_endpoint_claim(
+    node_id: &str,
+    field: &str,
+    endpoint: Option<String>,
+) -> Option<String> {
+    match normalize_endpoint(endpoint) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                node_id = %node_id,
+                field,
+                error = %error,
+                "ignoring invalid legacy discovery transport endpoint during startup"
+            );
+            None
+        }
+    }
 }
 
 fn ensure_node_transport_columns(conn: &Connection) -> rusqlite::Result<()> {
@@ -192,7 +248,7 @@ fn backfill_node_transport_claims(conn: &Connection) -> rusqlite::Result<()> {
     })?;
     for row in rows {
         let (node_id, descriptor_json) = row?;
-        let claims = EndpointClaims::from_descriptor_json(&descriptor_json)?;
+        let claims = EndpointClaims::from_descriptor_json_for_startup(&node_id, &descriptor_json)?;
         conn.execute(
             "UPDATE nodes SET clearnet_url = ?2, onion_url = ?3 WHERE node_id = ?1",
             params![node_id, claims.clearnet_url, claims.onion_url],
@@ -225,7 +281,7 @@ fn prune_duplicate_endpoint_claims(conn: &Connection) -> rusqlite::Result<()> {
     let mut duplicate_node_ids = Vec::new();
     for row in rows {
         let (node_id, descriptor_json) = row?;
-        let claims = EndpointClaims::from_descriptor_json(&descriptor_json)?;
+        let claims = EndpointClaims::from_descriptor_json_for_startup(&node_id, &descriptor_json)?;
         if claims.is_empty() {
             continue;
         }
@@ -395,7 +451,7 @@ fn register_node_record(
 ) -> Result<RegisterOutcome, String> {
     let node_id = descriptor.node_id.clone();
     let pubkey = descriptor.pubkey.clone();
-    let claims = EndpointClaims::from_descriptor(descriptor);
+    let claims = EndpointClaims::from_descriptor(descriptor)?;
     conn.execute_batch("SAVEPOINT discovery_register")
         .map_err(|error| error.to_string())?;
     let outcome = (|| -> Result<RegisterOutcome, String> {
@@ -931,7 +987,7 @@ mod tests {
         last_seen_at: i64,
     ) {
         let descriptor_json = serde_json::to_string(descriptor).unwrap();
-        let claims = EndpointClaims::from_descriptor(descriptor);
+        let claims = EndpointClaims::from_descriptor(descriptor).unwrap();
         conn.execute(
             "INSERT INTO nodes (
                 node_id, pubkey, descriptor_json, clearnet_url, onion_url, status,
@@ -1046,6 +1102,54 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM challenges", [], |row| row.get(0))
             .unwrap();
         assert_eq!(challenge_count, 0);
+    }
+
+    #[test]
+    fn configure_connection_ignores_legacy_invalid_endpoint_claims() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE nodes (
+                 node_id TEXT PRIMARY KEY,
+                 pubkey TEXT NOT NULL,
+                 descriptor_json TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 registered_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 last_seen_at INTEGER NOT NULL
+             );
+             CREATE TABLE challenges (
+                 challenge_id TEXT PRIMARY KEY,
+                 node_id TEXT NOT NULL,
+                 nonce TEXT NOT NULL,
+                 expires_at INTEGER NOT NULL,
+                 used_at INTEGER,
+                 FOREIGN KEY(node_id) REFERENCES nodes(node_id)
+             );",
+        )
+        .unwrap();
+        let descriptor = test_descriptor("node-legacy", "http://provider:8080");
+        conn.execute(
+            "INSERT INTO nodes (node_id, pubkey, descriptor_json, status, registered_at, updated_at, last_seen_at)
+             VALUES (?1, ?2, ?3, 'active', 1, 1, 1)",
+            params![
+                descriptor.node_id,
+                descriptor.pubkey,
+                serde_json::to_string(&descriptor).unwrap()
+            ],
+        )
+        .unwrap();
+
+        configure_discovery_connection(&conn).unwrap();
+
+        let claims: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT clearnet_url, onion_url FROM nodes WHERE node_id = 'node-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(claims, (None, None));
     }
 
     #[test]

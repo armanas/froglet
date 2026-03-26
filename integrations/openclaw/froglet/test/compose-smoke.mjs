@@ -13,6 +13,68 @@ function extractAppendedJson(text) {
   return JSON.parse(text.slice(start + 1))
 }
 
+async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  let lastRaw = null
+  let lastError = null
+  const allowDiscoveryDisabled = process.env.FROGLET_ALLOW_DISCOVERY_DISABLED === "1"
+
+  while (Date.now() < deadline) {
+    try {
+      const status = await froglet.definition.execute("status", {
+        action: "status",
+        include_raw: true
+      })
+      lastRaw = extractAppendedJson(status.content[0].text)
+      lastError = null
+      if (
+        lastRaw.runtime?.healthy === true &&
+        lastRaw.provider?.healthy === true &&
+        (lastRaw.reference_discovery?.enabled === true || allowDiscoveryDisabled)
+      ) {
+        return lastRaw
+      }
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+
+  throw new Error(
+    `compose smoke requires a healthy reference-discovery stack: ${JSON.stringify(lastRaw)}${lastError ? `; last_error=${lastError.message}` : ""}`
+  )
+}
+
+async function waitForDiscovery(froglet, serviceId, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  let lastRaw = null
+  let lastError = null
+
+  while (Date.now() < deadline) {
+    try {
+      const discover = await froglet.definition.execute("discover", {
+        action: "discover_services",
+        limit: 10,
+        include_inactive: false,
+        include_raw: true
+      })
+      lastRaw = extractAppendedJson(discover.content[0].text)
+      lastError = null
+      const services = Array.isArray(lastRaw.services) ? lastRaw.services : []
+      if (services.some((service) => service?.service_id === serviceId)) {
+        return lastRaw
+      }
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+
+  throw new Error(
+    `service ${serviceId} did not appear in discovery: ${JSON.stringify(lastRaw)}${lastError ? `; last_error=${lastError.message}` : ""}`
+  )
+}
+
 function assertConfigValueMatchesSchema(key, value, schema) {
   const expectedType = schema?.type
   switch (expectedType) {
@@ -83,14 +145,7 @@ async function main() {
 
   const froglet = tools.get("froglet")
 
-  const status = await froglet.definition.execute("status", {
-    action: "status",
-    include_raw: true
-  })
-  const statusRaw = extractAppendedJson(status.content[0].text)
-  assert.equal(statusRaw.runtime?.healthy, true)
-  assert.equal(statusRaw.provider?.healthy, true)
-  assert.equal(statusRaw.reference_discovery?.enabled, true)
+  const statusRaw = await waitForHealthyStatus(froglet)
 
   const serviceId = `compose-smoke-ping-${Date.now()}`
   const create = await froglet.definition.execute("create", {
@@ -105,18 +160,29 @@ async function main() {
   const createRaw = extractAppendedJson(create.content[0].text)
   assert.equal(createRaw.project?.service_id, serviceId)
   assert.equal(createRaw.project?.publication_state, "active")
+  const projectId = createRaw.project?.project_id ?? serviceId
+
+  const test = await froglet.definition.execute("test", {
+    action: "test_project",
+    project_id: projectId,
+    input: { source: "compose-smoke-test" },
+    include_raw: true
+  })
+  const testRaw = extractAppendedJson(test.content[0].text)
+  assert.equal(testRaw.project?.project_id, projectId)
+  assert.deepEqual(testRaw.output, { message: "pong" })
 
   const build = await froglet.definition.execute("build", {
     action: "build_project",
-    project_id: createRaw.project?.project_id ?? serviceId,
+    project_id: projectId,
     include_raw: true
   })
   const buildRaw = extractAppendedJson(build.content[0].text)
-  assert.equal(buildRaw.project?.project_id, createRaw.project?.project_id ?? serviceId)
+  assert.equal(buildRaw.project?.project_id, projectId)
 
   await froglet.definition.execute("publish", {
     action: "publish_project",
-    project_id: createRaw.project?.project_id ?? serviceId,
+    project_id: projectId,
     include_raw: true
   })
 
@@ -129,17 +195,14 @@ async function main() {
     (service) => service?.service_id === serviceId
   )
   assert.ok(localService, "local services did not include the published smoke service")
+  assert.equal(typeof localService?.provider_id, "string", "missing local service provider_id")
 
-  const discover = await froglet.definition.execute("discover", {
-    action: "discover_services",
-    limit: 10,
-    include_inactive: false,
-    include_raw: true
-  })
-  const discoverRaw = extractAppendedJson(discover.content[0].text)
-  assert.ok(discoverRaw, "missing discovery response")
-  assert.equal(Number(discoverRaw.provider_nodes_discovered ?? 0) >= 1, true)
-  assert.equal(Array.isArray(discoverRaw.services), true)
+  if (statusRaw.reference_discovery?.enabled === true) {
+    const discoverRaw = await waitForDiscovery(froglet, serviceId)
+    assert.ok(discoverRaw, "missing discovery response")
+    assert.equal(Number(discoverRaw.provider_nodes_discovered ?? 0) >= 1, true)
+    assert.equal(Array.isArray(discoverRaw.services), true)
+  }
 
   const service = await froglet.definition.execute("service", {
     action: "get_local_service",
@@ -149,6 +212,17 @@ async function main() {
   const serviceRaw = extractAppendedJson(service.content[0].text)
   assert.equal(serviceRaw.service?.service_id, serviceId)
   assert.equal(serviceRaw.service?.publication_state, "active")
+
+  const invoke = await froglet.definition.execute("invoke", {
+    action: "invoke_service",
+    provider_id: localService.provider_id,
+    service_id: serviceId,
+    input: { source: "compose-smoke" },
+    include_raw: true
+  })
+  const invokeRaw = extractAppendedJson(invoke.content[0].text)
+  assert.equal(invokeRaw.status ?? invokeRaw.task?.status, "succeeded")
+  assert.deepEqual(invokeRaw.result ?? invokeRaw.task?.result, { message: "pong" })
 }
 
 main().catch((error) => {

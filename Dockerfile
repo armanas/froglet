@@ -22,7 +22,12 @@ RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app
 
-FROM runtime-base AS provider
+FROM runtime-base AS python-runtime-base
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM python-runtime-base AS provider
 COPY --from=builder /app/target/release/froglet-provider /usr/local/bin/froglet-provider
 
 ENV FROGLET_DATA_DIR=/data \
@@ -64,7 +69,7 @@ EXPOSE 9090
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["froglet-discovery"]
 
-FROM runtime-base AS operator
+FROM python-runtime-base AS operator
 COPY --from=builder /app/target/release/froglet-operator /usr/local/bin/froglet-operator
 
 ENV FROGLET_DATA_DIR=/data \

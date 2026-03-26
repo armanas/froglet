@@ -26,17 +26,18 @@ services:
       discovery:
         condition: service_healthy
     environment:
-      FROGLET_PRICE_EXEC_WASM: "10"
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
+      FROGLET_PRICE_EXEC_WASM: "0"
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
       FROGLET_DISCOVERY_MODE: reference
-      FROGLET_PUBLIC_BASE_URL: http://provider:8080
+      FROGLET_PUBLIC_BASE_URL: http://127.0.0.1:8080
       FROGLET_DISCOVERY_URL: http://discovery:9090
       FROGLET_DISCOVERY_PUBLISH: "true"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ./data/provider:/data
+      - ./data:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 10s
@@ -57,6 +58,7 @@ services:
       runtime:
         condition: service_healthy
     environment:
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
       FROGLET_OPERATOR_LISTEN_ADDR: 0.0.0.0:9191
       FROGLET_OPERATOR_ALLOW_NON_LOOPBACK: "true"
       FROGLET_OPERATOR_PROVIDER_BASE_URL: http://provider:8080
@@ -88,8 +90,10 @@ services:
       provider:
         condition: service_healthy
     environment:
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
       FROGLET_DISCOVERY_MODE: reference
       FROGLET_DISCOVERY_URL: http://discovery:9090
+      FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
     ports:

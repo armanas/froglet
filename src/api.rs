@@ -33,8 +33,10 @@ use crate::{
     discovery::{DiscoveryNodeRecord, DiscoverySearchResponse},
     execution::{
         CONTRACT_BUILTIN_EVENTS_QUERY_V1, CONTRACT_CONTAINER_JSON_V1,
-        CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionMount,
-        ExecutionPackageKind, ExecutionRuntime, ExecutionSecurityMode, ExecutionWorkload,
+        CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionEntrypointKind,
+        ExecutionMount, ExecutionPackageKind, ExecutionRuntime, ExecutionSecurityMode,
+        ExecutionWorkload, default_contract_version_for, default_entrypoint_for,
+        default_entrypoint_kind_for,
     },
     jobs::{self, JobSpec, NewJob},
     nostr,
@@ -459,8 +461,6 @@ pub struct ProviderManagedOfferDefinition {
     pub contract_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
-    pub execution_kind: String,
-    pub abi_version: String,
     #[serde(default = "default_service_mode")]
     pub mode: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -521,7 +521,6 @@ pub struct ProviderControlOfferRecord {
     pub contract_version: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
-    pub execution_kind: String,
     pub mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -549,10 +548,6 @@ pub struct ProviderControlPublishArtifactRequest {
     pub oci_reference: Option<String>,
     #[serde(default)]
     pub oci_digest: Option<String>,
-    #[serde(default)]
-    pub execution_kind: Option<String>,
-    #[serde(default)]
-    pub abi_version: Option<String>,
     #[serde(default)]
     pub runtime: Option<String>,
     #[serde(default)]
@@ -612,6 +607,10 @@ pub struct ProviderControlMutationResponse {
 pub struct ProviderServiceRecord {
     pub service_id: String,
     pub offer_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub offer_kind: String,
+    #[serde(default = "default_service_resource_kind")]
+    pub resource_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     pub summary: String,
@@ -627,8 +626,6 @@ pub struct ProviderServiceRecord {
     pub contract_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
-    pub execution_kind: String,
-    pub abi_version: String,
     pub mode: String,
     pub price_sats: u64,
     pub publication_state: String,
@@ -671,12 +668,111 @@ const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 pub(crate) type ApiFailure = (StatusCode, serde_json::Value);
 
+const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
+
+fn validate_provider_url(raw_url: &str) -> Result<String, ApiFailure> {
+    let parsed = reqwest::Url::parse(raw_url).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid provider URL", "details": error.to_string(), "value": raw_url }),
+        )
+    })?;
+    match parsed.scheme() {
+        "https" => {}
+        "http" => {
+            let host = parsed.host_str().unwrap_or("");
+            if !LOOPBACK_HOSTS.contains(&host) && !host.ends_with(".onion") {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "provider URL must use https:// (http:// is only allowed for loopback and .onion addresses)",
+                        "value": raw_url,
+                    }),
+                ));
+            }
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "provider URL must use http:// or https://", "value": raw_url }),
+            ));
+        }
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+fn configured_runtime_provider_base_url() -> Result<Option<String>, ApiFailure> {
+    let Some(raw) = std::env::var("FROGLET_RUNTIME_PROVIDER_BASE_URL").ok() else {
+        return Ok(None);
+    };
+
+    let parsed = reqwest::Url::parse(&raw).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid FROGLET_RUNTIME_PROVIDER_BASE_URL", "details": error.to_string(), "value": raw }),
+        )
+    })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "FROGLET_RUNTIME_PROVIDER_BASE_URL must use http:// or https://", "value": raw }),
+        ));
+    }
+    if parsed.path() != "/" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "FROGLET_RUNTIME_PROVIDER_BASE_URL must not include a path", "value": raw }),
+        ));
+    }
+
+    Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
+}
+
+fn runtime_accessible_provider_url(
+    state: &AppState,
+    raw_url: &str,
+    provider_id: Option<&str>,
+) -> Result<String, ApiFailure> {
+    let local_provider_base_url = configured_runtime_provider_base_url()?;
+    let is_local_provider =
+        provider_id.is_none_or(|provider_id| provider_id == state.identity.node_id());
+    if is_local_provider
+        && let Some(base_url) = local_provider_base_url.as_deref()
+        && raw_url.trim_end_matches('/') == base_url
+    {
+        return Ok(base_url.to_string());
+    }
+
+    let validated = validate_provider_url(raw_url)?;
+    let parsed = reqwest::Url::parse(&validated).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid provider URL", "details": error.to_string(), "value": raw_url }),
+        )
+    })?;
+    if parsed.scheme() == "http" {
+        let host = parsed.host_str().unwrap_or("");
+        if LOOPBACK_HOSTS.contains(&host)
+            && is_local_provider
+            && let Some(base_url) = local_provider_base_url
+        {
+            return Ok(base_url);
+        }
+    }
+
+    Ok(validated)
+}
+
 fn default_offer_publication_state() -> String {
     "active".to_string()
 }
 
 fn default_service_mode() -> String {
     "sync".to_string()
+}
+
+fn default_service_resource_kind() -> String {
+    "service".to_string()
 }
 
 pub(crate) fn normalize_offer_publication_state(value: Option<&str>) -> Result<String, String> {
@@ -1101,8 +1197,11 @@ where
     })
 }
 
-fn provider_url_from_discovery(record: &DiscoveryNodeRecord) -> Result<String, ApiFailure> {
-    record
+fn provider_url_from_discovery(
+    state: &AppState,
+    record: &DiscoveryNodeRecord,
+) -> Result<String, ApiFailure> {
+    let raw = record
         .descriptor
         .transports
         .clearnet_url
@@ -1116,7 +1215,8 @@ fn provider_url_from_discovery(record: &DiscoveryNodeRecord) -> Result<String, A
                     "provider_id": record.descriptor.node_id,
                 }),
             )
-        })
+        })?;
+    runtime_accessible_provider_url(state, &raw, Some(&record.descriptor.node_id))
 }
 
 async fn fetch_discovery_provider(
@@ -1124,7 +1224,7 @@ async fn fetch_discovery_provider(
     provider_id: &str,
 ) -> Result<DiscoveryNodeRecord, ApiFailure> {
     let discovery_url = runtime_discovery_url(state)?;
-    remote_json_request(
+    remote_json_request_with_client_error_passthrough(
         state,
         reqwest::Method::GET,
         format!(
@@ -1133,6 +1233,7 @@ async fn fetch_discovery_provider(
             urlencoding::encode(provider_id)
         ),
         Option::<&()>::None,
+        true,
     )
     .await
 }
@@ -1267,6 +1368,8 @@ async fn resolve_runtime_provider(
 ) -> Result<ResolvedProvider, ApiFailure> {
     let explicit_provider_id = provider.provider_id.clone();
     if let Some(provider_url) = provider.provider_url.clone() {
+        let provider_url =
+            runtime_accessible_provider_url(state, &provider_url, explicit_provider_id.as_deref())?;
         let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
         verify_provider_descriptor_artifact(&descriptor)?;
         if let Some(expected_provider_id) = explicit_provider_id.as_deref()
@@ -1294,7 +1397,7 @@ async fn resolve_runtime_provider(
         ));
     };
     let discovery = fetch_discovery_provider(state, &provider_id).await?;
-    let provider_url = provider_url_from_discovery(&discovery)?;
+    let provider_url = provider_url_from_discovery(state, &discovery)?;
     let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
     verify_provider_descriptor_artifact(&descriptor)?;
     if descriptor.payload.provider_id != provider_id {
@@ -1611,7 +1714,7 @@ pub async fn runtime_provider_details(
         Ok(record) => record,
         Err(error) => return error_json(error.0, error.1),
     };
-    let provider_url = match provider_url_from_discovery(&discovery) {
+    let provider_url = match provider_url_from_discovery(state.as_ref(), &discovery) {
         Ok(url) => url,
         Err(error) => return error_json(error.0, error.1),
     };
@@ -4398,7 +4501,7 @@ pub(crate) fn provider_offer_limits(
     runtime: &str,
 ) -> (usize, u64, usize, usize, u64) {
     match runtime {
-        "events_query" => (
+        "builtin" => (
             MAX_BODY_BYTES,
             state.config.execution_timeout_secs.saturating_mul(1_000),
             0,
@@ -4429,34 +4532,54 @@ pub(crate) fn validate_provider_offer_definition(
     if definition.offer_kind.trim().is_empty() {
         return Err("offer_kind must be a non-empty string".to_string());
     }
-    if definition.runtime.trim().is_empty() {
-        return Err("runtime must be a non-empty string".to_string());
+    let runtime = ExecutionRuntime::parse(&definition.runtime)?;
+    if runtime == ExecutionRuntime::Any {
+        if definition.offer_kind != crate::execution::WORKLOAD_KIND_EXECUTION_V1 {
+            return Err(
+                "runtime=any is only supported for offer_kind=compute.execution.v1".to_string(),
+            );
+        }
+        if !definition.package_kind.trim().is_empty()
+            || !definition.entrypoint_kind.trim().is_empty()
+            || !definition.entrypoint.trim().is_empty()
+            || !definition.contract_version.trim().is_empty()
+        {
+            return Err(
+                "runtime=any offers must leave package_kind, entrypoint_kind, entrypoint, and contract_version empty"
+                    .to_string(),
+            );
+        }
+        if !definition.capabilities.is_empty() {
+            return Err("runtime=any offers cannot declare fixed capabilities".to_string());
+        }
+        if definition.source_kind.trim().is_empty() {
+            return Err("source_kind must be a non-empty string".to_string());
+        }
+        return Ok(());
     }
-    if definition.execution_kind != "wasm_inline"
-        && definition.execution_kind != "wasm_oci"
-        && definition.execution_kind != "builtin"
-        && definition.execution_kind != "python_inline"
-        && definition.execution_kind != "container_oci"
-        && definition.execution_kind != "python_oci"
-    {
-        return Err(
-            "execution_kind must be wasm_inline, wasm_oci, python_inline, python_oci, container_oci, or builtin"
-                .to_string(),
-        );
-    }
+    let package_kind = ExecutionPackageKind::parse(&definition.package_kind)?;
+    let entrypoint_kind = ExecutionEntrypointKind::parse(&definition.entrypoint_kind)?;
     if definition.mode != "sync" && definition.mode != "async" {
         return Err("mode must be sync or async".to_string());
     }
-    if definition.contract_version.trim().is_empty() && definition.abi_version.trim().is_empty() {
+    if definition.contract_version.trim().is_empty() {
         return Err("contract_version must be a non-empty string".to_string());
     }
     if definition.source_kind.trim().is_empty() {
         return Err("source_kind must be a non-empty string".to_string());
     }
-    if definition.runtime == "events_query" && definition.offer_kind != "events.query" {
-        return Err("events_query runtime requires offer_kind=events.query".to_string());
+    if runtime == ExecutionRuntime::Builtin && definition.offer_kind != "events.query" {
+        return Err("builtin runtime requires offer_kind=events.query".to_string());
     }
-    if definition.abi_version == wasm::WASM_RUN_JSON_ABI_V1 && !definition.capabilities.is_empty() {
+    if runtime == ExecutionRuntime::Builtin && package_kind != ExecutionPackageKind::Builtin {
+        return Err("builtin runtime requires package_kind=builtin".to_string());
+    }
+    if runtime == ExecutionRuntime::Builtin && entrypoint_kind != ExecutionEntrypointKind::Builtin {
+        return Err("builtin runtime requires entrypoint_kind=builtin".to_string());
+    }
+    if definition.contract_version == wasm::WASM_RUN_JSON_ABI_V1
+        && !definition.capabilities.is_empty()
+    {
         return Err(format!(
             "{} does not permit requested capabilities",
             wasm::WASM_RUN_JSON_ABI_V1
@@ -4474,7 +4597,7 @@ fn offer_service_id(definition: &ProviderManagedOfferDefinition) -> String {
 
 fn service_id_for_offer_definition(definition: &ProviderManagedOfferDefinition) -> ServiceId {
     match definition.runtime.as_str() {
-        "events_query" => ServiceId::EventsQuery,
+        "builtin" => ServiceId::EventsQuery,
         _ => ServiceId::ExecuteWasm,
     }
 }
@@ -4485,6 +4608,7 @@ fn payload_from_provider_offer_definition(
     definition: &ProviderManagedOfferDefinition,
 ) -> OfferPayload {
     let service_id = service_id_for_offer_definition(definition);
+    let runtime = ExecutionRuntime::parse(&definition.runtime).unwrap_or(ExecutionRuntime::Wasm);
     OfferPayload {
         provider_id: state.identity.node_id().to_string(),
         offer_id: definition.offer_id.clone(),
@@ -4499,15 +4623,11 @@ fn payload_from_provider_offer_definition(
             &accepted_payment_methods(state),
         ),
         execution_profile: protocol::OfferExecutionProfile {
-            runtime: ExecutionRuntime::parse(&definition.runtime).unwrap_or(ExecutionRuntime::Wasm),
-            package_kind: match definition.execution_kind.as_str() {
-                "wasm_oci" => "oci_image".to_string(),
-                "builtin" => "builtin".to_string(),
-                _ => "inline_module".to_string(),
-            },
-            contract_version: definition.abi_version.clone(),
+            runtime,
+            package_kind: definition.package_kind.clone(),
+            contract_version: definition.contract_version.clone(),
             access_handles: definition.capabilities.clone(),
-            abi_version: definition.abi_version.clone(),
+            abi_version: definition.contract_version.clone(),
             capabilities: definition.capabilities.clone(),
             max_input_bytes: definition.max_input_bytes,
             max_runtime_ms: definition.max_runtime_ms,
@@ -4537,13 +4657,8 @@ pub(crate) fn provider_offer_record_from_parts(
         package_kind: definition.package_kind.clone(),
         entrypoint_kind: definition.entrypoint_kind.clone(),
         entrypoint: definition.entrypoint.clone(),
-        contract_version: if definition.contract_version.is_empty() {
-            definition.abi_version.clone()
-        } else {
-            definition.contract_version.clone()
-        },
+        contract_version: definition.contract_version.clone(),
         mounts: definition.mounts.clone(),
-        execution_kind: definition.execution_kind.clone(),
         mode: definition.mode.clone(),
         summary: definition.summary.clone(),
         module_hash: definition.module_hash.clone(),
@@ -4566,12 +4681,14 @@ fn builtin_provider_offer_definitions(
     let builtin = |offer_id: &str,
                    offer_kind: &str,
                    runtime: &str,
-                   abi_version: &str,
+                   contract_version: &str,
                    capabilities: Vec<String>,
                    price_sats: u64,
                    source_kind: &str,
                    summary: &str| {
         let is_events_query = offer_id == ServiceId::EventsQuery.as_str();
+        let is_generic_compute = offer_id == ServiceId::ExecuteWasm.as_str()
+            && offer_kind == crate::execution::WORKLOAD_KIND_EXECUTION_V1;
         let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
             provider_offer_limits(state, runtime);
         ProviderManagedOfferDefinition {
@@ -4582,23 +4699,27 @@ fn builtin_provider_offer_definitions(
             runtime: runtime.to_string(),
             package_kind: if is_events_query {
                 "builtin".to_string()
+            } else if is_generic_compute {
+                String::new()
             } else {
                 "inline_module".to_string()
             },
             entrypoint_kind: if is_events_query {
                 "builtin".to_string()
+            } else if is_generic_compute {
+                String::new()
             } else {
                 "handler".to_string()
             },
             entrypoint: if is_events_query {
                 "events.query".to_string()
+            } else if is_generic_compute {
+                String::new()
             } else {
                 "run".to_string()
             },
-            contract_version: abi_version.to_string(),
+            contract_version: contract_version.to_string(),
             mounts: Vec::new(),
-            execution_kind: "builtin".to_string(),
-            abi_version: abi_version.to_string(),
             mode: default_service_mode(),
             capabilities,
             max_input_bytes,
@@ -4643,7 +4764,7 @@ fn builtin_provider_offer_definitions(
             Vec::new(),
             state.pricing.price_for(ServiceId::ExecuteWasm),
             "builtin",
-            "Run an arbitrary Wasm module that implements froglet.wasm.run_json.v1.",
+            "Run arbitrary Wasm compute using froglet.wasm.run_json.v1.",
         ),
     ];
     if !wasm_host_capabilities.is_empty() {
@@ -4659,19 +4780,20 @@ fn builtin_provider_offer_definitions(
         ));
     }
     for profile in confidential_profiles {
-        let (runtime, abi_version, summary) = match profile.config.allowed_workload_kind.as_str() {
-            confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => (
-                "tee.service",
-                "froglet.confidential.service.v1",
-                "Confidential service execution offer",
-            ),
-            confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => (
-                "tee.wasm",
-                "froglet.confidential.attested_wasm.v1",
-                "Confidential attested Wasm execution offer",
-            ),
-            _ => continue,
-        };
+        let (runtime, contract_version, summary) =
+            match profile.config.allowed_workload_kind.as_str() {
+                confidential::WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 => (
+                    "tee.service",
+                    "froglet.confidential.service.v1",
+                    "Confidential service execution offer",
+                ),
+                confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1 => (
+                    "tee.wasm",
+                    "froglet.confidential.attested_wasm.v1",
+                    "Confidential attested Wasm execution offer",
+                ),
+                _ => continue,
+            };
         definitions.push(ProviderManagedOfferDefinition {
             offer_id: profile.config.offer_id.clone(),
             service_id: None,
@@ -4685,10 +4807,8 @@ fn builtin_provider_offer_definitions(
             } else {
                 "attested.wasm".to_string()
             },
-            contract_version: abi_version.to_string(),
+            contract_version: contract_version.to_string(),
             mounts: Vec::new(),
-            execution_kind: "builtin".to_string(),
-            abi_version: abi_version.to_string(),
             mode: default_service_mode(),
             capabilities: Vec::new(),
             max_input_bytes: profile.config.max_input_bytes,
@@ -4726,7 +4846,10 @@ pub(crate) async fn current_offer_definitions(
     }
     let managed = state
         .db
-        .with_read_conn(db::list_provider_managed_offers)
+        // Operator publications can arrive from a separate long-lived process.
+        // Use the writer connection here so provider-facing snapshots reflect
+        // the latest committed offer definitions immediately.
+        .with_write_conn(db::list_provider_managed_offers)
         .await?;
     for record in managed {
         let definition: ProviderManagedOfferDefinition = serde_json::from_value(record.definition)
@@ -4783,7 +4906,7 @@ fn inline_module_bytes_hex(
     if let Some(module_bytes_hex) = definition.module_bytes_hex.clone() {
         return Ok(Some(module_bytes_hex));
     }
-    if definition.execution_kind != "wasm_inline" {
+    if definition.runtime != "wasm" || definition.package_kind != "inline_module" {
         return Ok(None);
     }
     let Some(source_path) = definition.source_path.as_ref() else {
@@ -4805,23 +4928,19 @@ fn provider_service_from_definition(
     Ok(Some(ProviderServiceRecord {
         service_id,
         offer_id: definition.offer_id.clone(),
+        offer_kind: definition.offer_kind.clone(),
+        resource_kind: provider_service_resource_kind(definition).to_string(),
         project_id: definition.project_id.clone(),
         summary: definition
             .summary
             .clone()
             .unwrap_or_else(|| format!("Froglet service {}", definition.offer_id)),
-        execution_kind: definition.execution_kind.clone(),
         runtime: definition.runtime.clone(),
         package_kind: definition.package_kind.clone(),
         entrypoint_kind: definition.entrypoint_kind.clone(),
         entrypoint: definition.entrypoint.clone(),
-        contract_version: if definition.contract_version.is_empty() {
-            definition.abi_version.clone()
-        } else {
-            definition.contract_version.clone()
-        },
+        contract_version: definition.contract_version.clone(),
         mounts: definition.mounts.clone(),
-        abi_version: definition.abi_version.clone(),
         mode: definition.mode.clone(),
         price_sats: definition.price_sats,
         publication_state: definition.publication_state.clone(),
@@ -4850,6 +4969,14 @@ fn provider_service_from_definition(
             None
         },
     }))
+}
+
+fn provider_service_resource_kind(definition: &ProviderManagedOfferDefinition) -> &'static str {
+    match definition.runtime.as_str() {
+        "builtin" if definition.offer_kind == "events.query" => "data",
+        "tee.service" | "tee.wasm" | "tee.python" => "confidential",
+        _ => "service",
+    }
 }
 
 pub(crate) async fn current_service_records(
@@ -4915,61 +5042,61 @@ pub(crate) fn artifact_provider_offer_definition(
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     let publication_state = normalize_offer_publication_state(payload.publication_state.as_deref())
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
-    let contract_version = payload
-        .contract_version
+    let runtime = if let Some(runtime) = payload.runtime.as_deref() {
+        ExecutionRuntime::parse(runtime)
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
+    } else if payload.inline_source.is_some() {
+        ExecutionRuntime::Python
+    } else if payload.wasm_module_hex.is_some() {
+        ExecutionRuntime::Wasm
+    } else if payload.oci_reference.is_some() || payload.oci_digest.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "runtime is required for OCI artifact publication",
+                "details": "set runtime to python, container, or wasm when using oci_reference/oci_digest"
+            }),
+        ));
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "runtime is required when artifact publication cannot be inferred",
+                "details": "set runtime/package_kind or provide inline_source/wasm_module_hex"
+            }),
+        ));
+    };
+    let package_kind = if let Some(package_kind) = payload.package_kind.as_deref() {
+        ExecutionPackageKind::parse(package_kind)
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
+    } else if payload.inline_source.is_some() {
+        ExecutionPackageKind::InlineSource
+    } else if payload.wasm_module_hex.is_some() {
+        ExecutionPackageKind::InlineModule
+    } else if payload.oci_reference.is_some() || payload.oci_digest.is_some() {
+        ExecutionPackageKind::OciImage
+    } else {
+        match runtime {
+            ExecutionRuntime::Builtin => ExecutionPackageKind::Builtin,
+            ExecutionRuntime::Python => ExecutionPackageKind::InlineSource,
+            _ => ExecutionPackageKind::InlineModule,
+        }
+    };
+    let entrypoint_kind = if let Some(entrypoint_kind) = payload.entrypoint_kind.as_deref() {
+        ExecutionEntrypointKind::parse(entrypoint_kind)
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
+    } else {
+        default_entrypoint_kind_for(&runtime)
+    };
+    let entrypoint = payload
+        .entrypoint
         .clone()
-        .or(payload.abi_version.clone())
-        .unwrap_or_else(|| wasm::WASM_RUN_JSON_ABI_V1.to_string());
-    let runtime = payload.runtime.clone().unwrap_or_else(|| {
-        if payload.execution_kind.as_deref() == Some("builtin") {
-            "builtin".to_string()
-        } else if payload.inline_source.is_some() {
-            "python".to_string()
-        } else {
-            "wasm".to_string()
-        }
+        .unwrap_or_else(|| default_entrypoint_for(&runtime, &entrypoint_kind).to_string());
+    let contract_version = payload.contract_version.clone().unwrap_or_else(|| {
+        default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
     });
-    let package_kind = payload.package_kind.clone().unwrap_or_else(|| {
-        if payload.inline_source.is_some() {
-            "inline_source".to_string()
-        } else if payload.oci_reference.is_some() || payload.oci_digest.is_some() {
-            "oci_image".to_string()
-        } else if runtime == "builtin" {
-            "builtin".to_string()
-        } else {
-            "inline_module".to_string()
-        }
-    });
-    let entrypoint_kind = payload.entrypoint_kind.clone().unwrap_or_else(|| {
-        if runtime == "builtin" {
-            "builtin".to_string()
-        } else {
-            "handler".to_string()
-        }
-    });
-    let entrypoint = payload.entrypoint.clone().unwrap_or_else(|| {
-        if runtime == "builtin" {
-            "events.query".to_string()
-        } else if runtime == "python" {
-            "handler".to_string()
-        } else {
-            "run".to_string()
-        }
-    });
-    let execution_kind =
-        payload
-            .execution_kind
-            .unwrap_or_else(|| match (runtime.as_str(), package_kind.as_str()) {
-                ("python", "inline_source") => "python_inline".to_string(),
-                ("python", "oci_image") => "python_oci".to_string(),
-                ("container", "oci_image") => "container_oci".to_string(),
-                (_, "oci_image") => "wasm_oci".to_string(),
-                ("builtin", _) => "builtin".to_string(),
-                _ => "wasm_inline".to_string(),
-            });
     let (
         offer_kind,
-        runtime,
         module_hash,
         module_bytes_hex,
         inline_source,
@@ -4977,8 +5104,8 @@ pub(crate) fn artifact_provider_offer_definition(
         source_kind,
         oci_reference,
         oci_digest,
-    ) = match execution_kind.as_str() {
-        "wasm_inline" => {
+    ) = match (&runtime, &package_kind) {
+        (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
             let module_bytes = match (
                 payload.artifact_path.as_ref(),
                 payload.wasm_module_hex.as_ref(),
@@ -5012,13 +5139,13 @@ pub(crate) fn artifact_provider_offer_definition(
                 (_, _, Some(_), _) | (_, _, _, Some(_)) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "oci_reference and oci_digest require execution_kind=wasm_oci" }),
+                        json!({ "error": "oci_reference and oci_digest require package_kind=oci_image" }),
                     ));
                 }
                 _ => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "artifact_path or wasm_module_hex is required for wasm_inline" }),
+                        json!({ "error": "artifact_path or wasm_module_hex is required for runtime=wasm package_kind=inline_module" }),
                     ));
                 }
             };
@@ -5036,7 +5163,6 @@ pub(crate) fn artifact_provider_offer_definition(
             )?;
             (
                 wasm::WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
-                "wasm".to_string(),
                 Some(crypto::sha256_hex(&module_bytes)),
                 Some(
                     payload
@@ -5050,28 +5176,27 @@ pub(crate) fn artifact_provider_offer_definition(
                 None,
             )
         }
-        "wasm_oci" => {
+        (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage) => {
             let Some(oci_reference) = payload.oci_reference else {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "oci_reference is required for wasm_oci" }),
+                    json!({ "error": "oci_reference is required for runtime=wasm package_kind=oci_image" }),
                 ));
             };
             let Some(oci_digest) = payload.oci_digest else {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "oci_digest is required for wasm_oci" }),
+                    json!({ "error": "oci_digest is required for runtime=wasm package_kind=oci_image" }),
                 ));
             };
             if payload.artifact_path.is_some() || payload.wasm_module_hex.is_some() {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "artifact_path and wasm_module_hex are not used for wasm_oci" }),
+                    json!({ "error": "artifact_path and wasm_module_hex are not used for runtime=wasm package_kind=oci_image" }),
                 ));
             }
             (
                 wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
-                "wasm".to_string(),
                 Some(oci_digest.clone()),
                 None,
                 None,
@@ -5081,7 +5206,7 @@ pub(crate) fn artifact_provider_offer_definition(
                 Some(oci_digest),
             )
         }
-        "python_inline" => {
+        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
             let source_text = match (
                 payload.inline_source.as_ref(),
                 payload.artifact_path.as_ref(),
@@ -5106,23 +5231,23 @@ pub(crate) fn artifact_provider_offer_definition(
                 _ => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "artifact_path or inline_source is required for python_inline" }),
+                        json!({ "error": "artifact_path or inline_source is required for runtime=python package_kind=inline_source" }),
                     ));
                 }
             };
             (
                 crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
-                "python".to_string(),
                 Some(crypto::sha256_hex(source_text.as_bytes())),
                 None,
                 Some(source_text),
                 payload.artifact_path,
-                "python".to_string(),
+                runtime.as_str().to_string(),
                 None,
                 None,
             )
         }
-        "python_oci" | "container_oci" => {
+        (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
+        | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
             let Some(oci_reference) = payload.oci_reference else {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -5137,11 +5262,6 @@ pub(crate) fn artifact_provider_offer_definition(
             };
             (
                 crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
-                if execution_kind == "python_oci" {
-                    "python".to_string()
-                } else {
-                    "container".to_string()
-                },
                 Some(oci_digest.clone()),
                 None,
                 None,
@@ -5151,29 +5271,38 @@ pub(crate) fn artifact_provider_offer_definition(
                 Some(oci_digest),
             )
         }
+        (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "builtin services are managed by Froglet and cannot be published via publish_artifact" }),
+            ));
+        }
         _ => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                json!({ "error": "unsupported execution_kind", "execution_kind": execution_kind }),
+                json!({
+                    "error": "unsupported runtime/package_kind combination",
+                    "runtime": runtime.as_str(),
+                    "package_kind": package_kind.as_str(),
+                }),
             ));
         }
     };
 
+    let runtime_str = runtime.as_str().to_string();
     let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
-        provider_offer_limits(state, &runtime);
+        provider_offer_limits(state, &runtime_str);
     let definition = ProviderManagedOfferDefinition {
         offer_id: offer_id.clone(),
         service_id: Some(service_id),
         project_id: None,
         offer_kind,
-        runtime,
-        package_kind,
-        entrypoint_kind,
+        runtime: runtime_str,
+        package_kind: package_kind.as_str().to_string(),
+        entrypoint_kind: entrypoint_kind.as_str().to_string(),
         entrypoint,
         contract_version: contract_version.clone(),
         mounts: payload.mounts.unwrap_or_default(),
-        execution_kind,
-        abi_version: contract_version.clone(),
         mode: payload.mode.unwrap_or_else(default_service_mode),
         capabilities: Vec::new(),
         max_input_bytes,
@@ -5306,6 +5435,7 @@ async fn create_quote_record(
     }
 
     if let Some(requested_runtime) = payload.spec.runtime()
+        && offer.payload.execution_profile.runtime != ExecutionRuntime::Any
         && offer.payload.execution_profile.runtime.as_str() != requested_runtime
     {
         return Err((
@@ -5318,6 +5448,18 @@ async fn create_quote_record(
         ));
     }
     if let Some(contract_version) = payload.spec.contract_version()
+        && !offer
+            .payload
+            .execution_profile
+            .contract_version
+            .trim()
+            .is_empty()
+        && !offer
+            .payload
+            .execution_profile
+            .abi_version
+            .trim()
+            .is_empty()
         && offer.payload.execution_profile.contract_version != contract_version
         && offer.payload.execution_profile.abi_version != contract_version
     {
@@ -6584,7 +6726,9 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     let context_json = context.to_string();
     let timeout_secs = timeout;
     let input_json_clone = input_json.clone();
-    run_wasm_with_timeout(timeout_secs, move || {
+    let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
+    let kill_handle_clone = Arc::clone(&kill_handle);
+    run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let mut child = std::process::Command::new("python3")
             .arg("-I")
             .arg("-c")
@@ -6598,19 +6742,44 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| format!("failed to spawn python3: {error}"))?;
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(&input_json_clone)
                 .map_err(|error| format!("failed to write python input: {error}"))?;
         }
-        let output = child
-            .wait_with_output()
+        // Take stdout/stderr pipes before storing child in kill handle.
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        *kill_handle_clone.lock().unwrap() = Some(child);
+        // Read stdout and stderr concurrently to avoid pipe-backpressure deadlock.
+        let stderr_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = stderr_pipe {
+                let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            }
+            buf
+        });
+        let mut stdout_buf = Vec::new();
+        if let Some(mut pipe) = stdout_pipe {
+            std::io::Read::read_to_end(&mut pipe, &mut stdout_buf)
+                .map_err(|error| format!("failed to read python stdout: {error}"))?;
+        }
+        let stderr_buf = stderr_thread.join().unwrap_or_default();
+        // Wait for child to exit; kill handle can kill it on timeout.
+        let status = kill_handle_clone
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|c| c.wait())
+            .transpose()
             .map_err(|error| format!("failed waiting for python execution: {error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if let Some(status) = status
+            && !status.success()
+        {
+            let stderr = String::from_utf8_lossy(&stderr_buf).trim().to_string();
             return Err(format!("python execution failed: {stderr}").into());
         }
-        serde_json::from_slice::<Value>(&output.stdout)
+        serde_json::from_slice::<Value>(&stdout_buf)
             .map_err(|error| format!("python execution returned invalid JSON: {error}").into())
     })
     .await
@@ -6651,7 +6820,10 @@ async fn run_container_execution(
     let oci_digest = execution.oci_digest.clone();
     let timeout_secs = timeout;
     let context_json = json!({ "mounts": mount_context }).to_string();
-    run_wasm_with_timeout(timeout_secs, move || {
+    let granted_access_clone = granted_access.to_vec();
+    let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
+    let kill_handle_clone = Arc::clone(&kill_handle);
+    run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let mut command = std::process::Command::new(&runner);
         command
             .arg("run")
@@ -6667,6 +6839,17 @@ async fn run_container_execution(
             let Some(binding) = mount.binding.as_ref() else {
                 continue;
             };
+            let capability = format!(
+                "mount.{}.{}.{}",
+                mount.kind,
+                if mount.read_only { "read" } else { "write" },
+                mount.handle
+            );
+            if !granted_access_clone.is_empty()
+                && !granted_access_clone.iter().any(|v| v == &capability)
+            {
+                continue;
+            }
             let target = format!("/froglet-mounts/{}", mount.handle);
             let mut volume = format!("{binding}:{target}");
             if mount.read_only {
@@ -6682,19 +6865,42 @@ async fn run_container_execution(
         let mut child = command
             .spawn()
             .map_err(|error| format!("failed to spawn container runtime: {error}"))?;
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(&input_json)
                 .map_err(|error| format!("failed to write container input: {error}"))?;
         }
-        let output = child
-            .wait_with_output()
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        *kill_handle_clone.lock().unwrap() = Some(child);
+        // Read stdout and stderr concurrently to avoid pipe-backpressure deadlock.
+        let stderr_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = stderr_pipe {
+                let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            }
+            buf
+        });
+        let mut stdout_buf = Vec::new();
+        if let Some(mut pipe) = stdout_pipe {
+            std::io::Read::read_to_end(&mut pipe, &mut stdout_buf)
+                .map_err(|error| format!("failed to read container stdout: {error}"))?;
+        }
+        let stderr_buf = stderr_thread.join().unwrap_or_default();
+        let status = kill_handle_clone
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|c| c.wait())
+            .transpose()
             .map_err(|error| format!("failed waiting for container execution: {error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if let Some(status) = status
+            && !status.success()
+        {
+            let stderr = String::from_utf8_lossy(&stderr_buf).trim().to_string();
             return Err(format!("container execution failed: {stderr}").into());
         }
-        serde_json::from_slice::<Value>(&output.stdout)
+        serde_json::from_slice::<Value>(&stdout_buf)
             .map_err(|error| format!("container execution returned invalid JSON: {error}").into())
     })
     .await
@@ -7794,6 +8000,13 @@ fn receipt_limits_for_spec(
                 max_output_bytes: MAX_BODY_BYTES,
                 fuel_limit: 0,
             },
+            ExecutionRuntime::Any => ReceiptLimitsApplied {
+                max_input_bytes: MAX_BODY_BYTES,
+                max_runtime_ms,
+                max_memory_bytes: 128 * 1024 * 1024,
+                max_output_bytes: MAX_BODY_BYTES,
+                fuel_limit: 0,
+            },
             ExecutionRuntime::Python
             | ExecutionRuntime::Container
             | ExecutionRuntime::TeePython => ReceiptLimitsApplied {
@@ -8455,7 +8668,21 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
     recover_runtime_state_remote(state).await
 }
 
+/// Shared slot for a child process, allowing timeout-based kill.
+type ChildKillHandle = Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
 async fn run_wasm_with_timeout<F>(timeout: Duration, operation: F) -> Result<Value, String>
+where
+    F: FnOnce() -> Result<Value, Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
+{
+    run_wasm_with_timeout_and_kill(timeout, None, operation).await
+}
+
+async fn run_wasm_with_timeout_and_kill<F>(
+    timeout: Duration,
+    kill_handle: Option<ChildKillHandle>,
+    operation: F,
+) -> Result<Value, String>
 where
     F: FnOnce() -> Result<Value, Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
 {
@@ -8471,10 +8698,19 @@ where
                 join_result.map_err(|error| format!("execution thread panicked: {error}"))?;
             result.map_err(|error| error.to_string())
         }
-        Err(_) => Err(format!(
-            "execution exceeded runtime deadline after {}s",
-            timeout.as_secs()
-        )),
+        Err(_) => {
+            if let Some(ref handle) = kill_handle
+                && let Ok(mut guard) = handle.lock()
+                && let Some(ref mut child) = *guard
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Err(format!(
+                "execution exceeded runtime deadline after {}s",
+                timeout.as_secs()
+            ))
+        }
     }
 }
 
@@ -9935,13 +10171,14 @@ mod tests {
         http::{Method, Request, StatusCode, header},
     };
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     };
     use tokio::net::TcpListener;
     use tower::ServiceExt;
 
     static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
+    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
     const TEST_CONFIDENTIAL_POLICY_TOML: &str =
         include_str!("../examples/confidential_policy.example.toml");
@@ -9956,6 +10193,34 @@ mod tests {
             "froglet-api-tests-{label}-{}-{unique}-{counter}",
             std::process::id()
         ))
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
     }
 
     fn test_app_state_with_lightning_mode(
@@ -10013,6 +10278,7 @@ mod tests {
                 consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
                 provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
                 tor_dir: temp_dir.join("tor"),
+                host_readable_control_token: false,
             },
             wasm: WasmConfig {
                 policy_path: None,
@@ -10568,6 +10834,40 @@ mod tests {
         assert_eq!(fetched, fixture.module_bytes);
     }
 
+    #[test]
+    fn runtime_accessible_provider_url_rewrites_local_loopback_to_configured_base_url() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", "http://provider:8080");
+        let state = test_app_state(PaymentBackend::None);
+        let local_node_id = state.identity.node_id().to_string();
+
+        let provider_url = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://127.0.0.1:8080",
+            Some(&local_node_id),
+        )
+        .expect("runtime-accessible provider url");
+
+        assert_eq!(provider_url, "http://provider:8080");
+    }
+
+    #[test]
+    fn runtime_accessible_provider_url_accepts_configured_local_provider_base_url() {
+        let _env_lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", "http://provider:8080");
+        let state = test_app_state(PaymentBackend::None);
+        let local_node_id = state.identity.node_id().to_string();
+
+        let provider_url = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://provider:8080",
+            Some(&local_node_id),
+        )
+        .expect("runtime-accessible provider url");
+
+        assert_eq!(provider_url, "http://provider:8080");
+    }
+
     #[tokio::test]
     async fn oci_wasm_fetch_rejects_digest_mismatch() {
         let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
@@ -10611,6 +10911,83 @@ mod tests {
         .expect("OCI wasm execution");
 
         assert_eq!(oci_result, inline_result);
+    }
+
+    #[tokio::test]
+    async fn builtin_execute_compute_offer_is_wasm_execution() {
+        #[derive(serde::Deserialize)]
+        struct OffersResponse {
+            offers: Vec<SignedArtifact<OfferPayload>>,
+        }
+
+        let state = test_app_state(PaymentBackend::None);
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/offers",
+                None,
+                None,
+            ))
+            .await
+            .expect("offers response");
+        let (status, payload): (StatusCode, OffersResponse) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let offer = payload
+            .offers
+            .into_iter()
+            .find(|offer| offer.payload.offer_id == ServiceId::ExecuteWasm.as_str())
+            .expect("execute.compute offer");
+        assert_eq!(
+            offer.payload.offer_kind,
+            wasm::WORKLOAD_KIND_COMPUTE_WASM_V1
+        );
+        assert_eq!(
+            offer.payload.execution_profile.runtime,
+            ExecutionRuntime::Wasm
+        );
+        assert_eq!(
+            offer.payload.execution_profile.contract_version,
+            wasm::WASM_RUN_JSON_ABI_V1
+        );
+        assert_eq!(
+            offer.payload.execution_profile.abi_version,
+            wasm::WASM_RUN_JSON_ABI_V1
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_python_compute_is_rejected_by_builtin_execute_compute_offer() {
+        let state = test_app_state(PaymentBackend::None);
+        let spec = WorkloadSpec::Execution {
+            execution: Box::new(
+                crate::execution::ExecutionWorkload::python_inline_script(
+                    "result = 4 + 3".to_string(),
+                    Value::Null,
+                )
+                .expect("python inline script workload"),
+            ),
+        };
+
+        let (status, payload) = create_quote_record(
+            state,
+            CreateQuoteRequest {
+                offer_id: ServiceId::ExecuteWasm.as_str().to_string(),
+                requester_id: "11".repeat(32),
+                spec,
+                max_price_sats: None,
+            },
+        )
+        .await
+        .expect_err("quote should reject non-wasm workload kind");
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["error"], "offer does not match workload kind");
+        assert_eq!(payload["offer_kind"], wasm::WORKLOAD_KIND_COMPUTE_WASM_V1);
+        assert_eq!(
+            payload["requested_workload_kind"],
+            crate::execution::WORKLOAD_KIND_EXECUTION_V1
+        );
     }
 
     #[test]
