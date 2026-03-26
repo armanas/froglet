@@ -108,6 +108,8 @@ async function runScenario(froglet, name, prompt, requiredActions = [], { inject
         service_id: args.service_id ?? null,
         project_id: args.project_id ?? null
       })
+      // Hook may mutate args in-place before the tool call, e.g. to inject
+      // fixtures the model should not supply (called once per tool call per step).
       if (injectBeforeExecute) {
         injectBeforeExecute(args)
       }
@@ -175,7 +177,7 @@ async function main() {
         "will inject it. Return the compute result.",
       requiredActions: ["run_compute"],
       injectBeforeExecute(args) {
-        if (args.action === "run_compute" && !args.wasm_module_hex) {
+        if (!args.wasm_module_hex) {
           args.wasm_module_hex = validWasmHex
         }
       }
