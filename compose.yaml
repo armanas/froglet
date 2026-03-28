@@ -9,7 +9,7 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
-      - ./data/discovery:/data
+      - ${FROGLET_DATA_ROOT:-./data}/discovery:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9090/health >/dev/null"]
       interval: 10s
@@ -26,8 +26,9 @@ services:
       discovery:
         condition: service_healthy
     environment:
+      FROGLET_DATA_ROOT: /data
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
-      FROGLET_PRICE_EXEC_WASM: "0"
+      FROGLET_PRICE_EXEC_WASM: ${FROGLET_PRICE_EXEC_WASM:-0}
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
       FROGLET_DISCOVERY_MODE: reference
@@ -37,7 +38,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ./data:/data
+      - ${FROGLET_DATA_ROOT:-./data}:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 10s
@@ -58,6 +59,7 @@ services:
       runtime:
         condition: service_healthy
     environment:
+      FROGLET_DATA_ROOT: /data
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
       FROGLET_OPERATOR_LISTEN_ADDR: 0.0.0.0:9191
       FROGLET_OPERATOR_ALLOW_NON_LOOPBACK: "true"
@@ -71,7 +73,7 @@ services:
     ports:
       - "127.0.0.1:9191:9191"
     volumes:
-      - ./data:/data
+      - ${FROGLET_DATA_ROOT:-./data}:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9191/health >/dev/null"]
       interval: 10s
@@ -90,6 +92,8 @@ services:
       provider:
         condition: service_healthy
     environment:
+      FROGLET_DATA_ROOT: /data
+      FROGLET_DB_PATH: /data/runtime.node.db
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
       FROGLET_DISCOVERY_MODE: reference
       FROGLET_DISCOVERY_URL: http://discovery:9090
@@ -99,7 +103,7 @@ services:
     ports:
       - "127.0.0.1:8081:8081"
     volumes:
-      - ./data:/data
+      - ${FROGLET_DATA_ROOT:-./data}:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health >/dev/null"]
       interval: 10s

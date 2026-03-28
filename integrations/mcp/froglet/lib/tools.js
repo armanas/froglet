@@ -2,6 +2,7 @@ import {
   buildProject,
   createProject,
   discoverServices,
+  frogletRestart,
   frogletStatus,
   frogletTailLogs,
   getLocalService,
@@ -44,14 +45,16 @@ function ctx(config) {
   }
 }
 
-// --- Tool: froglet_status ---
+// --- Froglet action: status ---
 
 async function handleStatus(args, config) {
   const response = await frogletStatus(ctx(config))
+  const runtimeHealthy = response.components?.runtime?.healthy ?? response.runtime?.healthy
+  const providerHealthy = response.components?.provider?.healthy ?? response.provider?.healthy
   const lines = [
+    `service: ${response.service ?? "froglet"}`,
+    `healthy: ${response.healthy === true}`,
     `node_id: ${response.node_id ?? "unknown"}`,
-    `runtime_healthy: ${response.runtime?.healthy === true}`,
-    `provider_healthy: ${response.provider?.healthy === true}`,
     `discovery_mode: ${response.discovery?.mode ?? "unknown"}`,
     `reference_discovery_enabled: ${response.reference_discovery?.enabled === true}`,
     `reference_discovery_publish_enabled: ${response.reference_discovery?.publish_enabled === true}`,
@@ -59,12 +62,15 @@ async function handleStatus(args, config) {
     `reference_discovery_url: ${response.reference_discovery?.url ?? "none"}`,
     `reference_discovery_last_error: ${response.reference_discovery?.last_error ?? "none"}`,
     `projects_root: ${response.projects_root ?? "unknown"}`,
-    `compute_offer_id: ${response.raw_compute_offer_id ?? "execute.compute"}`
+    `compute_offer_id: ${response.raw_compute_offer_id ?? "execute.compute"}`,
+    "",
+    `runtime_healthy: ${runtimeHealthy === true}`,
+    `provider_healthy: ${providerHealthy === true}`
   ]
   return toolTextResult(lines.join("\n"))
 }
 
-// --- Tool: froglet_logs ---
+// --- Froglet action: tail_logs ---
 
 async function handleLogs(args, config) {
   const response = await frogletTailLogs({
@@ -73,11 +79,16 @@ async function handleLogs(args, config) {
     lines: args.lines
   })
   const logs = Array.isArray(response.logs) ? response.logs : []
+  const components = logs
+    .map((entry) => entry.component ?? entry.target)
+    .filter((value) => typeof value === "string" && value.length > 0)
   const lines = [
-    `targets: ${logs.map((entry) => entry.target).join(", ") || "none"}`,
+    `service: ${response.service ?? "froglet"}`,
+    `scope: ${response.scope ?? "node"}`,
+    `components: ${components.join(", ") || "none"}`,
     "",
     ...logs.flatMap((entry) => [
-      `${entry.target}:`,
+      `${entry.component ?? entry.target ?? "unknown"}:`,
       ...(Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines : ["no lines"]),
       ""
     ])
@@ -85,7 +96,29 @@ async function handleLogs(args, config) {
   return toolTextResult(lines.join("\n"))
 }
 
-// --- Tool: froglet_discover ---
+// --- Froglet action: restart ---
+
+async function handleRestart(args, config) {
+  const response = await frogletRestart({
+    ...ctx(config),
+    target: args.target
+  })
+  const results = Array.isArray(response.results) ? response.results : []
+  const lines = [
+    `service: ${response.service ?? "froglet"}`,
+    `scope: ${response.scope ?? "node"}`,
+    "",
+    ...results.flatMap((entry) => [
+      `${entry.component ?? entry.target ?? "unknown"}: ${entry.status ?? "unknown"}`,
+      `stdout_preview: ${entry.stdout_preview ?? "none"}`,
+      `stderr_preview: ${entry.stderr_preview ?? "none"}`,
+      ""
+    ])
+  ]
+  return toolTextResult(lines.join("\n"))
+}
+
+// --- Froglet action: discover_services ---
 
 async function handleDiscover(args, config) {
   const response = await discoverServices({
@@ -117,12 +150,12 @@ async function handleDiscover(args, config) {
           ])
         ]
       : []),
-    "Only listed fields are authoritative. Use froglet_get_service for one service at a time."
+    "Only listed fields are authoritative. Use action=get_service for one service at a time."
   ]
   return toolTextResult(lines.join("\n"))
 }
 
-// --- Tool: froglet_get_service ---
+// --- Froglet action: get_service ---
 
 async function handleGetService(args, config) {
   const response = await getService({
@@ -162,13 +195,13 @@ async function handleInvoke(args, config) {
         `result: ${formatObject(effectiveResult)}`,
         ...(response.terminal === true
           ? []
-          : ["pending: use froglet_task with wait=true if you need the final result"])
+          : ["pending: use action=wait_task if you need the final result"])
       ]
     : [`status: ${response.status ?? "unknown"}`, `result: ${formatObject(effectiveResult)}`]
   return toolTextResult(lines.join("\n"))
 }
 
-// --- Tool: froglet_local_services ---
+// --- Froglet actions: list_local_services / get_local_service ---
 
 async function handleLocalServices(args, config) {
   if (args.service_id) {
@@ -197,7 +230,7 @@ async function handleLocalServices(args, config) {
   return toolTextResult(lines.join("\n"))
 }
 
-// --- Tool: froglet_project ---
+// --- Froglet project actions ---
 
 async function handleProject(args, config) {
   const c = ctx(config)
@@ -370,7 +403,7 @@ async function handleProject(args, config) {
   }
 }
 
-// --- Tool: froglet_task ---
+// --- Froglet actions: get_task / wait_task ---
 
 async function handleTask(args, config) {
   if (args.wait) {
@@ -390,7 +423,7 @@ async function handleTask(args, config) {
   return toolTextResult(summarizeTask(response.task ?? {}).join("\n"))
 }
 
-// --- Tool: froglet_compute ---
+// --- Froglet action: run_compute ---
 
 async function handleCompute(args, config) {
   const response = await runCompute({
@@ -419,210 +452,202 @@ async function handleCompute(args, config) {
   return toolTextResult(lines.join("\n"))
 }
 
-// --- Tool definitions ---
+const frogletToolDescription =
+  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For remote discovery-backed services use discover_services or get_service. For named or data-service bindings use invoke_service. For simple fixed-response services, use create_project with result_json, price_sats, and publication_state=active. For authored services use create_project, write_file, build_project, test_project, and publish_project. Use run_compute for open-ended compute through the provider's direct compute offer, and include provider_id or provider_url."
+
+function frogletToolInputSchema(config) {
+  return {
+    type: "object",
+    required: ["action"],
+    properties: {
+      action: {
+        type: "string",
+        description:
+          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote discovery-backed listings, get_local_service/get_service for authoritative details, invoke_service for named or data-service execution, create_project plus explicit result_json/inline_source or the project build flow for authoring, and run_compute for open-ended compute with an explicit provider_id or provider_url.",
+        enum: [
+          "discover_services",
+          "get_service",
+          "invoke_service",
+          "list_local_services",
+          "get_local_service",
+          "create_project",
+          "list_projects",
+          "get_project",
+          "read_file",
+          "write_file",
+          "build_project",
+          "test_project",
+          "publish_project",
+          "publish_artifact",
+          "status",
+          "tail_logs",
+          "restart",
+          "get_task",
+          "wait_task",
+          "run_compute"
+        ]
+      },
+      name: {
+        type: "string",
+        description:
+          "Friendly service/project name. For create_project, Froglet will derive project_id, service_id, and offer_id from this if explicit ids are omitted."
+      },
+      service_id: { type: "string" },
+      project_id: { type: "string" },
+      offer_id: { type: "string" },
+      summary: {
+        type: "string",
+        description:
+          "Descriptive metadata only. Summary never generates code and is never enough to auto-publish a runnable service."
+      },
+      runtime: {
+        type: "string",
+        description: "Execution runtime for the service or compute request, for example wasm, python, or container."
+      },
+      package_kind: {
+        type: "string",
+        description: "Execution package kind for the workload, for example inline_module, inline_source, or oci_image."
+      },
+      entrypoint_kind: {
+        type: "string",
+        description: "Entrypoint shape for the workload, for example handler, script, or builtin."
+      },
+      entrypoint: {
+        type: "string",
+        description: "Entrypoint identifier or path for the workload."
+      },
+      contract_version: {
+        type: "string",
+        description: "Contract version for the execution payload."
+      },
+      mounts: {
+        description:
+          "Optional mount handles or bindings required by the workload. Keep this as the provider-defined mount payload."
+      },
+      wasm_module_hex: {
+        type: "string",
+        description:
+          "Optional inline Wasm module bytes in hex. Low-level escape hatch for direct inline Wasm compute or publish_artifact. Prefer artifact_path instead."
+      },
+      inline_source: {
+        type: "string",
+        description:
+          "Optional inline source for a new project or compute request. Use this when you want Froglet to author or run explicit source text, typically for runtime=python package_kind=inline_source."
+      },
+      starter: {
+        type: "string",
+        description:
+          "Optional starter code scaffold. This is only initial code scaffolding, not a publish mode. Use starter only when you want Froglet to scaffold starter code explicitly."
+      },
+      path: { type: "string" },
+      contents: { type: "string" },
+      input: {},
+      result_json: {
+        description:
+          "Optional static JSON result to scaffold into a new project. Use this for simple constant-return services. Summary is metadata only and does not generate code."
+      },
+      output_schema: {},
+      input_schema: {},
+      price_sats: { type: "integer", minimum: 0 },
+      publication_state: {
+        type: "string",
+        enum: ["active", "hidden"],
+        description:
+          "Use active only when the request also includes starter, result_json, or inline_source, or when a built project is already ready to publish. Blank projects should remain hidden."
+      },
+      mode: { type: "string", enum: ["sync", "async"] },
+      target: { type: "string", enum: ["node", "runtime", "provider", "all"] },
+      lines: { type: "integer", minimum: 1, maximum: 500 },
+      provider_id: {
+        type: "string",
+        description:
+          "Target provider node ID. Required for run_compute unless provider_url is supplied."
+      },
+      provider_url: {
+        type: "string",
+        description:
+          "Target provider base URL. Required for run_compute unless provider_id is supplied."
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: config.maxSearchLimit
+      },
+      include_inactive: { type: "boolean" },
+      query: { type: "string" },
+      task_id: { type: "string" },
+      timeout_secs: { type: "integer", minimum: 1, maximum: 600 },
+      poll_interval_secs: { type: "number", minimum: 0.1, maximum: 10 },
+      artifact_path: { type: "string" },
+      oci_reference: { type: "string" },
+      oci_digest: { type: "string" }
+    }
+  }
+}
 
 export function buildToolDefinitions(config) {
   return [
     {
-      name: "froglet_status",
-      description: "Check Froglet node health, runtime/provider/discovery status, and configuration.",
-      inputSchema: {
-        type: "object",
-        properties: {}
-      }
-    },
-    {
-      name: "froglet_logs",
-      description: "Tail runtime or provider logs from the Froglet node.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          target: {
-            type: "string",
-            enum: ["runtime", "provider", "all"],
-            description: "Which log target to tail."
-          },
-          lines: {
-            type: "integer",
-            minimum: 1,
-            maximum: 500,
-            description: "Number of log lines to return."
-          }
-        }
-      }
-    },
-    {
-      name: "froglet_discover",
-      description:
-        "Search for remote Froglet services across the discovery network. Returns matching services with metadata, schemas, and pricing.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Free-text search query to filter services." },
-          limit: {
-            type: "integer",
-            minimum: 1,
-            maximum: config.maxSearchLimit,
-            description: "Maximum number of results."
-          },
-          include_inactive: { type: "boolean", description: "Include inactive/hidden services." }
-        }
-      }
-    },
-    {
-      name: "froglet_get_service",
-      description:
-        "Get authoritative details for a specific remote Froglet service or data-service binding. Returns full metadata including offer_kind, resource_kind, and input/output schemas.",
-      inputSchema: {
-        type: "object",
-        required: ["service_id"],
-        properties: {
-          service_id: { type: "string" },
-          provider_id: { type: "string", description: "Provider node ID (optional, for disambiguation)." },
-          provider_url: { type: "string", description: "Direct provider URL (optional)." }
-        }
-      }
-    },
-    {
-      name: "froglet_invoke",
-      description:
-        "Invoke a remote Froglet named service or data-service binding by service_id. May return a result synchronously or a task_id for async polling via froglet_task. Use froglet_compute for open-ended compute instead of inventing a service call.",
-      inputSchema: {
-        type: "object",
-        required: ["service_id"],
-        properties: {
-          service_id: { type: "string" },
-          input: { description: "Input payload matching the service's input_schema." },
-          provider_id: { type: "string" },
-          provider_url: { type: "string" },
-          timeout_secs: { type: "integer", minimum: 1, maximum: 600 }
-        }
-      }
-    },
-    {
-      name: "froglet_local_services",
-      description:
-        "List or inspect local Froglet named/data service bindings on this node. Without service_id lists all; with service_id returns authoritative details including offer_kind and resource_kind. Direct compute offers are not listed here; use froglet_compute.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          service_id: {
-            type: "string",
-            description: "If provided, get details for this specific local service."
-          }
-        }
-      }
-    },
-    {
-      name: "froglet_project",
-      description:
-        "Manage Froglet service authoring projects. Actions: list, create, get, read_file, write_file, build, test, publish, publish_artifact. Typical workflow: create -> write_file -> build -> test -> publish. Projects currently cover project-backed WAT->Wasm and inline-source Python authoring. Use publish_artifact for prebuilt Wasm modules or OCI-backed/container profiles. For simple fixed-response services use create with result_json and publication_state=active.",
-      inputSchema: {
-        type: "object",
-        required: ["action"],
-        properties: {
-          action: {
-            type: "string",
-            enum: ["list", "create", "get", "read_file", "write_file", "build", "test", "publish", "publish_artifact"],
-            description: "Project sub-action."
-          },
-          project_id: { type: "string" },
-          name: { type: "string", description: "Friendly name; derives IDs if explicit IDs are omitted." },
-          summary: { type: "string" },
-          runtime: { type: "string", description: "Execution runtime such as wasm, python, or container." },
-          package_kind: { type: "string", description: "Execution package shape such as inline_module, inline_source, or oci_image." },
-          entrypoint_kind: { type: "string", description: "Entrypoint style such as handler, script, or builtin." },
-          entrypoint: { type: "string" },
-          contract_version: { type: "string" },
-          mounts: { description: "Mount handles or bindings." },
-          wasm_module_hex: { type: "string", description: "Inline Wasm module bytes in hex for publish_artifact. Low-level escape hatch — prefer artifact_path." },
-          inline_source: { type: "string", description: "Inline source text for Python-backed authored services." },
-          starter: { type: "string" },
-          result_json: { description: "Static JSON result for simple constant-return services." },
-          price_sats: { type: "integer", minimum: 0 },
-          publication_state: { type: "string", enum: ["active", "hidden"] },
-          mode: { type: "string", enum: ["sync", "async"] },
-          input_schema: {},
-          output_schema: {},
-          path: { type: "string", description: "File path within the project (for read_file/write_file)." },
-          contents: { type: "string", description: "File contents (for write_file)." },
-          input: { description: "Test input (for test action)." },
-          service_id: { type: "string" },
-          offer_id: { type: "string" },
-          artifact_path: { type: "string" },
-          oci_reference: { type: "string" },
-          oci_digest: { type: "string" }
-        }
-      }
-    },
-    {
-      name: "froglet_task",
-      description:
-        "Get status of or wait for an async Froglet task. Use wait=true to poll until completion.",
-      inputSchema: {
-        type: "object",
-        required: ["task_id"],
-        properties: {
-          task_id: { type: "string" },
-          wait: { type: "boolean", description: "If true, poll until task completes." },
-          timeout_secs: { type: "integer", minimum: 1, maximum: 600 },
-          poll_interval_secs: { type: "number", minimum: 0.1, maximum: 10 }
-        }
-      }
-    },
-    {
-      name: "froglet_compute",
-      description:
-        "Execute open-ended compute on a Froglet provider without a registered service. You must target a provider with provider_id or provider_url because service discovery/listing does not expose this path automatically; it uses the provider's direct compute offer. Preferred input for Wasm is artifact_path (a local filesystem path to a .wasm file); wasm_module_hex is a low-level escape hatch. Also supports inline Python via inline_source, OCI-backed Wasm, and OCI image execution for python/container profiles. Zip archives are not yet supported.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          input: { description: "Input payload for the compute workload." },
-          artifact_path: { type: "string", description: "Local filesystem path to a .wasm module file. Preferred over wasm_module_hex for Wasm compute." },
-          wasm_module_hex: { type: "string", description: "Inline Wasm module bytes in hex. Low-level escape hatch — prefer artifact_path." },
-          inline_source: { type: "string", description: "Inline Python source for runtime=python package_kind=inline_source." },
-          oci_reference: { type: "string" },
-          oci_digest: { type: "string" },
-          runtime: { type: "string", description: "Required runtime selector such as wasm, python, or container." },
-          package_kind: { type: "string", description: "Required package selector such as inline_module, inline_source, or oci_image." },
-          entrypoint_kind: { type: "string", description: "Entrypoint style such as handler or script." },
-          entrypoint: { type: "string" },
-          contract_version: { type: "string" },
-          mounts: {},
-          provider_id: {
-            type: "string",
-            description: "Target provider node ID. Provide this or provider_url for direct compute."
-          },
-          provider_url: {
-            type: "string",
-            description: "Target provider base URL. Provide this or provider_id for direct compute."
-          },
-          timeout_secs: { type: "integer", minimum: 1, maximum: 600 }
-        }
-      }
+      name: "froglet",
+      description: frogletToolDescription,
+      inputSchema: frogletToolInputSchema(config)
     }
   ]
 }
 
-const handlers = {
-  froglet_status: handleStatus,
-  froglet_logs: handleLogs,
-  froglet_discover: handleDiscover,
-  froglet_get_service: handleGetService,
-  froglet_invoke: handleInvoke,
-  froglet_local_services: handleLocalServices,
-  froglet_project: handleProject,
-  froglet_task: handleTask,
-  froglet_compute: handleCompute
+async function dispatchFrogletAction(args, config) {
+  switch (args.action) {
+    case "status":
+      return handleStatus(args, config)
+    case "tail_logs":
+      return handleLogs(args, config)
+    case "restart":
+      return handleRestart(args, config)
+    case "discover_services":
+      return handleDiscover(args, config)
+    case "get_service":
+      return handleGetService(args, config)
+    case "invoke_service":
+      return handleInvoke(args, config)
+    case "list_local_services":
+      return handleLocalServices(args, config)
+    case "get_local_service":
+      return handleLocalServices({ ...args, service_id: args.service_id }, config)
+    case "list_projects":
+      return handleProject({ ...args, action: "list" }, config)
+    case "get_project":
+      return handleProject({ ...args, action: "get" }, config)
+    case "create_project":
+      return handleProject({ ...args, action: "create" }, config)
+    case "read_file":
+      return handleProject({ ...args, action: "read_file" }, config)
+    case "write_file":
+      return handleProject({ ...args, action: "write_file" }, config)
+    case "build_project":
+      return handleProject({ ...args, action: "build" }, config)
+    case "test_project":
+      return handleProject({ ...args, action: "test" }, config)
+    case "publish_project":
+      return handleProject({ ...args, action: "publish" }, config)
+    case "publish_artifact":
+      return handleProject({ ...args, action: "publish_artifact" }, config)
+    case "get_task":
+      return handleTask({ ...args, wait: false }, config)
+    case "wait_task":
+      return handleTask({ ...args, wait: true }, config)
+    case "run_compute":
+      return handleCompute(args, config)
+    default:
+      throw new Error(`Unknown Froglet action: ${args.action}`)
+  }
 }
 
 export async function handleToolCall(name, args, config) {
-  const handler = handlers[name]
-  if (!handler) {
+  if (name !== "froglet") {
     return errorResult(new Error(`Unknown tool: ${name}`))
   }
   try {
-    return await handler(args ?? {}, config)
+    return await dispatchFrogletAction(args ?? {}, config)
   } catch (error) {
     return errorResult(error)
   }

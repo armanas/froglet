@@ -189,9 +189,11 @@ async function main() {
       )
       checks.push(
         buildCheck("runtime_health", "ok", "Froglet control API responded", {
+          service: status.service,
+          healthy: status.healthy,
           node_id: status.node_id,
-          runtime_healthy: status.runtime?.healthy,
-          provider_healthy: status.provider?.healthy
+          runtime_healthy: status.components?.runtime?.healthy ?? status.runtime?.healthy,
+          provider_healthy: status.components?.provider?.healthy ?? status.provider?.healthy
         })
       )
     } catch (error) {

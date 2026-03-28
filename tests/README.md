@@ -17,7 +17,6 @@
 Isolated tests that do not spawn binaries or require external services.
 
 - `cargo test --lib` (Rust unit tests in `src/`)
-- Python: `test_client_sdk`, `test_nostr_adapter`, `test_examples`
 - Node: OpenClaw plugin tests (plugin, config-profiles, doctor, froglet-client) + MCP server tests
 - **Requires:** cargo, python3, node >= 18
 
@@ -36,7 +35,6 @@ Static analysis and syntax checks.
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets -- -D warnings`
 - `node --check` on `index.js`, `doctor.mjs`, `server.js`
-- `python3 -m py_compile froglet_client.py`
 - **Requires:** cargo + rustfmt + clippy, node >= 18, python3
 
 ### security
@@ -174,7 +172,7 @@ Dependency vulnerability scanning.
 Quick health check — minimal subset for fast verification.
 
 - Rust: `crypto::tests`
-- Python: `test_client_sdk`
+- Python: `test_conformance_vectors`
 - **Requires:** cargo, python3
 
 ### canary
@@ -261,11 +259,11 @@ FROGLET_GCP_PROJECT=my-project GCP_RIG_CATEGORIES="fuzz pentest" ./scripts/test_
 
 - **Rust unit test:** Add `#[test]` in `src/*.rs` — picked up automatically by `unit`
 - **Rust integration test:** Add a file in `tests/*.rs` — picked up automatically by `integration`
-- **Python test:** Create `python/tests/test_<name>.py`, then add the module to the appropriate category in `scripts/test_suite.sh`
+- **Core Python-backed test:** Create `python/tests/test_<name>.py` only for node/runtime/security/conformance coverage that remains part of the core repo, then add the module to the appropriate category in `scripts/test_suite.sh`
 - **Node test:** Add `*.test.{js,mjs}` in `integrations/*/froglet/test/`, then add to the appropriate category in `scripts/test_suite.sh`
 - **Chaos scenario:** Add a function in `tests/chaos/chaos_runner.sh` and register it in `ALL_SCENARIOS`
 - **Penetration test:** Add test class in `python/tests/test_pentest.py`
 
 ## Legacy Runner
 
-`scripts/strict_checks.sh` is still used by CI (`.github/workflows/ci.yml`). It runs sast + all Rust tests + all Node tests + all Python tests sequentially. `test_suite.sh` is the organized superset with per-category control.
+`scripts/strict_checks.sh` is still used by CI (`.github/workflows/ci.yml`). It runs sast + all Rust tests + all Node tests + the core Python-backed runtime/security/conformance modules sequentially. `test_suite.sh` is the organized superset with per-category control.

@@ -3,48 +3,71 @@
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
 
-Froglet is a signed-deal resource protocol for bots and remote agents.
-It gives one economic primitive for three product shapes:
+Froglet is a protocol and node for a bot economy.
+It lets bots create, publish, discover, buy, sell, and compose remote
+resources for value.
+It gives one signed economic primitive for three product shapes:
 
 - named services
 - data-backed services
 - open-ended compute
 
-The bot-facing contract is intentionally simple:
+The primary bot-facing integration surfaces are intentionally simple:
 
 - one OpenClaw/NemoClaw plugin id: `froglet`
 - one bot tool: `froglet`
-- one MCP server for external agent hosts under `integrations/mcp/froglet/`
+- one MCP server for external agent hosts and automations under
+  `integrations/mcp/froglet/`
+
+Bots should be able to create small scriptable services directly, validate them
+locally, and publish them without having to start from OCI images.
+OCI containers remain a supported packaging and deployment path rather than
+the only authoring model.
 
 ## Product Model
 
 - any Froglet node can publish resources and invoke remote resources
-- published resources are execution bindings backed by projects or explicit
-  artifacts
+- the current reference implementation exposes separable binaries and planes,
+  but the product model is one Froglet node
+- published resources are execution bindings backed by bot-authored projects,
+  explicit source, or prebuilt artifacts
+- easy bot authoring and local checking of scriptable services is a core
+  product requirement
 - identity is first-class in signed artifacts
+- payment rails are adapter-level surfaces; the current reference backend is
+  Lightning, and other rails such as Stripe-backed and B2B-friendly settlement
+  methods should plug into the same economic flow
 - marketplace, ranking, incentive, and broker policy live above the protocol
 - named services and data services are discovered through discovery
 - open-ended compute uses the provider's direct compute offer via
   `run_compute`, targeted with `provider_id` or `provider_url`
 - the same signed deals can be served over clearnet HTTPS or Tor onion
   endpoints
+- publication and bootstrap adapters may include Nostr-style publication
+  without making any single relay or network the kernel source of truth
 
 ## Current Scope
 
 In this repo now:
 
-- runtime, provider, discovery, and operator binaries
+- reference Froglet node implementation shipped as separable `runtime`,
+  `provider`, `discovery`, and `operator` binaries
 - OpenClaw and NemoClaw bot integration
-- MCP server for external agent hosts
-- local project authoring, build, test, and publish flows
+- MCP server for external agent hosts and automations
+- local project authoring, build, test, and publish flows for bot-authored
+  services
 - direct artifact publication for prebuilt Wasm and OCI-backed profiles
 - reference execution profiles for Wasm, Python, container, and confidential
   execution paths
+- reference settlement support for Lightning plus the adapter boundary needed
+  for additional payment rails
+- clearnet, Tor, and Nostr-facing adapter support needed for early adoption
 
 Intentionally outside this repo or later:
 
-- marketplace or catalog products, which may live out-of-tree or be closed
-  source
+- marketplace, catalog, broker, ranking, reputation, and policy products,
+  which may live in separate directories for now and later move out-of-tree or
+  be closed source
 - long-running batch orchestration, which remains out of scope for the current
   v1 runtime surface
 - native deployment adapters for AWS, GCP, OVH, and similar cloud providers
@@ -57,10 +80,14 @@ host or container isolation characteristics.
 
 ## Components
 
+Product-wise, Froglet is one node that can both provide and consume.
+The current reference implementation exposes these separable binaries inside
+that node:
+
 | Binary | Purpose |
 | --- | --- |
-| `froglet-runtime` | deal and payment engine used when a node invokes remote resources |
-| `froglet-provider` | public node API used when a node serves published resources |
+| `froglet-runtime` | requester-side deal and payment engine used when a node invokes remote resources |
+| `froglet-provider` | provider-side public node API used when a node serves published resources |
 | `froglet-discovery` | public discovery service |
 | `froglet-operator` | host-side `/v1/froglet/*` control API |
 
@@ -119,6 +146,9 @@ The normal model is one node running both `froglet-provider` and
 
 ## Bot Surfaces
 
+OpenClaw, NemoClaw, and MCP-compatible hosts are the primary bot-facing
+surfaces today.
+
 ### OpenClaw And NemoClaw
 
 Use the shared plugin package in
@@ -137,8 +167,8 @@ The one `froglet` tool covers:
 
 - service discovery and invocation
 - local resource inspection and publication
-- project authoring
-- build, test, and publish
+- source-first project authoring for scriptable services
+- local build, validation, test, and publish flows
 - status, logs, and restart
 - task polling
 - raw compute
@@ -149,6 +179,9 @@ Important behavior:
 - `starter` and `result_json` are built-in scaffolding inputs
 - `inline_source` is the explicit direct-code input for authored inline-source
   services
+- bots should be able to create and validate scriptable services directly;
+  OCI/container profiles are supported packaging and deployment paths rather
+  than the only authoring model
 - blank projects are scaffolds only and should stay hidden until edited,
   tested, and published
 - `run_compute` is the low-level path for open-ended compute and should include
@@ -156,8 +189,8 @@ Important behavior:
 
 ### MCP Server
 
-External bot hosts can use the MCP server instead of the OpenClaw or NemoClaw
-plugin:
+External bot hosts and automation systems can use the MCP server instead of
+the OpenClaw or NemoClaw plugin:
 
 ```bash
 node integrations/mcp/froglet/server.js

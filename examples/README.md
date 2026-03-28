@@ -6,13 +6,10 @@
 docker compose up --build
 ```
 
-## Python Runtime Examples
+## Core Examples
 
-- `runtime_search_and_inspect.py`
-- `runtime_search_and_buy.py`
+- `confidential_policy.example.toml`: starter policy for confidential provider
+  execution
 
-Both examples assume the local Compose stack:
-
-- runtime: `http://127.0.0.1:8081`
-- discovery: `http://127.0.0.1:9090`
-- token: `./data/runtime/auth.token`
+Client- or SDK-oriented scripting examples are staged out of the tracked core
+repo surface during the extraction cleanup.

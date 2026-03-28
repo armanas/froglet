@@ -21,6 +21,9 @@ fi
 DRY_RUN=0
 CATEGORIES=()
 FAILURES=()
+COMPOSE_TEST_ACTIVE=0
+COMPOSE_TEST_DATA_ROOT=""
+COMPOSE_TEST_PROJECT_NAME=""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,6 +44,44 @@ step() {
   fi
   echo -e "  ${BOLD}[run]${RESET} $*"
   "$@"
+}
+
+compose_test_env() {
+  env \
+    COMPOSE_PROJECT_NAME="$COMPOSE_TEST_PROJECT_NAME" \
+    FROGLET_DATA_ROOT="$COMPOSE_TEST_DATA_ROOT" \
+    FROGLET_TEST_DATA_ROOT="$COMPOSE_TEST_DATA_ROOT" \
+    FROGLET_AUTH_TOKEN_PATH="$COMPOSE_TEST_DATA_ROOT/runtime/froglet-control.token" \
+    FROGLET_BASE_URL="${FROGLET_BASE_URL:-http://127.0.0.1:9191}" \
+    FROGLET_PROVIDER_URL="${FROGLET_PROVIDER_URL:-http://127.0.0.1:8080}" \
+    "$@"
+}
+
+compose_test_setup() {
+  local label="$1"
+  if [[ "$COMPOSE_TEST_ACTIVE" == "1" ]]; then
+    compose_test_finish 0 >/dev/null || true
+  fi
+  local safe_label="${label//[^a-zA-Z0-9]/-}"
+  COMPOSE_TEST_DATA_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/froglet-${safe_label}-XXXXXX")"
+  COMPOSE_TEST_PROJECT_NAME="froglet-${safe_label}-$$-$(date +%s)"
+  COMPOSE_TEST_ACTIVE=1
+}
+
+compose_test_finish() {
+  local rc="$1"
+  if [[ "$COMPOSE_TEST_ACTIVE" == "1" ]]; then
+    if [[ "$rc" -ne 0 ]]; then
+      compose_test_env docker compose ps || true
+      compose_test_env docker compose logs --no-color || true
+    fi
+    compose_test_env docker compose down --remove-orphans -v 2>/dev/null || true
+    rm -rf "$COMPOSE_TEST_DATA_ROOT"
+    COMPOSE_TEST_ACTIVE=0
+    COMPOSE_TEST_DATA_ROOT=""
+    COMPOSE_TEST_PROJECT_NAME=""
+  fi
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -86,9 +127,7 @@ run_unit() {
 
   if has_python; then
     step python3 -W error -m unittest \
-      python.tests.test_client_sdk \
-      python.tests.test_nostr_adapter \
-      python.tests.test_examples -v || rc=1
+      python.tests.test_conformance_vectors -v || rc=1
   else
     skip_warn "python3 not found"
   fi
@@ -167,7 +206,7 @@ run_sast() {
   fi
 
   if has_python; then
-    step python3 -m py_compile python/froglet_client.py || rc=1
+    skip_warn "no core Python SDK source file is compiled in sast; runtime checks cover Python-backed services"
   else
     skip_warn "python3 not found"
   fi
@@ -273,14 +312,20 @@ run_smoke() {
   fi
 
   local rc=0
-  step docker compose down --remove-orphans
-  step docker compose up --build -d --wait || { rc=1; return $rc; }
-  trap 'docker compose down --remove-orphans 2>/dev/null || true' EXIT
+  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
+    step node integrations/openclaw/froglet/test/compose-smoke.mjs || rc=1
+    step node integrations/mcp/froglet/test/compose-smoke.mjs || rc=1
+    return $rc
+  fi
 
-  step node integrations/openclaw/froglet/test/compose-smoke.mjs || rc=1
-  step node integrations/mcp/froglet/test/compose-smoke.mjs || rc=1
+  compose_test_setup smoke
+  step compose_test_env docker compose up --build -d --wait || rc=1
+  if [[ "$rc" -eq 0 ]]; then
+    step compose_test_env node integrations/openclaw/froglet/test/compose-smoke.mjs || rc=1
+    step compose_test_env node integrations/mcp/froglet/test/compose-smoke.mjs || rc=1
+  fi
 
-  return $rc
+  compose_test_finish "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -300,10 +345,27 @@ run_agentic() {
     skip_warn "agentic tests require node >= 18"
     return 0
   fi
+  if ! ensure_mcp_deps; then
+    return 1
+  fi
 
   local rc=0
-  step node integrations/openclaw/froglet/test/openai-responses-smoke.mjs || rc=1
-  return $rc
+  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
+    step node integrations/openclaw/froglet/test/openai-responses-smoke.mjs || rc=1
+    return $rc
+  fi
+  if ! has_docker; then
+    skip_warn "agentic tests require Docker or FROGLET_TEST_REMOTE_STACK=1"
+    return 0
+  fi
+
+  compose_test_setup agentic
+  step compose_test_env docker compose up --build -d --wait || rc=1
+  if [[ "$rc" -eq 0 ]]; then
+    step compose_test_env node integrations/openclaw/froglet/test/openai-responses-smoke.mjs || rc=1
+  fi
+
+  compose_test_finish "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -428,7 +490,14 @@ run_acceptance() {
   local rc=0
 
   if has_python; then
-    step python3 -W error -m unittest python.tests.test_acceptance -v || rc=1
+    if [[ -n "${FROGLET_ACCEPTANCE_TESTS:-}" ]]; then
+      local acceptance_tests=()
+      # shellcheck disable=SC2206
+      acceptance_tests=(${FROGLET_ACCEPTANCE_TESTS})
+      step python3 -W error -m unittest -v "${acceptance_tests[@]}" || rc=1
+    else
+      step python3 -W error -m unittest python.tests.test_acceptance -v || rc=1
+    fi
   else
     skip_warn "python3 not found"
   fi
@@ -448,8 +517,13 @@ run_chaos() {
   fi
 
   local rc=0
-  step bash tests/chaos/chaos_runner.sh || rc=1
-  return $rc
+  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
+    step bash tests/chaos/chaos_runner.sh || rc=1
+    return $rc
+  fi
+  compose_test_setup chaos
+  step compose_test_env bash tests/chaos/chaos_runner.sh || rc=1
+  compose_test_finish "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -467,11 +541,28 @@ run_exploratory() {
     skip_warn "exploratory tests require node >= 18"
     return 0
   fi
+  if ! ensure_mcp_deps; then
+    return 1
+  fi
 
   local rc=0
   export OPENAI_API_KEY="$api_key"
-  step node tests/e2e/agentic_exploratory.mjs || rc=1
-  return $rc
+  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
+    step node tests/e2e/agentic_exploratory.mjs || rc=1
+    return $rc
+  fi
+  if ! has_docker; then
+    skip_warn "exploratory tests require Docker or FROGLET_TEST_REMOTE_STACK=1"
+    return 0
+  fi
+
+  compose_test_setup exploratory
+  step compose_test_env docker compose up --build -d --wait || rc=1
+  if [[ "$rc" -eq 0 ]]; then
+    step compose_test_env node tests/e2e/agentic_exploratory.mjs || rc=1
+  fi
+
+  compose_test_finish "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -532,7 +623,7 @@ run_sanity() {
   fi
 
   if has_python; then
-    step python3 -W error -m unittest python.tests.test_client_sdk -v || rc=1
+    step python3 -W error -m unittest python.tests.test_conformance_vectors -v || rc=1
   else
     skip_warn "python3 not found"
   fi
@@ -576,16 +667,78 @@ run_canary() {
     return 0
   fi
 
-  # Start only discovery + provider (no operator, no runtime)
-  step docker compose up --build -d --wait discovery provider || { return 1; }
-
-  if has_python; then
-    step python3 -W error -m unittest python.tests.test_blackbox -v || rc=1
-  else
-    skip_warn "python3 not found"
+  if ! has_python; then
+    skip_warn "canary tests require python3"
+    return 0
   fi
 
-  return $rc
+  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
+    step python3 -c '
+import json
+import urllib.request
+
+def get_json(url: str) -> dict:
+    with urllib.request.urlopen(url) as response:
+        return json.load(response)
+
+search_req = urllib.request.Request(
+    "http://127.0.0.1:9090/v1/discovery/search",
+    method="POST",
+    headers={"Content-Type": "application/json"},
+    data=b"{}",
+)
+with urllib.request.urlopen(search_req) as response:
+    search = json.load(response)
+
+nodes = search.get("nodes", [])
+assert nodes, "expected provider publication in discovery"
+
+descriptor = get_json("http://127.0.0.1:8080/v1/provider/descriptor")
+payload = descriptor["payload"]
+assert isinstance(payload["provider_id"], str) and payload["provider_id"], payload
+assert isinstance(payload["transport_endpoints"], list) and payload["transport_endpoints"], payload
+
+offers = get_json("http://127.0.0.1:8080/v1/provider/offers")
+assert isinstance(offers.get("offers"), list) and offers["offers"], offers
+' || rc=1
+    return $rc
+  fi
+
+  compose_test_setup canary
+
+  step compose_test_env docker compose up --build -d --wait discovery provider || rc=1
+  if [[ "$rc" -eq 0 ]]; then
+    step compose_test_env python3 -c '
+import json
+import urllib.request
+
+def get_json(url: str) -> dict:
+    with urllib.request.urlopen(url) as response:
+        return json.load(response)
+
+search_req = urllib.request.Request(
+    "http://127.0.0.1:9090/v1/discovery/search",
+    method="POST",
+    headers={"Content-Type": "application/json"},
+    data=b"{}",
+)
+with urllib.request.urlopen(search_req) as response:
+    search = json.load(response)
+
+nodes = search.get("nodes", [])
+assert nodes, "expected provider publication in discovery"
+
+descriptor = get_json("http://127.0.0.1:8080/v1/provider/descriptor")
+payload = descriptor["payload"]
+assert isinstance(payload["provider_id"], str) and payload["provider_id"], payload
+assert isinstance(payload["transport_endpoints"], list) and payload["transport_endpoints"], payload
+
+offers = get_json("http://127.0.0.1:8080/v1/provider/offers")
+assert isinstance(offers.get("offers"), list) and offers["offers"], offers
+' || rc=1
+  fi
+
+  compose_test_finish "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -614,7 +767,7 @@ run_gcp_rig() {
   step gcp_deploy_stack
 
   # Step 2: Run test categories on the VM
-  local categories="${GCP_RIG_CATEGORIES:-performance spike fuzz blackbox acceptance pentest}"
+  local categories="${GCP_RIG_CATEGORIES:-smoke performance spike soak fuzz blackbox pentest}"
   step gcp_run_test_on_vm "$categories" || rc=1
 
   # Step 3: Cleanup is handled by EXIT trap in gcp_instance.sh
@@ -684,7 +837,7 @@ Available test categories:
   Core:
   unit          Rust unit tests (--lib), Python unit tests, Node OpenClaw + MCP unit tests
   integration   Rust integration tests (--tests), Python integration tests
-  sast          Static analysis: cargo fmt, clippy, node --check, py_compile
+  sast          Static analysis: cargo fmt, clippy, node --check
   security      Python security/privacy/hardening, Rust crypto tests, cargo-audit, npm audit
   conformance   Kernel conformance vectors (Rust + Python)
   stress        Python stress tests (concurrent publish + query)
@@ -704,8 +857,8 @@ Available test categories:
   exploratory   AI-driven exploratory testing (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
   mutation      Mutation testing via cargo-mutants (requires cargo-mutants)
   vulnscan      Dependency vulnerability scanning (cargo-audit, npm audit)
-  sanity        Quick health check (crypto tests + client SDK)
-  canary        Acceptance tests on partial deploy (provider + discovery only)
+  sanity        Quick health check (crypto tests + conformance vectors)
+  canary        Compose-backed provider/discovery canary probe
 
   Meta-categories:
   all           unit + integration + sast + security + conformance
@@ -717,10 +870,13 @@ Available test categories:
 
   Env vars:
   OPENCLAW_API_KEY / OPENAI_API_KEY   For agentic + exploratory tests
+  FROGLET_DATA_ROOT                   Override compose-backed test data root
   FROGLET_GCP_PROJECT                 GCP project ID for gcp_rig
   FROGLET_PERF_REQUESTS               Benchmark request count (default 500)
   FROGLET_SOAK_DURATION_MINUTES       Soak test duration (default 5)
   GCP_RIG_CATEGORIES                  Categories to run on GCP VM
+  FROGLET_PRICE_EXEC_WASM             Optional compose price override for GCP acceptance lanes
+  FROGLET_ACCEPTANCE_TESTS            Optional space-separated unittest targets for acceptance
 
 Usage:
   ./scripts/test_suite.sh                     # runs "all"

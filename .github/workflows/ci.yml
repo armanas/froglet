@@ -252,6 +252,39 @@ jobs:
         env:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           OPENCLAW_API_KEY: ${{ secrets.OPENCLAW_API_KEY }}
+          GCP_RIG_CATEGORIES: smoke performance spike soak fuzz blackbox pentest
+          FROGLET_TEST_REMOTE_STACK: "1"
+          FROGLET_TEST_PROVIDER_URL: http://127.0.0.1:8080
+          FROGLET_TEST_RUNTIME_URL: http://127.0.0.1:8081
+          FROGLET_TEST_DISCOVERY_URL: http://127.0.0.1:9090
+          FROGLET_TEST_OPERATOR_URL: http://127.0.0.1:9191
+        run: ./scripts/test_suite.sh gcp_rig
+
+      - name: Run GCP acceptance free lane
+        env:
+          FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_RIG_CATEGORIES: acceptance
+          FROGLET_ACCEPTANCE_TESTS: >-
+            python.tests.test_acceptance.AcceptanceTests.test_uat1_service_discoverable_via_reference_discovery
+            python.tests.test_acceptance.AcceptanceTests.test_uat2_free_wasm_compute_within_sla
+            python.tests.test_acceptance.AcceptanceTests.test_uat4_wasm_resource_limits_enforced
+            python.tests.test_acceptance.AcceptanceTests.test_uat5_event_content_integrity
+            python.tests.test_acceptance.AcceptanceTests.test_uat6_kind_isolation
+        run: ./scripts/test_suite.sh gcp_rig
+
+      - name: Run GCP acceptance priced lane
+        env:
+          FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_RIG_CATEGORIES: acceptance
+          FROGLET_ACCEPTANCE_TESTS: >-
+            python.tests.test_acceptance.AcceptanceTests.test_uat3_priced_service_requires_protocol_deal
+          FROGLET_PRICE_EXEC_WASM: "10"
+        run: ./scripts/test_suite.sh gcp_rig
+
+      - name: Run GCP compose resilience lane
+        env:
+          FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_RIG_CATEGORIES: canary chaos
         run: ./scripts/test_suite.sh gcp_rig
 
       - name: Cleanup GCP resources

@@ -39,7 +39,7 @@ class BlackBoxApiTests(FrogletAsyncTestCase):
 
         self.assertIn("payload", descriptor)
         self.assertIn("transport_endpoints", descriptor["payload"])
-        self.assertIn("node_id", descriptor["payload"])
+        self.assertIn("provider_id", descriptor["payload"])
 
     async def test_publish_query_roundtrip(self) -> None:
         """Publish an event and retrieve it via query."""
@@ -115,7 +115,7 @@ class BlackBoxApiTests(FrogletAsyncTestCase):
 
         # The valid WASM module returns output "42"
         if resp.status == 200:
-            self.assertIn("output", result)
+            self.assertIn("result", result)
 
     async def test_invalid_event_rejected(self) -> None:
         """Publishing an event with invalid signature is rejected with 400."""

@@ -42,6 +42,93 @@ LONG_RUNNING_WASM_HEX = (
 _BUILD_DONE = False
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def remote_stack_enabled() -> bool:
+    return _env_truthy("FROGLET_TEST_REMOTE_STACK")
+
+
+def remote_stack_data_root() -> Path:
+    return Path(
+        os.environ.get(
+            "FROGLET_TEST_DATA_ROOT",
+            os.environ.get("FROGLET_DATA_ROOT", REPO_ROOT / "data"),
+        )
+    )
+
+
+def remote_stack_url(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} is required when FROGLET_TEST_REMOTE_STACK=1")
+    return value.rstrip("/")
+
+
+def read_bearer_token(token_path: Path) -> str:
+    return token_path.read_text(encoding="utf-8").strip()
+
+
+def bearer_auth_headers(token_path: Path) -> dict[str, str]:
+    return {"Authorization": f"Bearer {read_bearer_token(token_path)}"}
+
+
+def runtime_auth_token_path(data_dir: Path) -> Path:
+    return Path(
+        os.environ.get(
+            "FROGLET_TEST_RUNTIME_AUTH_TOKEN_PATH",
+            data_dir / "runtime" / "auth.token",
+        )
+    )
+
+
+def provider_control_auth_token_path(data_dir: Path) -> Path:
+    return Path(
+        os.environ.get(
+            "FROGLET_TEST_PROVIDER_CONTROL_AUTH_TOKEN_PATH",
+            data_dir / "runtime" / "froglet-control.token",
+        )
+    )
+
+
+def consumer_control_auth_token_path(data_dir: Path) -> Path:
+    return Path(
+        os.environ.get(
+            "FROGLET_TEST_CONSUMER_CONTROL_AUTH_TOKEN_PATH",
+            data_dir / "runtime" / "consumerctl.token",
+        )
+    )
+
+
+def _requires_local_provider_start(extra_env: Optional[dict[str, str]]) -> bool:
+    if not extra_env:
+        return False
+    return any(
+        key in extra_env
+        for key in {
+            "FROGLET_PRICE_EXEC_WASM",
+            "FROGLET_PAYMENT_BACKEND",
+            "FROGLET_LIGHTNING_MODE",
+        }
+    )
+
+
+def _requires_local_runtime_start(extra_env: Optional[dict[str, str]]) -> bool:
+    if not extra_env:
+        return False
+    return any(
+        key in extra_env
+        for key in {
+            "FROGLET_PAYMENT_BACKEND",
+            "FROGLET_LIGHTNING_MODE",
+            "FROGLET_LIGHTNING_REST_URL",
+            "FROGLET_LIGHTNING_TLS_CERT_PATH",
+            "FROGLET_LIGHTNING_MACAROON_PATH",
+        }
+    )
+
+
 def ensure_binaries() -> None:
     global _BUILD_DONE
     if _BUILD_DONE:
@@ -251,6 +338,93 @@ class DiscoveryServer(ManagedProcess):
 
     def url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+
+class _RemoteProcess:
+    pid = 0
+
+    def poll(self) -> int:
+        return 0
+
+    def terminate(self) -> None:
+        return None
+
+    def kill(self) -> None:
+        return None
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        return 0
+
+
+class _RemoteManagedEndpoint:
+    def __init__(self, temp_root: Path):
+        self.process = _RemoteProcess()
+        self.log_path = temp_root / "remote.log"
+        self.temp_root = temp_root
+
+    def output(self) -> str:
+        return ""
+
+    async def stop(self) -> None:
+        shutil.rmtree(self.temp_root, ignore_errors=True)
+
+
+class RemoteDiscoveryServer(_RemoteManagedEndpoint):
+    def __init__(self, *, base_url: str, temp_root: Path, db_path: Path):
+        super().__init__(temp_root)
+        self.port = urlparse(base_url).port or 9090
+        self.base_url = base_url.rstrip("/")
+        self.db_path = db_path
+
+    def url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+
+class RemoteFrogletProvider(_RemoteManagedEndpoint):
+    def __init__(self, *, base_url: str, temp_root: Path, data_dir: Path):
+        super().__init__(temp_root)
+        self.port = urlparse(base_url).port or 8080
+        self.base_url = base_url.rstrip("/")
+        self.data_dir = data_dir
+
+    def url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+
+class RemoteFrogletRuntime(_RemoteManagedEndpoint):
+    def __init__(self, *, runtime_url: str, temp_root: Path, data_dir: Path):
+        super().__init__(temp_root)
+        self.runtime_port = urlparse(runtime_url).port or 8081
+        self.runtime_url = runtime_url.rstrip("/")
+        self.data_dir = data_dir
+        self.runtime_auth_token_path = runtime_auth_token_path(data_dir)
+
+    def url(self, path: str) -> str:
+        return f"{self.runtime_url}{path}"
+
+
+class RemoteFrogletNode:
+    def __init__(self, provider: RemoteFrogletProvider, runtime: RemoteFrogletRuntime):
+        self.provider = provider
+        self.runtime = runtime
+        self.process = provider.process
+        self.log_path = provider.log_path
+        self.temp_root = provider.temp_root
+        self.port = provider.port
+        self.base_url = provider.base_url
+        self.runtime_port = runtime.runtime_port
+        self.runtime_url = runtime.runtime_url
+        self.data_dir = provider.data_dir
+
+    def url(self, path: str) -> str:
+        return self.provider.url(path)
+
+    def output(self) -> str:
+        return ""
+
+    async def stop(self) -> None:
+        await self.runtime.stop()
+        await self.provider.stop()
 
 
 @dataclass
@@ -703,6 +877,17 @@ async def _wait_for_lnd_payment_ready(
 
 
 async def start_discovery(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> DiscoveryServer:
+    if remote_stack_enabled():
+        base_url = remote_stack_url("FROGLET_TEST_DISCOVERY_URL")
+        temp_root = Path(tempfile.mkdtemp(prefix="froglet-remote-discovery-"))
+        server = RemoteDiscoveryServer(
+            base_url=base_url,
+            temp_root=temp_root,
+            db_path=remote_stack_data_root() / "discovery" / "discovery.db",
+        )
+        await wait_for_http(server.url("/health"))
+        return server
+
     ensure_binaries()
     requested_port = port
     port = port or 0
@@ -778,6 +963,14 @@ async def start_provider(
     data_dir: Optional[Path] = None,
     extra_env: Optional[dict[str, str]] = None,
 ) -> FrogletProvider:
+    if remote_stack_enabled() and not _requires_local_provider_start(extra_env):
+        base_url = remote_stack_url("FROGLET_TEST_PROVIDER_URL")
+        temp_root = Path(tempfile.mkdtemp(prefix="froglet-remote-provider-"))
+        data_dir = data_dir or remote_stack_data_root()
+        node = RemoteFrogletProvider(base_url=base_url, temp_root=temp_root, data_dir=data_dir)
+        await wait_for_http(node.url("/health"))
+        return node
+
     ensure_binaries()
     requested_port = port
     port = port or 0
@@ -856,6 +1049,14 @@ async def start_runtime(
     data_dir: Optional[Path] = None,
     extra_env: Optional[dict[str, str]] = None,
 ) -> FrogletRuntime:
+    if remote_stack_enabled() and not _requires_local_runtime_start(extra_env):
+        runtime_url = remote_stack_url("FROGLET_TEST_RUNTIME_URL")
+        temp_root = Path(tempfile.mkdtemp(prefix="froglet-remote-runtime-"))
+        data_dir = data_dir or remote_stack_data_root()
+        runtime = RemoteFrogletRuntime(runtime_url=runtime_url, temp_root=temp_root, data_dir=data_dir)
+        await wait_for_http(runtime.url("/health"))
+        return runtime
+
     ensure_binaries()
     requested_runtime_port = runtime_port
     runtime_port = runtime_port or 0
@@ -929,6 +1130,12 @@ async def start_node(**kwargs) -> FrogletNode:
     kwargs = dict(kwargs)
     extra_env = kwargs.pop("extra_env", None)
     data_dir = kwargs.pop("data_dir", None)
+    if remote_stack_enabled() and not _requires_local_provider_start(extra_env) and not _requires_local_runtime_start(extra_env):
+        data_dir = data_dir or remote_stack_data_root()
+        provider = await start_provider(data_dir=data_dir, extra_env=extra_env, **kwargs)
+        runtime = await start_runtime(data_dir=data_dir, extra_env=extra_env)
+        return RemoteFrogletNode(provider, runtime)
+
     shared_data_dir = data_dir or (Path(tempfile.mkdtemp(prefix="froglet-shared-node-")) / "data")
     provider = await start_provider(
         data_dir=shared_data_dir,
@@ -1087,20 +1294,19 @@ def canonical_event_id(event: dict) -> str:
 
 
 def canonical_event_id_bytes(event: dict) -> bytes:
-    return json.dumps(
+    return canonical_json_bytes(
         [
             event["pubkey"],
             event["created_at"],
             event["kind"],
             event["tags"],
             event["content"],
-        ],
-        separators=(",", ":"),
-    ).encode("utf-8")
+        ]
+    )
 
 
 def canonical_event_signing_bytes(event: dict) -> bytes:
-    return json.dumps(
+    return canonical_json_bytes(
         [
             event["id"],
             event["pubkey"],
@@ -1108,9 +1314,8 @@ def canonical_event_signing_bytes(event: dict) -> bytes:
             event["kind"],
             event["tags"],
             event["content"],
-        ],
-        separators=(",", ":"),
-    ).encode("utf-8")
+        ]
+    )
 
 
 def canonical_artifact_signing_bytes(artifact: dict) -> bytes:
@@ -1366,7 +1571,8 @@ def verify_signed_artifact(artifact: dict) -> bool:
 
 class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        await asyncio.to_thread(ensure_binaries)
+        if not remote_stack_enabled():
+            await asyncio.to_thread(ensure_binaries)
         asyncio.get_running_loop().slow_callback_duration = 1.0
 
     async def start_provider(self, **kwargs) -> FrogletProvider:

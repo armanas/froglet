@@ -47,14 +47,10 @@ coverage/
 /marketplace.db
 /marketplace.db-*
 /_tmp/
-/higher_layers/
 
-# Private higher-layer incubation
-private/**
-!private/
-!private/README.md
-!private/*/
-!private/*/.gitkeep
+# Canonical ignored staging root for extracted higher-layer surfaces
+/higher_layers/
+/private/
 
 # IDE and local tooling
 .idea/

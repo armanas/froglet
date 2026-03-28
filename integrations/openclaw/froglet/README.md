@@ -42,6 +42,7 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `get_local_service`
 - `create_project`
 - `list_projects`
+- `get_project`
 - `read_file`
 - `write_file`
 - `build_project`

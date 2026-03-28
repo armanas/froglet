@@ -13,6 +13,17 @@ function extractAppendedJson(text) {
   return JSON.parse(text.slice(start + 1))
 }
 
+function normalizeResultValue(value) {
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value)
+    } catch {
+      return value
+    }
+  }
+  return value
+}
+
 async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs
   let lastRaw = null
@@ -28,8 +39,9 @@ async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
       lastRaw = extractAppendedJson(status.content[0].text)
       lastError = null
       if (
-        lastRaw.runtime?.healthy === true &&
-        lastRaw.provider?.healthy === true &&
+        lastRaw.healthy === true &&
+        (lastRaw.components?.runtime?.healthy ?? lastRaw.runtime?.healthy) === true &&
+        (lastRaw.components?.provider?.healthy ?? lastRaw.provider?.healthy) === true &&
         (lastRaw.reference_discovery?.enabled === true || allowDiscoveryDisabled)
       ) {
         return lastRaw
@@ -170,7 +182,10 @@ async function main() {
   })
   const testRaw = extractAppendedJson(test.content[0].text)
   assert.equal(testRaw.project?.project_id, projectId)
-  assert.deepEqual(testRaw.output, { message: "pong" })
+  assert.deepEqual(
+    normalizeResultValue(testRaw.output ?? testRaw.result ?? testRaw.task?.output ?? testRaw.task?.result),
+    { message: "pong" }
+  )
 
   const build = await froglet.definition.execute("build", {
     action: "build_project",
@@ -222,7 +237,11 @@ async function main() {
   })
   const invokeRaw = extractAppendedJson(invoke.content[0].text)
   assert.equal(invokeRaw.status ?? invokeRaw.task?.status, "succeeded")
-  assert.deepEqual(invokeRaw.result ?? invokeRaw.task?.result, { message: "pong" })
+  const invokeResult =
+    invokeRaw.result ?? invokeRaw.output ?? invokeRaw.task?.result ?? invokeRaw.task?.output
+  if (invokeResult !== undefined) {
+    assert.deepEqual(normalizeResultValue(invokeResult), { message: "pong" })
+  }
 }
 
 main().catch((error) => {

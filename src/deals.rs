@@ -2,9 +2,12 @@ use crate::{
     canonical_json, crypto,
     protocol::{DealPayload, QuotePayload, ReceiptPayload, SignedArtifact, WorkloadSpec},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{
+    Connection, OptionalExtension, params,
+    types::{Type, ValueRef},
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub const DEAL_STATUS_ACCEPTED: &str = "accepted";
 pub const DEAL_STATUS_PAYMENT_PENDING: &str = "payment_pending";
@@ -74,6 +77,14 @@ pub struct StoredDeal {
     pub receipt: Option<SignedArtifact<ReceiptPayload>>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantinedDeal {
+    pub source_rowid: i64,
+    pub deal_id: Option<String>,
+    pub status: Option<String>,
+    pub reason: String,
 }
 
 impl StoredDeal {
@@ -931,68 +942,304 @@ pub fn list_recent_deals(conn: &Connection, limit: usize) -> Result<Vec<StoredDe
 }
 
 fn decode_deal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeal> {
-    let quote_json: String = row.get(2)?;
-    let quote_document_json: Option<String> = row.get(3)?;
+    decode_deal_row_with_offset(row, 0)
+}
+
+fn decode_deal_row_with_offset(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<StoredDeal> {
+    let quote_json: String = row.get(offset + 2)?;
+    let quote_document_json: Option<String> = row.get(offset + 3)?;
     let quote_source = quote_document_json.as_deref().unwrap_or(&quote_json);
     let quote = serde_json::from_str(quote_source).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
+        rusqlite::Error::FromSqlConversionFailure(offset + 2, Type::Text, Box::new(err))
     })?;
 
-    let spec_json: String = row.get(4)?;
-    let workload_evidence_json: Option<String> = row.get(5)?;
+    let spec_json: String = row.get(offset + 4)?;
+    let workload_evidence_json: Option<String> = row.get(offset + 5)?;
     let spec_source = workload_evidence_json.as_deref().unwrap_or(&spec_json);
     let spec = serde_json::from_str(spec_source).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(err))
+        rusqlite::Error::FromSqlConversionFailure(offset + 4, Type::Text, Box::new(err))
     })?;
 
-    let artifact_json: String = row.get(6)?;
-    let deal_document_json: Option<String> = row.get(7)?;
+    let artifact_json: String = row.get(offset + 6)?;
+    let deal_document_json: Option<String> = row.get(offset + 7)?;
     let artifact_source = deal_document_json.as_deref().unwrap_or(&artifact_json);
     let artifact = serde_json::from_str(artifact_source).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+        rusqlite::Error::FromSqlConversionFailure(offset + 6, Type::Text, Box::new(err))
     })?;
 
-    let result_json: Option<String> = row.get(9)?;
-    let result_evidence_json: Option<String> = row.get(10)?;
+    let result_json: Option<String> = row.get(offset + 9)?;
+    let result_evidence_json: Option<String> = row.get(offset + 10)?;
     let result_source = result_evidence_json.as_deref().or(result_json.as_deref());
     let result = match result_source {
         Some(json) => Some(serde_json::from_str(json).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(err))
+            rusqlite::Error::FromSqlConversionFailure(offset + 9, Type::Text, Box::new(err))
         })?),
         None => None,
     };
 
-    let receipt_json: Option<String> = row.get(16)?;
-    let receipt_document_json: Option<String> = row.get(17)?;
+    let receipt_json: Option<String> = row.get(offset + 16)?;
+    let receipt_document_json: Option<String> = row.get(offset + 17)?;
     let receipt_source = receipt_document_json.as_deref().or(receipt_json.as_deref());
     let receipt = match receipt_source {
         Some(json) => Some(serde_json::from_str(json).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                16,
-                rusqlite::types::Type::Text,
-                Box::new(err),
-            )
+            rusqlite::Error::FromSqlConversionFailure(offset + 16, Type::Text, Box::new(err))
         })?),
         None => None,
     };
 
-    let payment_amount_sats: Option<i64> = row.get(15)?;
+    let payment_amount_sats: Option<i64> = row.get(offset + 15)?;
 
     Ok(StoredDeal {
-        deal_id: row.get(0)?,
-        idempotency_key: row.get(1)?,
+        deal_id: row.get(offset)?,
+        idempotency_key: row.get(offset + 1)?,
         quote,
         spec,
         artifact,
-        status: row.get(8)?,
+        status: row.get(offset + 8)?,
         result,
-        result_hash: row.get(11)?,
-        error: row.get(12)?,
-        payment_method: row.get(13)?,
-        payment_token_hash: row.get(14)?,
+        result_hash: row.get(offset + 11)?,
+        error: row.get(offset + 12)?,
+        payment_method: row.get(offset + 13)?,
+        payment_token_hash: row.get(offset + 14)?,
         payment_amount_sats: payment_amount_sats.map(|value| value as u64),
         receipt,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
+        created_at: row.get(offset + 18)?,
+        updated_at: row.get(offset + 19)?,
     })
+}
+
+pub fn quarantine_invalid_deals(
+    conn: &Connection,
+    quarantined_at: i64,
+) -> Result<Vec<QuarantinedDeal>, String> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| e.to_string())?;
+
+    let result = (|| -> Result<Vec<QuarantinedDeal>, String> {
+        let quarantine_candidates = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        rowid,
+                        deal_id,
+                        idempotency_key,
+                        quote_json,
+                        (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
+                        spec_json,
+                        (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
+                        deal_artifact_json,
+                        (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
+                        status,
+                        result_json,
+                        (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
+                        result_hash,
+                        error,
+                        payment_method,
+                        payment_token_hash,
+                        payment_amount_sats,
+                        receipt_artifact_json,
+                        (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
+                        created_at,
+                        updated_at
+                     FROM deals NOT INDEXED
+                     ORDER BY rowid ASC",
+                )
+                .map_err(|e| e.to_string())?;
+
+            let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+            let mut candidates = Vec::new();
+
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                if let Err(error) = decode_deal_row_with_offset(row, 1) {
+                    let source_rowid: i64 = row.get(0).map_err(|e| e.to_string())?;
+                    let deal_id = row.get_ref(1).ok().and_then(optional_string_from_value_ref);
+                    let status = row.get_ref(9).ok().and_then(optional_string_from_value_ref);
+                    let reason = error.to_string();
+                    let snapshot_json = serde_json::to_string(&deal_row_snapshot(row))
+                        .map_err(|e| e.to_string())?;
+                    candidates.push((source_rowid, deal_id, status, reason, snapshot_json));
+                }
+            }
+
+            candidates
+        };
+
+        let mut quarantined = Vec::new();
+        for (source_rowid, deal_id, status, reason, snapshot_json) in quarantine_candidates {
+            conn.execute(
+                "INSERT INTO deal_quarantine (
+                    source_rowid,
+                    deal_id,
+                    status,
+                    reason,
+                    snapshot_json,
+                    quarantined_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    source_rowid,
+                    deal_id.as_deref(),
+                    status.as_deref(),
+                    &reason,
+                    &snapshot_json,
+                    quarantined_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM deals WHERE rowid = ?1", params![source_rowid])
+                .map_err(|e| e.to_string())?;
+
+            quarantined.push(QuarantinedDeal {
+                source_rowid,
+                deal_id,
+                status,
+                reason,
+            });
+        }
+
+        if !quarantined.is_empty() {
+            conn.execute_batch("REINDEX deals;")
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(quarantined)
+    })();
+
+    match result {
+        Ok(quarantined) => {
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            Ok(quarantined)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+fn optional_string_from_value_ref(value: ValueRef<'_>) -> Option<String> {
+    match value {
+        ValueRef::Null => None,
+        ValueRef::Integer(value) => Some(value.to_string()),
+        ValueRef::Real(value) => Some(value.to_string()),
+        ValueRef::Text(value) => Some(String::from_utf8_lossy(value).into_owned()),
+        ValueRef::Blob(_) => None,
+    }
+}
+
+fn value_ref_to_json(value: ValueRef<'_>) -> Value {
+    match value {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(value) => Value::from(value),
+        ValueRef::Real(value) => Value::from(value),
+        ValueRef::Text(value) => Value::String(String::from_utf8_lossy(value).into_owned()),
+        ValueRef::Blob(value) => Value::Array(
+            value
+                .iter()
+                .map(|byte| Value::from(u64::from(*byte)))
+                .collect(),
+        ),
+    }
+}
+
+fn deal_row_snapshot(row: &rusqlite::Row<'_>) -> Value {
+    let columns = [
+        "rowid",
+        "deal_id",
+        "idempotency_key",
+        "quote_json",
+        "quote_document_json",
+        "spec_json",
+        "workload_evidence_json",
+        "deal_artifact_json",
+        "deal_document_json",
+        "status",
+        "result_json",
+        "result_evidence_json",
+        "result_hash",
+        "error",
+        "payment_method",
+        "payment_token_hash",
+        "payment_amount_sats",
+        "receipt_artifact_json",
+        "receipt_document_json",
+        "created_at",
+        "updated_at",
+    ];
+    let mut snapshot = Map::new();
+
+    for (index, name) in columns.iter().enumerate() {
+        let value = row
+            .get_ref(index)
+            .map(value_ref_to_json)
+            .unwrap_or_else(|error| Value::String(error.to_string()));
+        snapshot.insert((*name).to_string(), value);
+    }
+
+    Value::Object(snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quarantine_invalid_deals_removes_unreadable_rows() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        conn.execute(
+            "INSERT INTO deals (
+                deal_id,
+                quote_id,
+                quote_hash,
+                offer_id,
+                service_id,
+                workload_hash,
+                spec_json,
+                quote_json,
+                deal_artifact_json,
+                status,
+                created_at,
+                updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                "invalid-deal",
+                "quote-id",
+                "quote-hash",
+                "offer-id",
+                "service-id",
+                "workload-hash",
+                "{\"schema_version\":\"froglet/v1\"}",
+                "{not-json",
+                "{\"artifact_type\":\"deal\"}",
+                DEAL_STATUS_RUNNING,
+                1_i64,
+                1_i64,
+            ],
+        )
+        .expect("seed invalid deal");
+
+        let quarantined = quarantine_invalid_deals(&conn, 123).expect("quarantine invalid deals");
+
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(quarantined[0].source_rowid, 1);
+        assert_eq!(quarantined[0].deal_id.as_deref(), Some("invalid-deal"));
+        assert_eq!(quarantined[0].status.as_deref(), Some(DEAL_STATUS_RUNNING));
+        assert!(
+            quarantined[0].reason.contains("expected ident") || !quarantined[0].reason.is_empty(),
+            "unexpected quarantine reason: {}",
+            quarantined[0].reason
+        );
+        let deals_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deals", [], |row| row.get(0))
+            .expect("remaining deal count");
+        let quarantine_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deal_quarantine", [], |row| row.get(0))
+            .expect("quarantine count");
+
+        assert_eq!(deals_count, 0);
+        assert_eq!(quarantine_count, 1);
+    }
 }

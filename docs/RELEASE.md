@@ -1,6 +1,6 @@
 # Release
 
-This repo now has a minimal tagged release path for the current Docker,
+This repo now has a minimal tagged release path for the current Froglet node,
 reference discovery, and OpenClaw alpha surface.
 
 ## Versioning
@@ -51,6 +51,6 @@ the release notes should call out:
 - official Docker starter
 - public OpenClaw integration
 - reference discovery
-- mock-Lightning local development path
-- any intentionally deferred layers, especially broker and closed higher-layer
+- v1 Lightning reference settlement path
+- any intentionally deferred layers, especially external broker and closed higher-layer
   services

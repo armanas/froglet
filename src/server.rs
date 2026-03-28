@@ -1,7 +1,7 @@
 use crate::{
     api,
     config::{NodeConfig, PaymentBackend},
-    discovery_client,
+    discovery_client, settlement,
     state::{self, AppState},
     tls, tor,
 };
@@ -110,6 +110,9 @@ async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>
     );
     set_mode(&node_config.storage.db_path, 0o600)?;
 
+    sanitize_persisted_deals(state.clone())
+        .await
+        .expect("Failed to sanitize persisted deal state");
     log_startup_db_metrics(state.clone(), &node_config.storage.db_path)
         .await
         .expect("Failed to collect SQLite startup metrics");
@@ -494,6 +497,34 @@ async fn log_startup_db_metrics(
         wal_checkpoint_duration_ms = metrics.duration_ms as u64,
         "SQLite WAL checkpoint metrics collected"
     );
+    Ok(())
+}
+
+async fn sanitize_persisted_deals(state: Arc<AppState>) -> Result<(), String> {
+    let quarantined = state
+        .db
+        .with_write_conn(move |conn| {
+            crate::deals::quarantine_invalid_deals(conn, settlement::current_unix_timestamp())
+        })
+        .await?;
+    if quarantined.is_empty() {
+        info!("No unreadable persisted deals detected at startup");
+        return Ok(());
+    }
+
+    warn!(
+        quarantined_deals = quarantined.len(),
+        "Unreadable persisted deals were quarantined at startup"
+    );
+    for deal in quarantined {
+        warn!(
+            source_rowid = deal.source_rowid,
+            deal_id = deal.deal_id.as_deref().unwrap_or("unknown"),
+            status = deal.status.as_deref().unwrap_or("unknown"),
+            reason = %deal.reason,
+            "quarantined unreadable persisted deal"
+        );
+    }
     Ok(())
 }
 

@@ -72,8 +72,18 @@ else
   echo "[strict] skipping Node integration checks: node is not installed"
 fi
 
-echo "[strict] python unittest with warnings as errors"
-python3 -W error -m unittest discover -s python/tests -t . -v
+echo "[strict] core python-backed runtime tests with warnings as errors"
+python3 -W error -m unittest \
+  python.tests.test_protocol \
+  python.tests.test_runtime \
+  python.tests.test_discovery \
+  python.tests.test_jobs \
+  python.tests.test_payments \
+  python.tests.test_sandbox \
+  python.tests.test_security \
+  python.tests.test_privacy \
+  python.tests.test_hardening \
+  python.tests.test_conformance_vectors -v
 
 if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then
   echo "[strict] tor integration"

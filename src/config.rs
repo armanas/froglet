@@ -495,8 +495,11 @@ impl NodeConfig {
             }),
         };
 
-        let data_dir =
-            PathBuf::from(env::var("FROGLET_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
+        let data_dir = PathBuf::from(
+            env::var("FROGLET_DATA_ROOT")
+                .or_else(|_| env::var("FROGLET_DATA_DIR"))
+                .unwrap_or_else(|_| "./data".to_string()),
+        );
         let host_readable_control_token = env_bool("FROGLET_HOST_READABLE_CONTROL_TOKEN", false)?;
         let identity_dir = data_dir.join("identity");
         let identity_seed_path = identity_dir.join("secp256k1.seed");
@@ -506,7 +509,9 @@ impl NodeConfig {
         let consumer_control_auth_token_path = runtime_dir.join("consumerctl.token");
         let provider_control_auth_token_path = runtime_dir.join("froglet-control.token");
         let tor_dir = data_dir.join("tor");
-        let db_path = data_dir.join("node.db");
+        let db_path = env::var("FROGLET_DB_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| data_dir.join("node.db"));
         let wasm_policy_path = env::var("FROGLET_WASM_POLICY_PATH").ok().map(PathBuf::from);
         let wasm_policy = match wasm_policy_path.as_ref() {
             Some(path) => Some(load_wasm_policy(path, &db_path)?),

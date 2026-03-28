@@ -285,6 +285,19 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
          CREATE INDEX IF NOT EXISTS idx_deal_settlement_materializations_updated_at
             ON deal_settlement_materializations (updated_at ASC);",
     )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS deal_quarantine (
+            quarantine_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_rowid INTEGER NOT NULL,
+            deal_id TEXT,
+            status TEXT,
+            reason TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            quarantined_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_deal_quarantine_quarantined_at
+            ON deal_quarantine (quarantined_at DESC);",
+    )?;
     apply_migration_once(conn, LEGACY_ARTIFACTS_MIGRATION, migrate_legacy_artifacts)?;
     Ok(())
 }

@@ -1,5 +1,10 @@
 import register from "../index.js"
 import { readFileSync } from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const testDir = fileURLToPath(new URL("./", import.meta.url))
+const repoRoot = path.resolve(testDir, "../../..")
 
 function loadFrogletTool() {
   const tools = new Map()
@@ -9,7 +14,7 @@ function loadFrogletTool() {
       baseUrl: process.env.FROGLET_BASE_URL ?? "http://127.0.0.1:9191",
       authTokenPath:
         process.env.FROGLET_AUTH_TOKEN_PATH ??
-        "/home/armanas/froglet-e2e/data/runtime/froglet-control.token",
+        path.resolve(repoRoot, "data/runtime/froglet-control.token"),
       requestTimeoutMs: Number.parseInt(process.env.FROGLET_REQUEST_TIMEOUT_MS ?? "15000", 10),
       defaultSearchLimit: Number.parseInt(
         process.env.FROGLET_DEFAULT_SEARCH_LIMIT ?? "10",
@@ -55,7 +60,42 @@ async function callResponses(body) {
   return json
 }
 
-async function runScenario(froglet, name, prompt, requiredActions = [], { injectBeforeExecute } = {}) {
+async function ensureFinalText(previousResponseId, prompt) {
+  const response = await callResponses({
+    model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+    previous_response_id: previousResponseId,
+    input: prompt,
+    max_output_tokens: 300
+  })
+  return {
+    responseId: response.id,
+    finalText: response.output_text ?? ""
+  }
+}
+
+function assertScenarioOutcome(name, { finalText, toolOutputs }, requiredResultCheck) {
+  if (toolOutputs.some((output) => output.startsWith("ERROR:"))) {
+    throw new Error(
+      `scenario ${name} encountered tool errors: ${JSON.stringify(toolOutputs)}`
+    )
+  }
+
+  if (finalText.trim().length === 0) {
+    throw new Error(`scenario ${name} produced an empty final response`)
+  }
+
+  if (typeof requiredResultCheck === "function") {
+    requiredResultCheck({ finalText, toolOutputs })
+  }
+}
+
+async function runScenario(
+  froglet,
+  name,
+  prompt,
+  requiredActions = [],
+  { injectBeforeExecute, requiredResultCheck } = {}
+) {
   const toolCalls = []
   const toolOutputs = []
   let previousResponseId = null
@@ -83,6 +123,15 @@ async function runScenario(froglet, name, prompt, requiredActions = [], { inject
     previousResponseId = response.id
     const calls = (response.output ?? []).filter((item) => item.type === "function_call")
     if (calls.length === 0) {
+      let finalText = response.output_text ?? ""
+      if (finalText.trim().length === 0) {
+        const finalized = await ensureFinalText(
+          previousResponseId,
+          "The required tool work is complete. Reply now with the requested final answer in plain text only."
+        )
+        previousResponseId = finalized.responseId
+        finalText = finalized.finalText
+      }
       const actions = new Set(toolCalls.map((call) => call.action).filter(Boolean))
       for (const action of requiredActions) {
         if (!actions.has(action)) {
@@ -91,12 +140,16 @@ async function runScenario(froglet, name, prompt, requiredActions = [], { inject
           )
         }
       }
+      assertScenarioOutcome(name, {
+        finalText,
+        toolOutputs
+      }, requiredResultCheck)
       return {
         name,
-        response_id: response.id,
+        response_id: previousResponseId,
         tool_calls: toolCalls,
         tool_outputs: toolOutputs,
-        final_text: response.output_text ?? ""
+        final_text: finalText
       }
     }
 
@@ -154,16 +207,25 @@ async function main() {
     {
       name: "status_create_publish_discover_invoke",
       prompt:
-        `Use the froglet tool to inspect status, create a free active service named oa-smoke-ping-${suffix} ` +
-        `that returns {"message":"pong"}, list local services, discover services, and invoke the new service. ` +
-        `Return the service_id and final invocation result.`,
+      `Use the froglet tool to inspect status, create a free active service named oa-smoke-ping-${suffix} ` +
+      `that returns {"message":"pong"}, list local services, discover services, and invoke the new service. ` +
+      `Return the service_id and final invocation result.`,
       requiredActions: [
         "status",
         "create_project",
         "list_local_services",
         "discover_services",
         "invoke_service"
-      ]
+      ],
+      requiredResultCheck({ finalText, toolOutputs }) {
+        const combined = `${finalText}\n${toolOutputs.join("\n")}`
+        if (!/service_id/i.test(combined)) {
+          throw new Error("scenario status_create_publish_discover_invoke did not report a service_id")
+        }
+        if (!combined.includes("pong")) {
+          throw new Error("scenario status_create_publish_discover_invoke did not include the invocation result")
+        }
+      }
     },
     {
       name: "project_and_service_details",
@@ -179,6 +241,12 @@ async function main() {
         'runtime "wasm", and package_kind "inline_module". Do NOT supply wasm_module_hex — the harness ' +
         "will inject it. Return the compute result.",
       requiredActions: ["run_compute"],
+      requiredResultCheck({ finalText, toolOutputs }) {
+        const combined = `${finalText}\n${toolOutputs.join("\n")}`
+        if (!combined.includes("42")) {
+          throw new Error("scenario direct_compute_wasm did not include the compute result")
+        }
+      },
       injectBeforeExecute(args) {
         if (!args.wasm_module_hex) {
           args.wasm_module_hex = validWasmHex
@@ -190,7 +258,13 @@ async function main() {
       prompt:
         `Use the froglet tool to invoke a definitely missing service id missing-service-${suffix}. ` +
         "Return the exact error you get.",
-      requiredActions: ["invoke_service"]
+      requiredActions: ["invoke_service"],
+      requiredResultCheck({ finalText, toolOutputs }) {
+        const combined = `${finalText}\n${toolOutputs.join("\n")}`
+        if (!/missing-service-|not found|error/i.test(combined)) {
+          throw new Error("scenario expected_missing_service_error did not surface the missing-service failure")
+        }
+      }
     }
   ]
 
@@ -198,7 +272,8 @@ async function main() {
   for (const scenario of scenarios) {
     results.push(
       await runScenario(froglet, scenario.name, scenario.prompt, scenario.requiredActions, {
-        injectBeforeExecute: scenario.injectBeforeExecute
+        injectBeforeExecute: scenario.injectBeforeExecute,
+        requiredResultCheck: scenario.requiredResultCheck
       })
     )
   }

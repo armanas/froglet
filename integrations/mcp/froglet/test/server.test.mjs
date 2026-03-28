@@ -36,21 +36,11 @@ after(async () => {
 })
 
 describe("tool definitions", () => {
-  it("returns 9 tools", () => {
+  it("returns a single froglet tool", () => {
     const tools = buildToolDefinitions(config)
-    assert.equal(tools.length, 9)
+    assert.equal(tools.length, 1)
     const names = tools.map((t) => t.name)
-    assert.deepEqual(names, [
-      "froglet_status",
-      "froglet_logs",
-      "froglet_discover",
-      "froglet_get_service",
-      "froglet_invoke",
-      "froglet_local_services",
-      "froglet_project",
-      "froglet_task",
-      "froglet_compute"
-    ])
+    assert.deepEqual(names, ["froglet"])
   })
 
   it("each tool has name, description, and inputSchema", () => {
@@ -64,16 +54,20 @@ describe("tool definitions", () => {
   })
 })
 
-describe("froglet_status", () => {
+describe("froglet status action", () => {
   it("returns formatted status text", async () => {
     const restore = mockFetch(async (url, opts) => {
       assert.ok(url.endsWith("/v1/froglet/status"))
       assert.equal(opts.headers.Authorization, "Bearer test-token-abc")
       return new Response(
         JSON.stringify({
+          service: "froglet",
+          healthy: true,
           node_id: "node-1",
-          runtime: { healthy: true },
-          provider: { healthy: true },
+          components: {
+            runtime: { healthy: true },
+            provider: { healthy: true }
+          },
           discovery: { mode: "reference" },
           reference_discovery: { enabled: true, connected: true, url: "http://disc.example" },
           projects_root: "/tmp/projects",
@@ -82,9 +76,11 @@ describe("froglet_status", () => {
       )
     })
     try {
-      const result = await handleToolCall("froglet_status", {}, config)
+      const result = await handleToolCall("froglet", { action: "status" }, config)
       assert.equal(result.content.length, 1)
       assert.equal(result.content[0].type, "text")
+      assert.ok(result.content[0].text.includes("service: froglet"))
+      assert.ok(result.content[0].text.includes("healthy: true"))
       assert.ok(result.content[0].text.includes("node_id: node-1"))
       assert.ok(result.content[0].text.includes("runtime_healthy: true"))
       assert.equal(result.isError, undefined)
@@ -94,7 +90,7 @@ describe("froglet_status", () => {
   })
 })
 
-describe("froglet_discover", () => {
+describe("froglet discover_services action", () => {
   it("sends correct request and formats services", async () => {
     let capturedBody
     const restore = mockFetch(async (url, opts) => {
@@ -118,8 +114,8 @@ describe("froglet_discover", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_discover",
-        { query: "test", limit: 5 },
+        "froglet",
+        { action: "discover_services", query: "test", limit: 5 },
         config
       )
       assert.equal(capturedBody.query, "test")
@@ -132,7 +128,7 @@ describe("froglet_discover", () => {
   })
 })
 
-describe("froglet_invoke", () => {
+describe("froglet invoke_service action", () => {
   it("returns sync result", async () => {
     const restore = mockFetch(async (url, opts) => {
       assert.ok(url.endsWith("/v1/froglet/services/invoke"))
@@ -145,8 +141,8 @@ describe("froglet_invoke", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_invoke",
-        { service_id: "svc-1", input: { text: "hello" } },
+        "froglet",
+        { action: "invoke_service", service_id: "svc-1", input: { text: "hello" } },
         config
       )
       assert.ok(result.content[0].text.includes('result: "world"'))
@@ -167,19 +163,19 @@ describe("froglet_invoke", () => {
     )
     try {
       const result = await handleToolCall(
-        "froglet_invoke",
-        { service_id: "svc-1" },
+        "froglet",
+        { action: "invoke_service", service_id: "svc-1" },
         config
       )
       assert.ok(result.content[0].text.includes("task_id: task-1"))
-      assert.ok(result.content[0].text.includes("froglet_task"))
+      assert.ok(result.content[0].text.includes("action=wait_task"))
     } finally {
       restore()
     }
   })
 })
 
-describe("froglet_local_services", () => {
+describe("froglet local service actions", () => {
   it("lists all local services when no service_id", async () => {
     const restore = mockFetch(async (url) => {
       assert.ok(url.endsWith("/v1/froglet/services/local"))
@@ -193,7 +189,7 @@ describe("froglet_local_services", () => {
       )
     })
     try {
-      const result = await handleToolCall("froglet_local_services", {}, config)
+      const result = await handleToolCall("froglet", { action: "list_local_services" }, config)
       assert.ok(result.content[0].text.includes("services: 2"))
       assert.ok(result.content[0].text.includes("service_id: local-1"))
       assert.ok(result.content[0].text.includes("service_id: local-2"))
@@ -213,8 +209,8 @@ describe("froglet_local_services", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_local_services",
-        { service_id: "local-1" },
+        "froglet",
+        { action: "get_local_service", service_id: "local-1" },
         config
       )
       assert.ok(result.content[0].text.includes("service_id: local-1"))
@@ -225,7 +221,7 @@ describe("froglet_local_services", () => {
   })
 })
 
-describe("froglet_project", () => {
+describe("froglet project actions", () => {
   it("lists projects", async () => {
     const restore = mockFetch(async (url) => {
       assert.ok(url.endsWith("/v1/froglet/projects"))
@@ -237,8 +233,8 @@ describe("froglet_project", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_project",
-        { action: "list" },
+        "froglet",
+        { action: "list_projects" },
         config
       )
       assert.ok(result.content[0].text.includes("projects: 1"))
@@ -271,9 +267,9 @@ describe("froglet_project", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_project",
+        "froglet",
         {
-          action: "create",
+          action: "create_project",
           name: "ping",
           result_json: "pong",
           price_sats: 0,
@@ -307,8 +303,8 @@ describe("froglet_project", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_project",
-        { action: "create", name: "my-proj" },
+        "froglet",
+        { action: "create_project", name: "my-proj" },
         config
       )
       assert.equal(callCount, 1)
@@ -320,17 +316,13 @@ describe("froglet_project", () => {
   })
 
   it("rejects unknown action", async () => {
-    const result = await handleToolCall(
-      "froglet_project",
-      { action: "explode" },
-      config
-    )
+    const result = await handleToolCall("froglet", { action: "explode" }, config)
     assert.equal(result.isError, true)
-    assert.ok(result.content[0].text.includes("Unknown project action"))
+    assert.ok(result.content[0].text.includes("Unknown Froglet action"))
   })
 })
 
-describe("froglet_task", () => {
+describe("froglet task actions", () => {
   it("gets task status without wait", async () => {
     const restore = mockFetch(async (url, opts) => {
       assert.ok(url.includes("/v1/froglet/tasks/task-1"))
@@ -343,8 +335,8 @@ describe("froglet_task", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_task",
-        { task_id: "task-1" },
+        "froglet",
+        { action: "get_task", task_id: "task-1" },
         config
       )
       assert.ok(result.content[0].text.includes("task_id: task-1"))
@@ -368,8 +360,8 @@ describe("froglet_task", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_task",
-        { task_id: "task-2", wait: true, timeout_secs: 30 },
+        "froglet",
+        { action: "wait_task", task_id: "task-2", timeout_secs: 30 },
         config
       )
       assert.ok(result.content[0].text.includes("status: succeeded"))
@@ -379,7 +371,7 @@ describe("froglet_task", () => {
   })
 })
 
-describe("froglet_compute", () => {
+describe("froglet run_compute action", () => {
   it("sends inline Wasm compute requests", async () => {
     const restore = mockFetch(async (url, opts) => {
       assert.ok(url.endsWith("/v1/froglet/compute/run"))
@@ -397,8 +389,9 @@ describe("froglet_compute", () => {
     })
     try {
       const result = await handleToolCall(
-        "froglet_compute",
+        "froglet",
         {
+          action: "run_compute",
           runtime: "wasm",
           package_kind: "inline_module",
           contract_version: "froglet.wasm.run_json.v1",
@@ -427,7 +420,7 @@ describe("error handling", () => {
       throw new Error("connection refused")
     })
     try {
-      const result = await handleToolCall("froglet_status", {}, config)
+      const result = await handleToolCall("froglet", { action: "status" }, config)
       assert.equal(result.isError, true)
       assert.ok(result.content[0].text.includes("connection refused"))
     } finally {
@@ -440,7 +433,7 @@ describe("error handling", () => {
       new Response(JSON.stringify({ error: "not found" }), { status: 404 })
     )
     try {
-      const result = await handleToolCall("froglet_status", {}, config)
+      const result = await handleToolCall("froglet", { action: "status" }, config)
       assert.equal(result.isError, true)
       assert.ok(result.content[0].text.includes("failed with 404"))
     } finally {

@@ -15,9 +15,9 @@ The format follows Keep a Changelog and the release line currently targets the
 - `OciWasmSubmission` and `OciWasmWorkload` structs in `src/wasm.rs`
 - `oci-registry-client` dependency for OCI manifest and blob fetching
 - OCI Wasm deal execution path with digest verification and sandbox execution
-- official Docker assets for `froglet` and `marketplace`, including a starter
+- official Docker assets for the Froglet node, including a starter
   `compose.yaml`
-- public OpenClaw plugin with marketplace discovery and provider-surface tools
+- public OpenClaw plugin with Froglet discovery and provider-surface tools
 - checked-in OpenClaw starter config example
 - GitHub Actions CI for strict checks and Docker starter validation
 - GitHub Actions release workflow for tagged GHCR image publication

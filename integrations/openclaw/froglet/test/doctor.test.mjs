@@ -76,9 +76,15 @@ test("doctor can run a live status probe", async () => {
       res.writeHead(200, { "content-type": "application/json" })
       res.end(
         JSON.stringify({
+          service: "froglet",
+          healthy: true,
           node_id: "node-1",
-          runtime: { healthy: true },
-          provider: { healthy: true }
+          components: {
+            runtime: { healthy: true },
+            provider: { healthy: true }
+          },
+          discovery: { mode: "none" },
+          reference_discovery: { enabled: false, publish_enabled: false, connected: false }
         })
       )
       return

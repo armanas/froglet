@@ -74,6 +74,20 @@ async function callResponses(body) {
   return json
 }
 
+async function ensureFinalAssessment(previousResponseId) {
+  const response = await callResponses({
+    model: MODEL,
+    previous_response_id: previousResponseId,
+    input:
+      "The exploratory session is complete. Provide the structured final assessment now, including severity for each anomaly or explicitly state that no anomalies were found.",
+    max_output_tokens: 700,
+  })
+  return {
+    responseId: response.id,
+    finalText: response.output_text ?? "",
+  }
+}
+
 async function runExploratorySession(froglet) {
   const toolCalls = []
   const anomalies = []
@@ -122,7 +136,12 @@ Start by checking status, then systematically explore each action.`
     const calls = (response.output ?? []).filter((item) => item.type === "function_call")
     if (calls.length === 0) {
       // Model is done — extract final assessment
-      const finalText = response.output_text ?? ""
+      let finalText = response.output_text ?? ""
+      if (finalText.trim().length === 0) {
+        const finalized = await ensureFinalAssessment(previousResponseId)
+        previousResponseId = finalized.responseId
+        finalText = finalized.finalText
+      }
 
       // Parse anomalies from the model's response
       const severityPattern = /(?:severity|level):\s*(critical|high|medium|low|info)/gi
@@ -133,6 +152,13 @@ Start by checking status, then systematically explore each action.`
         anomalies.push({
           severity: match[1].toLowerCase(),
           context: finalText.slice(contextStart, contextEnd).trim(),
+        })
+      }
+
+      if (finalText.trim().length === 0) {
+        anomalies.push({
+          severity: "high",
+          context: "model returned an empty final assessment",
         })
       }
 
@@ -164,6 +190,10 @@ Start by checking status, then systematically explore each action.`
         })
       } catch (error) {
         const output = `ERROR: ${error.message}`
+        anomalies.push({
+          severity: "high",
+          context: `tool call failed: ${call.name} ${JSON.stringify(args)} -> ${error.message}`,
+        })
         outputs.push({
           type: "function_call_output",
           call_id: call.call_id,
@@ -177,7 +207,10 @@ Start by checking status, then systematically explore each action.`
   return {
     scenarios_explored: toolCalls.length,
     tool_calls: toolCalls,
-    anomalies: [{ severity: "info", context: "Reached maximum step limit" }],
+    anomalies: [
+      ...anomalies,
+      { severity: "info", context: "Reached maximum step limit" },
+    ],
     model_assessment: "Session ended due to step limit.",
   }
 }

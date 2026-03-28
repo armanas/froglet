@@ -5,6 +5,7 @@ Runs against process-local binaries (like other python/tests/).
 """
 
 import asyncio
+import io
 import json
 import os
 import unittest
@@ -83,7 +84,7 @@ class FuzzApiTests(FrogletAsyncTestCase):
                     async with session.request(
                         method,
                         f"{node_url}{path}",
-                        data=body,
+                        data=io.BytesIO(body),
                         headers={"Content-Type": "application/octet-stream"},
                         timeout=aiohttp.ClientTimeout(total=10),
                     ) as resp:
@@ -203,7 +204,7 @@ class FuzzApiTests(FrogletAsyncTestCase):
                 try:
                     async with session.post(
                         node.url("/v1/node/events/publish"),
-                        data=body,
+                        data=io.BytesIO(body),
                         headers={"Content-Type": "application/json"},
                         timeout=aiohttp.ClientTimeout(total=30),
                     ) as resp:

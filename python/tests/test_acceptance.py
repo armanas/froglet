@@ -15,11 +15,15 @@ from test_support import (
     VALID_WASM_HEX,
     build_wasm_request,
     build_wasm_submission,
+    bearer_auth_headers,
     create_signed_event,
     create_protocol_quote,
     create_protocol_deal,
     default_success_payment_hash,
     generate_schnorr_signing_key,
+    provider_control_auth_token_path,
+    remote_stack_enabled,
+    remote_stack_url,
     schnorr_pubkey_hex,
     start_discovery,
     workload_hash_from_submission,
@@ -90,7 +94,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
 
         self.assertLess(elapsed, 5.0, f"WASM compute took {elapsed:.2f}s (SLA: 5s)")
         if resp.status == 200:
-            self.assertIn("output", result)
+            self.assertIn("result", result)
 
     # -----------------------------------------------------------------------
     # UAT-3: Priced service enforces the quote → deal payment path
@@ -98,13 +102,47 @@ class AcceptanceTests(FrogletAsyncTestCase):
     async def test_uat3_priced_service_requires_protocol_deal(self) -> None:
         """When a service has a price, a raw invoke returns 409 with the
         correct quote_path and deal_path, and a proper quote can be obtained."""
+        provider_extra_env = {
+            "FROGLET_PRICE_EXEC_WASM": "10",
+            "FROGLET_PAYMENT_BACKEND": "lightning",
+            "FROGLET_LIGHTNING_MODE": "mock",
+        }
         provider = await self.start_provider(
-            extra_env={
-                "FROGLET_PRICE_EXEC_WASM": "10",
-                "FROGLET_PAYMENT_BACKEND": "lightning",
-                "FROGLET_LIGHTNING_MODE": "mock",
-            }
+            extra_env=None if remote_stack_enabled() else provider_extra_env
         )
+        remote_provider_url = remote_stack_url("FROGLET_TEST_PROVIDER_URL") if remote_stack_enabled() else None
+        if remote_provider_url and provider.base_url == remote_provider_url:
+            operator_url = remote_stack_url("FROGLET_TEST_OPERATOR_URL")
+            priced_service_id = f"uat-priced-compute-{int(time.time() * 1000)}"
+            payload = {
+                "service_id": "execute.compute",
+                "offer_id": "execute.compute",
+                "summary": f"UAT-3 priced compute ({priced_service_id})",
+                "price_sats": 10,
+                "publication_state": "active",
+                "runtime": "wasm",
+                "package_kind": "inline_module",
+                "entrypoint_kind": "handler",
+                "entrypoint": "run",
+                "contract_version": "froglet.wasm.run_json.v1",
+                "wasm_module_hex": VALID_WASM_HEX,
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{operator_url}/v1/froglet/artifacts/publish",
+                    headers=bearer_auth_headers(
+                        provider_control_auth_token_path(provider.data_dir),
+                    ),
+                    json=payload,
+                ) as resp:
+                    self.assertEqual(resp.status, 201)
+                    published = await resp.json()
+            published_service_id = (
+                published.get("service", {}).get("service_id")
+                or published.get("evidence", {}).get("service_id")
+                or published.get("project", {}).get("service_id")
+            )
+            self.assertEqual(published_service_id, "execute.compute")
 
         request = build_wasm_request(VALID_WASM_HEX)
 
@@ -170,7 +208,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
         if resp.status == 200:
             self.assertIn(result.get("status", ""), ("failed", "error"))
         else:
-            self.assertIn(resp.status, (400, 422, 500))
+            self.assertIn(resp.status, (400, 422))
 
         # Provider still healthy
         async with aiohttp.ClientSession() as session:

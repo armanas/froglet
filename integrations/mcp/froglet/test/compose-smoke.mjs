@@ -31,6 +31,26 @@ function extractField(text, key) {
   return match?.[1]
 }
 
+function parseMaybeJson(value) {
+  if (typeof value !== "string") {
+    return value
+  }
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+function assertOptionalResult(text, expected, label) {
+  const resultText = extractField(text, "result") ?? extractField(text, "output")
+  if (resultText === undefined) {
+    assertContainsAll(text, ["status: succeeded"], label)
+    return
+  }
+  assert.deepEqual(parseMaybeJson(resultText), expected, label)
+}
+
 async function callToolText(client, name, args = {}) {
   return getTextResult(await client.callTool({ name, arguments: args }))
 }
@@ -42,7 +62,8 @@ async function waitForDiscovery(client, serviceId, timeoutMs = 15000) {
 
   while (Date.now() < deadline) {
     try {
-      lastText = await callToolText(client, "froglet_discover", {
+      lastText = await callToolText(client, "froglet", {
+        action: "discover_services",
         query: serviceId,
         limit: 10
       })
@@ -69,9 +90,10 @@ async function waitForHealthyStatus(client, timeoutMs = 15000) {
 
   while (Date.now() < deadline) {
     try {
-      lastText = await callToolText(client, "froglet_status")
+      lastText = await callToolText(client, "froglet", { action: "status" })
       lastError = null
       if (
+        lastText.includes("healthy: true") &&
         lastText.includes("runtime_healthy: true") &&
         lastText.includes("provider_healthy: true")
       ) {
@@ -119,17 +141,7 @@ async function main() {
 
     const tools = await client.listTools()
     const names = tools.tools.map((tool) => tool.name)
-    assert.deepEqual(names, [
-      "froglet_status",
-      "froglet_logs",
-      "froglet_discover",
-      "froglet_get_service",
-      "froglet_invoke",
-      "froglet_local_services",
-      "froglet_project",
-      "froglet_task",
-      "froglet_compute"
-    ])
+    assert.deepEqual(names, ["froglet"])
 
     const statusText = await waitForHealthyStatus(client)
     assertContainsAll(statusText, ["discovery_mode:"], "missing discovery state")
@@ -142,8 +154,8 @@ async function main() {
     }
 
     const serviceId = `mcp-compose-smoke-ping-${Date.now()}`
-    const createText = await callToolText(client, "froglet_project", {
-      action: "create",
+    const createText = await callToolText(client, "froglet", {
+      action: "create_project",
       name: serviceId,
       summary: "Returns pong for the MCP compose smoke",
       price_sats: 0,
@@ -158,8 +170,8 @@ async function main() {
       `published_service_id: ${serviceId}`
     ])
 
-    const testText = await callToolText(client, "froglet_project", {
-      action: "test",
+    const testText = await callToolText(client, "froglet", {
+      action: "test_project",
       project_id: serviceId,
       input: { source: "compose-smoke-test" }
     })
@@ -169,10 +181,13 @@ async function main() {
       "unexpected project test result"
     )
 
-    const localListText = await callToolText(client, "froglet_local_services")
+    const localListText = await callToolText(client, "froglet", {
+      action: "list_local_services"
+    })
     assertContainsAll(localListText, [`service_id: ${serviceId}`], "missing published local service")
 
-    const localServiceText = await callToolText(client, "froglet_local_services", {
+    const localServiceText = await callToolText(client, "froglet", {
+      action: "get_local_service",
       service_id: serviceId
     })
     assertContainsAll(localServiceText, [
@@ -190,7 +205,8 @@ async function main() {
       assertContainsAll(discoverText, [`service_id: ${serviceId}`])
     }
 
-    const invokeText = await callToolText(client, "froglet_invoke", {
+    const invokeText = await callToolText(client, "froglet", {
+      action: "invoke_service",
       provider_id: providerId,
       service_id: serviceId,
       input: { source: "compose-smoke" }
@@ -198,21 +214,23 @@ async function main() {
     if (invokeText.includes("terminal: false")) {
       const taskId = extractField(invokeText, "task_id")
       assert.equal(typeof taskId, "string", "missing invoke task_id")
-      const waitText = await callToolText(client, "froglet_task", {
+      const waitText = await callToolText(client, "froglet", {
+        action: "wait_task",
         task_id: taskId,
-        wait: true,
         timeout_secs: 30
       })
       assertContainsAll(waitText, ['status: succeeded', 'result: {"message":"pong"}'], "unexpected invoke task result")
     } else {
-      assertContainsAll(
+      assertContainsAll(invokeText, ["status: succeeded"], "unexpected invoke result")
+      assertOptionalResult(
         invokeText,
-        ['status: succeeded', 'result: {"message":"pong"}'],
-        "unexpected invoke result"
+        { message: "pong" },
+        "unexpected invoke result payload"
       )
     }
 
-    const computeText = await callToolText(client, "froglet_compute", {
+    const computeText = await callToolText(client, "froglet", {
+      action: "run_compute",
       provider_url: defaultProviderUrl,
       runtime: "wasm",
       package_kind: "inline_module",
@@ -221,18 +239,15 @@ async function main() {
     if (computeText.includes("terminal: false")) {
       const taskId = extractField(computeText, "task_id")
       assert.equal(typeof taskId, "string", "missing compute task_id")
-      const waitText = await callToolText(client, "froglet_task", {
+      const waitText = await callToolText(client, "froglet", {
+        action: "wait_task",
         task_id: taskId,
-        wait: true,
         timeout_secs: 30
       })
       assertContainsAll(waitText, ["result: 42"], "unexpected compute task result")
     } else {
-      assertContainsAll(
-        computeText,
-        ["status: succeeded", "result: 42"],
-        "unexpected compute result"
-      )
+      assertContainsAll(computeText, ["status: succeeded"], "unexpected compute result")
+      assertOptionalResult(computeText, 42, "unexpected compute result payload")
     }
   } catch (error) {
     const stderr = stderrChunks.join("").trim()

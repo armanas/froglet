@@ -51,16 +51,10 @@ FROGLET_LIGHTNING_MODE=mock \
 cargo run --bin froglet-provider
 ```
 
-## Python Helpers
+## Client Helpers
 
-[../python/froglet_client.py](../python/froglet_client.py) exposes the low-level confidential helpers:
-
-- `ProviderClient.confidential_profile(...)`
-- `ProviderClient.open_confidential_session(...)`
-- `ProviderClient.confidential_session(...)`
-- `generate_confidential_keypair()`
-- `encrypt_confidential_payload(...)`
-- `decrypt_confidential_envelope(...)`
-- `verify_confidential_session_bundle(...)`
-
-These are low-level confidential building blocks. They do not change the supported requester-runtime topology.
+Confidential helpers above the raw provider routes are intentionally treated as
+client- or SDK-level surfaces rather than part of the core Froglet node
+contract. The stable core interfaces are the provider confidential routes and
+the signed artifacts described above. External SDKs may wrap those primitives,
+but they should not redefine the requester-runtime topology.

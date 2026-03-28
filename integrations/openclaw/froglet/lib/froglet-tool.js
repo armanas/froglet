@@ -62,6 +62,7 @@ export function registerFrogletTool(api, config) {
               "get_local_service",
               "create_project",
               "list_projects",
+              "get_project",
               "read_file",
               "write_file",
               "build_project",
@@ -145,7 +146,7 @@ export function registerFrogletTool(api, config) {
               "Use active only when the request also includes starter, result_json, or inline_source, or when a built project is already ready to publish. Blank projects should remain hidden."
           },
           mode: { type: "string", enum: ["sync", "async"] },
-          target: { type: "string", enum: ["runtime", "provider", "all"] },
+          target: { type: "string", enum: ["node", "runtime", "provider", "all"] },
           lines: { type: "integer", minimum: 1, maximum: 500 },
           provider_id: {
             type: "string",
@@ -180,10 +181,13 @@ export function registerFrogletTool(api, config) {
         switch (args.action) {
           case "status": {
             const response = await frogletStatus(clientContext)
+            const runtimeHealthy = response.components?.runtime?.healthy ?? response.runtime?.healthy
+            const providerHealthy =
+              response.components?.provider?.healthy ?? response.provider?.healthy
             const lines = [
+              `service: ${response.service ?? "froglet"}`,
+              `healthy: ${response.healthy === true}`,
               `node_id: ${response.node_id ?? "unknown"}`,
-              `runtime_healthy: ${response.runtime?.healthy === true}`,
-              `provider_healthy: ${response.provider?.healthy === true}`,
               `discovery_mode: ${response.discovery?.mode ?? "unknown"}`,
               `reference_discovery_enabled: ${response.reference_discovery?.enabled === true}`,
               `reference_discovery_publish_enabled: ${response.reference_discovery?.publish_enabled === true}`,
@@ -191,7 +195,10 @@ export function registerFrogletTool(api, config) {
               `reference_discovery_url: ${response.reference_discovery?.url ?? "none"}`,
               `reference_discovery_last_error: ${response.reference_discovery?.last_error ?? "none"}`,
               `projects_root: ${response.projects_root ?? "unknown"}`,
-              `compute_offer_id: ${response.raw_compute_offer_id ?? "execute.compute"}`
+              `compute_offer_id: ${response.raw_compute_offer_id ?? "execute.compute"}`,
+              "",
+              `runtime_healthy: ${runtimeHealthy === true}`,
+              `provider_healthy: ${providerHealthy === true}`
             ]
             return toolTextResult(appendRaw(lines, response, includeRaw).join("\n"))
           }
@@ -202,11 +209,16 @@ export function registerFrogletTool(api, config) {
               lines: args.lines
             })
             const logs = Array.isArray(response.logs) ? response.logs : []
+            const components = logs
+              .map((entry) => entry.component ?? entry.target)
+              .filter((value) => typeof value === "string" && value.length > 0)
             const lines = [
-              `targets: ${logs.map((entry) => entry.target).join(", ") || "none"}`,
+              `service: ${response.service ?? "froglet"}`,
+              `scope: ${response.scope ?? "node"}`,
+              `components: ${components.join(", ") || "none"}`,
               "",
               ...logs.flatMap((entry) => [
-                `${entry.target}:`,
+                `${entry.component ?? entry.target ?? "unknown"}:`,
                 ...(Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines : ["no lines"]),
                 ""
               ])
@@ -219,12 +231,17 @@ export function registerFrogletTool(api, config) {
               target: args.target
             })
             const results = Array.isArray(response.results) ? response.results : []
-            const lines = results.flatMap((entry) => [
-              `${entry.target}: ${entry.status ?? "unknown"}`,
-              `stdout_preview: ${entry.stdout_preview ?? "none"}`,
-              `stderr_preview: ${entry.stderr_preview ?? "none"}`,
-              ""
-            ])
+            const lines = [
+              `service: ${response.service ?? "froglet"}`,
+              `scope: ${response.scope ?? "node"}`,
+              "",
+              ...results.flatMap((entry) => [
+                `${entry.component ?? entry.target ?? "unknown"}: ${entry.status ?? "unknown"}`,
+                `stdout_preview: ${entry.stdout_preview ?? "none"}`,
+                `stderr_preview: ${entry.stderr_preview ?? "none"}`,
+                ""
+              ])
+            ]
             return toolTextResult(appendRaw(lines, response, includeRaw).join("\n"))
           }
           case "list_projects": {

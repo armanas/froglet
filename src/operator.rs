@@ -96,7 +96,7 @@ struct ProviderStatusResponse {
 
 #[derive(Debug, Serialize)]
 struct LogTailResponse {
-    service: &'static str,
+    component: &'static str,
     log_path: Option<String>,
     line_count: usize,
     lines: Vec<String>,
@@ -274,23 +274,32 @@ struct WaitTaskRequest {
 
 #[derive(Debug, Serialize)]
 struct FrogletStatusResponse {
+    service: &'static str,
+    healthy: bool,
     node_id: String,
     projects_root: String,
     raw_compute_offer_id: &'static str,
     discovery: DiscoveryInfo,
     reference_discovery: ReferenceDiscoveryInfo,
+    components: FrogletStatusComponents,
+}
+
+#[derive(Debug, Serialize)]
+struct FrogletStatusComponents {
     runtime: ConsumerStatusResponse,
     provider: ProviderStatusResponse,
 }
 
 #[derive(Debug, Serialize)]
 struct FrogletLogsResponse {
+    service: &'static str,
+    scope: String,
     logs: Vec<LogTailResponse>,
 }
 
 #[derive(Debug, Serialize)]
 struct FrogletRestartResult {
-    target: String,
+    component: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     stdout_preview: Option<String>,
@@ -300,6 +309,8 @@ struct FrogletRestartResult {
 
 #[derive(Debug, Serialize)]
 struct FrogletRestartResponse {
+    service: &'static str,
+    scope: String,
     results: Vec<FrogletRestartResult>,
 }
 
@@ -1067,7 +1078,7 @@ async fn provider_publish_artifact(
 async fn build_consumer_status(state: &OperatorState) -> Result<ConsumerStatusResponse, Response> {
     let runtime_url = runtime_base_url(state)?;
     Ok(ConsumerStatusResponse {
-        service: "consumer",
+        service: "runtime",
         healthy: health_reachable(state, &runtime_url).await,
         runtime_url,
         runtime_auth_token_path: state
@@ -1460,16 +1471,18 @@ async fn froglet_status(headers: HeaderMap, State(state): State<Arc<OperatorStat
         Err(response) => return response,
     };
     let (discovery, reference_discovery) = current_discovery_status(state.app_state.as_ref()).await;
+    let healthy = runtime.healthy && provider.healthy;
     (
         StatusCode::OK,
         Json(FrogletStatusResponse {
+            service: "froglet",
+            healthy,
             node_id: state.app_state.identity.node_id().to_string(),
             projects_root: state.projects_root.display().to_string(),
             raw_compute_offer_id: "execute.compute",
             discovery,
             reference_discovery,
-            runtime,
-            provider,
+            components: FrogletStatusComponents { runtime, provider },
         }),
     )
         .into_response()
@@ -1483,12 +1496,16 @@ async fn froglet_tail_logs(
     if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
         return response;
     }
-    let requested_target = query.lines.map(|_| ()).and(None::<()>);
-    let _ = requested_target;
     let mut logs = Vec::new();
-    let targets = match query.target.as_deref() {
-        Some("runtime") => vec!["runtime"],
-        Some("provider") => vec!["provider"],
+    let scope = match query.target.as_deref() {
+        Some("runtime") => "runtime",
+        Some("provider") => "provider",
+        Some("node") | Some("all") | None => "node",
+        Some(_) => "node",
+    };
+    let targets = match scope {
+        "runtime" => vec!["runtime"],
+        "provider" => vec!["provider"],
         _ => vec!["runtime", "provider"],
     };
     for entry in targets {
@@ -1500,7 +1517,7 @@ async fn froglet_tail_logs(
         let Some(path) = path else { continue };
         match read_tail_lines(path, query.lines) {
             Ok(lines) => logs.push(LogTailResponse {
-                service: "froglet",
+                component: label,
                 log_path: Some(path.display().to_string()),
                 line_count: lines.len(),
                 lines,
@@ -1509,11 +1526,16 @@ async fn froglet_tail_logs(
                 return error_json(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error }));
             }
         }
-        if let Some(last) = logs.last_mut() {
-            last.service = label;
-        }
     }
-    (StatusCode::OK, Json(FrogletLogsResponse { logs })).into_response()
+    (
+        StatusCode::OK,
+        Json(FrogletLogsResponse {
+            service: "froglet",
+            scope: scope.to_string(),
+            logs,
+        }),
+    )
+        .into_response()
 }
 
 async fn froglet_restart(
@@ -1524,9 +1546,15 @@ async fn froglet_restart(
     if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
         return response;
     }
-    let targets = match payload.target.as_deref() {
-        Some("runtime") => vec!["runtime"],
-        Some("provider") => vec!["provider"],
+    let scope = match payload.target.as_deref() {
+        Some("runtime") => "runtime",
+        Some("provider") => "provider",
+        Some("node") | Some("all") | None => "node",
+        Some(_) => "node",
+    };
+    let targets = match scope {
+        "runtime" => vec!["runtime"],
+        "provider" => vec!["provider"],
         _ => vec!["runtime", "provider"],
     };
     let mut results = Vec::new();
@@ -1553,13 +1581,21 @@ async fn froglet_restart(
             stderr_preview: None,
         });
         results.push(FrogletRestartResult {
-            target: target.to_string(),
+            component: target.to_string(),
             status: payload.status.to_string(),
             stdout_preview: payload.stdout_preview,
             stderr_preview: payload.stderr_preview,
         });
     }
-    (StatusCode::OK, Json(FrogletRestartResponse { results })).into_response()
+    (
+        StatusCode::OK,
+        Json(FrogletRestartResponse {
+            service: "froglet",
+            scope: scope.to_string(),
+            results,
+        }),
+    )
+        .into_response()
 }
 
 async fn froglet_list_local_services(
@@ -2832,9 +2868,89 @@ mod tests {
             .expect("froglet status response");
         let (status, payload): (StatusCode, Value) = response_json(response).await;
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["service"], "froglet");
+        assert_eq!(payload["healthy"], false);
         assert_eq!(payload["discovery"]["mode"], "none");
         assert_eq!(payload["reference_discovery"]["enabled"], false);
         assert_eq!(payload["reference_discovery"]["connected"], false);
+        assert_eq!(payload["components"]["runtime"]["service"], "runtime");
+        assert_eq!(payload["components"]["runtime"]["healthy"], false);
+        assert_eq!(payload["components"]["provider"]["service"], "provider");
+        assert_eq!(payload["components"]["provider"]["healthy"], false);
+    }
+
+    #[tokio::test]
+    async fn froglet_logs_returns_node_scope_and_components() {
+        let temp_dir = unique_temp_dir("froglet-logs");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let runtime_log_path = temp_dir.join("runtime.log");
+        let provider_log_path = temp_dir.join("provider.log");
+        std::fs::write(&runtime_log_path, "runtime-line-1\nruntime-line-2\n")
+            .expect("write runtime log");
+        std::fs::write(&provider_log_path, "provider-line-1\nprovider-line-2\n")
+            .expect("write provider log");
+
+        let base_state = test_operator_state();
+        let token = base_state.app_state.consumer_control_auth_token.clone();
+        let state = Arc::new(OperatorState {
+            runtime_log_path: Some(runtime_log_path.clone()),
+            provider_log_path: Some(provider_log_path.clone()),
+            ..base_state.as_ref().clone()
+        });
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::GET,
+                "/v1/froglet/logs?target=node&lines=1",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("froglet logs response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["service"], "froglet");
+        assert_eq!(payload["scope"], "node");
+        assert_eq!(payload["logs"][0]["component"], "runtime");
+        assert_eq!(payload["logs"][0]["line_count"], 1);
+        assert_eq!(payload["logs"][0]["lines"][0], "runtime-line-2");
+        assert_eq!(payload["logs"][1]["component"], "provider");
+        assert_eq!(payload["logs"][1]["line_count"], 1);
+        assert_eq!(payload["logs"][1]["lines"][0], "provider-line-2");
+    }
+
+    #[tokio::test]
+    async fn froglet_restart_returns_node_scope_and_components() {
+        let base_state = test_operator_state();
+        let token = base_state.app_state.consumer_control_auth_token.clone();
+        let state = Arc::new(OperatorState {
+            runtime_restart_command: Some("printf runtime-restarted".to_string()),
+            provider_restart_command: Some("printf provider-restarted".to_string()),
+            ..base_state.as_ref().clone()
+        });
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/restart",
+                Some(&token),
+                Some(json!({ "target": "node" })),
+            ))
+            .await
+            .expect("froglet restart response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["service"], "froglet");
+        assert_eq!(payload["scope"], "node");
+        assert_eq!(payload["results"][0]["component"], "runtime");
+        assert_eq!(payload["results"][0]["status"], "restarted");
+        assert_eq!(payload["results"][0]["stdout_preview"], "runtime-restarted");
+        assert_eq!(payload["results"][1]["component"], "provider");
+        assert_eq!(payload["results"][1]["status"], "restarted");
+        assert_eq!(
+            payload["results"][1]["stdout_preview"],
+            "provider-restarted"
+        );
     }
 
     #[tokio::test]
