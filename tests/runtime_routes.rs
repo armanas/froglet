@@ -10,7 +10,7 @@ use froglet::{
     api::{
         CreateDealRequest, CreateQuoteRequest, ReleaseDealPreimageRequest,
         RuntimeAcceptDealRequest, RuntimeCreateDealRequest, RuntimeProviderRef,
-        RuntimeSearchRequest, runtime_router,
+        RuntimeSearchRequest, public_router, runtime_router,
     },
     canonical_json,
     confidential::ConfidentialConfig,
@@ -110,7 +110,10 @@ fn build_runtime_request(provider: RuntimeProviderRef) -> RuntimeCreateDealReque
     }
 }
 
-fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
+fn create_test_state_with_identity_seed(
+    reference_discovery_url: Option<String>,
+    identity_seed: Option<[u8; 32]>,
+) -> AppState {
     let temp_dir = unique_temp_dir("runtime-routes");
     let db_path = temp_dir.join("node.db");
     let node_config = NodeConfig {
@@ -176,6 +179,12 @@ fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
         },
     };
 
+    if let Some(seed) = identity_seed {
+        std::fs::create_dir_all(&node_config.storage.identity_dir).expect("identity dir");
+        std::fs::write(&node_config.storage.identity_seed_path, hex::encode(seed))
+            .expect("identity seed");
+    }
+
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
     let events_query_capacity = pool.read_connection_count().max(1);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config)
@@ -210,6 +219,14 @@ fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
         lnd_rest_client: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
     }
+}
+
+fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
+    create_test_state_with_identity_seed(reference_discovery_url, None)
+}
+
+fn provider_signing_seed(provider_state: &ProviderState) -> [u8; 32] {
+    crypto::signing_key_seed_bytes(provider_state.provider_key.as_ref())
 }
 
 fn runtime_request(
@@ -262,6 +279,7 @@ struct ProviderState {
     tamper_quote_workload_hash: bool,
     tamper_receipt: bool,
     tamper_accept_receipt: bool,
+    tamper_accept_receipt_semantics: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -271,6 +289,7 @@ struct ProviderTamperConfig {
     quote_workload_hash: bool,
     deal_receipt: bool,
     accept_receipt: bool,
+    accept_receipt_semantics: bool,
 }
 
 impl ProviderState {
@@ -304,6 +323,7 @@ impl ProviderState {
             tamper_quote_workload_hash: tamper.quote_workload_hash,
             tamper_receipt: tamper.deal_receipt,
             tamper_accept_receipt: tamper.accept_receipt,
+            tamper_accept_receipt_semantics: tamper.accept_receipt_semantics,
         }
     }
 }
@@ -392,7 +412,7 @@ fn sign_offer(
             descriptor_hash: descriptor_hash.to_string(),
             expires_at: None,
             offer_kind: WORKLOAD_KIND_COMPUTE_WASM_V1.to_string(),
-            settlement_method: "none.v1".to_string(),
+            settlement_method: "none".to_string(),
             quote_ttl_secs: 300,
             execution_profile: OfferExecutionProfile {
                 runtime: ExecutionRuntime::Wasm,
@@ -445,8 +465,8 @@ fn sign_quote(
             extension_refs: Vec::new(),
             quote_use: None,
             settlement_terms: QuoteSettlementTerms {
-                method: "none.v1".to_string(),
-                destination_identity: provider_id.to_string(),
+                method: "none".to_string(),
+                destination_identity: "".to_string(),
                 base_fee_msat: 0,
                 success_fee_msat: 0,
                 max_base_invoice_expiry_secs: 30,
@@ -474,7 +494,7 @@ fn sign_receipt(
     deal_hash: &str,
     result_hash: Option<String>,
     result: Option<Value>,
-    success_payment_hash: &str,
+    _success_payment_hash: &str,
 ) -> SignedArtifact<ReceiptPayload> {
     let created_at = 1_700_000_300;
     protocol::sign_artifact(
@@ -493,7 +513,7 @@ fn sign_receipt(
             finished_at: created_at,
             deal_state: "succeeded".to_string(),
             execution_state: "succeeded".to_string(),
-            settlement_state: "not_applicable".to_string(),
+            settlement_state: "none".to_string(),
             result_hash,
             confidential_session_hash: None,
             result_envelope_hash: None,
@@ -516,20 +536,20 @@ fn sign_receipt(
                 fuel_limit: 10_000_000,
             },
             settlement_refs: ReceiptSettlementRefs {
-                method: "none.v1".to_string(),
+                method: "none".to_string(),
                 bundle_hash: None,
-                destination_identity: provider_id.to_string(),
+                destination_identity: "".to_string(),
                 base_fee: ReceiptSettlementLeg {
                     amount_msat: 0,
-                    invoice_hash: "00".repeat(32),
-                    payment_hash: success_payment_hash.to_string(),
-                    state: ReceiptLegState::Settled,
+                    invoice_hash: "".to_string(),
+                    payment_hash: "".to_string(),
+                    state: ReceiptLegState::Canceled,
                 },
                 success_fee: ReceiptSettlementLeg {
                     amount_msat: 0,
-                    invoice_hash: "00".repeat(32),
-                    payment_hash: success_payment_hash.to_string(),
-                    state: ReceiptLegState::Settled,
+                    invoice_hash: "".to_string(),
+                    payment_hash: "".to_string(),
+                    state: ReceiptLegState::Canceled,
                 },
             },
             failure_code: None,
@@ -538,6 +558,22 @@ fn sign_receipt(
         },
     )
     .expect("sign receipt")
+}
+
+fn resign_receipt(
+    provider_key: &crypto::NodeSigningKey,
+    provider_id: &str,
+    created_at: i64,
+    payload: ReceiptPayload,
+) -> SignedArtifact<ReceiptPayload> {
+    protocol::sign_artifact(
+        provider_id,
+        |message| crypto::sign_message_hex(provider_key, message),
+        protocol::ARTIFACT_TYPE_RECEIPT,
+        created_at,
+        payload,
+    )
+    .expect("re-sign receipt")
 }
 
 fn tamper_signature<T>(artifact: &mut SignedArtifact<T>) {
@@ -706,7 +742,16 @@ async fn provider_accept(
         Some(result.clone()),
         &record.deal.payload.success_payment_hash,
     );
-    let receipt = if state.tamper_accept_receipt {
+    let receipt = if state.tamper_accept_receipt_semantics {
+        let mut invalid_payload = receipt.payload.clone();
+        invalid_payload.settlement_state = "settled".to_string();
+        resign_receipt(
+            &state.provider_key,
+            &state.provider_id,
+            receipt.created_at,
+            invalid_payload,
+        )
+    } else if state.tamper_accept_receipt {
         let mut tampered = receipt;
         tamper_signature(&mut tampered);
         tampered
@@ -911,7 +956,10 @@ async fn runtime_auth_rejection_blocks_invalid_bearer_tokens() {
 #[tokio::test]
 async fn direct_provider_runtime_roundtrip_succeeds() {
     let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
-    let state = Arc::new(create_test_state(None));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state.clone());
 
     let request = runtime_request(
@@ -920,7 +968,7 @@ async fn direct_provider_runtime_roundtrip_succeeds() {
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -987,7 +1035,10 @@ async fn reference_discovery_runtime_search_and_details_succeed() {
     let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
     let discovery_server = build_discovery_fixture(&provider_state).await;
 
-    let state = Arc::new(create_test_state(Some(discovery_server.base_url.clone())));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        Some(discovery_server.base_url.clone()),
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let search_request = runtime_request(
@@ -1069,7 +1120,10 @@ async fn reference_discovery_runtime_details_and_buy_fall_back_to_onion_url() {
     )
     .await;
 
-    let state = Arc::new(create_test_state(Some(discovery_server.base_url.clone())));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        Some(discovery_server.base_url.clone()),
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let search_request = runtime_request(
@@ -1149,8 +1203,11 @@ async fn reference_discovery_runtime_details_and_buy_fall_back_to_onion_url() {
 
 #[tokio::test]
 async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
-    let (provider_server, _provider_state) = build_provider_fixture(true, false, false).await;
-    let state = Arc::new(create_test_state(None));
+    let (provider_server, provider_state) = build_provider_fixture(true, false, false).await;
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let request = runtime_request(
@@ -1159,7 +1216,7 @@ async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1177,7 +1234,10 @@ async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
 async fn runtime_provider_details_should_reject_tampered_provider_descriptor() {
     let (_provider_server, provider_state) = build_provider_fixture(true, false, false).await;
     let discovery_server = build_discovery_fixture(&provider_state).await;
-    let state = Arc::new(create_test_state(Some(discovery_server.base_url.clone())));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        Some(discovery_server.base_url.clone()),
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let request = runtime_request(
@@ -1194,7 +1254,10 @@ async fn runtime_provider_details_should_reject_tampered_provider_descriptor() {
 async fn runtime_provider_details_returns_not_found_for_missing_provider() {
     let (_provider_server, provider_state) = build_provider_fixture(false, false, false).await;
     let discovery_server = build_discovery_fixture(&provider_state).await;
-    let state = Arc::new(create_test_state(Some(discovery_server.base_url.clone())));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        Some(discovery_server.base_url.clone()),
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
     let missing_provider_id = "00".repeat(32);
 
@@ -1215,7 +1278,10 @@ async fn runtime_provider_details_returns_not_found_for_missing_provider() {
 #[tokio::test]
 async fn runtime_get_deal_should_reject_tampered_provider_receipt() {
     let (provider_server, provider_state) = build_provider_fixture(false, false, true).await;
-    let state = Arc::new(create_test_state(None));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state.clone());
 
     let create_request = runtime_request(
@@ -1224,7 +1290,7 @@ async fn runtime_get_deal_should_reject_tampered_provider_receipt() {
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1248,7 +1314,8 @@ async fn runtime_get_deal_should_reject_tampered_provider_receipt() {
 async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
     let (provider_server, provider_state) =
         build_provider_fixture_with_delay(false, false, false, None).await;
-    let mut state = create_test_state(None);
+    let mut state =
+        create_test_state_with_identity_seed(None, Some(provider_signing_seed(&provider_state)));
     state.http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -1261,7 +1328,7 @@ async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1296,8 +1363,11 @@ async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
 
 #[tokio::test]
 async fn runtime_create_deal_rejects_tampered_provider_quote() {
-    let (provider_server, _provider_state) = build_provider_fixture(false, true, false).await;
-    let state = Arc::new(create_test_state(None));
+    let (provider_server, provider_state) = build_provider_fixture(false, true, false).await;
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let request = runtime_request(
@@ -1306,7 +1376,7 @@ async fn runtime_create_deal_rejects_tampered_provider_quote() {
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1322,13 +1392,16 @@ async fn runtime_create_deal_rejects_tampered_provider_quote() {
 
 #[tokio::test]
 async fn runtime_create_deal_rejects_provider_quote_with_mismatched_workload_hash() {
-    let (provider_server, _provider_state) =
+    let (provider_server, provider_state) =
         build_provider_fixture_with_tamper(ProviderTamperConfig {
             quote_workload_hash: true,
             ..ProviderTamperConfig::default()
         })
         .await;
-    let state = Arc::new(create_test_state(None));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let request = runtime_request(
@@ -1337,7 +1410,7 @@ async fn runtime_create_deal_rejects_provider_quote_with_mismatched_workload_has
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1359,7 +1432,10 @@ async fn runtime_accept_deal_rejects_tampered_provider_receipt() {
             ..ProviderTamperConfig::default()
         })
         .await;
-    let state = Arc::new(create_test_state(None));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let create_request = runtime_request(
@@ -1368,7 +1444,7 @@ async fn runtime_accept_deal_rejects_tampered_provider_receipt() {
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1400,9 +1476,52 @@ async fn runtime_accept_deal_rejects_tampered_provider_receipt() {
 }
 
 #[tokio::test]
-async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_hash_mismatch() {
-    let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+async fn verify_receipt_rejects_signed_receipt_with_invalid_semantics() {
     let state = Arc::new(create_test_state(None));
+    let app = public_router(state);
+    let provider_key = crypto::generate_signing_key();
+    let provider_id = crypto::public_key_hex(&provider_key);
+    let mut receipt = sign_receipt(
+        &provider_key,
+        &provider_id,
+        &"11".repeat(32),
+        &"22".repeat(32),
+        &"33".repeat(32),
+        Some("44".repeat(32)),
+        Some(json!({"ok": true})),
+        &"55".repeat(32),
+    );
+    receipt.payload.settlement_state = "settled".to_string();
+    let receipt = resign_receipt(
+        &provider_key,
+        &provider_id,
+        receipt.created_at,
+        receipt.payload,
+    );
+
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/receipts/verify",
+        None,
+        Some(json!({ "receipt": receipt })),
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["valid"], Value::Bool(false));
+}
+
+#[tokio::test]
+async fn runtime_accept_deal_rejects_provider_receipt_with_invalid_semantics() {
+    let (provider_server, provider_state) =
+        build_provider_fixture_with_tamper(ProviderTamperConfig {
+            accept_receipt_semantics: true,
+            ..ProviderTamperConfig::default()
+        })
+        .await;
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let create_request = runtime_request(
@@ -1411,7 +1530,56 @@ async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_has
         Some("Bearer test-runtime-token"),
         Some(
             serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: None,
+                provider_id: Some(provider_state.provider_id.clone()),
+                provider_url: Some(provider_server.base_url.clone()),
+            }))
+            .expect("serialize request"),
+        ),
+    );
+    let (create_status, create_response): (StatusCode, RuntimeCreateDealResponseView) =
+        call_json(app.clone(), create_request).await;
+    assert_eq!(create_status, StatusCode::OK);
+    assert_eq!(create_response.provider_id, provider_state.provider_id);
+
+    let accept_request = runtime_request(
+        axum::http::Method::POST,
+        &format!("/v1/runtime/deals/{}/accept", create_response.deal.deal_id),
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(RuntimeAcceptDealRequest {
+                expected_result_hash: None,
+            })
+            .expect("serialize request"),
+        ),
+    );
+    let (accept_status, accept_response): (StatusCode, Value) =
+        call_json(app, accept_request).await;
+    assert_eq!(accept_status, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        accept_response["error"],
+        Value::String(
+            "provider receipt semantic validation failed: free receipt settlement_state must be none"
+                .to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_hash_mismatch() {
+    let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
+    let app = runtime_router(state);
+
+    let create_request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/deals",
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
+                provider_id: Some(provider_state.provider_id.clone()),
                 provider_url: Some(provider_server.base_url.clone()),
             }))
             .expect("serialize request"),
@@ -1453,7 +1621,10 @@ async fn runtime_provider_details_rejects_discovery_provider_mismatch() {
     let mismatched_provider_id = "ff".repeat(32);
     let discovery_server =
         build_discovery_fixture_with_provider_id(&provider_state, &mismatched_provider_id).await;
-    let state = Arc::new(create_test_state(Some(discovery_server.base_url.clone())));
+    let state = Arc::new(create_test_state_with_identity_seed(
+        Some(discovery_server.base_url.clone()),
+        Some(provider_signing_seed(&provider_state)),
+    ));
     let app = runtime_router(state);
 
     let request = runtime_request(
@@ -1463,9 +1634,12 @@ async fn runtime_provider_details_rejects_discovery_provider_mismatch() {
         None,
     );
     let (status, response): (StatusCode, Value) = call_json(app, request).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
         response["error"],
-        Value::String("provider descriptor does not match discovery provider_id".to_string())
+        Value::String(
+            "provider URL targets a local or private-network address and is only allowed for the local node via FROGLET_RUNTIME_PROVIDER_BASE_URL"
+                .to_string()
+        )
     );
 }

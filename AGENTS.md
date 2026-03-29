@@ -8,10 +8,10 @@
 - Rust integration and conformance tests live in `tests/`.
 - Python client helpers, adapters, and unittests live in `python/`.
 - The OpenClaw/NemoClaw plugin lives in `integrations/openclaw/froglet/`.
-- Protocol and operator docs live in `SPEC.md`, `docs/`, and `conformance/`.
+- Protocol and operator docs live in `docs/KERNEL.md`, `docs/`, and `conformance/`.
 
 ## Change Boundaries
-- Treat `SPEC.md` as a frozen protocol document. Do not change canonical artifact payloads, hashing, signing bytes, state transitions, or Lightning settlement bindings without explicit interoperability justification and prior discussion.
+- Treat `docs/KERNEL.md` as the authoritative kernel specification. Do not change canonical artifact payloads, hashing, signing bytes, state transitions, or Lightning settlement bindings without explicit interoperability justification and prior discussion.
 - If you touch signing, hashing, or artifact structure, update `conformance/kernel_v1.json` and explain why in the change summary.
 - Keep kernel changes small. Prefer adapters, higher layers, or integrations unless a change truly belongs in the signed protocol/runtime core.
 - Public code must not depend on ignored `private/` incubations.

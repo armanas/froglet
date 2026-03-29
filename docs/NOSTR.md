@@ -27,7 +27,7 @@ That publication key should appear in `Descriptor.payload.linked_identities[]` w
 - `identity_kind = nostr`
 - scope including `publication.nostr`
 
-The exact linkage challenge format is defined in [`../SPEC.md`](../SPEC.md).
+The exact linkage challenge format is defined in [`KERNEL.md`](KERNEL.md).
 
 ## 3. Suggested Summary Events
 

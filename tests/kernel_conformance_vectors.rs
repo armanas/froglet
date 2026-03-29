@@ -33,6 +33,7 @@ struct KernelConformanceFixture {
     artifact_verification_cases: Vec<ArtifactVerificationCase>,
     invoice_bundle_validation_cases: Vec<InvoiceBundleValidationCase>,
     conformance_path: ConformancePath,
+    free_service_conformance_path: ConformancePath,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +66,11 @@ struct ArtifactVectors {
     deal: ArtifactVector<DealPayload>,
     invoice_bundle: ArtifactVector<InvoiceBundlePayload>,
     receipt: ArtifactVector<ReceiptPayload>,
+    // Free-service round-trip vectors
+    free_offer: ArtifactVector<OfferPayload>,
+    free_quote: ArtifactVector<QuotePayload>,
+    free_deal: ArtifactVector<DealPayload>,
+    free_receipt: ArtifactVector<ReceiptPayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -262,6 +268,167 @@ fn kernel_conformance_artifact_vectors_match_exact_bytes() {
             .result_hash
             .clone()
             .expect("receipt result hash")
+    );
+
+    // --- Free-service round-trip vector assertions ---
+    assert_artifact_vector(&fixture.artifacts.free_offer);
+    assert_artifact_vector(&fixture.artifacts.free_quote);
+    assert_artifact_vector(&fixture.artifacts.free_deal);
+    assert_artifact_vector(&fixture.artifacts.free_receipt);
+
+    // Free-service conformance path
+    assert_eq!(
+        fixture.free_service_conformance_path.artifact_order,
+        vec![
+            "descriptor",
+            "free_offer",
+            "free_quote",
+            "free_deal",
+            "free_receipt"
+        ]
+    );
+
+    // Free-service offer uses settlement_method "none" with zero fees
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_offer
+            .artifact
+            .payload
+            .settlement_method,
+        "none"
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_offer
+            .artifact
+            .payload
+            .price_schedule
+            .base_fee_msat,
+        0
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_offer
+            .artifact
+            .payload
+            .price_schedule
+            .success_fee_msat,
+        0
+    );
+
+    // Free-service offer references the same descriptor
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_offer
+            .artifact
+            .payload
+            .descriptor_hash,
+        fixture.artifacts.descriptor.artifact.hash
+    );
+
+    // Free-service quote references the free offer
+    assert_eq!(
+        fixture.artifacts.free_quote.artifact.payload.offer_hash,
+        fixture.artifacts.free_offer.artifact.hash
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_quote
+            .artifact
+            .payload
+            .settlement_terms
+            .method,
+        "none"
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_quote
+            .artifact
+            .payload
+            .settlement_terms
+            .destination_identity,
+        ""
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_quote
+            .artifact
+            .payload
+            .settlement_terms
+            .base_fee_msat,
+        0
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_quote
+            .artifact
+            .payload
+            .settlement_terms
+            .success_fee_msat,
+        0
+    );
+
+    // Free-service deal references the free quote
+    assert_eq!(
+        fixture.artifacts.free_deal.artifact.payload.quote_hash,
+        fixture.artifacts.free_quote.artifact.hash
+    );
+
+    // Free-service receipt references the free deal and quote
+    assert_eq!(
+        fixture.artifacts.free_receipt.artifact.payload.deal_hash,
+        fixture.artifacts.free_deal.artifact.hash
+    );
+    assert_eq!(
+        fixture.artifacts.free_receipt.artifact.payload.quote_hash,
+        fixture.artifacts.free_quote.artifact.hash
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_receipt
+            .artifact
+            .payload
+            .settlement_state,
+        "none"
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_receipt
+            .artifact
+            .payload
+            .settlement_refs
+            .method,
+        "none"
+    );
+    assert!(
+        fixture
+            .artifacts
+            .free_receipt
+            .artifact
+            .payload
+            .settlement_refs
+            .bundle_hash
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .artifacts
+            .free_receipt
+            .artifact
+            .payload
+            .settlement_refs
+            .destination_identity,
+        ""
     );
 }
 

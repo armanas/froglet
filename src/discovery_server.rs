@@ -1,5 +1,5 @@
 use crate::{
-    crypto,
+    api, crypto,
     db::DbPool,
     discovery::{
         DiscoveryNodeRecord, DiscoverySearchResponse, HeartbeatRequest, NodeDescriptor,
@@ -125,6 +125,7 @@ struct EndpointClaims {
 }
 
 impl EndpointClaims {
+    #[cfg(test)]
     fn from_descriptor(descriptor: &NodeDescriptor) -> Result<Self, String> {
         Ok(Self {
             clearnet_url: normalize_endpoint(descriptor.transports.clearnet_url.clone())?,
@@ -206,6 +207,23 @@ fn normalize_endpoint(endpoint: Option<String>) -> Result<Option<String>, String
         other => return Err(format!("endpoint must use http or https, got {other}")),
     }
     Ok(Some(trimmed.to_string()))
+}
+
+async fn validated_endpoint_claims_from_descriptor(
+    descriptor: &NodeDescriptor,
+) -> Result<EndpointClaims, String> {
+    let clearnet_url = match descriptor.transports.clearnet_url.as_deref() {
+        Some(url) => Some(api::validate_discovery_endpoint_url(url).await?),
+        None => None,
+    };
+    let onion_url = match descriptor.transports.onion_url.as_deref() {
+        Some(url) => Some(api::validate_discovery_endpoint_url(url).await?),
+        None => None,
+    };
+    Ok(EndpointClaims {
+        clearnet_url,
+        onion_url,
+    })
 }
 
 fn normalize_legacy_endpoint_claim(
@@ -442,6 +460,7 @@ fn fetch_conflicting_endpoint_claims(
     Ok(conflicts)
 }
 
+#[cfg(test)]
 fn register_node_record(
     conn: &Connection,
     descriptor: &NodeDescriptor,
@@ -449,9 +468,27 @@ fn register_node_record(
     now: i64,
     stale_after_secs: i64,
 ) -> Result<RegisterOutcome, String> {
+    let claims = EndpointClaims::from_descriptor(descriptor)?;
+    register_node_record_with_claims(
+        conn,
+        descriptor,
+        descriptor_json,
+        &claims,
+        now,
+        stale_after_secs,
+    )
+}
+
+fn register_node_record_with_claims(
+    conn: &Connection,
+    descriptor: &NodeDescriptor,
+    descriptor_json: &str,
+    claims: &EndpointClaims,
+    now: i64,
+    stale_after_secs: i64,
+) -> Result<RegisterOutcome, String> {
     let node_id = descriptor.node_id.clone();
     let pubkey = descriptor.pubkey.clone();
-    let claims = EndpointClaims::from_descriptor(descriptor)?;
     conn.execute_batch("SAVEPOINT discovery_register")
         .map_err(|error| error.to_string())?;
     let outcome = (|| -> Result<RegisterOutcome, String> {
@@ -472,7 +509,7 @@ fn register_node_record(
             return Ok(RegisterOutcome::ReclaimRequired);
         }
 
-        for conflict in fetch_conflicting_endpoint_claims(conn, &node_id, &claims)? {
+        for conflict in fetch_conflicting_endpoint_claims(conn, &node_id, claims)? {
             if requires_reclaim(
                 &conflict.status,
                 conflict.last_seen_at,
@@ -559,17 +596,27 @@ async fn register(
         return bad_request("request timestamp is too old or too far in the future");
     }
 
-    let descriptor_json = match serde_json::to_string(&payload.descriptor) {
+    let descriptor = payload.descriptor;
+    let claims = match validated_endpoint_claims_from_descriptor(&descriptor).await {
+        Ok(claims) => claims,
+        Err(error) => return bad_request(&error),
+    };
+    let descriptor_json = match serde_json::to_string(&descriptor) {
         Ok(json) => json,
         Err(error) => return bad_request(&format!("invalid descriptor: {error}")),
     };
-
-    let descriptor = payload.descriptor;
     let stale_after_secs = state.stale_after_secs;
     match state
         .db
         .with_write_conn(move |conn| -> Result<RegisterOutcome, String> {
-            register_node_record(conn, &descriptor, &descriptor_json, now, stale_after_secs)
+            register_node_record_with_claims(
+                conn,
+                &descriptor,
+                &descriptor_json,
+                &claims,
+                now,
+                stale_after_secs,
+            )
         })
         .await
     {
@@ -948,7 +995,7 @@ fn database_error(error: &str) -> (StatusCode, Json<serde_json::Value>) {
 mod tests {
     use super::{
         EndpointClaims, RegisterOutcome, active_minimum_last_seen, configure_discovery_connection,
-        load_search_records, register_node_record,
+        load_search_records, register_node_record, validated_endpoint_claims_from_descriptor,
     };
     use crate::{
         discovery::{NodeDescriptor, TransportDescriptor},
@@ -1194,5 +1241,33 @@ mod tests {
         let nodes = load_search_records(&conn, 10, true, 100, 30).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].descriptor.node_id, "node-active");
+    }
+
+    #[tokio::test]
+    async fn register_validation_rejects_https_loopback_endpoints() {
+        let descriptor = test_descriptor("node-loopback", "https://127.0.0.1:8080");
+
+        let error = validated_endpoint_claims_from_descriptor(&descriptor)
+            .await
+            .expect_err("https loopback should be rejected");
+
+        assert!(
+            error.contains("private or local-network"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_validation_allows_plain_http_loopback_for_local_dev() {
+        let descriptor = test_descriptor("node-loopback-http", "http://127.0.0.1:8080");
+
+        let claims = validated_endpoint_claims_from_descriptor(&descriptor)
+            .await
+            .expect("loopback http should remain allowed for local dev");
+
+        assert_eq!(
+            claims.clearnet_url.as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
     }
 }

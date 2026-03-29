@@ -113,6 +113,10 @@ Bot-facing local control token:
 
 - `./data/runtime/froglet-control.token`
 
+The default Compose stack now keeps the provider control token private to the
+container filesystem. Only set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` when
+you explicitly need a host-readable dev token.
+
 If you want to run the binaries directly instead of Compose:
 
 ```bash
@@ -241,4 +245,4 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - [docs/OPERATOR.md](docs/OPERATOR.md)
 - [docs/OPENCLAW.md](docs/OPENCLAW.md)
 - [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
-- [SPEC.md](SPEC.md)
+- [docs/KERNEL.md](docs/KERNEL.md)

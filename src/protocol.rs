@@ -669,6 +669,157 @@ pub fn verify_artifact<T: Serialize>(artifact: &SignedArtifact<T>) -> bool {
     crypto::verify_message(&artifact.signer, &artifact.signature, &signing_bytes)
 }
 
+fn receipt_leg_is_empty_canceled(leg: &ReceiptSettlementLeg) -> bool {
+    leg.amount_msat == 0
+        && leg.invoice_hash.is_empty()
+        && leg.payment_hash.is_empty()
+        && leg.state == ReceiptLegState::Canceled
+}
+
+pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Result<(), String> {
+    let payload = &receipt.payload;
+
+    if receipt.signer != payload.provider_id {
+        return Err("receipt signer does not match provider_id".to_string());
+    }
+
+    if let Some(started_at) = payload.started_at
+        && payload.finished_at < started_at
+    {
+        return Err("receipt finished_at is earlier than started_at".to_string());
+    }
+
+    let has_result_hash = payload.result_hash.is_some();
+    let has_result_format = payload.result_format.is_some();
+    if payload.execution_state == "succeeded" {
+        if !has_result_hash || !has_result_format {
+            return Err(
+                "receipt with execution_state succeeded must include result_hash and result_format"
+                    .to_string(),
+            );
+        }
+    } else if has_result_hash || has_result_format {
+        return Err(
+            "receipt result_hash and result_format must be absent unless execution_state is succeeded"
+                .to_string(),
+        );
+    }
+
+    match payload.deal_state.as_str() {
+        "rejected" => {
+            if payload.execution_state != "not_started" {
+                return Err("rejected receipt must have execution_state not_started".to_string());
+            }
+        }
+        "succeeded" => {
+            if payload.execution_state != "succeeded" {
+                return Err("successful receipt must have execution_state succeeded".to_string());
+            }
+        }
+        "failed" => {
+            if payload.execution_state != "failed" {
+                return Err("failed receipt must have execution_state failed".to_string());
+            }
+        }
+        "canceled" => {
+            if payload.execution_state != "not_started" && payload.execution_state != "succeeded" {
+                return Err(
+                    "canceled receipt must have execution_state not_started or succeeded"
+                        .to_string(),
+                );
+            }
+        }
+        _ => return Err("receipt deal_state is invalid".to_string()),
+    }
+
+    match payload.settlement_refs.method.as_str() {
+        "lightning.base_fee_plus_success_fee.v1" => {
+            if payload
+                .settlement_refs
+                .bundle_hash
+                .as_deref()
+                .unwrap_or_default()
+                .is_empty()
+            {
+                return Err("lightning receipt must include bundle_hash".to_string());
+            }
+            if payload.settlement_refs.destination_identity.is_empty() {
+                return Err("lightning receipt must include destination_identity".to_string());
+            }
+            if matches!(
+                payload.settlement_refs.base_fee.state,
+                ReceiptLegState::Open | ReceiptLegState::Accepted
+            ) || matches!(
+                payload.settlement_refs.success_fee.state,
+                ReceiptLegState::Open | ReceiptLegState::Accepted
+            ) {
+                return Err("lightning receipt settlement legs must be terminal".to_string());
+            }
+
+            match payload.settlement_state.as_str() {
+                "settled" => {
+                    if payload.settlement_refs.success_fee.state != ReceiptLegState::Settled {
+                        return Err(
+                            "lightning receipt settlement_state settled requires success_fee.state settled"
+                                .to_string(),
+                        );
+                    }
+                }
+                "canceled" => {
+                    if payload.settlement_refs.success_fee.state != ReceiptLegState::Canceled {
+                        return Err(
+                            "lightning receipt settlement_state canceled requires success_fee.state canceled"
+                                .to_string(),
+                        );
+                    }
+                }
+                "expired" => {
+                    if payload.settlement_refs.success_fee.state != ReceiptLegState::Expired {
+                        return Err(
+                            "lightning receipt settlement_state expired requires success_fee.state expired"
+                                .to_string(),
+                        );
+                    }
+                }
+                _ => {
+                    return Err(
+                        "lightning receipt settlement_state must be settled, canceled, or expired"
+                            .to_string(),
+                    );
+                }
+            }
+
+            if payload.deal_state == "succeeded" && payload.settlement_state != "settled" {
+                return Err(
+                    "successful lightning receipt must have settlement_state settled".to_string(),
+                );
+            }
+        }
+        "none" => {
+            if payload.settlement_state != "none" {
+                return Err("free receipt settlement_state must be none".to_string());
+            }
+            if payload.settlement_refs.bundle_hash.is_some() {
+                return Err("free receipt must not include bundle_hash".to_string());
+            }
+            if !payload.settlement_refs.destination_identity.is_empty() {
+                return Err("free receipt destination_identity must be empty".to_string());
+            }
+            if !receipt_leg_is_empty_canceled(&payload.settlement_refs.base_fee)
+                || !receipt_leg_is_empty_canceled(&payload.settlement_refs.success_fee)
+            {
+                return Err(
+                    "free receipt settlement legs must be zero-valued canceled placeholders"
+                        .to_string(),
+                );
+            }
+        }
+        _ => return Err("receipt settlement_refs.method is invalid".to_string()),
+    }
+
+    Ok(())
+}
+
 pub fn artifact_hash<T: Serialize>(artifact: &SignedArtifact<T>) -> Result<String, String> {
     let payload_hash = payload_hash(&artifact.payload)?;
     canonical_signing_bytes(
@@ -986,5 +1137,101 @@ mod tests {
                 "iteration {iteration} should fail on signature tampering"
             );
         }
+    }
+
+    fn valid_free_receipt_payload(provider_id: &str) -> ReceiptPayload {
+        ReceiptPayload {
+            provider_id: provider_id.to_string(),
+            requester_id: "11".repeat(32),
+            deal_hash: "22".repeat(32),
+            quote_hash: "33".repeat(32),
+            extension_refs: Vec::new(),
+            acceptance_ref: None,
+            started_at: Some(123),
+            finished_at: 124,
+            deal_state: "succeeded".to_string(),
+            execution_state: "succeeded".to_string(),
+            settlement_state: "none".to_string(),
+            result_hash: Some("44".repeat(32)),
+            confidential_session_hash: None,
+            result_envelope_hash: None,
+            result_format: Some("application/json+jcs".to_string()),
+            executor: ReceiptExecutor {
+                runtime: "wasm".to_string(),
+                runtime_version: "test".to_string(),
+                execution_mode: None,
+                attestation_platform: None,
+                measurement: None,
+                abi_version: Some("froglet.wasm.run_json.v1".to_string()),
+                module_hash: Some("55".repeat(32)),
+                capabilities_granted: Vec::new(),
+            },
+            limits_applied: ExecutionLimits {
+                max_input_bytes: 1,
+                max_runtime_ms: 2,
+                max_memory_bytes: 3,
+                max_output_bytes: 4,
+                fuel_limit: 5,
+            },
+            settlement_refs: ReceiptSettlementRefs {
+                method: "none".to_string(),
+                bundle_hash: None,
+                destination_identity: String::new(),
+                base_fee: ReceiptSettlementLeg {
+                    amount_msat: 0,
+                    invoice_hash: String::new(),
+                    payment_hash: String::new(),
+                    state: ReceiptLegState::Canceled,
+                },
+                success_fee: ReceiptSettlementLeg {
+                    amount_msat: 0,
+                    invoice_hash: String::new(),
+                    payment_hash: String::new(),
+                    state: ReceiptLegState::Canceled,
+                },
+            },
+            failure_code: None,
+            failure_message: None,
+            result_ref: None,
+        }
+    }
+
+    #[test]
+    fn signed_receipt_with_valid_free_semantics_passes_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            123,
+            valid_free_receipt_payload(&signer),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        assert!(validate_receipt_artifact(&receipt).is_ok());
+    }
+
+    #[test]
+    fn signed_receipt_with_invalid_free_settlement_state_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_free_receipt_payload(&signer);
+        payload.settlement_state = "settled".to_string();
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "free receipt settlement_state must be none"
+        );
     }
 }

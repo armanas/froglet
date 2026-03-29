@@ -203,6 +203,43 @@ FROGLET_GCP_PROJECT=my-project GCP_RIG_CATEGORIES="fuzz pentest" ./scripts/test_
 **Required:** `FROGLET_GCP_PROJECT`, `gcloud` CLI configured.
 **Optional:** `FROGLET_GCP_ZONE` (default us-central1-a), `FROGLET_GCP_MACHINE_TYPE` (default e2-standard-4), `GCP_RIG_CATEGORIES` (categories to run on VM, default: performance spike fuzz blackbox acceptance pentest).
 
+## Multi-Node GCP Harness
+
+For end-to-end OpenClaw + Froglet marketplace coverage on GCP, use `scripts/gcp_harness.sh`.
+
+```bash
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh provision
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh deploy
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh seed
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh run-matrix
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh run-agentic
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh collect
+FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh destroy
+```
+
+The harness provisions five fixed roles on the existing `froglet-harness` VPC:
+
+- `froglet-marketplace` — marketplace requester node, OpenClaw host, local operator/runtime/provider
+- `froglet-discovery` — reference discovery
+- `froglet-provider-free` — free named/data/project-backed services
+- `froglet-provider-paid` — priced, async, and OCI-backed workloads
+- `froglet-settlement-lab` — dedicated real-LND regtest runner
+
+Artifacts are written under `_tmp/gcp-harness/<run-id>/`:
+
+- `inventory.json` — node metadata, URLs, token paths, and discovery URL
+- `scenario.json` — deterministic tool/protocol/agentic scenarios and oracles
+- `results/` — tool matrix, protocol matrix, LND regtest, and agentic outputs
+- `collected/` — copied node logs and remote artifacts after `collect`
+- `SUMMARY.md` — run summary assembled from the JSON results
+
+Implementation notes:
+
+- Main Froglet binaries run under systemd on the nodes; auxiliary OCI fixtures are seeded separately on the paid provider.
+- Provider and discovery publication edges are exposed through per-node TLS reverse proxies on `:443`, with a harness CA distributed through `FROGLET_HTTP_CA_CERT_PATH`. Runtime and operator listeners remain loopback-only.
+- `run-matrix` opens a local SSH tunnel to the marketplace operator and executes the OpenClaw tool matrix locally against the real marketplace node, then runs direct protocol checks and the settlement-lab LND regtest.
+- `run-agentic` fetches the OpenAI key from Secret Manager using local `gcloud` credentials and injects it only into the remote marketplace process as `OPENCLAW_API_KEY`. Do not hardcode API keys in repo files.
+
 ## Environment Variables
 
 | Variable | Category | Purpose |
@@ -213,6 +250,9 @@ FROGLET_GCP_PROJECT=my-project GCP_RIG_CATEGORIES="fuzz pentest" ./scripts/test_
 | `FROGLET_GCP_ZONE` | gcp_rig | GCP zone (default us-central1-a) |
 | `FROGLET_GCP_MACHINE_TYPE` | gcp_rig | VM machine type (default e2-standard-4) |
 | `GCP_RIG_CATEGORIES` | gcp_rig | Categories to run on VM |
+| `FROGLET_GCP_OPENAI_SECRET` | gcp_harness | Secret Manager secret name used by `run-agentic` (default `openclaw-api-key`) |
+| `FROGLET_GCP_HARNESS_STATE_DIR` | gcp_harness | Override the local harness state directory |
+| `FROGLET_GCP_HARNESS_RUN_ID` | gcp_harness | Override the generated harness run id |
 | `FROGLET_PERF_REQUESTS` | performance | Requests per endpoint (default 500) |
 | `FROGLET_PERF_CONCURRENCY` | performance | Max parallel requests (default 40) |
 | `FROGLET_SOAK_DURATION_MINUTES` | soak | Endurance test duration (default 5) |

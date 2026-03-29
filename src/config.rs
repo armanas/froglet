@@ -896,6 +896,37 @@ mod tests {
     }
 
     #[test]
+    fn test_storage_modes_default_to_private_permissions() {
+        let temp_dir = unique_temp_dir("storage-modes");
+        let storage = StorageConfig {
+            data_dir: temp_dir.clone(),
+            db_path: temp_dir.join("node.db"),
+            identity_dir: temp_dir.join("identity"),
+            identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+            runtime_dir: temp_dir.join("runtime"),
+            runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+            tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: false,
+        };
+
+        assert_eq!(storage.data_dir_mode(), 0o700);
+        assert_eq!(storage.runtime_dir_mode(), 0o700);
+        assert_eq!(storage.provider_control_token_mode(), 0o600);
+    }
+
+    #[test]
+    fn compose_defaults_do_not_make_control_tokens_host_readable() {
+        const COMPOSE_YAML: &str = include_str!("../compose.yaml");
+        assert!(
+            !COMPOSE_YAML.contains("FROGLET_HOST_READABLE_CONTROL_TOKEN"),
+            "compose.yaml should require explicit opt-in for host-readable control tokens"
+        );
+    }
+
+    #[test]
     fn test_load_wasm_policy_accepts_valid_policy_file() {
         let temp_dir = unique_temp_dir("wasm-policy-valid");
         std::fs::create_dir_all(&temp_dir).unwrap();

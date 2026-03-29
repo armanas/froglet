@@ -26,6 +26,25 @@ const BUILD_DIR_NAME: &str = "build";
 const BUILD_ARTIFACT_NAME: &str = "module.wasm";
 const BUILD_PYTHON_ARTIFACT_NAME: &str = "main.py";
 
+fn private_tempdir(prefix: &str) -> Result<PathBuf, String> {
+    let tempdir =
+        std::env::temp_dir().join(format!("{prefix}-{}", crate::discovery::random_hex(16)));
+    fs::create_dir_all(&tempdir)
+        .map_err(|error| format!("failed to create tempdir {}: {error}", tempdir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&tempdir, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "failed to secure tempdir permissions {}: {error}",
+                tempdir.display()
+            )
+        })?;
+    }
+    Ok(tempdir)
+}
+
 fn default_project_runtime() -> String {
     "python".to_string()
 }
@@ -374,6 +393,9 @@ pub fn list_projects(root: &Path) -> Result<Vec<ProviderProjectRecord>, String> 
         if !file_type.is_dir() {
             continue;
         }
+        if !manifest_path(&entry.path()).is_file() {
+            continue;
+        }
         let manifest = load_manifest(&entry.path())?;
         projects.push(project_record(&entry.path(), manifest)?);
     }
@@ -482,7 +504,7 @@ pub fn create_project(
 }
 
 pub fn get_project(root: &Path, project_id: &str) -> Result<ProviderProjectRecord, String> {
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
     project_record(&project_dir, manifest)
 }
@@ -497,7 +519,7 @@ pub fn set_project_publication_state(
             "provider project publication_state must be active or hidden, got {publication_state}"
         ));
     }
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let mut manifest = load_manifest(&project_dir)?;
     manifest.publication_state = publication_state.to_string();
     save_manifest(&project_dir, &manifest)?;
@@ -509,7 +531,7 @@ pub fn read_project_file(
     project_id: &str,
     relative_path: &str,
 ) -> Result<String, String> {
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let full_path = resolve_relative_path(&project_dir, relative_path)?;
     let contents = fs::read_to_string(&full_path).map_err(|error| {
         format!(
@@ -526,7 +548,7 @@ pub fn write_project_file(
     relative_path: &str,
     contents: &str,
 ) -> Result<(), String> {
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let full_path = resolve_relative_path(&project_dir, relative_path)?;
     if let Some(parent) = full_path.parent() {
         ensure_non_symlink_tree(&project_dir, parent)?;
@@ -546,7 +568,7 @@ pub fn write_static_result_project(
     project_id: &str,
     result: &Value,
 ) -> Result<(), String> {
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
     let source = if manifest.source_kind == "python" {
         static_json_python(result)?
@@ -557,7 +579,7 @@ pub fn write_static_result_project(
 }
 
 pub fn build_project(root: &Path, project_id: &str) -> Result<ProviderProjectBuildRecord, String> {
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
     let entrypoint = resolve_relative_path(&project_dir, &manifest.entrypoint)?;
     let build_dir = project_dir.join(BUILD_DIR_NAME);
@@ -612,7 +634,7 @@ pub fn build_project(root: &Path, project_id: &str) -> Result<ProviderProjectBui
 }
 
 pub fn reject_blank_scaffold_publication(root: &Path, project_id: &str) -> Result<(), String> {
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
     if manifest.starter.is_some() {
         return Ok(());
@@ -648,7 +670,7 @@ pub fn test_project(
             build.build_artifact_path
         )
     })?;
-    let project_dir = validate_project_dir(root, project_id)?;
+    let project_dir = existing_project_dir(root, project_id)?;
     let manifest = load_manifest(&project_dir)?;
     let input = input.unwrap_or_else(|| default_project_input(&manifest));
     let output = if manifest.source_kind == "python" {
@@ -658,12 +680,7 @@ pub fn test_project(
                 build.build_artifact_path
             )
         })?;
-        let tempdir = std::env::temp_dir().join(format!(
-            "froglet-project-python-{}",
-            crate::discovery::random_hex(16)
-        ));
-        fs::create_dir_all(&tempdir)
-            .map_err(|error| format!("failed to create python tempdir: {error}"))?;
+        let tempdir = private_tempdir("froglet-project-python")?;
         let source_path = tempdir.join("main.py");
         fs::write(&source_path, &source)
             .map_err(|error| format!("failed to write python source: {error}"))?;
@@ -687,50 +704,56 @@ else:
     raise RuntimeError("python project must define handler, main, or result")
 json.dump(result, sys.stdout, separators=(",", ":"))
 "#;
-        let mut child = std::process::Command::new("python3")
-            .arg("-I")
-            .arg("-c")
-            .arg(runner)
-            .arg(source_path)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("failed to spawn python3: {error}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write as _;
-            stdin
-                .write_all(&input_bytes)
-                .map_err(|error| format!("failed to write python input: {error}"))?;
-        }
-        let deadline = std::time::Duration::from_secs(state.config.execution_timeout_secs);
-        let start = std::time::Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if start.elapsed() > deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "python test execution timed out after {}s",
-                        deadline.as_secs()
-                    ));
-                }
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-                Err(error) => return Err(format!("failed waiting for python execution: {error}")),
+        let result = (|| -> Result<Value, String> {
+            let mut child = std::process::Command::new("python3")
+                .arg("-I")
+                .arg("-c")
+                .arg(runner)
+                .arg(source_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("failed to spawn python3: {error}"))?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write as _;
+                stdin
+                    .write_all(&input_bytes)
+                    .map_err(|error| format!("failed to write python input: {error}"))?;
             }
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|error| format!("failed waiting for python execution: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "python execution failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        serde_json::from_slice::<Value>(&output.stdout)
-            .map_err(|error| format!("python execution returned invalid JSON: {error}"))?
+            let deadline = std::time::Duration::from_secs(state.config.execution_timeout_secs);
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if start.elapsed() > deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!(
+                            "python test execution timed out after {}s",
+                            deadline.as_secs()
+                        ));
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    Err(error) => {
+                        return Err(format!("failed waiting for python execution: {error}"));
+                    }
+                }
+            }
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("failed waiting for python execution: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "python execution failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            serde_json::from_slice::<Value>(&output.stdout)
+                .map_err(|error| format!("python execution returned invalid JSON: {error}"))
+        })();
+        let _ = fs::remove_dir_all(&tempdir);
+        result?
     } else if manifest.contract_version == WASM_HOST_JSON_ABI_V1 {
         let Some(host_environment) = state.wasm_host.clone() else {
             return Err("unsupported_capability: froglet.wasm.host_json.v1 requires a configured Wasm host environment".to_string());
@@ -992,6 +1015,22 @@ fn project_record(
 fn validate_project_dir(root: &Path, project_id: &str) -> Result<PathBuf, String> {
     validate_slug(project_id, "project_id")?;
     Ok(root.join(project_id))
+}
+
+fn manifest_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(MANIFEST_FILE_NAME)
+}
+
+fn existing_project_dir(root: &Path, project_id: &str) -> Result<PathBuf, String> {
+    let project_dir = validate_project_dir(root, project_id)?;
+    if !manifest_path(&project_dir).is_file() {
+        return Err(format!("project not found: {project_id}"));
+    }
+    Ok(project_dir)
+}
+
+pub fn is_project_not_found_error(error: &str) -> bool {
+    error.starts_with("project not found:")
 }
 
 fn validate_relative_file_path(value: &str, field_name: &str) -> Result<(), String> {
@@ -1273,5 +1312,52 @@ mod tests {
         let error = write_project_file(&root, "blank-project", "../escape.wat", "(module)")
             .expect_err("expected traversal error");
         assert!(error.contains("must not traverse parent directories"));
+    }
+
+    #[test]
+    fn list_projects_ignores_directories_without_manifests() {
+        let state = test_app_state();
+        let root = projects_root_from_data_dir(&state.config.storage.data_dir);
+        create_project(
+            &root,
+            "listed-project",
+            "listed-project",
+            "listed-project",
+            Some(ProviderProjectStarter::BlankRunJson),
+            "Listed project",
+            0,
+            "hidden",
+            CreateProjectOverrides::default(),
+        )
+        .expect("create project");
+        fs::create_dir_all(root.join("orphan-directory")).expect("create orphan directory");
+
+        let projects = list_projects(&root).expect("list projects");
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_id, "listed-project");
+    }
+
+    #[test]
+    fn missing_project_operations_do_not_create_orphan_directories() {
+        let state = test_app_state();
+        let root = projects_root_from_data_dir(&state.config.storage.data_dir);
+        let missing_dir = root.join("missing-project");
+
+        let write_error =
+            write_project_file(&root, "missing-project", "source/main.py", "print(1)")
+                .expect_err("missing project write should fail");
+        assert!(is_project_not_found_error(&write_error));
+        assert!(!missing_dir.exists());
+
+        let build_error =
+            build_project(&root, "missing-project").expect_err("missing project build should fail");
+        assert!(is_project_not_found_error(&build_error));
+        assert!(!missing_dir.exists());
+
+        let publish_error = reject_blank_scaffold_publication(&root, "missing-project")
+            .expect_err("missing project publish should fail");
+        assert!(is_project_not_found_error(&publish_error));
+        assert!(!missing_dir.exists());
     }
 }

@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "name": "Auto Update Docs on Source Change",
+  "description": "When source files (Rust, Python, JavaScript) or key config files are edited, asks the agent to review the change and update the relevant documentation in README.md or the docs/ folder.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.rs",
+      "*.py",
+      "*.js",
+      "*.mjs",
+      "*.toml",
+      "*.yaml",
+      "*.sh"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A source or config file was just edited. Review the change and determine if any documentation needs updating. If so, update the relevant docs in README.md or the docs/ folder to reflect the change. Focus on user-facing behavior, CLI usage, configuration, architecture, or API changes. Skip trivial internal refactors that don't affect documented behavior."
+  }
+}

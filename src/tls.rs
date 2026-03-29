@@ -1,4 +1,6 @@
-use reqwest::{Certificate, Client, ClientBuilder, NoProxy, Proxy};
+use reqwest::{
+    Certificate, Client, ClientBuilder, NoProxy, Proxy, redirect::Policy as RedirectPolicy,
+};
 use std::{fs, path::Path, sync::Once, time::Duration};
 
 static INSTALL_RUSTLS_PROVIDER: Once = Once::new();
@@ -51,7 +53,8 @@ pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<Client, Strin
     ensure_rustls_crypto_provider();
     let mut builder = Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10));
+        .timeout(Duration::from_secs(10))
+        .redirect(RedirectPolicy::none());
 
     if let Some(path) = ca_cert_path {
         let cert_bytes = fs::read(path).map_err(|error| {

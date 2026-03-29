@@ -12,8 +12,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap, error::Error as StdError, fs, io::Write, process::Stdio, sync::Arc,
-    time::Duration,
+    collections::BTreeMap, error::Error as StdError, fs, io::Write, net::IpAddr, process::Stdio,
+    sync::Arc, time::Duration,
 };
 use subtle::ConstantTimeEq;
 use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
@@ -527,6 +527,8 @@ pub struct ProviderControlOfferRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub starter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
@@ -633,6 +635,8 @@ pub struct ProviderServiceRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
@@ -668,37 +672,166 @@ const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 pub(crate) type ApiFailure = (StatusCode, serde_json::Value);
 
-const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
+const LOOPBACK_HOSTS: &[&str] = &[
+    "127.0.0.1",
+    "localhost",
+    "localhost.",
+    "localhost.localdomain",
+    "::1",
+    "[::1]",
+];
 
-fn validate_provider_url(raw_url: &str) -> Result<String, ApiFailure> {
-    let parsed = reqwest::Url::parse(raw_url).map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "invalid provider URL", "details": error.to_string(), "value": raw_url }),
-        )
-    })?;
-    match parsed.scheme() {
-        "https" => {}
-        "http" => {
-            let host = parsed.host_str().unwrap_or("");
-            if !LOOPBACK_HOSTS.contains(&host) && !host.ends_with(".onion") {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    json!({
-                        "error": "provider URL must use https:// (http:// is only allowed for loopback and .onion addresses)",
-                        "value": raw_url,
-                    }),
-                ));
-            }
-        }
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "provider URL must use http:// or https://", "value": raw_url }),
-            ));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteEndpointReachability {
+    Public,
+    Onion,
+    LocalOnly,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedRemoteEndpoint {
+    pub normalized_url: String,
+    pub reachability: RemoteEndpointReachability,
+}
+
+fn ip_v4_targets_local_network(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_unspecified()
+        || ip.octets() == [169, 254, 169, 254]
+}
+
+fn ip_targets_local_network(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip_v4_targets_local_network(ip),
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+                || ip.to_ipv4_mapped().is_some_and(ip_v4_targets_local_network)
+                || ip.to_ipv4().is_some_and(ip_v4_targets_local_network)
         }
     }
-    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+fn host_targets_local_network_literal(host: &str) -> bool {
+    let normalized = host
+        .trim()
+        .trim_matches(|character| character == '[' || character == ']');
+    if LOOPBACK_HOSTS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(normalized))
+    {
+        return true;
+    }
+    match normalized.parse::<IpAddr>() {
+        Ok(ip) => ip_targets_local_network(ip),
+        Err(_) => false,
+    }
+}
+
+fn normalize_remote_endpoint_url(raw_url: &str, label: &str) -> Result<reqwest::Url, String> {
+    let parsed =
+        reqwest::Url::parse(raw_url).map_err(|error| format!("invalid {label}: {error}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(format!("{label} must use http:// or https://"));
+        }
+    }
+    if parsed.host_str().is_none() {
+        return Err(format!("{label} must include a host"));
+    }
+    Ok(parsed)
+}
+
+async fn resolve_remote_endpoint_addresses(host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("failed to resolve host '{host}': {error}"))?;
+    let resolved: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
+    if resolved.is_empty() {
+        return Err(format!("failed to resolve host '{host}'"));
+    }
+    Ok(resolved)
+}
+
+pub(crate) async fn classify_remote_endpoint_url(
+    raw_url: &str,
+    label: &str,
+) -> Result<ValidatedRemoteEndpoint, String> {
+    let parsed = normalize_remote_endpoint_url(raw_url, label)?;
+    let normalized_url = parsed.as_str().trim_end_matches('/').to_string();
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+
+    let reachability = if host.ends_with(".onion") {
+        RemoteEndpointReachability::Onion
+    } else if host_targets_local_network_literal(&host) {
+        RemoteEndpointReachability::LocalOnly
+    } else {
+        let port = parsed
+            .port_or_known_default()
+            .ok_or_else(|| format!("{label} must include a known port"))?;
+        let addresses = resolve_remote_endpoint_addresses(&host, port).await?;
+        if addresses.into_iter().any(ip_targets_local_network) {
+            RemoteEndpointReachability::LocalOnly
+        } else {
+            RemoteEndpointReachability::Public
+        }
+    };
+
+    if parsed.scheme() == "http" && reachability == RemoteEndpointReachability::Public {
+        return Err(format!(
+            "{label} must use https:// (http:// is only allowed for local-node rewrites and .onion addresses)"
+        ));
+    }
+
+    Ok(ValidatedRemoteEndpoint {
+        normalized_url,
+        reachability,
+    })
+}
+
+pub(crate) async fn validate_discovery_endpoint_url(raw_url: &str) -> Result<String, String> {
+    let validated = classify_remote_endpoint_url(raw_url, "endpoint URL").await?;
+    if validated.reachability != RemoteEndpointReachability::LocalOnly {
+        return Ok(validated.normalized_url);
+    }
+
+    let parsed = reqwest::Url::parse(&validated.normalized_url)
+        .map_err(|error| format!("invalid endpoint URL: {error}"))?;
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if parsed.scheme() == "http" && LOOPBACK_HOSTS.contains(&host.as_str()) {
+        return Ok(validated.normalized_url);
+    }
+
+    Err(format!(
+        "endpoint URL targets a private or local-network address and cannot be advertised through discovery: {raw_url}"
+    ))
+}
+
+fn private_runtime_tempdir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let tempdir =
+        std::env::temp_dir().join(format!("{prefix}-{}", crate::discovery::random_hex(16)));
+    fs::create_dir_all(&tempdir)
+        .map_err(|error| format!("failed to create tempdir {}: {error}", tempdir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&tempdir, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "failed to secure tempdir permissions {}: {error}",
+                tempdir.display()
+            )
+        })?;
+    }
+    Ok(tempdir)
 }
 
 fn configured_runtime_provider_base_url() -> Result<Option<String>, ApiFailure> {
@@ -728,7 +861,7 @@ fn configured_runtime_provider_base_url() -> Result<Option<String>, ApiFailure> 
     Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
 }
 
-fn runtime_accessible_provider_url(
+async fn runtime_accessible_provider_url(
     state: &AppState,
     raw_url: &str,
     provider_id: Option<&str>,
@@ -743,24 +876,31 @@ fn runtime_accessible_provider_url(
         return Ok(base_url.to_string());
     }
 
-    let validated = validate_provider_url(raw_url)?;
-    let parsed = reqwest::Url::parse(&validated).map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "invalid provider URL", "details": error.to_string(), "value": raw_url }),
-        )
-    })?;
-    if parsed.scheme() == "http" {
-        let host = parsed.host_str().unwrap_or("");
-        if LOOPBACK_HOSTS.contains(&host)
-            && is_local_provider
-            && let Some(base_url) = local_provider_base_url
-        {
+    let validated = classify_remote_endpoint_url(raw_url, "provider URL")
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error, "value": raw_url }),
+            )
+        })?;
+    if validated.reachability == RemoteEndpointReachability::LocalOnly {
+        if is_local_provider && let Some(base_url) = local_provider_base_url {
             return Ok(base_url);
         }
+        if provider_id.is_some() && is_local_provider {
+            return Ok(validated.normalized_url);
+        }
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "provider URL targets a local or private-network address and is only allowed for the local node via FROGLET_RUNTIME_PROVIDER_BASE_URL",
+                "value": raw_url,
+            }),
+        ));
     }
 
-    Ok(validated)
+    Ok(validated.normalized_url)
 }
 
 fn default_offer_publication_state() -> String {
@@ -1197,7 +1337,7 @@ where
     })
 }
 
-fn provider_url_from_discovery(
+async fn provider_url_from_discovery(
     state: &AppState,
     record: &DiscoveryNodeRecord,
 ) -> Result<String, ApiFailure> {
@@ -1216,7 +1356,7 @@ fn provider_url_from_discovery(
                 }),
             )
         })?;
-    runtime_accessible_provider_url(state, &raw, Some(&record.descriptor.node_id))
+    runtime_accessible_provider_url(state, &raw, Some(&record.descriptor.node_id)).await
 }
 
 async fn fetch_discovery_provider(
@@ -1319,6 +1459,11 @@ fn verify_provider_receipt_artifact(
             "provider receipt signature verification failed",
         ));
     }
+    if let Err(error) = protocol::validate_receipt_artifact(receipt) {
+        return Err(provider_bad_gateway(&format!(
+            "provider receipt semantic validation failed: {error}"
+        )));
+    }
     if receipt.payload.provider_id != expected_provider_id {
         return Err(provider_bad_gateway(
             "provider receipt provider_id does not match selected provider",
@@ -1337,6 +1482,11 @@ fn verify_provider_receipt_artifact(
     if receipt.payload.deal_hash != deal.hash {
         return Err(provider_bad_gateway(
             "provider receipt deal_hash does not match local requester deal",
+        ));
+    }
+    if receipt.payload.settlement_refs.method != quote.payload.settlement_terms.method {
+        return Err(provider_bad_gateway(
+            "provider receipt settlement method does not match local requester quote",
         ));
     }
     if let Some(result_hash) = result_hash
@@ -1369,7 +1519,8 @@ async fn resolve_runtime_provider(
     let explicit_provider_id = provider.provider_id.clone();
     if let Some(provider_url) = provider.provider_url.clone() {
         let provider_url =
-            runtime_accessible_provider_url(state, &provider_url, explicit_provider_id.as_deref())?;
+            runtime_accessible_provider_url(state, &provider_url, explicit_provider_id.as_deref())
+                .await?;
         let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
         verify_provider_descriptor_artifact(&descriptor)?;
         if let Some(expected_provider_id) = explicit_provider_id.as_deref()
@@ -1397,7 +1548,7 @@ async fn resolve_runtime_provider(
         ));
     };
     let discovery = fetch_discovery_provider(state, &provider_id).await?;
-    let provider_url = provider_url_from_discovery(state, &discovery)?;
+    let provider_url = provider_url_from_discovery(state, &discovery).await?;
     let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
     verify_provider_descriptor_artifact(&descriptor)?;
     if descriptor.payload.provider_id != provider_id {
@@ -1714,7 +1865,7 @@ pub async fn runtime_provider_details(
         Ok(record) => record,
         Err(error) => return error_json(error.0, error.1),
     };
-    let provider_url = match provider_url_from_discovery(state.as_ref(), &discovery) {
+    let provider_url = match provider_url_from_discovery(state.as_ref(), &discovery).await {
         Ok(url) => url,
         Err(error) => return error_json(error.0, error.1),
     };
@@ -2566,7 +2717,7 @@ pub async fn get_provider_service(
     State(state): State<Arc<AppState>>,
     Path(service_id): Path<String>,
 ) -> impl IntoResponse {
-    match provider_service_record(state.as_ref(), &service_id, true).await {
+    match provider_service_record(state.as_ref(), &service_id, false, false).await {
         Ok(Some(service)) => {
             (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response()
         }
@@ -3148,7 +3299,8 @@ pub async fn release_deal_preimage(
 }
 
 pub async fn verify_receipt(Json(payload): Json<VerifyReceiptRequest>) -> impl IntoResponse {
-    let valid = protocol::verify_artifact(&payload.receipt);
+    let valid = protocol::verify_artifact(&payload.receipt)
+        && protocol::validate_receipt_artifact(&payload.receipt).is_ok();
     (
         StatusCode::OK,
         Json(json!({
@@ -4308,14 +4460,17 @@ async fn quoted_settlement_terms(
         return Ok(terms);
     }
 
+    // Canonical free-service settlement terms: method "none" with empty
+    // destination_identity and zero fees.  Do NOT fall through to the
+    // Lightning method string with zero fees.
     Ok(QuoteSettlementTerms {
-        method: "lightning.base_fee_plus_success_fee.v1".to_string(),
-        destination_identity: state.identity.compressed_public_key_hex().to_string(),
+        method: "none".to_string(),
+        destination_identity: String::new(),
         base_fee_msat: 0,
-        success_fee_msat: price_sats.saturating_mul(1_000),
-        max_base_invoice_expiry_secs: state.config.lightning.base_invoice_expiry_secs,
-        max_success_hold_expiry_secs: state.config.lightning.success_hold_expiry_secs,
-        min_final_cltv_expiry: state.config.lightning.min_final_cltv_expiry,
+        success_fee_msat: 0,
+        max_base_invoice_expiry_secs: 0,
+        max_success_hold_expiry_secs: 0,
+        min_final_cltv_expiry: 0,
     })
 }
 
@@ -4595,6 +4750,20 @@ fn offer_service_id(definition: &ProviderManagedOfferDefinition) -> String {
         .unwrap_or_else(|| definition.offer_id.clone())
 }
 
+fn effective_provider_offer_kind(definition: &ProviderManagedOfferDefinition) -> String {
+    if definition.service_id.is_some()
+        && let Ok(
+            ExecutionRuntime::Wasm
+            | ExecutionRuntime::Python
+            | ExecutionRuntime::Container
+            | ExecutionRuntime::Any,
+        ) = ExecutionRuntime::parse(&definition.runtime)
+    {
+        return crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string();
+    }
+    definition.offer_kind.clone()
+}
+
 fn service_id_for_offer_definition(definition: &ProviderManagedOfferDefinition) -> ServiceId {
     match definition.runtime.as_str() {
         "builtin" => ServiceId::EventsQuery,
@@ -4608,14 +4777,22 @@ fn payload_from_provider_offer_definition(
     definition: &ProviderManagedOfferDefinition,
 ) -> OfferPayload {
     let service_id = service_id_for_offer_definition(definition);
+    let offer_kind = effective_provider_offer_kind(definition);
     let runtime = ExecutionRuntime::parse(&definition.runtime).unwrap_or(ExecutionRuntime::Wasm);
+    let base_fee_msat: u64 = 0;
+    let success_fee_msat: u64 = definition.price_sats.saturating_mul(1_000);
+    let settlement_method = if base_fee_msat == 0 && success_fee_msat == 0 {
+        "none".to_string()
+    } else {
+        "lightning.base_fee_plus_success_fee.v1".to_string()
+    };
     OfferPayload {
         provider_id: state.identity.node_id().to_string(),
         offer_id: definition.offer_id.clone(),
         descriptor_hash: descriptor_hash.to_string(),
         expires_at: None,
-        offer_kind: definition.offer_kind.clone(),
-        settlement_method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+        offer_kind,
+        settlement_method,
         quote_ttl_secs: advertised_offer_timeout_secs(
             state,
             service_id,
@@ -4636,8 +4813,8 @@ fn payload_from_provider_offer_definition(
             fuel_limit: definition.fuel_limit,
         },
         price_schedule: protocol::OfferPriceSchedule {
-            base_fee_msat: 0,
-            success_fee_msat: definition.price_sats.saturating_mul(1_000),
+            base_fee_msat,
+            success_fee_msat,
         },
         terms_hash: definition.terms_hash.clone(),
         confidential_profile_hash: definition.confidential_profile_hash.clone(),
@@ -4662,6 +4839,7 @@ pub(crate) fn provider_offer_record_from_parts(
         mode: definition.mode.clone(),
         summary: definition.summary.clone(),
         module_hash: definition.module_hash.clone(),
+        binding_hash: definition.module_hash.clone(),
         starter: definition.starter.clone(),
         input_schema: definition.input_schema.clone(),
         output_schema: definition.output_schema.clone(),
@@ -4928,7 +5106,7 @@ fn provider_service_from_definition(
     Ok(Some(ProviderServiceRecord {
         service_id,
         offer_id: definition.offer_id.clone(),
-        offer_kind: definition.offer_kind.clone(),
+        offer_kind: effective_provider_offer_kind(definition),
         resource_kind: provider_service_resource_kind(definition).to_string(),
         project_id: definition.project_id.clone(),
         summary: definition
@@ -4946,6 +5124,7 @@ fn provider_service_from_definition(
         publication_state: definition.publication_state.clone(),
         provider_id: state.identity.node_id().to_string(),
         module_hash: definition.module_hash.clone(),
+        binding_hash: definition.module_hash.clone(),
         input_schema: definition.input_schema.clone(),
         output_schema: definition.output_schema.clone(),
         module_bytes_hex: if include_binding {
@@ -5002,10 +5181,11 @@ pub(crate) async fn current_service_records(
 pub(crate) async fn provider_service_record(
     state: &AppState,
     service_id: &str,
+    include_hidden: bool,
     include_binding: bool,
 ) -> Result<Option<ProviderServiceRecord>, String> {
     let normalized_service_id = normalize_short_id(service_id)?;
-    let services = current_service_records(state, true, include_binding).await?;
+    let services = current_service_records(state, include_hidden, include_binding).await?;
     Ok(services
         .into_iter()
         .find(|service| service.service_id == normalized_service_id))
@@ -6537,6 +6717,44 @@ fn validate_execution_workload(
         .validate_basic()
         .map_err(|error| error_json(StatusCode::BAD_REQUEST, json!({ "error": error })))?;
 
+    if execution.is_service_addressed() {
+        return match (&execution.runtime, &execution.package_kind) {
+            (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource)
+            | (ExecutionRuntime::TeePython, ExecutionPackageKind::InlineSource) => {
+                if execution.contract_version != CONTRACT_PYTHON_HANDLER_JSON_V1
+                    && execution.contract_version != CONTRACT_PYTHON_SCRIPT_JSON_V1
+                {
+                    return Err(error_json(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "unsupported python contract_version", "contract_version": execution.contract_version }),
+                    ));
+                }
+                Ok(())
+            }
+            (ExecutionRuntime::Container, ExecutionPackageKind::OciImage)
+            | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage) => {
+                if execution.contract_version != CONTRACT_CONTAINER_JSON_V1 {
+                    return Err(error_json(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "unsupported container contract_version", "contract_version": execution.contract_version }),
+                    ));
+                }
+                Ok(())
+            }
+            (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
+                if execution.builtin_name.as_deref() == Some("events.query") {
+                    Ok(())
+                } else {
+                    Err(error_json(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "unsupported builtin execution", "builtin_name": execution.builtin_name }),
+                    ))
+                }
+            }
+            _ => Ok(()),
+        };
+    }
+
     match (&execution.runtime, &execution.package_kind) {
         (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule)
         | (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule) => {
@@ -6708,12 +6926,7 @@ else:
     raise RuntimeError(f"unsupported entrypoint kind: {entrypoint_kind}")
 json.dump(result, sys.stdout, separators=(",", ":"))
 "#;
-    let tempdir = std::env::temp_dir().join(format!(
-        "froglet-python-{}",
-        crate::discovery::random_hex(16)
-    ));
-    fs::create_dir_all(&tempdir)
-        .map_err(|error| format!("failed to create python tempdir: {error}"))?;
+    let tempdir = private_runtime_tempdir("froglet-python")?;
     let source_path = tempdir.join("main.py");
     fs::write(&source_path, source)
         .map_err(|error| format!("failed to write python source: {error}"))?;
@@ -6728,7 +6941,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     let input_json_clone = input_json.clone();
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
     let kill_handle_clone = Arc::clone(&kill_handle);
-    run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
+    let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let mut child = std::process::Command::new("python3")
             .arg("-I")
             .arg("-c")
@@ -6782,7 +6995,9 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         serde_json::from_slice::<Value>(&stdout_buf)
             .map_err(|error| format!("python execution returned invalid JSON: {error}").into())
     })
-    .await
+    .await;
+    let _ = fs::remove_dir_all(&tempdir);
+    result
 }
 
 fn detect_container_runner() -> Option<String> {
@@ -6813,11 +7028,15 @@ async fn run_container_execution(
         .oci_reference
         .as_ref()
         .ok_or_else(|| "container execution requires oci_reference".to_string())?;
+    let oci_digest = execution
+        .oci_digest
+        .as_ref()
+        .ok_or_else(|| "container execution requires oci_digest".to_string())?;
+    let image_ref = crate::execution::digest_pinned_oci_image_reference(image, oci_digest)?;
     let input_json = canonical_json::to_vec(&execution.input).map_err(|error| error.to_string())?;
     let mount_context = execution_mount_context(execution, granted_access);
-    let image_ref = image.clone();
     let mounts = execution.mounts.clone();
-    let oci_digest = execution.oci_digest.clone();
+    let oci_digest = Some(oci_digest.to_string());
     let timeout_secs = timeout;
     let context_json = json!({ "mounts": mount_context }).to_string();
     let granted_access_clone = granted_access.to_vec();
@@ -6904,6 +7123,286 @@ async fn run_container_execution(
             .map_err(|error| format!("container execution returned invalid JSON: {error}").into())
     })
     .await
+}
+
+fn normalized_service_execution_profile(
+    service: &ProviderServiceRecord,
+) -> Result<
+    (
+        ExecutionRuntime,
+        ExecutionPackageKind,
+        ExecutionEntrypointKind,
+        String,
+        String,
+    ),
+    String,
+> {
+    let runtime = ExecutionRuntime::parse(&service.runtime)?;
+    let package_kind = ExecutionPackageKind::parse(&service.package_kind)?;
+    let entrypoint_kind = if service.entrypoint_kind.trim().is_empty() {
+        default_entrypoint_kind_for(&runtime)
+    } else {
+        ExecutionEntrypointKind::parse(&service.entrypoint_kind)?
+    };
+    let use_default_entrypoint = service.entrypoint.trim().is_empty()
+        || (matches!(entrypoint_kind, ExecutionEntrypointKind::Handler)
+            && (service.entrypoint.contains('/')
+                || service.entrypoint.ends_with(".py")
+                || service.entrypoint.contains('\\')));
+    let entrypoint = if use_default_entrypoint {
+        default_entrypoint_for(&runtime, &entrypoint_kind).to_string()
+    } else {
+        service.entrypoint.clone()
+    };
+    let contract_version = if service.contract_version.trim().is_empty() {
+        default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
+    } else {
+        service.contract_version.clone()
+    };
+    Ok((
+        runtime,
+        package_kind,
+        entrypoint_kind,
+        entrypoint,
+        contract_version,
+    ))
+}
+
+fn service_binding_hash(service: &ProviderServiceRecord) -> Option<&str> {
+    service
+        .binding_hash
+        .as_deref()
+        .or(service.module_hash.as_deref())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn validate_service_addressed_execution_against_service(
+    execution: &ExecutionWorkload,
+    service: &ProviderServiceRecord,
+) -> Result<(), String> {
+    let requested_service_id = execution
+        .service_id()
+        .ok_or_else(|| "service-addressed execution requires security.service_id".to_string())?;
+    if requested_service_id != service.service_id {
+        return Err(
+            "service-addressed execution service_id does not match local service".to_string(),
+        );
+    }
+    let (runtime, package_kind, entrypoint_kind, entrypoint, contract_version) =
+        normalized_service_execution_profile(service)?;
+    if execution.runtime != runtime {
+        return Err("service-addressed execution runtime does not match local service".to_string());
+    }
+    if execution.package_kind != package_kind {
+        return Err(
+            "service-addressed execution package_kind does not match local service".to_string(),
+        );
+    }
+    if execution.entrypoint.kind != entrypoint_kind {
+        return Err(
+            "service-addressed execution entrypoint_kind does not match local service".to_string(),
+        );
+    }
+    if execution.entrypoint.value != entrypoint {
+        return Err(
+            "service-addressed execution entrypoint does not match local service".to_string(),
+        );
+    }
+    if execution.contract_version != contract_version {
+        return Err(
+            "service-addressed execution contract_version does not match local service".to_string(),
+        );
+    }
+    if execution.mounts != service.mounts {
+        return Err("service-addressed execution mounts do not match local service".to_string());
+    }
+    let Some(requested_binding_hash) = execution.binding_hash() else {
+        return Err("service-addressed execution binding hash is missing".to_string());
+    };
+    let Some(local_binding_hash) = service_binding_hash(service) else {
+        return Err("local service binding hash is missing".to_string());
+    };
+    if requested_binding_hash != local_binding_hash {
+        return Err(
+            "service-addressed execution binding hash does not match local service".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn build_bound_workload_spec_from_service(
+    service: &ProviderServiceRecord,
+    input: Value,
+) -> Result<WorkloadSpec, String> {
+    let (runtime, package_kind, entrypoint_kind, entrypoint, contract_version) =
+        normalized_service_execution_profile(service)?;
+    match (&runtime, &package_kind) {
+        (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
+            let module_bytes_hex = service
+                .module_bytes_hex
+                .clone()
+                .ok_or_else(|| "service is missing module_bytes_hex binding".to_string())?;
+            let module_bytes = hex::decode(&module_bytes_hex)
+                .map_err(|error| format!("invalid module hex: {error}"))?;
+            let workload = crate::wasm::ComputeWasmWorkload::new(&module_bytes, &input)?;
+            Ok(WorkloadSpec::Wasm {
+                submission: Box::new(crate::wasm::WasmSubmission {
+                    schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
+                    submission_type: crate::wasm::WASM_SUBMISSION_TYPE_V1.to_string(),
+                    workload: crate::wasm::ComputeWasmWorkload {
+                        abi_version: contract_version,
+                        requested_capabilities: Vec::new(),
+                        ..workload
+                    },
+                    module_bytes_hex,
+                    input,
+                }),
+            })
+        }
+        (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage) => {
+            let oci_reference = service
+                .oci_reference
+                .clone()
+                .ok_or_else(|| "service is missing oci_reference binding".to_string())?;
+            let oci_digest = service
+                .oci_digest
+                .clone()
+                .ok_or_else(|| "service is missing oci_digest binding".to_string())?;
+            let input_hash = crypto::sha256_hex(
+                canonical_json::to_vec(&input).map_err(|error| error.to_string())?,
+            );
+            Ok(WorkloadSpec::OciWasm {
+                submission: Box::new(crate::wasm::OciWasmSubmission {
+                    schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
+                    submission_type: crate::wasm::WASM_OCI_SUBMISSION_TYPE_V1.to_string(),
+                    workload: crate::wasm::OciWasmWorkload {
+                        schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
+                        workload_kind: crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
+                        abi_version: contract_version,
+                        module_format: crate::wasm::WASM_MODULE_OCI_FORMAT.to_string(),
+                        oci_reference,
+                        oci_digest,
+                        input_format: crate::wasm::JCS_JSON_FORMAT.to_string(),
+                        input_hash,
+                        requested_capabilities: Vec::new(),
+                    },
+                    input,
+                }),
+            })
+        }
+        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
+            let source = service
+                .inline_source
+                .clone()
+                .ok_or_else(|| "service is missing inline_source binding".to_string())?;
+            let execution = match entrypoint_kind {
+                ExecutionEntrypointKind::Script => {
+                    ExecutionWorkload::python_inline_script(source, input)?
+                }
+                _ => ExecutionWorkload::python_inline_handler(source, entrypoint, input)?,
+            };
+            Ok(WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            })
+        }
+        (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
+        | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
+            let oci_reference = service
+                .oci_reference
+                .clone()
+                .ok_or_else(|| "service is missing oci_reference binding".to_string())?;
+            let oci_digest = service
+                .oci_digest
+                .clone()
+                .ok_or_else(|| "service is missing oci_digest binding".to_string())?;
+            let execution = ExecutionWorkload::container_oci(
+                runtime,
+                oci_reference,
+                oci_digest,
+                entrypoint_kind,
+                entrypoint,
+                input,
+            )?;
+            Ok(WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            })
+        }
+        (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
+            let Value::Object(object) = input else {
+                return Err("builtin events.query expects a JSON object input".to_string());
+            };
+            let kinds = match object.get("kinds") {
+                Some(Value::Array(values)) => values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| "builtin events.query kinds must be strings".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(_) => {
+                    return Err(
+                        "builtin events.query kinds must be an array of strings".to_string()
+                    );
+                }
+                None => Vec::new(),
+            };
+            let limit = match object.get("limit") {
+                Some(Value::Number(number)) => {
+                    Some(number.as_u64().map(|value| value as usize).ok_or_else(|| {
+                        "builtin events.query limit must be a non-negative integer".to_string()
+                    })?)
+                }
+                Some(Value::Null) | None => None,
+                Some(_) => {
+                    return Err(
+                        "builtin events.query limit must be a non-negative integer".to_string()
+                    );
+                }
+            };
+            let execution = ExecutionWorkload::builtin_events_query(kinds, limit)?;
+            Ok(WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            })
+        }
+        _ => Err(format!(
+            "unsupported service execution profile runtime={} package_kind={}",
+            runtime.as_str(),
+            package_kind.as_str()
+        )),
+    }
+}
+
+async fn resolve_service_addressed_workload_spec(
+    state: &AppState,
+    execution: &ExecutionWorkload,
+    expected_offer_hash: Option<&str>,
+) -> Result<WorkloadSpec, String> {
+    let service_id = execution
+        .service_id()
+        .ok_or_else(|| "service-addressed execution requires security.service_id".to_string())?;
+    let Some(service) = provider_service_record(state, service_id, true, true).await? else {
+        return Err(format!("service not found: {service_id}"));
+    };
+    validate_service_addressed_execution_against_service(execution, &service)?;
+    if let Some(expected_offer_hash) = expected_offer_hash {
+        let Some(offer_record) =
+            provider_control_offer_record(state, &service.offer_id, true).await?
+        else {
+            return Err(format!(
+                "service-addressed execution offer is missing: {}",
+                service.offer_id
+            ));
+        };
+        if offer_record.offer.hash != expected_offer_hash {
+            return Err(
+                "service-addressed execution offer hash does not match the quoted offer"
+                    .to_string(),
+            );
+        }
+    }
+    build_bound_workload_spec_from_service(&service, execution.input.clone())
 }
 
 fn validate_workload_spec(
@@ -8281,6 +8780,17 @@ async fn classify_deal_recovery(
             && (matches!(synced_bundle.success_state, InvoiceBundleLegState::Settled)
                 || !settlement::lightning_bundle_is_funded(&synced_bundle))
         {
+            // Cancel the bundle to ensure the success_fee leg reaches a
+            // terminal state before we emit a receipt.  Without this,
+            // non-terminal states (Open/Accepted) would leak into the
+            // signed receipt's settlement_state via
+            // settlement_state_from_bundle, violating the kernel rule that
+            // receipts are terminal-only artifacts.
+            let terminal_bundle = settlement::cancel_and_sync_lightning_invoice_bundle(
+                state.as_ref(),
+                &synced_bundle,
+            )
+            .await?;
             let failure = receipt_failure(
                 "recovery_invariant_violation",
                 "lightning settlement state is inconsistent with the persisted deal status",
@@ -8290,7 +8800,7 @@ async fn classify_deal_recovery(
                     state.as_ref(),
                     deal,
                     recovered_at,
-                    Some(synced_bundle),
+                    Some(terminal_bundle),
                     "lightning settlement state is inconsistent with the persisted deal status",
                     failure,
                 )?,
@@ -9172,8 +9682,24 @@ async fn run_workload_spec_with_admission(
     capabilities_granted: Vec<String>,
     payment_method: Option<&str>,
     permit: Option<sandbox::ExecutionPermit>,
+    expected_offer_hash: Option<&str>,
 ) -> Result<WorkloadRunOutput, String> {
     let timeout = workload_execution_timeout(state, &spec, payment_method);
+    if let WorkloadSpec::Execution { execution } = &spec
+        && execution.is_service_addressed()
+    {
+        let bound_spec =
+            resolve_service_addressed_workload_spec(state, execution, expected_offer_hash).await?;
+        return Box::pin(run_workload_spec_with_admission(
+            state,
+            bound_spec,
+            capabilities_granted,
+            payment_method,
+            permit,
+            expected_offer_hash,
+        ))
+        .await;
+    }
     match (spec, permit) {
         (WorkloadSpec::Execution { execution }, permit) => {
             match (&execution.runtime, &execution.package_kind, permit) {
@@ -9862,6 +10388,7 @@ async fn process_deal_with_reserved_permit(
         effective_capabilities,
         deal.payment_method.as_deref(),
         execution_permit,
+        Some(deal.quote.payload.offer_hash.as_str()),
     )
     .await
     {
@@ -10171,14 +10698,14 @@ mod tests {
         http::{Method, Request, StatusCode, header},
     };
     use std::sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     };
-    use tokio::net::TcpListener;
+    use tokio::{net::TcpListener, sync::Mutex};
     use tower::ServiceExt;
 
     static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
-    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static TEST_ENV_LOCK: Mutex<()> = Mutex::const_new(());
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
     const TEST_CONFIDENTIAL_POLICY_TOML: &str =
         include_str!("../examples/confidential_policy.example.toml");
@@ -10307,7 +10834,7 @@ mod tests {
             config: node_config.clone(),
             identity: Arc::new(identity),
             pricing: PricingTable::from_config(node_config.pricing),
-            http_client: reqwest::Client::new(),
+            http_client: crate::tls::build_reqwest_client(None).expect("http client"),
             wasm_host: None,
             confidential_policy: None,
             runtime_auth_token: "test-runtime-token".to_string(),
@@ -10330,6 +10857,90 @@ mod tests {
 
     fn test_app_state(payment_backend: PaymentBackend) -> Arc<AppState> {
         test_app_state_with_lightning_mode(payment_backend, LightningMode::Mock)
+    }
+
+    async fn publish_test_service(
+        state: &Arc<AppState>,
+        payload: ProviderControlPublishArtifactRequest,
+    ) {
+        let service_id = payload.service_id.clone();
+        let definition = artifact_provider_offer_definition(state.as_ref(), payload)
+            .expect("service definition");
+        let (_status, _response) = persist_provider_offer_mutation(
+            state.as_ref(),
+            definition,
+            StatusCode::CREATED,
+            format!("published test service {service_id}"),
+        )
+        .await
+        .expect("persist published service");
+    }
+
+    fn service_addressed_execution_from_record(
+        service: &ProviderServiceRecord,
+        input: Value,
+    ) -> crate::execution::ExecutionWorkload {
+        let (runtime, package_kind, entrypoint_kind, entrypoint, contract_version) =
+            normalized_service_execution_profile(service).expect("normalized service profile");
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).expect("canonical input"));
+        let requested_access = service
+            .mounts
+            .iter()
+            .map(|mount| {
+                format!(
+                    "mount.{}.{}.{}",
+                    mount.kind,
+                    if mount.read_only { "read" } else { "write" },
+                    mount.handle
+                )
+            })
+            .collect::<Vec<_>>();
+        let binding_hash = service
+            .binding_hash
+            .clone()
+            .or_else(|| service.module_hash.clone())
+            .expect("binding hash");
+        let mut execution = crate::execution::ExecutionWorkload {
+            schema_version: FROGLET_SCHEMA_V1.to_string(),
+            workload_kind: crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
+            runtime,
+            package_kind,
+            entrypoint: crate::execution::ExecutionEntrypoint {
+                kind: entrypoint_kind,
+                value: entrypoint,
+            },
+            contract_version,
+            input_format: JCS_JSON_FORMAT.to_string(),
+            input_hash,
+            requested_access,
+            security: crate::execution::ExecutionSecurity {
+                mode: crate::execution::ExecutionSecurityMode::Standard,
+                confidential_session_hash: None,
+                service_id: Some(service.service_id.clone()),
+                request_envelope: None,
+            },
+            mounts: service.mounts.clone(),
+            input,
+            module_hash: None,
+            module_bytes_hex: None,
+            source_hash: None,
+            inline_source: None,
+            oci_reference: None,
+            oci_digest: None,
+            builtin_name: None,
+        };
+        match execution.package_kind {
+            crate::execution::ExecutionPackageKind::InlineSource => {
+                execution.source_hash = Some(binding_hash)
+            }
+            crate::execution::ExecutionPackageKind::InlineModule
+            | crate::execution::ExecutionPackageKind::OciImage => {
+                execution.module_hash = Some(binding_hash)
+            }
+            crate::execution::ExecutionPackageKind::Builtin => {}
+        }
+        execution
     }
 
     fn test_confidential_policy() -> crate::confidential::ConfidentialPolicy {
@@ -10834,9 +11445,9 @@ mod tests {
         assert_eq!(fetched, fixture.module_bytes);
     }
 
-    #[test]
-    fn runtime_accessible_provider_url_rewrites_local_loopback_to_configured_base_url() {
-        let _env_lock = TEST_ENV_LOCK.lock().expect("env lock");
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_rewrites_local_loopback_to_configured_base_url() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
         let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", "http://provider:8080");
         let state = test_app_state(PaymentBackend::None);
         let local_node_id = state.identity.node_id().to_string();
@@ -10846,14 +11457,15 @@ mod tests {
             "http://127.0.0.1:8080",
             Some(&local_node_id),
         )
+        .await
         .expect("runtime-accessible provider url");
 
         assert_eq!(provider_url, "http://provider:8080");
     }
 
-    #[test]
-    fn runtime_accessible_provider_url_accepts_configured_local_provider_base_url() {
-        let _env_lock = TEST_ENV_LOCK.lock().expect("env lock");
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_accepts_configured_local_provider_base_url() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
         let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", "http://provider:8080");
         let state = test_app_state(PaymentBackend::None);
         let local_node_id = state.identity.node_id().to_string();
@@ -10863,9 +11475,429 @@ mod tests {
             "http://provider:8080",
             Some(&local_node_id),
         )
+        .await
         .expect("runtime-accessible provider url");
 
         assert_eq!(provider_url, "http://provider:8080");
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_rejects_https_loopback_for_remote_provider() {
+        let state = test_app_state(PaymentBackend::None);
+        let error = runtime_accessible_provider_url(
+            state.as_ref(),
+            "https://127.0.0.1:8443",
+            Some(&"11".repeat(32)),
+        )
+        .await
+        .expect_err("remote https loopback should be rejected");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("local or private-network")),
+            "unexpected payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn public_provider_service_detail_hides_hidden_services_and_binding_fields() {
+        let state = test_app_state(PaymentBackend::None);
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "public-python".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"message\": \"pong\"}\n"
+                        .to_string(),
+                ),
+                summary: Some("public python service".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "hidden-python".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"hidden\": true}\n".to_string(),
+                ),
+                summary: Some("hidden python service".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("hidden".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let public_response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/services/public-python",
+                None,
+                None,
+            ))
+            .await
+            .expect("public service response");
+        let (public_status, public_payload): (StatusCode, Value) =
+            response_json(public_response).await;
+        assert_eq!(public_status, StatusCode::OK);
+        assert_eq!(public_payload["service"]["service_id"], "public-python");
+        assert_eq!(public_payload["service"]["publication_state"], "active");
+        assert_eq!(public_payload["service"]["inline_source"], Value::Null);
+        assert_eq!(public_payload["service"]["module_bytes_hex"], Value::Null);
+        assert_eq!(public_payload["service"]["oci_reference"], Value::Null);
+        assert_eq!(public_payload["service"]["oci_digest"], Value::Null);
+        assert!(public_payload["service"]["binding_hash"].is_string());
+
+        let hidden_response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/services/hidden-python",
+                None,
+                None,
+            ))
+            .await
+            .expect("hidden service response");
+        let (hidden_status, hidden_payload): (StatusCode, Value) =
+            response_json(hidden_response).await;
+        assert_eq!(hidden_status, StatusCode::NOT_FOUND);
+        assert_eq!(hidden_payload["error"], "service not found");
+    }
+
+    #[tokio::test]
+    async fn service_addressed_python_execution_runs_from_redacted_service_record() {
+        let state = test_app_state(PaymentBackend::None);
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "public-python".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"message\": \"pong\", \"input\": event}\n"
+                        .to_string(),
+                ),
+                summary: Some("public python service".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let service = provider_service_record(state.as_ref(), "public-python", false, false)
+            .await
+            .expect("provider service record")
+            .expect("published service");
+        assert!(service.inline_source.is_none());
+        assert!(service.binding_hash.is_some());
+        let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
+            .await
+            .expect("provider offer record")
+            .expect("published offer");
+        let execution =
+            service_addressed_execution_from_record(&service, json!({ "origin": "test" }));
+
+        let output = run_workload_spec_with_admission(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            Vec::new(),
+            None,
+            Some(
+                state
+                    .wasm_sandbox
+                    .try_acquire_execution_permit()
+                    .expect("wasm execution permit"),
+            ),
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect("service-addressed python execution");
+
+        assert_eq!(
+            output.persisted_result,
+            json!({ "message": "pong", "input": { "origin": "test" } })
+        );
+    }
+
+    #[tokio::test]
+    async fn service_addressed_wasm_execution_runs_from_redacted_service_record() {
+        let state = test_app_state(PaymentBackend::None);
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "public-wasm".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: Some(VALID_WASM_HEX.to_string()),
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("wasm".to_string()),
+                package_kind: Some("inline_module".to_string()),
+                entrypoint_kind: None,
+                entrypoint: None,
+                contract_version: Some(WASM_RUN_JSON_ABI_V1.to_string()),
+                mounts: None,
+                inline_source: None,
+                summary: Some("public wasm service".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let service = provider_service_record(state.as_ref(), "public-wasm", false, false)
+            .await
+            .expect("provider service record")
+            .expect("published service");
+        assert!(service.module_bytes_hex.is_none());
+        assert!(service.binding_hash.is_some());
+        let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
+            .await
+            .expect("provider offer record")
+            .expect("published offer");
+        let execution = service_addressed_execution_from_record(&service, Value::Null);
+
+        let output = run_workload_spec_with_admission(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            Vec::new(),
+            None,
+            Some(
+                state
+                    .wasm_sandbox
+                    .try_acquire_execution_permit()
+                    .expect("wasm execution permit"),
+            ),
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect("service-addressed wasm execution");
+
+        assert_eq!(output.persisted_result, json!(42));
+    }
+
+    #[tokio::test]
+    async fn service_addressed_oci_wasm_execution_runs_from_redacted_service_record() {
+        let state = test_app_state(PaymentBackend::None);
+        let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
+        let fixture = spawn_oci_registry_fixture(module_bytes).await;
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "public-oci-wasm".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: Some(fixture.oci_reference.clone()),
+                oci_digest: Some(fixture.oci_digest.clone()),
+                runtime: Some("wasm".to_string()),
+                package_kind: Some("oci_image".to_string()),
+                entrypoint_kind: None,
+                entrypoint: None,
+                contract_version: Some(WASM_RUN_JSON_ABI_V1.to_string()),
+                mounts: None,
+                inline_source: None,
+                summary: Some("public OCI wasm service".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let service = provider_service_record(state.as_ref(), "public-oci-wasm", false, false)
+            .await
+            .expect("provider service record")
+            .expect("published service");
+        assert!(service.oci_reference.is_none());
+        assert!(service.oci_digest.is_none());
+        assert_eq!(
+            service.binding_hash.as_deref(),
+            Some(fixture.oci_digest.as_str())
+        );
+        let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
+            .await
+            .expect("provider offer record")
+            .expect("published offer");
+        let execution = service_addressed_execution_from_record(&service, Value::Null);
+
+        let output = run_workload_spec_with_admission(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            Vec::new(),
+            None,
+            None,
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect("service-addressed OCI wasm execution");
+
+        assert_eq!(output.persisted_result, json!(42));
+    }
+
+    #[tokio::test]
+    async fn service_addressed_execution_rejects_metadata_and_offer_mismatches() {
+        let state = test_app_state(PaymentBackend::None);
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "validated-python".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: Some(vec![crate::execution::ExecutionMount {
+                    handle: "fixtures".to_string(),
+                    kind: "fs".to_string(),
+                    read_only: true,
+                    binding: Some("/tmp".to_string()),
+                }]),
+                inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
+                summary: Some("validated python service".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let service = provider_service_record(state.as_ref(), "validated-python", false, false)
+            .await
+            .expect("provider service record")
+            .expect("published service");
+        let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
+            .await
+            .expect("provider offer record")
+            .expect("published offer");
+        let execution = service_addressed_execution_from_record(&service, Value::Null);
+
+        let mut wrong_runtime = execution.clone();
+        wrong_runtime.runtime = crate::execution::ExecutionRuntime::Wasm;
+        let runtime_error = resolve_service_addressed_workload_spec(
+            state.as_ref(),
+            &wrong_runtime,
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect_err("runtime mismatch should fail");
+        assert!(runtime_error.contains("runtime does not match"));
+
+        let mut wrong_entrypoint = execution.clone();
+        wrong_entrypoint.entrypoint.value = "different".to_string();
+        let entrypoint_error = resolve_service_addressed_workload_spec(
+            state.as_ref(),
+            &wrong_entrypoint,
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect_err("entrypoint mismatch should fail");
+        assert!(entrypoint_error.contains("entrypoint does not match"));
+
+        let mut wrong_contract = execution.clone();
+        wrong_contract.contract_version = WASM_RUN_JSON_ABI_V1.to_string();
+        let contract_error = resolve_service_addressed_workload_spec(
+            state.as_ref(),
+            &wrong_contract,
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect_err("contract mismatch should fail");
+        assert!(contract_error.contains("contract_version does not match"));
+
+        let mut wrong_mounts = execution.clone();
+        wrong_mounts.mounts.clear();
+        wrong_mounts.requested_access.clear();
+        let mounts_error = resolve_service_addressed_workload_spec(
+            state.as_ref(),
+            &wrong_mounts,
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect_err("mount mismatch should fail");
+        assert!(mounts_error.contains("mounts do not match"));
+
+        let mut wrong_binding = execution.clone();
+        wrong_binding.source_hash = Some("00".repeat(32));
+        let binding_error = resolve_service_addressed_workload_spec(
+            state.as_ref(),
+            &wrong_binding,
+            Some(offer.offer.hash.as_str()),
+        )
+        .await
+        .expect_err("binding mismatch should fail");
+        assert!(binding_error.contains("binding hash does not match"));
+
+        let offer_error = resolve_service_addressed_workload_spec(
+            state.as_ref(),
+            &execution,
+            Some(&"11".repeat(32)),
+        )
+        .await
+        .expect_err("quoted offer mismatch should fail");
+        assert!(offer_error.contains("offer hash does not match"));
     }
 
     #[tokio::test]

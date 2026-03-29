@@ -250,10 +250,176 @@ fn default_input_value() -> Value {
     Value::Null
 }
 
+pub fn digest_pinned_oci_image_reference(
+    oci_reference: &str,
+    oci_digest: &str,
+) -> Result<String, String> {
+    let digest = oci_digest.trim().to_ascii_lowercase();
+    if digest.len() != 64
+        || !digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("oci_digest must be a 64-character sha256 hex string".to_string());
+    }
+
+    let trimmed = oci_reference.trim();
+    if trimmed.is_empty() {
+        return Err("oci_reference must not be empty".to_string());
+    }
+    if trimmed.contains(['?', '#']) {
+        return Err("oci_reference must not include query or fragment components".to_string());
+    }
+
+    let reference = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    let last_slash = reference.rfind('/').ok_or_else(|| {
+        "oci_reference must include a registry host and repository path".to_string()
+    })?;
+    if last_slash == 0 || last_slash == reference.len() - 1 {
+        return Err("oci_reference must include a registry host and repository path".to_string());
+    }
+
+    let repository = if let Some(at_pos) = reference.rfind('@') {
+        &reference[..at_pos]
+    } else if let Some(colon_pos) = reference.rfind(':') {
+        if colon_pos > last_slash {
+            &reference[..colon_pos]
+        } else {
+            reference
+        }
+    } else {
+        reference
+    };
+
+    if repository.is_empty() || repository.ends_with('/') {
+        return Err("oci_reference must include a registry host and repository path".to_string());
+    }
+
+    Ok(format!("{repository}@sha256:{digest}"))
+}
+
 impl ExecutionWorkload {
     pub fn request_hash(&self) -> Result<String, String> {
         let encoded = canonical_json::to_vec(self).map_err(|error| error.to_string())?;
         Ok(crypto::sha256_hex(encoded))
+    }
+
+    pub fn is_service_addressed(&self) -> bool {
+        self.security.mode == ExecutionSecurityMode::Standard
+            && self
+                .security
+                .service_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+
+    pub fn service_id(&self) -> Option<&str> {
+        self.security.service_id.as_deref()
+    }
+
+    pub fn binding_hash(&self) -> Option<&str> {
+        match self.package_kind {
+            ExecutionPackageKind::InlineSource => self.source_hash.as_deref(),
+            ExecutionPackageKind::InlineModule | ExecutionPackageKind::OciImage => {
+                self.module_hash.as_deref()
+            }
+            ExecutionPackageKind::Builtin => None,
+        }
+    }
+
+    fn validate_service_addressed_shape(&self) -> Result<(), String> {
+        let Some(service_id) = self.service_id() else {
+            return Err("service-addressed execution requires security.service_id".to_string());
+        };
+        if service_id.trim().is_empty() {
+            return Err("service-addressed execution requires security.service_id".to_string());
+        }
+        if self.contract_version.trim().is_empty() {
+            return Err("service-addressed execution requires contract_version".to_string());
+        }
+        if self.entrypoint.value.trim().is_empty() {
+            return Err("service-addressed execution requires entrypoint".to_string());
+        }
+        let expected_access = self
+            .mounts
+            .iter()
+            .map(|mount| {
+                format!(
+                    "mount.{}.{}.{}",
+                    mount.kind,
+                    if mount.read_only { "read" } else { "write" },
+                    mount.handle
+                )
+            })
+            .collect::<Vec<_>>();
+        if self.requested_access != expected_access {
+            return Err(
+                "service-addressed execution requested_access must match the declared mounts"
+                    .to_string(),
+            );
+        }
+        match (&self.runtime, &self.package_kind) {
+            (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule)
+            | (ExecutionRuntime::TeeWasm, ExecutionPackageKind::InlineModule) => {
+                if self.module_hash.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err("service-addressed Wasm execution requires module_hash".to_string());
+                }
+                if self.module_bytes_hex.is_some()
+                    || self.inline_source.is_some()
+                    || self.oci_reference.is_some()
+                    || self.oci_digest.is_some()
+                {
+                    return Err(
+                        "service-addressed Wasm execution must not embed binding payloads"
+                            .to_string(),
+                    );
+                }
+            }
+            (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource)
+            | (ExecutionRuntime::TeePython, ExecutionPackageKind::InlineSource) => {
+                if self.source_hash.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(
+                        "service-addressed inline source execution requires source_hash"
+                            .to_string(),
+                    );
+                }
+                if self.module_bytes_hex.is_some()
+                    || self.inline_source.is_some()
+                    || self.oci_reference.is_some()
+                    || self.oci_digest.is_some()
+                {
+                    return Err(
+                        "service-addressed inline source execution must not embed binding payloads"
+                            .to_string(),
+                    );
+                }
+            }
+            (_, ExecutionPackageKind::OciImage) => {
+                if self.module_hash.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err("service-addressed OCI execution requires module_hash".to_string());
+                }
+                if self.module_bytes_hex.is_some()
+                    || self.inline_source.is_some()
+                    || self.oci_reference.is_some()
+                    || self.oci_digest.is_some()
+                {
+                    return Err(
+                        "service-addressed OCI execution must not embed binding payloads"
+                            .to_string(),
+                    );
+                }
+            }
+            (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
+                if self.builtin_name.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err("builtin execution requires builtin_name".to_string());
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub fn validate_basic(&self) -> Result<(), String> {
@@ -261,6 +427,9 @@ impl ExecutionWorkload {
         let input_hash = crypto::sha256_hex(input_bytes);
         if input_hash != self.input_hash {
             return Err("input hash does not match canonical input".to_string());
+        }
+        if self.is_service_addressed() {
+            return self.validate_service_addressed_shape();
         }
         match (&self.runtime, &self.package_kind) {
             (ExecutionRuntime::Any, _) => {
@@ -289,17 +458,17 @@ impl ExecutionWorkload {
                 }
             }
             (_, ExecutionPackageKind::OciImage) => {
-                if self
+                let oci_reference = self
                     .oci_reference
                     .as_deref()
-                    .unwrap_or("")
-                    .trim()
-                    .is_empty()
-                {
-                    return Err("oci_image execution requires oci_reference".to_string());
-                }
-                if self.oci_digest.as_deref().unwrap_or("").trim().is_empty() {
-                    return Err("oci_image execution requires oci_digest".to_string());
+                    .ok_or_else(|| "oci_image execution requires oci_reference".to_string())?;
+                let oci_digest = self
+                    .oci_digest
+                    .as_deref()
+                    .ok_or_else(|| "oci_image execution requires oci_digest".to_string())?;
+                digest_pinned_oci_image_reference(oci_reference, oci_digest)?;
+                if self.module_hash.as_deref() != Some(oci_digest) {
+                    return Err("module hash does not match oci_digest".to_string());
                 }
             }
             (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin)
@@ -712,5 +881,55 @@ impl ExecutionWorkload {
             .and_then(Value::as_u64)
             .map(|value| value as usize);
         Some((kinds, limit))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ExecutionEntrypointKind, ExecutionRuntime, ExecutionWorkload,
+        digest_pinned_oci_image_reference,
+    };
+    use serde_json::Value;
+
+    #[test]
+    fn digest_pinned_oci_image_reference_strips_tags_and_schemes() {
+        let pinned = digest_pinned_oci_image_reference(
+            "https://ghcr.io/froglet/image:latest",
+            &"ab".repeat(32),
+        )
+        .expect("digest-pinned reference");
+
+        assert_eq!(
+            pinned,
+            format!("ghcr.io/froglet/image@sha256:{}", "ab".repeat(32))
+        );
+    }
+
+    #[test]
+    fn digest_pinned_oci_image_reference_rejects_invalid_digest() {
+        let error = digest_pinned_oci_image_reference("ghcr.io/froglet/image:latest", "xyz")
+            .expect_err("invalid digest should fail");
+
+        assert!(error.contains("oci_digest"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn oci_workload_validation_rejects_mismatched_module_hash() {
+        let mut workload = ExecutionWorkload::container_oci(
+            ExecutionRuntime::Container,
+            "ghcr.io/froglet/image:latest".to_string(),
+            "ab".repeat(32),
+            ExecutionEntrypointKind::Handler,
+            "run".to_string(),
+            Value::Null,
+        )
+        .expect("container workload");
+        workload.module_hash = Some("cd".repeat(32));
+
+        let error = workload
+            .validate_basic()
+            .expect_err("mismatched hash should fail");
+        assert!(error.contains("module hash"), "unexpected error: {error}");
     }
 }

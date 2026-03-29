@@ -48,6 +48,12 @@ const DEFAULT_OPERATOR_LISTEN_ADDR: &str = "127.0.0.1:9191";
 const DEFAULT_TAIL_LINES: usize = 100;
 const MAX_TAIL_LINES: usize = 500;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrogletAuthScope {
+    Consumer,
+    ProviderControl,
+}
+
 #[derive(Clone)]
 pub struct OperatorState {
     pub app_state: Arc<AppState>,
@@ -362,20 +368,24 @@ fn require_provider_control_auth(
         .map_err(|(status, body)| error_json(status, body))
 }
 
-fn require_froglet_auth(headers: &HeaderMap, state: &OperatorState) -> Result<(), Response> {
+fn require_froglet_auth(
+    headers: &HeaderMap,
+    state: &OperatorState,
+) -> Result<FrogletAuthScope, Response> {
     let consumer = api::require_bearer_token(
         headers,
         &state.app_state.consumer_control_auth_token,
         "froglet",
     );
     if consumer.is_ok() {
-        return Ok(());
+        return Ok(FrogletAuthScope::Consumer);
     }
     api::require_bearer_token(
         headers,
         &state.app_state.provider_control_auth_token,
         "froglet",
     )
+    .map(|_| FrogletAuthScope::ProviderControl)
     .map_err(|(status, body)| error_json(status, body))
 }
 
@@ -418,65 +428,32 @@ fn configured_base_url(env_key: &str) -> Result<Option<String>, Response> {
     Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
 }
 
-const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
-
-/// Validates a provider URL: must be https, or http only to loopback/.onion hosts.
-pub fn validate_provider_url(raw_url: &str) -> Result<String, Response> {
-    let parsed = Url::parse(raw_url).map_err(|error| {
-        error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "invalid provider URL", "details": error.to_string(), "value": raw_url }),
-        )
-    })?;
-    match parsed.scheme() {
-        "https" => {}
-        "http" => {
-            let host = parsed.host_str().unwrap_or("");
-            if !LOOPBACK_HOSTS.contains(&host) && !host.ends_with(".onion") {
-                return Err(error_json(
-                    StatusCode::BAD_REQUEST,
-                    json!({
-                        "error": "provider URL must use https:// (http:// is only allowed for loopback and .onion addresses)",
-                        "value": raw_url,
-                    }),
-                ));
-            }
-        }
-        _ => {
-            return Err(error_json(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "provider URL must use http:// or https://", "value": raw_url }),
-            ));
-        }
-    }
-    Ok(parsed.as_str().trim_end_matches('/').to_string())
-}
-
-fn operator_accessible_provider_url(
+async fn operator_accessible_provider_url(
     state: &OperatorState,
     raw_url: &str,
     provider_id: Option<&str>,
 ) -> Result<String, Response> {
-    let validated = validate_provider_url(raw_url)?;
-    let parsed = Url::parse(&validated).map_err(|error| {
-        error_json(
-            StatusCode::BAD_REQUEST,
-            json!({
-                "error": "invalid provider URL",
-                "details": error.to_string(),
-                "value": raw_url,
-            }),
-        )
-    })?;
-    if parsed.scheme() == "http" {
-        let host = parsed.host_str().unwrap_or("");
-        if LOOPBACK_HOSTS.contains(&host)
-            && provider_id.is_none_or(|value| value == state.app_state.identity.node_id())
-        {
+    let validated = api::classify_remote_endpoint_url(raw_url, "provider URL")
+        .await
+        .map_err(|error| {
+            error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error, "value": raw_url }),
+            )
+        })?;
+    if validated.reachability == api::RemoteEndpointReachability::LocalOnly {
+        if provider_id.is_none_or(|value| value == state.app_state.identity.node_id()) {
             return provider_base_url(state);
         }
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "provider URL targets a local or private-network address and is only allowed for the local provider",
+                "value": raw_url,
+            }),
+        ));
     }
-    Ok(validated)
+    Ok(validated.normalized_url)
 }
 
 async fn health_reachable(state: &OperatorState, url: &str) -> bool {
@@ -904,15 +881,10 @@ async fn provider_get_project(
     }
     match provider_projects::get_project(&state.projects_root, &project_id) {
         Ok(project) => (StatusCode::OK, Json(ProviderProjectResponse { project })).into_response(),
-        Err(error)
-            if error.contains("No such file")
-                || error.contains("failed to read project manifest") =>
-        {
-            error_json(
-                StatusCode::NOT_FOUND,
-                json!({ "error": "project not found", "project_id": project_id }),
-            )
-        }
+        Err(error) if provider_projects::is_project_not_found_error(&error) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "project not found", "project_id": project_id }),
+        ),
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
 }
@@ -935,6 +907,10 @@ async fn provider_read_file(
             }),
         )
             .into_response(),
+        Err(error) if provider_projects::is_project_not_found_error(&error) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "project not found", "project_id": project_id }),
+        ),
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
 }
@@ -963,6 +939,10 @@ async fn provider_write_file(
             }),
         )
             .into_response(),
+        Err(error) if provider_projects::is_project_not_found_error(&error) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "project not found", "project_id": project_id }),
+        ),
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
 }
@@ -977,6 +957,10 @@ async fn provider_build_project(
     }
     match provider_projects::build_project(&state.projects_root, &project_id) {
         Ok(build) => (StatusCode::OK, Json(build)).into_response(),
+        Err(error) if provider_projects::is_project_not_found_error(&error) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "project not found", "project_id": project_id }),
+        ),
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
 }
@@ -997,6 +981,10 @@ async fn provider_test_project(
         payload.input,
     ) {
         Ok(result) => (StatusCode::OK, Json::<ProviderProjectTestRecord>(result)).into_response(),
+        Err(error) if provider_projects::is_project_not_found_error(&error) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "project not found", "project_id": project_id }),
+        ),
         Err(error) => error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
     }
 }
@@ -1012,6 +1000,12 @@ async fn provider_publish_project(
     if let Err(error) =
         provider_projects::reject_blank_scaffold_publication(&state.projects_root, &project_id)
     {
+        if provider_projects::is_project_not_found_error(&error) {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "project not found", "project_id": project_id }),
+            );
+        }
         return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
     }
     if let Err(error) = provider_projects::set_project_publication_state(
@@ -1019,10 +1013,22 @@ async fn provider_publish_project(
         &project_id,
         "active",
     ) {
+        if provider_projects::is_project_not_found_error(&error) {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "project not found", "project_id": project_id }),
+            );
+        }
         return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
     }
     let build = match provider_projects::build_project(&state.projects_root, &project_id) {
         Ok(build) => build,
+        Err(error) if provider_projects::is_project_not_found_error(&error) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "project not found", "project_id": project_id }),
+            );
+        }
         Err(error) => {
             return error_json(
                 StatusCode::BAD_REQUEST,
@@ -1191,7 +1197,7 @@ async fn fetch_remote_provider_services(
     })
 }
 
-fn preferred_provider_url(
+async fn preferred_provider_url(
     state: &OperatorState,
     details: &RuntimeProviderDetailsResponse,
 ) -> Result<String, Response> {
@@ -1208,7 +1214,7 @@ fn preferred_provider_url(
                 json!({ "error": "provider discovery record does not expose a usable URL" }),
             )
         })?;
-    operator_accessible_provider_url(state, &raw, Some(&details.discovery.descriptor.node_id))
+    operator_accessible_provider_url(state, &raw, Some(&details.discovery.descriptor.node_id)).await
 }
 
 async fn resolve_provider_reference(
@@ -1217,7 +1223,7 @@ async fn resolve_provider_reference(
     provider_url: Option<&str>,
 ) -> Result<(Option<String>, String), Response> {
     if let Some(url) = provider_url {
-        let validated = operator_accessible_provider_url(state, url, provider_id)?;
+        let validated = operator_accessible_provider_url(state, url, provider_id).await?;
         return Ok((provider_id.map(str::to_string), validated));
     }
     let Some(provider_id) = provider_id else {
@@ -1240,8 +1246,30 @@ async fn resolve_provider_reference(
     .await?;
     Ok((
         Some(provider_id.to_string()),
-        preferred_provider_url(state, &details)?,
+        preferred_provider_url(state, &details).await?,
     ))
+}
+
+async fn local_provider_service_record(
+    state: &OperatorState,
+    service_id: &str,
+    auth_scope: FrogletAuthScope,
+    include_binding: bool,
+) -> Result<Option<ProviderServiceRecord>, Response> {
+    let include_hidden = auth_scope == FrogletAuthScope::ProviderControl;
+    provider_service_record(
+        state.app_state.as_ref(),
+        service_id,
+        include_hidden,
+        include_binding,
+    )
+    .await
+    .map_err(|error| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "failed to load local service", "details": error }),
+        )
+    })
 }
 
 async fn fetch_provider_service(
@@ -1249,14 +1277,37 @@ async fn fetch_provider_service(
     provider_id: Option<&str>,
     provider_url: Option<&str>,
     service_id: &str,
+    auth_scope: FrogletAuthScope,
+    include_local_binding: bool,
 ) -> Result<ProviderServiceRecord, Response> {
-    if provider_id.is_none() && provider_url.is_none() {
-        if let Ok(Some(local_service)) =
-            provider_service_record(state.app_state.as_ref(), service_id, true).await
+    let local_node_id = state.app_state.identity.node_id();
+    let local_provider_requested = provider_id.is_none_or(|value| value == local_node_id);
+    if provider_url.is_none() && local_provider_requested {
+        if let Some(local_service) =
+            local_provider_service_record(state, service_id, auth_scope, include_local_binding)
+                .await?
         {
             return Ok(local_service);
         }
+        let local_service_exists =
+            provider_service_record(state.app_state.as_ref(), service_id, true, false)
+                .await
+                .map_err(|error| {
+                    error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load local service", "details": error }),
+                    )
+                })?
+                .is_some();
+        if local_service_exists && auth_scope == FrogletAuthScope::Consumer {
+            return Err(error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "service not found", "service_id": service_id }),
+            ));
+        }
+    }
 
+    if provider_id.is_none() && provider_url.is_none() {
         let runtime_url = runtime_base_url(state)?;
         let search: crate::discovery::DiscoverySearchResponse = local_json_request(
             state,
@@ -1284,7 +1335,9 @@ async fn fetch_provider_service(
                 state,
                 &raw_url,
                 Some(&node.descriptor.node_id),
-            ) {
+            )
+            .await
+            {
                 Ok(url) => url,
                 Err(_) => continue,
             };
@@ -1321,6 +1374,14 @@ async fn fetch_provider_service(
     }
     let (_, resolved_provider_url) =
         resolve_provider_reference(state, provider_id, provider_url).await?;
+    if let Ok(local_provider_url) = provider_base_url(state)
+        && resolved_provider_url == local_provider_url
+        && let Some(local_service) =
+            local_provider_service_record(state, service_id, auth_scope, include_local_binding)
+                .await?
+    {
+        return Ok(local_service);
+    }
     let response: ProviderServiceResponse = unauthenticated_json_request(
         state,
         reqwest::Method::GET,
@@ -1493,7 +1554,7 @@ async fn froglet_tail_logs(
     State(state): State<Arc<OperatorState>>,
     Query(query): Query<LogQuery>,
 ) -> Response {
-    if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
+    if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
     let mut logs = Vec::new();
@@ -1543,7 +1604,7 @@ async fn froglet_restart(
     State(state): State<Arc<OperatorState>>,
     Json(payload): Json<RestartRequest>,
 ) -> Response {
-    if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
+    if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
     let scope = match payload.target.as_deref() {
@@ -1602,7 +1663,7 @@ async fn froglet_list_local_services(
     headers: HeaderMap,
     State(state): State<Arc<OperatorState>>,
 ) -> Response {
-    if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
+    if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
     match current_service_records(state.app_state.as_ref(), true, true).await {
@@ -1621,10 +1682,10 @@ async fn froglet_get_local_service(
     State(state): State<Arc<OperatorState>>,
     AxumPath(service_id): AxumPath<String>,
 ) -> Response {
-    if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
+    if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
-    match provider_service_record(state.app_state.as_ref(), &service_id, true).await {
+    match provider_service_record(state.app_state.as_ref(), &service_id, true, true).await {
         Ok(Some(service)) => {
             (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response()
         }
@@ -1689,25 +1750,26 @@ async fn froglet_discover_services(
         }
     };
     let query = payload.query.map(|value| value.to_lowercase());
-    let mut provider_urls: Vec<String> = search
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            node.descriptor
-                .transports
-                .clearnet_url
-                .clone()
-                .or_else(|| node.descriptor.transports.onion_url.clone())
-                .and_then(|url| {
-                    operator_accessible_provider_url(
-                        state.as_ref(),
-                        &url,
-                        Some(&node.descriptor.node_id),
-                    )
-                    .ok()
-                })
-        })
-        .collect();
+    let mut provider_urls = Vec::new();
+    for node in &search.nodes {
+        let raw_url = node
+            .descriptor
+            .transports
+            .clearnet_url
+            .clone()
+            .or_else(|| node.descriptor.transports.onion_url.clone());
+        let Some(raw_url) = raw_url else { continue };
+        let Ok(provider_url) = operator_accessible_provider_url(
+            state.as_ref(),
+            &raw_url,
+            Some(&node.descriptor.node_id),
+        )
+        .await
+        else {
+            continue;
+        };
+        provider_urls.push(provider_url);
+    }
     provider_urls.sort();
     provider_urls.dedup();
     let provider_nodes_discovered = provider_urls.len();
@@ -1754,14 +1816,17 @@ async fn froglet_get_service(
     State(state): State<Arc<OperatorState>>,
     Json(payload): Json<ServiceLookupRequest>,
 ) -> Response {
-    if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
-        return response;
-    }
+    let auth_scope = match require_froglet_auth(&headers, state.as_ref()) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
     match fetch_provider_service(
         state.as_ref(),
         payload.provider_id.as_deref(),
         payload.provider_url.as_deref(),
         &payload.service_id,
+        auth_scope,
+        auth_scope == FrogletAuthScope::ProviderControl,
     )
     .await
     {
@@ -1770,75 +1835,82 @@ async fn froglet_get_service(
     }
 }
 
-fn build_inline_wasm_submission(
-    service: &ProviderServiceRecord,
-    input: Value,
-) -> Result<crate::wasm::WasmSubmission, Response> {
-    let Some(module_bytes_hex) = service.module_bytes_hex.clone() else {
-        return Err(error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "service is missing module_bytes_hex binding", "service_id": service.service_id }),
-        ));
-    };
-    let module_bytes = hex::decode(&module_bytes_hex).map_err(|error| {
-        error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "service module_bytes_hex is invalid", "details": error.to_string() }),
-        )
-    })?;
-    let workload = crate::wasm::ComputeWasmWorkload::new(&module_bytes, &input)
-        .map_err(|error| error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })))?;
-    Ok(crate::wasm::WasmSubmission {
-        schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
-        submission_type: crate::wasm::WASM_SUBMISSION_TYPE_V1.to_string(),
-        workload: crate::wasm::ComputeWasmWorkload {
-            abi_version: service.contract_version.clone(),
-            requested_capabilities: Vec::new(),
-            ..workload
-        },
-        module_bytes_hex,
-        input,
-    })
+fn service_binding_hash(service: &ProviderServiceRecord) -> Result<String, Response> {
+    service
+        .binding_hash
+        .clone()
+        .or_else(|| service.module_hash.clone())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": "service is missing binding_hash",
+                    "service_id": service.service_id
+                }),
+            )
+        })
 }
 
-fn build_oci_wasm_submission(
+fn build_service_addressed_execution(
     service: &ProviderServiceRecord,
+    runtime: ExecutionRuntime,
+    package_kind: ExecutionPackageKind,
+    entrypoint_kind: ExecutionEntrypointKind,
+    entrypoint: String,
+    contract_version: String,
     input: Value,
-) -> Result<crate::wasm::OciWasmSubmission, Response> {
-    let Some(oci_reference) = service.oci_reference.clone() else {
-        return Err(error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "service is missing oci_reference binding", "service_id": service.service_id }),
-        ));
-    };
-    let Some(oci_digest) = service.oci_digest.clone() else {
-        return Err(error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "service is missing oci_digest binding", "service_id": service.service_id }),
-        ));
-    };
-    let input_bytes = crate::canonical_json::to_vec(&input).map_err(|error| {
-        error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": error.to_string() }),
-        )
-    })?;
-    Ok(crate::wasm::OciWasmSubmission {
+) -> Result<ExecutionWorkload, Response> {
+    let input_hash =
+        crate::crypto::sha256_hex(crate::canonical_json::to_vec(&input).map_err(|error| {
+            error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string() }),
+            )
+        })?);
+    let binding_hash = service_binding_hash(service)?;
+    let mut execution = ExecutionWorkload {
         schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
-        submission_type: crate::wasm::WASM_OCI_SUBMISSION_TYPE_V1.to_string(),
-        workload: crate::wasm::OciWasmWorkload {
-            schema_version: crate::wasm::FROGLET_SCHEMA_V1.to_string(),
-            workload_kind: crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
-            abi_version: service.contract_version.clone(),
-            module_format: crate::wasm::WASM_MODULE_OCI_FORMAT.to_string(),
-            oci_reference,
-            oci_digest,
-            input_format: crate::wasm::JCS_JSON_FORMAT.to_string(),
-            input_hash: crate::crypto::sha256_hex(input_bytes),
-            requested_capabilities: Vec::new(),
+        workload_kind: crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
+        runtime,
+        package_kind: package_kind.clone(),
+        entrypoint: crate::execution::ExecutionEntrypoint {
+            kind: entrypoint_kind,
+            value: entrypoint,
         },
+        contract_version,
+        input_format: crate::wasm::JCS_JSON_FORMAT.to_string(),
+        input_hash,
+        requested_access: Vec::new(),
+        security: crate::execution::ExecutionSecurity {
+            mode: crate::execution::ExecutionSecurityMode::Standard,
+            confidential_session_hash: None,
+            service_id: Some(service.service_id.clone()),
+            request_envelope: None,
+        },
+        mounts: Vec::new(),
         input,
-    })
+        module_hash: None,
+        module_bytes_hex: None,
+        source_hash: None,
+        inline_source: None,
+        oci_reference: None,
+        oci_digest: None,
+        builtin_name: None,
+    };
+    match (&execution.runtime, &package_kind) {
+        (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule)
+        | (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage)
+        | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage)
+        | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage) => {
+            execution.module_hash = Some(binding_hash);
+        }
+        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
+            execution.source_hash = Some(binding_hash);
+        }
+        _ => {}
+    }
+    Ok(execution)
 }
 
 fn execution_access_handles(mounts: &[ExecutionMount]) -> Vec<String> {
@@ -1958,88 +2030,30 @@ fn build_execution_from_service(
     };
 
     let execution = match (&runtime, &package_kind) {
-        (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
-            let submission = build_inline_wasm_submission(service, input)?;
-            ExecutionWorkload::from_wasm_submission(submission).map_err(|error| {
-                error_json(
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": error, "service_id": service.service_id }),
-                )
-            })?
-        }
-        (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage) => {
-            let submission = build_oci_wasm_submission(service, input)?;
-            ExecutionWorkload::from_oci_wasm_submission(submission).map_err(|error| {
-                error_json(
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": error, "service_id": service.service_id }),
-                )
-            })?
-        }
-        (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
-            let Some(source) = service.inline_source.clone() else {
-                return Err(error_json(
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": "service is missing inline_source binding", "service_id": service.service_id }),
-                ));
-            };
-            match entrypoint_kind {
-                ExecutionEntrypointKind::Script => {
-                    ExecutionWorkload::python_inline_script(source, input).map_err(|error| {
-                        error_json(
-                            StatusCode::BAD_GATEWAY,
-                            json!({ "error": error, "service_id": service.service_id }),
-                        )
-                    })?
-                }
-                _ => {
-                    let handler_name = if entrypoint.contains('/')
-                        || entrypoint.ends_with(".py")
-                        || entrypoint.contains('\\')
-                    {
-                        default_entrypoint_for(&runtime, &entrypoint_kind).to_string()
-                    } else {
-                        entrypoint.clone()
-                    };
-                    ExecutionWorkload::python_inline_handler(source, handler_name, input).map_err(
-                        |error| {
-                            error_json(
-                                StatusCode::BAD_GATEWAY,
-                                json!({ "error": error, "service_id": service.service_id }),
-                            )
-                        },
-                    )?
-                }
-            }
-        }
-        (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
+        (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule)
+        | (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage)
+        | (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource)
+        | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
         | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
-            let Some(oci_reference) = service.oci_reference.clone() else {
-                return Err(error_json(
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": "service is missing oci_reference binding", "service_id": service.service_id }),
-                ));
-            };
-            let Some(oci_digest) = service.oci_digest.clone() else {
-                return Err(error_json(
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": "service is missing oci_digest binding", "service_id": service.service_id }),
-                ));
-            };
-            ExecutionWorkload::container_oci(
+            let normalized_entrypoint =
+                if matches!(entrypoint_kind, ExecutionEntrypointKind::Handler)
+                    && (entrypoint.contains('/')
+                        || entrypoint.ends_with(".py")
+                        || entrypoint.contains('\\'))
+                {
+                    default_entrypoint_for(&runtime, &entrypoint_kind).to_string()
+                } else {
+                    entrypoint.clone()
+                };
+            build_service_addressed_execution(
+                service,
                 runtime.clone(),
-                oci_reference,
-                oci_digest,
+                package_kind.clone(),
                 entrypoint_kind.clone(),
-                entrypoint.clone(),
+                normalized_entrypoint,
+                contract_version.clone(),
                 input,
-            )
-            .map_err(|error| {
-                error_json(
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": error, "service_id": service.service_id }),
-                )
-            })?
+            )?
         }
         (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
             if entrypoint != "events.query" {
@@ -2348,14 +2362,17 @@ async fn froglet_invoke_service(
     State(state): State<Arc<OperatorState>>,
     Json(payload): Json<InvokeServiceRequest>,
 ) -> Response {
-    if let Err(response) = require_froglet_auth(&headers, state.as_ref()) {
-        return response;
-    }
+    let auth_scope = match require_froglet_auth(&headers, state.as_ref()) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
     let service = match fetch_provider_service(
         state.as_ref(),
         payload.provider_id.as_deref(),
         payload.provider_url.as_deref(),
         &payload.service_id,
+        auth_scope,
+        true,
     )
     .await
     {
@@ -2758,6 +2775,36 @@ mod tests {
         (status, payload)
     }
 
+    async fn publish_test_inline_python_service(
+        state: Arc<OperatorState>,
+        token: &str,
+        service_id: &str,
+        publication_state: &str,
+    ) -> (StatusCode, Value) {
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/artifacts/publish",
+                Some(token),
+                Some(json!({
+                    "service_id": service_id,
+                    "offer_id": service_id,
+                    "summary": format!("Test service {service_id}"),
+                    "price_sats": 0,
+                    "publication_state": publication_state,
+                    "runtime": "python",
+                    "package_kind": "inline_source",
+                    "entrypoint_kind": "handler",
+                    "entrypoint": "handler",
+                    "contract_version": "froglet.python.handler_json.v1",
+                    "inline_source": "def handler(event, context):\n    return {\"service\": \"ok\"}\n"
+                })),
+            ))
+            .await
+            .expect("publish artifact response");
+        response_json(response).await
+    }
+
     fn test_signed_artifact(artifact_type: &str, payload: Value) -> Value {
         json!({
             "artifact_type": artifact_type,
@@ -2880,6 +2927,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operator_accessible_provider_url_rejects_https_loopback_for_remote_provider() {
+        let state = test_operator_state();
+
+        let response = operator_accessible_provider_url(
+            state.as_ref(),
+            "https://127.0.0.1:8443",
+            Some(&"11".repeat(32)),
+        )
+        .await
+        .expect_err("remote https loopback should be rejected");
+        let (status, payload) = response_json::<Value>(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("local or private-network")),
+            "unexpected payload: {payload}"
+        );
+    }
+
+    #[tokio::test]
     async fn froglet_logs_returns_node_scope_and_components() {
         let temp_dir = unique_temp_dir("froglet-logs");
         std::fs::create_dir_all(&temp_dir).expect("temp dir");
@@ -2891,7 +2960,7 @@ mod tests {
             .expect("write provider log");
 
         let base_state = test_operator_state();
-        let token = base_state.app_state.consumer_control_auth_token.clone();
+        let token = base_state.app_state.provider_control_auth_token.clone();
         let state = Arc::new(OperatorState {
             runtime_log_path: Some(runtime_log_path.clone()),
             provider_log_path: Some(provider_log_path.clone()),
@@ -2922,7 +2991,7 @@ mod tests {
     #[tokio::test]
     async fn froglet_restart_returns_node_scope_and_components() {
         let base_state = test_operator_state();
-        let token = base_state.app_state.consumer_control_auth_token.clone();
+        let token = base_state.app_state.provider_control_auth_token.clone();
         let state = Arc::new(OperatorState {
             runtime_restart_command: Some("printf runtime-restarted".to_string()),
             provider_restart_command: Some("printf provider-restarted".to_string()),
@@ -2950,6 +3019,75 @@ mod tests {
         assert_eq!(
             payload["results"][1]["stdout_preview"],
             "provider-restarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn froglet_logs_rejects_consumer_token() {
+        let state = test_operator_state();
+        let token = state.app_state.consumer_control_auth_token.clone();
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::GET,
+                "/v1/froglet/logs",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("froglet logs response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            payload["error"],
+            "invalid provider control authorization token"
+        );
+    }
+
+    #[tokio::test]
+    async fn froglet_restart_rejects_consumer_token() {
+        let state = test_operator_state();
+        let token = state.app_state.consumer_control_auth_token.clone();
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/restart",
+                Some(&token),
+                Some(json!({ "target": "node" })),
+            ))
+            .await
+            .expect("froglet restart response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            payload["error"],
+            "invalid provider control authorization token"
+        );
+    }
+
+    #[tokio::test]
+    async fn froglet_local_services_require_provider_control_auth() {
+        let state = test_operator_state();
+        let token = state.app_state.consumer_control_auth_token.clone();
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::GET,
+                "/v1/froglet/services/local",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("local services response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            payload["error"],
+            "invalid provider control authorization token"
         );
     }
 
@@ -3095,11 +3233,12 @@ mod tests {
         runtime_handle.abort();
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(payload["provider_nodes_discovered"], 2);
-        assert_eq!(payload["services"][0]["service_id"], "remote-pong");
-        assert_eq!(
-            payload["provider_fetch_failures"][0]["error"],
-            "provider unhealthy"
+        assert_eq!(payload["provider_nodes_discovered"], 0);
+        assert_eq!(payload["services"], json!([]));
+        assert!(
+            payload["provider_fetch_failures"].is_null()
+                || payload["provider_fetch_failures"] == json!([]),
+            "unexpected provider_fetch_failures payload: {payload}"
         );
     }
 
@@ -3216,9 +3355,12 @@ mod tests {
 
     #[tokio::test]
     async fn invoke_service_uses_local_provider_base_url_for_runtime_deals() {
+        let source = "def handler(event, context):\n    return {\"message\": \"pong\"}\n";
+        let binding_hash = crate::crypto::sha256_hex(source.as_bytes());
         let provider_app = Router::new().route(
             "/v1/provider/services/:service_id",
             get({
+                let binding_hash = binding_hash.clone();
                 move |AxumPath(service_id): AxumPath<String>| async move {
                     AxumJson(json!({
                         "service": {
@@ -3237,8 +3379,9 @@ mod tests {
                             "price_sats": 0,
                             "publication_state": "active",
                             "provider_id": "placeholder",
+                            "binding_hash": binding_hash,
                             "output_schema": { "const": { "message": "pong" } },
-                            "inline_source": "def handler(event, context):\n    return {\"message\": \"pong\"}\n"
+                            "inline_source": null
                         }
                     }))
                 }
@@ -3322,6 +3465,246 @@ mod tests {
             captured["provider"]["provider_url"],
             Value::String(expected_provider_url)
         );
+        assert_eq!(
+            captured["execution"]["security"]["service_id"],
+            "invoke-loopback"
+        );
+        assert_eq!(captured["execution"]["inline_source"], Value::Null);
+        assert_eq!(captured["execution"]["source_hash"], binding_hash);
+    }
+
+    #[tokio::test]
+    async fn invoke_service_builds_service_addressed_wasm_execution_from_redacted_service() {
+        let binding_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let provider_app = Router::new().route(
+            "/v1/provider/services/:service_id",
+            get({
+                let binding_hash = binding_hash.to_string();
+                move |AxumPath(service_id): AxumPath<String>| {
+                    let binding_hash = binding_hash.clone();
+                    async move {
+                        AxumJson(json!({
+                            "service": {
+                                "service_id": service_id,
+                                "offer_id": "invoke-wasm",
+                                "offer_kind": "compute.execution.v1",
+                                "resource_kind": "service",
+                                "summary": "Returns 42",
+                                "runtime": "wasm",
+                                "package_kind": "inline_module",
+                                "entrypoint_kind": "handler",
+                                "entrypoint": "run",
+                                "contract_version": "froglet.run_json.v1",
+                                "mounts": [],
+                                "mode": "sync",
+                                "price_sats": 0,
+                                "publication_state": "active",
+                                "provider_id": "placeholder",
+                                "binding_hash": binding_hash,
+                                "module_bytes_hex": null
+                            }
+                        }))
+                    }
+                }
+            }),
+        );
+        let (provider_url, provider_handle) = spawn_test_server(provider_app).await;
+
+        let temp_dir = unique_temp_dir("invoke-wasm-loopback");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut node_config = test_node_config(temp_dir);
+        node_config.listen_addr = provider_url
+            .strip_prefix("http://")
+            .expect("provider url")
+            .to_string();
+
+        let state = test_operator_state_with_config(node_config.clone());
+        let local_node_id = state.app_state.identity.node_id().to_string();
+        let token = state.app_state.consumer_control_auth_token.clone();
+        let expected_provider_url = provider_url.clone();
+        let captured_deal_request = Arc::new(Mutex::new(None::<Value>));
+
+        let runtime_app = Router::new().route(
+            "/v1/runtime/deals",
+            post({
+                let captured_deal_request = captured_deal_request.clone();
+                let expected_provider_url = expected_provider_url.clone();
+                let local_node_id = local_node_id.clone();
+                move |AxumJson(payload): AxumJson<Value>| {
+                    let captured_deal_request = captured_deal_request.clone();
+                    let expected_provider_url = expected_provider_url.clone();
+                    let local_node_id = local_node_id.clone();
+                    async move {
+                        *captured_deal_request
+                            .lock()
+                            .expect("lock captured deal request") = Some(payload);
+                        AxumJson(test_runtime_create_deal_response(
+                            &local_node_id,
+                            &expected_provider_url,
+                            json!(42),
+                        ))
+                    }
+                }
+            }),
+        );
+        let (runtime_url, runtime_handle) = spawn_test_server(runtime_app).await;
+
+        let mut state_config = state.app_state.config.clone();
+        state_config.runtime_listen_addr = runtime_url
+            .strip_prefix("http://")
+            .expect("runtime url")
+            .to_string();
+        let state = test_operator_state_with_config(state_config);
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/invoke",
+                Some(&token),
+                Some(json!({
+                    "provider_id": local_node_id,
+                    "service_id": "invoke-wasm",
+                    "input": null
+                })),
+            ))
+            .await
+            .expect("invoke response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        provider_handle.abort();
+        runtime_handle.abort();
+
+        let captured = captured_deal_request
+            .lock()
+            .expect("lock captured deal request")
+            .clone()
+            .expect("captured runtime deal request");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "succeeded");
+        assert_eq!(payload["result"], json!(42));
+        assert_eq!(
+            captured["execution"]["security"]["service_id"],
+            "invoke-wasm"
+        );
+        assert_eq!(captured["execution"]["module_hash"], binding_hash);
+        assert_eq!(captured["execution"]["module_bytes_hex"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn invoke_service_builds_service_addressed_oci_execution_from_redacted_service() {
+        let binding_hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        let provider_app = Router::new().route(
+            "/v1/provider/services/:service_id",
+            get({
+                let binding_hash = binding_hash.to_string();
+                move |AxumPath(service_id): AxumPath<String>| {
+                    let binding_hash = binding_hash.clone();
+                    async move {
+                        AxumJson(json!({
+                            "service": {
+                                "service_id": service_id,
+                                "offer_id": "invoke-oci",
+                                "offer_kind": "compute.execution.v1",
+                                "resource_kind": "service",
+                                "summary": "Returns input from OCI",
+                                "runtime": "container",
+                                "package_kind": "oci_image",
+                                "entrypoint_kind": "script",
+                                "entrypoint": "__main__",
+                                "contract_version": "froglet.container.stdin_json.v1",
+                                "mounts": [],
+                                "mode": "sync",
+                                "price_sats": 0,
+                                "publication_state": "active",
+                                "provider_id": "placeholder",
+                                "binding_hash": binding_hash,
+                                "oci_reference": null,
+                                "oci_digest": null
+                            }
+                        }))
+                    }
+                }
+            }),
+        );
+        let (provider_url, provider_handle) = spawn_test_server(provider_app).await;
+
+        let temp_dir = unique_temp_dir("invoke-oci-loopback");
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut node_config = test_node_config(temp_dir);
+        node_config.listen_addr = provider_url
+            .strip_prefix("http://")
+            .expect("provider url")
+            .to_string();
+
+        let state = test_operator_state_with_config(node_config.clone());
+        let local_node_id = state.app_state.identity.node_id().to_string();
+        let token = state.app_state.consumer_control_auth_token.clone();
+        let expected_provider_url = provider_url.clone();
+        let captured_deal_request = Arc::new(Mutex::new(None::<Value>));
+
+        let runtime_app = Router::new().route(
+            "/v1/runtime/deals",
+            post({
+                let captured_deal_request = captured_deal_request.clone();
+                let expected_provider_url = expected_provider_url.clone();
+                let local_node_id = local_node_id.clone();
+                move |AxumJson(payload): AxumJson<Value>| {
+                    let captured_deal_request = captured_deal_request.clone();
+                    let expected_provider_url = expected_provider_url.clone();
+                    let local_node_id = local_node_id.clone();
+                    async move {
+                        *captured_deal_request
+                            .lock()
+                            .expect("lock captured deal request") = Some(payload);
+                        AxumJson(test_runtime_create_deal_response(
+                            &local_node_id,
+                            &expected_provider_url,
+                            json!({ "via": "oci" }),
+                        ))
+                    }
+                }
+            }),
+        );
+        let (runtime_url, runtime_handle) = spawn_test_server(runtime_app).await;
+
+        let mut state_config = state.app_state.config.clone();
+        state_config.runtime_listen_addr = runtime_url
+            .strip_prefix("http://")
+            .expect("runtime url")
+            .to_string();
+        let state = test_operator_state_with_config(state_config);
+
+        let response = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/invoke",
+                Some(&token),
+                Some(json!({
+                    "provider_id": local_node_id,
+                    "service_id": "invoke-oci",
+                    "input": { "probe": true }
+                })),
+            ))
+            .await
+            .expect("invoke response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        provider_handle.abort();
+        runtime_handle.abort();
+
+        let captured = captured_deal_request
+            .lock()
+            .expect("lock captured deal request")
+            .clone()
+            .expect("captured runtime deal request");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "succeeded");
+        assert_eq!(payload["result"], json!({ "via": "oci" }));
+        assert_eq!(
+            captured["execution"]["security"]["service_id"],
+            "invoke-oci"
+        );
+        assert_eq!(captured["execution"]["module_hash"], binding_hash);
+        assert_eq!(captured["execution"]["oci_reference"], Value::Null);
+        assert_eq!(captured["execution"]["oci_digest"], Value::Null);
     }
 
     #[tokio::test]
@@ -3539,6 +3922,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn consumer_get_service_redacts_local_bindings_and_hides_hidden_services() {
+        let state = test_operator_state();
+        let provider_token = state.app_state.provider_control_auth_token.clone();
+        let consumer_token = state.app_state.consumer_control_auth_token.clone();
+
+        let (public_status, _) = publish_test_inline_python_service(
+            state.clone(),
+            &provider_token,
+            "public-inline",
+            "active",
+        )
+        .await;
+        assert_eq!(public_status, StatusCode::CREATED);
+        let (hidden_status, _) = publish_test_inline_python_service(
+            state.clone(),
+            &provider_token,
+            "hidden-inline",
+            "hidden",
+        )
+        .await;
+        assert_eq!(hidden_status, StatusCode::CREATED);
+
+        let consumer_public = router(state.clone())
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/get",
+                Some(&consumer_token),
+                Some(json!({ "service_id": "public-inline" })),
+            ))
+            .await
+            .expect("consumer get service response");
+        let (consumer_public_status, consumer_public_payload): (StatusCode, Value) =
+            response_json(consumer_public).await;
+        assert_eq!(consumer_public_status, StatusCode::OK);
+        assert_eq!(
+            consumer_public_payload["service"]["service_id"],
+            "public-inline"
+        );
+        assert_eq!(
+            consumer_public_payload["service"]["inline_source"],
+            Value::Null
+        );
+        assert_eq!(
+            consumer_public_payload["service"]["module_bytes_hex"],
+            Value::Null
+        );
+        assert_eq!(
+            consumer_public_payload["service"]["oci_reference"],
+            Value::Null
+        );
+        assert_eq!(
+            consumer_public_payload["service"]["oci_digest"],
+            Value::Null
+        );
+
+        let consumer_hidden = router(state.clone())
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/get",
+                Some(&consumer_token),
+                Some(json!({ "service_id": "hidden-inline" })),
+            ))
+            .await
+            .expect("consumer hidden service response");
+        let (consumer_hidden_status, consumer_hidden_payload): (StatusCode, Value) =
+            response_json(consumer_hidden).await;
+        assert_eq!(consumer_hidden_status, StatusCode::NOT_FOUND);
+        assert_eq!(consumer_hidden_payload["error"], "service not found");
+
+        let provider_public = router(state)
+            .oneshot(operator_request(
+                Method::POST,
+                "/v1/froglet/services/get",
+                Some(&provider_token),
+                Some(json!({ "service_id": "public-inline" })),
+            ))
+            .await
+            .expect("provider get service response");
+        let (provider_public_status, provider_public_payload): (StatusCode, Value) =
+            response_json(provider_public).await;
+        assert_eq!(provider_public_status, StatusCode::OK);
+        assert!(
+            provider_public_payload["service"]["inline_source"]
+                .as_str()
+                .is_some_and(|source| source.contains("def handler")),
+            "expected provider control token to retain binding fields: {provider_public_payload}"
+        );
+    }
+
+    #[tokio::test]
     async fn provider_project_lifecycle_works_through_operator() {
         let state = test_operator_state();
         let token = state.app_state.provider_control_auth_token.clone();
@@ -3725,6 +4198,8 @@ mod tests {
 
     #[test]
     fn build_execution_from_python_service_normalizes_file_entrypoint_to_handler() {
+        let source = "def handler(event, context):\n    return \"pong\"\n";
+        let expected_hash = crate::crypto::sha256_hex(source.as_bytes());
         let service = ProviderServiceRecord {
             service_id: "python-ping".to_string(),
             offer_id: "python-ping".to_string(),
@@ -3742,11 +4217,12 @@ mod tests {
             price_sats: 0,
             publication_state: "active".to_string(),
             provider_id: "provider-1".to_string(),
-            module_hash: None,
+            module_hash: Some(expected_hash.clone()),
+            binding_hash: Some(expected_hash.clone()),
             input_schema: None,
             output_schema: Some(json!({ "const": "pong" })),
             module_bytes_hex: None,
-            inline_source: Some("def handler(event, context):\n    return \"pong\"\n".to_string()),
+            inline_source: None,
             oci_reference: None,
             oci_digest: None,
         };
@@ -3760,6 +4236,12 @@ mod tests {
 
         assert_eq!(workload.entrypoint.kind, ExecutionEntrypointKind::Handler);
         assert_eq!(workload.entrypoint.value, "handler");
+        assert_eq!(workload.security.service_id.as_deref(), Some("python-ping"));
+        assert_eq!(
+            workload.source_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(workload.inline_source, None);
     }
 
     #[tokio::test]

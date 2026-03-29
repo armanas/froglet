@@ -1,7 +1,10 @@
 import asyncio
 import os
+import shutil
 import stat
+import tempfile
 import unittest
+from pathlib import Path
 
 import aiohttp
 
@@ -14,6 +17,20 @@ def runtime_auth_headers(runtime) -> dict[str, str]:
 
 
 class RuntimeApiTests(FrogletAsyncTestCase):
+    async def start_runtime_for_local_provider(
+        self, provider, *, extra_env: dict[str, str] | None = None
+    ):
+        temp_root = Path(tempfile.mkdtemp(prefix="froglet-runtime-local-provider-"))
+        self.addCleanup(shutil.rmtree, temp_root, ignore_errors=True)
+        data_dir = temp_root / "data"
+        identity_dir = data_dir / "identity"
+        identity_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(
+            provider.data_dir / "identity" / "secp256k1.seed",
+            identity_dir / "secp256k1.seed",
+        )
+        return await self.start_runtime(data_dir=data_dir, extra_env=extra_env)
+
     async def wait_for_provider_publication(
         self, discovery, provider_id: str, timeout: float = 10.0
     ) -> dict:
@@ -93,7 +110,8 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 "FROGLET_DISCOVERY_PUBLISH": "true",
             }
         )
-        runtime = await self.start_runtime(
+        runtime = await self.start_runtime_for_local_provider(
+            provider,
             extra_env={
                 "FROGLET_DISCOVERY_MODE": "reference",
                 "FROGLET_DISCOVERY_URL": discovery.base_url,
@@ -142,7 +160,8 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 "FROGLET_PRICE_EXEC_WASM": "0",
             }
         )
-        runtime = await self.start_runtime(
+        runtime = await self.start_runtime_for_local_provider(
+            provider,
             extra_env={
                 "FROGLET_DISCOVERY_MODE": "reference",
                 "FROGLET_DISCOVERY_URL": discovery.base_url,
@@ -212,7 +231,10 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 self.assertEqual(resp.status, 400)
                 payload = await resp.json()
 
-        self.assertIn("provider_id does not match provider_url descriptor", payload["error"])
+        self.assertIn(
+            "provider URL targets a local or private-network address",
+            payload["error"],
+        )
 
     async def test_runtime_exposes_payment_intent_for_priced_remote_provider(self) -> None:
         discovery = await self.start_discovery()
@@ -226,7 +248,8 @@ class RuntimeApiTests(FrogletAsyncTestCase):
                 "FROGLET_LIGHTNING_MODE": "mock",
             }
         )
-        runtime = await self.start_runtime(
+        runtime = await self.start_runtime_for_local_provider(
+            provider,
             extra_env={
                 "FROGLET_DISCOVERY_MODE": "reference",
                 "FROGLET_DISCOVERY_URL": discovery.base_url,

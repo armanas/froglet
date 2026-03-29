@@ -34,6 +34,10 @@ Host token path:
 
 - `./data/runtime/froglet-control.token`
 
+The default Compose file no longer makes that token host-readable. Set
+`FROGLET_HOST_READABLE_CONTROL_TOKEN=true` only for explicit local-development
+workflows that need direct host access to the provider control token.
+
 This is the default local development topology and the one used by the OpenClaw
 and MCP compose smoke coverage.
 

@@ -2,7 +2,7 @@
 
 Status: non-normative supporting document
 
-[`../SPEC.md`](../SPEC.md) is the kernel contract.
+[`KERNEL.md`](KERNEL.md) is the kernel contract.
 This document describes how the rest of the system is layered around that kernel.
 
 ## 1. Layering
