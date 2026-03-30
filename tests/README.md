@@ -206,6 +206,8 @@ FROGLET_GCP_PROJECT=my-project GCP_RIG_CATEGORIES="fuzz pentest" ./scripts/test_
 ## Multi-Node GCP Harness
 
 For end-to-end OpenClaw + Froglet marketplace coverage on GCP, use `scripts/gcp_harness.sh`.
+Here `froglet-marketplace` is only a harness role name for the requester/OpenClaw
+node; it is not a separate tracked product tree in this repo.
 
 ```bash
 FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh provision

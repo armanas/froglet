@@ -95,7 +95,9 @@ fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
         ));
     }
 
-    let seed: [u8; 32] = bytes.try_into().unwrap();
+    let seed: [u8; 32] = bytes
+        .try_into()
+        .expect("length validated as 32 bytes above");
     crypto::signing_key_from_seed_bytes(&seed)
 }
 

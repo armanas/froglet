@@ -6963,7 +6963,10 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         // Take stdout/stderr pipes before storing child in kill handle.
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
-        *kill_handle_clone.lock().unwrap() = Some(child);
+        *kill_handle_clone
+            .lock()
+            .map_err(|_| "python kill handle lock poisoned".to_string())?
+            = Some(child);
         // Read stdout and stderr concurrently to avoid pipe-backpressure deadlock.
         let stderr_thread = std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -6981,7 +6984,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         // Wait for child to exit; kill handle can kill it on timeout.
         let status = kill_handle_clone
             .lock()
-            .unwrap()
+            .map_err(|_| "python kill handle lock poisoned".to_string())?
             .as_mut()
             .map(|c| c.wait())
             .transpose()
@@ -7091,7 +7094,10 @@ async fn run_container_execution(
         }
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
-        *kill_handle_clone.lock().unwrap() = Some(child);
+        *kill_handle_clone
+            .lock()
+            .map_err(|_| "container kill handle lock poisoned".to_string())?
+            = Some(child);
         // Read stdout and stderr concurrently to avoid pipe-backpressure deadlock.
         let stderr_thread = std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -7108,7 +7114,7 @@ async fn run_container_execution(
         let stderr_buf = stderr_thread.join().unwrap_or_default();
         let status = kill_handle_clone
             .lock()
-            .unwrap()
+            .map_err(|_| "container kill handle lock poisoned".to_string())?
             .as_mut()
             .map(|c| c.wait())
             .transpose()

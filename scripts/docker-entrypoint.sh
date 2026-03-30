@@ -1,7 +1,9 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
 cmd="${1:-}"
+
+ALLOWED_COMMANDS="froglet-provider froglet-runtime froglet-discovery froglet-operator"
 
 ensure_dir() {
   path="$1"
@@ -23,10 +25,15 @@ case "$cmd" in
     data_dir_mode=700
     case "${FROGLET_HOST_READABLE_CONTROL_TOKEN:-}" in
       1|true|TRUE|yes|YES|on|ON)
-        data_dir_mode=755
+        data_dir_mode=750
         ;;
     esac
     ensure_dir "$data_dir" "$data_dir_mode"
+    ;;
+  *)
+    echo "docker-entrypoint: unknown command: $cmd" >&2
+    echo "allowed: $ALLOWED_COMMANDS" >&2
+    exit 1
     ;;
 esac
 

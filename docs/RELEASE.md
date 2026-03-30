@@ -3,6 +3,8 @@
 This repo now has a minimal tagged release path for the current Froglet node,
 reference discovery, and OpenClaw alpha surface.
 
+Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
+
 ## Versioning
 
 Use semver with explicit alpha prereleases for the current train, for example:
@@ -19,7 +21,7 @@ The release workflow checks this and fails if they diverge.
 
 Pushing a matching tag triggers
 [../.github/workflows/release.yml](../.github/workflows/release.yml), which
-publishes the three role-specific images:
+publishes the four role-specific images:
 
 - `ghcr.io/<owner>/froglet-provider:<version>`
 - `ghcr.io/<owner>/froglet-provider:<sha-tag>`
@@ -27,6 +29,13 @@ publishes the three role-specific images:
 - `ghcr.io/<owner>/froglet-runtime:<sha-tag>`
 - `ghcr.io/<owner>/froglet-discovery:<version>`
 - `ghcr.io/<owner>/froglet-discovery:<sha-tag>`
+- `ghcr.io/<owner>/froglet-operator:<version>`
+- `ghcr.io/<owner>/froglet-operator:<sha-tag>`
+
+The public release surface covers the tracked Froglet protocol docs, reference
+node binaries, supported integrations, and validation assets in this repo.
+Ignored local-only incubation under `private_work/` is not part of the release
+surface.
 
 ## Alpha Cut Checklist
 
@@ -51,6 +60,7 @@ the release notes should call out:
 - official Docker starter
 - public OpenClaw integration
 - reference discovery
+- public operator image
 - v1 Lightning reference settlement path
 - any intentionally deferred layers, especially external broker and closed higher-layer
   services

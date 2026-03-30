@@ -3,6 +3,8 @@
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
 
+Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
+
 Froglet is a protocol and node for a bot economy.
 It lets bots create, publish, discover, buy, sell, and compose remote
 resources for value.
@@ -50,10 +52,12 @@ the only authoring model.
 
 In this repo now:
 
+- protocol and supporting specifications under `docs/` and `conformance/`
 - reference Froglet node implementation shipped as separable `runtime`,
   `provider`, `discovery`, and `operator` binaries
 - OpenClaw and NemoClaw bot integration
 - MCP server for external agent hosts and automations
+- Python-backed helpers and tests for the public node and protocol surface
 - local project authoring, build, test, and publish flows for bot-authored
   services
 - direct artifact publication for prebuilt Wasm and OCI-backed profiles
@@ -62,12 +66,15 @@ In this repo now:
 - reference settlement support for Lightning plus the adapter boundary needed
   for additional payment rails
 - clearnet, Tor, and Nostr-facing adapter support needed for early adoption
+- tests, validation scripts, and release docs for the public repo surface
+- ignored local-only incubation work under `private_work/`, which is not part
+  of the public release surface
 
 Intentionally outside this repo or later:
 
 - marketplace, catalog, broker, ranking, reputation, and policy products,
-  which may live in separate directories for now and later move out-of-tree or
-  be closed source
+  which may live in separate repos, local ignored incubation, or private
+  deployments
 - long-running batch orchestration, which remains out of scope for the current
   v1 runtime surface
 - native deployment adapters for AWS, GCP, OVH, and similar cloud providers
@@ -242,7 +249,13 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/ADAPTERS.md](docs/ADAPTERS.md)
+- [docs/RUNTIME.md](docs/RUNTIME.md)
+- [docs/SERVICE_BINDING.md](docs/SERVICE_BINDING.md)
 - [docs/OPERATOR.md](docs/OPERATOR.md)
 - [docs/OPENCLAW.md](docs/OPENCLAW.md)
 - [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
 - [docs/KERNEL.md](docs/KERNEL.md)
+- [docs/CONFIDENTIAL.md](docs/CONFIDENTIAL.md)
+- [docs/NOSTR.md](docs/NOSTR.md)
+- [docs/STORAGE_PROFILE.md](docs/STORAGE_PROFILE.md)
+- [docs/RELEASE.md](docs/RELEASE.md)

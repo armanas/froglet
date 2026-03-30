@@ -2,7 +2,7 @@
 
 ## Kernel changes
 
-`docs/KERNEL.md` is the current authoritative kernel specification. Changes to canonical artifact payloads, hashing, signing bytes, state transitions, or the Lightning settlement binding require a strong interoperability justification and must be discussed before a PR is opened. Everything outside the kernel is more flexible, but this repo is now intentionally centered on the protocol, the Froglet node, and the OpenClaw/NemoClaw/MCP bot surfaces. Staged higher-layer or SDK material should move under `higher_layers/` rather than expanding the core surface.
+`docs/KERNEL.md` is the current authoritative kernel specification. Changes to canonical artifact payloads, hashing, signing bytes, state transitions, or the Lightning settlement binding require a strong interoperability justification and must be discussed before a PR is opened. Everything outside the kernel is more flexible, but this repo is now intentionally centered on the protocol, the Froglet node, and the OpenClaw/NemoClaw/MCP bot surfaces. Staged higher-layer or SDK material should live under ignored local incubation in `private_work/` rather than expanding the core surface.
 
 ## Before opening a PR
 

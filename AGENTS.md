@@ -14,13 +14,13 @@
 - Treat `docs/KERNEL.md` as the authoritative kernel specification. Do not change canonical artifact payloads, hashing, signing bytes, state transitions, or Lightning settlement bindings without explicit interoperability justification and prior discussion.
 - If you touch signing, hashing, or artifact structure, update `conformance/kernel_v1.json` and explain why in the change summary.
 - Keep kernel changes small. Prefer adapters, higher layers, or integrations unless a change truly belongs in the signed protocol/runtime core.
-- Public code must not depend on ignored `private/` incubations.
+- Public code must not depend on ignored `private_work/` incubations.
 
 ## Working Style
 - Prefer editing existing files over adding new ones.
 - Keep changes scoped to the task; avoid broad refactors unless they are required.
 - Match existing Rust, Python, and JavaScript patterns already used nearby.
-- Do not commit generated artifacts, local databases, or scratch outputs from `target/`, `_tmp/`, `data/`, `node.db*`, `higher_layers/`, coverage caches, or IDE folders.
+- Do not commit generated artifacts, local databases, or scratch outputs from `target/`, `_tmp/`, `data/`, `node.db*`, `private_work/`, coverage caches, or IDE folders.
 
 ## Key Paths
 - `src/`: Rust library code for protocol, runtime, provider, discovery, operator, storage, and execution.

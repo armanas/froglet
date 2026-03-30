@@ -1,17 +1,21 @@
-import { readFile } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 
 import { requestJson } from "./shared.js"
 
+/** @type {Map<string, { token: string, mtimeMs: number }>} */
 const tokenCache = new Map()
 
 async function readAuthToken(tokenPath) {
+  const fileStat = await stat(tokenPath)
   const cached = tokenCache.get(tokenPath)
-  if (cached) return cached
+  if (cached && cached.mtimeMs === fileStat.mtimeMs) {
+    return cached.token
+  }
   const token = (await readFile(tokenPath, "utf8")).trim()
   if (token.length === 0) {
     throw new Error(`froglet auth token file ${tokenPath} is empty`)
   }
-  tokenCache.set(tokenPath, token)
+  tokenCache.set(tokenPath, { token, mtimeMs: fileStat.mtimeMs })
   return token
 }
 

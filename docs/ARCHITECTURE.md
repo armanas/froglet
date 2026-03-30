@@ -103,7 +103,9 @@ Examples:
 These services consume signed artifacts.
 They are not themselves the source of truth.
 The core repo defines the boundary and shared contract; product-specific
-planning should live with the owning service or deployment.
+planning should live with the owning service or deployment. Local ignored
+incubation may exist under `private_work/`, but that workspace is not part of
+the public Froglet release surface.
 
 ## 6. What Stays Out of the Kernel
 

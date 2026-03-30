@@ -50,6 +50,14 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --locked --quiet
+          cargo audit
+
+      - name: Audit npm dependencies
+        run: npm audit --prefix integrations/mcp/froglet --audit-level=high
+
       - name: Run strict verification matrix
         run: ./scripts/strict_checks.sh
 

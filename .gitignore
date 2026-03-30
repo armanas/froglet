@@ -48,9 +48,8 @@ coverage/
 /marketplace.db-*
 /_tmp/
 
-# Canonical ignored staging root for extracted higher-layer surfaces
-/higher_layers/
-/private/
+# Canonical ignored staging root for local-only incubation work
+/private_work/
 
 # IDE and local tooling
 .idea/
