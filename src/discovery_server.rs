@@ -1,11 +1,12 @@
 use crate::{
-    api, crypto,
+    crypto,
     db::DbPool,
     discovery::{
         DiscoveryNodeRecord, DiscoverySearchResponse, HeartbeatRequest, NodeDescriptor,
         ReclaimChallengeRequest, ReclaimChallengeResponse, ReclaimCompleteRequest, RegisterRequest,
         heartbeat_signing_payload, random_hex, reclaim_signing_payload, register_signing_payload,
     },
+    provider_resolution,
     settlement::current_unix_timestamp,
 };
 use axum::{
@@ -213,11 +214,11 @@ async fn validated_endpoint_claims_from_descriptor(
     descriptor: &NodeDescriptor,
 ) -> Result<EndpointClaims, String> {
     let clearnet_url = match descriptor.transports.clearnet_url.as_deref() {
-        Some(url) => Some(api::validate_discovery_endpoint_url(url).await?),
+        Some(url) => Some(provider_resolution::validate_discovery_endpoint_url(url).await?),
         None => None,
     };
     let onion_url = match descriptor.transports.onion_url.as_deref() {
-        Some(url) => Some(api::validate_discovery_endpoint_url(url).await?),
+        Some(url) => Some(provider_resolution::validate_discovery_endpoint_url(url).await?),
         None => None,
     };
     Ok(EndpointClaims {

@@ -20,14 +20,12 @@ use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::{
-    api::{
-        self, DiscoveryInfo, ProviderControlPublishArtifactRequest, ProviderServiceRecord,
-        ProviderServiceResponse, ProviderServicesResponse, ReferenceDiscoveryInfo,
-        RuntimeCreateDealRequest, RuntimeCreateDealResponse, RuntimeDealResponse,
-        RuntimeProviderDetailsResponse, RuntimeProviderRef, RuntimeSearchRequest,
-        artifact_provider_offer_definition, current_service_records,
-        normalize_offer_publication_state, persist_provider_offer_mutation,
-        provider_service_record,
+    api::types::{
+        DiscoveryInfo, ProviderControlPublishArtifactRequest, ProviderManagedOfferDefinition,
+        ProviderServiceRecord, ProviderServiceResponse, ProviderServicesResponse,
+        ReferenceDiscoveryInfo, RuntimeCreateDealRequest, RuntimeCreateDealResponse,
+        RuntimeDealResponse, RuntimeProviderDetailsResponse, RuntimeProviderRef,
+        RuntimeSearchRequest,
     },
     config::NodeConfig,
     execution::{
@@ -35,11 +33,12 @@ use crate::{
         ExecutionWorkload, default_contract_version_for, default_entrypoint_for,
         default_entrypoint_kind_for,
     },
+    provider_catalog,
     provider_projects::{
         self, ProviderProjectBuildRecord, ProviderProjectRecord, ProviderProjectStarter,
         ProviderProjectTestRecord,
     },
-    requester_deals, runtime_auth,
+    provider_resolution, requester_deals, runtime_auth,
     state::{self, AppState},
     tls,
 };
@@ -356,23 +355,26 @@ fn init_logging() {
 }
 
 fn error_json(status: StatusCode, body: serde_json::Value) -> Response {
-    let (status, json) = api::error_json(status, body);
-    (status, json).into_response()
+    (status, Json(body)).into_response()
 }
 
 fn require_provider_control_auth(
     headers: &HeaderMap,
     state: &OperatorState,
 ) -> Result<(), Response> {
-    api::require_provider_control_auth(headers, state.app_state.as_ref())
-        .map_err(|(status, body)| error_json(status, body))
+    runtime_auth::require_bearer_token(
+        headers,
+        &state.app_state.provider_control_auth_token,
+        "provider control",
+    )
+    .map_err(|(status, body)| error_json(status, body))
 }
 
 fn require_froglet_auth(
     headers: &HeaderMap,
     state: &OperatorState,
 ) -> Result<FrogletAuthScope, Response> {
-    let consumer = api::require_bearer_token(
+    let consumer = runtime_auth::require_bearer_token(
         headers,
         &state.app_state.consumer_control_auth_token,
         "froglet",
@@ -380,7 +382,7 @@ fn require_froglet_auth(
     if consumer.is_ok() {
         return Ok(FrogletAuthScope::Consumer);
     }
-    api::require_bearer_token(
+    runtime_auth::require_bearer_token(
         headers,
         &state.app_state.provider_control_auth_token,
         "froglet",
@@ -433,7 +435,7 @@ async fn operator_accessible_provider_url(
     raw_url: &str,
     provider_id: Option<&str>,
 ) -> Result<String, Response> {
-    let validated = api::classify_remote_endpoint_url(raw_url, "provider URL")
+    let validated = provider_resolution::classify_remote_endpoint_url(raw_url, "provider URL")
         .await
         .map_err(|error| {
             error_json(
@@ -441,7 +443,7 @@ async fn operator_accessible_provider_url(
                 json!({ "error": error, "value": raw_url }),
             )
         })?;
-    if validated.reachability == api::RemoteEndpointReachability::LocalOnly {
+    if validated.reachability == provider_resolution::RemoteEndpointReachability::LocalOnly {
         if provider_id.is_none_or(|value| value == state.app_state.identity.node_id()) {
             return provider_base_url(state);
         }
@@ -673,8 +675,8 @@ async fn run_restart_command(command: Option<&str>, service: &'static str) -> Re
 fn project_definition_from_build(
     state: &OperatorState,
     build: &ProviderProjectBuildRecord,
-) -> Result<crate::api::ProviderManagedOfferDefinition, Response> {
-    let mut definition = artifact_provider_offer_definition(
+) -> Result<ProviderManagedOfferDefinition, Response> {
+    let mut definition = provider_catalog::artifact_provider_offer_definition(
         state.app_state.as_ref(),
         ProviderControlPublishArtifactRequest {
             service_id: build.project.service_id.clone(),
@@ -746,11 +748,12 @@ async fn provider_create_project(
         },
         None => None,
     };
-    let publication_state =
-        match normalize_offer_publication_state(payload.publication_state.as_deref()) {
-            Ok(value) => value,
-            Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
-        };
+    let publication_state = match provider_catalog::normalize_offer_publication_state(
+        payload.publication_state.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
+    };
     if let Err(response) = validate_create_project_request(&payload, &publication_state) {
         return response;
     }
@@ -843,7 +846,7 @@ async fn provider_create_project(
                     Ok(definition) => definition,
                     Err(response) => return response,
                 };
-                if let Err((status, body)) = persist_provider_offer_mutation(
+                if let Err((status, body)) = provider_catalog::persist_provider_offer_mutation(
                     state.app_state.as_ref(),
                     definition,
                     StatusCode::CREATED,
@@ -1040,7 +1043,7 @@ async fn provider_publish_project(
         Ok(definition) => definition,
         Err(response) => return response,
     };
-    match persist_provider_offer_mutation(
+    match provider_catalog::persist_provider_offer_mutation(
         state.app_state.as_ref(),
         definition.clone(),
         StatusCode::CREATED,
@@ -1064,11 +1067,14 @@ async fn provider_publish_artifact(
     if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
-    let definition = match artifact_provider_offer_definition(state.app_state.as_ref(), payload) {
+    let definition = match provider_catalog::artifact_provider_offer_definition(
+        state.app_state.as_ref(),
+        payload,
+    ) {
         Ok(definition) => definition,
         Err((status, body)) => return error_json(status, body),
     };
-    match persist_provider_offer_mutation(
+    match provider_catalog::persist_provider_offer_mutation(
         state.app_state.as_ref(),
         definition.clone(),
         StatusCode::CREATED,
@@ -1257,7 +1263,7 @@ async fn local_provider_service_record(
     include_binding: bool,
 ) -> Result<Option<ProviderServiceRecord>, Response> {
     let include_hidden = auth_scope == FrogletAuthScope::ProviderControl;
-    provider_service_record(
+    provider_catalog::provider_service_record(
         state.app_state.as_ref(),
         service_id,
         include_hidden,
@@ -1289,16 +1295,20 @@ async fn fetch_provider_service(
         {
             return Ok(local_service);
         }
-        let local_service_exists =
-            provider_service_record(state.app_state.as_ref(), service_id, true, false)
-                .await
-                .map_err(|error| {
-                    error_json(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        json!({ "error": "failed to load local service", "details": error }),
-                    )
-                })?
-                .is_some();
+        let local_service_exists = provider_catalog::provider_service_record(
+            state.app_state.as_ref(),
+            service_id,
+            true,
+            false,
+        )
+        .await
+        .map_err(|error| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load local service", "details": error }),
+            )
+        })?
+        .is_some();
         if local_service_exists && auth_scope == FrogletAuthScope::Consumer {
             return Err(error_json(
                 StatusCode::NOT_FOUND,
@@ -1666,7 +1676,7 @@ async fn froglet_list_local_services(
     if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
-    match current_service_records(state.app_state.as_ref(), true, true).await {
+    match provider_catalog::current_service_records(state.app_state.as_ref(), true, true).await {
         Ok(services) => {
             (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response()
         }
@@ -1685,7 +1695,14 @@ async fn froglet_get_local_service(
     if let Err(response) = require_provider_control_auth(&headers, state.as_ref()) {
         return response;
     }
-    match provider_service_record(state.app_state.as_ref(), &service_id, true, true).await {
+    match provider_catalog::provider_service_record(
+        state.app_state.as_ref(),
+        &service_id,
+        true,
+        true,
+    )
+    .await
+    {
         Ok(Some(service)) => {
             (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response()
         }

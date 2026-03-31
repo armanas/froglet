@@ -123,3 +123,23 @@ The kernel should not hardwire:
 
 That boundary is deliberate.
 The best core implementation is the smallest irreversible surface.
+
+## 7. Code Layout
+
+The repository mirrors that layering in code:
+
+- `src/protocol/`
+  - `kernel.rs` contains the signed artifact envelope, kernel payloads, and sign/hash/verify logic.
+  - `workload.rs` contains `WorkloadSpec` and its request-hash and service-id helpers.
+  - `publication.rs` contains curated-list publication payloads.
+- `src/api/`
+  - `mod.rs` owns router assembly, shared HTTP helpers, auth wrappers, and cross-domain orchestration helpers.
+  - `http_catalog.rs` serves descriptors, offers, services, feed pages, and artifact fetch.
+  - `http_discovery.rs` serves runtime discovery/search and provider-detail lookup.
+  - `http_deals.rs` serves quote/deal creation and runtime deal/archive entrypoints.
+  - `http_settlement.rs` serves wallet, payment-intent, acceptance, bundle, and verification endpoints.
+  - `http_execution.rs` serves immediate execution and jobs APIs.
+  - `http_events.rs` serves event publish/query and verification endpoints.
+  - `http_confidential.rs` serves confidential profile and session endpoints.
+- `src/provider_resolution.rs` isolates endpoint normalization, private-network checks, and runtime/provider URL rewriting.
+- `src/provider_catalog.rs` isolates the shared provider publication and service-catalog seam used by the operator and API layers.

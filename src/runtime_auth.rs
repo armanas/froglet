@@ -1,6 +1,9 @@
 use crate::config::NodeConfig;
+use axum::http::{HeaderMap, StatusCode, header};
 use rand::RngCore;
+use serde_json::json;
 use std::{fs, path::Path};
+use subtle::ConstantTimeEq;
 
 #[derive(Debug, Clone)]
 pub struct LocalRuntimeAuth {
@@ -27,6 +30,47 @@ pub fn load_or_create_local_token(
     file_mode: u32,
 ) -> Result<String, String> {
     load_or_create_token(dir_path, token_path, label, dir_mode, file_mode)
+}
+
+pub fn require_bearer_token(
+    headers: &HeaderMap,
+    expected_token: &str,
+    scope: &str,
+) -> Result<(), (StatusCode, serde_json::Value)> {
+    let Some(header_value) = headers.get(header::AUTHORIZATION) else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": format!("missing {scope} authorization") }),
+        ));
+    };
+
+    let authorization = header_value.to_str().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": format!("invalid {scope} authorization header") }),
+        )
+    })?;
+
+    let Some(token) = authorization.strip_prefix("Bearer ") else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": format!("invalid {scope} authorization scheme") }),
+        ));
+    };
+
+    let valid = token
+        .as_bytes()
+        .ct_eq(expected_token.as_bytes())
+        .unwrap_u8()
+        == 1;
+    if !valid {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": format!("invalid {scope} authorization token") }),
+        ));
+    }
+
+    Ok(())
 }
 
 fn load_or_create_token(
@@ -111,7 +155,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::load_or_create_local_token;
+    use super::{load_or_create_local_token, require_bearer_token};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -142,5 +187,33 @@ mod tests {
         assert_eq!(metadata.permissions().mode() & 0o777, 0o644);
 
         std::fs::remove_dir_all(&runtime_dir).expect("cleanup runtime dir");
+    }
+
+    #[test]
+    fn bearer_token_validation_accepts_matching_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-token"),
+        );
+
+        let result = require_bearer_token(&headers, "test-token", "runtime");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn bearer_token_validation_rejects_wrong_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic test-token"),
+        );
+
+        let error = require_bearer_token(&headers, "test-token", "runtime")
+            .expect_err("basic auth should be rejected");
+
+        assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(error.1["error"], "invalid runtime authorization scheme");
     }
 }
