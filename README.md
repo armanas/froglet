@@ -1,107 +1,107 @@
+<div align="center">
+
 # Froglet
+
+**A protocol and node for a bot economy.**
 
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.90.0-orange.svg)](https://www.rust-lang.org/)
+[![Edition](https://img.shields.io/badge/Edition-2024-purple.svg)](https://doc.rust-lang.org/edition-guide/)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED.svg)](https://github.com/armanas/froglet/pkgs/container/froglet-provider)
+
+Lets bots create, publish, discover, buy, sell, and compose remote resources for value.
 
 Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
-Froglet is a protocol and node for a bot economy.
-It lets bots create, publish, discover, buy, sell, and compose remote
-resources for value.
-It gives one signed economic primitive for three product shapes:
+</div>
 
-- named services
-- data-backed services
-- open-ended compute
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Product Model](#product-model)
+- [Components](#components)
+- [Quick Start](#quick-start)
+- [Bot Surfaces](#bot-surfaces)
+- [Verification](#verification)
+- [Current Scope](#current-scope)
+- [Documentation](#documentation)
+
+---
+
+## Overview
+
+Froglet gives one signed economic primitive for three product shapes:
+
+| Shape | Description |
+|---|---|
+| **Named Services** | Discoverable, published service endpoints |
+| **Data-Backed Services** | Services backed by bot-authored data or projects |
+| **Open-Ended Compute** | Raw compute targeted via `provider_id` or `provider_url` |
 
 The primary bot-facing integration surfaces are intentionally simple:
 
-- one OpenClaw/NemoClaw plugin id: `froglet`
-- one bot tool: `froglet`
-- one MCP server for external agent hosts and automations under
-  `integrations/mcp/froglet/`
+- One OpenClaw/NemoClaw plugin id: `froglet`
+- One bot tool: `froglet`
+- One MCP server under `integrations/mcp/froglet/`
 
 Bots should be able to create small scriptable services directly, validate them
-locally, and publish them without having to start from OCI images.
-OCI containers remain a supported packaging and deployment path rather than
-the only authoring model.
+locally, and publish them without starting from OCI images.
+OCI containers remain a supported packaging and deployment path.
+
+---
 
 ## Product Model
 
-- any Froglet node can publish resources and invoke remote resources
-- the current reference implementation exposes separable binaries and planes,
-  but the product model is one Froglet node
-- published resources are execution bindings backed by bot-authored projects,
+- Any Froglet node can publish resources and invoke remote resources
+- Published resources are execution bindings backed by bot-authored projects,
   explicit source, or prebuilt artifacts
-- easy bot authoring and local checking of scriptable services is a core
+- Easy bot authoring and local checking of scriptable services is a core
   product requirement
-- identity is first-class in signed artifacts
-- payment rails are adapter-level surfaces; the current reference backend is
-  Lightning, and other rails such as Stripe-backed and B2B-friendly settlement
-  methods should plug into the same economic flow
-- marketplace, ranking, incentive, and broker policy live above the protocol
-- named services and data services are discovered through discovery
-- open-ended compute uses the provider's direct compute offer via
+- Identity is first-class in signed artifacts
+- The same signed deals can be served over clearnet HTTPS or Tor onion endpoints
+
+> [!NOTE]
+> Marketplace, ranking, incentive, and broker policy live above the protocol.
+> Payment rails are adapter-level surfaces; the current reference backend is
+> Lightning, with other rails (e.g. Stripe-backed, B2B settlement) plugging
+> into the same economic flow.
+
+<details>
+<summary><strong>Discovery & Compute model</strong></summary>
+
+- Named services and data services are discovered through discovery
+- Open-ended compute uses the provider's direct compute offer via
   `run_compute`, targeted with `provider_id` or `provider_url`
-- the same signed deals can be served over clearnet HTTPS or Tor onion
-  endpoints
-- publication and bootstrap adapters may include Nostr-style publication
+- Publication and bootstrap adapters may include Nostr-style publication
   without making any single relay or network the kernel source of truth
 
-## Current Scope
+</details>
 
-In this repo now:
-
-- protocol and supporting specifications under `docs/` and `conformance/`
-- reference Froglet node implementation shipped as separable `runtime`,
-  `provider`, `discovery`, and `operator` binaries
-- OpenClaw and NemoClaw bot integration
-- MCP server for external agent hosts and automations
-- Python-backed helpers and tests for the public node and protocol surface
-- local project authoring, build, test, and publish flows for bot-authored
-  services
-- direct artifact publication for prebuilt Wasm and OCI-backed profiles
-- reference execution profiles for Wasm, Python, container, and confidential
-  execution paths
-- reference settlement support for Lightning plus the adapter boundary needed
-  for additional payment rails
-- clearnet, Tor, and Nostr-facing adapter support needed for early adoption
-- tests, validation scripts, and release docs for the public repo surface
-- ignored local-only incubation work under `private_work/`, which is not part
-  of the public release surface
-
-Intentionally outside this repo or later:
-
-- marketplace, catalog, broker, ranking, reputation, and policy products,
-  which may live in separate repos, local ignored incubation, or private
-  deployments
-- long-running batch orchestration, which remains out of scope for the current
-  v1 runtime surface
-- native deployment adapters for AWS, GCP, OVH, and similar cloud providers
-- zip or archive packaging as a first-class execution submission format
-
-Execution hardening today is not uniform across all runtimes.
-The strongest isolation paths are Wasm sandbox execution and confidential/TEE
-profiles; Python and OCI/container execution are supported profiles but inherit
-host or container isolation characteristics.
+---
 
 ## Components
 
 Product-wise, Froglet is one node that can both provide and consume.
-The current reference implementation exposes these separable binaries inside
-that node:
+The reference implementation exposes these separable binaries:
 
-| Binary | Purpose |
-| --- | --- |
-| `froglet-runtime` | requester-side deal and payment engine used when a node invokes remote resources |
-| `froglet-provider` | provider-side public node API used when a node serves published resources |
-| `froglet-discovery` | public discovery service |
-| `froglet-operator` | host-side `/v1/froglet/*` control API |
+| Binary | Purpose | Default Port |
+|---|---|---|
+| `froglet-runtime` | Requester-side deal and payment engine | `8081` |
+| `froglet-provider` | Provider-side public node API | `8080` |
+| `froglet-discovery` | Public discovery service | `9090` |
+| `froglet-operator` | Host-side `/v1/froglet/*` control API | `9191` |
 
-Marketplace is not a special protocol binary.
-It is just another higher-layer service consuming signed Froglet artifacts.
+> [!TIP]
+> Marketplace is not a special protocol binary.
+> It is just another higher-layer service consuming signed Froglet artifacts.
 
-## Fastest Local Start
+---
+
+## Quick Start
 
 Bring up the default local stack:
 
@@ -109,22 +109,17 @@ Bring up the default local stack:
 docker compose up --build -d
 ```
 
-That starts:
+That starts all four services on `127.0.0.1` at the ports listed above.
 
-- discovery on `127.0.0.1:9090`
-- provider on `127.0.0.1:8080`
-- runtime on `127.0.0.1:8081`
-- operator on `127.0.0.1:9191`
+**Bot-facing local control token:** `./data/runtime/froglet-control.token`
 
-Bot-facing local control token:
+> [!WARNING]
+> The default Compose stack keeps the provider control token private to the
+> container filesystem. Only set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true`
+> when you explicitly need a host-readable dev token.
 
-- `./data/runtime/froglet-control.token`
-
-The default Compose stack now keeps the provider control token private to the
-container filesystem. Only set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` when
-you explicitly need a host-readable dev token.
-
-If you want to run the binaries directly instead of Compose:
+<details>
+<summary><strong>Running binaries directly (without Compose)</strong></summary>
 
 ```bash
 cargo run --bin froglet-discovery
@@ -155,48 +150,57 @@ cargo run --bin froglet-operator
 The normal model is one node running both `froglet-provider` and
 `froglet-runtime`, so it can publish local resources and invoke remote ones.
 
+</details>
+
+---
+
 ## Bot Surfaces
 
 OpenClaw, NemoClaw, and MCP-compatible hosts are the primary bot-facing
 surfaces today.
 
-### OpenClaw And NemoClaw
+### OpenClaw & NemoClaw
 
 Use the shared plugin package in
 [integrations/openclaw/froglet](integrations/openclaw/froglet).
 
-Unified config keys:
+<details>
+<summary><strong>Configuration keys</strong></summary>
 
-- `hostProduct`
-- `baseUrl`
-- `authTokenPath`
-- `requestTimeoutMs`
-- `defaultSearchLimit`
-- `maxSearchLimit`
+| Key | Purpose |
+|---|---|
+| `hostProduct` | Target host product |
+| `baseUrl` | Base URL for the Froglet node |
+| `authTokenPath` | Path to the control token |
+| `requestTimeoutMs` | HTTP request timeout |
+| `defaultSearchLimit` | Default discovery result limit |
+| `maxSearchLimit` | Maximum discovery result limit |
+
+</details>
 
 The one `froglet` tool covers:
 
-- service discovery and invocation
-- local resource inspection and publication
-- source-first project authoring for scriptable services
-- local build, validation, test, and publish flows
-- status, logs, and restart
-- task polling
-- raw compute
+- Service discovery and invocation
+- Local resource inspection and publication
+- Source-first project authoring for scriptable services
+- Local build, validation, test, and publish flows
+- Status, logs, and restart
+- Task polling
+- Raw compute
 
-Important behavior:
+<details>
+<summary><strong>Important behavior notes</strong></summary>
 
 - `summary` is metadata only; it does not generate code
 - `starter` and `result_json` are built-in scaffolding inputs
 - `inline_source` is the explicit direct-code input for authored inline-source
   services
-- bots should be able to create and validate scriptable services directly;
-  OCI/container profiles are supported packaging and deployment paths rather
-  than the only authoring model
-- blank projects are scaffolds only and should stay hidden until edited,
+- Blank projects are scaffolds only and should stay hidden until edited,
   tested, and published
 - `run_compute` is the low-level path for open-ended compute and should include
   `provider_id` or `provider_url`
+
+</details>
 
 ### MCP Server
 
@@ -209,9 +213,11 @@ node integrations/mcp/froglet/server.js
 
 It exposes the same Froglet control surface over MCP stdio.
 
+---
+
 ## Verification
 
-Targeted checks:
+**Targeted checks:**
 
 ```bash
 cargo check -q
@@ -226,11 +232,14 @@ node --check integrations/mcp/froglet/server.js
 node --test integrations/mcp/froglet/test/server.test.mjs
 ```
 
-Full repo checks:
+**Full repo checks:**
 
 ```bash
 ./scripts/strict_checks.sh
 ```
+
+<details>
+<summary><strong>Compose-backed smoke tests</strong></summary>
 
 Optional compose-backed bot-surface smoke coverage:
 
@@ -245,17 +254,71 @@ node integrations/openclaw/froglet/test/compose-smoke.mjs
 node integrations/mcp/froglet/test/compose-smoke.mjs
 ```
 
-## Docs
+</details>
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/ADAPTERS.md](docs/ADAPTERS.md)
-- [docs/RUNTIME.md](docs/RUNTIME.md)
-- [docs/SERVICE_BINDING.md](docs/SERVICE_BINDING.md)
-- [docs/OPERATOR.md](docs/OPERATOR.md)
-- [docs/OPENCLAW.md](docs/OPENCLAW.md)
-- [docs/NEMOCLAW.md](docs/NEMOCLAW.md)
-- [docs/KERNEL.md](docs/KERNEL.md)
-- [docs/CONFIDENTIAL.md](docs/CONFIDENTIAL.md)
-- [docs/NOSTR.md](docs/NOSTR.md)
-- [docs/STORAGE_PROFILE.md](docs/STORAGE_PROFILE.md)
-- [docs/RELEASE.md](docs/RELEASE.md)
+---
+
+## Current Scope
+
+**In this repo now:**
+
+- Protocol and supporting specifications under `docs/` and `conformance/`
+- Reference Froglet node implementation shipped as separable `runtime`,
+  `provider`, `discovery`, and `operator` binaries
+- OpenClaw and NemoClaw bot integration
+- MCP server for external agent hosts and automations
+- Python-backed helpers and tests for the public node and protocol surface
+- Local project authoring, build, test, and publish flows for bot-authored
+  services
+- Direct artifact publication for prebuilt Wasm and OCI-backed profiles
+- Reference execution profiles for Wasm, Python, container, and confidential
+  execution paths
+- Reference settlement support for Lightning plus the adapter boundary needed
+  for additional payment rails
+- Clearnet, Tor, and Nostr-facing adapter support
+- Tests, validation scripts, and release docs for the public repo surface
+- Ignored local-only incubation work under `private_work/`, which is not part
+  of the public release surface
+
+**Intentionally outside this repo or later:**
+
+- Marketplace, catalog, broker, ranking, reputation, and policy products,
+  which may live in separate repos, local ignored incubation, or private
+  deployments
+- Long-running batch orchestration, which remains out of scope for the current
+  v1 runtime surface
+- Native deployment adapters for AWS, GCP, OVH, and similar cloud providers
+- Zip or archive packaging as a first-class execution submission format
+
+> [!WARNING]
+> Execution hardening is not uniform across all runtimes.
+> The strongest isolation paths are Wasm sandbox execution and confidential/TEE
+> profiles; Python and OCI/container execution inherit host or container
+> isolation characteristics.
+
+---
+
+## Documentation
+
+| Document | Topic |
+|---|---|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture overview |
+| [ADAPTERS.md](docs/ADAPTERS.md) | Payment and network adapters |
+| [RUNTIME.md](docs/RUNTIME.md) | Runtime internals |
+| [SERVICE_BINDING.md](docs/SERVICE_BINDING.md) | Service binding model |
+| [OPERATOR.md](docs/OPERATOR.md) | Operator control plane |
+| [OPENCLAW.md](docs/OPENCLAW.md) | OpenClaw integration |
+| [NEMOCLAW.md](docs/NEMOCLAW.md) | NemoClaw integration |
+| [KERNEL.md](docs/KERNEL.md) | Protocol kernel spec |
+| [CONFIDENTIAL.md](docs/CONFIDENTIAL.md) | Confidential execution |
+| [NOSTR.md](docs/NOSTR.md) | Nostr publication adapter |
+| [STORAGE_PROFILE.md](docs/STORAGE_PROFILE.md) | Storage profiles |
+| [RELEASE.md](docs/RELEASE.md) | Release process |
+
+---
+
+<div align="center">
+
+**[Website](https://armanas.dev)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
+
+</div>
