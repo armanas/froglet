@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "froglet-protocol", "froglet-marketplace"]
+resolver = "2"
+
 [package]
 name = "froglet"
 version = "0.1.0"
@@ -15,15 +19,10 @@ path = "src/bin/froglet-provider.rs"
 name = "froglet-runtime"
 path = "src/bin/froglet-runtime.rs"
 
-[[bin]]
-name = "froglet-discovery"
-path = "src/bin/discovery.rs"
-
-[[bin]]
-name = "froglet-operator"
-path = "src/bin/froglet-operator.rs"
 
 [dependencies]
+froglet-protocol = { path = "froglet-protocol" }
+
 # Async Runtime & Web Framework
 tokio = { version = "1.37", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "tokio"] }
@@ -72,5 +71,6 @@ wat = "1"
 
 [dev-dependencies]
 bitcoin = "0.32.8"
+proptest = "1"
 rcgen = "0.13"
 tokio-rustls = "0.26"

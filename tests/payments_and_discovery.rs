@@ -1,20 +1,16 @@
 use froglet::{
     confidential::ConfidentialConfig,
     config::{
-        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, ReferenceDiscoveryConfig, StorageConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
     },
     db::{self, DbPool},
-    discovery::{
-        descriptor_digest_hex, heartbeat_signing_payload, reclaim_signing_payload,
-        register_signing_payload,
-    },
     pricing::ServiceId,
     protocol::{
         self, DealPayload, ExecutionLimits, InvoiceBundleLegState, QuotePayload, verify_artifact,
     },
     settlement,
-    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
+    state::{AppState, TransportStatus},
 };
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use std::sync::{
@@ -78,16 +74,9 @@ fn in_memory_state() -> AppState {
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
-        discovery_mode: DiscoveryMode::Reference,
         identity: IdentityConfig {
             auto_generate: true,
         },
-        reference_discovery: Some(ReferenceDiscoveryConfig {
-            url: "http://localhost".to_string(),
-            publish: true,
-            required: false,
-            heartbeat_interval_secs: 30,
-        }),
         pricing: PricingConfig {
             events_query: 10,
             execute_wasm: 30,
@@ -125,6 +114,7 @@ fn in_memory_state() -> AppState {
             policy: None,
             session_ttl_secs: 300,
         },
+        marketplace_url: None,
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -138,9 +128,6 @@ fn in_memory_state() -> AppState {
         transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
             &node_config,
         ))),
-        reference_discovery_status: Arc::new(tokio::sync::Mutex::new(
-            ReferenceDiscoveryStatus::from_config(&node_config),
-        )),
         wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
@@ -157,48 +144,11 @@ fn in_memory_state() -> AppState {
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
+        event_batch_writer: None,
+        builtin_services: std::collections::HashMap::new(),
     }
 }
 
-#[test]
-fn discovery_signing_payloads_are_stable() {
-    let state = in_memory_state();
-    let rt = Runtime::new().unwrap();
-
-    let descriptor1 = rt
-        .block_on(froglet::discovery_client::build_descriptor(&state))
-        .expect("descriptor 1");
-    let descriptor2 = rt
-        .block_on(froglet::discovery_client::build_descriptor(&state))
-        .expect("descriptor 2");
-
-    let digest1 = descriptor_digest_hex(&descriptor1).expect("digest 1");
-    let digest2 = descriptor_digest_hex(&descriptor2).expect("digest 2");
-    assert_eq!(
-        digest1, digest2,
-        "descriptor digest must remain stable across rebuilds"
-    );
-    assert_eq!(descriptor1.updated_at, None);
-    assert_eq!(descriptor2.updated_at, None);
-
-    let ts = 1234567890_i64;
-    let register_msg = register_signing_payload(&descriptor1, ts).expect("register payload");
-    let heartbeat_msg = heartbeat_signing_payload(state.identity.node_id(), ts);
-    let reclaim_msg = reclaim_signing_payload(state.identity.node_id(), "challenge", "nonce", ts);
-
-    assert!(
-        register_msg.starts_with(b"froglet-register\n"),
-        "register payload prefix changed"
-    );
-    assert!(
-        heartbeat_msg.starts_with(b"froglet-heartbeat\n"),
-        "heartbeat payload prefix changed"
-    );
-    assert!(
-        reclaim_msg.starts_with(b"froglet-reclaim\n"),
-        "reclaim payload prefix changed"
-    );
-}
 
 #[test]
 fn artifact_store_reuses_existing_payload_document_for_republished_roots() {
@@ -705,47 +655,3 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
     }
 }
 
-#[test]
-fn discovery_initial_sync_returns_after_http_timeout() {
-    let rt = Runtime::new().unwrap();
-    rt.block_on(async {
-        let mut state = in_memory_state();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind hung discovery");
-        let addr = listener.local_addr().expect("listener addr");
-        state
-            .config
-            .reference_discovery
-            .as_mut()
-            .expect("reference discovery")
-            .url = format!("http://{addr}");
-        state.http_client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(100))
-            .timeout(Duration::from_millis(100))
-            .build()
-            .expect("http client");
-
-        tokio::spawn(async move {
-            let _ = listener.accept().await;
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        });
-
-        let started_at = tokio::time::Instant::now();
-        let error = froglet::discovery_client::perform_initial_sync(Arc::new(state))
-            .await
-            .expect_err("initial sync should time out");
-        assert!(
-            started_at.elapsed() < Duration::from_secs(1),
-            "initial sync should fail quickly, elapsed {:?}",
-            started_at.elapsed()
-        );
-        assert!(
-            error.contains("register request failed")
-                || error.contains("challenge request failed")
-                || error.contains("timed out")
-                || error.contains("deadline"),
-            "unexpected error: {error}"
-        );
-    });
-}

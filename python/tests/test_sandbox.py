@@ -58,6 +58,21 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertEqual(resp.status, 400)
         self.assertIn("invalid hex", payload["error"])
 
+    async def test_execute_wasm_rejects_module_hash_mismatch(self) -> None:
+        node = await self.start_node()
+        submission = build_wasm_submission(VALID_WASM_HEX)
+        submission["workload"]["module_hash"] = "11" * 32
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                node.url("/v1/node/execute/wasm"),
+                json={"submission": submission},
+            ) as resp:
+                payload = await resp.json()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("module hash", payload["error"].lower())
+
     async def test_execute_wasm_rejects_unsupported_abi_version(self) -> None:
         node = await self.start_node()
         submission = build_wasm_submission(VALID_WASM_HEX)

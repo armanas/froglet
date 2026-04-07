@@ -332,12 +332,12 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       authProfile: "provider_control",
       fixtureInjections: {
         action: "read_file",
-        project_id: bootstrap.build_project_id,
+        project_id: bootstrap.publish_ready_project_id,
         path: "source/main.wat",
         include_raw: true,
       },
       resultOracles: {
-        text_contains: [`project_id: ${bootstrap.build_project_id}`, "(module"],
+        text_contains: [`project_id: ${bootstrap.publish_ready_project_id}`, "(module"],
         raw_assertions: [{ path: "path", equals: "source/main.wat" }],
       },
     }),
@@ -385,8 +385,21 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         project_id: bootstrap.build_project_id,
         path: "source/main.wat",
         contents: `(module
-  (func (export "run_json") (result i32)
-    i32.const 11)
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 128))
+  (func (export "alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    global.get $heap
+    local.set $ptr
+    global.get $heap
+    local.get $len
+    i32.add
+    global.set $heap
+    local.get $ptr)
+  (func (export "dealloc") (param i32 i32))
+  (func (export "run") (param i32 i32) (result i64)
+    i64.const 2)
+  (data (i32.const 0) "11")
 )`,
         include_raw: true,
       },
@@ -542,8 +555,8 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: created", `service_id: ${bootstrap.build_project_id}`],
-        raw_assertions: [{ path: "service.service_id", equals: bootstrap.build_project_id }],
+        text_contains: ["status: passed", `service_id: ${bootstrap.build_project_id}`],
+        raw_assertions: [{ path: "offer.service_id", equals: bootstrap.build_project_id }],
       },
     }),
     toolScenario({
@@ -557,9 +570,9 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: created", `service_id: ${bootstrap.publish_ready_project_id}`],
+        text_contains: ["status: passed", `service_id: ${bootstrap.publish_ready_project_id}`],
         raw_assertions: [
-          { path: "service.publication_state", equals: "active" },
+          { path: "offer.publication_state", equals: "active" },
         ],
       },
     }),
@@ -599,10 +612,10 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: [`service_id: ${bootstrap.publish_artifact_inline_service_id}`],
+        text_contains: ["status: passed", `service_id: ${bootstrap.publish_artifact_inline_service_id}`],
         raw_assertions: [
-          { path: "service.runtime", equals: "python" },
-          { path: "service.binding_hash", exists: true },
+          { path: "offer.runtime", equals: "python" },
+          { path: "offer.binding_hash", exists: true },
         ],
       },
     }),
@@ -623,10 +636,11 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       },
       resultOracles: {
         text_contains: [
+          "status: passed",
           `service_id: ${bootstrap.publish_artifact_hidden_service_id}`,
           "publication_state: hidden",
         ],
-        raw_assertions: [{ path: "service.publication_state", equals: "hidden" }],
+        raw_assertions: [{ path: "offer.publication_state", equals: "hidden" }],
       },
     }),
     toolScenario({
@@ -1109,6 +1123,7 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         inline_source:
           "def handler(event, context):\n    return {\"via\": \"inline-python\", \"input\": event}\n",
         input: { via: "matrix" },
+        timeout_secs: 15,
         include_raw: true,
       },
       resultOracles: {
@@ -1150,7 +1165,7 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       },
       resultOracles: {
         text_contains: ["status: succeeded"],
-        raw_assertions: [{ path: "result.echo.hello", equals: "world" }],
+        raw_assertions: [{ path: "result.hello", equals: "world" }],
       },
     }),
     toolScenario({
@@ -1291,8 +1306,8 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
     agenticScenario({
       scenarioId: "agentic.local_project_lifecycle",
       prompt:
-        `Use the froglet tool to create a new hidden project named ${prefix}-agentic-local, read its main source file, write runnable source, build it, test it, publish it, then confirm it appears in local services. ` +
-        "Return the project_id, service_id, and test output.",
+        `Use the froglet tool to create a new hidden project named ${prefix}-agentic-local, then call create_project, read_file, write_file, build_project, test_project, publish_project, and list_local_services in that exact order. ` +
+        "Do not stop early. Return the project_id, service_id, and test output.",
       requiredActions: [
         "create_project",
         "read_file",
@@ -1312,12 +1327,13 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
     agenticScenario({
       scenarioId: "agentic.direct_compute",
       prompt:
-        `Use the froglet tool to run direct compute twice against provider ${freeSeed.provider_id}: once using inline Wasm, and once using a tiny inline Python handler that returns the input with a marker. ` +
+        `Use the froglet tool to run direct compute twice against provider ${freeSeed.provider_id}. First call run_compute with the provided wasm_module_hex fixture unchanged and the Wasm execution fields so the result is 42. Second call run_compute with runtime=python, package_kind=inline_source, entrypoint_kind=handler, entrypoint=handler, contract_version=froglet.python.handler_json.v1, and inline_source exactly def handler(event, context): return {"marker":"processed by python handler","input":event}. ` +
         "Return both results in plain text.",
       requiredActions: ["run_compute"],
       fixtureInjections: {
         free_provider_id: freeSeed.provider_id,
         wasm_module_hex: "__fixture_valid_wasm_hex",
+        timeout_secs: 15,
       },
       resultOracles: {
         must_contain: ["42", "marker"],

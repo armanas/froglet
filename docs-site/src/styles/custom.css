@@ -1,0 +1,24 @@
+:root {
+	--sl-color-accent-low: #1a3a2a;
+	--sl-color-accent: #3fb950;
+	--sl-color-accent-high: #a8e6b0;
+	--sl-color-white: #f0f6fc;
+	--sl-color-gray-1: #c9d1d9;
+	--sl-color-gray-2: #8b949e;
+	--sl-color-gray-3: #484f58;
+	--sl-color-gray-4: #30363d;
+	--sl-color-gray-5: #21262d;
+	--sl-color-gray-6: #161b22;
+	--sl-color-black: #0d1117;
+	--sl-font-system-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+[data-theme='light'] {
+	--sl-color-accent-low: #d4edda;
+	--sl-color-accent: #28a745;
+	--sl-color-accent-high: #155724;
+}
+
+mjx-container {
+	overflow-x: auto;
+}

@@ -39,12 +39,82 @@ function context(config) {
   }
 }
 
+function resolvedProviderId(args) {
+  return firstDefined(args.provider_id, args.free_provider_id, args.paid_provider_id)
+}
+
+function resolvedProviderUrl(args) {
+  return firstDefined(args.provider_url, args.free_provider_url, args.paid_provider_url)
+}
+
+function resolvedServiceId(args) {
+  return firstDefined(args.service_id, args.free_service_id, args.async_service_id)
+}
+
+function computeOfferIds(response) {
+  if (Array.isArray(response.raw_compute_offer_ids) && response.raw_compute_offer_ids.length > 0) {
+    return response.raw_compute_offer_ids
+  }
+  if (typeof response.raw_compute_offer_id === "string" && response.raw_compute_offer_id.length > 0) {
+    return [response.raw_compute_offer_id]
+  }
+  return ["execute.compute"]
+}
+
+function resolveProjectFileTarget(args) {
+  let projectId = args.project_id
+  let filePath = args.path
+  if (typeof filePath === "string") {
+    const match = filePath.match(/\/projects\/([^/]+)\/(.+)$/)
+    if (match) {
+      if (!projectId) {
+        projectId = match[1]
+      }
+      filePath = match[2]
+    } else if (filePath.startsWith("/")) {
+      filePath = filePath.replace(/^\/+/, "")
+    }
+  }
+  return { projectId, path: filePath }
+}
+
+function summarizeMutationResponse(response) {
+  const offer = response.offer ?? {}
+  const payload = offer.offer?.payload ?? {}
+  const service = {
+    service_id: offer.service_id ?? response.evidence?.service_id ?? "unknown",
+    offer_id: payload.offer_id ?? response.evidence?.offer_id ?? "unknown",
+    offer_kind: payload.offer_kind ?? "unknown",
+    resource_kind: "service",
+    project_id: offer.project_id ?? "none",
+    summary: offer.summary ?? response.summary ?? "none",
+    runtime: offer.runtime ?? "unknown",
+    package_kind: offer.package_kind ?? "unknown",
+    entrypoint_kind: offer.entrypoint_kind ?? "unknown",
+    entrypoint: offer.entrypoint ?? "unknown",
+    contract_version: offer.contract_version ?? "unknown",
+    mounts: offer.mounts ?? [],
+    mode: offer.mode ?? "unknown",
+    price_sats: payload.price_sats ?? "unknown",
+    publication_state: offer.publication_state ?? "unknown",
+    provider_id: response.evidence?.provider_id ?? payload.provider_id ?? "unknown",
+    input_schema: offer.input_schema,
+    output_schema: offer.output_schema
+  }
+  return [
+    `status: ${response.status ?? "unknown"}`,
+    ...summarizeService(service),
+    ...serviceAuthorityNotes(service),
+    `offer_hash: ${response.evidence?.offer_hash ?? response.offer_hash ?? "none"}`
+  ]
+}
+
 export function registerFrogletTool(api, config) {
   api.registerTool(
     {
       name: "froglet",
       description:
-        "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For remote discovery-backed services use discover_services or get_service. For named or data-service bindings use invoke_service. For simple fixed-response services, use create_project with result_json, price_sats, and publication_state=active. Example: if the user says create a service called ping which just returns \"pong\" for free, use action=create_project, name=ping, result_json=\"pong\", price_sats=0, publication_state=active. For authored services use create_project, write_file, build_project, test_project, and publish_project. Prefer runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, and explicit artifact fields when the user asks for execution metadata. Use run_compute for open-ended compute through the provider's direct compute offer, and include provider_id or provider_url.",
+        "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For remote discovery-backed services use discover_services or get_service. For named or data-service bindings use invoke_service. For simple fixed-response services, use create_project with result_json, price_sats, and publication_state=active. Example: if the user says create a service called ping which just returns \"pong\" for free, use action=create_project, name=ping, result_json=\"pong\", price_sats=0, publication_state=active. For authored services use create_project, read_file, write_file, build_project, test_project, and publish_project. read_file and write_file require a Froglet project_id plus a project-relative path like source/main.py, not an absolute filesystem path. For runtime=python inline_source, use a handler shaped like def handler(event, context): .... Prefer runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, and explicit artifact fields when the user asks for execution metadata. Use run_compute for open-ended compute through the provider's direct compute offer, and include provider_id or provider_url.",
       parameters: {
         type: "object",
         additionalProperties: true,
@@ -82,8 +152,15 @@ export function registerFrogletTool(api, config) {
             description:
               "Friendly service/project name. For create_project, Froglet will derive project_id, service_id, and offer_id from this if explicit ids are omitted."
           },
-          service_id: { type: "string" },
-          project_id: { type: "string" },
+          service_id: {
+            type: "string",
+            description:
+              "Service identifier. Required for publish_artifact, get_local_service, get_service, and invoke_service."
+          },
+          project_id: {
+            type: "string",
+            description: "Froglet project identifier. Required for get_project, read_file, write_file, build_project, test_project, and publish_project."
+          },
           offer_id: { type: "string" },
           summary: {
             type: "string",
@@ -129,7 +206,10 @@ export function registerFrogletTool(api, config) {
             description:
               "Optional starter code scaffold. This is only initial code scaffolding, not a publish mode. Use starter only when you want Froglet to scaffold starter code explicitly."
           },
-          path: { type: "string" },
+          path: {
+            type: "string",
+            description: "Project-relative file path such as source/main.py or source/main.wat. Do not pass an absolute filesystem path."
+          },
           contents: { type: "string" },
           input: {},
           result_json: {
@@ -184,6 +264,7 @@ export function registerFrogletTool(api, config) {
             const runtimeHealthy = response.components?.runtime?.healthy ?? response.runtime?.healthy
             const providerHealthy =
               response.components?.provider?.healthy ?? response.provider?.healthy
+            const offerIds = computeOfferIds(response)
             const lines = [
               `service: ${response.service ?? "froglet"}`,
               `healthy: ${response.healthy === true}`,
@@ -195,7 +276,7 @@ export function registerFrogletTool(api, config) {
               `reference_discovery_url: ${response.reference_discovery?.url ?? "none"}`,
               `reference_discovery_last_error: ${response.reference_discovery?.last_error ?? "none"}`,
               `projects_root: ${response.projects_root ?? "unknown"}`,
-              `compute_offer_id: ${response.raw_compute_offer_id ?? "execute.compute"}`,
+              `compute_offer_ids: ${offerIds.join(", ")}`,
               "",
               `runtime_healthy: ${runtimeHealthy === true}`,
               `provider_healthy: ${providerHealthy === true}`
@@ -318,16 +399,17 @@ export function registerFrogletTool(api, config) {
             )
           }
           case "read_file": {
+            const target = resolveProjectFileTarget(args)
             const response = await readProjectFile({
               ...clientContext,
-              projectId: args.project_id,
-              path: args.path
+              projectId: target.projectId,
+              path: target.path
             })
             return toolTextResult(
               appendRaw(
                 [
-                  `project_id: ${response.project_id ?? args.project_id ?? "unknown"}`,
-                  `path: ${response.path ?? args.path ?? "unknown"}`,
+                  `project_id: ${response.project_id ?? target.projectId ?? "unknown"}`,
+                  `path: ${response.path ?? target.path ?? "unknown"}`,
                   "",
                   response.contents ?? ""
                 ],
@@ -337,18 +419,19 @@ export function registerFrogletTool(api, config) {
             )
           }
           case "write_file": {
+            const target = resolveProjectFileTarget(args)
             const response = await writeProjectFile({
               ...clientContext,
-              projectId: args.project_id,
-              path: args.path,
+              projectId: target.projectId,
+              path: target.path,
               contents: args.contents
             })
             return toolTextResult(
               appendRaw(
                 [
                   `status: ${response.status ?? "unknown"}`,
-                  `project_id: ${response.project_id ?? args.project_id ?? "unknown"}`,
-                  `path: ${response.path ?? args.path ?? "unknown"}`
+                  `project_id: ${response.project_id ?? target.projectId ?? "unknown"}`,
+                  `path: ${response.path ?? target.path ?? "unknown"}`
                 ],
                 response,
                 includeRaw
@@ -384,23 +467,14 @@ export function registerFrogletTool(api, config) {
               projectId: args.project_id
             })
             return toolTextResult(
-              appendRaw(
-                [
-                  `status: ${response.status ?? "unknown"}`,
-                  ...summarizeService(response.service ?? {}),
-                  ...serviceAuthorityNotes(response.service ?? {}),
-                  `offer_hash: ${response.offer_hash ?? "none"}`
-                ],
-                response,
-                includeRaw
-              ).join("\n")
+              appendRaw(summarizeMutationResponse(response), response, includeRaw).join("\n")
             )
           }
           case "publish_artifact": {
             const response = await publishArtifact({
               ...clientContext,
               request: {
-                service_id: args.service_id,
+                service_id: resolvedServiceId(args),
                 offer_id: args.offer_id,
                 summary: args.summary,
                 artifact_path: args.artifact_path,
@@ -422,16 +496,7 @@ export function registerFrogletTool(api, config) {
               }
             })
             return toolTextResult(
-              appendRaw(
-                [
-                  `status: ${response.status ?? "unknown"}`,
-                  ...summarizeService(response.service ?? {}),
-                  ...serviceAuthorityNotes(response.service ?? {}),
-                  `offer_hash: ${response.offer_hash ?? "none"}`
-                ],
-                response,
-                includeRaw
-              ).join("\n")
+              appendRaw(summarizeMutationResponse(response), response, includeRaw).join("\n")
             )
           }
           case "list_local_services": {
@@ -451,7 +516,7 @@ export function registerFrogletTool(api, config) {
           case "get_local_service": {
             const response = await getLocalService({
               ...clientContext,
-              serviceId: args.service_id
+              serviceId: resolvedServiceId(args)
             })
             return toolTextResult(
               appendRaw(
@@ -502,9 +567,9 @@ export function registerFrogletTool(api, config) {
             const response = await getService({
               ...clientContext,
               request: {
-                provider_id: args.provider_id,
-                provider_url: args.provider_url,
-                service_id: args.service_id
+                provider_id: resolvedProviderId(args),
+                provider_url: resolvedProviderUrl(args),
+                service_id: resolvedServiceId(args)
               }
             })
             return toolTextResult(
@@ -522,9 +587,9 @@ export function registerFrogletTool(api, config) {
             const response = await invokeService({
               ...clientContext,
               request: {
-                provider_id: args.provider_id,
-                provider_url: args.provider_url,
-                service_id: args.service_id,
+                provider_id: resolvedProviderId(args),
+                provider_url: resolvedProviderUrl(args),
+                service_id: resolvedServiceId(args),
                 input: args.input,
                 timeout_secs: args.timeout_secs
               }
@@ -547,8 +612,8 @@ export function registerFrogletTool(api, config) {
             const response = await runCompute({
               ...clientContext,
               request: {
-                provider_id: args.provider_id,
-                provider_url: args.provider_url,
+                provider_id: resolvedProviderId(args),
+                provider_url: resolvedProviderUrl(args),
                 input: args.input,
                 artifact_path: args.artifact_path,
                 wasm_module_hex: args.wasm_module_hex,
@@ -561,7 +626,7 @@ export function registerFrogletTool(api, config) {
                 entrypoint: args.entrypoint,
                 contract_version: args.contract_version,
                 mounts: args.mounts,
-                timeout_secs: args.timeout_secs
+                timeout_secs: args.timeout_secs ?? 15
               }
             })
             const lines = response.task

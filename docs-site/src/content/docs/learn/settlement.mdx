@@ -1,0 +1,107 @@
+---
+title: "Settlement (Lightning)"
+description: How payments are cryptographically bound to deals.
+---
+
+## The Lightning Network
+
+The **Lightning Network** is a payment layer built on Bitcoin. It enables instant, low-fee payments by creating payment channels between nodes. Instead of recording every transaction on the blockchain, parties exchange signed IOUs and only settle to the chain when channels open or close.
+
+## Hash Time-Locked Contracts (HTLCs)
+
+Lightning payments use **HTLCs**:
+
+1. The receiver generates a random secret (the **preimage**)
+2. The receiver computes $H = \text{SHA-256}(\text{preimage})$ (the **payment hash**)
+3. The sender locks funds: "I'll pay you X sats if you reveal the preimage of H within T seconds"
+4. The receiver reveals the preimage to claim the funds
+5. If the timeout expires, the sender gets their money back
+
+## Froglet's two-leg model
+
+Every paid deal splits into two Lightning payments:
+
+| Leg | Amount | When | Purpose |
+|-----|--------|------|---------|
+| **Base fee** | Fixed (e.g., 1000 msat) | Locks on admission | Prevents free-riding |
+| **Success fee** | Fixed (e.g., 4000 msat) | Settles on success | Fair to requester |
+
+### Why two legs?
+
+- **Requester protection**: If the provider fails, the success fee is never charged
+- **Provider protection**: The base fee compensates for reserved resources
+- **No escrow needed**: The Lightning HTLCs enforce the rules cryptographically
+
+### Interactive: outcomes by scenario
+
+Click a scenario to see what each party pays and receives:
+
+<div style="margin:20px 0">
+<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+<button id="scn-ok" onclick="showScn('ok')" style="padding:6px 14px;border-radius:6px;background:#16a34a22;border:1px solid #16a34a44;color:#4ade80;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">✓ Success</button>
+<button id="scn-fail" onclick="showScn('fail')" style="padding:6px 14px;border-radius:6px;background:#dc262622;border:1px solid #dc262644;color:#f87171;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">✗ Provider fails</button>
+<button id="scn-free" onclick="showScn('free')" style="padding:6px 14px;border-radius:6px;background:#6366f122;border:1px solid #6366f144;color:#818cf8;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">○ Free service</button>
+</div>
+<canvas id="settle-viz" width="600" height="160" style="width:100%;max-width:600px;height:160px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
+</div>
+
+<script>{`
+const scenarios = {
+  ok: {title:'Successful execution',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#4ade80'},success:{from:'Requester',to:'Provider',amount:'5,000 msat',state:'settled',color:'#4ade80'},note:'Both fees settled. Provider earned 8 sats. Requester got result.'},
+  fail: {title:'Provider failed',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#fbbf24'},success:{from:'Requester',to:'—',amount:'5,000 msat',state:'canceled',color:'#f87171'},note:'Base fee paid (provider reserved resources). Success fee returned to requester.'},
+  free: {title:'Free service (settlement: none)',base:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},success:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},note:'No payment. Deal flow still runs. Quote, deal, execute, receipt — just no money.'},
+};
+window.showScn = function(key){
+  const s=scenarios[key];
+  const c=document.getElementById('settle-viz'),ctx=c.getContext('2d');
+  const w=c.width,h=c.height;
+  ctx.clearRect(0,0,w,h);
+
+  ctx.font='bold 12px system-ui';ctx.fillStyle='#e5e7eb';ctx.textAlign='center';
+  ctx.fillText(s.title,w/2,20);
+
+  // Base fee
+  const by=55;
+  ctx.font='10px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='left';
+  ctx.fillText('base fee',20,by);
+  ctx.fillStyle=s.base.color;ctx.fillText(s.base.amount,120,by);
+  ctx.fillStyle='#6b7280';ctx.fillText(s.base.state,240,by);
+  // Arrow
+  ctx.beginPath();ctx.moveTo(310,by-4);ctx.lineTo(380,by-4);
+  ctx.strokeStyle=s.base.color+'88';ctx.lineWidth=1.5;ctx.stroke();
+  ctx.fillStyle=s.base.color+'88';ctx.beginPath();ctx.moveTo(380,by-4);ctx.lineTo(374,by-8);ctx.lineTo(374,by);ctx.fill();
+  ctx.font='9px system-ui';ctx.fillStyle='#6b7280';ctx.textAlign='left';
+  ctx.fillText(s.base.from,390,by);
+
+  // Success fee
+  const sy=90;
+  ctx.font='10px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='left';
+  ctx.fillText('success fee',20,sy);
+  ctx.fillStyle=s.success.color;ctx.fillText(s.success.amount,120,sy);
+  ctx.fillStyle='#6b7280';ctx.fillText(s.success.state,240,sy);
+  ctx.beginPath();ctx.moveTo(310,sy-4);ctx.lineTo(380,sy-4);
+  ctx.strokeStyle=s.success.color+'88';ctx.lineWidth=1.5;ctx.stroke();
+  ctx.fillStyle=s.success.color+'88';ctx.beginPath();ctx.moveTo(380,sy-4);ctx.lineTo(374,sy-8);ctx.lineTo(374,sy);ctx.fill();
+  ctx.font='9px system-ui';ctx.fillStyle='#6b7280';ctx.textAlign='left';
+  ctx.fillText(s.success.from,390,sy);
+
+  // Note
+  ctx.font='11px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='center';
+  ctx.fillText(s.note,w/2,h-16);
+};
+window.showScn('ok');
+`}</script>
+
+### Units
+
+```
+1 bitcoin    = 100,000,000 satoshis (sats)
+1 satoshi    = 1,000 millisatoshis (msat)
+
+Froglet prices in msat.
+Typical compute deal: 5,000 msat = 5 sats
+```
+
+:::note
+Froglet also supports `settlement_method: "none"` for free services. The deal flow still runs — quote, deal, execute, receipt — you just skip the payment.
+:::

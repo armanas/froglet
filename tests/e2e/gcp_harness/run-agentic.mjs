@@ -36,11 +36,23 @@ function mergeMissing(target, source) {
   }
 }
 
+function applyFixtures(target, source, { overwrite = false } = {}) {
+  for (const [key, value] of Object.entries(source ?? {})) {
+    if (key === "discover_service_id") {
+      continue
+    }
+    if (overwrite || target[key] === undefined) {
+      target[key] = value
+    }
+  }
+}
+
 async function runDeterministicScenario(tool, scenario, fixtures) {
   const toolCalls = []
   const toolOutputs = []
   let previousResponseId = null
   let input = scenario.prompt
+  const scenarioFixtures = resolveValue(scenario.fixture_injections, fixtures)
   try {
     for (let step = 0; step < 16; step += 1) {
       const body = {
@@ -64,6 +76,22 @@ async function runDeterministicScenario(tool, scenario, fixtures) {
       previousResponseId = response.id
       const calls = (response.output ?? []).filter((item) => item.type === "function_call")
       if (calls.length === 0) {
+        const executed = new Set(toolCalls.map((call) => call.action).filter(Boolean))
+        const missingActions = (scenario.required_tool_actions ?? []).filter((action) => !executed.has(action))
+        const missingNeedles = (scenario.result_oracles?.must_contain ?? []).filter(
+          (needle) => !toolOutputs.some((output) => output.includes(needle))
+        )
+        if ((missingActions.length > 0 || missingNeedles.length > 0) && step < 15) {
+          const reminders = []
+          if (missingActions.length > 0) {
+            reminders.push(`You must still execute these froglet actions before answering: ${missingActions.join(", ")}.`)
+          }
+          if (missingNeedles.length > 0) {
+            reminders.push(`Your final answer or tool outputs must still include: ${missingNeedles.join(", ")}.`)
+          }
+          input = reminders.join("\n")
+          continue
+        }
         let finalText = response.output_text ?? ""
         if (finalText.trim().length === 0) {
           const finalized = await ensureFinalText(
@@ -73,7 +101,6 @@ async function runDeterministicScenario(tool, scenario, fixtures) {
           previousResponseId = finalized.responseId
           finalText = finalized.finalText
         }
-        const executed = new Set(toolCalls.map((call) => call.action).filter(Boolean))
         for (const action of scenario.required_tool_actions ?? []) {
           assert.ok(executed.has(action), `${scenario.scenario_id} did not execute required action ${action}`)
         }
@@ -94,7 +121,7 @@ async function runDeterministicScenario(tool, scenario, fixtures) {
       for (const call of calls) {
         const args = JSON.parse(call.arguments || "{}")
         toolCalls.push({ action: args.action ?? null })
-        mergeMissing(args, resolveValue(scenario.fixture_injections, fixtures))
+        applyFixtures(args, scenarioFixtures, { overwrite: true })
         try {
           const result = await tool.execute(call.name, args)
           const output = result.content?.[0]?.text ?? ""

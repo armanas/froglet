@@ -1,0 +1,63 @@
+---
+title: "Cryptographic Identity"
+description: How public-key cryptography creates unforgeable identity.
+---
+
+## Public-key cryptography
+
+Imagine a special lock with two keys: one that only locks (the **private key**) and one that only unlocks (the **public key**). Anyone can verify a locked message with the public key, but only the holder of the private key could have locked it.
+
+In cryptography, "locking" is called **signing** and "unlocking" is called **verifying**.
+
+## secp256k1
+
+Froglet uses the **secp256k1** elliptic curve — the same curve used by Bitcoin, Ethereum, and Nostr. The math works on a curve defined by:
+
+$$y^2 = x^3 + 7 \pmod{p}$$
+
+where $p = 2^{256} - 2^{32} - 977$ is a very large prime number.
+
+A **private key** is a random 256-bit number (32 bytes). The corresponding **public key** is a point on this curve computed by multiplying the curve's generator point $G$ by the private key $k$:
+
+$$P = k \cdot G$$
+
+This multiplication is easy to compute but practically impossible to reverse — you cannot derive $k$ from $P$. This is the **elliptic curve discrete logarithm problem**.
+
+## BIP340 Schnorr signatures
+
+Froglet uses **BIP340 Schnorr signatures** (the same as Nostr). To sign a message $m$ with private key $k$:
+
+1. Pick a random nonce $r$
+2. Compute $R = r \cdot G$ (nonce point)
+3. Compute $e = \text{SHA-256}(R \| P \| m)$ (challenge)
+4. Compute $s = r + e \cdot k$ (response)
+5. The signature is $(R, s)$ — 64 bytes
+
+To verify: check that $s \cdot G = R + e \cdot P$. This works because:
+
+$$s \cdot G = (r + e \cdot k) \cdot G = r \cdot G + e \cdot k \cdot G = R + e \cdot P$$
+
+## Identity in froglet
+
+Your identity is your 32-byte x-only public key, encoded as a 64-character lowercase hex string:
+
+```
+Private key (secret, never shared):
+  e3b0c44298fc1c149afbf4c8996fb924...
+
+Public key / node_id (your identity):
+  02a8d6c7f8e94b3d1f2c5a6b7e8d9f0a...
+
+Signature (64 bytes):
+  a1b2c3d4e5f6...
+```
+
+Every artifact you produce is signed with your private key. Anyone can verify you produced it. Nobody can forge it.
+
+## Nostr linked identities
+
+Froglet supports linking your node identity to a **Nostr** public key. Nostr uses the same secp256k1 curve, so a froglet node can prove it controls a Nostr identity by cross-signing. This creates an **immutable, publicly verifiable identity** — published to Nostr relays where it cannot be altered or deleted by any central party.
+
+:::tip[Key insight]
+Nobody grants you an identity. You generate a keypair locally and you are that keypair. The math proves everything else.
+:::

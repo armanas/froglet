@@ -1,10 +1,11 @@
 use crate::{
-    confidential::ConfidentialPolicy, config::NodeConfig, db::DbPool, identity::NodeIdentity,
-    lnd::LndRestClient, pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, tls,
+    confidential::ConfidentialPolicy, config::NodeConfig, db, db::DbPool,
+    execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
+    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, tls,
     wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex as TokioMutex, OnceCell, Semaphore};
 
 fn advertiseable_clearnet_url(addr: SocketAddr) -> Option<String> {
@@ -74,35 +75,9 @@ impl TransportStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ReferenceDiscoveryStatus {
-    pub publish_enabled: bool,
-    pub connected: bool,
-    pub last_register_at: Option<i64>,
-    pub last_heartbeat_at: Option<i64>,
-    pub last_error: Option<String>,
-}
-
-impl ReferenceDiscoveryStatus {
-    pub fn from_config(config: &NodeConfig) -> Self {
-        Self {
-            publish_enabled: config
-                .reference_discovery
-                .as_ref()
-                .map(|discovery| discovery.publish)
-                .unwrap_or(false),
-            connected: false,
-            last_register_at: None,
-            last_heartbeat_at: None,
-            last_error: None,
-        }
-    }
-}
-
 pub struct AppState {
     pub db: DbPool,
     pub transport_status: Arc<TokioMutex<TransportStatus>>,
-    pub reference_discovery_status: Arc<TokioMutex<ReferenceDiscoveryStatus>>,
     pub wasm_sandbox: Arc<WasmSandbox>,
     pub config: NodeConfig,
     pub identity: Arc<NodeIdentity>,
@@ -119,6 +94,8 @@ pub struct AppState {
     pub events_query_semaphore: Arc<Semaphore>,
     pub lnd_rest_client: Option<Arc<LndRestClient>>,
     pub lightning_destination_identity: Arc<OnceCell<String>>,
+    pub event_batch_writer: Option<db::EventBatchWriter>,
+    pub builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>>,
 }
 
 pub fn ensure_storage_dirs(config: &NodeConfig) -> Result<(), String> {
@@ -181,9 +158,6 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
     Ok(Arc::new(AppState {
         db: db_pool,
         transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&config))),
-        reference_discovery_status: Arc::new(TokioMutex::new(
-            ReferenceDiscoveryStatus::from_config(&config),
-        )),
         wasm_sandbox,
         pricing: PricingTable::from_config(config.pricing),
         identity,
@@ -200,6 +174,8 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
         lnd_rest_client,
         lightning_destination_identity: Arc::new(OnceCell::new()),
+        event_batch_writer: None,
+        builtin_services: HashMap::new(),
     }))
 }
 
@@ -207,7 +183,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
 mod tests {
     use super::*;
     use crate::config::{
-        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
         PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -227,11 +203,9 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:8082".to_string(),
                 startup_timeout_secs: 90,
             },
-            discovery_mode: DiscoveryMode::None,
             identity: IdentityConfig {
                 auto_generate: true,
             },
-            reference_discovery: None,
             pricing: PricingConfig {
                 events_query: 0,
                 execute_wasm: 0,
@@ -273,6 +247,7 @@ mod tests {
                 policy: None,
                 session_ttl_secs: 300,
             },
+            marketplace_url: None,
         }
     }
 

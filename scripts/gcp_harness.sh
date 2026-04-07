@@ -29,7 +29,23 @@ ROLES=(
 )
 
 latest_run_file="$FROGLET_GCP_HARNESS_STATE_ROOT/latest-run"
-run_id_default="$(date -u +%Y%m%d%H%M%S)"
+
+# For continuation subcommands (deploy, seed, run-matrix, run-agentic, collect),
+# read the run ID from latest-run if FROGLET_GCP_HARNESS_RUN_ID is not set.
+# provision and destroy always generate a fresh run ID by default.
+_harness_subcommand="${1:-}"
+if [[ -z "${FROGLET_GCP_HARNESS_RUN_ID:-}" && -f "$latest_run_file" ]]; then
+  case "$_harness_subcommand" in
+    deploy|seed|run-matrix|run-agentic|collect)
+      run_id_default="$(cat "$latest_run_file")"
+      ;;
+    *)
+      run_id_default="$(date -u +%Y%m%d%H%M%S)"
+      ;;
+  esac
+else
+  run_id_default="$(date -u +%Y%m%d%H%M%S)"
+fi
 : "${FROGLET_GCP_HARNESS_RUN_ID:=$run_id_default}"
 : "${FROGLET_GCP_HARNESS_STATE_DIR:=$FROGLET_GCP_HARNESS_STATE_ROOT/$FROGLET_GCP_HARNESS_RUN_ID}"
 
@@ -283,7 +299,14 @@ keyUsage = critical,digitalSignature,keyEncipherment
 subjectAltName = @alt_names
 extendedKeyUsage = serverAuth
 subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid,issuer
+
+[v3_sign]
+basicConstraints = CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+subjectAltName = @alt_names
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
 
 [alt_names]
 IP.1 = $nat_ip
@@ -302,7 +325,7 @@ EOF
     -out "$STATE_DIR/pki/$role.crt" \
     -days 7 -sha256 \
     -extfile "$tmp_cfg" \
-    -extensions v3_req >/dev/null 2>&1
+    -extensions v3_sign >/dev/null 2>&1
 }
 
 build_inventory() {

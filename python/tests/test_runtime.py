@@ -147,7 +147,7 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         self.assertEqual(provider_view["descriptor"]["payload"]["provider_id"], provider_id)
         self.assertEqual(
             {offer["payload"]["offer_id"] for offer in provider_view["offers"]},
-            {"events.query", "execute.compute"},
+            {"events.query", "execute.compute", "execute.compute.generic"},
         )
 
     async def test_runtime_creates_remote_deal_and_persists_requester_state(self) -> None:

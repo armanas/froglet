@@ -1,0 +1,109 @@
+---
+title: Trust & Verification
+description: Trust computed from signed receipts, not reputation scores.
+---
+
+## What is trusted?
+
+| Trusted | Not trusted |
+|---------|-------------|
+| Cryptographic signatures | Marketplaces (can be wrong, cannot forge) |
+| SHA-256 hashes | Transport (can fail, cannot alter signed data) |
+| The deal chain | Storage (can lose data, cannot alter signed data) |
+
+## Trust from receipts
+
+Trust is computed from **signed receipts** — real deals that actually executed and settled.
+
+### Interactive: trust score with decay
+
+Drag the slider to see how the decay factor affects how much recent vs old deals matter:
+
+<div style="margin:20px 0">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+  <label style="font-size:12px;color:#9ca3af;white-space:nowrap">decay α = <span id="alpha-val" style="color:#4ade80;font-family:'SF Mono',monospace">0.995</span></label>
+  <input id="alpha-slider" type="range" min="900" max="999" value="995" style="flex:1;accent-color:#4ade80" />
+</div>
+<canvas id="trust-chart" width="600" height="200" style="width:100%;max-width:600px;height:200px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
+<p style="font-size:11px;color:#6b7280;margin-top:6px">X = deals ago (0 = most recent). Y = weight. Lower α means recent deals matter more. Yellow line = half-life.</p>
+</div>
+
+<script>{`
+(function(){
+  const slider=document.getElementById('alpha-slider');
+  const val=document.getElementById('alpha-val');
+  const c=document.getElementById('trust-chart');
+  const ctx=c.getContext('2d');
+
+  function draw(){
+    const alpha=slider.value/1000;
+    val.textContent=alpha.toFixed(3);
+    const w=c.width,h=c.height,pad=10;
+    ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
+    for(let y=0;y<h;y+=h/5){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+    ctx.font='9px system-ui';ctx.fillStyle='#4b5563';ctx.textAlign='left';
+    ctx.fillText('weight 1.0',4,14);ctx.fillText('0',4,h-4);
+    ctx.textAlign='right';ctx.fillText('recent',w-4,h-4);
+
+    const n=100;
+    ctx.beginPath();
+    for(let i=0;i<=n;i++){
+      const x=w-i*(w/n);
+      const wt=Math.pow(alpha,i);
+      const y=h-wt*(h-2*pad)-pad;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.stroke();
+    ctx.lineTo(0,h);ctx.lineTo(w,h);ctx.closePath();
+    ctx.fillStyle='rgba(74,222,128,0.05)';ctx.fill();
+
+    const hl=Math.log(0.5)/Math.log(alpha);
+    if(hl<n&&hl>0){
+      const hx=w-hl*(w/n);
+      ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(hx,0);ctx.lineTo(hx,h);
+      ctx.strokeStyle='#fbbf2466';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
+      ctx.font='9px system-ui';ctx.fillStyle='#fbbf24';ctx.textAlign='center';
+      ctx.fillText('half-life: '+Math.round(hl)+' deals',hx,14);
+    }
+  }
+  slider.addEventListener('input',draw);draw();
+})();
+`}</script>
+
+### The formula
+
+$$T_P(t) = \frac{\sum_{i=1}^{n} \alpha^{t-t_i} \cdot \mathbb{1}[\text{receipt}_i = \text{success}]}{\sum_{i=1}^{n} \alpha^{t-t_i}}$$
+
+## Sybil resistance
+
+Creating a new identity gives $T = 0$ (no history), not $T = 1$ (trusted).
+
+### Cost of attack vs gain from cheating
+
+<div style="margin:20px 0">
+<canvas id="sybil-chart" width="600" height="180" style="width:100%;max-width:600px;height:180px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
+<p style="font-size:11px;color:#6b7280;margin-top:6px">Red = cost of building fake reputation. Green = gain from one cheat. Cheating is increasingly irrational as reputation grows.</p>
+</div>
+
+<script>{`
+(function(){
+  const c=document.getElementById('sybil-chart'),ctx=c.getContext('2d');
+  const w=c.width,h=c.height;
+  ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
+  for(let y=0;y<h;y+=h/4){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+  ctx.beginPath();
+  for(let i=0;i<=100;i++){const x=i*w/100,cost=i*8,y=h-cost/(800/h)-10;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
+  ctx.strokeStyle='#f87171';ctx.lineWidth=2;ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,h-8/(800/h)-10);ctx.lineTo(w,h-8/(800/h)-10);
+  ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.setLineDash([6,4]);ctx.stroke();ctx.setLineDash([]);
+  ctx.font='10px system-ui';ctx.textAlign='left';
+  ctx.fillStyle='#f87171';ctx.fillText('cost of reputation (n × avg_fee)',8,30);
+  ctx.fillStyle='#4ade80';ctx.fillText('gain from cheating once (~1 deal)',8,h-14);
+  ctx.font='9px system-ui';ctx.fillStyle='#4b5563';ctx.textAlign='right';ctx.fillText('deals →',w-4,h-4);
+})();
+`}</script>
+
+:::tip[Key insight]
+Anyone can recompute trust from the same signed receipts. The marketplace computes scores as a convenience, but it is not the authority — the signed artifacts are.
+:::

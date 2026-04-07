@@ -52,34 +52,6 @@ impl NetworkMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DiscoveryMode {
-    None,
-    Reference,
-}
-
-impl fmt::Display for DiscoveryMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DiscoveryMode::None => write!(f, "none"),
-            DiscoveryMode::Reference => write!(f, "reference"),
-        }
-    }
-}
-
-impl DiscoveryMode {
-    fn parse(s: &str) -> Result<Self, String> {
-        match s.to_lowercase().as_str() {
-            "none" => Ok(Self::None),
-            "reference" => Ok(Self::Reference),
-            _ => Err(format!(
-                "Invalid FROGLET_DISCOVERY_MODE value: '{s}'. Allowed values: none, reference"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum PaymentBackend {
     None,
     Lightning,
@@ -137,14 +109,6 @@ impl LightningMode {
 #[derive(Debug, Clone)]
 pub struct IdentityConfig {
     pub auto_generate: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReferenceDiscoveryConfig {
-    pub url: String,
-    pub publish: bool,
-    pub required: bool,
-    pub heartbeat_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -337,9 +301,7 @@ pub struct NodeConfig {
     pub provider_control_allow_non_loopback: bool,
     pub http_ca_cert_path: Option<PathBuf>,
     pub tor: TorSidecarConfig,
-    pub discovery_mode: DiscoveryMode,
     pub identity: IdentityConfig,
-    pub reference_discovery: Option<ReferenceDiscoveryConfig>,
     pub pricing: PricingConfig,
     pub payment_backend: PaymentBackend,
     pub execution_timeout_secs: u64,
@@ -347,6 +309,7 @@ pub struct NodeConfig {
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
     pub confidential: ConfidentialConfig,
+    pub marketplace_url: Option<String>,
 }
 
 impl NodeConfig {
@@ -382,37 +345,6 @@ impl NodeConfig {
         let pricing = PricingConfig {
             events_query: env_u64("FROGLET_PRICE_EVENTS_QUERY", 0)?,
             execute_wasm: env_u64("FROGLET_PRICE_EXEC_WASM", 0)?,
-        };
-
-        let discovery_url = env::var("FROGLET_DISCOVERY_URL").ok();
-        let publish = env_bool("FROGLET_DISCOVERY_PUBLISH", false)?;
-        let required = env_bool("FROGLET_DISCOVERY_REQUIRED", false)?;
-        let discovery_mode = match env::var("FROGLET_DISCOVERY_MODE") {
-            Ok(val) => DiscoveryMode::parse(&val)?,
-            Err(_) if publish || discovery_url.is_some() => DiscoveryMode::Reference,
-            Err(_) => DiscoveryMode::None,
-        };
-
-        if required && !publish {
-            return Err(
-                "FROGLET_DISCOVERY_REQUIRED=true requires FROGLET_DISCOVERY_PUBLISH=true".into(),
-            );
-        }
-
-        let reference_discovery = if discovery_mode == DiscoveryMode::Reference || publish {
-            let url = discovery_url.ok_or_else(|| {
-                "FROGLET_DISCOVERY_URL is required when reference discovery or publishing is enabled"
-                    .to_string()
-            })?;
-
-            Some(ReferenceDiscoveryConfig {
-                url,
-                publish,
-                required,
-                heartbeat_interval_secs: env_u64("FROGLET_DISCOVERY_HEARTBEAT_INTERVAL_SECS", 30)?,
-            })
-        } else {
-            None
         };
 
         let payment_backend = match env::var("FROGLET_PAYMENT_BACKEND") {
@@ -535,11 +467,9 @@ impl NodeConfig {
             provider_control_allow_non_loopback,
             http_ca_cert_path,
             tor,
-            discovery_mode,
             identity: IdentityConfig {
                 auto_generate: env_bool("FROGLET_IDENTITY_AUTO_GENERATE", true)?,
             },
-            reference_discovery,
             pricing,
             payment_backend,
             execution_timeout_secs,
@@ -567,6 +497,7 @@ impl NodeConfig {
                 session_ttl_secs: env_u64("FROGLET_CONFIDENTIAL_SESSION_TTL_SECS", 300)?
                     .clamp(30, 3600),
             },
+            marketplace_url: env::var("FROGLET_MARKETPLACE_URL").ok(),
         })
     }
 }
@@ -839,7 +770,6 @@ mod tests {
     #[test]
     fn test_parse_invalid_mode() {
         assert!(NetworkMode::parse("invalid").is_err());
-        assert!(DiscoveryMode::parse("relay").is_err());
         assert!(PaymentBackend::parse("wallet").is_err());
     }
 

@@ -71,7 +71,8 @@ describe("froglet status action", () => {
           discovery: { mode: "reference" },
           reference_discovery: { enabled: true, connected: true, url: "http://disc.example" },
           projects_root: "/tmp/projects",
-          raw_compute_offer_id: "compute.v1"
+          raw_compute_offer_id: "compute.v1",
+          raw_compute_offer_ids: ["compute.v1", "compute.generic.v1"]
         })
       )
     })
@@ -83,6 +84,7 @@ describe("froglet status action", () => {
       assert.ok(result.content[0].text.includes("healthy: true"))
       assert.ok(result.content[0].text.includes("node_id: node-1"))
       assert.ok(result.content[0].text.includes("runtime_healthy: true"))
+      assert.ok(result.content[0].text.includes("compute_offer_ids: compute.v1, compute.generic.v1"))
       assert.equal(result.isError, undefined)
     } finally {
       restore()
@@ -168,7 +170,7 @@ describe("froglet invoke_service action", () => {
         config
       )
       assert.ok(result.content[0].text.includes("task_id: task-1"))
-      assert.ok(result.content[0].text.includes("action=wait_task"))
+      assert.ok(result.content[0].text.includes("pending: use wait_task"))
     } finally {
       restore()
     }
@@ -215,6 +217,28 @@ describe("froglet local service actions", () => {
       )
       assert.ok(result.content[0].text.includes("service_id: local-1"))
       assert.ok(result.content[0].text.includes("input_contract:"))
+    } finally {
+      restore()
+    }
+  })
+
+  it("resolves seeded local service aliases", async () => {
+    const restore = mockFetch(async (url) => {
+      assert.ok(url.includes("/v1/froglet/services/local/local-2"))
+      return new Response(
+        JSON.stringify({
+          service: { service_id: "local-2", runtime: "python", price_sats: 0 }
+        })
+      )
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        { action: "get_local_service", async_service_id: "local-2" },
+        config
+      )
+      assert.ok(result.content[0].text.includes("service_id: local-2"))
+      assert.ok(result.content[0].text.includes("runtime: python"))
     } finally {
       restore()
     }

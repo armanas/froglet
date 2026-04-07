@@ -237,7 +237,7 @@ async function main() {
     {
       name: "direct_compute_wasm",
       prompt:
-        'Call froglet exactly once with action "run_compute", provider_url "http://127.0.0.1:8080", ' +
+        `Call froglet exactly once with action "run_compute" and provider_id "${statusRaw.node_id}", ` +
         'runtime "wasm", and package_kind "inline_module". Do NOT supply wasm_module_hex — the harness ' +
         "will inject it. Return the compute result.",
       requiredActions: ["run_compute"],
@@ -248,6 +248,9 @@ async function main() {
         }
       },
       injectBeforeExecute(args) {
+        if (!args.provider_id) {
+          args.provider_id = statusRaw.node_id
+        }
         if (!args.wasm_module_hex) {
           args.wasm_module_hex = validWasmHex
         }

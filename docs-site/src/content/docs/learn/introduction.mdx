@@ -1,0 +1,43 @@
+---
+title: What is Froglet?
+description: A cryptographic protocol for buying and selling compute.
+---
+
+Froglet is three things:
+
+1. **Identity** — a secp256k1 keypair generated locally. Your public key is your identity. Every artifact you produce is signed. Nobody grants or revokes this.
+
+2. **Execution** — a signed evidence chain. Descriptor, Offer, Quote, Deal, Receipt. A provider describes what it offers, a requester deals for it, the provider executes and signs a receipt. The entire chain is independently verifiable.
+
+3. **Settlement** — Lightning Network. Base fee locks on admission, success fee settles on completion. Cryptographically bound to the deal. Or free.
+
+Everything else is either an adapter that makes the core usable in a specific environment, or a service built on top of the protocol.
+
+## Why?
+
+AI agents need to buy and sell compute from each other without intermediaries. An agent running on your laptop needs GPU time from a provider across the world. It needs to:
+
+- **Find** the provider (without a central registry)
+- **Verify** the provider is who they claim to be (without trust)
+- **Pay** for the compute (without a bank)
+- **Prove** the execution happened correctly (without dispute resolution)
+
+Froglet solves all four with cryptography and the Lightning Network. No accounts, no sign-ups, no platforms, no middlemen.
+
+## How to read these docs
+
+This guide takes you from zero knowledge to complete understanding. Each chapter builds on the previous one:
+
+| Chapter | You'll learn |
+|---------|-------------|
+| [Foundations](/learn/foundations/) | What bytes, hex, and hashing are |
+| [Identity](/learn/identity/) | How public-key cryptography creates unforgeable identity |
+| [Canonical Serialization](/learn/canonical/) | Why everyone must agree on the same bytes |
+| [Signed Artifacts](/learn/artifacts/) | Froglet's atomic unit — the signed envelope |
+| [Deal Flow](/learn/deal-flow/) | The six artifacts that form every deal |
+| [Settlement](/learn/settlement/) | How Lightning payments work |
+| [Execution](/learn/execution/) | How workloads run (WASM, Python, builtins) |
+| [Network](/learn/network/) | Nodes, marketplace, direct deals |
+| [Storage](/learn/storage/) | SQLite, Postgres, feeds |
+| [Trust](/learn/trust/) | How trust is computed from signed receipts |
+| [Economics](/learn/economics/) | Formal analysis with math |

@@ -1,0 +1,109 @@
+---
+title: "The Deal Flow"
+description: Six artifacts, one evidence chain.
+---
+
+## The chain
+
+Click any artifact to see its details:
+
+<div style="margin:20px 0">
+<canvas id="chain-canvas" width="700" height="120" style="width:100%;max-width:700px;height:120px;cursor:pointer;border-radius:8px"></canvas>
+<div id="chain-detail" style="margin-top:12px;padding:14px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:60px"></div>
+</div>
+
+<script>{`
+(function(){
+  const items=[
+    {label:'Descriptor',sub:'who',color:'#a78bfa',signer:'provider',detail:'Provider declares identity, capabilities, and transport endpoints. Signed by the provider.'},
+    {label:'Offer',sub:'what',color:'#818cf8',signer:'provider',detail:'Specific service with pricing and execution profile. References the descriptor by hash.'},
+    {label:'Quote',sub:'price',color:'#67e8f9',signer:'provider',detail:'Prices a workload for a specific requester. Ephemeral — has an expiry. References the offer by hash.'},
+    {label:'Deal',sub:'commit',color:'#93c5fd',signer:'requester',detail:'Requester commits to the quote. Signed by the REQUESTER (not provider). References the quote by hash.'},
+    {label:'Invoice',sub:'payment',color:'#fbbf24',signer:'provider',detail:'Two Lightning invoices — base fee (locks upfront) and success fee (settles on completion). Only for paid deals.'},
+    {label:'Receipt',sub:'proof',color:'#4ade80',signer:'provider',detail:'Terminal artifact. Cryptographic proof of execution, result hash, and settlement state. The chain ends here.'},
+  ];
+  const c=document.getElementById('chain-canvas'),ctx=c.getContext('2d');
+  const det=document.getElementById('chain-detail');
+  let selected=0, hovered=-1;
+
+  function draw(){
+    const w=c.width,h=c.height,n=items.length,bw=w/n;
+    ctx.clearRect(0,0,w,h);
+    // Arrows
+    for(let i=0;i<n-1;i++){
+      const x1=(i+1)*bw-8, x2=(i+1)*bw+8;
+      ctx.beginPath();ctx.moveTo(x1,h/2);ctx.lineTo(x2,h/2);
+      ctx.strokeStyle='#30363d';ctx.lineWidth=2;ctx.stroke();
+      ctx.beginPath();ctx.moveTo(x2-4,h/2-4);ctx.lineTo(x2,h/2);ctx.lineTo(x2-4,h/2+4);
+      ctx.strokeStyle='#30363d';ctx.lineWidth=1.5;ctx.stroke();
+    }
+    // Boxes
+    for(let i=0;i<n;i++){
+      const it=items[i],cx=i*bw+bw/2,cy=h/2;
+      const isS=i===selected,isH=i===hovered;
+      const r=isS?26:isH?24:22;
+      // Glow
+      if(isS){
+        const g=ctx.createRadialGradient(cx,cy,r,cx,cy,r*2);
+        g.addColorStop(0,it.color+'20');g.addColorStop(1,it.color+'00');
+        ctx.beginPath();ctx.arc(cx,cy,r*2,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+      }
+      // Circle
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.fillStyle=isS?it.color+'25':it.color+'10';ctx.fill();
+      ctx.strokeStyle=isS?it.color:it.color+'66';ctx.lineWidth=isS?2:1.2;ctx.stroke();
+      // Label
+      ctx.font='bold 9px system-ui';ctx.fillStyle=isS?it.color:it.color+'cc';
+      ctx.textAlign='center';ctx.fillText(it.label,cx,cy+3);
+      // Sub label
+      ctx.font='8px system-ui';ctx.fillStyle='#6b7280';
+      ctx.fillText(it.sub,cx,cy+r+14);
+      // Signer indicator
+      ctx.font='7px system-ui';ctx.fillStyle=it.signer==='requester'?'#93c5fd88':'#a78bfa88';
+      ctx.fillText(it.signer,cx,cy-r-6);
+    }
+  }
+
+  function showDetail(i){
+    const it=items[i];
+    det.innerHTML='<strong style="color:'+it.color+'">'+it.label+'</strong> <span style="color:#6b7280">(signed by '+it.signer+')</span><br>'+it.detail+(i>0?' <span style="color:#4b5563">← references previous artifact by SHA-256 hash</span>':'');
+  }
+
+  c.addEventListener('click',function(e){
+    const rect=c.getBoundingClientRect();
+    const x=(e.clientX-rect.left)*(c.width/rect.width);
+    const bw=c.width/items.length;
+    const i=Math.floor(x/bw);
+    if(i>=0&&i<items.length){selected=i;draw();showDetail(i);}
+  });
+  c.addEventListener('mousemove',function(e){
+    const rect=c.getBoundingClientRect();
+    const x=(e.clientX-rect.left)*(c.width/rect.width);
+    const bw=c.width/items.length;
+    const i=Math.floor(x/bw);
+    if(i!==hovered){hovered=i;draw();}
+  });
+  c.addEventListener('mouseleave',function(){hovered=-1;draw();});
+
+  draw();showDetail(0);
+})();
+`}</script>
+
+Each artifact references the previous one by hash. Tamper with any link and the chain breaks.
+
+## Key insight: who signs what
+
+| Artifact | Signed by | Why |
+|----------|-----------|-----|
+| Descriptor | **Provider** | Declares identity |
+| Offer | **Provider** | Commits to pricing |
+| Quote | **Provider** | Prices specific workload |
+| Deal | **Requester** | Commits to pay |
+| InvoiceBundle | **Provider** | Payment instructions |
+| Receipt | **Provider** | Proof of execution |
+
+The **Deal** is the only artifact signed by the requester — it's their cryptographic commitment to pay. Everything else is signed by the provider.
+
+:::tip[The receipt is proof]
+Anyone holding the receipt can verify: the provider signed it, the result hash matches, the settlement is correct, the chain is unbroken. No dispute resolution — the math is the arbiter.
+:::

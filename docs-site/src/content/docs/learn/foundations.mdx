@@ -1,0 +1,80 @@
+---
+title: "Foundations: Bits, Bytes, and Hex"
+description: The building blocks everything else is made of.
+---
+
+Everything in computing is built on binary — ones and zeros. A single 0 or 1 is called a **bit**. Eight bits make a **byte**, which can represent 256 different values (0 through 255).
+
+```
+bit:   0 or 1
+byte:  00000000 to 11111111  (0 to 255)
+```
+
+## Hexadecimal
+
+Typing long binary strings is tedious, so we use **hexadecimal** (base-16). Each hex digit represents 4 bits. Two hex digits represent one byte.
+
+```
+decimal:  0  1  2  ...  9  10  11  12  13  14  15
+hex:      0  1  2  ...  9   a   b   c   d   e   f
+```
+
+In froglet, all identities, hashes, and signatures are represented as **lowercase hex strings**. A 32-byte value becomes a 64-character hex string.
+
+## Hashing: fingerprints for data
+
+A **hash function** takes any amount of data and produces a fixed-size output called a **digest**. Think of it as a fingerprint: unique to the input, but much smaller.
+
+| Property | Meaning |
+|----------|---------|
+| Deterministic | Same input always produces the same output |
+| One-way | You cannot reverse the hash to find the input |
+| Collision-resistant | Practically impossible to find two inputs with the same hash |
+| Avalanche effect | Changing one bit of input changes ~half the output bits |
+
+### SHA-256
+
+Froglet uses **SHA-256**, which produces a 256-bit (32-byte) hash — a 64-character hex string.
+
+### Try it: the avalanche effect
+
+<div style="margin:16px 0">
+<label style="font-size:13px;color:#9ca3af;display:block;margin-bottom:6px">Type anything and watch the hash change completely:</label>
+<input id="hash-input" type="text" value="froglet" style="width:100%;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px;color:#c9d1d9;font-family:'SF Mono',monospace;font-size:13px;outline:none" />
+<div id="hash-output" style="margin-top:10px;padding:12px 14px;background:#0d1117;border:1px solid #30363d;border-radius:8px;font-family:'SF Mono',monospace;font-size:12px;color:#3fb950;word-break:break-all;min-height:20px"></div>
+<canvas id="hash-viz" width="512" height="48" style="width:100%;height:48px;margin-top:8px;border-radius:6px"></canvas>
+<p style="font-size:11px;color:#6b7280;margin-top:6px">Each colored square represents 2 bits of the hash. Change one letter and watch the entire pattern change.</p>
+</div>
+
+<script>{`
+(function(){
+  async function sha256hex(str) {
+    const buf = new TextEncoder().encode(str);
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  const input = document.getElementById('hash-input');
+  const output = document.getElementById('hash-output');
+  const canvas = document.getElementById('hash-viz');
+  const ctx = canvas.getContext('2d');
+  const colors = ['#0d1117','#1a1f2b','#30363d','#4ade80','#3fb950','#818cf8','#a78bfa','#67e8f9','#fbbf24','#f87171','#93c5fd','#d1d5db','#28c840','#bf5af2','#ff453a','#ffd60a'];
+
+  async function update(){
+    const h = await sha256hex(input.value);
+    output.textContent = h;
+    const w=canvas.width, bw=w/64;
+    ctx.clearRect(0,0,w,48);
+    for(let i=0;i<64;i++){
+      const v = parseInt(h[i],16);
+      ctx.fillStyle = colors[v];
+      ctx.fillRect(i*bw,0,bw-0.5,48);
+    }
+  }
+  input.addEventListener('input', update);
+  update();
+})();
+`}</script>
+
+:::tip[Key insight]
+If two parties independently hash the same data and get the same result, they can be certain the data is identical — without exchanging the full data. This is the foundation of froglet's verification model.
+:::

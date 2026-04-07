@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import os
+import platform
 import re
 import shutil
 import signal
@@ -710,6 +711,32 @@ async def start_lnd_regtest_cluster() -> LndRegtestCluster:
                 timeout=45.0,
                 description=f"{node_key} lncli",
             )
+            if platform.system() == "Linux":
+                async def wait_for_admin_macaroon(node_key: str = node_key) -> str:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        [
+                            "sudo",
+                            "test",
+                            "-f",
+                            str(nodes[node_key].admin_macaroon_path),
+                        ],
+                        check=False,
+                        capture_output=True,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(result.stderr.decode() if result.stderr else "macaroon not created yet")
+                    return "ok"
+
+                await _wait_for(
+                    wait_for_admin_macaroon,
+                    timeout=45.0,
+                    description=f"{node_key} admin macaroon materialization",
+                )
+                subprocess.run(
+                    ["sudo", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(nodes[node_key].data_dir)],
+                    check=True,
+                )
             await _wait_for_path(
                 nodes[node_key].admin_macaroon_path,
                 timeout=45.0,
@@ -769,8 +796,11 @@ async def _wait_for(
 async def _wait_for_path(path: Path, *, timeout: float, description: str) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if path.exists():
-            return
+        try:
+            if path.exists():
+                return
+        except PermissionError:
+            pass
         await asyncio.sleep(0.5)
     raise RuntimeError(f"Timed out waiting for {description} at {path}")
 

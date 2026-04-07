@@ -12,25 +12,23 @@ pub fn init_logging() {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
-pub mod canonical_json;
+
+// Protocol core — re-exported from froglet-protocol (single source of truth)
+pub use froglet_protocol::canonical_json;
+pub use froglet_protocol::crypto;
+
 pub mod confidential;
 pub mod config;
-pub mod crypto;
 pub mod db;
 pub mod deals;
-pub mod discovery;
-pub mod discovery_client;
-pub mod discovery_server;
 pub mod execution;
 pub mod identity;
 pub mod jobs;
 pub mod lnd;
 pub mod nostr;
-pub mod operator;
 pub mod pricing;
 pub mod protocol;
 pub mod provider_catalog;
-pub mod provider_projects;
 pub mod provider_resolution;
 pub mod requester_deals;
 pub mod runtime_auth;

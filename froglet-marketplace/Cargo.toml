@@ -1,0 +1,39 @@
+[package]
+name = "froglet-marketplace"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[[bin]]
+name = "froglet-marketplace"
+path = "src/bin/froglet-marketplace.rs"
+
+[dependencies]
+froglet = { path = ".." }
+froglet-protocol = { path = "../froglet-protocol" }
+
+# Async
+tokio = { version = "1.37", features = ["full"] }
+futures = "0.3"
+
+# Web
+axum = { version = "0.7", features = ["macros", "tokio"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+
+# Database
+deadpool-postgres = { version = "0.14", features = ["serde"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
+postgres-types = { version = "0.2", features = ["with-serde_json-1"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }

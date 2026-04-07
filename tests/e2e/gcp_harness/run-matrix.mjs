@@ -112,6 +112,7 @@ async function bootstrapMarketplaceFixtures(tool, bootstrap) {
     name: bootstrap.build_project_id,
     summary: "GCP harness build-flow project",
     publication_state: "hidden",
+    starter: "hello_world",
   })
   await ensureCreateProject(tool, {
     action: "create_project",
@@ -120,6 +121,7 @@ async function bootstrapMarketplaceFixtures(tool, bootstrap) {
     name: bootstrap.invalid_build_project_id,
     summary: "GCP harness invalid build project",
     publication_state: "hidden",
+    starter: "hello_world",
   })
   await ensureCreateProject(tool, {
     action: "create_project",

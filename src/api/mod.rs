@@ -29,7 +29,6 @@ use crate::{
     config::{LightningMode, PaymentBackend},
     crypto, db,
     deals::{self, NewDeal},
-    discovery::{DiscoveryNodeRecord, DiscoverySearchResponse},
     execution::{
         CONTRACT_BUILTIN_EVENTS_QUERY_V1, CONTRACT_CONTAINER_JSON_V1,
         CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionEntrypointKind,
@@ -99,11 +98,17 @@ const BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS: u64 = 1;
 const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
+
+/// Offer ID for the generic compute offer that accepts any supported runtime
+/// (Python, Container, Wasm) with `offer_kind = "compute.execution.v1"`.
+pub(crate) const EXECUTE_COMPUTE_GENERIC_OFFER_ID: &str = "execute.compute.generic";
 pub(crate) type ApiFailure = (StatusCode, serde_json::Value);
 
 fn private_runtime_tempdir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let mut rng_bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut rng_bytes);
     let tempdir =
-        std::env::temp_dir().join(format!("{prefix}-{}", crate::discovery::random_hex(16)));
+        std::env::temp_dir().join(format!("{prefix}-{}", hex::encode(rng_bytes)));
     fs::create_dir_all(&tempdir)
         .map_err(|error| format!("failed to create tempdir {}: {error}", tempdir.display()))?;
     #[cfg(unix)]
@@ -255,8 +260,8 @@ pub async fn health_check() -> impl IntoResponse {
 
 pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let transport_status = state.transport_status.lock().await.clone();
-    let reference_discovery_status = state.reference_discovery_status.lock().await.clone();
     let settlement_descriptor = settlement::driver_descriptor(state.as_ref());
+    let faas_descriptor = jobs::FaaSDescriptor::standard();
 
     let capabilities = NodeCapabilities {
         api_version: "v1".to_string(),
@@ -266,20 +271,7 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
             public_key: state.identity.public_key_hex().to_string(),
         },
         discovery: DiscoveryInfo {
-            mode: state.config.discovery_mode.to_string(),
-        },
-        reference_discovery: ReferenceDiscoveryInfo {
-            enabled: state.config.reference_discovery.is_some(),
-            publish_enabled: reference_discovery_status.publish_enabled,
-            url: state
-                .config
-                .reference_discovery
-                .as_ref()
-                .map(|discovery| discovery.url.clone()),
-            connected: reference_discovery_status.connected,
-            last_register_at: reference_discovery_status.last_register_at,
-            last_heartbeat_at: reference_discovery_status.last_heartbeat_at,
-            last_error: reference_discovery_status.last_error,
+            mode: "none".to_string(),
         },
         transports: TransportsInfo {
             clearnet: ClearnetInfo {
@@ -316,10 +308,10 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
             receipts: settlement_descriptor.receipts,
         },
         faas: FaaSInfo {
-            jobs_api: true,
+            jobs_api: faas_descriptor.jobs_api,
             async_jobs: true,
-            idempotency_keys: true,
-            runtimes: vec!["wasm".to_string()],
+            idempotency_keys: faas_descriptor.idempotency_keys,
+            runtimes: faas_descriptor.runtimes,
         },
     };
 
@@ -359,25 +351,6 @@ pub async fn runtime_wallet_balance(
         ),
         Err(error) => error_json(error.status_code(), error.details()),
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderOffersResponse {
-    offers: Vec<SignedArtifact<OfferPayload>>,
-}
-
-fn runtime_discovery_url(state: &AppState) -> Result<String, ApiFailure> {
-    state
-        .config
-        .reference_discovery
-        .as_ref()
-        .map(|discovery| discovery.url.clone())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "runtime discovery is not configured" }),
-            )
-        })
 }
 
 fn format_reqwest_error(error: &reqwest::Error) -> String {
@@ -464,47 +437,6 @@ where
     })
 }
 
-async fn provider_url_from_discovery(
-    state: &AppState,
-    record: &DiscoveryNodeRecord,
-) -> Result<String, ApiFailure> {
-    let raw = record
-        .descriptor
-        .transports
-        .clearnet_url
-        .clone()
-        .or_else(|| record.descriptor.transports.onion_url.clone())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_GATEWAY,
-                json!({
-                    "error": "discovery record does not advertise a provider url",
-                    "provider_id": record.descriptor.node_id,
-                }),
-            )
-        })?;
-    runtime_accessible_provider_url(state, &raw, Some(&record.descriptor.node_id)).await
-}
-
-async fn fetch_discovery_provider(
-    state: &AppState,
-    provider_id: &str,
-) -> Result<DiscoveryNodeRecord, ApiFailure> {
-    let discovery_url = runtime_discovery_url(state)?;
-    remote_json_request_with_client_error_passthrough(
-        state,
-        reqwest::Method::GET,
-        format!(
-            "{}/v1/discovery/providers/{}",
-            discovery_url,
-            urlencoding::encode(provider_id)
-        ),
-        Option::<&()>::None,
-        true,
-    )
-    .await
-}
-
 async fn fetch_provider_descriptor(
     state: &AppState,
     provider_url: &str,
@@ -518,20 +450,6 @@ async fn fetch_provider_descriptor(
     .await
 }
 
-async fn fetch_provider_offers(
-    state: &AppState,
-    provider_url: &str,
-) -> Result<Vec<SignedArtifact<OfferPayload>>, ApiFailure> {
-    let response: ProviderOffersResponse = remote_json_request(
-        state,
-        reqwest::Method::GET,
-        format!("{provider_url}/v1/provider/offers"),
-        Option::<&()>::None,
-    )
-    .await?;
-    Ok(response.offers)
-}
-
 fn provider_bad_gateway(message: &str) -> ApiFailure {
     (StatusCode::BAD_GATEWAY, json!({ "error": message }))
 }
@@ -543,31 +461,6 @@ fn verify_provider_descriptor_artifact(
         return Err(provider_bad_gateway(
             "provider descriptor signature verification failed",
         ));
-    }
-    Ok(())
-}
-
-fn verify_provider_offers_artifacts(
-    offers: &[SignedArtifact<OfferPayload>],
-    provider_id: &str,
-    descriptor_hash: &str,
-) -> Result<(), ApiFailure> {
-    for offer in offers {
-        if !protocol::verify_artifact(offer) {
-            return Err(provider_bad_gateway(
-                "provider offer signature verification failed",
-            ));
-        }
-        if offer.payload.provider_id != provider_id {
-            return Err(provider_bad_gateway(
-                "provider offer provider_id does not match provider descriptor",
-            ));
-        }
-        if offer.payload.descriptor_hash != descriptor_hash {
-            return Err(provider_bad_gateway(
-                "provider offer descriptor_hash does not match provider descriptor",
-            ));
-        }
     }
     Ok(())
 }
@@ -674,24 +567,15 @@ async fn resolve_runtime_provider(
             json!({ "error": "provider.provider_id or provider.provider_url is required" }),
         ));
     };
-    let discovery = fetch_discovery_provider(state, &provider_id).await?;
-    let provider_url = provider_url_from_discovery(state, &discovery).await?;
-    let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
-    verify_provider_descriptor_artifact(&descriptor)?;
-    if descriptor.payload.provider_id != provider_id {
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            json!({
-                "error": "provider descriptor does not match discovery provider_id",
-                "discovery_provider_id": provider_id,
-                "descriptor_provider_id": descriptor.payload.provider_id,
-            }),
-        ));
-    }
-    Ok(ResolvedProvider {
-        provider_id,
-        provider_url,
-    })
+    // Discovery server has been removed.  Resolving a provider by ID alone
+    // is no longer possible -- callers must supply a provider_url.
+    Err((
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": "provider.provider_url is required — discovery server removed; use marketplace or direct URL",
+            "provider_id": provider_id,
+        }),
+    ))
 }
 
 fn generate_success_preimage_hex() -> String {
@@ -953,85 +837,6 @@ async fn sync_requester_deal_from_provider(
         })
 }
 
-pub async fn runtime_search(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(payload): Json<RuntimeSearchRequest>,
-) -> impl IntoResponse {
-    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1);
-    }
-
-    let discovery_url = match runtime_discovery_url(state.as_ref()) {
-        Ok(url) => url,
-        Err(error) => return error_json(error.0, error.1),
-    };
-    match remote_json_request::<DiscoverySearchResponse, _>(
-        state.as_ref(),
-        reqwest::Method::POST,
-        format!("{discovery_url}/v1/discovery/search"),
-        Some(&payload),
-    )
-    .await
-    {
-        Ok(response) => (StatusCode::OK, Json(json!(response))),
-        Err(error) => error_json(error.0, error.1),
-    }
-}
-
-pub async fn runtime_provider_details(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(provider_id): Path<String>,
-) -> impl IntoResponse {
-    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1);
-    }
-
-    let discovery = match fetch_discovery_provider(state.as_ref(), &provider_id).await {
-        Ok(record) => record,
-        Err(error) => return error_json(error.0, error.1),
-    };
-    let provider_url = match provider_url_from_discovery(state.as_ref(), &discovery).await {
-        Ok(url) => url,
-        Err(error) => return error_json(error.0, error.1),
-    };
-    let descriptor = match fetch_provider_descriptor(state.as_ref(), &provider_url).await {
-        Ok(descriptor) => descriptor,
-        Err(error) => return error_json(error.0, error.1),
-    };
-    if let Err(error) = verify_provider_descriptor_artifact(&descriptor) {
-        return error_json(error.0, error.1);
-    }
-    if descriptor.payload.provider_id != provider_id {
-        return error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({
-                "error": "provider descriptor does not match discovery provider_id",
-                "discovery_provider_id": provider_id,
-                "descriptor_provider_id": descriptor.payload.provider_id,
-            }),
-        );
-    }
-    let offers = match fetch_provider_offers(state.as_ref(), &provider_url).await {
-        Ok(offers) => offers,
-        Err(error) => return error_json(error.0, error.1),
-    };
-    if let Err(error) =
-        verify_provider_offers_artifacts(&offers, &descriptor.payload.provider_id, &descriptor.hash)
-    {
-        return error_json(error.0, error.1);
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!(RuntimeProviderDetailsResponse {
-            discovery,
-            descriptor,
-            offers,
-        })),
-    )
-}
 
 pub async fn runtime_create_deal(
     State(state): State<Arc<AppState>>,
@@ -2891,6 +2696,9 @@ async fn handle_timeout_error(_: BoxError) -> impl IntoResponse {
 }
 
 async fn insert_event_db(state: &AppState, event: NodeEventEnvelope) -> Result<bool, String> {
+    if let Some(ref writer) = state.event_batch_writer {
+        return writer.insert(event).await;
+    }
     state
         .db
         .with_write_conn(move |conn| db::insert_event(conn, &event))
@@ -2941,6 +2749,26 @@ async fn query_events_with_capacity(
 ) -> Result<Vec<NodeEventEnvelope>, String> {
     let _permit = try_acquire_events_query_permit(state)?;
     query_events_db(state, kinds, limit).await
+}
+
+async fn dispatch_builtin_workload(
+    state: &AppState,
+    execution: &ExecutionWorkload,
+) -> Result<Value, String> {
+    let builtin_name = execution
+        .builtin_name
+        .as_deref()
+        .ok_or("builtin execution requires builtin_name")?;
+    if let Some(handler) = state.builtin_services.get(builtin_name) {
+        handler.execute(execution.input.clone()).await
+    } else if let Some((kinds, limit)) = execution.events_query_params() {
+        Ok(json!({
+            "events": query_events_with_capacity(state, kinds, limit).await?,
+            "cursor": null
+        }))
+    } else {
+        Err(format!("unsupported builtin service: {builtin_name}"))
+    }
 }
 
 async fn ensure_protocol_root_artifacts(state: &AppState) -> Result<(), String> {
@@ -3805,9 +3633,6 @@ pub(crate) fn validate_provider_offer_definition(
     if definition.source_kind.trim().is_empty() {
         return Err("source_kind must be a non-empty string".to_string());
     }
-    if runtime == ExecutionRuntime::Builtin && definition.offer_kind != "events.query" {
-        return Err("builtin runtime requires offer_kind=events.query".to_string());
-    }
     if runtime == ExecutionRuntime::Builtin && package_kind != ExecutionPackageKind::Builtin {
         return Err("builtin runtime requires package_kind=builtin".to_string());
     }
@@ -3947,8 +3772,9 @@ fn builtin_provider_offer_definitions(
                    source_kind: &str,
                    summary: &str| {
         let is_events_query = offer_id == ServiceId::EventsQuery.as_str();
-        let is_generic_compute = offer_id == ServiceId::ExecuteWasm.as_str()
-            && offer_kind == crate::execution::WORKLOAD_KIND_EXECUTION_V1;
+        let is_generic_compute = offer_kind == crate::execution::WORKLOAD_KIND_EXECUTION_V1
+            && (offer_id == ServiceId::ExecuteWasm.as_str()
+                || offer_id == EXECUTE_COMPUTE_GENERIC_OFFER_ID);
         let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
             provider_offer_limits(state, runtime);
         ProviderManagedOfferDefinition {
@@ -4025,6 +3851,16 @@ fn builtin_provider_offer_definitions(
             state.pricing.price_for(ServiceId::ExecuteWasm),
             "builtin",
             "Run arbitrary Wasm compute using froglet.wasm.run_json.v1.",
+        ),
+        builtin(
+            EXECUTE_COMPUTE_GENERIC_OFFER_ID,
+            crate::execution::WORKLOAD_KIND_EXECUTION_V1,
+            "any",
+            "",
+            Vec::new(),
+            state.pricing.price_for(ServiceId::ExecuteWasm),
+            "builtin",
+            "Run compute with any supported runtime (Python, Container, Wasm) using compute.execution.v1.",
         ),
     ];
     if !wasm_host_capabilities.is_empty() {
@@ -4294,7 +4130,7 @@ pub(crate) fn persist_provider_offer_definition(
     db::upsert_provider_managed_offer(conn, &definition.offer_id, &definition_json, now)
 }
 
-pub(crate) fn artifact_provider_offer_definition(
+pub fn artifact_provider_offer_definition(
     state: &AppState,
     payload: ProviderControlPublishArtifactRequest,
 ) -> Result<ProviderManagedOfferDefinition, ApiFailure> {
@@ -4597,7 +4433,7 @@ pub(crate) fn artifact_provider_offer_definition(
     Ok(definition)
 }
 
-pub(crate) async fn persist_provider_offer_mutation(
+pub async fn persist_provider_offer_mutation(
     state: &AppState,
     definition: ProviderManagedOfferDefinition,
     status_code: StatusCode,
@@ -5823,16 +5659,7 @@ fn validate_execution_workload(
                 }
                 Ok(())
             }
-            (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-                if execution.builtin_name.as_deref() == Some("events.query") {
-                    Ok(())
-                } else {
-                    Err(error_json(
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "unsupported builtin execution", "builtin_name": execution.builtin_name }),
-                    ))
-                }
-            }
+            (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => Ok(()),
             _ => Ok(()),
         };
     }
@@ -5874,13 +5701,10 @@ fn validate_execution_workload(
             Ok(())
         }
         (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-            if execution.builtin_name.as_deref() == Some("events.query") {
-                let Some((kinds, limit)) = execution.events_query_params() else {
-                    return Err(error_json(
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "events query builtin requires kinds input" }),
-                    ));
-                };
+            // events.query has specific validation; other builtins are
+            // validated structurally and rejected at dispatch time if no
+            // handler is registered.
+            if let Some((kinds, limit)) = execution.events_query_params() {
                 if kinds.is_empty() {
                     return Err(error_json(
                         StatusCode::BAD_REQUEST,
@@ -5913,13 +5737,8 @@ fn validate_execution_workload(
                         }),
                     ));
                 }
-                Ok(())
-            } else {
-                Err(error_json(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": "unsupported builtin execution", "builtin_name": execution.builtin_name }),
-                ))
             }
+            Ok(())
         }
         (ExecutionRuntime::TeeService, ExecutionPackageKind::Builtin) => {
             let Some(request_envelope) = execution.security.request_envelope.as_ref() else {
@@ -6414,43 +6233,53 @@ fn build_bound_workload_spec_from_service(
             })
         }
         (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-            let Value::Object(object) = input else {
-                return Err("builtin events.query expects a JSON object input".to_string());
-            };
-            let kinds = match object.get("kinds") {
-                Some(Value::Array(values)) => values
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| "builtin events.query kinds must be strings".to_string())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                Some(_) => {
+            let builtin_name = service.offer_kind.as_str();
+            if builtin_name == "events.query" {
+                let Value::Object(object) = input else {
                     return Err(
-                        "builtin events.query kinds must be an array of strings".to_string()
+                        "builtin events.query expects a JSON object input".to_string(),
                     );
-                }
-                None => Vec::new(),
-            };
-            let limit = match object.get("limit") {
-                Some(Value::Number(number)) => {
-                    Some(number.as_u64().map(|value| value as usize).ok_or_else(|| {
-                        "builtin events.query limit must be a non-negative integer".to_string()
-                    })?)
-                }
-                Some(Value::Null) | None => None,
-                Some(_) => {
-                    return Err(
-                        "builtin events.query limit must be a non-negative integer".to_string()
-                    );
-                }
-            };
-            let execution = ExecutionWorkload::builtin_events_query(kinds, limit)?;
-            Ok(WorkloadSpec::Execution {
-                execution: Box::new(execution),
-            })
+                };
+                let kinds = match object.get("kinds") {
+                    Some(Value::Array(values)) => values
+                        .iter()
+                        .map(|value| {
+                            value.as_str().map(str::to_string).ok_or_else(|| {
+                                "builtin events.query kinds must be strings".to_string()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    Some(_) => {
+                        return Err(
+                            "builtin events.query kinds must be an array of strings".to_string(),
+                        );
+                    }
+                    None => Vec::new(),
+                };
+                let limit = match object.get("limit") {
+                    Some(Value::Number(number)) => Some(
+                        number.as_u64().map(|value| value as usize).ok_or_else(|| {
+                            "builtin events.query limit must be a non-negative integer".to_string()
+                        })?,
+                    ),
+                    Some(Value::Null) | None => None,
+                    Some(_) => {
+                        return Err(
+                            "builtin events.query limit must be a non-negative integer".to_string(),
+                        );
+                    }
+                };
+                let execution = ExecutionWorkload::builtin_events_query(kinds, limit)?;
+                Ok(WorkloadSpec::Execution {
+                    execution: Box::new(execution),
+                })
+            } else {
+                let execution =
+                    ExecutionWorkload::builtin_service(builtin_name.to_string(), input)?;
+                Ok(WorkloadSpec::Execution {
+                    execution: Box::new(execution),
+                })
+            }
         }
         _ => Err(format!(
             "unsupported service execution profile runtime={} package_kind={}",
@@ -8178,6 +8007,124 @@ async fn recover_orphaned_deal_materializations_remote(state: Arc<AppState>) -> 
     Ok(())
 }
 
+/// Register this provider's descriptor and offers with a marketplace.
+///
+/// Makes a `marketplace.register` deal with the marketplace at `marketplace_url`.
+/// Uses a lightweight HTTP POST to submit the registration payload directly,
+/// bypassing the full deal flow for bootstrap simplicity.
+pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), String> {
+    let marketplace_url = match state.config.marketplace_url.as_deref() {
+        Some(url) => url.to_string(),
+        None => return Ok(()), // no marketplace configured
+    };
+
+    let descriptor = current_descriptor_artifact(state.as_ref()).await?;
+    let offers = current_offer_artifacts(state.as_ref()).await?;
+
+    let descriptor_json = serde_json::to_value(&descriptor).map_err(|e| e.to_string())?;
+    let offer_jsons: Vec<serde_json::Value> = offers
+        .iter()
+        .map(|o| serde_json::to_value(o).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Determine our feed URL from transport status
+    let transport_status = state.transport_status.lock().await.clone();
+    let feed_url = transport_status
+        .clearnet_url
+        .or(transport_status.tor_onion_url);
+
+    let registration_input = serde_json::json!({
+        "descriptor": descriptor_json,
+        "offers": offer_jsons,
+        "feed_url": feed_url,
+    });
+
+    // Build a builtin execution workload for marketplace.register
+    let execution = crate::execution::ExecutionWorkload::builtin_service(
+        "marketplace.register".to_string(),
+        registration_input,
+    )?;
+
+    // Call the marketplace's quote endpoint
+    let quote_url = format!("{marketplace_url}/v1/provider/quotes");
+    let quote_response: serde_json::Value = remote_json_request(
+        state.as_ref(),
+        reqwest::Method::POST,
+        quote_url,
+        Some(&serde_json::json!({
+            "offer_id": "marketplace.register",
+            "requester_id": state.identity.node_id(),
+            "spec": { "kind": "execution", "execution": execution },
+        })),
+    )
+    .await
+    .map_err(|(status, body)| format!("marketplace quote failed ({status}): {body}"))?;
+
+    let quote_hash = quote_response
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Create and sign a deal referencing the quote
+    let created_at = settlement::current_unix_timestamp();
+    let workload_hash = quote_response
+        .get("payload")
+        .and_then(|p| p.get("workload_hash"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let deal_payload = protocol::DealPayload {
+        provider_id: quote_response
+            .get("payload")
+            .and_then(|p| p.get("provider_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        requester_id: state.identity.node_id().to_string(),
+        quote_hash: quote_hash.clone(),
+        workload_hash,
+        confidential_session_hash: None,
+        extension_refs: Vec::new(),
+        authority_ref: None,
+        supersedes_deal_hash: None,
+        client_nonce: None,
+        success_payment_hash: crypto::sha256_hex(format!("mkt-reg-{created_at}")),
+        admission_deadline: created_at + 60,
+        completion_deadline: created_at + 90,
+        acceptance_deadline: created_at + 120,
+    };
+    let deal = protocol::sign_artifact(
+        state.identity.node_id(),
+        |msg| state.identity.sign_message_hex(msg),
+        protocol::ARTIFACT_TYPE_DEAL,
+        created_at,
+        deal_payload,
+    )?;
+
+    // Send deal to marketplace
+    let deal_url = format!("{marketplace_url}/v1/provider/deals");
+    let _deal_response: serde_json::Value = remote_json_request(
+        state.as_ref(),
+        reqwest::Method::POST,
+        deal_url,
+        Some(&serde_json::json!({
+            "quote": quote_response,
+            "deal": deal,
+            "spec": { "kind": "execution", "execution": execution },
+        })),
+    )
+    .await
+    .map_err(|(status, body)| format!("marketplace deal failed ({status}): {body}"))?;
+
+    tracing::info!(
+        marketplace = marketplace_url,
+        offers = offers.len(),
+        "registered with marketplace"
+    );
+    Ok(())
+}
+
 pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), String> {
     recover_orphaned_deal_materializations_local(state.clone()).await?;
 
@@ -8496,14 +8443,7 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                 run_container_execution(&execution, &execution.requested_access, timeout).await
             }
             (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-                if let Some((kinds, limit)) = execution.events_query_params() {
-                    Ok(json!({
-                        "events": query_events_with_capacity(state, kinds, limit).await?,
-                        "cursor": null
-                    }))
-                } else {
-                    Err("unsupported builtin execution".to_string())
-                }
+                dispatch_builtin_workload(state, &execution).await
             }
             _ => Err("unsupported execution runtime/package for job".to_string()),
         },
@@ -8840,14 +8780,8 @@ async fn run_workload_spec_with_admission(
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
-                    let Some((kinds, limit)) = execution.events_query_params() else {
-                        return Err("unsupported builtin execution".to_string());
-                    };
-                    let events = query_events_with_capacity(state, kinds, limit).await?;
-                    Ok(run_output_for_plain_result(json!({
-                        "events": events,
-                        "cursor": null
-                    })))
+                    let result = dispatch_builtin_workload(state, &execution).await?;
+                    Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, Some(_)) => {
                     Err("builtin workloads do not use execution permits".to_string())
@@ -9764,7 +9698,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+            IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
             PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
         },
         crypto,
@@ -9772,7 +9706,7 @@ mod tests {
         identity::NodeIdentity,
         pricing::PricingTable,
         sandbox::WasmSandbox,
-        state::{ReferenceDiscoveryStatus, TransportStatus},
+        state::TransportStatus,
         wasm::{
             ComputeWasmWorkload, FROGLET_SCHEMA_V1, JCS_JSON_FORMAT, OciWasmSubmission,
             OciWasmWorkload, WASM_MODULE_OCI_FORMAT, WASM_OCI_SUBMISSION_TYPE_V1,
@@ -9858,11 +9792,9 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:0".to_string(),
                 startup_timeout_secs: 90,
             },
-            discovery_mode: DiscoveryMode::None,
             identity: IdentityConfig {
                 auto_generate: true,
             },
-            reference_discovery: None,
             pricing: PricingConfig {
                 events_query: 10,
                 execute_wasm: 30,
@@ -9902,6 +9834,7 @@ mod tests {
                 policy: None,
                 session_ttl_secs: 300,
             },
+            marketplace_url: None,
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
@@ -9913,9 +9846,6 @@ mod tests {
             transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
                 &node_config,
             ))),
-            reference_discovery_status: Arc::new(tokio::sync::Mutex::new(
-                ReferenceDiscoveryStatus::from_config(&node_config),
-            )),
             wasm_sandbox: Arc::new(WasmSandbox::new(4).expect("sandbox")),
             config: node_config.clone(),
             identity: Arc::new(identity),
@@ -9938,11 +9868,46 @@ mod tests {
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
             lnd_rest_client: None,
             lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
+            event_batch_writer: None,
+            builtin_services: std::collections::HashMap::new(),
         })
     }
 
     fn test_app_state(payment_backend: PaymentBackend) -> Arc<AppState> {
         test_app_state_with_lightning_mode(payment_backend, LightningMode::Mock)
+    }
+
+    fn test_app_state_with_free_pricing(payment_backend: PaymentBackend) -> Arc<AppState> {
+        let mut state = test_app_state(payment_backend);
+        let state_mut = Arc::get_mut(&mut state).expect("unique app state");
+        state_mut.config.pricing.events_query = 0;
+        state_mut.config.pricing.execute_wasm = 0;
+        state_mut.pricing = PricingTable::from_config(state_mut.config.pricing);
+        state
+    }
+
+    #[tokio::test]
+    async fn node_capabilities_reports_all_job_runtimes() {
+        let state = test_app_state(PaymentBackend::None);
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/node/capabilities",
+                None,
+                None,
+            ))
+            .await
+            .expect("node capabilities response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["faas"]["jobs_api"], Value::Bool(true));
+        assert_eq!(payload["faas"]["async_jobs"], Value::Bool(true));
+        assert_eq!(payload["faas"]["idempotency_keys"], Value::Bool(true));
+        assert_eq!(
+            payload["faas"]["runtimes"],
+            json!(crate::jobs::FaaSDescriptor::standard().runtimes)
+        );
     }
 
     async fn publish_test_service(
@@ -10053,8 +10018,11 @@ mod tests {
     }
 
     fn test_wasm_submission() -> crate::wasm::WasmSubmission {
+        test_wasm_submission_with_input(Value::Null)
+    }
+
+    fn test_wasm_submission_with_input(input: Value) -> crate::wasm::WasmSubmission {
         let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm hex");
-        let input = Value::Null;
         crate::wasm::WasmSubmission {
             schema_version: FROGLET_SCHEMA_V1.to_string(),
             submission_type: WASM_SUBMISSION_TYPE_V1.to_string(),
@@ -11029,6 +10997,165 @@ mod tests {
         .expect("OCI wasm execution");
 
         assert_eq!(oci_result, inline_result);
+    }
+
+    #[tokio::test]
+    async fn create_job_reuses_existing_job_for_canonical_wasm_submission() {
+        let state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let public = public_router(state.clone());
+
+        let first_submission = test_wasm_submission_with_input(json!({ "b": 2, "a": 1 }));
+        let mut second_submission = test_wasm_submission_with_input(json!({ "a": 1, "b": 2 }));
+        second_submission.module_bytes_hex = VALID_WASM_HEX.to_ascii_uppercase();
+
+        let first_request_hash = JobSpec::Wasm {
+            submission: first_submission.clone(),
+        }
+        .request_hash()
+        .expect("first request hash");
+        let second_request_hash = JobSpec::Wasm {
+            submission: second_submission.clone(),
+        }
+        .request_hash()
+        .expect("second request hash");
+        assert_eq!(
+            first_request_hash, second_request_hash,
+            "canonical workload hashing should ignore transport-level hex casing and input order"
+        );
+
+        let first_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/jobs",
+                None,
+                Some(json!({
+                    "kind": "wasm",
+                    "submission": first_submission,
+                    "idempotency_key": "rust-canonical-wasm-idempotency",
+                })),
+            ))
+            .await
+            .expect("first jobs response");
+        let (first_status, first_payload): (StatusCode, Value) =
+            response_json(first_response).await;
+        assert_eq!(
+            first_status,
+            StatusCode::ACCEPTED,
+            "unexpected first payload: {first_payload}"
+        );
+
+        let second_response = public
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/jobs",
+                None,
+                Some(json!({
+                    "kind": "wasm",
+                    "submission": second_submission,
+                    "idempotency_key": "rust-canonical-wasm-idempotency",
+                })),
+            ))
+            .await
+            .expect("second jobs response");
+        let (second_status, second_payload): (StatusCode, Value) =
+            response_json(second_response).await;
+        assert_eq!(
+            second_status,
+            StatusCode::OK,
+            "unexpected second payload: {second_payload}"
+        );
+        assert_eq!(first_payload["job_id"], second_payload["job_id"]);
+
+        let job_id = first_payload["job_id"]
+            .as_str()
+            .expect("job_id string")
+            .to_string();
+        let completed = wait_for_job_status(&state, &job_id, jobs::JOB_STATUS_SUCCEEDED).await;
+        assert_eq!(completed.request_hash, first_request_hash);
+        assert_eq!(completed.result, Some(json!(42)));
+    }
+
+    #[tokio::test]
+    async fn create_execution_job_persists_request_hash_and_evidence() {
+        let state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let public = public_router(state.clone());
+        let created_at = settlement::current_unix_timestamp();
+        let mut event = NodeEventEnvelope {
+            id: String::new(),
+            pubkey: "11".repeat(32),
+            created_at,
+            kind: "market.listing".to_string(),
+            tags: vec![vec!["t".to_string(), "froglet".to_string()]],
+            content: "hello".to_string(),
+            sig: "22".repeat(64),
+        };
+        event.id = expected_node_event_id(&event);
+        insert_event_db(state.as_ref(), event.clone())
+            .await
+            .expect("insert event");
+
+        let execution = crate::execution::ExecutionWorkload::builtin_events_query(
+            vec!["market.listing".to_string()],
+            Some(1),
+        )
+        .expect("builtin execution");
+        let request_hash = execution.request_hash().expect("execution request hash");
+
+        let response = public
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/jobs",
+                None,
+                Some(json!({
+                    "kind": "execution",
+                    "execution": execution,
+                    "idempotency_key": "rust-builtin-events-query",
+                })),
+            ))
+            .await
+            .expect("create execution job response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
+        let job_id = payload["job_id"]
+            .as_str()
+            .expect("job_id string")
+            .to_string();
+        let completed = wait_for_job_status(&state, &job_id, jobs::JOB_STATUS_SUCCEEDED).await;
+        assert_eq!(completed.request_hash, request_hash);
+        assert_eq!(
+            completed.service_id,
+            crate::pricing::ServiceId::EventsQuery.as_str()
+        );
+        assert_eq!(
+            completed.result,
+            Some(json!({
+                "events": [event],
+                "cursor": null
+            }))
+        );
+
+        let evidence = state
+            .db
+            .with_read_conn({
+                let job_id = job_id.clone();
+                move |conn| db::list_execution_evidence_for_subject(conn, "job", &job_id)
+            })
+            .await
+            .expect("job evidence");
+        assert!(
+            evidence
+                .iter()
+                .any(|record| record.evidence_kind == "workload_spec"),
+            "expected workload_spec evidence: {evidence:?}"
+        );
+        assert!(
+            evidence
+                .iter()
+                .any(|record| record.evidence_kind == "execution_result"),
+            "expected execution_result evidence: {evidence:?}"
+        );
     }
 
     #[tokio::test]

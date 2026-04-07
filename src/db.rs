@@ -468,6 +468,49 @@ pub fn insert_event(conn: &Connection, event: &NodeEventEnvelope) -> SqlResult<b
     Ok(inserted > 0)
 }
 
+/// Insert multiple events in a single transaction, returning per-event results.
+/// Each entry is `true` if the event was newly inserted, `false` if it already existed.
+pub fn batch_insert_events(
+    conn: &Connection,
+    events: &[NodeEventEnvelope],
+) -> SqlResult<Vec<bool>> {
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
+    if events.len() == 1 {
+        return insert_event(conn, &events[0]).map(|ok| vec![ok]);
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let mut results = Vec::with_capacity(events.len());
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR IGNORE INTO events (id, pubkey, created_at, kind, content, sig, tags)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+
+    for event in events {
+        let tags_json = serde_json::to_string(&event.tags).unwrap_or_else(|_| "[]".to_string());
+        match stmt.execute(params![
+            event.id,
+            event.pubkey,
+            event.created_at,
+            event.kind,
+            event.content,
+            event.sig,
+            tags_json
+        ]) {
+            Ok(n) => results.push(n > 0),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+
+    conn.execute_batch("COMMIT")?;
+    Ok(results)
+}
+
 pub fn query_events_by_kind(
     conn: &Connection,
     kinds: &[String],
@@ -1350,6 +1393,111 @@ pub fn list_execution_evidence_for_subject(
     }
 
     Ok(evidence)
+}
+
+/// Write-coalescing event batch writer.
+///
+/// Collects pending event inserts via a channel and flushes them in batched
+/// transactions, reducing per-event write-mutex contention and WAL sync overhead.
+pub struct EventBatchWriter {
+    tx: tokio::sync::mpsc::Sender<(
+        NodeEventEnvelope,
+        tokio::sync::oneshot::Sender<Result<bool, String>>,
+    )>,
+}
+
+impl Clone for EventBatchWriter {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+        }
+    }
+}
+
+/// Maximum events to coalesce into a single transaction.
+const EVENT_BATCH_MAX_SIZE: usize = 64;
+/// Maximum time to wait for a batch to fill before flushing.
+const EVENT_BATCH_LINGER: Duration = Duration::from_millis(5);
+
+impl EventBatchWriter {
+    /// Spawn the background flush loop. The returned writer can be cloned and
+    /// shared across request handlers.
+    pub fn spawn(db: DbPool) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel::<(
+            NodeEventEnvelope,
+            tokio::sync::oneshot::Sender<Result<bool, String>>,
+        )>(512);
+
+        tokio::spawn(Self::flush_loop(db, rx));
+
+        Self { tx }
+    }
+
+    /// Submit a single event for batched insertion. Returns `Ok(true)` if the
+    /// event was newly inserted, `Ok(false)` if it already existed.
+    pub async fn insert(&self, event: NodeEventEnvelope) -> Result<bool, String> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send((event, reply_tx))
+            .await
+            .map_err(|_| "event batch writer closed".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "event batch writer dropped reply".to_string())?
+    }
+
+    async fn flush_loop(
+        db: DbPool,
+        mut rx: tokio::sync::mpsc::Receiver<(
+            NodeEventEnvelope,
+            tokio::sync::oneshot::Sender<Result<bool, String>>,
+        )>,
+    ) {
+        let mut batch: Vec<(
+            NodeEventEnvelope,
+            tokio::sync::oneshot::Sender<Result<bool, String>>,
+        )> = Vec::with_capacity(EVENT_BATCH_MAX_SIZE);
+
+        loop {
+            // Wait for the first item (blocks until work arrives).
+            let first = rx.recv().await;
+            let Some(first) = first else {
+                break; // Channel closed — shut down.
+            };
+            batch.push(first);
+
+            // Drain up to EVENT_BATCH_MAX_SIZE more items with a short linger.
+            let deadline = tokio::time::Instant::now() + EVENT_BATCH_LINGER;
+            loop {
+                if batch.len() >= EVENT_BATCH_MAX_SIZE {
+                    break;
+                }
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
+                    Ok(Some(item)) => batch.push(item),
+                    _ => break, // Timeout or channel closed.
+                }
+            }
+
+            // Flush the batch.
+            let events: Vec<NodeEventEnvelope> = batch.iter().map(|(e, _)| e.clone()).collect();
+            let result = db
+                .with_write_conn(move |conn| batch_insert_events(conn, &events))
+                .await;
+
+            match result {
+                Ok(results) => {
+                    for ((_event, reply), inserted) in batch.drain(..).zip(results.into_iter()) {
+                        let _ = reply.send(Ok(inserted));
+                    }
+                }
+                Err(error) => {
+                    for (_event, reply) in batch.drain(..) {
+                        let _ = reply.send(Err(error.clone()));
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

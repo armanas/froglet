@@ -1,12 +1,4 @@
-use crate::{
-    canonical_json,
-    confidential::{
-        ARTIFACT_TYPE_CONFIDENTIAL_PROFILE as CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_PROFILE,
-        ARTIFACT_TYPE_CONFIDENTIAL_SESSION as CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_SESSION,
-    },
-    crypto,
-    execution::ExecutionRuntime,
-};
+use crate::{canonical_json, crypto, ExecutionRuntime};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,10 +11,8 @@ pub const ARTIFACT_TYPE_QUOTE: &str = "quote";
 pub const ARTIFACT_TYPE_DEAL: &str = "deal";
 pub const ARTIFACT_TYPE_RECEIPT: &str = "receipt";
 pub const ARTIFACT_TYPE_CURATED_LIST: &str = "curated_list";
-pub const ARTIFACT_TYPE_CONFIDENTIAL_PROFILE: &str =
-    CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_PROFILE;
-pub const ARTIFACT_TYPE_CONFIDENTIAL_SESSION: &str =
-    CONFIDENTIAL_ARTIFACT_TYPE_CONFIDENTIAL_SESSION;
+pub const ARTIFACT_TYPE_CONFIDENTIAL_PROFILE: &str = "confidential_profile";
+pub const ARTIFACT_TYPE_CONFIDENTIAL_SESSION: &str = "confidential_session";
 pub const TRANSPORT_TYPE_INVOICE_BUNDLE: &str = "invoice_bundle";
 
 pub const ARTIFACT_KIND_DESCRIPTOR: &str = ARTIFACT_TYPE_DESCRIPTOR;

@@ -6,7 +6,6 @@ pub struct NodeCapabilities {
     pub version: String,
     pub identity: IdentityInfo,
     pub discovery: DiscoveryInfo,
-    pub reference_discovery: ReferenceDiscoveryInfo,
     pub transports: TransportsInfo,
     pub execution: ExecutionInfo,
     pub limits: LimitsInfo,
@@ -24,21 +23,6 @@ pub struct IdentityInfo {
 #[derive(Debug, Serialize)]
 pub struct DiscoveryInfo {
     pub mode: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ReferenceDiscoveryInfo {
-    pub enabled: bool,
-    pub publish_enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    pub connected: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_register_at: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_heartbeat_at: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,7 +92,7 @@ pub struct ExecuteWasmRequest {
     pub payment: Option<ProvidedPayment>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeEventEnvelope {
     pub id: String,
     pub pubkey: String,
@@ -253,7 +237,6 @@ pub struct RuntimeSearchRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeProviderDetailsResponse {
-    pub discovery: DiscoveryNodeRecord,
     pub descriptor: SignedArtifact<DescriptorPayload>,
     pub offers: Vec<SignedArtifact<OfferPayload>>,
 }

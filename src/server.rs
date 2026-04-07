@@ -1,7 +1,7 @@
 use crate::{
     api,
     config::{NodeConfig, PaymentBackend},
-    discovery_client, settlement,
+    db, settlement,
     state::{self, AppState},
     tls, tor,
 };
@@ -67,37 +67,62 @@ enum ServiceRole {
 }
 
 pub async fn run_provider() -> Result<(), Box<dyn std::error::Error>> {
-    run(ServiceRole::Provider).await
+    run(ServiceRole::Provider, None).await
+}
+
+/// Start a Froglet provider node with a pre-built `AppState`.
+///
+/// Use this when the caller has already constructed and customized the state
+/// (e.g., to inject `builtin_services` for custom service handlers).  The
+/// provided state must already have `event_batch_writer` initialized.
+pub async fn run_provider_with_state(state: Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
+    run(ServiceRole::Provider, Some(state)).await
 }
 
 pub async fn run_runtime() -> Result<(), Box<dyn std::error::Error>> {
-    run(ServiceRole::Runtime).await
+    run(ServiceRole::Runtime, None).await
 }
 
-async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     tls::ensure_rustls_crypto_provider();
 
-    println!("\n=========================================");
-    println!(" 🐸 Froglet Node is Starting...");
-    println!("=========================================\n");
+    let (node_config, state) = if let Some(state) = prebuilt_state {
+        let config = state.config.clone();
+        (config, state)
+    } else {
+        println!("\n=========================================");
+        println!(" 🐸 Froglet Node is Starting...");
+        println!("=========================================\n");
 
-    let node_config = match NodeConfig::from_env() {
-        Ok(cfg) => {
-            info!("Network mode: {}", cfg.network_mode);
-            cfg
-        }
-        Err(e) => {
-            error!("{e}");
-            std::process::exit(1);
-        }
-    };
-    let state = match state::build_app_state(node_config.clone()) {
-        Ok(state) => state,
-        Err(error) => {
-            error!("{error}");
-            std::process::exit(1);
-        }
+        let node_config = match NodeConfig::from_env() {
+            Ok(cfg) => {
+                info!("Network mode: {}", cfg.network_mode);
+                cfg
+            }
+            Err(e) => {
+                error!("{e}");
+                std::process::exit(1);
+            }
+        };
+        let state = match state::build_app_state(node_config.clone()) {
+            Ok(state) => state,
+            Err(error) => {
+                error!("{error}");
+                std::process::exit(1);
+            }
+        };
+        // Initialize the write-coalescing event batch writer now that we have a
+        // tokio runtime.  `Arc::get_mut` is safe here because no clones exist yet.
+        let state = {
+            let mut state = state;
+            let db_clone = state.db.clone();
+            Arc::get_mut(&mut state)
+                .expect("no other Arc references at startup")
+                .event_batch_writer = Some(db::EventBatchWriter::spawn(db_clone));
+            state
+        };
+        (node_config, state)
     };
     info!("Node identity: {}", state.identity.node_id());
     info!(
@@ -286,6 +311,19 @@ async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>
             .expect("Failed to recover local runtime state");
     }
 
+    // Register with marketplace if configured (non-blocking — failures are logged, not fatal)
+    if service_role == ServiceRole::Provider && node_config.marketplace_url.is_some() {
+        let reg_state = state.clone();
+        tokio::spawn(async move {
+            // Small delay to let transport endpoints bind first
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            match api::register_with_marketplace(reg_state).await {
+                Ok(()) => {}
+                Err(error) => warn!("Marketplace registration failed (will retry on next start): {error}"),
+            }
+        });
+    }
+
     if service_role == ServiceRole::Provider
         && node_config.payment_backend == PaymentBackend::Lightning
     {
@@ -383,80 +421,6 @@ async fn run(service_role: ServiceRole) -> Result<(), Box<dyn std::error::Error>
                 })
             }),
         );
-    }
-
-    let discovery_publish_enabled = node_config
-        .reference_discovery
-        .as_ref()
-        .map(|discovery| discovery.publish)
-        .unwrap_or(false);
-    let discovery_required = node_config
-        .reference_discovery
-        .as_ref()
-        .map(|discovery| discovery.required)
-        .unwrap_or(false);
-    if service_role == ServiceRole::Provider && discovery_publish_enabled {
-        if discovery_required {
-            let initial_discovery_hash = match discovery_client::perform_initial_sync(state.clone())
-                .await
-            {
-                Ok(hash) => hash,
-                Err(e) => {
-                    warn!("Initial reference discovery sync failed: {e}");
-                    {
-                        let mut status = state.reference_discovery_status.lock().await;
-                        status.last_error = Some(e.clone());
-                    }
-                    error!(
-                        "Reference discovery is required but initial registration failed. Exiting."
-                    );
-                    std::process::exit(1);
-                }
-            };
-            let sync_state = state.clone();
-            let initial_discovery_hash = Arc::new(TokioMutex::new(Some(initial_discovery_hash)));
-            spawn_supervised_task(
-                "reference-discovery-sync-loop",
-                restart_policy,
-                Arc::new(move || {
-                    let sync_state = sync_state.clone();
-                    let initial_discovery_hash = initial_discovery_hash.clone();
-                    Box::pin(async move {
-                        let last_descriptor_hash =
-                            take_initial_hash_or_resync(sync_state.clone(), initial_discovery_hash)
-                                .await?;
-                        discovery_client::run_sync_loop(sync_state, last_descriptor_hash).await;
-                        Err("reference discovery sync loop exited unexpectedly".to_string())
-                    })
-                }),
-            );
-        } else {
-            let sync_state = state.clone();
-            spawn_supervised_task(
-                "reference-discovery-sync-loop",
-                restart_policy,
-                Arc::new(move || {
-                    let sync_state = sync_state.clone();
-                    Box::pin(async move {
-                        let last_descriptor_hash = match discovery_client::perform_initial_sync(
-                            sync_state.clone(),
-                        )
-                        .await
-                        {
-                            Ok(hash) => hash,
-                            Err(error) => {
-                                warn!("Initial reference discovery sync failed: {error}");
-                                let mut status = sync_state.reference_discovery_status.lock().await;
-                                status.last_error = Some(error);
-                                String::new()
-                            }
-                        };
-                        discovery_client::run_sync_loop(sync_state, last_descriptor_hash).await;
-                        Err("reference discovery sync loop exited unexpectedly".to_string())
-                    })
-                }),
-            );
-        }
     }
 
     std::future::pending::<()>().await;
@@ -636,20 +600,6 @@ async fn take_or_bind_listener(
     }
 }
 
-async fn take_initial_hash_or_resync(
-    state: Arc<AppState>,
-    initial_hash: Arc<TokioMutex<Option<String>>>,
-) -> Result<String, String> {
-    let pending_hash = {
-        let mut slot = initial_hash.lock().await;
-        slot.take()
-    };
-
-    match pending_hash {
-        Some(hash) => Ok(hash),
-        None => discovery_client::perform_initial_sync(state).await,
-    }
-}
 
 fn accept_error_is_transient(error: &std::io::Error) -> bool {
     if matches!(

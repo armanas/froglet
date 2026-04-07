@@ -1,0 +1,183 @@
+---
+title: Economic Model
+description: Formal analysis of froglet's agentic economy.
+---
+
+## Definitions
+
+Let $\mathcal{N}$ be the set of all froglet nodes. Each node $n \in \mathcal{N}$ has a secp256k1 keypair $(k_n, P_n)$ where $P_n = k_n \cdot G$.
+
+A **service** $s$ is characterized by:
+
+$$s = (\text{offer\_kind}, \text{runtime}, b_s, f_s, \mathbf{L}_s)$$
+
+where $b_s$ is the base fee, $f_s$ is the success fee, and $\mathbf{L}_s = (t_{\max}, m_{\max}, \phi_{\max})$ is the execution limit vector (time, memory, fuel).
+
+## The deal as a game
+
+A deal between requester $R$ and provider $P$ is a two-player sequential game:
+
+$$\text{Quote} \xrightarrow{\text{P signs}} \text{Deal} \xrightarrow{\text{R signs}} \text{Execute} \xrightarrow{\text{P runs}} \text{Receipt} \xrightarrow{\text{P signs}}$$
+
+### Payoffs
+
+Let $v$ be the value to the requester, $c$ the provider's cost, $p = b_s + f_s$ the total price.
+
+| Outcome | Requester | Provider |
+|---------|-----------|----------|
+| Success | $v - p$ | $p - c$ |
+| Failure | $-b_s$ | $b_s - c$ |
+| No deal | $0$ | $0$ |
+
+### Participation constraints
+
+Requester participates if $v \geq b_s + f_s$. Provider participates if $b_s + f_s \geq c$. Gains from trade must be positive: $v - c > 0$.
+
+## Two-leg settlement analysis
+
+Let $q \in [0, 1]$ be the probability the provider successfully executes.
+
+**Requester expected payoff:**
+
+$$\mathbb{E}[\pi_R] = q(v - b_s - f_s) + (1-q)(-b_s) = qv - b_s - qf_s$$
+
+**Provider expected payoff:**
+
+$$\mathbb{E}[\pi_P] = q(b_s + f_s - c) + (1-q)(b_s - c) = b_s + qf_s - c$$
+
+### Incentive compatibility
+
+The provider is incentivized to maximize $q$:
+
+$$\frac{\partial \mathbb{E}[\pi_P]}{\partial q} = f_s > 0$$
+
+The success fee acts as the provider's marginal incentive for reliability. Higher $f_s$ = stronger incentives for quality execution.
+
+### Interactive: provider profit vs quality
+
+Drag the sliders to see how fees affect the provider's incentive to deliver quality:
+
+<div style="margin:20px 0">
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:#9ca3af">
+  <label>base fee: <span id="bf-val" style="color:#f87171;font-family:'SF Mono',monospace">3</span> sat <input id="bf-slider" type="range" min="0" max="10" value="3" style="width:100px;accent-color:#f87171;vertical-align:middle" /></label>
+  <label>success fee: <span id="sf-val" style="color:#4ade80;font-family:'SF Mono',monospace">5</span> sat <input id="sf-slider" type="range" min="0" max="15" value="5" style="width:100px;accent-color:#4ade80;vertical-align:middle" /></label>
+  <label>cost: <span id="c-val" style="color:#fbbf24;font-family:'SF Mono',monospace">2</span> sat <input id="c-slider" type="range" min="0" max="8" value="2" style="width:100px;accent-color:#fbbf24;vertical-align:middle" /></label>
+</div>
+<canvas id="profit-chart" width="600" height="220" style="width:100%;max-width:600px;height:220px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
+<p style="font-size:11px;color:#6b7280;margin-top:6px">X = provider quality (q). Green = provider profit. Blue = requester payoff (v=10). The steeper the green line, the stronger the incentive to be reliable.</p>
+</div>
+
+<script>{`
+(function(){
+  const bfs=document.getElementById('bf-slider'),sfs=document.getElementById('sf-slider'),cs=document.getElementById('c-slider');
+  const bfv=document.getElementById('bf-val'),sfv=document.getElementById('sf-val'),cv=document.getElementById('c-val');
+  const c=document.getElementById('profit-chart'),ctx=c.getContext('2d');
+  const v=10;
+  function draw(){
+    const bf=+bfs.value,sf=+sfs.value,cost=+cs.value;
+    bfv.textContent=bf;sfv.textContent=sf;cv.textContent=cost;
+    const w=c.width,h=c.height,pad=20,ph=h-2*pad;
+    ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
+    for(let y=pad;y<=h-pad;y+=ph/4){ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();}
+    // Zero line
+    const zeroY=pad+ph/2;
+    ctx.strokeStyle='#30363d';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad,zeroY);ctx.lineTo(w-pad,zeroY);ctx.stroke();
+    // Labels
+    ctx.font='9px system-ui';ctx.fillStyle='#4b5563';ctx.textAlign='center';
+    ctx.fillText('quality (q) →',w/2,h-2);
+    ctx.textAlign='left';ctx.fillText('profit',2,pad-4);
+    ctx.fillText('0',pad-14,zeroY+3);ctx.fillText('1.0',w-pad+2,h-pad+3);ctx.fillText('0.0',pad-2,h-pad+3);
+
+    const maxVal=Math.max(bf+sf,v,10);
+    function yOf(val){return zeroY-val*(ph/2)/maxVal;}
+
+    // Provider profit: E[π_P] = bf + q*sf - cost
+    ctx.beginPath();
+    for(let i=0;i<=100;i++){
+      const q=i/100, x=pad+i*(w-2*pad)/100;
+      const profit=bf+q*sf-cost;
+      const y=yOf(profit);
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.stroke();
+
+    // Requester payoff: E[π_R] = q*v - bf - q*sf
+    ctx.beginPath();
+    for(let i=0;i<=100;i++){
+      const q=i/100, x=pad+i*(w-2*pad)/100;
+      const payoff=q*v-bf-q*sf;
+      const y=yOf(payoff);
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle='#93c5fd';ctx.lineWidth=2;ctx.stroke();
+
+    // Legend
+    ctx.font='10px system-ui';
+    ctx.fillStyle='#4ade80';ctx.textAlign='left';ctx.fillText('provider profit',pad+8,pad+12);
+    ctx.fillStyle='#93c5fd';ctx.fillText('requester payoff (v='+v+')',pad+8,pad+24);
+    ctx.fillStyle='#fbbf24';ctx.fillText('slope = success_fee = '+sf+' (incentive strength)',pad+8,pad+36);
+  }
+  bfs.addEventListener('input',draw);sfs.addEventListener('input',draw);cs.addEventListener('input',draw);
+  draw();
+})();
+`}</script>
+
+### Optimal fee structure
+
+With total price $\bar{p}$ fixed, the equilibrium split for a risk-neutral provider with reliability $q^*$:
+
+$$b_s^* = \frac{c}{1 + q^*}, \quad f_s^* = \bar{p} - b_s^*$$
+
+This ensures the provider breaks even on failed executions while the success fee captures the surplus.
+
+## Network economics
+
+### Marketplace viability
+
+The marketplace charges $(b_M, f_M)$ per search. With query rate $\lambda$ and $N_P$ indexed providers:
+
+$$\text{Rev}_M = \lambda \cdot (b_M + q_M f_M)$$
+
+$$C_M = c_{\text{idx}} \cdot N_P + c_{\text{qry}} \cdot \lambda$$
+
+Viable when $\text{Rev}_M > C_M$.
+
+### Provider discovery value
+
+A provider's expected value from marketplace registration:
+
+$$\Delta V_P = \lambda_M \cdot q_P \cdot (b_P + f_P - c_P) - \text{registration cost}$$
+
+Rational when $\Delta V_P > 0$.
+
+### Network effects
+
+The marketplace exhibits cross-side network effects. Steady-state:
+
+$$N_P^* = g_P(N_R^*), \quad N_R^* = g_R(N_P^*)$$
+
+where $g_P$ and $g_R$ are increasing. Two equilibria: trivial $(0, 0)$ and a non-trivial fixed point where both sides participate.
+
+## Welfare analysis
+
+Total welfare:
+
+$$W = \sum_{\text{deals}} (v_i - c_i) - \text{transaction costs}$$
+
+The protocol maximizes $W$ by:
+
+1. **Minimizing information asymmetry** — signed receipts make quality observable
+2. **Eliminating counterparty risk** — HTLCs remove the need for trust
+3. **Reducing search costs** — marketplace aggregates information
+4. **Enabling price discovery** — competition drives prices toward cost
+
+In the limit of a large market:
+
+$$\lim_{|\mathcal{N}| \to \infty} p_s \to c_s + \epsilon$$
+
+Perfect competition drives prices toward cost, with the marketplace extracting the remaining friction as query fees.
+
+:::tip[The economic conclusion]
+Froglet creates a market where trust is computable from signed evidence, incentives are enforced by cryptography, and the equilibrium price reflects the true cost of computation plus the provider's reliability premium.
+:::

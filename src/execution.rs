@@ -9,54 +9,28 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::future::Future;
+use std::pin::Pin;
+
+pub use froglet_protocol::ExecutionRuntime;
+
+/// A handler for a builtin service registered on this node.
+///
+/// Implementations receive JSON input from the deal workload and return JSON
+/// output that becomes the deal result.  Handlers capture their own state
+/// (database pools, caches, etc.) at construction time.
+pub trait BuiltinServiceHandler: Send + Sync + 'static {
+    fn execute<'a>(
+        &'a self,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
+}
 
 pub const WORKLOAD_KIND_EXECUTION_V1: &str = "compute.execution.v1";
 pub const CONTRACT_BUILTIN_EVENTS_QUERY_V1: &str = "froglet.builtin.events_query.v1";
 pub const CONTRACT_CONTAINER_JSON_V1: &str = "froglet.container.stdin_json.v1";
 pub const CONTRACT_PYTHON_HANDLER_JSON_V1: &str = "froglet.python.handler_json.v1";
 pub const CONTRACT_PYTHON_SCRIPT_JSON_V1: &str = "froglet.python.script_json.v1";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionRuntime {
-    Any,
-    Wasm,
-    Python,
-    Container,
-    Builtin,
-    TeeService,
-    TeeWasm,
-    TeePython,
-}
-
-impl ExecutionRuntime {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value.trim() {
-            "any" => Ok(Self::Any),
-            "wasm" => Ok(Self::Wasm),
-            "python" => Ok(Self::Python),
-            "container" => Ok(Self::Container),
-            "builtin" => Ok(Self::Builtin),
-            "tee.service" | "tee_service" => Ok(Self::TeeService),
-            "tee.wasm" | "tee_wasm" => Ok(Self::TeeWasm),
-            "tee.python" | "tee_python" => Ok(Self::TeePython),
-            other => Err(format!("unsupported runtime: {other}")),
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Any => "any",
-            Self::Wasm => "wasm",
-            Self::Python => "python",
-            Self::Container => "container",
-            Self::Builtin => "builtin",
-            Self::TeeService => "tee.service",
-            Self::TeeWasm => "tee.wasm",
-            Self::TeePython => "tee.python",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -783,6 +757,35 @@ impl ExecutionWorkload {
             oci_reference: None,
             oci_digest: None,
             builtin_name: Some("events.query".to_string()),
+        })
+    }
+
+    pub fn builtin_service(name: String, input: Value) -> Result<Self, String> {
+        let input_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&input).map_err(|error| error.to_string())?);
+        Ok(Self {
+            schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
+            workload_kind: name.clone(),
+            runtime: ExecutionRuntime::Builtin,
+            package_kind: ExecutionPackageKind::Builtin,
+            entrypoint: ExecutionEntrypoint {
+                kind: ExecutionEntrypointKind::Builtin,
+                value: name.clone(),
+            },
+            contract_version: format!("froglet.builtin.{name}.v1"),
+            input_format: wasm::JCS_JSON_FORMAT.to_string(),
+            input_hash,
+            requested_access: Vec::new(),
+            security: ExecutionSecurity::default(),
+            mounts: Vec::new(),
+            input,
+            module_hash: None,
+            module_bytes_hex: None,
+            source_hash: None,
+            inline_source: None,
+            oci_reference: None,
+            oci_digest: None,
+            builtin_name: Some(name),
         })
     }
 

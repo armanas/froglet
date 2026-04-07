@@ -306,7 +306,6 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [ADAPTERS.md](docs/ADAPTERS.md) | Payment and network adapters |
 | [RUNTIME.md](docs/RUNTIME.md) | Runtime internals |
 | [SERVICE_BINDING.md](docs/SERVICE_BINDING.md) | Service binding model |
-| [OPERATOR.md](docs/OPERATOR.md) | Operator control plane |
 | [OPENCLAW.md](docs/OPENCLAW.md) | OpenClaw integration |
 | [NEMOCLAW.md](docs/NEMOCLAW.md) | NemoClaw integration |
 | [KERNEL.md](docs/KERNEL.md) | Protocol kernel spec |

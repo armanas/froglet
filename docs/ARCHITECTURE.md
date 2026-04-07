@@ -3,143 +3,274 @@
 Status: non-normative supporting document
 
 [`KERNEL.md`](KERNEL.md) is the kernel contract.
-This document describes how the rest of the system is layered around that kernel.
+This document describes how the system is layered around that kernel.
 
-## 1. Layering
+## 1. What Froglet Is
 
-Froglet is intentionally split into four layers:
+Froglet is three things:
 
-- economic kernel
-- adapters
-- bot-facing localhost runtime
-- higher-layer discovery, indexers, brokers, operators, and bot integrations
+1. **Identity** — a secp256k1 keypair generated locally. Your public key is your
+   identity. Every artifact you produce is signed. Nobody grants or revokes this.
+   Linked identities (Nostr) provide immutable, publicly verifiable identity
+   publication.
 
-The kernel is the smallest irreversible surface.
-Everything above it may evolve without changing how hashes, signatures, deals, or receipts work.
+2. **Execution** — a signed evidence chain. Descriptor, Offer, Quote, Deal,
+   Receipt. A provider describes what it offers, a requester deals for it, the
+   provider executes and signs a receipt. The entire chain is independently
+   verifiable.
 
-## 2. Economic Kernel
+3. **Settlement** — Lightning Network. Base fee locks on admission, success fee
+   settles on completion. Cryptographically bound to the deal. Or free.
 
-The kernel is the part that must remain stable and independently reimplementable.
+Everything else is either an adapter that makes the core usable in a specific
+environment, or a service built on top of the protocol.
 
-It contains:
+## 2. Layering
 
-- the signed artifact envelope
-- canonical serialization, hashing, and signing
-- the `Descriptor`, `Offer`, `Quote`, `Deal`, and `Receipt` payloads
-- cross-artifact commitments
-- canonical deal, execution, and settlement states
-- Lightning settlement binding rules
-- the signed execution/request commitments that every execution profile must use
+```
+┌─────────────────────────────────────────────────────┐
+│                    Services                         │
+│   marketplace, brokers, reputation, curated lists   │
+│   (built ON the protocol, not part of it)           │
+├─────────────────────────────────────────────────────┤
+│                  Node Runtime                       │
+│   HTTP server, deal tracking, jobs API,             │
+│   storage, auth, config                             │
+├─────────────────────────────────────────────────────┤
+│                    Adapters                          │
+│   WASM sandbox, Python, Container, LND,             │
+│   Tor, TLS, Nostr, TEE/confidential                 │
+├─────────────────────────────────────────────────────┤
+│              Economic Kernel                         │
+│   signed envelope, canonical JSON, hashing,         │
+│   signing, verification, artifact types,            │
+│   settlement state machine                          │
+└─────────────────────────────────────────────────────┘
+```
 
-The current codebase still ships Wasm reference profiles, but the product
-model is broader:
+Each layer depends only on the layers below it. The kernel is the smallest
+irreversible surface. Everything above it may evolve without changing how
+hashes, signatures, deals, or receipts work.
 
-- a predefined service
-- a predefined data service
-- open-ended compute
+## 3. Economic Kernel
 
-are all the same Froglet primitive with different product-layer bindings.
+The kernel must remain stable and independently reimplementable.
 
-## 3. Adapters
+It lives in the `froglet-protocol` crate (open source) and contains:
 
-Adapters make the kernel usable in real environments without becoming part of the trust boundary.
+- the signed artifact envelope (`SignedArtifact<T>`)
+- canonical JSON serialization (RFC 8785 JCS)
+- SHA-256 hashing and BIP340 Schnorr signing
+- the six artifact types: Descriptor, Offer, Quote, Deal, InvoiceBundle, Receipt
+- cross-artifact hash commitments
+- verification rules
+- the `ExecutionRuntime` enum
 
-Examples:
+The kernel does not know about HTTP, databases, sandboxes, or any specific
+execution environment. It is pure types, signing, and verification.
 
-- HTTPS and Tor transport
-- Lightning node drivers such as mock mode or LND REST
-- Nostr publication and relay behavior
-- discovery bootstrap formats
-- execution-material delivery such as module uploads, interpreted source
-  bundles, archive bundles such as zip files, or container/image references
-- registry pulls for runtime-specific packaged workloads
+## 4. Adapters
 
-Adapters may change, and implementations may support more than one adapter, as long as they preserve kernel semantics.
+Adapters make the kernel usable in real environments without becoming part of
+the trust boundary.
 
-## 4. Bot Runtime
+| Adapter | Purpose |
+|---------|---------|
+| WASM sandbox | Sandboxed execution with fuel, memory, and I/O limits |
+| Python / Container | Alternative execution runtimes |
+| LND REST | Lightning invoice creation and settlement |
+| Tor | Anonymous transport via hidden services |
+| TLS | HTTPS transport with certificate management |
+| Nostr | Linked identity publication to Nostr relays |
+| TEE / Confidential | Trusted execution environment attestation and encryption |
 
-The bot runtime is the primary product surface for agent developers.
+Adapters may change, and implementations may support more than one, as long as
+they preserve kernel semantics.
 
-Its purpose is to make the signed kernel usable through a simpler localhost
-workflow:
+## 5. Node Runtime
 
-- search
-- quote
-- deal
-- wait
-- accept or reject
-- receipt
+The node runtime is the product surface. It takes the kernel and adapters and
+makes them usable through HTTP endpoints:
 
-At the product surface, this should feel like one thing:
+- **Provider API** (`/v1/provider/*`) — quotes, deals, offers, feed, artifacts
+- **Runtime API** (`/v1/runtime/*`) — deal creation, status polling, acceptance
+- **Jobs API** (`/v1/node/jobs`) — async execution with polling
 
-- discover a resource
-- invoke a named service
-- invoke a data service
-- send open-ended compute
+The runtime handles deal state tracking, storage (SQLite), pricing, auth,
+and the execution dispatch that routes workloads to the correct adapter.
 
-Those are UX distinctions over the same underlying deal flow.
+### BuiltinServiceHandler
 
-The runtime may expose local handles, helper endpoints, polling views,
-wallet-facing payment intents, and compatibility routes.
-Those are product decisions, not protocol commitments.
-Longer-running agent workflows should stay above the runtime and reuse ordinary
-Froglet deals rather than widening the kernel.
+The `BuiltinServiceHandler` trait is how services plug into the node:
 
-## 5. Reference Discovery and Higher Layers
+```rust
+pub trait BuiltinServiceHandler: Send + Sync + 'static {
+    fn execute(&self, input: Value) -> Future<Result<Value, String>>;
+}
+```
 
-Froglet's long-term discovery and commercial product layers should be composed
-from ordinary Froglet services rather than privileged protocol actors.
+A node registers handlers in `AppState.builtin_services` at startup. When a
+deal targets a builtin offer, the dispatch calls the handler. JSON in, JSON out.
+The handler owns its state (database pools, caches, HTTP clients).
 
-Examples:
+This is the same mechanism for all services — marketplace, reputation engines,
+data services, anything built on Froglet.
 
-- indexers over artifact feeds
-- catalogs built from indexed descriptors and offers
-- brokers that aggregate or route quotes
-- reputation services that interpret receipt history
-- marketplaces that publish search, listing, or routing services
-- resource providers that publish named services, data services, or open-ended
-  compute through the same deal primitive
+## 6. Services
 
-These services consume signed artifacts.
-They are not themselves the source of truth.
-The core repo defines the boundary and shared contract; product-specific
-planning should live with the owning service or deployment. Local ignored
-incubation may exist under `private_work/`, but that workspace is not part of
-the public Froglet release surface.
+Services are Froglet providers that serve domain-specific queries or
+computations through the standard deal flow.
 
-## 6. What Stays Out of the Kernel
+The marketplace is the first service. It:
 
-The kernel should not hardwire:
+- indexes provider descriptors and offers from the network
+- serves search, provider details, and trust queries
+- accepts provider registrations
+- is itself discoverable and invocable through the deal flow
 
-- a relay network as the source of truth
+Services are not privileged protocol actors. They consume signed artifacts.
+They are not the source of truth — the signed artifacts are.
+
+### How a Service Works
+
+```
+1. Service starts a Froglet node
+2. Registers BuiltinServiceHandler(s) in AppState
+3. Publishes offers for its service kinds
+4. Serves deals: requester → quote → deal → execute handler → receipt
+```
+
+The deal flow is identical to WASM compute or any other execution. The only
+difference is the handler runs in-process instead of in a sandbox.
+
+## 7. Network Model
+
+```
+Node B (provider)                 Node C (marketplace)
+
+private by default                a Froglet provider
+generates identity locally        indexes the network
+publishes to marketplace          serves search as deals
+  (optional, explicit)
+      │                                  │
+      │   marketplace.register deal      │
+      ├─────────────────────────────────►│
+      │                                  │
+                                         │
+Node A (requester)                       │
+                                         │
+      │   marketplace.search deal        │
+      ├─────────────────────────────────►│
+      │   results: [Node B, ...]         │
+      │◄─────────────────────────────────┤
+      │                                  │
+      │          direct deal             │
+      ├─────────────────────────────────►│ Node B
+      │                                  │
+```
+
+Two paths, same protocol:
+
+- **Via marketplace** — provider registers, requester searches, then deals
+  directly with the found provider
+- **Direct** — requester knows the provider URL, deals without marketplace
+
+Nodes are private by default. They are not known publicly unless they
+explicitly register with a marketplace.
+
+## 8. Crate Structure
+
+```
+froglet-protocol/        open source kernel
+  canonical_json          RFC 8785 canonicalization
+  crypto                  secp256k1, SHA-256
+  protocol/kernel         SignedArtifact, all payload types, verification
+  protocol/publication    CuratedList types
+  ExecutionRuntime        execution runtime enum
+
+froglet/                 open source node framework
+  protocol/workload       WorkloadSpec (re-exports kernel from froglet-protocol)
+  execution               BuiltinServiceHandler trait, workload types
+  identity                keypair generation, node_id
+  settlement              Lightning two-leg model
+  api/                    HTTP routes for deal flow
+  server                  HTTP server, supervision
+  db                      SQLite storage
+  deals, jobs             deal tracking, async execution
+  sandbox, wasm*          WASM execution adapter
+  confidential            TEE/encrypted execution
+  nostr                   linked identity publication
+  lnd                     Lightning driver
+  tls, tor                transport adapters
+
+froglet-marketplace/     closed source first service
+  handlers/               search, provider, receipts, register
+  indexer/                feed polling, artifact projection
+  db                      Postgres connection pool
+  config                  marketplace-specific config
+```
+
+`froglet-protocol` is the single source of truth for kernel types. `froglet`
+re-exports from it. No duplication.
+
+## 9. Deal Flow
+
+Every interaction follows the same signed evidence chain:
+
+```
+Descriptor ──► Offer ──► Quote ──► Deal ──► Receipt
+   (who)        (what)    (price)   (commit)  (proof)
+```
+
+1. **Descriptor** — provider declares identity, capabilities, transport endpoints
+2. **Offer** — provider declares a specific service with pricing and execution profile
+3. **Quote** — provider prices a specific workload for a specific requester
+4. **Deal** — requester commits to the quote (signed by requester)
+5. **Receipt** — provider signs proof of execution outcome and settlement state
+
+Each artifact references the previous one by hash. The chain is independently
+verifiable by any party holding the artifacts.
+
+### Settlement
+
+For paid deals, an InvoiceBundle is created between Quote and Deal:
+
+```
+Quote ──► InvoiceBundle ──► Deal ──► Receipt
+            base_fee          │
+            success_fee       │
+                              ▼
+                        execution
+```
+
+- **Base fee** locks on deal admission (prevents free-riding)
+- **Success fee** settles only on successful execution (fair to requester)
+- Both are Lightning HTLCs with cryptographic preimage binding
+
+Free deals (`settlement_method: "none"`) skip the InvoiceBundle entirely.
+
+## 10. What Stays Out of the Kernel
+
+The kernel does not hardwire:
+
+- a specific marketplace or discovery mechanism
 - a single transport stack
 - a single storage engine
 - runtime HTTP endpoint shapes
 - a single execution runtime or packaging format
-- reference-discovery, ranking, or broker logic
-- archive bundle layout
+- ranking, broker, or reputation logic
+- archive or deployment layouts
 - long-running session semantics
-- cloud-provider-specific deployment behavior
 
 That boundary is deliberate.
 The best core implementation is the smallest irreversible surface.
 
-## 7. Code Layout
+## 11. Code Layout
 
-The repository mirrors that layering in code:
-
-- `src/protocol/`
-  - `kernel.rs` contains the signed artifact envelope, kernel payloads, and sign/hash/verify logic.
-  - `workload.rs` contains `WorkloadSpec` and its request-hash and service-id helpers.
-  - `publication.rs` contains curated-list publication payloads.
-- `src/api/`
-  - `mod.rs` owns router assembly, shared HTTP helpers, auth wrappers, and cross-domain orchestration helpers.
-  - `http_catalog.rs` serves descriptors, offers, services, feed pages, and artifact fetch.
-  - `http_discovery.rs` serves runtime discovery/search and provider-detail lookup.
-  - `http_deals.rs` serves quote/deal creation and runtime deal/archive entrypoints.
-  - `http_settlement.rs` serves wallet, payment-intent, acceptance, bundle, and verification endpoints.
-  - `http_execution.rs` serves immediate execution and jobs APIs.
-  - `http_events.rs` serves event publish/query and verification endpoints.
-  - `http_confidential.rs` serves confidential profile and session endpoints.
-- `src/provider_resolution.rs` isolates endpoint normalization, private-network checks, and runtime/provider URL rewriting.
-- `src/provider_catalog.rs` isolates the shared provider publication and service-catalog seam used by the operator and API layers.
+- `src/protocol/` — re-exports kernel types from `froglet-protocol`, plus `workload.rs`
+- `src/api/` — HTTP routes organized by domain (catalog, deals, settlement, execution, events, confidential)
+- `src/execution.rs` — `BuiltinServiceHandler` trait, `ExecutionWorkload`, runtime/package enums
+- `src/settlement.rs` — `SettlementDriver` trait, Lightning invoice bundle lifecycle
+- `src/identity.rs` — secp256k1 key loading and generation
+- `src/server.rs` — HTTP server bootstrap, `run_provider()` and `run_provider_with_state()`
+- `src/provider_catalog.rs` — offer publication and service catalog

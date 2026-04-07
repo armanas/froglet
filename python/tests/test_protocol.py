@@ -130,11 +130,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         )
         self.assertEqual(
             descriptor["payload"]["capabilities"]["service_kinds"],
-            ["compute.wasm.v1", "events.query"],
+            ["compute.execution.v1", "compute.wasm.v1", "events.query"],
         )
         self.assertEqual(
             descriptor["payload"]["capabilities"]["execution_runtimes"],
-            ["builtin", "wasm"],
+            ["any", "builtin", "wasm"],
         )
         linked_identities = descriptor["payload"]["linked_identities"]
         self.assertEqual(len(linked_identities), 1)
@@ -146,11 +146,11 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
         self.assertNotEqual(linked_identities[0]["identity"], descriptor["signer"])
 
         offers = offers_payload["offers"]
-        self.assertEqual(len(offers), 2)
+        self.assertEqual(len(offers), 3)
         self.assertTrue(all(verify_signed_artifact(offer) for offer in offers))
         self.assertEqual(
             {offer["payload"]["offer_id"] for offer in offers},
-            {"events.query", "execute.compute"},
+            {"events.query", "execute.compute", "execute.compute.generic"},
         )
 
         self.assertEqual(first_page["cursor_type"], "artifact_sequence")

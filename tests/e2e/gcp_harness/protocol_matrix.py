@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import secrets
 import ssl
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from test_support import (  # noqa: E402
     sha256_hex,
     verify_signed_artifact,
 )
+
+RUN_NONCE = secrets.token_hex(6)
 
 
 class RemoteNode:
@@ -155,6 +158,8 @@ async def check_free_compute_chain(session: aiohttp.ClientSession, free_seed: di
 
     _, descriptor = await request_json(session, "GET", provider.url("/v1/provider/descriptor"))
     _, offers = await request_json(session, "GET", provider.url("/v1/provider/offers"))
+    descriptor_artifact = descriptor.get("document", descriptor)
+    offer_artifacts = [offer.get("offer", offer) for offer in offers.get("offers", [])]
     quote = await create_protocol_quote(
         session,
         provider,
@@ -168,15 +173,15 @@ async def check_free_compute_chain(session: aiohttp.ClientSession, free_seed: di
         quote=quote,
         request=build_wasm_request(VALID_WASM_HEX),
         requester_secret_key=requester_key,
-        idempotency_key="gcp-free-compute",
+        idempotency_key=f"gcp-free-compute-{RUN_NONCE}",
     )
 
     terminal = created
     if terminal.get("status") not in {"succeeded", "failed"}:
         terminal = await wait_for_deal(session, provider, created["deal_id"], {"succeeded", "failed"})
     assert terminal["status"] == "succeeded"
-    assert verify_signed_artifact(descriptor["document"])
-    assert all(verify_signed_artifact(offer["offer"]) for offer in offers["offers"])
+    assert verify_signed_artifact(descriptor_artifact)
+    assert all(verify_signed_artifact(offer) for offer in offer_artifacts)
     assert verify_signed_artifact(quote)
     assert verify_signed_artifact(terminal["deal"])
     assert verify_signed_artifact(terminal["receipt"])
@@ -200,8 +205,8 @@ async def check_free_compute_chain(session: aiohttp.ClientSession, free_seed: di
 
     return {
         "requester_id": requester_id,
-        "descriptor_hash": descriptor["document"]["hash"],
-        "offer_ids": [offer["offer"]["payload"]["offer_id"] for offer in offers["offers"]],
+        "descriptor_hash": descriptor_artifact["hash"],
+        "offer_ids": [offer["payload"]["offer_id"] for offer in offer_artifacts],
         "quote_hash": quote["hash"],
         "deal_hash": terminal["deal"]["hash"],
         "receipt_hash": terminal["receipt"]["hash"],
@@ -231,7 +236,7 @@ async def check_mock_lightning(session: aiohttp.ClientSession, inventory: dict, 
         quote=quote,
         request=build_wasm_request(VALID_WASM_HEX),
         requester_secret_key=requester_key,
-        idempotency_key="gcp-mock-lightning",
+        idempotency_key=f"gcp-mock-lightning-{RUN_NONCE}",
         success_payment_hash=success_payment_hash,
     )
     assert created["status"] == "payment_pending"
@@ -360,7 +365,7 @@ async def check_restart_recovery(
     for _ in range(120):
         try:
             _, response = await request_json(session, "GET", provider.url("/health"))
-            if response.get("ok") is True:
+            if response.get("status") == "ok":
                 break
         except Exception:
             pass

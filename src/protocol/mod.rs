@@ -1,7 +1,4 @@
-mod kernel;
-mod publication;
-mod workload;
+pub use froglet_protocol::protocol::*;
 
-pub use kernel::*;
-pub use publication::*;
+mod workload;
 pub use workload::*;

@@ -11,8 +11,8 @@ use froglet::{
     api,
     confidential::ConfidentialConfig,
     config::{
-        DiscoveryMode, IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode,
-        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, ReferenceDiscoveryConfig,
+        IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode,
+        NetworkMode, NodeConfig, PaymentBackend, PricingConfig,
         StorageConfig, WasmConfig,
     },
     crypto,
@@ -23,7 +23,7 @@ use froglet::{
     pricing::PricingTable,
     protocol::{self, DealPayload, ExecutionLimits, QuotePayload, WorkloadSpec, verify_artifact},
     settlement::{self, BuildLightningInvoiceBundleRequest},
-    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
+    state::{AppState, TransportStatus},
 };
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use serde::{Deserialize, Serialize};
@@ -464,16 +464,9 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
-        discovery_mode: DiscoveryMode::None,
         identity: IdentityConfig {
             auto_generate: true,
         },
-        reference_discovery: Some(ReferenceDiscoveryConfig {
-            url: "http://localhost".to_string(),
-            publish: false,
-            required: false,
-            heartbeat_interval_secs: 30,
-        }),
         pricing: PricingConfig {
             events_query: 10,
             execute_wasm: 30,
@@ -511,6 +504,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             policy: None,
             session_ttl_secs: 300,
         },
+        marketplace_url: None,
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -529,9 +523,6 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
     AppState {
         db: pool,
         transport_status: Arc::new(Mutex::new(TransportStatus::from_config(&node_config))),
-        reference_discovery_status: Arc::new(Mutex::new(ReferenceDiscoveryStatus::from_config(
-            &node_config,
-        ))),
         wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
@@ -548,6 +539,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: Some(Arc::new(lnd_rest_client)),
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
+        event_batch_writer: None,
+        builtin_services: std::collections::HashMap::new(),
     }
 }
 

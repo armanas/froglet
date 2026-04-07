@@ -15,15 +15,12 @@ use froglet::{
     canonical_json,
     confidential::ConfidentialConfig,
     config::{
-        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, ReferenceDiscoveryConfig, StorageConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
     },
     crypto,
     db::DbPool,
     deals::DealRecord,
-    discovery::{
-        DiscoveryNodeRecord, DiscoverySearchResponse, NodeDescriptor, TransportDescriptor,
-    },
     execution::ExecutionRuntime,
     jobs::FaaSDescriptor,
     pricing::ServicePriceInfo,
@@ -33,7 +30,7 @@ use froglet::{
         ReceiptPayload, ReceiptSettlementLeg, ReceiptSettlementRefs, SignedArtifact, WorkloadSpec,
     },
     requester_deals::RequesterDealRecord,
-    state::{AppState, ReferenceDiscoveryStatus, TransportStatus},
+    state::{AppState, TransportStatus},
     wasm::{
         ComputeWasmWorkload, FROGLET_SCHEMA_V1, JCS_JSON_FORMAT, WASM_MODULE_FORMAT,
         WASM_RUN_JSON_ABI_V1, WASM_SUBMISSION_TYPE_V1, WORKLOAD_KIND_COMPUTE_WASM_V1,
@@ -111,7 +108,7 @@ fn build_runtime_request(provider: RuntimeProviderRef) -> RuntimeCreateDealReque
 }
 
 fn create_test_state_with_identity_seed(
-    reference_discovery_url: Option<String>,
+    _reference_discovery_url: Option<String>,
     identity_seed: Option<[u8; 32]>,
 ) -> AppState {
     let temp_dir = unique_temp_dir("runtime-routes");
@@ -130,16 +127,9 @@ fn create_test_state_with_identity_seed(
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
-        discovery_mode: DiscoveryMode::Reference,
         identity: IdentityConfig {
             auto_generate: true,
         },
-        reference_discovery: reference_discovery_url.map(|url| ReferenceDiscoveryConfig {
-            url,
-            publish: true,
-            required: false,
-            heartbeat_interval_secs: 30,
-        }),
         pricing: PricingConfig {
             events_query: 0,
             execute_wasm: 0,
@@ -177,6 +167,7 @@ fn create_test_state_with_identity_seed(
             policy: None,
             session_ttl_secs: 300,
         },
+        marketplace_url: None,
     };
 
     if let Some(seed) = identity_seed {
@@ -196,9 +187,6 @@ fn create_test_state_with_identity_seed(
         transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
             &node_config,
         ))),
-        reference_discovery_status: Arc::new(tokio::sync::Mutex::new(
-            ReferenceDiscoveryStatus::from_config(&node_config),
-        )),
         wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
         config: node_config,
         identity: Arc::new(identity),
@@ -218,6 +206,8 @@ fn create_test_state_with_identity_seed(
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
+        event_batch_writer: None,
+        builtin_services: std::collections::HashMap::new(),
     }
 }
 
@@ -328,11 +318,6 @@ impl ProviderState {
     }
 }
 
-#[derive(Clone)]
-struct DiscoveryState {
-    record: DiscoveryNodeRecord,
-}
-
 #[derive(Debug, Deserialize)]
 struct RuntimeCreateDealResponseView {
     provider_id: String,
@@ -355,7 +340,6 @@ struct RuntimeAcceptDealResponseView {
 
 #[derive(Debug, Deserialize)]
 struct RuntimeProviderDetailsResponseView {
-    discovery: DiscoveryNodeRecord,
     descriptor: SignedArtifact<DescriptorPayload>,
     offers: Vec<SignedArtifact<OfferPayload>>,
 }
@@ -592,14 +576,6 @@ fn provider_router(state: Arc<ProviderState>) -> Router {
         .with_state(state)
 }
 
-fn discovery_router(state: Arc<DiscoveryState>) -> Router {
-    Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/v1/discovery/search", post(discovery_search))
-        .route("/v1/discovery/providers/:node_id", get(discovery_provider))
-        .with_state(state)
-}
-
 async fn provider_descriptor(State(state): State<Arc<ProviderState>>) -> impl IntoResponse {
     let mut descriptor = state.descriptor.clone();
     if state.tamper_descriptor {
@@ -768,29 +744,6 @@ async fn provider_accept(
     (StatusCode::OK, Json(record)).into_response()
 }
 
-async fn discovery_search(State(state): State<Arc<DiscoveryState>>) -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(DiscoverySearchResponse {
-            nodes: vec![state.record.clone()],
-        }),
-    )
-}
-
-async fn discovery_provider(
-    State(state): State<Arc<DiscoveryState>>,
-    Path(node_id): Path<String>,
-) -> impl IntoResponse {
-    if state.record.descriptor.node_id != node_id {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "node not found" })),
-        )
-            .into_response();
-    }
-    (StatusCode::OK, Json(state.record.clone())).into_response()
-}
-
 struct TestServer {
     base_url: String,
     join_handle: JoinHandle<()>,
@@ -863,58 +816,6 @@ async fn build_provider_fixture_with_delay(
         build_provider_fixture(tamper_descriptor, tamper_quote, tamper_receipt).await;
     *state.deal_delay.lock().await = deal_delay;
     (server, state)
-}
-
-async fn build_discovery_fixture(provider_state: &ProviderState) -> TestServer {
-    build_discovery_fixture_with_provider_id(provider_state, &provider_state.provider_id).await
-}
-
-async fn build_discovery_fixture_with_transports(
-    _provider_state: &ProviderState,
-    discovery_provider_id: &str,
-    clearnet_url: Option<String>,
-    onion_url: Option<String>,
-    tor_status: &str,
-) -> TestServer {
-    let record = DiscoveryNodeRecord {
-        descriptor: NodeDescriptor {
-            node_id: discovery_provider_id.to_string(),
-            pubkey: discovery_provider_id.to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            discovery_mode: "reference".to_string(),
-            transports: TransportDescriptor {
-                clearnet_url,
-                onion_url,
-                tor_status: tor_status.to_string(),
-            },
-            services: vec![ServicePriceInfo {
-                service_id: "execute.compute".to_string(),
-                price_sats: 0,
-                payment_required: false,
-            }],
-            faas: FaaSDescriptor::standard(),
-            updated_at: None,
-        },
-        status: "active".to_string(),
-        registered_at: 1_700_000_000,
-        updated_at: 1_700_000_000,
-        last_seen_at: 1_700_000_000,
-    };
-    spawn_server(discovery_router(Arc::new(DiscoveryState { record }))).await
-}
-
-async fn build_discovery_fixture_with_provider_id(
-    provider_state: &ProviderState,
-    discovery_provider_id: &str,
-) -> TestServer {
-    build_discovery_fixture_with_transports(
-        provider_state,
-        discovery_provider_id,
-        Some(provider_state.provider_url.clone()),
-        None,
-        "disabled",
-    )
-    .await
 }
 
 #[tokio::test]
@@ -1031,177 +932,6 @@ async fn direct_provider_runtime_roundtrip_succeeds() {
 }
 
 #[tokio::test]
-async fn reference_discovery_runtime_search_and_details_succeed() {
-    let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
-    let discovery_server = build_discovery_fixture(&provider_state).await;
-
-    let state = Arc::new(create_test_state_with_identity_seed(
-        Some(discovery_server.base_url.clone()),
-        Some(provider_signing_seed(&provider_state)),
-    ));
-    let app = runtime_router(state);
-
-    let search_request = runtime_request(
-        axum::http::Method::POST,
-        "/v1/runtime/search",
-        Some("Bearer test-runtime-token"),
-        Some(
-            serde_json::to_value(RuntimeSearchRequest {
-                limit: Some(10),
-                include_inactive: Some(false),
-            })
-            .expect("serialize request"),
-        ),
-    );
-    let (search_status, search_response): (StatusCode, DiscoverySearchResponse) =
-        call_json(app.clone(), search_request).await;
-    assert_eq!(search_status, StatusCode::OK);
-    assert_eq!(search_response.nodes.len(), 1);
-    assert_eq!(
-        search_response.nodes[0].descriptor.node_id,
-        provider_state.provider_id
-    );
-
-    let details_request = runtime_request(
-        axum::http::Method::GET,
-        &format!("/v1/runtime/providers/{}", provider_state.provider_id),
-        Some("Bearer test-runtime-token"),
-        None,
-    );
-    let (details_status, details_response): (StatusCode, RuntimeProviderDetailsResponseView) =
-        call_json(app.clone(), details_request).await;
-    assert_eq!(details_status, StatusCode::OK);
-    assert_eq!(
-        details_response.discovery.descriptor.node_id,
-        provider_state.provider_id
-    );
-    assert_eq!(
-        details_response.descriptor.payload.provider_id,
-        provider_state.provider_id
-    );
-    assert_eq!(details_response.offers.len(), 1);
-    assert_eq!(
-        details_response.offers[0].payload.offer_id,
-        "execute.compute"
-    );
-
-    let create_request = runtime_request(
-        axum::http::Method::POST,
-        "/v1/runtime/deals",
-        Some("Bearer test-runtime-token"),
-        Some(
-            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: Some(provider_state.provider_id.clone()),
-                provider_url: None,
-            }))
-            .expect("serialize request"),
-        ),
-    );
-    let (create_status, create_response): (StatusCode, RuntimeCreateDealResponseView) =
-        call_json(app, create_request).await;
-    assert_eq!(create_status, StatusCode::OK);
-    assert_eq!(create_response.provider_id, provider_state.provider_id);
-    assert_eq!(create_response.provider_url, provider_server.base_url);
-    assert_eq!(
-        create_response.quote.payload.provider_id,
-        provider_state.provider_id
-    );
-}
-
-#[tokio::test]
-async fn reference_discovery_runtime_details_and_buy_fall_back_to_onion_url() {
-    let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
-    let discovery_server = build_discovery_fixture_with_transports(
-        &provider_state,
-        &provider_state.provider_id,
-        None,
-        Some(provider_server.base_url.clone()),
-        "up",
-    )
-    .await;
-
-    let state = Arc::new(create_test_state_with_identity_seed(
-        Some(discovery_server.base_url.clone()),
-        Some(provider_signing_seed(&provider_state)),
-    ));
-    let app = runtime_router(state);
-
-    let search_request = runtime_request(
-        axum::http::Method::POST,
-        "/v1/runtime/search",
-        Some("Bearer test-runtime-token"),
-        Some(
-            serde_json::to_value(RuntimeSearchRequest {
-                limit: Some(10),
-                include_inactive: Some(false),
-            })
-            .expect("serialize request"),
-        ),
-    );
-    let (search_status, search_response): (StatusCode, DiscoverySearchResponse) =
-        call_json(app.clone(), search_request).await;
-    assert_eq!(search_status, StatusCode::OK);
-    assert_eq!(search_response.nodes.len(), 1);
-    assert_eq!(
-        search_response.nodes[0].descriptor.transports.clearnet_url,
-        None
-    );
-    assert_eq!(
-        search_response.nodes[0]
-            .descriptor
-            .transports
-            .onion_url
-            .as_deref(),
-        Some(provider_server.base_url.as_str())
-    );
-
-    let details_request = runtime_request(
-        axum::http::Method::GET,
-        &format!("/v1/runtime/providers/{}", provider_state.provider_id),
-        Some("Bearer test-runtime-token"),
-        None,
-    );
-    let (details_status, details_response): (StatusCode, RuntimeProviderDetailsResponseView) =
-        call_json(app.clone(), details_request).await;
-    assert_eq!(details_status, StatusCode::OK);
-    assert_eq!(
-        details_response
-            .discovery
-            .descriptor
-            .transports
-            .clearnet_url,
-        None
-    );
-    assert_eq!(
-        details_response
-            .discovery
-            .descriptor
-            .transports
-            .onion_url
-            .as_deref(),
-        Some(provider_server.base_url.as_str())
-    );
-
-    let create_request = runtime_request(
-        axum::http::Method::POST,
-        "/v1/runtime/deals",
-        Some("Bearer test-runtime-token"),
-        Some(
-            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
-                provider_id: Some(provider_state.provider_id.clone()),
-                provider_url: None,
-            }))
-            .expect("serialize request"),
-        ),
-    );
-    let (create_status, create_response): (StatusCode, RuntimeCreateDealResponseView) =
-        call_json(app, create_request).await;
-    assert_eq!(create_status, StatusCode::OK);
-    assert_eq!(create_response.provider_id, provider_state.provider_id);
-    assert_eq!(create_response.provider_url, provider_server.base_url);
-}
-
-#[tokio::test]
 async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
     let (provider_server, provider_state) = build_provider_fixture(true, false, false).await;
     let state = Arc::new(create_test_state_with_identity_seed(
@@ -1227,51 +957,6 @@ async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
     assert_eq!(
         response["error"],
         Value::String("provider descriptor signature verification failed".to_string())
-    );
-}
-
-#[tokio::test]
-async fn runtime_provider_details_should_reject_tampered_provider_descriptor() {
-    let (_provider_server, provider_state) = build_provider_fixture(true, false, false).await;
-    let discovery_server = build_discovery_fixture(&provider_state).await;
-    let state = Arc::new(create_test_state_with_identity_seed(
-        Some(discovery_server.base_url.clone()),
-        Some(provider_signing_seed(&provider_state)),
-    ));
-    let app = runtime_router(state);
-
-    let request = runtime_request(
-        axum::http::Method::GET,
-        &format!("/v1/runtime/providers/{}", provider_state.provider_id),
-        Some("Bearer test-runtime-token"),
-        None,
-    );
-    let (status, _response): (StatusCode, Value) = call_json(app, request).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
-}
-
-#[tokio::test]
-async fn runtime_provider_details_returns_not_found_for_missing_provider() {
-    let (_provider_server, provider_state) = build_provider_fixture(false, false, false).await;
-    let discovery_server = build_discovery_fixture(&provider_state).await;
-    let state = Arc::new(create_test_state_with_identity_seed(
-        Some(discovery_server.base_url.clone()),
-        Some(provider_signing_seed(&provider_state)),
-    ));
-    let app = runtime_router(state);
-    let missing_provider_id = "00".repeat(32);
-
-    let request = runtime_request(
-        axum::http::Method::GET,
-        &format!("/v1/runtime/providers/{missing_provider_id}"),
-        Some("Bearer test-runtime-token"),
-        None,
-    );
-    let (status, response): (StatusCode, Value) = call_json(app, request).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(
-        response["error"],
-        Value::String("node not found".to_string())
     );
 }
 
@@ -1615,31 +1300,3 @@ async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_has
     assert!(accept_response["result_hash"].as_str().is_some());
 }
 
-#[tokio::test]
-async fn runtime_provider_details_rejects_discovery_provider_mismatch() {
-    let (_provider_server, provider_state) = build_provider_fixture(false, false, false).await;
-    let mismatched_provider_id = "ff".repeat(32);
-    let discovery_server =
-        build_discovery_fixture_with_provider_id(&provider_state, &mismatched_provider_id).await;
-    let state = Arc::new(create_test_state_with_identity_seed(
-        Some(discovery_server.base_url.clone()),
-        Some(provider_signing_seed(&provider_state)),
-    ));
-    let app = runtime_router(state);
-
-    let request = runtime_request(
-        axum::http::Method::GET,
-        &format!("/v1/runtime/providers/{mismatched_provider_id}"),
-        Some("Bearer test-runtime-token"),
-        None,
-    );
-    let (status, response): (StatusCode, Value) = call_json(app, request).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        response["error"],
-        Value::String(
-            "provider URL targets a local or private-network address and is only allowed for the local node via FROGLET_RUNTIME_PROVIDER_BASE_URL"
-                .to_string()
-        )
-    );
-}

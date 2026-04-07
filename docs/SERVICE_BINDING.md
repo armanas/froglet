@@ -221,12 +221,13 @@ Direct compute follows a similar path but skips the service record lookup:
 
 1. The requester provides execution material directly (Wasm module, inline source, or OCI reference) along with a target `provider_id` or `provider_url`.
 2. The operator builds a `WorkloadSpec` from the supplied material.
-3. The operator submits a deal request using the provider's generic compute offer.
+3. The operator selects the direct-compute offer that matches the workload kind:
+   `execute.compute` for `compute.wasm.v1`, and `execute.compute.generic` for `compute.execution.v1`.
 4. The kernel deal flow proceeds identically.
 
 ### 5.3 Resolution Invariants
 
-- The `offer_id` used in the deal request MUST come from the resolved service record (for `invoke_service`) or the provider's generic compute offer (for `run_compute`).
+- The `offer_id` used in the deal request MUST come from the resolved service record (for `invoke_service`) or the workload-compatible direct-compute offer (for `run_compute`).
 - The `WorkloadSpec` MUST be valid for the offer's `offer_kind`. The provider will reject workloads that do not match the offer's execution profile.
 - The `workload_hash` in the resulting `Quote` and `Deal` is computed from the canonical serialization of the `WorkloadSpec`. It is stable for identical inputs.
 - Service invocation and direct compute produce identical kernel artifacts. The kernel cannot distinguish the origin of a workload.

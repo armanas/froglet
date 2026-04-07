@@ -188,7 +188,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::{
-        DiscoveryMode, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
         PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     #[test]
@@ -208,11 +208,9 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:8082".into(),
                 startup_timeout_secs: 90,
             },
-            discovery_mode: DiscoveryMode::None,
             identity: IdentityConfig {
                 auto_generate: true,
             },
-            reference_discovery: None,
             pricing: PricingConfig {
                 events_query: 0,
                 execute_wasm: 0,
@@ -251,6 +249,7 @@ mod tests {
                 policy: None,
                 session_ttl_secs: 300,
             },
+            marketplace_url: None,
         };
 
         let identity = NodeIdentity::load_or_create(&config).unwrap();
