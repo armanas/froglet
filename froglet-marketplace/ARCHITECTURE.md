@@ -6,7 +6,7 @@ and serves queries through Froglet deals.
 
 ## What It Is
 
-A Froglet provider node with four builtin service handlers and a background
+A Froglet provider node with six builtin service handlers and a background
 indexer. From the outside it looks like any other provider — discoverable,
 quotable, payable through the standard deal flow.
 
@@ -24,6 +24,8 @@ quotable, payable through the standard deal flow.
 │  │  feed/artifacts  │     │    provider.rs             │  │
 │  │  HTTP server     │     │    receipts.rs             │  │
 │  │                  │     │    register.rs             │  │
+│  │                  │     │    stake.rs                │  │
+│  │                  │     │    topup.rs                │  │
 │  │  BuiltinService  │────►│                            │  │
 │  │  Handler dispatch│     │  indexer/                  │  │
 │  │                  │     │    mod.rs (feed polling)   │  │
@@ -48,14 +50,16 @@ quotable, payable through the standard deal flow.
 
 ## Services
 
-Four builtin service offers, all free (`price_sats: 0`) in v1:
+Six builtin service offers:
 
 | Service | Purpose | Input | Output |
 |---------|---------|-------|--------|
 | `marketplace.register` | Provider pushes descriptor + offers | signed artifacts | confirmation |
 | `marketplace.search` | Search providers by filters | offer_kind, runtime, price | provider list with offers |
-| `marketplace.provider` | Get one provider's details + trust | provider_id | descriptor, offers, trust scores |
-| `marketplace.receipts` | Get provider receipt history | provider_id, status filter | receipts + trust summary |
+| `marketplace.provider` | Get one provider's details + stake | provider_id | descriptor, offers, stake summary |
+| `marketplace.receipts` | Get provider receipt history | provider_id, status filter | paginated receipts |
+| `marketplace.stake` | Stake into provider identity | provider_id, amount_msat | stake confirmation + total |
+| `marketplace.topup` | Top up existing stake | provider_id, amount_msat | updated total |
 
 Each service is a `BuiltinServiceHandler` implementation that queries Postgres
 and returns JSON. The deal flow wraps it: quote, deal, execute handler, receipt.
@@ -92,11 +96,13 @@ ordering, offers upsert by hash, receipts insert-or-ignore by hash.
 ## Postgres Schema
 
 ```
-indexer_cursors          per-source polling state
-marketplace_providers    projected descriptors (latest per provider_id)
-marketplace_offers       projected offers (FK to providers)
-marketplace_receipts     projected receipts
-raw_artifacts            full artifact documents by hash
+indexer_cursors           per-source polling state
+marketplace_providers     projected descriptors (latest per provider_id)
+marketplace_offers        projected offers (FK to providers)
+marketplace_receipts      projected receipts
+raw_artifacts             full artifact documents by hash
+marketplace_stakes        non-refundable identity stake balances (trust = total staked)
+marketplace_stake_ledger  stake deposit and topup transaction history
 ```
 
 Descriptor supersession: a new descriptor from the same provider_id only
@@ -111,10 +117,10 @@ pre-checked — the indexer attempts the insert and handles the constraint error
 1. Load NodeConfig from env (standard Froglet config)
 2. Load MarketplaceConfig from env (Postgres URL, feed sources)
 3. Connect to Postgres, run migrations
-4. Build 4 service handlers with shared PgPool
+4. Build 6 service handlers with shared PgPool
 5. Build Froglet AppState
 6. Inject handlers into AppState.builtin_services
-7. Auto-register 4 marketplace offer definitions
+7. Auto-register 6 marketplace offer definitions
 8. Spawn indexer background tasks
 9. Start server via froglet::server::run_provider_with_state()
 ```

@@ -1,175 +1,144 @@
 ---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteFooter from '../components/SiteFooter.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
 ---
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Froglet — The economic protocol for AI agents</title>
-<meta name="description" content="A cryptographic protocol for buying and selling compute. Identity, execution, settlement — no platforms, no middlemen.">
-<style>
-:root{--bg:#050708;--surface:#0a0d14;--card:#0f1219;--border:#191f2c;--border-h:#252d3e;--text:#b0b8c8;--muted:#5c6578;--white:#eef1f6;--green:#4ade80;--green-d:#166534;--purple:#a78bfa;--blue:#7dd3fc;--cyan:#67e8f9;--yellow:#fbbf24;--indigo:#818cf8;--indigo-d:#312e81}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
-a{color:var(--indigo);text-decoration:none}
-a:hover{color:var(--blue)}
-
-/* Nav */
-nav{position:sticky;top:0;z-index:10;background:rgba(5,7,8,.8);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
-.nav-inner{max-width:1100px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;gap:24px}
-.nav-logo{font-size:19px;font-weight:700;color:var(--white);letter-spacing:-.3px}
-.nav-links{margin-left:auto;display:flex;gap:20px;font-size:13px;font-weight:500;align-items:center}
-.nav-links a{color:var(--muted);transition:color .15s}
-.nav-links a:hover{color:var(--white)}
-.nav-cta{background:var(--green);color:#050708!important;padding:7px 18px;border-radius:7px;font-weight:600;font-size:12px;transition:all .15s}
-.nav-cta:hover{background:#6ee7b7;color:#050708!important;box-shadow:0 0 20px rgba(74,222,128,.2)}
-
-/* Hero */
-.hero-bg{position:relative;overflow:hidden}
-.hero-glow{position:absolute;top:-200px;left:50%;transform:translateX(-50%);width:900px;height:600px;background:radial-gradient(ellipse,rgba(74,222,128,.06) 0%,rgba(99,102,241,.04) 40%,transparent 70%);pointer-events:none}
-.hero{position:relative;max-width:1100px;margin:0 auto;padding:100px 24px 72px;text-align:center}
-.hero-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.15);border-radius:20px;padding:5px 14px 5px 10px;font-size:11px;font-weight:600;color:var(--green);margin-bottom:24px;letter-spacing:.3px}
-.hero-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse-dot 2s ease-in-out infinite}
-@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
-.hero h1{font-size:56px;font-weight:800;color:var(--white);line-height:1.1;letter-spacing:-.8px;margin-bottom:20px}
-.hero h1 em{font-style:normal;background:linear-gradient(135deg,var(--green) 0%,var(--cyan) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.hero p{font-size:18px;color:var(--muted);max-width:560px;margin:0 auto 36px;line-height:1.7}
-.hero-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-.btn{padding:12px 28px;border-radius:9px;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:8px;transition:all .2s}
-.btn-primary{background:var(--green);color:#050708;box-shadow:0 0 24px rgba(74,222,128,.15)}
-.btn-primary:hover{background:#6ee7b7;color:#050708;box-shadow:0 0 32px rgba(74,222,128,.25);transform:translateY(-1px)}
-.btn-ghost{background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--text)}
-.btn-ghost:hover{border-color:var(--border-h);color:var(--white);background:rgba(255,255,255,.06)}
-
-/* Trust */
-.trust{display:flex;gap:1px;justify-content:center;max-width:700px;margin:0 auto;background:var(--border);border-radius:12px;overflow:hidden}
-.trust-item{flex:1;text-align:center;padding:24px 16px;background:var(--surface)}
-.trust-item:first-child{border-radius:12px 0 0 12px}
-.trust-item:last-child{border-radius:0 12px 12px 0}
-.trust-n{font-size:28px;font-weight:800;color:var(--white);font-variant-numeric:tabular-nums}
-.trust-l{font-size:10px;color:var(--muted);margin-top:4px;letter-spacing:.3px;text-transform:uppercase}
-
-/* Sections */
-section{max-width:1100px;margin:0 auto;padding:72px 24px}
-.section-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:2.5px;color:var(--indigo);margin-bottom:12px}
-.section-title{font-size:30px;font-weight:800;color:var(--white);margin-bottom:10px;line-height:1.25;letter-spacing:-.3px}
-.section-desc{font-size:15px;color:var(--muted);max-width:560px;line-height:1.7;margin-bottom:36px}
-
-/* Pillars */
-.pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);border-radius:16px;overflow:hidden}
-.pillar{background:var(--card);padding:32px 28px;transition:background .2s}
-.pillar:hover{background:#111824}
-.pillar-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:16px}
-.pillar-icon.pi-id{background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.12)}
-.pillar-icon.pi-ex{background:rgba(129,140,248,.08);border:1px solid rgba(129,140,248,.12)}
-.pillar-icon.pi-st{background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.12)}
-.pillar h3{font-size:15px;font-weight:700;color:var(--white);margin-bottom:8px}
-.pillar p{font-size:13px;color:var(--muted);line-height:1.65}
-
-/* Grid cards */
-.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-.gc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px 22px;transition:all .2s}
-.gc:hover{border-color:var(--border-h);background:#111824;transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.2)}
-.gc h4{font-size:13.5px;font-weight:600;color:var(--white);margin-bottom:6px;display:flex;align-items:center;gap:8px}
-.gc p{font-size:12.5px;color:var(--muted);line-height:1.65}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
-.tag-green{background:rgba(74,222,128,.1);color:var(--green)}
-.tag-purple{background:rgba(167,139,250,.1);color:var(--purple)}
-.tag-blue{background:rgba(125,211,252,.1);color:var(--blue)}
-.tag-yellow{background:rgba(251,191,36,.1);color:var(--yellow)}
-.tag-cyan{background:rgba(103,232,249,.1);color:var(--cyan)}
-
-/* Code block */
-.code-block{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px;font-family:'SF Mono','Menlo','Fira Code',monospace;font-size:12px;line-height:1.7;color:var(--muted);overflow-x:auto;margin:24px 0}
-.code-block .g{color:var(--green)}.code-block .p{color:var(--purple)}.code-block .y{color:var(--yellow)}.code-block .c{color:var(--cyan)}
-
-/* Integrations */
-.integrations{display:flex;gap:8px;flex-wrap:wrap;margin-top:24px}
-.int-badge{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:11px;font-weight:500;color:var(--text);display:flex;align-items:center;gap:5px;transition:all .15s}
-.int-badge:hover{border-color:var(--border-h);background:#111824}
-
-/* CTA */
-.cta-bg{position:relative;overflow:hidden}
-.cta-glow{position:absolute;bottom:-100px;left:50%;transform:translateX(-50%);width:600px;height:300px;background:radial-gradient(ellipse,rgba(99,102,241,.06) 0%,transparent 70%);pointer-events:none}
-.cta-section{position:relative;text-align:center;padding:80px 24px;max-width:700px;margin:0 auto}
-.cta-section h2{font-size:32px;font-weight:800;color:var(--white);margin-bottom:14px;letter-spacing:-.3px}
-.cta-section p{color:var(--muted);margin-bottom:32px;font-size:15px;line-height:1.7}
-
-/* Footer */
-footer{border-top:1px solid var(--border);max-width:1100px;margin:0 auto;padding:28px 24px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted)}
-footer a{color:var(--muted)}
-footer a:hover{color:var(--white)}
-
-.divider{height:1px;background:var(--border);max-width:1100px;margin:0 auto}
-
-@media(max-width:768px){
-  .hero h1{font-size:36px}
-  .pillars,.grid{grid-template-columns:1fr}
-  .trust{flex-direction:column;border-radius:12px}
-  .trust-item:first-child{border-radius:12px 12px 0 0}
-  .trust-item:last-child{border-radius:0 0 12px 12px}
-  footer{flex-direction:column;gap:8px;text-align:center}
-}
-</style>
+<title>Froglet &#8212; Commerce infrastructure for autonomous agents</title>
+<meta name="description" content="A cryptographic protocol that lets AI agents discover, negotiate, pay for, and verify compute services without accounts, platforms, or human intermediaries.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Froglet &#8212; Commerce infrastructure for autonomous agents">
+<meta property="og:description" content="A cryptographic protocol that lets AI agents discover, negotiate, pay for, and verify compute services autonomously.">
+<meta property="og:url" content="https://armanas.dev">
+<meta property="og:site_name" content="Froglet">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Froglet &#8212; Commerce infrastructure for autonomous agents">
+<meta name="twitter:description" content="A cryptographic protocol that lets AI agents discover, negotiate, pay for, and verify compute services autonomously.">
+<ThemeProvider />
 </head>
 <body>
-
-<nav>
-<div class="nav-inner">
-  <span class="nav-logo">&#x1F438; froglet</span>
-  <div class="nav-links">
-    <a href="/learn/introduction/">Learn</a>
-    <a href="/architecture/overview/">Docs</a>
-    <a href="/demo/">Demo</a>
-    <a href="https://github.com/armanas/froglet">GitHub</a>
-    <a href="/demo/" class="nav-cta">Try it live &rarr;</a>
-  </div>
-</div>
-</nav>
+<SiteHeader currentPath={Astro.url.pathname} />
 
 <div class="hero-bg">
   <div class="hero-glow"></div>
   <div class="hero">
-    <div class="hero-badge"><span class="dot"></span> Open source protocol</div>
-    <h1>The economic protocol<br>for <em>AI agents</em></h1>
-    <p>Cryptographic identity. Signed execution. Lightning settlement.<br>No platforms, no middlemen — just math.</p>
+    <div class="hero-badge"><span class="dot"></span> Open protocol &#183; Live now</div>
+    <h1>AI agents need to trade.<br/>The internet <em>was not built</em> for that.</h1>
+    <p>Froglet is a cryptographic protocol that gives agents identity, deals, settlement, and receipts &#8212; so they can buy and sell compute, tools, and data from each other without accounts, platforms, or human intermediaries.</p>
     <div class="hero-actions">
-      <a href="/demo/" class="btn btn-primary">Interactive demo &rarr;</a>
-      <a href="/learn/introduction/" class="btn btn-ghost">Read the docs</a>
+      <a href="/demo/" class="btn btn-primary">Watch it work &#8594;</a>
+      <a href="/learn/quickstart/" class="btn btn-ghost">Quickstart</a>
+      <a href="/learn/" class="btn btn-ghost">Read the model</a>
     </div>
   </div>
 </div>
 
 <section style="padding-top:0">
-  <div class="trust">
-    <div class="trust-item"><div class="trust-n">3</div><div class="trust-l">Open source crates</div></div>
-    <div class="trust-item"><div class="trust-n">6</div><div class="trust-l">Signed artifact types</div></div>
-    <div class="trust-item"><div class="trust-n">0</div><div class="trust-l">Trusted third parties</div></div>
-    <div class="trust-item"><div class="trust-n">166</div><div class="trust-l">Tests passing</div></div>
+  <div class="section-label">Why now</div>
+  <div class="section-title">Three trends converging</div>
+  <div class="section-desc">The window for agent commerce infrastructure is opening right now.</div>
+  <div class="pillars">
+    <div class="pillar">
+      <div class="pillar-icon">&#x1F916;</div>
+      <h3>Agents are getting autonomy</h3>
+      <p>MCP, tool use, and multi-step planning mean AI agents can now act on their own. They need infrastructure to transact, not just chat.</p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-icon">&#x1F4C8;</div>
+      <h3>Compute demand is exploding</h3>
+      <p>AI inference costs billions per year and growing. Fragmented supply needs a protocol-level way to match buyers and sellers.</p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-icon">&#x26A1;</div>
+      <h3>Micropayments finally work</h3>
+      <p>Lightning Network settles sub-cent payments in milliseconds. For the first time, agents can pay per-request without merchant accounts.</p>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<section style="padding-top:48px">
+  <div class="compare">
+    <div class="compare-card platform">
+      <div class="compare-kicker">Human commerce</div>
+      <h3>The internet was built for people to click and approve</h3>
+      <ul class="compare-list">
+        <li>Commerce depends on accounts, dashboards, contracts, invoices, and manual trust decisions.</li>
+        <li>APIs are consumable by agents, but the buying relationship is still mediated by human-owned platforms.</li>
+        <li>Cross-provider trade is fragmented because identity, billing, and reputation do not travel well.</li>
+      </ul>
+    </div>
+    <div class="compare-card froglet">
+      <div class="compare-kicker">Agent commerce</div>
+      <h3>Froglet gives machines a native way to trade</h3>
+      <ul class="compare-list">
+        <li>Identity is a keypair, so the buyer and seller relationship belongs to the agents themselves.</li>
+        <li>Resources are exposed as signed offers, quoted through a common flow, and closed with receipts any party can verify.</li>
+        <li>Discovery can happen through marketplaces or direct links, creating an open economic layer above any single vendor.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="proof-strip">
+    <div class="proof-pill"><strong>Any resource can be sold</strong>Compute, tools, data, storage, and private runtimes all fit the same commerce flow.</div>
+    <div class="proof-pill"><strong>Deals are machine-readable</strong>Offers, quotes, deals, and receipts are designed for agents to process directly.</div>
+    <div class="proof-pill"><strong>Settlement is programmable</strong>Free, Lightning, and adapter-based payment paths all fit the same protocol surface.</div>
+    <div class="proof-pill"><strong>Markets can be global</strong>Agents can trade through open marketplaces or deal directly without losing portability.</div>
   </div>
 </section>
 
 <div class="divider"></div>
 
 <section>
-  <div class="section-label">Foundation</div>
-  <div class="section-title">Three pillars. Nothing else.</div>
-  <div class="section-desc">Everything in froglet reduces to identity, execution, and settlement. The rest is services built on top.</div>
+  <div class="section-label">Core Guarantees</div>
+  <div class="section-title">What an agent economy needs to function</div>
+  <div class="section-desc">A global market of agents only works if identity, proof, and settlement are portable. Froglet keeps those guarantees in the protocol so marketplaces and services can compete above it.</div>
   <div class="pillars">
     <div class="pillar">
       <div class="pillar-icon pi-id">&#x1F511;</div>
-      <h3>Identity</h3>
-      <p>secp256k1 keypair generated locally. Your public key is your permanent identity. BIP340 Schnorr signatures on everything. Nostr linked identities for immutable publication.</p>
+      <h3>Portable identity</h3>
+      <p>Generate a local secp256k1 keypair once. That public key becomes a stable identity across providers, marketplaces, and runtimes.</p>
     </div>
     <div class="pillar">
       <div class="pillar-icon pi-ex">&#x26D3;&#xFE0F;</div>
-      <h3>Execution</h3>
-      <p>Descriptor &rarr; Offer &rarr; Quote &rarr; Deal &rarr; Receipt. A signed evidence chain where each artifact references the previous by hash. Independently verifiable by any party.</p>
+      <h3>Verifiable execution</h3>
+      <p>Descriptor &#8594; offer &#8594; quote &#8594; deal &#8594; receipt. Each step is signed and hash-linked, so an agent can prove what was promised and what actually happened.</p>
     </div>
     <div class="pillar">
       <div class="pillar-icon pi-st">&#x26A1;</div>
-      <h3>Settlement</h3>
-      <p>Lightning Network micropayments. Base fee locks on admission, success fee settles on completion. HTLCs with preimage binding — cryptography enforces fair exchange.</p>
+      <h3>Settlement without blind trust</h3>
+      <p>Base fee protects admission, success fee protects completion. Lightning settlement is live today, and other payment adapters can plug into the same commerce model.</p>
     </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<section>
+  <div class="section-label">See it</div>
+  <div class="section-title">A deal in 30 seconds</div>
+  <div class="section-desc">An agent finds a provider, commits to a quote, pays via Lightning, and gets a signed receipt. No accounts. No dashboards. Just cryptography.</div>
+  <div class="code-block">
+<span class="c"># 1. Start your node (free mode, no Lightning needed)</span>
+<span class="g">$</span> FROGLET_PAYMENT_BACKEND=none cargo run --bin froglet-node
+<span class="p">froglet-node listening on 127.0.0.1:8080</span>
+
+<span class="c"># 2. Get provider identity and capabilities</span>
+<span class="g">$</span> curl http://127.0.0.1:8080/v1/node/identity
+
+<span class="c"># 3. Request a quote for WASM execution</span>
+<span class="g">$</span> curl -X POST http://127.0.0.1:8080/v1/provider/quotes
+<span class="p">quote signed &#x2713;</span>
+
+<span class="c"># 4. Commit to the deal, execute, receive receipt</span>
+<span class="g">$</span> curl -X POST http://127.0.0.1:8080/v1/provider/deals
+<span class="p">receipt &#x2713;</span>  <span class="y">status: succeeded</span>
   </div>
 </section>
 
@@ -180,30 +149,12 @@ footer a:hover{color:var(--white)}
   <div class="section-title">What you can build</div>
   <div class="section-desc">Every froglet node is both provider and consumer. All services use the same deal flow.</div>
   <div class="grid">
-    <div class="gc">
-      <h4><span class="tag tag-purple">Compute</span> WASM execution</h4>
-      <p>Sandboxed WebAssembly with fuel limits, memory caps, and timeout enforcement. Send untrusted code to a provider and get a signed result.</p>
-    </div>
-    <div class="gc">
-      <h4><span class="tag tag-blue">Compute</span> Python &amp; containers</h4>
-      <p>Inline Python scripts, handler functions, or full OCI container images. Same deal flow, different runtime adapter.</p>
-    </div>
-    <div class="gc">
-      <h4><span class="tag tag-cyan">Service</span> Builtin services</h4>
-      <p>Register custom handlers on your node. JSON in, JSON out. The marketplace uses this — search, register, trust scoring, all served as deals.</p>
-    </div>
-    <div class="gc">
-      <h4><span class="tag tag-green">Privacy</span> Encrypted compute (TEE)</h4>
-      <p>Trusted Execution Environments with hardware attestation. The provider runs your code but cannot read your data.</p>
-    </div>
-    <div class="gc">
-      <h4><span class="tag tag-yellow">Data</span> Query services</h4>
-      <p>Event feeds, indexed data, and structured queries. Price per query with the same two-fee settlement model.</p>
-    </div>
-    <div class="gc">
-      <h4><span class="tag tag-purple">Platform</span> Marketplace</h4>
-      <p>The first service built on froglet. Indexes providers, serves search queries, computes trust from signed receipts.</p>
-    </div>
+    <div class="gc"><h4><span class="tag tag-purple">Compute</span> WASM execution</h4><p>Sandboxed WebAssembly with fuel limits, memory caps, and timeout enforcement.</p></div>
+    <div class="gc"><h4><span class="tag tag-blue">Compute</span> Python and containers</h4><p>Inline Python scripts, handler functions, or full OCI container images.</p></div>
+    <div class="gc"><h4><span class="tag tag-cyan">Service</span> Builtin services</h4><p>Register custom handlers on your node. JSON in, JSON out.</p></div>
+    <div class="gc"><h4><span class="tag tag-green">Privacy</span> Encrypted compute (TEE)</h4><p>Trusted Execution Environments with hardware attestation.</p></div>
+    <div class="gc"><h4><span class="tag tag-yellow">Data</span> Query services</h4><p>Event feeds, indexed data, and structured queries.</p></div>
+    <div class="gc"><h4><span class="tag tag-purple">Platform</span> Marketplace</h4><p>The first service built on froglet. Indexes providers, serves search queries.</p></div>
   </div>
 </section>
 
@@ -212,35 +163,12 @@ footer a:hover{color:var(--white)}
 <section>
   <div class="section-label">Configuration</div>
   <div class="section-title">Your node, your rules</div>
-  <div class="section-desc">Transport, payment, execution, privacy — mix and match. The deal flow stays the same.</div>
+  <div class="section-desc">Transport, payment, execution, privacy &#8212; mix and match. The deal flow stays the same.</div>
   <div class="grid">
-    <div class="gc">
-      <h4>&#x1F310; Transport</h4>
-      <p><strong style="color:var(--white)">Clearnet</strong> for speed. <strong style="color:var(--white)">Tor</strong> for anonymity. Both simultaneously — same identity on either.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F4B0; Payment</h4>
-      <p><strong style="color:var(--white)">Free</strong> for open services. <strong style="color:var(--white)">Lightning</strong> for crypto micropayments. <strong style="color:var(--white)">Fiat</strong> adapters coming soon.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F512; Privacy</h4>
-      <p><strong style="color:var(--white)">Standard</strong> execution. <strong style="color:var(--white)">TEE</strong> encrypted compute. <strong style="color:var(--white)">Tor + TEE</strong> for full-stack privacy.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F50D; Discovery</h4>
-      <p><strong style="color:var(--white)">Marketplace</strong> for public search. <strong style="color:var(--white)">Direct URL</strong> for private deals. Register with many or stay invisible.</p>
-    </div>
-  </div>
-  <div class="code-block">
-<span class="g">$</span> froglet init --network both
-<span class="c">&#x1F310; clearnet:</span>  https://my-node.example.com:8080
-<span class="c">&#x1F9C5; tor:</span>       frog7a2b...xyz.onion:8080
-
-<span class="g">$</span> froglet publish --kind compute.wasm --price 8 --settlement lightning
-<span class="y">offer:</span> compute.wasm @ 8 sats (base 3 + success 5)
-
-<span class="g">$</span> froglet register --marketplace https://mkt.froglet.dev
-<span class="p">registered ✓</span>  your node is now discoverable.
+    <div class="gc"><h4>&#x1F310; Transport</h4><p>Clearnet for speed. Tor for anonymity. Both simultaneously.</p></div>
+    <div class="gc"><h4>&#x1F4B0; Payment</h4><p>Free for open services. Lightning for crypto micropayments. Fiat adapters coming soon.</p></div>
+    <div class="gc"><h4>&#x1F512; Privacy</h4><p>Standard execution. TEE encrypted compute. Tor + TEE for full-stack privacy.</p></div>
+    <div class="gc"><h4>&#x1F50D; Discovery</h4><p>Marketplace for public search. Direct URL for private deals.</p></div>
   </div>
 </section>
 
@@ -249,24 +177,12 @@ footer a:hover{color:var(--white)}
 <section>
   <div class="section-label">Integrations</div>
   <div class="section-title">Built for AI agents</div>
-  <div class="section-desc">The economic layer that lets AI agents buy and sell compute from each other — without human intermediaries.</div>
+  <div class="section-desc">The economic layer that lets AI agents buy and sell compute from each other &#8212; without human intermediaries.</div>
   <div class="grid">
-    <div class="gc">
-      <h4>&#x1F916; OpenClaw</h4>
-      <p>Claude sees froglet as a tool. Search for services, make deals, verify receipts — all from a conversation.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F4BB; NemoClaw</h4>
-      <p>Local agent integration. Llama, Mistral, GPT — any model gets access to the froglet network.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F50C; MCP Server</h4>
-      <p>Model Context Protocol. Claude Code, Cursor, Windsurf — direct access from your editor.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F527; Any HTTP client</h4>
-      <p>No SDK required. JSON over HTTPS. Sign artifacts with any secp256k1 library. The protocol is the API.</p>
-    </div>
+    <div class="gc"><h4>&#x1F916; OpenClaw</h4><p>Claude sees froglet as a tool. Search for services, make deals, verify receipts.</p></div>
+    <div class="gc"><h4>&#x1F4BB; NemoClaw</h4><p>Local agent integration. Llama, Mistral, GPT &#8212; any model gets access.</p></div>
+    <div class="gc"><h4>&#x1F50C; MCP Server</h4><p>Model Context Protocol. Claude Code, Cursor, Windsurf &#8212; direct access.</p></div>
+    <div class="gc"><h4>&#x1F527; Any HTTP client</h4><p>No SDK required. JSON over HTTPS. The protocol is the API.</p></div>
   </div>
   <div class="integrations">
     <div class="int-badge">&#x1F438; OpenClaw</div>
@@ -276,7 +192,6 @@ footer a:hover{color:var(--white)}
     <div class="int-badge">&#x1F9C5; Tor</div>
     <div class="int-badge">&#x1F512; TEE</div>
     <div class="int-badge">&#x1F310; HTTPS</div>
-    <div class="int-badge">&#x1F4B0; Fiat (coming)</div>
   </div>
 </section>
 
@@ -284,25 +199,13 @@ footer a:hover{color:var(--white)}
 
 <section>
   <div class="section-label">Game Theory</div>
-  <div class="section-title">Why cheating doesn't pay</div>
+  <div class="section-title">Why cheating does not pay</div>
   <div class="section-desc">The protocol makes honesty the dominant strategy through economics, not enforcement.</div>
   <div class="grid">
-    <div class="gc">
-      <h4>&#x1F4B8; Identity is free, reputation is expensive</h4>
-      <p>Anyone can create a keypair. But trust starts at zero. Building it requires months and thousands of sats in real deals.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F525; Cheating burns everything</h4>
-      <p>One bad receipt destroys your trust. A new identity starts at zero. The gain from cheating once is dwarfed by the cost.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F4CA; Two fees align incentives</h4>
-      <p>Base fee protects the provider. Success fee protects the requester. Provider profit increases with quality.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x2696;&#xFE0F; Nash equilibrium: honesty</h4>
-      <p>When reputation value exceeds cheat value — which it does after just a few deals — no rational actor cheats.</p>
-    </div>
+    <div class="gc"><h4>&#x1F4B8; Identity is free, stake is expensive</h4><p>Anyone can create a keypair. But trust requires staking real, non-refundable value into your identity.</p></div>
+    <div class="gc"><h4>&#x1F525; Cheating burns the investment</h4><p>Cheat once and your staked identity is worthless. Rebuilding means paying again from zero.</p></div>
+    <div class="gc"><h4>&#x1F4CA; Calculable safety</h4><p>Requesters check: is the provider's stake large enough relative to this deal? Simple ratio, no trust required.</p></div>
+    <div class="gc"><h4>&#x2696;&#xFE0F; Nash equilibrium: honesty</h4><p>When stake far exceeds deal value, no rational actor cheats. The math is trivial.</p></div>
   </div>
 </section>
 
@@ -312,22 +215,10 @@ footer a:hover{color:var(--white)}
   <div class="section-label">Use Cases</div>
   <div class="section-title">What people build with froglet</div>
   <div class="grid">
-    <div class="gc">
-      <h4>&#x1F9E0; Agent-to-agent compute</h4>
-      <p>An AI agent needs GPU inference. It finds a provider, deals, pays via Lightning, gets a signed result — autonomously.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F310; Decentralized services</h4>
-      <p>Host a search engine or analytics API as a froglet provider. Clients pay per query. No cloud vendor lock-in.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F512; Private computation</h4>
-      <p>Encrypted workloads over Tor to TEE providers. They execute but never see your data. Hardware attestation proves it.</p>
-    </div>
-    <div class="gc">
-      <h4>&#x1F4B1; Micropayment APIs</h4>
-      <p>Sell API access per-request. No rate limits, no API keys. Lightning settles each request instantly.</p>
-    </div>
+    <div class="gc"><h4>&#x1F9E0; Agent-to-agent compute</h4><p>An AI agent needs GPU inference. It finds a provider, deals, pays, gets a signed result.</p></div>
+    <div class="gc"><h4>&#x1F310; Decentralized services</h4><p>Host a search engine or analytics API as a froglet provider.</p></div>
+    <div class="gc"><h4>&#x1F512; Private computation</h4><p>Encrypted workloads over Tor to TEE providers.</p></div>
+    <div class="gc"><h4>&#x1F4B1; Micropayment APIs</h4><p>Sell API access per-request. Lightning settles each request instantly.</p></div>
   </div>
 </section>
 
@@ -337,17 +228,13 @@ footer a:hover{color:var(--white)}
     <h2>Start building</h2>
     <p>Open source protocol. Independently reimplementable kernel. Every interaction is a signed artifact you can verify.</p>
     <div class="hero-actions">
-      <a href="/demo/" class="btn btn-primary">Try the demo &rarr;</a>
-      <a href="/learn/introduction/" class="btn btn-ghost">Read the docs</a>
+      <a href="/demo/" class="btn btn-primary">Try the demo &#8594;</a>
+      <a href="/learn/" class="btn btn-ghost">Read the docs</a>
       <a href="https://github.com/armanas/froglet" class="btn btn-ghost">GitHub</a>
     </div>
   </div>
 </div>
 
-<footer>
-  <span>&#x1F438; froglet — identity. execution. settlement.</span>
-  <span><a href="https://github.com/armanas/froglet">GitHub</a> &middot; <a href="/learn/introduction/">Docs</a> &middot; <a href="/demo/">Demo</a></span>
-</footer>
-
+<SiteFooter />
 </body>
 </html>

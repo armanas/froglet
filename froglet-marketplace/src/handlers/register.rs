@@ -130,5 +130,5 @@ impl BuiltinServiceHandler for MarketplaceRegisterHandler {
 }
 
 fn verify_artifact_document(document: &Value) -> bool {
-    crate::verify::verify_artifact_signature(document)
+    crate::verify::verify_artifact_document(document)
 }

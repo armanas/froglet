@@ -1,24 +1,837 @@
+/* Fonts loaded via <link> in head config — see astro.config.mjs */
+
 :root {
-	--sl-color-accent-low: #1a3a2a;
-	--sl-color-accent: #3fb950;
-	--sl-color-accent-high: #a8e6b0;
-	--sl-color-white: #f0f6fc;
-	--sl-color-gray-1: #c9d1d9;
-	--sl-color-gray-2: #8b949e;
-	--sl-color-gray-3: #484f58;
-	--sl-color-gray-4: #30363d;
-	--sl-color-gray-5: #21262d;
-	--sl-color-gray-6: #161b22;
-	--sl-color-black: #0d1117;
-	--sl-font-system-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+	--froglet-font-sans: 'Inter', system-ui, sans-serif;
+	--froglet-font-serif: 'Inter', system-ui, sans-serif;
+	--froglet-font-code: 'JetBrains Mono', monospace;
+	--froglet-background: 43 30% 95%;
+	--froglet-foreground: 30 10% 12%;
+	--froglet-surface: 43 25% 93%;
+	--froglet-surface-2: 40 18% 88%;
+	--froglet-card: 43 28% 97%;
+	--froglet-muted: 30 8% 45%;
+	--froglet-border: 38 15% 82%;
+	--froglet-border-strong: 141 24% 72%;
+	--froglet-accent: 141 43% 36%;
+	--froglet-accent-foreground: 43 30% 95%;
+	--froglet-accent-soft: 141 40% 93%;
+	--froglet-accent-strong: 142 47% 24%;
+	--froglet-code: 218 18% 14%;
+	--froglet-code-surface: 218 16% 18%;
+	--froglet-shadow:
+		0 1px 2px rgba(24, 23, 20, 0.05),
+		0 18px 40px rgba(24, 23, 20, 0.06);
+	--sl-font: var(--froglet-font-sans);
+	--sl-font-system: var(--froglet-font-sans);
+	--sl-font-system-mono: var(--froglet-font-code);
+	--sl-color-accent-low: hsl(var(--froglet-accent-soft));
+	--sl-color-accent: hsl(var(--froglet-accent));
+	--sl-color-accent-high: hsl(var(--froglet-accent-strong));
+	--sl-color-white: hsl(var(--froglet-foreground));
+	--sl-color-gray-1: hsl(30 10% 18%);
+	--sl-color-gray-2: hsl(var(--froglet-muted));
+	--sl-color-gray-3: hsl(30 8% 56%);
+	--sl-color-gray-4: hsl(var(--froglet-border));
+	--sl-color-gray-5: hsl(var(--froglet-surface-2));
+	--sl-color-gray-6: hsl(var(--froglet-surface));
+	--sl-color-black: hsl(var(--froglet-background));
 }
 
-[data-theme='light'] {
-	--sl-color-accent-low: #d4edda;
-	--sl-color-accent: #28a745;
-	--sl-color-accent-high: #155724;
+[data-theme='dark'] {
+	--froglet-background: 220 10% 8%;
+	--froglet-foreground: 220 10% 90%;
+	--froglet-surface: 220 10% 12%;
+	--froglet-surface-2: 220 10% 18%;
+	--froglet-card: 220 10% 11%;
+	--froglet-muted: 220 8% 65%;
+	--froglet-border: 220 10% 25%;
+	--froglet-border-strong: 141 24% 32%;
+	--froglet-accent: 141 40% 54%;
+	--froglet-accent-foreground: 220 10% 10%;
+	--froglet-accent-soft: 141 24% 18%;
+	--froglet-accent-strong: 141 35% 72%;
+	--froglet-code: 220 12% 10%;
+	--froglet-code-surface: 220 10% 15%;
+	--froglet-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+	--sl-color-accent-low: hsl(var(--froglet-accent-soft));
+	--sl-color-accent: hsl(var(--froglet-accent));
+	--sl-color-accent-high: hsl(var(--froglet-accent-strong));
+	--sl-color-white: hsl(var(--froglet-foreground));
+	--sl-color-gray-1: hsl(var(--froglet-foreground));
+	--sl-color-gray-2: hsl(var(--froglet-muted));
+	--sl-color-gray-3: hsl(220 8% 55%);
+	--sl-color-gray-4: hsl(var(--froglet-border));
+	--sl-color-gray-5: hsl(var(--froglet-surface-2));
+	--sl-color-gray-6: hsl(var(--froglet-surface));
+	--sl-color-black: hsl(var(--froglet-background));
+}
+
+html {
+	background: hsl(var(--froglet-background));
+}
+
+body {
+	background:
+		radial-gradient(circle at top, color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent), transparent 24%),
+		hsl(var(--froglet-background));
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-sans);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+* {
+	border-color: hsl(var(--froglet-border));
 }
 
 mjx-container {
 	overflow-x: auto;
+}
+
+body > .page > header {
+	border-bottom: 1px solid hsl(var(--froglet-border));
+	background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, transparent);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+}
+
+body > .page > header .site-title,
+body > .page > header .site-title span {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1.15rem;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+body > .page > header a,
+body > .page > header button,
+body > .page > header select,
+body > .page > header svg {
+	color: hsl(var(--froglet-muted));
+}
+
+body > .page > header a:hover,
+body > .page > header button:hover,
+body > .page > header select:hover {
+	color: hsl(var(--froglet-foreground));
+}
+
+nav.sidebar .sidebar-pane {
+	border-inline-end: 1px solid hsl(var(--froglet-border));
+	background: transparent;
+}
+
+nav.sidebar .sidebar-content {
+	padding-top: 0.85rem;
+}
+
+nav.sidebar summary,
+nav.sidebar a {
+	border-radius: 0.8rem;
+	transition:
+		background-color 140ms ease,
+		color 140ms ease,
+		border-color 140ms ease;
+}
+
+nav.sidebar summary:hover,
+nav.sidebar a:hover {
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-foreground));
+}
+
+nav.sidebar .group-label .large {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 0.97rem;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+}
+
+nav.sidebar a[aria-current='page'] {
+	background: hsl(var(--froglet-accent-soft));
+	color: hsl(var(--froglet-accent-strong));
+	font-weight: 600;
+}
+
+.right-sidebar-panel > .sl-container {
+	border-inline-start: 1px solid hsl(var(--froglet-border));
+}
+
+.right-sidebar-panel nav h2 {
+	color: hsl(var(--froglet-muted));
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+
+.right-sidebar-panel nav a {
+	color: hsl(var(--froglet-muted));
+}
+
+.right-sidebar-panel nav a:hover,
+.right-sidebar-panel nav a[aria-current='true'] {
+	color: hsl(var(--froglet-accent));
+}
+
+main[data-pagefind-body] > .content-panel {
+	background: transparent;
+}
+
+main[data-pagefind-body] > .content-panel:first-child {
+	border-bottom: 1px solid hsl(var(--froglet-border));
+}
+
+main[data-pagefind-body] > .content-panel:first-child .sl-container {
+	padding-block: 1.8rem 1.05rem;
+}
+
+main[data-pagefind-body] > .content-panel:first-child h1 {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: clamp(2.25rem, 5vw, 3.6rem);
+	font-weight: 700;
+	letter-spacing: -0.04em;
+	line-height: 1.04;
+}
+
+.sl-markdown-content {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-sans);
+	font-size: 1.03rem;
+	line-height: 1.75;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4) {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-weight: 700;
+	letter-spacing: -0.03em;
+	line-height: 1.12;
+}
+
+.sl-markdown-content h2 {
+	margin-top: 2.8rem;
+	font-size: clamp(1.75rem, 2.3vw, 2.15rem);
+}
+
+.sl-markdown-content h3 {
+	margin-top: 2.1rem;
+	font-size: clamp(1.35rem, 1.7vw, 1.6rem);
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+	color: color-mix(in srgb, hsl(var(--froglet-foreground)) 84%, transparent);
+}
+
+.sl-markdown-content a {
+	color: hsl(var(--froglet-accent));
+	text-decoration-color: color-mix(in srgb, hsl(var(--froglet-accent)) 36%, transparent);
+	text-underline-offset: 0.18em;
+	transition: color 140ms ease, text-decoration-color 140ms ease;
+}
+
+.sl-markdown-content a:hover,
+.sl-markdown-content a:focus-visible {
+	color: hsl(var(--froglet-accent-strong));
+	text-decoration-color: hsl(var(--froglet-accent));
+}
+
+.sl-markdown-content blockquote {
+	margin: 1.6rem 0;
+	padding: 1rem 1.1rem;
+	border-inline-start: 3px solid hsl(var(--froglet-accent));
+	border-radius: 0 0.9rem 0.9rem 0;
+	background: hsl(var(--froglet-surface));
+}
+
+.sl-markdown-content hr {
+	border-color: hsl(var(--froglet-border));
+}
+
+.sl-markdown-content :not(pre) > code {
+	padding: 0.14rem 0.36rem;
+	border-radius: 0.35rem;
+	background: hsl(var(--froglet-surface-2));
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+	font-size: 0.92em;
+}
+
+.sl-markdown-content pre,
+.sl-markdown-content .expressive-code {
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	box-shadow: none;
+}
+
+.sl-markdown-content pre {
+	background: hsl(var(--froglet-code));
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+}
+
+.sl-markdown-content table {
+	display: block;
+	width: 100%;
+	overflow-x: auto;
+	margin: 1.5rem 0 1.8rem;
+	border-collapse: separate;
+	border-spacing: 0;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.sl-markdown-content :is(th, td) {
+	padding: 0.8rem 0.95rem;
+	vertical-align: top;
+}
+
+.sl-markdown-content thead th {
+	color: hsl(var(--froglet-foreground));
+	font-size: 0.83rem;
+	font-weight: 700;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	background: hsl(var(--froglet-surface));
+}
+
+.sl-markdown-content tbody td {
+	color: color-mix(in srgb, hsl(var(--froglet-foreground)) 88%, transparent);
+	border-top: 1px solid hsl(var(--froglet-border));
+}
+
+.sl-markdown-content img {
+	border-radius: 1rem;
+}
+
+.pagination-links a {
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.pagination-links a:hover {
+	border-color: hsl(var(--froglet-border-strong));
+}
+
+.learn-hero {
+	display: grid;
+	grid-template-columns: minmax(0, 1.35fr) minmax(270px, 0.95fr);
+	gap: 1.25rem;
+	padding: 1.6rem;
+	margin: 1.4rem 0 2rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1.1rem;
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.learn-hero.compact {
+	grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+}
+
+.learn-pill {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.34rem 0.72rem;
+	border-radius: 999px;
+	background: hsl(var(--froglet-accent-soft));
+	color: hsl(var(--froglet-accent-strong));
+	font-size: 0.74rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+
+.learn-lead {
+	margin: 0.85rem 0 0.65rem;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: clamp(2rem, 2.8vw, 3.15rem);
+	line-height: 1.03;
+	letter-spacing: -0.04em;
+}
+
+.learn-sublead {
+	max-width: 41rem;
+	color: color-mix(in srgb, hsl(var(--froglet-foreground)) 78%, transparent);
+	font-size: 1.01rem;
+	line-height: 1.72;
+}
+
+.learn-chip-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.55rem;
+	margin-top: 1rem;
+}
+
+.learn-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.36rem 0.72rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 999px;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+}
+
+.learn-roadmap {
+	display: grid;
+	gap: 0.6rem;
+	padding: 0.7rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-surface));
+}
+
+.learn-roadmap-step {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 0.85rem;
+	align-items: center;
+	padding: 0.78rem 0.88rem;
+	border: 1px solid transparent;
+	border-radius: 0.85rem;
+	color: inherit;
+	text-decoration: none;
+	transition:
+		background-color 140ms ease,
+		border-color 140ms ease,
+		transform 140ms ease;
+}
+
+.learn-roadmap-step:hover {
+	border-color: hsl(var(--froglet-border-strong));
+	background: hsl(var(--froglet-card));
+	transform: translateY(-1px);
+}
+
+.learn-roadmap-step strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-weight: 700;
+}
+
+.learn-roadmap-step small {
+	display: block;
+	margin-top: 0.18rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.learn-roadmap-step > span:last-child {
+	padding: 0.24rem 0.55rem;
+	border-radius: 999px;
+	background: hsl(var(--froglet-card));
+	color: hsl(var(--froglet-muted));
+	font-family: var(--froglet-font-code);
+	font-size: 0.76rem;
+}
+
+.learn-stat-strip {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+	gap: 0.8rem;
+	margin: 1.35rem 0 2rem;
+}
+
+.learn-stat,
+.learn-card,
+.chapter-card,
+.learn-code-box,
+.learn-sequence-step,
+.learn-path,
+.plot-metric {
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.learn-stat {
+	padding: 0.92rem 1rem;
+}
+
+.learn-stat strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1.5rem;
+	line-height: 1.05;
+}
+
+.learn-stat span {
+	display: block;
+	margin-top: 0.32rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	line-height: 1.45;
+}
+
+.learn-grid {
+	display: grid;
+	gap: 1rem;
+	margin: 1.3rem 0 1.8rem;
+}
+
+.learn-grid.two {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.learn-grid.three {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.learn-card {
+	padding: 1rem 1.05rem;
+}
+
+.learn-card.tight {
+	padding: 0.85rem 0.9rem;
+}
+
+.learn-card h2,
+.learn-card h3,
+.learn-card h4,
+.learn-card p:last-child,
+.learn-card ul:last-child,
+.learn-card pre:last-child,
+.chapter-card p:last-child,
+.learn-path p:last-child,
+.learn-sequence-step p:last-child {
+	margin-bottom: 0;
+}
+
+.learn-kicker {
+	display: block;
+	margin-bottom: 0.45rem;
+	color: hsl(var(--froglet-accent));
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.11em;
+	text-transform: uppercase;
+}
+
+.learn-card strong,
+.learn-card h3,
+.learn-card h4,
+.chapter-card strong,
+.learn-path strong,
+.learn-sequence-step strong {
+	color: hsl(var(--froglet-foreground));
+}
+
+.chapter-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 0.9rem;
+	margin: 1.25rem 0 2rem;
+}
+
+.chapter-card {
+	display: block;
+	padding: 1rem;
+	color: inherit;
+	text-decoration: none;
+	transition:
+		transform 140ms ease,
+		border-color 140ms ease;
+}
+
+.chapter-card:hover {
+	transform: translateY(-1px);
+	border-color: hsl(var(--froglet-border-strong));
+}
+
+.chapter-card small {
+	display: block;
+	margin-top: 0.22rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	line-height: 1.5;
+}
+
+.protocol-chain {
+	display: grid;
+	grid-template-columns: repeat(6, minmax(0, 1fr));
+	gap: 0.75rem;
+	margin: 1.35rem 0;
+}
+
+.protocol-step {
+	position: relative;
+	padding: 0.95rem 0.85rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-surface));
+}
+
+.protocol-step::after {
+	content: '';
+	position: absolute;
+	top: 50%;
+	right: -0.62rem;
+	width: 0.8rem;
+	height: 1px;
+	background: hsl(var(--froglet-border-strong));
+}
+
+.protocol-step:last-child::after {
+	display: none;
+}
+
+.protocol-step strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-size: 0.92rem;
+	font-weight: 700;
+}
+
+.protocol-step span {
+	display: block;
+	margin-top: 0.28rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.learn-compare {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1rem;
+	margin: 1.35rem 0 1.75rem;
+}
+
+.learn-code-box {
+	padding: 1rem 1.05rem;
+}
+
+.learn-code-box pre {
+	margin: 0.7rem 0 0;
+	padding: 0.95rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 0.9rem;
+	background: hsl(var(--froglet-code));
+	color: hsl(0 0% 96%);
+}
+
+.learn-sequence {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.8rem;
+	margin: 1.25rem 0;
+}
+
+.learn-sequence.four {
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.learn-sequence-step {
+	padding: 0.92rem;
+}
+
+.learn-sequence-step small {
+	display: block;
+	margin-top: 0.32rem;
+	color: hsl(var(--froglet-muted));
+	line-height: 1.5;
+}
+
+.learn-paths {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1rem;
+	margin: 1.25rem 0 1.7rem;
+}
+
+.learn-path {
+	padding: 1rem;
+}
+
+.learn-path ol,
+.learn-path ul {
+	margin-bottom: 0;
+}
+
+.plot-shell {
+	padding: 1.15rem;
+	margin: 1.4rem 0 1.85rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.plot-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 1rem;
+	margin-bottom: 1rem;
+}
+
+.plot-title {
+	margin: 0;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1.2rem;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+.plot-subtitle {
+	margin: 0.28rem 0 0;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.96rem;
+	line-height: 1.65;
+}
+
+.plot-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	align-items: center;
+}
+
+.plot-control {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.45rem;
+	align-items: center;
+	padding: 0.45rem 0.7rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 0.8rem;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+}
+
+.plot-control span {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+}
+
+.plot-controls input[type='range'] {
+	accent-color: hsl(var(--froglet-accent));
+}
+
+.plot-button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.65rem;
+	margin: 1rem 0 0.9rem;
+}
+
+.plot-button {
+	appearance: none;
+	padding: 0.55rem 0.9rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 999px;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font: inherit;
+	font-size: 0.84rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition:
+		border-color 140ms ease,
+		background-color 140ms ease,
+		color 140ms ease;
+}
+
+.plot-button:hover,
+.plot-button:focus-visible {
+	border-color: hsl(var(--froglet-border-strong));
+	color: hsl(var(--froglet-foreground));
+}
+
+.plot-button.is-active {
+	border-color: hsl(var(--froglet-accent));
+	background: hsl(var(--froglet-accent));
+	color: hsl(var(--froglet-accent-foreground));
+}
+
+.plot-metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 0.75rem;
+	margin: 0.95rem 0 1rem;
+}
+
+.plot-metric {
+	padding: 0.8rem 0.9rem;
+}
+
+.plot-metric strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1rem;
+}
+
+.plot-metric span {
+	display: block;
+	margin-top: 0.3rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.plot-canvas,
+.plot-shell canvas {
+	display: block;
+	width: 100%;
+	max-width: 100%;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 0.95rem;
+	background: hsl(var(--froglet-code));
+}
+
+.plot-note {
+	margin: 0.85rem 0 0;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	line-height: 1.55;
+}
+
+@media (max-width: 900px) {
+	.learn-hero,
+	.learn-hero.compact,
+	.learn-grid.two,
+	.learn-grid.three,
+	.chapter-grid,
+	.learn-compare,
+	.learn-paths,
+	.learn-sequence,
+	.learn-sequence.four {
+		grid-template-columns: 1fr;
+	}
+
+	.protocol-chain {
+		grid-template-columns: 1fr;
+	}
+
+	.protocol-step::after {
+		top: auto;
+		right: auto;
+		left: 50%;
+		bottom: -0.62rem;
+		width: 1px;
+		height: 0.8rem;
+		background: hsl(var(--froglet-border-strong));
+	}
+
+	.plot-header {
+		flex-direction: column;
+	}
 }

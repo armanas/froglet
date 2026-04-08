@@ -61,26 +61,33 @@ struct HttpServeConfig {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ServiceRole {
+pub enum ServiceRole {
     Provider,
     Runtime,
+    /// Both provider and runtime listeners on a single node.
+    Dual,
 }
 
-pub async fn run_provider() -> Result<(), Box<dyn std::error::Error>> {
-    run(ServiceRole::Provider, None).await
+impl ServiceRole {
+    fn is_provider(self) -> bool {
+        matches!(self, Self::Provider | Self::Dual)
+    }
+    fn is_runtime(self) -> bool {
+        matches!(self, Self::Runtime | Self::Dual)
+    }
+}
+
+/// Start a Froglet node with the given role.
+pub async fn run_with_role(role: ServiceRole) -> Result<(), Box<dyn std::error::Error>> {
+    run(role, None).await
 }
 
 /// Start a Froglet provider node with a pre-built `AppState`.
 ///
-/// Use this when the caller has already constructed and customized the state
-/// (e.g., to inject `builtin_services` for custom service handlers).  The
-/// provided state must already have `event_batch_writer` initialized.
-pub async fn run_provider_with_state(state: Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
+/// Used by froglet-marketplace to inject custom builtin service handlers
+/// before starting the server.
+pub async fn run_with_state(state: Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
     run(ServiceRole::Provider, Some(state)).await
-}
-
-pub async fn run_runtime() -> Result<(), Box<dyn std::error::Error>> {
-    run(ServiceRole::Runtime, None).await
 }
 
 async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -> Result<(), Box<dyn std::error::Error>> {
@@ -157,7 +164,7 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
 
     let public_app = api::public_router(state.clone());
     let runtime_app = api::runtime_router(state.clone());
-    let tor_backend_addr = if service_role == ServiceRole::Provider
+    let tor_backend_addr = if service_role.is_provider()
         && node_config.network_mode.should_start_tor()
     {
         let tor_backend_addr: SocketAddr = node_config
@@ -211,7 +218,7 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
         None
     };
 
-    if service_role == ServiceRole::Runtime {
+    if service_role.is_runtime() {
         let runtime_addr: SocketAddr = node_config
             .runtime_listen_addr
             .parse()
@@ -260,7 +267,7 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
         );
     }
 
-    if service_role == ServiceRole::Provider && node_config.network_mode.should_start_clearnet() {
+    if service_role.is_provider() && node_config.network_mode.should_start_clearnet() {
         let addr: SocketAddr = node_config
             .listen_addr
             .parse()
@@ -301,18 +308,18 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
                 })
             }),
         );
-    } else if service_role == ServiceRole::Provider {
+    } else if service_role.is_provider() {
         info!("Running in Tor-only mode. No clearnet server started.");
     }
 
-    if service_role == ServiceRole::Provider {
+    if service_role.is_provider() {
         api::recover_runtime_state_local(state.clone())
             .await
             .expect("Failed to recover local runtime state");
     }
 
     // Register with marketplace if configured (non-blocking — failures are logged, not fatal)
-    if service_role == ServiceRole::Provider && node_config.marketplace_url.is_some() {
+    if service_role.is_provider() && node_config.marketplace_url.is_some() {
         let reg_state = state.clone();
         tokio::spawn(async move {
             // Small delay to let transport endpoints bind first
@@ -324,7 +331,7 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
         });
     }
 
-    if service_role == ServiceRole::Provider
+    if service_role.is_provider()
         && node_config.payment_backend == PaymentBackend::Lightning
     {
         let recovery_state = state.clone();
@@ -356,7 +363,7 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
         );
     }
 
-    if service_role == ServiceRole::Provider
+    if service_role.is_provider()
         && let Some(tor_backend_addr) = tor_backend_addr
     {
         let tor_state = state.clone();

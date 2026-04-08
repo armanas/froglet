@@ -32,7 +32,7 @@ struct ProviderDetail {
     first_seen_at: String,
     last_seen_at: String,
     offers: Vec<OfferDetail>,
-    trust: super::TrustSummary,
+    stake: super::StakeSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,17 +88,14 @@ impl BuiltinServiceHandler for MarketplaceProviderHandler {
                 .await
                 .map_err(|e| format!("offers query: {e}"))?;
 
-            let trust_row = client
-                .query_one(
-                    "SELECT
-                        COUNT(*)::bigint,
-                        COUNT(*) FILTER (WHERE status = 'succeeded')::bigint,
-                        COUNT(*) FILTER (WHERE status = 'failed')::bigint
-                     FROM marketplace_receipts WHERE provider_id = $1",
+            let stake_row = client
+                .query_opt(
+                    "SELECT total_staked_msat, last_staked_at::text
+                     FROM marketplace_stakes WHERE provider_id = $1",
                     &[&provider_id],
                 )
                 .await
-                .map_err(|e| format!("trust query: {e}"))?;
+                .map_err(|e| format!("stake query: {e}"))?;
 
             let detail = ProviderDetail {
                 provider_id,
@@ -123,11 +120,13 @@ impl BuiltinServiceHandler for MarketplaceProviderHandler {
                         execution_profile: r.get(7),
                     })
                     .collect(),
-                trust: super::TrustSummary {
-                    total: trust_row.get(0),
-                    succeeded: trust_row.get(1),
-                    failed: trust_row.get(2),
-                },
+                stake: stake_row
+                    .as_ref()
+                    .map(|r| super::StakeSummary {
+                        total_staked_msat: r.get(0),
+                        last_staked_at: r.get(1),
+                    })
+                    .unwrap_or_default(),
             };
 
             serde_json::to_value(ProviderResult {

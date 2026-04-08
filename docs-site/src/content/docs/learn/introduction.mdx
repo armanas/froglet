@@ -3,41 +3,79 @@ title: What is Froglet?
 description: A cryptographic protocol for buying and selling compute.
 ---
 
-Froglet is three things:
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">Orientation</div>
+    <p class="learn-lead">Froglet turns compute into a cryptographically provable service.</p>
+    <p class="learn-sublead">A provider describes what it offers, a requester commits to a quote, the workload executes, and the final receipt becomes signed evidence. No accounts, no platform state, and no trusted registry are required.</p>
+    <div class="learn-chip-row">
+      <span class="learn-chip">Identity by keypair</span>
+      <span class="learn-chip">Execution by receipt</span>
+      <span class="learn-chip">Settlement by Lightning or none</span>
+    </div>
+  </div>
+  <div class="learn-grid">
+    <div class="learn-card tight">
+      <span class="learn-kicker">Identity</span>
+      <strong>Every artifact is attributable.</strong>
+      <p>Your public key is your node identity. Signatures are the protocol's source of truth.</p>
+    </div>
+    <div class="learn-card tight">
+      <span class="learn-kicker">Execution</span>
+      <strong>Every interaction becomes evidence.</strong>
+      <p>Descriptor, offer, quote, deal, and receipt form a chain anyone can verify.</p>
+    </div>
+    <div class="learn-card tight">
+      <span class="learn-kicker">Settlement</span>
+      <strong>Payments are part of the protocol.</strong>
+      <p>Base fees protect providers, success fees protect requesters, and free services still use the same flow.</p>
+    </div>
+  </div>
+</div>
 
-1. **Identity** — a secp256k1 keypair generated locally. Your public key is your identity. Every artifact you produce is signed. Nobody grants or revokes this.
+## Froglet in one loop
 
-2. **Execution** — a signed evidence chain. Descriptor, Offer, Quote, Deal, Receipt. A provider describes what it offers, a requester deals for it, the provider executes and signs a receipt. The entire chain is independently verifiable.
-
-3. **Settlement** — Lightning Network. Base fee locks on admission, success fee settles on completion. Cryptographically bound to the deal. Or free.
-
-Everything else is either an adapter that makes the core usable in a specific environment, or a service built on top of the protocol.
+<div class="protocol-chain">
+  <div class="protocol-step"><strong>1. Discover</strong><span>Find a provider directly or through a marketplace service.</span></div>
+  <div class="protocol-step"><strong>2. Verify</strong><span>Check signatures, hashes, pricing, and limits before you commit.</span></div>
+  <div class="protocol-step"><strong>3. Quote</strong><span>The provider prices your exact workload and signs the quote.</span></div>
+  <div class="protocol-step"><strong>4. Deal</strong><span>The requester signs the commitment and, if needed, settles the base fee.</span></div>
+  <div class="protocol-step"><strong>5. Execute</strong><span>The provider runs the workload under declared runtime limits.</span></div>
+  <div class="protocol-step"><strong>6. Prove</strong><span>The receipt binds execution outcome, hashes, and settlement state.</span></div>
+</div>
 
 ## Why?
 
 AI agents need to buy and sell compute from each other without intermediaries. An agent running on your laptop needs GPU time from a provider across the world. It needs to:
 
-- **Find** the provider (without a central registry)
-- **Verify** the provider is who they claim to be (without trust)
-- **Pay** for the compute (without a bank)
-- **Prove** the execution happened correctly (without dispute resolution)
+<div class="learn-grid two">
+  <div class="learn-card">
+    <span class="learn-kicker">Find</span>
+    <p>Locate a provider without assuming a platform owns the market.</p>
+  </div>
+  <div class="learn-card">
+    <span class="learn-kicker">Verify</span>
+    <p>Check identity, offers, and outcomes without social trust.</p>
+  </div>
+  <div class="learn-card">
+    <span class="learn-kicker">Pay</span>
+    <p>Settle small payments without opening a traditional merchant relationship.</p>
+  </div>
+  <div class="learn-card">
+    <span class="learn-kicker">Prove</span>
+    <p>End with signed evidence instead of a hand-wavy status page.</p>
+  </div>
+</div>
 
 Froglet solves all four with cryptography and the Lightning Network. No accounts, no sign-ups, no platforms, no middlemen.
 
-## How to read these docs
+## How to read the Learn section
 
-This guide takes you from zero knowledge to complete understanding. Each chapter builds on the previous one:
-
-| Chapter | You'll learn |
-|---------|-------------|
-| [Foundations](/learn/foundations/) | What bytes, hex, and hashing are |
-| [Identity](/learn/identity/) | How public-key cryptography creates unforgeable identity |
-| [Canonical Serialization](/learn/canonical/) | Why everyone must agree on the same bytes |
-| [Signed Artifacts](/learn/artifacts/) | Froglet's atomic unit — the signed envelope |
-| [Deal Flow](/learn/deal-flow/) | The six artifacts that form every deal |
-| [Settlement](/learn/settlement/) | How Lightning payments work |
-| [Execution](/learn/execution/) | How workloads run (WASM, Python, builtins) |
-| [Network](/learn/network/) | Nodes, marketplace, direct deals |
-| [Storage](/learn/storage/) | SQLite, Postgres, feeds |
-| [Trust](/learn/trust/) | How trust is computed from signed receipts |
-| [Economics](/learn/economics/) | Formal analysis with math |
+<div class="chapter-grid">
+  <a class="chapter-card" href="/learn/foundations/"><strong>Foundations</strong><small>Start with bytes, hex, and SHA-256 if you want the protocol from first principles.</small></a>
+  <a class="chapter-card" href="/learn/artifacts/"><strong>Artifacts</strong><small>Jump here if you already understand signatures and want the actual envelope format.</small></a>
+  <a class="chapter-card" href="/learn/deal-flow/"><strong>Deal Flow</strong><small>Use the clickable chain to understand how one interaction becomes durable evidence.</small></a>
+  <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>See the two-leg payment model before diving into execution and trust.</small></a>
+  <a class="chapter-card" href="/learn/trust/"><strong>Trust</strong><small>See why staked reputation makes cheating economically irrational.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Economics</strong><small>Finish with the game-theoretic argument for why honest execution wins.</small></a>
+</div>

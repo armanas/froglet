@@ -1,0 +1,156 @@
+---
+title: Quickstart
+description: From zero to first deal in five minutes.
+---
+
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">5 minutes</div>
+    <p class="learn-lead">Run a froglet node and complete your first deal.</p>
+    <p class="learn-sublead">This guide starts a provider, requests a quote, and executes a deal — all locally, no Lightning wallet required.</p>
+    <div class="learn-chip-row">
+      <span class="learn-chip">Free mode</span>
+      <span class="learn-chip">Local only</span>
+      <span class="learn-chip">No wallet needed</span>
+    </div>
+  </div>
+</div>
+
+## Prerequisites
+
+- **Rust toolchain** (1.80+) — [install via rustup](https://rustup.rs/)
+- **Git** — to clone the repository
+
+## 1. Clone and build
+
+```bash
+git clone https://github.com/armanas/froglet.git
+cd froglet
+cargo build --release
+```
+
+The build produces `froglet-node` — a single binary that can act as provider, requester, or both depending on configuration.
+
+## 2. Start a node
+
+Open a terminal and run:
+
+```bash
+FROGLET_PAYMENT_BACKEND=none \
+FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
+cargo run --bin froglet-node
+```
+
+By default, `froglet-node` runs in **dual mode** — both provider (port 8080) and requester (port 8081). You can control this with `FROGLET_NODE_ROLE`:
+
+| Value | Behavior |
+|-------|----------|
+| `dual` (default) | Both provider and requester |
+| `provider` | Provider only |
+| `runtime` | Requester only |
+
+You should see:
+
+```
+froglet-node listening on 127.0.0.1:8080
+```
+
+## 3. Check node identity
+
+In a second terminal:
+
+```bash
+curl http://127.0.0.1:8080/v1/node/identity
+```
+
+This returns your node's public key — the same key that signs every artifact.
+
+## 4. Execute a WASM workload
+
+Submit a WASM binary for execution:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/node/execute/wasm \
+  -H "Content-Type: application/json" \
+  -d '{"wasm_hex": "0061736d...", "input": {}}'
+```
+
+The provider quotes, executes, and returns a signed receipt — all in one request.
+
+## 5. Requester side
+
+If you started in dual mode (the default), the requester API is already running on port 8081. If you started as provider-only, start a second node for the requester:
+
+```bash
+FROGLET_NODE_ROLE=runtime \
+FROGLET_RUNTIME_LISTEN_ADDR=127.0.0.1:8081 \
+FROGLET_PAYMENT_BACKEND=none \
+cargo run --bin froglet-node
+```
+
+The requester handles deal negotiation, payment settlement, and receipt verification.
+
+## 6. Register with a marketplace (optional)
+
+To make your provider discoverable:
+
+```bash
+FROGLET_PAYMENT_BACKEND=none \
+FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
+FROGLET_MARKETPLACE_URL=https://mkt.froglet.dev \
+cargo run --bin froglet-node
+```
+
+The provider automatically registers its signed descriptor and offers with the marketplace on startup.
+
+## 7. Stake your identity
+
+After registering, stake non-refundable value into your identity to build trust. Requesters use your stake to decide if dealing with you is safe.
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/provider/deals \
+  -H "Content-Type: application/json" \
+  -d '{
+    "offer_id": "marketplace.stake",
+    "input": { "provider_id": "YOUR_NODE_ID", "amount_msat": 10000 }
+  }'
+```
+
+The marketplace records a non-refundable deposit. Your stake T = total_staked_msat is the complete trust signal. Requesters check: is `stake / deal_value` large enough? If your stake is 10,000 msat and the deal costs 8 msat, the safety ratio is 1,250x — cheating would be irrational.
+
+Top up your stake over time with `marketplace.topup`. See [Trust](/learn/trust/) for the full staked reputation model.
+
+## What just happened
+
+Every interaction produced signed artifacts:
+
+1. **Descriptor** — your provider declared its identity and capabilities
+2. **Offer** — it published what it can execute and at what price
+3. **Quote** — it priced a specific workload
+4. **Deal** — the requester committed
+5. **Receipt** — the provider signed the outcome
+
+Each artifact references the previous by SHA-256 hash. Tamper with any link and verification fails.
+
+## Next steps
+
+<div class="chapter-grid">
+  <a class="chapter-card" href="/learn/deal-flow/"><strong>The Deal Flow</strong><small>See the full artifact chain with an interactive diagram.</small></a>
+  <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>Add Lightning payments with base fee + success fee.</small></a>
+  <a class="chapter-card" href="/learn/trust/"><strong>Trust</strong><small>How staked reputation makes cheating economically irrational.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Economics</strong><small>Why honest execution is the dominant strategy.</small></a>
+</div>
+
+## Environment variable reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_NODE_ROLE` | `dual` | `dual`, `provider`, or `runtime` |
+| `FROGLET_LISTEN_ADDR` | `127.0.0.1:8080` | Provider API bind address |
+| `FROGLET_RUNTIME_LISTEN_ADDR` | `127.0.0.1:8081` | Runtime API bind address |
+| `FROGLET_PAYMENT_BACKEND` | `none` | `none` or `lightning` |
+| `FROGLET_LIGHTNING_MODE` | `mock` | `mock` or `lnd_rest` |
+| `FROGLET_NETWORK_MODE` | `clearnet` | `clearnet`, `tor`, or `dual` |
+| `FROGLET_MARKETPLACE_URL` | — | Auto-register with marketplace |
+| `FROGLET_DATA_DIR` | `./data` | Data directory for SQLite and keys |
+| `FROGLET_IDENTITY_AUTO_GENERATE` | `true` | Generate identity on first run |

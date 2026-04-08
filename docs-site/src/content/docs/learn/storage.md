@@ -18,7 +18,9 @@ The marketplace uses **PostgreSQL** for complex queries:
 
 - **marketplace_providers** — latest descriptor per provider
 - **marketplace_offers** — all active offers with pricing
-- **marketplace_receipts** — receipt history for trust scoring
+- **marketplace_receipts** — receipt history for audit and quality monitoring
+- **marketplace_stakes** — non-refundable identity stake balances (trust = total staked)
+- **marketplace_stake_ledger** — stake deposit and topup transaction history
 - **indexer_cursors** — polling state for each feed source
 
 ## The feed

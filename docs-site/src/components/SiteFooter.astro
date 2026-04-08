@@ -1,0 +1,71 @@
+---
+interface Props {
+	compact?: boolean;
+}
+
+const { compact = false } = Astro.props;
+---
+
+<footer class:list={['froglet-site-footer', compact && 'froglet-site-footer--compact']}>
+	<div class="froglet-site-footer__inner">
+		<p class="froglet-site-footer__tagline">🐸 froglet — identity. execution. settlement.</p>
+		<nav class="froglet-site-footer__links" aria-label="Footer">
+			<a href="/">Home</a>
+			<a href="/learn/">Learn</a>
+			<a href="/architecture/overview/">Docs</a>
+			<a href="/demo/">Demo</a>
+			<a href="https://github.com/armanas/froglet" target="_blank" rel="noreferrer">GitHub</a>
+		</nav>
+	</div>
+</footer>
+
+<style is:global>
+	.froglet-site-footer {
+		border-top: 1px solid hsl(var(--froglet-border));
+		margin-top: auto;
+	}
+
+	.froglet-site-footer__inner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		width: min(1120px, calc(100% - 2rem));
+		margin: 0 auto;
+		padding: 1.1rem 0 1.3rem;
+		color: hsl(var(--froglet-muted));
+		font-size: 0.88rem;
+	}
+
+	.froglet-site-footer--compact .froglet-site-footer__inner {
+		width: 100%;
+		padding-top: 0.85rem;
+	}
+
+	.froglet-site-footer__tagline {
+		margin: 0;
+	}
+
+	.froglet-site-footer__links {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.85rem;
+	}
+
+	.froglet-site-footer__links a {
+		color: hsl(var(--froglet-muted));
+		text-decoration: none;
+	}
+
+	.froglet-site-footer__links a:hover {
+		color: hsl(var(--froglet-foreground));
+	}
+
+	@media (max-width: 720px) {
+		.froglet-site-footer__inner {
+			flex-direction: column;
+			align-items: flex-start;
+			padding-block: 1rem 1.1rem;
+		}
+	}
+</style>

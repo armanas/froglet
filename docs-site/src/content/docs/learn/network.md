@@ -30,14 +30,26 @@ The marketplace is not special infrastructure — it's a provider like any other
 
 ## Two paths, same protocol
 
-```
-PATH 1: Via marketplace
-  Provider ──register──> Marketplace ──search──> Requester
-  Then: Requester deals directly with Provider
-
-PATH 2: Direct
-  Requester knows Provider URL → deals directly
-```
+<div class="learn-paths">
+  <div class="learn-path">
+    <span class="learn-kicker">Path 1</span>
+    <strong>Via marketplace</strong>
+    <ol>
+      <li>Provider registers signed artifacts with a marketplace.</li>
+      <li>Requester buys a search result from that marketplace service.</li>
+      <li>Requester then deals directly with the chosen provider.</li>
+    </ol>
+  </div>
+  <div class="learn-path">
+    <span class="learn-kicker">Path 2</span>
+    <strong>Direct</strong>
+    <ol>
+      <li>The requester already knows the provider URL.</li>
+      <li>Discovery is skipped entirely.</li>
+      <li>The same quote, deal, execution, and receipt flow still applies.</li>
+    </ol>
+  </div>
+</div>
 
 The marketplace is optional — a convenience for public discovery.
 

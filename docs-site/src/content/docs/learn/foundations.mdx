@@ -5,10 +5,23 @@ description: The building blocks everything else is made of.
 
 Everything in computing is built on binary — ones and zeros. A single 0 or 1 is called a **bit**. Eight bits make a **byte**, which can represent 256 different values (0 through 255).
 
-```
-bit:   0 or 1
-byte:  00000000 to 11111111  (0 to 255)
-```
+<div class="learn-grid three">
+  <div class="learn-card tight">
+    <span class="learn-kicker">Bit</span>
+    <strong>0 or 1</strong>
+    <p>The smallest unit. Every value in the protocol is eventually encoded as bits.</p>
+  </div>
+  <div class="learn-card tight">
+    <span class="learn-kicker">Byte</span>
+    <strong>8 bits</strong>
+    <p>A byte can hold 256 values, from <code>00000000</code> to <code>11111111</code>.</p>
+  </div>
+  <div class="learn-card tight">
+    <span class="learn-kicker">Hex</span>
+    <strong>2 hex chars = 1 byte</strong>
+    <p>Hashes and public keys stay human-readable because hex compresses binary cleanly.</p>
+  </div>
+</div>
 
 ## Hexadecimal
 
@@ -38,12 +51,18 @@ Froglet uses **SHA-256**, which produces a 256-bit (32-byte) hash — a 64-chara
 
 ### Try it: the avalanche effect
 
-<div style="margin:16px 0">
-<label style="font-size:13px;color:#9ca3af;display:block;margin-bottom:6px">Type anything and watch the hash change completely:</label>
-<input id="hash-input" type="text" value="froglet" style="width:100%;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px;color:#c9d1d9;font-family:'SF Mono',monospace;font-size:13px;outline:none" />
-<div id="hash-output" style="margin-top:10px;padding:12px 14px;background:#0d1117;border:1px solid #30363d;border-radius:8px;font-family:'SF Mono',monospace;font-size:12px;color:#3fb950;word-break:break-all;min-height:20px"></div>
-<canvas id="hash-viz" width="512" height="48" style="width:100%;height:48px;margin-top:8px;border-radius:6px"></canvas>
-<p style="font-size:11px;color:#6b7280;margin-top:6px">Each colored square represents 2 bits of the hash. Change one letter and watch the entire pattern change.</p>
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">SHA-256 avalanche visualizer</p>
+    <p class="plot-subtitle">Type anything and watch the hash output and the bit-pattern strip change almost completely.</p>
+  </div>
+</div>
+<label class="plot-control" for="hash-input">Input</label>
+<input id="hash-input" type="text" value="froglet" style="width:100%;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:12px;color:#c9d1d9;font-family:'SF Mono',monospace;font-size:13px;outline:none" />
+<div id="hash-output" class="learn-code-box" style="margin-top:10px;font-family:'SF Mono',monospace;font-size:12px;color:#3fb950;word-break:break-all;min-height:20px"></div>
+<canvas id="hash-viz" class="plot-canvas" width="512" height="48" style="height:48px;margin-top:10px"></canvas>
+<p class="plot-note">Each colored square represents one hex digit. Change one character and the pattern should scramble across the entire digest.</p>
 </div>
 
 <script>{`

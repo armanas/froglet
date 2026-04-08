@@ -2754,13 +2754,20 @@ async fn query_events_with_capacity(
 async fn dispatch_builtin_workload(
     state: &AppState,
     execution: &ExecutionWorkload,
+    caller_id: Option<&str>,
 ) -> Result<Value, String> {
     let builtin_name = execution
         .builtin_name
         .as_deref()
         .ok_or("builtin execution requires builtin_name")?;
     if let Some(handler) = state.builtin_services.get(builtin_name) {
-        handler.execute(execution.input.clone()).await
+        let mut input = execution.input.clone();
+        // Inject verified caller identity so handlers can enforce authorization.
+        // This field is set by the execution engine, not by the user.
+        if let (Some(obj), Some(cid)) = (input.as_object_mut(), caller_id) {
+            obj.insert("_caller_id".to_string(), Value::String(cid.to_string()));
+        }
+        handler.execute(input).await
     } else if let Some((kinds, limit)) = execution.events_query_params() {
         Ok(json!({
             "events": query_events_with_capacity(state, kinds, limit).await?,
@@ -8443,7 +8450,7 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                 run_container_execution(&execution, &execution.requested_access, timeout).await
             }
             (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-                dispatch_builtin_workload(state, &execution).await
+                dispatch_builtin_workload(state, &execution, None).await
             }
             _ => Err("unsupported execution runtime/package for job".to_string()),
         },
@@ -8709,6 +8716,7 @@ async fn run_workload_spec_with_admission(
     payment_method: Option<&str>,
     permit: Option<sandbox::ExecutionPermit>,
     expected_offer_hash: Option<&str>,
+    caller_id: Option<&str>,
 ) -> Result<WorkloadRunOutput, String> {
     let timeout = workload_execution_timeout(state, &spec, payment_method);
     if let WorkloadSpec::Execution { execution } = &spec
@@ -8723,6 +8731,7 @@ async fn run_workload_spec_with_admission(
             payment_method,
             permit,
             expected_offer_hash,
+            caller_id,
         ))
         .await;
     }
@@ -8780,7 +8789,7 @@ async fn run_workload_spec_with_admission(
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
-                    let result = dispatch_builtin_workload(state, &execution).await?;
+                    let result = dispatch_builtin_workload(state, &execution, caller_id).await?;
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, Some(_)) => {
@@ -9402,6 +9411,7 @@ async fn process_deal_with_reserved_permit(
         deal.quote.payload.capabilities_granted.clone()
     };
 
+    let deal_requester_id = deal.artifact.payload.requester_id.clone();
     match run_workload_spec_with_admission(
         state.as_ref(),
         deal.spec.clone(),
@@ -9409,6 +9419,7 @@ async fn process_deal_with_reserved_permit(
         deal.payment_method.as_deref(),
         execution_permit,
         Some(deal.quote.payload.offer_hash.as_str()),
+        Some(&deal_requester_id),
     )
     .await
     {
@@ -10709,6 +10720,7 @@ mod tests {
                     .expect("wasm execution permit"),
             ),
             Some(offer.offer.hash.as_str()),
+            None,
         )
         .await
         .expect("service-addressed python execution");
@@ -10774,6 +10786,7 @@ mod tests {
                     .expect("wasm execution permit"),
             ),
             Some(offer.offer.hash.as_str()),
+            None,
         )
         .await
         .expect("service-addressed wasm execution");
@@ -10837,6 +10850,7 @@ mod tests {
             None,
             None,
             Some(offer.offer.hash.as_str()),
+            None,
         )
         .await
         .expect("service-addressed OCI wasm execution");

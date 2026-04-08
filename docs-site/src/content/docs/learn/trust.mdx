@@ -1,6 +1,6 @@
 ---
 title: Trust & Verification
-description: Trust computed from signed receipts, not reputation scores.
+description: Trust from staked reputation, not receipt history.
 ---
 
 ## What is trusted?
@@ -10,100 +10,155 @@ description: Trust computed from signed receipts, not reputation scores.
 | Cryptographic signatures | Marketplaces (can be wrong, cannot forge) |
 | SHA-256 hashes | Transport (can fail, cannot alter signed data) |
 | The deal chain | Storage (can lose data, cannot alter signed data) |
+| **Staked value** | Receipt history alone (can be self-dealt) |
 
-## Trust from receipts
+## Trust from stake
 
-Trust is computed from **signed receipts** — real deals that actually executed and settled.
+Trust is **not** computed from deal history. It is the total non-refundable value a provider has deposited into their identity.
 
-### Interactive: trust score with decay
+$$T(F^P) = \text{total\_staked\_msat}$$
 
-Drag the slider to see how the decay factor affects how much recent vs old deals matter:
+A provider stakes real money into their identity through the marketplace. This stake is:
+- **Non-refundable** — already spent, cannot be recovered
+- **Public** — any requester can query how much a provider has staked
+- **Toppable** — providers can add more stake at any time via `marketplace.topup`
+- **Destroyed on cheat** — if the provider cheats, the identity becomes worthless and the stake must be repaid to rebuild
 
-<div style="margin:20px 0">
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
-  <label style="font-size:12px;color:#9ca3af;white-space:nowrap">decay α = <span id="alpha-val" style="color:#4ade80;font-family:'SF Mono',monospace">0.995</span></label>
-  <input id="alpha-slider" type="range" min="900" max="999" value="995" style="flex:1;accent-color:#4ade80" />
+### Interactive: stake vs deal safety
+
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">Drag the stake amount</p>
+    <p class="plot-subtitle">See how the safety ratio changes for different deal sizes. Higher ratio = more irrational to cheat.</p>
+  </div>
 </div>
-<canvas id="trust-chart" width="600" height="200" style="width:100%;max-width:600px;height:200px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
-<p style="font-size:11px;color:#6b7280;margin-top:6px">X = deals ago (0 = most recent). Y = weight. Lower α means recent deals matter more. Yellow line = half-life.</p>
+<div class="plot-controls">
+  <label class="plot-control">provider stake = <span id="stake-val">10,000</span> sats</label>
+  <input id="stake-slider" type="range" min="100" max="100000" value="10000" step="100" style="flex:1;accent-color:#4ade80" />
+</div>
+<div class="plot-metrics">
+  <div class="plot-metric"><strong id="ratio-small">1,250x</strong><span>safety ratio for 8 sat deal</span></div>
+  <div class="plot-metric"><strong id="ratio-mid">100x</strong><span>safety ratio for 100 sat deal</span></div>
+  <div class="plot-metric"><strong id="ratio-large">10x</strong><span>safety ratio for 1,000 sat deal</span></div>
+</div>
+<canvas id="stake-chart" class="plot-canvas" width="600" height="200" style="max-width:600px;height:200px"></canvas>
+<p class="plot-note">X = deal value (sats). Y = safety ratio (stake / deal). Green zone = cheating is irrational. The dashed line marks the minimum safe threshold.</p>
 </div>
 
 <script>{`
-(function(){
-  const slider=document.getElementById('alpha-slider');
-  const val=document.getElementById('alpha-val');
-  const c=document.getElementById('trust-chart');
-  const ctx=c.getContext('2d');
+  (function(){
+    const slider=document.getElementById('stake-slider');
+    const valLabel=document.getElementById('stake-val');
+    const ratioSmall=document.getElementById('ratio-small');
+    const ratioMid=document.getElementById('ratio-mid');
+    const ratioLarge=document.getElementById('ratio-large');
+    const c=document.getElementById('stake-chart');
+    const ctx=c.getContext('2d');
 
-  function draw(){
-    const alpha=slider.value/1000;
-    val.textContent=alpha.toFixed(3);
-    const w=c.width,h=c.height,pad=10;
-    ctx.clearRect(0,0,w,h);
-    ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
-    for(let y=0;y<h;y+=h/5){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
-    ctx.font='9px system-ui';ctx.fillStyle='#4b5563';ctx.textAlign='left';
-    ctx.fillText('weight 1.0',4,14);ctx.fillText('0',4,h-4);
-    ctx.textAlign='right';ctx.fillText('recent',w-4,h-4);
+    function fmt(n){return n>=1000?Math.round(n).toLocaleString():n.toFixed(1);}
 
-    const n=100;
-    ctx.beginPath();
-    for(let i=0;i<=n;i++){
-      const x=w-i*(w/n);
-      const wt=Math.pow(alpha,i);
-      const y=h-wt*(h-2*pad)-pad;
-      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-    }
-    ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.stroke();
-    ctx.lineTo(0,h);ctx.lineTo(w,h);ctx.closePath();
-    ctx.fillStyle='rgba(74,222,128,0.05)';ctx.fill();
+    function draw(){
+      const stake=parseInt(slider.value);
+      valLabel.textContent=stake.toLocaleString();
+      ratioSmall.textContent=fmt(stake/8)+'x';
+      ratioMid.textContent=fmt(stake/100)+'x';
+      ratioLarge.textContent=fmt(stake/1000)+'x';
 
-    const hl=Math.log(0.5)/Math.log(alpha);
-    if(hl<n&&hl>0){
-      const hx=w-hl*(w/n);
-      ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(hx,0);ctx.lineTo(hx,h);
+      const w=c.width,h=c.height,pad=10;
+      ctx.clearRect(0,0,w,h);
+      ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
+      for(let y=0;y<h;y+=h/5){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+
+      ctx.font='9px system-ui';ctx.fillStyle='#4b5563';
+      ctx.textAlign='left';ctx.fillText('ratio',4,14);
+      ctx.textAlign='right';ctx.fillText('deal value (sats) \\u2192',w-4,h-4);
+
+      var maxDeal=Math.max(stake*2,500);
+      var threshold=10;
+
+      ctx.fillStyle='rgba(74,222,128,0.04)';
+      var threshY=h-(threshold/(stake/1))*((h-2*pad)/Math.max(stake/1,1))-pad;
+
+      ctx.beginPath();
+      for(let i=0;i<=100;i++){
+        var dealVal=1+(maxDeal-1)*i/100;
+        var ratio=stake/dealVal;
+        var plotMax=stake;
+        var y=h-Math.min(ratio/plotMax,1)*(h-2*pad)-pad;
+        if(i===0)ctx.moveTo(i*w/100,y);else ctx.lineTo(i*w/100,y);
+      }
+      ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.stroke();
+
+      ctx.setLineDash([4,4]);ctx.beginPath();
+      var thLine=h-Math.min(threshold/stake*1,1)*(h-2*pad)-pad;
+      ctx.moveTo(0,thLine);ctx.lineTo(w,thLine);
       ctx.strokeStyle='#fbbf2466';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
-      ctx.font='9px system-ui';ctx.fillStyle='#fbbf24';ctx.textAlign='center';
-      ctx.fillText('half-life: '+Math.round(hl)+' deals',hx,14);
+      ctx.font='9px system-ui';ctx.fillStyle='#fbbf24';ctx.textAlign='left';
+      ctx.fillText('min safe threshold (10x)',8,thLine-4);
     }
-  }
-  slider.addEventListener('input',draw);draw();
-})();
+    slider.addEventListener('input',draw);draw();
+  })();
 `}</script>
 
-### The formula
+### The requester's calculation
 
-$$T_P(t) = \frac{\sum_{i=1}^{n} \alpha^{t-t_i} \cdot \mathbb{1}[\text{receipt}_i = \text{success}]}{\sum_{i=1}^{n} \alpha^{t-t_i}}$$
+A requester sees a deal priced at **V** sats and a provider with stake **S** sats.
 
-## Sybil resistance
+For the provider, cheating gains at most V but destroys an identity worth S (which must be repaid to re-enter the market).
 
-Creating a new identity gives $T = 0$ (no history), not $T = 1$ (trusted).
+$$\text{If } \frac{S}{V} > k, \text{ cheating is irrational}$$
 
-### Cost of attack vs gain from cheating
+The requester sets their own risk threshold **k** (e.g., 10). A deal is safe when the provider's stake exceeds **k** times the deal value.
 
-<div style="margin:20px 0">
-<canvas id="sybil-chart" width="600" height="180" style="width:100%;max-width:600px;height:180px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
-<p style="font-size:11px;color:#6b7280;margin-top:6px">Red = cost of building fake reputation. Green = gain from one cheat. Cheating is increasingly irrational as reputation grows.</p>
-</div>
+## Why self-dealing does not work
 
-<script>{`
-(function(){
-  const c=document.getElementById('sybil-chart'),ctx=c.getContext('2d');
-  const w=c.width,h=c.height;
-  ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
-  for(let y=0;y<h;y+=h/4){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
-  ctx.beginPath();
-  for(let i=0;i<=100;i++){const x=i*w/100,cost=i*8,y=h-cost/(800/h)-10;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
-  ctx.strokeStyle='#f87171';ctx.lineWidth=2;ctx.stroke();
-  ctx.beginPath();ctx.moveTo(0,h-8/(800/h)-10);ctx.lineTo(w,h-8/(800/h)-10);
-  ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.setLineDash([6,4]);ctx.stroke();ctx.setLineDash([]);
-  ctx.font='10px system-ui';ctx.textAlign='left';
-  ctx.fillStyle='#f87171';ctx.fillText('cost of reputation (n × avg_fee)',8,30);
-  ctx.fillStyle='#4ade80';ctx.fillText('gain from cheating once (~1 deal)',8,h-14);
-  ctx.font='9px system-ui';ctx.fillStyle='#4b5563';ctx.textAlign='right';ctx.fillText('deals →',w-4,h-4);
-})();
-`}</script>
+In a receipt-based trust model, a provider can create fake requesters and deal with themselves to inflate their score. The cost is just Lightning routing fees — essentially free.
+
+In staked reputation, **self-dealing does not change T.** Only paying real, non-refundable value into the identity changes T. You cannot fake stake.
+
+## The 1% growth mechanism
+
+A new provider entering the market can allocate 100% of margin to stake growth:
+
+| Period | Revenue | Stake (at 1%) | Safety ratio for 8-sat deals |
+|--------|---------|---------------|------------------------------|
+| Week 1 | 500 sats | 5 sats | 0.6x (not yet safe) |
+| Month 1 | 8,000 sats | 80 sats | 10x (threshold) |
+| Month 3 | 50,000 sats | 500 sats | 62x (very safe) |
+| Year 1 | 400,000 sats | 4,000 sats | 500x (dominant provider) |
+
+An aggressive new entrant who stakes **100% of margin** grows T faster than established providers. This is a feature — it rewards commitment over incumbency.
+
+## Game theory
+
+### The payoff matrix
+
+| Strategy | This deal | Reputation | Future income |
+|----------|-----------|------------|---------------|
+| **Honest** | +V (full price) | preserved | continues |
+| **Cheat** | +base_fee only | destroyed (must re-stake S) | zero until rebuilt |
+
+### Nash equilibrium
+
+For any provider with meaningful stake:
+
+$$\text{gain\_from\_cheat} = \text{base\_fee} \ll S + \text{future\_earnings}(S) = \text{cost\_of\_cheat}$$
+
+**Honesty is the dominant strategy.** Not because the protocol enforces it — there is no enforcement. But because the economics make honesty the cheapest option.
+
+## Quality as a separate concern
+
+Stake proves **commitment**, not **competence**. A provider can stake 100,000 sats and still have buggy infrastructure.
+
+Quality monitoring is a **marketplace service** (ranker), not a protocol mechanism. The marketplace can track execution success rates from receipts and surface quality rankings alongside stake amounts. Providers with high stake but poor quality get fewer deals — market competition handles the rest.
+
+| Layer | Responsibility |
+|-------|---------------|
+| **Protocol** | Identity, artifacts, deals, settlement, stake |
+| **Marketplace: staking** | Accept and publish non-refundable identity deposits |
+| **Marketplace: ranker** | Monitor quality, flag poor performers, rank search results |
 
 :::tip[Key insight]
-Anyone can recompute trust from the same signed receipts. The marketplace computes scores as a convenience, but it is not the authority — the signed artifacts are.
+The protocol guarantees that cheating is economically irrational (via stake). The marketplace guarantees that incompetence is visible (via ranking). These are different concerns with different solutions.
 :::

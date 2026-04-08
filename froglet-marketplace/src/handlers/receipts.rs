@@ -24,7 +24,6 @@ struct ReceiptsInput {
 #[derive(Debug, Serialize)]
 struct ReceiptsResult {
     receipts: Vec<ReceiptSummary>,
-    summary: super::TrustSummary,
     cursor: Option<String>,
     has_more: bool,
 }
@@ -78,18 +77,6 @@ impl BuiltinServiceHandler for MarketplaceReceiptsHandler {
                 .take(limit as usize)
                 .collect();
 
-            let trust_row = client
-                .query_one(
-                    "SELECT
-                        COUNT(*)::bigint,
-                        COUNT(*) FILTER (WHERE status = 'succeeded')::bigint,
-                        COUNT(*) FILTER (WHERE status = 'failed')::bigint
-                     FROM marketplace_receipts WHERE provider_id = $1",
-                    &[&req.provider_id],
-                )
-                .await
-                .map_err(|e| format!("trust query: {e}"))?;
-
             let next_cursor = if has_more {
                 Some((offset + limit).to_string())
             } else {
@@ -107,11 +94,6 @@ impl BuiltinServiceHandler for MarketplaceReceiptsHandler {
                         created_at: r.get(4),
                     })
                     .collect(),
-                summary: super::TrustSummary {
-                    total: trust_row.get(0),
-                    succeeded: trust_row.get(1),
-                    failed: trust_row.get(2),
-                },
                 cursor: next_cursor,
                 has_more,
             })

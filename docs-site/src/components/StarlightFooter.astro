@@ -1,0 +1,35 @@
+---
+import EditLink from 'virtual:starlight/components/EditLink';
+import LastUpdated from 'virtual:starlight/components/LastUpdated';
+import Pagination from 'virtual:starlight/components/Pagination';
+import SiteFooter from './SiteFooter.astro';
+---
+
+<div class="froglet-docs-footer sl-flex">
+	<div class="froglet-docs-footer__meta sl-flex">
+		<EditLink />
+		<LastUpdated />
+	</div>
+	<Pagination />
+</div>
+<SiteFooter compact={true} />
+
+<style>
+	.froglet-docs-footer {
+		flex-direction: column;
+		gap: 1.5rem;
+	}
+
+	.froglet-docs-footer__meta {
+		gap: 0.75rem 3rem;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		margin-top: 3rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+	}
+
+	.froglet-docs-footer__meta > :global(p:only-child) {
+		margin-inline-start: auto;
+	}
+</style>

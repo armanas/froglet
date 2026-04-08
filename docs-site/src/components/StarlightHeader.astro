@@ -1,0 +1,8 @@
+---
+import Search from 'virtual:starlight/components/Search';
+import SiteHeader from './SiteHeader.astro';
+---
+
+<SiteHeader currentPath={Astro.url.pathname} embedded={true}>
+	<Search slot="tools" class="froglet-site-search" />
+</SiteHeader>

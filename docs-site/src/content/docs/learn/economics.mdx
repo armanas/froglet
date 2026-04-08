@@ -55,28 +55,46 @@ The success fee acts as the provider's marginal incentive for reliability. Highe
 
 ### Interactive: provider profit vs quality
 
-Drag the sliders to see how fees affect the provider's incentive to deliver quality:
-
-<div style="margin:20px 0">
-<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:#9ca3af">
-  <label>base fee: <span id="bf-val" style="color:#f87171;font-family:'SF Mono',monospace">3</span> sat <input id="bf-slider" type="range" min="0" max="10" value="3" style="width:100px;accent-color:#f87171;vertical-align:middle" /></label>
-  <label>success fee: <span id="sf-val" style="color:#4ade80;font-family:'SF Mono',monospace">5</span> sat <input id="sf-slider" type="range" min="0" max="15" value="5" style="width:100px;accent-color:#4ade80;vertical-align:middle" /></label>
-  <label>cost: <span id="c-val" style="color:#fbbf24;font-family:'SF Mono',monospace">2</span> sat <input id="c-slider" type="range" min="0" max="8" value="2" style="width:100px;accent-color:#fbbf24;vertical-align:middle" /></label>
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">Move the fees and watch the incentive line change</p>
+    <p class="plot-subtitle">The slope of provider profit with respect to quality is the success fee. That is why the green line gets steeper when success fees rise.</p>
+  </div>
 </div>
-<canvas id="profit-chart" width="600" height="220" style="width:100%;max-width:600px;height:220px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
-<p style="font-size:11px;color:#6b7280;margin-top:6px">X = provider quality (q). Green = provider profit. Blue = requester payoff (v=10). The steeper the green line, the stronger the incentive to be reliable.</p>
+<div class="plot-controls">
+  <label class="plot-control">base fee: <span id="bf-val">3</span> sat <input id="bf-slider" type="range" min="0" max="10" value="3" style="width:120px;accent-color:#f87171" /></label>
+  <label class="plot-control">success fee: <span id="sf-val">5</span> sat <input id="sf-slider" type="range" min="0" max="15" value="5" style="width:120px;accent-color:#4ade80" /></label>
+  <label class="plot-control">cost: <span id="c-val">2</span> sat <input id="c-slider" type="range" min="0" max="8" value="2" style="width:120px;accent-color:#fbbf24" /></label>
+</div>
+<div class="plot-metrics">
+  <div class="plot-metric"><strong id="profit-at-zero">1.0 sat</strong><span>provider payoff at q = 0</span></div>
+  <div class="plot-metric"><strong id="profit-at-one">6.0 sat</strong><span>provider payoff at q = 1</span></div>
+  <div class="plot-metric"><strong id="break-even-q">0.00</strong><span>break-even quality threshold</span></div>
+</div>
+<canvas id="profit-chart" class="plot-canvas" width="600" height="220" style="max-width:600px;height:220px"></canvas>
+<p class="plot-note">X = provider quality (q). Green = provider profit. Blue = requester payoff with requester value fixed at 10 sat.</p>
 </div>
 
 <script>{`
-(function(){
-  const bfs=document.getElementById('bf-slider'),sfs=document.getElementById('sf-slider'),cs=document.getElementById('c-slider');
-  const bfv=document.getElementById('bf-val'),sfv=document.getElementById('sf-val'),cv=document.getElementById('c-val');
-  const c=document.getElementById('profit-chart'),ctx=c.getContext('2d');
-  const v=10;
-  function draw(){
-    const bf=+bfs.value,sf=+sfs.value,cost=+cs.value;
-    bfv.textContent=bf;sfv.textContent=sf;cv.textContent=cost;
-    const w=c.width,h=c.height,pad=20,ph=h-2*pad;
+  (function(){
+    const bfs=document.getElementById('bf-slider'),sfs=document.getElementById('sf-slider'),cs=document.getElementById('c-slider');
+    const bfv=document.getElementById('bf-val'),sfv=document.getElementById('sf-val'),cv=document.getElementById('c-val');
+    const profitAtZero=document.getElementById('profit-at-zero');
+    const profitAtOne=document.getElementById('profit-at-one');
+    const breakEven=document.getElementById('break-even-q');
+    const c=document.getElementById('profit-chart'),ctx=c.getContext('2d');
+    const v=10;
+    function draw(){
+      const bf=+bfs.value,sf=+sfs.value,cost=+cs.value;
+      bfv.textContent=bf;sfv.textContent=sf;cv.textContent=cost;
+      const zeroProfit=bf-cost;
+      const fullProfit=bf+sf-cost;
+      const threshold=sf===0?(zeroProfit>=0?0:Infinity):Math.max(0,(cost-bf)/sf);
+      profitAtZero.textContent=zeroProfit.toFixed(1)+' sat';
+      profitAtOne.textContent=fullProfit.toFixed(1)+' sat';
+      breakEven.textContent=Number.isFinite(threshold)?threshold.toFixed(2):'never';
+      const w=c.width,h=c.height,pad=20,ph=h-2*pad;
     ctx.clearRect(0,0,w,h);
     ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
     for(let y=pad;y<=h-pad;y+=ph/4){ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();}

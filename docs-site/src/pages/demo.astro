@@ -1,572 +1,645 @@
 ---
+import '../styles/custom.css';
+import SiteFooter from '../components/SiteFooter.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
 ---
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Froglet — Interactive Demo</title>
-<style>
+<meta name="color-scheme" content="light dark">
+<ThemeProvider />
+<style is:inline>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Kalam:wght@400;700&display=swap');
+:root{--bg:hsl(var(--froglet-background));--surface:hsl(var(--froglet-surface));--surface-2:hsl(var(--froglet-surface-2));--card:hsl(var(--froglet-card));--border:hsl(var(--froglet-border));--text:hsl(var(--froglet-foreground));--muted:hsl(var(--froglet-muted));--accent:hsl(var(--froglet-accent));--accent-strong:hsl(var(--froglet-accent-strong));--accent-soft:hsl(var(--froglet-accent-soft));--scene:#101618;--scene-border:rgba(122,215,143,.18);--term:#1b2327;--term-bar:hsl(var(--froglet-surface));--term-text:#d1d8d5;--shadow:var(--froglet-shadow)}
+[data-theme='dark']{--scene:#0a1012;--scene-border:rgba(154,217,192,.2);--term:#0d1417;--term-bar:hsl(var(--froglet-surface-2));--term-text:#d8e1dd}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#07090e;color:#c4cad6;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif;height:100vh;overflow:hidden;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+body{margin:0;background:radial-gradient(circle at top,color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent),transparent 24%),var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;min-height:100svh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+.demo-shell{flex:1;display:flex;flex-direction:column;min-height:0}
+.main{flex:1;display:grid;grid-template-columns:minmax(320px,360px) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:'lesson scene' 'term scene';gap:18px;padding:20px;min-height:640px;align-items:stretch}
+#scene{grid-area:scene;position:relative;inset:auto;border:1px solid var(--scene-border);border-radius:24px;overflow:hidden;background:var(--scene);box-shadow:var(--shadow);min-height:0}
+canvas{display:block;width:100%;height:100%;position:absolute;inset:0}
 
-#bar{height:44px;background:#0c0f16;border-bottom:1px solid #1a1f2b;display:flex;align-items:center;padding:0 20px;gap:14px;flex-shrink:0}
-.logo{font-size:17px;font-weight:700;letter-spacing:-.3px}
-.bar-r{margin-left:auto;display:flex;gap:16px;font-size:12px}
-.bar-r a{color:#6b7280;text-decoration:none;transition:color .15s}
-.bar-r a:hover{color:#a5b4fc}
-
-.main{flex:1;position:relative;overflow:hidden}
-canvas{display:block;width:100%;height:100%}
-#stats{position:absolute;top:14px;right:20px;display:flex;gap:18px;font-size:10px;font-family:'SF Mono','Menlo',monospace;color:#4b5563;z-index:2;background:rgba(7,9,14,.6);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:6px 14px;border-radius:8px;border:1px solid #1a1f2b}
-.stat{display:flex;align-items:center;gap:5px}
-.stat b{color:#9ca3af;font-weight:500;font-size:11px}
-.sdot{width:6px;height:6px;border-radius:50%;display:inline-block;box-shadow:0 0 4px currentColor}
-
-/* Lesson card — floating top-left */
-#lesson-wrap{position:absolute;top:16px;left:16px;width:380px;z-index:3;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+#lesson-wrap{grid-area:lesson;position:relative;width:auto;z-index:3;display:flex;flex-direction:column;gap:10px;pointer-events:none;align-self:start}
 #lesson-wrap>*{pointer-events:auto}
-#lesson-card{padding:20px 24px;background:rgba(10,13,20,.88);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(99,102,241,.12);border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.3)}
-.step-n{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;color:#6366f1;margin-bottom:8px}
-.step-t{font-size:17px;font-weight:600;color:#e5e7eb;line-height:1.35;margin-bottom:8px}
-.step-desc{font-size:13px;line-height:1.65;color:#9ca3af}
-.step-desc a{color:#818cf8;text-decoration:none;border-bottom:1px solid #818cf833}
-.step-desc code{background:#1e1b4b44;padding:1px 5px;border-radius:3px;font-family:'SF Mono','Menlo',monospace;font-size:11px;color:#a5b4fc}
+#lesson-card{padding:22px 24px;background:color-mix(in srgb, hsl(var(--froglet-card)) 96%, transparent);border:1px solid var(--border);border-radius:20px;box-shadow:var(--shadow)}
+.step-n{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--accent);margin-bottom:8px}
+.step-t{font-family:'Inter',system-ui,sans-serif;font-size:1.5rem;font-weight:700;color:var(--text);line-height:1.15;margin-bottom:8px;letter-spacing:-.02em}
+.step-desc{font-size:.98rem;line-height:1.65;color:var(--muted)}
+.step-desc a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(47,138,76,.25)}
+.step-desc code{background:var(--surface);padding:2px 6px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--accent-strong)}
 
-/* Annotation */
-#annotation{padding:10px 14px;background:rgba(17,22,32,.82);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(129,140,248,.08);border-radius:10px;font-size:11.5px;line-height:1.6;color:#6b7280;display:none;max-height:90px;overflow-y:auto}
-#annotation strong{color:#818cf8;font-weight:600}
-#annotation .hl{color:#4ade80}
+#annotation{padding:11px 14px;background:color-mix(in srgb, hsl(var(--froglet-surface)) 94%, transparent);border:1px solid var(--border);border-radius:14px;font-size:.82rem;line-height:1.6;color:var(--muted);display:none;max-height:110px;overflow-y:auto;box-shadow:var(--shadow)}
+#annotation strong{color:var(--text);font-weight:600}
+#annotation .hl{color:var(--accent);font-weight:600}
 
-/* macOS Terminal — floating bottom-right */
-#term{position:absolute;bottom:24px;right:24px;width:520px;height:390px;z-index:3;display:flex;flex-direction:column;border-radius:11px;overflow:hidden;background:#1c1c1e;box-shadow:0 12px 48px rgba(0,0,0,.6),0 4px 12px rgba(0,0,0,.35),0 0 0 0.5px rgba(255,255,255,.06),inset 0 0.5px 0 rgba(255,255,255,.04)}
-
-/* Title bar — macOS Sequoia style */
-#term-bar{height:36px;background:linear-gradient(180deg,#3a3a3c 0%,#2c2c2e 100%);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;-webkit-app-region:drag;border-bottom:1px solid #1a1a1c}
+#term{grid-area:term;position:relative;width:auto;height:100%;min-height:220px;max-height:320px;z-index:3;display:flex;flex-direction:column;border-radius:18px;overflow:hidden;background:var(--term);border:1px solid var(--scene-border);box-shadow:0 18px 42px rgba(24,23,20,.18);align-self:end}
+#term-bar{height:34px;background:var(--term-bar);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;border-bottom:1px solid #d4d8d7}
 .traffic{display:flex;gap:7px;align-items:center}
-.tl{width:12px;height:12px;border-radius:50%;position:relative}
-.tl-close{background:#ff5f57;border:0.5px solid #e0443e}
-.tl-min{background:#febc2e;border:0.5px solid #dea123}
-.tl-max{background:#28c840;border:0.5px solid #1aab29}
-.tl::after{content:'';position:absolute;inset:0;border-radius:50%;background:linear-gradient(180deg,rgba(255,255,255,.2) 0%,transparent 50%)}
-#term-title{flex:1;text-align:center;font-size:12px;font-weight:500;color:#a1a1a6;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif}
-
-/* Terminal body */
-#term-body{flex:1;padding:8px 12px;overflow-y:auto;font-family:'SF Mono','Menlo','Fira Code',monospace;font-size:12px;line-height:1.55;background:#1c1c1e;color:#d1d1d6}
-#term-body::-webkit-scrollbar{width:6px}
+.tl{width:11px;height:11px;border-radius:50%;position:relative}
+.tl-close{background:#ff5f57}.tl-min{background:#febc2e}.tl-max{background:#28c840}
+#term-title{flex:1;text-align:center;font-size:.74rem;font-weight:600;color:#67706f;font-family:'Inter',system-ui,sans-serif}
+#term-body{flex:1;padding:6px 10px;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:.72rem;line-height:1.55;background:var(--term);color:var(--term-text)}
+#term-body::-webkit-scrollbar{width:5px}
 #term-body::-webkit-scrollbar-track{background:transparent}
-#term-body::-webkit-scrollbar-thumb{background:#3a3a3c;border-radius:3px}
+#term-body::-webkit-scrollbar-thumb{background:#394245;border-radius:3px}
 
-/* Terminal colors — macOS Terminal "Basic" profile inspired */
-.tp{color:#28c840}.tc{color:#3f8eea}.to{color:#a1a1a6}.th{color:#ffd60a}.ts{color:#32d74b}.tm{color:#48484a}.te{color:#ff453a}.tv{color:#bf5af2}
+.tp{color:#7ad78f}.tc{color:#89c5ae}.to{color:#b7c0bd}.th{color:#d7c779}.ts{color:#7ad78f}.tm{color:#73807c}.te{color:#ff786f}.tv{color:#96b9a2}
 .cursor-line{display:flex;align-items:center}
-.cursor{width:7.2px;height:15px;background:#28c840;display:inline-block;animation:blink 1s step-end infinite;border-radius:1px}
+.cursor{width:7.2px;height:15px;background:#7ad78f;display:inline-block;animation:blink 1s step-end infinite;border-radius:1px}
 @keyframes blink{50%{opacity:0}}
 
-/* Bottom nav */
-#nav{height:52px;background:rgba(12,15,22,.95);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-top:1px solid #1a1f2b;display:flex;align-items:center;padding:0 20px;gap:10px;flex-shrink:0}
-.pips{display:flex;gap:3px;flex:1}
-.pip{width:18px;height:3px;border-radius:1.5px;background:#1a1f2b;transition:all .3s}
-.pip.done{background:#4f46e5}.pip.on{background:#818cf8}
-#prevBtn,#nextBtn{padding:7px 18px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;border:none;transition:all .15s}
-#prevBtn{background:#1a1f2b;color:#9ca3af}
-#prevBtn:hover{background:#252b3b}
-#prevBtn:disabled{opacity:.3;cursor:default}
-#nextBtn{background:#4f46e5;color:#fff}
-#nextBtn:hover{background:#6366f1}
+#nav{height:60px;background:color-mix(in srgb, hsl(var(--froglet-background)) 92%, transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+.pips{display:flex;gap:5px;flex:1}
+.pip{width:20px;height:4px;border-radius:999px;background:#dcd4c8;transition:all .3s;cursor:pointer}
+.pip:hover{background:#a8b8a0}
+.pip.done{background:#7db78d}.pip.on{background:var(--accent)}
+#prevBtn,#nextBtn{padding:10px 18px;border-radius:999px;font-size:.9rem;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid var(--border);transition:all .15s}
+#prevBtn{background:var(--card);color:var(--text)}
+#prevBtn:hover{background:var(--surface)}
+#prevBtn:disabled{opacity:.45;cursor:default}
+#nextBtn{background:var(--accent);border-color:var(--accent);color:#f8f6f1}
+#nextBtn:hover{background:var(--accent-strong);border-color:var(--accent-strong)}
 
 @media(max-width:900px){
-  #lesson-wrap{width:calc(100% - 32px);top:auto;bottom:72px;left:16px}
-  #term{width:calc(100% - 32px);height:240px;bottom:16px;right:16px;left:16px}
+  body{overflow:auto}
+  .demo-shell{min-height:auto}
+  .main{display:grid;grid-template-columns:1fr;grid-template-rows:auto;grid-template-areas:'lesson' 'scene' 'term';gap:16px;padding:16px;overflow:visible;min-height:auto}
+  #scene{position:relative;inset:auto;grid-area:scene;min-height:400px;border-radius:20px}
+  #lesson-wrap{position:relative;grid-area:lesson;width:auto;top:auto;left:auto}
+  #lesson-card{padding:18px 18px}
+  .step-t{font-size:1.28rem}
+  .step-desc{font-size:.93rem;line-height:1.55}
+  #annotation{font-size:.78rem;line-height:1.5}
+  #term{position:relative;grid-area:term;width:auto;height:220px;min-height:220px;max-height:none;bottom:auto;right:auto;left:auto}
+  #nav{padding:12px 16px 18px;background:transparent;border-top:none;justify-content:flex-end}
+  .pips{display:none}
 }
-</style>
+	</style>
 </head>
 <body>
-<div id="bar">
-  <span class="logo">&#x1F438; froglet</span>
-  <div class="bar-r"><a href="/">home</a><a href="/learn/introduction/">learn</a><a href="/architecture/overview/">docs</a></div>
-</div>
-<div class="main">
-  <canvas id="net"></canvas>
-  <div id="stats">
-    <div class="stat"><span class="sdot" style="background:#a78bfa"></span> providers <b id="sp">0</b></div>
-    <div class="stat"><span class="sdot" style="background:#67e8f9"></span> marketplace <b id="sm">0</b></div>
-    <div class="stat"><span class="sdot" style="background:#93c5fd"></span> requesters <b id="sr">0</b></div>
-    <div class="stat"><span class="sdot" style="background:#6ee7b7"></span> receipts <b id="sd">0</b></div>
-  </div>
-  <div id="lesson-wrap">
-    <div id="lesson-card"></div>
-    <div id="annotation"></div>
-  </div>
-  <div id="term">
-      <div id="term-bar">
-        <div class="traffic"><div class="tl tl-close"></div><div class="tl tl-min"></div><div class="tl tl-max"></div></div>
-        <div id="term-title">froglet — zsh — 80×24</div>
-      </div>
-      <div id="term-body"></div>
-    </div>
+	<SiteHeader currentPath={Astro.url.pathname} />
+	<div class="demo-shell">
+	<div class="main">
+	  <div id="scene">
+	    <canvas id="net"></canvas>
+	  </div>
+	  <div id="lesson-wrap">
+	    <div id="lesson-card"></div>
+	    <div id="annotation"></div>
+	  </div>
+	  <div id="term">
+	      <div id="term-bar">
+	        <div class="traffic"><div class="tl tl-close"></div><div class="tl tl-min"></div><div class="tl tl-max"></div></div>
+	        <div id="term-title">froglet &#8212; zsh</div>
+	      </div>
+	      <div id="term-body"></div>
+	    </div>
 </div>
 <div id="nav">
   <div class="pips" id="pips"></div>
   <button id="prevBtn" onclick="go(-1)">Back</button>
   <button id="nextBtn" onclick="go(1)">Continue</button>
 </div>
+</div>
+<SiteFooter />
 
 <script type="module">
+// ═══════ STEPS: lecture content + realistic terminal ═══════
 const S=[
 {
-  t:"Generate your identity",
-  d:`Your public key is your permanent identity. No accounts, no platforms.`,
-  link:"/learn/identity/",
-  note:`<strong>secp256k1</strong> elliptic curve — same as Bitcoin and Nostr. A 256-bit random number becomes your private key. Curve multiplication (P = k·G) derives the public key. This is <span class="hl">mathematically irreversible</span>.`,
-  term:[
-    {p:"~",c:"froglet init"},
-    {o:""},
-    {o:"  <span class='to'>Generating secp256k1 keypair...</span>"},
-    {o:"  <span class='ts'>✓</span> Identity created"},
-    {o:""},
-    {o:"  <span class='to'>node_id</span>    <span class='th'>7f3a2b91e8c4d1563a0e9f8b</span>"},
-    {o:"  <span class='to'>public_key</span> <span class='tm'>027f3a2b91e8c4d1563a0e9f8b4c7d2a6e1f0b...</span>"},
-    {o:"  <span class='to'>seed</span>       <span class='tm'>~/.froglet/identity/secp256k1.seed</span>"},
-    {o:""},
-    {o:"  Node is <span class='tv'>private</span>. Not visible on the network."},
-  ],
-  action:'spawn_provider',
-},
-{
-  t:"Publish a service",
-  d:`Sign a descriptor and an offer. Each is hashed and signed — creating an immutable chain.`,
-  link:"/learn/artifacts/",
-  note:`<strong>RFC 8785 canonical JSON</strong> guarantees identical bytes across implementations. Those bytes are <span class="hl">SHA-256</span> hashed, then <span class="hl">BIP340 Schnorr</span> signed. The offer references the descriptor by hash — tamper with one, the chain breaks.`,
-  term:[
-    {p:"~",c:"froglet publish --kind compute.wasm --price 8"},
-    {o:""},
-    {o:"  Signing descriptor..."},
-    {o:"  <span class='to'>provider_id</span>   <span class='th'>7f3a2b91e8c4d156</span>"},
-    {o:"  <span class='to'>transport</span>     https://my-node.dev:8080"},
-    {o:"  <span class='to'>capabilities</span>  compute.wasm"},
-    {o:"  <span class='ts'>✓</span> <span class='to'>descriptor</span>   <span class='tm'>d8e2f41a...9c3b</span>"},
-    {o:""},
-    {o:"  Signing offer..."},
-    {o:"  <span class='to'>offer_kind</span>    <span class='th'>compute.wasm</span>"},
-    {o:"  <span class='to'>base_fee</span>      3,000 msat"},
-    {o:"  <span class='to'>success_fee</span>   5,000 msat"},
-    {o:"  <span class='to'>runtime</span>       wasm  <span class='tm'>50M fuel / 8MB mem</span>"},
-    {o:"  <span class='ts'>✓</span> <span class='to'>offer</span>        <span class='tm'>a3f19e2b...7d4c</span> → <span class='tm'>d8e2f41a</span>"},
-  ],
-  action:'publish',
-},
-{
-  t:"Register with the marketplace",
-  d:`Push your signed artifacts to the marketplace — itself a froglet provider running a search service.`,
-  link:"/marketplace/overview/",
-  note:`This is a <strong>standard froglet deal</strong>. The marketplace quotes, you commit, it executes (indexes your data), signs a receipt. Same protocol as WASM compute. If froglet can't host its own marketplace, it can't host anything.`,
-  term:[
-    {p:"~",c:"froglet register --marketplace https://mkt.froglet.dev"},
-    {o:""},
-    {o:"  <span class='tc'>→</span> <span class='to'>POST</span> /v1/provider/quotes"},
-    {o:"    <span class='tm'>offer_id: marketplace.register</span>"},
-    {o:"  <span class='tc'>←</span> Quote <span class='tm'>e7b2...1f4a</span>  <span class='to'>free</span>"},
-    {o:""},
-    {o:"  <span class='tc'>→</span> <span class='to'>POST</span> /v1/provider/deals"},
-    {o:"    <span class='tm'>payload: descriptor + 1 offer</span>"},
-    {o:"    <span class='tm'>signed by: 7f3a2b91</span>"},
-    {o:"  <span class='tc'>←</span> Receipt <span class='tm'>4c8f...a2e1</span>"},
-    {o:""},
-    {o:"  <span class='ts'>✓</span> Registered. Node is now discoverable."},
-  ],
-  action:'register',
-},
-{
-  t:"Reputation economics",
-  d:`Trust is built from real deals with real payments. The math makes honesty the dominant strategy.`,
-  link:"/learn/trust/",
-  note:`<strong>Game theory:</strong> Building 147 deals costs <span class="hl">~1,200 sats and 34 days</span>. Cheating gains ~8 sats once and destroys 100% of that. New identity = 0 trust, 0 deals. Rational strategy: <span class="hl">never cheat</span>.`,
-  term:[
-    {p:"~",c:"froglet inspect 7f3a2b91 --trust"},
-    {o:""},
-    {o:"  <span class='th'>Provider 7f3a2b91e8c4d156</span>"},
-    {o:"  ─────────────────────────────────────"},
-    {o:"  deals          <span class='ts'>147</span>"},
-    {o:"  succeeded      <span class='ts'>146</span>  <span class='to'>(99.3%)</span>"},
-    {o:"  failed         <span class='te'>1</span>"},
-    {o:"  total settled  <span class='th'>1,240,000 msat</span>"},
-    {o:"  first seen     34 days ago"},
-    {o:"  trust score    <span class='ts'>0.9432</span>"},
-    {o:""},
-    {o:"  <span class='tm'>T = Σ(α^(t−tᵢ) · successᵢ) / Σ(α^(t−tᵢ))</span>"},
-    {o:"  <span class='tm'>α = 0.995   (recent deals weigh more)</span>"},
-  ],
-  action:'trust',
-},
-{
-  t:"Search for a service",
-  d:`Query the marketplace. Trust scores are computed from signed receipts with real Lightning payments.`,
-  link:"/learn/deal-flow/",
-  note:`Trust of <span class="hl">0.94</span> means 94% of deals settled successfully — from <strong>signed receipts with real money</strong>. Anyone can recompute it independently. The marketplace is a convenience, not the authority.`,
-  term:[
-    {p:"~",c:"froglet search --kind compute.wasm --max-price 10"},
-    {o:""},
-    {o:"  <span class='tc'>→</span> marketplace.search  <span class='tm'>deal e1f2...3a4b</span>"},
-    {o:"  <span class='tc'>←</span> results + receipt   <span class='tm'>b1d4...7e2f</span>"},
-    {o:""},
-    {o:"  <span class='tm'>PROVIDER          KIND            PRICE   TRUST</span>"},
-    {o:"  <span class='to'>7f3a2b91e8c4</span>  compute.wasm    <span class='th'>8 sat</span>   <span class='ts'>0.94</span>"},
-    {o:"  <span class='to'>e4c1d8a2f7b3</span>  compute.wasm    <span class='th'>5 sat</span>   <span class='ts'>0.87</span>"},
-    {o:"  <span class='to'>1a9b7e3c4d52</span>  compute.wasm    <span class='th'>3 sat</span>   <span class='to'>0.71</span>"},
-    {o:""},
-    {o:"  <span class='tm'>3 providers found</span>"},
-  ],
-  action:'search',
-},
-{
-  t:"Make a deal",
-  d:`Quote, commit, pay. Two fees protect both sides.`,
-  link:"/learn/settlement/",
-  note:`<strong>Base fee</strong> (3,000 msat) locks via Lightning HTLC — provider is paid for reserving resources. <strong>Success fee</strong> (5,000 msat) settles only on success. Provider fails → you lose 3 sats, not 8. Provider profit scales with quality: <span class="hl">∂π/∂q = f<sub>s</sub> > 0</span>.`,
-  term:[
-    {p:"~",c:"froglet run 7f3a2b91 --input '{\"query\": \"hello\"}'"},
-    {o:""},
-    {o:"  <span class='tc'>→</span> <span class='to'>POST</span> /v1/provider/quotes"},
-    {o:"  <span class='tc'>←</span> Quote <span class='tm'>f8a1...3e2c</span>  <span class='to'>expires 300s</span>"},
-    {o:"    <span class='to'>base_fee</span>     3,000 msat"},
-    {o:"    <span class='to'>success_fee</span>  5,000 msat"},
-    {o:""},
-    {o:"  <span class='tc'>→</span> <span class='to'>POST</span> /v1/provider/deals"},
-    {o:"    <span class='tm'>signed by requester: 03b7e8f1...</span>"},
-    {o:"  <span class='tc'>←</span> Deal <span class='tm'>b4a2...e7f1</span>  status: <span class='th'>payment_pending</span>"},
-    {o:""},
-    {o:"  Paying base fee <span class='to'>(3,000 msat)</span>..."},
-    {o:"  <span class='ts'>✓</span> Base settled. Status: <span class='ts'>accepted</span>"},
-  ],
-  action:'deal',
-},
-{
-  t:"Execution + receipt",
-  d:`WASM sandbox runs the workload. Provider signs a receipt — cryptographic proof of everything.`,
-  link:"/learn/execution/",
-  note:`The <strong>receipt</strong> completes the chain: descriptor → offer → quote → deal → receipt. Each linked by hash. Anyone can verify: provider signed it, result matches, settlement correct. <span class="hl">No dispute resolution. The math is the arbiter.</span>`,
-  term:[
-    {o:""},
-    {o:"  <span class='th'>Executing in WASM sandbox...</span>"},
-    {o:"    runtime     <span class='to'>wasmtime 41.0</span>"},
-    {o:"    fuel        <span class='to'>1,247,832 / 50,000,000</span>"},
-    {o:"    memory      <span class='to'>524,288 / 8,388,608 bytes</span>"},
-    {o:"    wall time   <span class='to'>42ms / 10,000ms</span>"},
-    {o:"  <span class='ts'>✓</span> Execution succeeded"},
-    {o:""},
-    {o:"  Settling success fee <span class='to'>(5,000 msat)</span>..."},
-    {o:"  <span class='ts'>✓</span> Success settled"},
-    {o:""},
-    {o:"  Receipt <span class='tm'>c8f3...a7e2</span>"},
-    {o:"    result_hash  <span class='tm'>sha256:9f1a...4b2c</span>"},
-    {o:"    result       <span class='th'>{\"answer\": 42}</span>"},
-    {o:"    chain        <span class='ts'>✓</span> <span class='tm'>d8e2→a3f1→f8a1→b4a2→c8f3</span>"},
-  ],
-  action:'receipt',
-},
-{
-  t:"Your node, your rules",
-  d:`Every node is provider and consumer. Choose your transport, payment, execution, and privacy stack.`,
+  t:"The network",
+  d:`Three roles, one protocol. Providers sell resources. Requesters buy them. Marketplaces help them find each other.`,
   link:"/learn/network/",
-  note:`<strong>No node classes.</strong> A node selling WASM can buy AI inference. <strong>Clearnet + Tor</strong> simultaneously — same identity. <strong>Free, Lightning, or Fiat</strong> — same deal flow. <strong>Standard or TEE</strong> — same protocol. Mix and match.`,
+  note:`Every node can play <strong>multiple roles</strong>. A marketplace is itself a provider that sells search. <span class="hl">There are no special node classes.</span>`,
+  board:{
+    nodes:[
+      {id:'fp',label:'F^P',sub:'provider',x:.18,y:.35},
+      {id:'fr',label:'F^R',sub:'requester',x:.82,y:.35},
+      {id:'m',label:'M',sub:'marketplace',x:.50,y:.72},
+    ],
+    arrows:[
+      {from:'fp',to:'fr',label:'deal',bidi:true},
+      {from:'fp',to:'m',label:'register'},
+      {from:'fr',to:'m',label:'discover'},
+    ],
+    notes:[
+      {text:'Let, Provider Froglet -> F^P,',x:.06,y:.92,size:12},
+      {text:'     Requester Froglet -> F^R,  Marketplace -> M.',x:.06,y:.96,size:12},
+    ],
+  },
   term:[
-    {p:"~",c:"froglet status"},
-    {o:""},
-    {o:"  <span class='th'>🐸 Froglet 7f3a2b91</span>  <span class='to'>uptime 4h 23m</span>"},
-    {o:"  ─────────────────────────────────────"},
-    {o:"  <span class='to'>TRANSPORT</span>"},
-    {o:"    clearnet  <span class='ts'>●</span>  https://my-node.dev:8080"},
-    {o:"    tor       <span class='ts'>●</span>  frog7a2b...xyz.onion"},
-    {o:""},
-    {o:"  <span class='to'>PROVIDING</span>                      <span class='to'>PRICE</span>"},
-    {o:"    compute.wasm               <span class='th'>8 sat</span>"},
-    {o:"    compute.python             <span class='th'>12 sat</span>"},
-    {o:"    data.query                 <span class='th'>2 sat</span>"},
-    {o:""},
-    {o:"  <span class='to'>CONSUMING</span>                      <span class='to'>TODAY</span>"},
-    {o:"    marketplace.search         3 deals"},
-    {o:"    e4c1d8a2/ai.inference      1 deal"},
-    {o:""},
-    {o:"  <span class='to'>SETTLEMENT</span>  lightning (LND)    <span class='th'>42,150 sat</span>"},
+    {p:"~",c:"FROGLET_PAYMENT_BACKEND=none cargo run --bin froglet-node"},
+    {o:"<span class='ts'>froglet-node</span> listening on 127.0.0.1:8080"},
   ],
-  action:'roles',
 },
 {
-  t:"Choose your stack",
-  d:`Execution, settlement, transport, privacy — every layer is swappable. The deal flow stays the same.`,
-  link:"/learn/execution/",
-  note:`<strong>WASM, Python, Container, TEE</strong> for execution. <strong>Free, Lightning, Fiat</strong> for payment. <strong>Clearnet, Tor</strong> for transport. <strong>Standard or encrypted</strong> for privacy. The signed artifact chain is identical regardless of stack.`,
-  term:[
-    {p:"~",c:"froglet capabilities"},
-    {o:""},
-    {o:"  <span class='to'>EXECUTION</span>"},
-    {o:"    <span class='ts'>wasm</span>         sandboxed WebAssembly <span class='tm'>50M fuel, 8MB</span>"},
-    {o:"    <span class='ts'>python</span>       inline scripts or handlers"},
-    {o:"    <span class='ts'>container</span>    OCI images (docker-compatible)"},
-    {o:"    <span class='ts'>builtin</span>      in-process JSON → JSON handlers"},
-    {o:"    <span class='ts'>tee.wasm</span>     encrypted WASM + hw attestation"},
-    {o:""},
-    {o:"  <span class='to'>SETTLEMENT</span>"},
-    {o:"    <span class='ts'>none</span>         free services"},
-    {o:"    <span class='ts'>lightning</span>    bitcoin micropayments (HTLC)"},
-    {o:"    <span class='th'>fiat</span>         <span class='tm'>coming: stripe, bank adapters</span>"},
-    {o:""},
-    {o:"  <span class='to'>TRANSPORT</span>"},
-    {o:"    <span class='ts'>clearnet</span>     HTTPS (TLS 1.3)"},
-    {o:"    <span class='ts'>tor</span>          .onion hidden service"},
-  ],
-  action:'execution',
-},
-{
-  t:"Agent integrations",
-  d:`Froglet is the economic layer for AI agents. They buy and sell compute through the protocol.`,
+  t:"The problem",
+  d:`An agent needs compute from a provider across the world. Four questions need answers.`,
   link:"/learn/introduction/",
-  note:`<strong>OpenClaw:</strong> Claude tool. <strong>NemoClaw:</strong> local LLM agent. <strong>MCP Server:</strong> Claude Code, Cursor, Windsurf. Any HTTP client works — the protocol is the API. <span class="hl">No API keys. No platforms. Just deals.</span>`,
+  note:`The internet was built for humans to click buttons. Agents need infrastructure to transact <strong>autonomously</strong>. Froglet answers all four with <span class="hl">cryptography and staked reputation</span>.`,
+  board:{
+    nodes:[
+      {id:'fr',label:'F^R',sub:'requester',x:.20,y:.40},
+      {id:'fp',label:'F^P',sub:'provider',x:.80,y:.40},
+    ],
+    arrows:[
+      {from:'fr',to:'fp',label:'?',style:'dashed'},
+    ],
+    notes:[
+      {text:'FIND    how does F^R discover F^P?',x:.15,y:.65,size:14,color:'muted'},
+      {text:'TRUST   how does F^R know F^P is reliable?',x:.15,y:.72,size:14,color:'muted'},
+      {text:'PAY     how does F^R pay without a bank?',x:.15,y:.79,size:14,color:'muted'},
+      {text:'PROVE   how does F^R verify execution?',x:.15,y:.86,size:14,color:'muted'},
+    ],
+  },
   term:[
-    {p:"~",c:"openclaw"},
-    {o:"  <span class='to'>OpenClaw v0.4.0</span> — froglet agent interface"},
-    {o:"  connected to <span class='th'>7f3a2b91</span>"},
-    {o:""},
-    {p:"openclaw❯",c:"search --kind ai.inference --max-price 100"},
-    {o:""},
-    {o:"  <span class='tc'>→</span> marketplace.search"},
-    {o:""},
-    {o:"  <span class='tm'>PROVIDER          KIND              PRICE    TRUST</span>"},
-    {o:"  <span class='to'>a1b2c3d4e5f6</span>  ai.inference      <span class='th'>50 sat</span>   <span class='ts'>0.97</span>"},
-    {o:"  <span class='to'>f6e5d4c3b2a1</span>  ai.inference      <span class='th'>80 sat</span>   <span class='ts'>0.99</span>"},
-    {o:""},
-    {p:"openclaw❯",c:"run f6e5d4 --input '{\"prompt\": \"summarize\"}'"},
-    {o:"  <span class='tc'>→</span> quote → deal → execute"},
-    {o:"  <span class='ts'>✓</span> Receipt <span class='tm'>7e2f...b1d4</span>  <span class='to'>320ms  12,400 msat</span>"},
+    {p:"~",c:"curl http://127.0.0.1:8080/v1/node/identity"},
+    {o:'<span class=\'th\'>{"node_id":"7f3a2b91","public_key":"027f3a2b..."}</span>'},
   ],
-  action:'agents',
+},
+{
+  t:"Identity by keypair",
+  d:`Generate a keypair locally. Your public key IS your identity. No registration.`,
+  link:"/learn/identity/",
+  note:`<strong>secp256k1</strong> elliptic curve. Private key signs. Public key verifies. <span class="hl">Mathematically irreversible.</span> Your key follows you across providers and marketplaces.`,
+  board:{
+    nodes:[
+      {id:'f',label:'F',sub:'new node',x:.50,y:.35,highlight:true},
+    ],
+    arrows:[],
+    notes:[
+      {text:'1. generate keypair (sk, pk)',x:.25,y:.58,size:15},
+      {text:'2. pk = node identity',x:.25,y:.66,size:15},
+      {text:'3. sk signs all artifacts',x:.25,y:.74,size:15},
+      {text:'No registration. No authority.',x:.25,y:.88,size:13,color:'accent'},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl http://127.0.0.1:8080/v1/node/identity"},
+    {o:'{"node_id":"7f3a2b91e8c4d156",'},
+    {o:' "public_key":"027f3a2b91e8c4d1563a0e9f8b4c7d2a..."}'},
+  ],
+},
+{
+  t:"Signed artifacts",
+  d:`Every interaction produces signed, hash-linked evidence. Five artifact types form a chain.`,
+  link:"/learn/artifacts/",
+  note:`<strong>RFC 8785 canonical JSON</strong> ensures identical bytes. <span class="hl">SHA-256</span> hashed, <span class="hl">BIP340 Schnorr</span> signed. Each artifact references the previous by hash.`,
+  board:{
+    nodes:[
+      {id:'a1',label:'descriptor',x:.10,y:.40,small:true},
+      {id:'a2',label:'offer',x:.30,y:.40,small:true},
+      {id:'a3',label:'quote',x:.50,y:.40,small:true},
+      {id:'a4',label:'deal',x:.70,y:.40,small:true},
+      {id:'a5',label:'receipt',x:.90,y:.40,small:true},
+    ],
+    arrows:[
+      {from:'a1',to:'a2',label:'H(a1)'},
+      {from:'a2',to:'a3',label:'H(a2)'},
+      {from:'a3',to:'a4',label:'H(a3)'},
+      {from:'a4',to:'a5',label:'H(a4)'},
+    ],
+    notes:[
+      {text:'provider signs',x:.06,y:.28,size:12,color:'muted'},
+      {text:'provider signs',x:.26,y:.28,size:12,color:'muted'},
+      {text:'provider signs',x:.46,y:.28,size:12,color:'muted'},
+      {text:'requester signs',x:.66,y:.28,size:12,color:'muted'},
+      {text:'provider signs',x:.86,y:.28,size:12,color:'muted'},
+      {text:'Each linked by SHA-256 hash. Tamper with one, chain breaks.',x:.12,y:.62,size:14,color:'accent'},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl -X POST http://127.0.0.1:8080/v1/provider/quotes -H 'Content-Type: application/json' -d '{\"offer_id\":\"execute.compute.generic\"}'"},
+    {o:'{"artifact_type":"quote",'},
+    {o:' "payload_hash":"a3f19e2b...7d4c",'},
+    {o:' "signature":"3045022100..."}'},
+  ],
+},
+{
+  t:"Discovery",
+  d:`A marketplace is just another froglet node. It sells search as a service, using the same deal flow.`,
+  link:"/marketplace/overview/",
+  note:`Registration is a <strong>standard froglet deal</strong>. After registering, the provider <span class="hl">stakes</span> non-refundable value into their identity.`,
+  board:{
+    nodes:[
+      {id:'fp',label:'F^P',sub:'provider',x:.15,y:.28},
+      {id:'m',label:'M',sub:'marketplace',x:.55,y:.60},
+      {id:'fr',label:'F^R',sub:'requester',x:.85,y:.28},
+    ],
+    arrows:[
+      {from:'fp',to:'m',label:'register + stake'},
+      {from:'fr',to:'m',label:'discover'},
+    ],
+    notes:[
+      {text:'M does:',x:.42,y:.78,size:13},
+      {text:'1. index new service',x:.42,y:.84,size:13},
+      {text:'2. record stake',x:.42,y:.90,size:13},
+      {text:'3. generate receipt',x:.42,y:.96,size:13},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl -X POST http://127.0.0.1:8080/v1/provider/deals -H 'Content-Type: application/json' -d '{\"offer_id\":\"marketplace.register\"}'"},
+    {o:'<span class=\'ts\'>{"status":"registered","provider_id":"7f3a2b91"}</span>'},
+  ],
+},
+{
+  t:"The deal",
+  d:`Search, quote, commit, execute, receipt. The complete lifecycle of one interaction.`,
+  link:"/learn/deal-flow/",
+  note:`The requester searches, picks a provider, gets a quote, signs the deal, workload executes, receipt returned. <span class="hl">Every step is hash-linked.</span>`,
+  board:{
+    nodes:[
+      {id:'fr',label:'F^R',sub:'requester',x:.18,y:.35},
+      {id:'fp',label:'F^P',sub:'provider',x:.82,y:.35},
+    ],
+    arrows:[
+      {from:'fr',to:'fp',label:'1. request quote'},
+      {from:'fp',to:'fr',label:'2. signed quote',y:.45},
+      {from:'fr',to:'fp',label:'3. signed deal',y:.55},
+      {from:'fp',to:'fr',label:'4. execute + receipt',y:.65},
+    ],
+    notes:[
+      {text:'base fee settles on commit',x:.28,y:.78,size:13,color:'muted'},
+      {text:'success fee settles on completion',x:.28,y:.84,size:13,color:'muted'},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl -X POST http://127.0.0.1:8080/v1/provider/deals -H 'Content-Type: application/json' -d '{\"quote_hash\":\"a3f19e2b...\",\"signed_deal\":{...}}'"},
+    {o:'{"deal_id":"b4a2e7f1",'},
+    {o:' "deal_state":"accepted",'},
+    {o:' "execution_state":"succeeded",'},
+    {o:' "result_hash":"sha256:9f1a4b2c...",'},
+    {o:' "settlement_state":"settled"}'},
+  ],
+},
+{
+  t:"Settlement",
+  d:`Two fees protect both sides. Base fee prevents free-riding. Success fee aligns incentives.`,
+  link:"/learn/settlement/",
+  note:`<strong>Base fee</strong> locks via Lightning HTLC. <strong>Success fee</strong> settles only on completion. Provider profit <span class="hl">increases with quality</span>. No escrow needed.`,
+  board:{
+    nodes:[
+      {id:'fr',label:'F^R',sub:'requester',x:.20,y:.30},
+      {id:'fp',label:'F^P',sub:'provider',x:.80,y:.30},
+    ],
+    arrows:[
+      {from:'fr',to:'fp',label:'base fee (locks on commit)'},
+      {from:'fr',to:'fp',label:'success fee (on completion)',y:.52},
+    ],
+    notes:[
+      {text:'Outcome     Requester   Provider',x:.15,y:.70,size:13,color:'muted'},
+      {text:'success     -8 sat      +8 sat',x:.15,y:.77,size:13,color:'accent'},
+      {text:'failure     -3 sat      +3 sat',x:.15,y:.84,size:13,color:'warn'},
+      {text:'no deal      0           0',x:.15,y:.91,size:13,color:'muted'},
+    ],
+  },
+  term:[
+    {o:"<span class='to'>SETTLEMENT</span>"},
+    {o:"  base_fee_msat:    3000  <span class='tm'>locks on deal acceptance</span>"},
+    {o:"  success_fee_msat: 5000  <span class='tm'>settles on execution success</span>"},
+    {o:"  method: lightning.base_fee_plus_success_fee.v1"},
+  ],
+},
+{
+  t:"Staked reputation",
+  d:`Trust is the total non-refundable value staked into an identity. Not ratings. Not deal history. Real money at risk.`,
+  link:"/learn/trust/",
+  note:`Stake is <span class="hl">non-refundable and public</span>. Cheating destroys the identity. Self-dealing cannot inflate T because only <strong>real payments into the stake</strong> change it.`,
+  board:{
+    nodes:[
+      {id:'fp',label:'F^P',sub:'provider',x:.20,y:.30},
+      {id:'m',label:'M',sub:'marketplace',x:.65,y:.30},
+    ],
+    arrows:[
+      {from:'fp',to:'m',label:'marketplace.stake'},
+    ],
+    notes:[
+      {text:'T(F^P) = total_staked_msat',x:.15,y:.55,size:16,color:'accent'},
+      {text:'Safety ratio = stake / deal_value',x:.15,y:.65,size:14},
+      {text:'  8 sat deal:   5,268x   safe',x:.15,y:.74,size:13,color:'muted'},
+      {text:' 100 sat deal:    421x   safe',x:.15,y:.81,size:13,color:'muted'},
+      {text:'1000 sat deal:     42x   safe',x:.15,y:.88,size:13,color:'muted'},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl -X POST http://127.0.0.1:8080/v1/provider/deals -H 'Content-Type: application/json' -d '{\"offer_id\":\"marketplace.stake\",\"input\":{\"provider_id\":\"7f3a2b91\",\"amount_msat\":42150}}'"},
+    {o:'{"provider_id":"7f3a2b91",'},
+    {o:' "total_staked_msat":42150,'},
+    {o:' "status":"staked"}'},
+  ],
+},
+{
+  t:"The pluggable stack",
+  d:`Core stays the same. Runtime, payment, transport &#8212; every layer is swappable.`,
+  link:"/learn/execution/",
+  note:`The signed artifact chain is <span class="hl">identical regardless of stack</span>. Swap any layer without touching the protocol.`,
+  board:{
+    nodes:[
+      {id:'core',label:'core',sub:'protocol kernel',x:.50,y:.22,highlight:true},
+    ],
+    arrows:[],
+    notes:[
+      {text:'EXECUTION',x:.08,y:.42,size:14,color:'accent'},
+      {text:'  wasm  /  python  /  container  /  gpu (coming)',x:.08,y:.50,size:13},
+      {text:'SETTLEMENT',x:.08,y:.62,size:14,color:'accent'},
+      {text:'  none  /  lightning  /  fiat (coming)',x:.08,y:.70,size:13},
+      {text:'TRANSPORT',x:.08,y:.82,size:14,color:'accent'},
+      {text:'  clearnet  /  tor  /  bluetooth (coming)',x:.08,y:.90,size:13},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl http://127.0.0.1:8080/v1/node/capabilities"},
+    {o:'{"execution":["wasm","python","container","builtin"],'},
+    {o:' "settlement":["none","lightning"],'},
+    {o:' "transport":["clearnet"]}'},
+  ],
+},
+{
+  t:"Agents and integrations",
+  d:`AI agents use froglet through MCP, OpenClaw, NemoClaw, or raw HTTP.`,
+  link:"/learn/introduction/",
+  note:`<strong>OpenClaw:</strong> Claude tool. <strong>NemoClaw:</strong> local LLM. <strong>MCP Server:</strong> Claude Code, Cursor, Windsurf. <span class="hl">No API keys. No platforms. Just signed deals.</span>`,
+  board:{
+    nodes:[
+      {id:'agent',label:'Agent',sub:'Claude / GPT / Llama',x:.18,y:.35},
+      {id:'fr',label:'F^R',sub:'requester',x:.50,y:.35},
+      {id:'fp',label:'F^P',sub:'provider',x:.82,y:.35},
+    ],
+    arrows:[
+      {from:'agent',to:'fr',label:'MCP / OpenClaw'},
+      {from:'fr',to:'fp',label:'deal'},
+    ],
+    notes:[
+      {text:'Integrations:',x:.12,y:.62,size:14,color:'accent'},
+      {text:'  OpenClaw      Claude tool interface',x:.12,y:.70,size:13},
+      {text:'  NemoClaw      local LLM agent',x:.12,y:.77,size:13},
+      {text:'  MCP Server    Claude Code, Cursor, VS Code',x:.12,y:.84,size:13},
+      {text:'  HTTP          any client, no SDK needed',x:.12,y:.91,size:13},
+    ],
+  },
+  term:[
+    {p:"~",c:"curl -X POST http://127.0.0.1:8081/v1/runtime/deals -H 'Content-Type: application/json' -d '{\"offer_id\":\"execute.compute.generic\",\"provider\":\"7f3a2b91\"}'"},
+    {o:'{"deal_id":"7e2fb1d4",'},
+    {o:' "execution_state":"succeeded",'},
+    {o:' "result_hash":"sha256:c4d2a6e1..."}'},
+  ],
 },
 {
   t:"The equilibrium",
-  d:`Identity is free. Reputation costs real sats. Cheating burns everything. <strong>Honesty is the Nash equilibrium.</strong>`,
+  d:`Identity is free. Stake costs real sats. Cheating burns the stake. <strong>Honesty is the Nash equilibrium.</strong>`,
   link:"/learn/economics/",
-  note:`In a large market: prices → cost, providers compete on quality, trust is computed from signed evidence anyone can verify. The protocol doesn't trust anyone. <span class="hl">It makes honesty the cheapest option.</span>`,
+  note:`The protocol does not trust anyone. It makes honesty the cheapest option. Stake >> deal value means cheating is <span class="hl">always irrational</span>.`,
+  board:{
+    nodes:[
+      {id:'fp',label:'F^P',sub:'provider',x:.18,y:.25},
+      {id:'fr',label:'F^R',sub:'requester',x:.82,y:.25},
+      {id:'m',label:'M',sub:'marketplace',x:.50,y:.55},
+    ],
+    arrows:[
+      {from:'fp',to:'fr',label:'deal',bidi:true},
+      {from:'fp',to:'m',label:'register + stake'},
+      {from:'fr',to:'m',label:'discover'},
+    ],
+    notes:[
+      {text:'identity    free       generate keypair',x:.12,y:.76,size:13},
+      {text:'stake       expensive  real sats, non-refundable',x:.12,y:.83,size:13},
+      {text:'cheating    destroys stake investment',x:.12,y:.90,size:13,color:'warn'},
+      {text:'when S >> V: honesty is dominant',x:.12,y:.97,size:14,color:'accent'},
+    ],
+  },
   term:[
+    {o:"<span class='to'>STRATEGY   THIS DEAL   STAKE       FUTURE</span>"},
+    {o:"<span class='ts'>honest</span>     +8 sat      preserved   continues"},
+    {o:"<span class='te'>cheat</span>      +3 sat      lost (S)    zero"},
     {o:""},
-    {o:"  <span class='th'>🐸 froglet</span>"},
-    {o:"  ─────────────────────────────────────"},
-    {o:"  <span class='to'>identity</span>      free  <span class='tm'>generate keypair</span>"},
-    {o:"  <span class='to'>reputation</span>    expensive  <span class='tm'>n deals × real sats</span>"},
-    {o:"  <span class='to'>cheating</span>      catastrophic  <span class='tm'>reputation → 0</span>"},
-    {o:""},
-    {o:"  <span class='ts'>when reputation ≫ cheat_value:</span>"},
-    {o:"  <span class='ts'>  honesty is the dominant strategy</span>"},
-    {o:""},
-    {o:"  identity. execution. settlement."},
-    {o:"  <span class='ts'>everything else is a service.</span>"},
+    {o:"<span class='ts'>when S >> V: honesty is dominant</span>"},
   ],
-  action:'full',
 },
 ];
 
-let step=0,typing=false;
+	let step=0,typing=false,typingSkip=false,typingRun=0,sceneStartedAt=performance.now();
 
-function renderLesson(){
-  const s=S[step];
-  document.getElementById('lesson-card').innerHTML=`
-    <div class="step-n">Step ${step+1} of ${S.length}</div>
-    <div class="step-t">${s.t}</div>
-    <div class="step-desc">${s.d} <a href="${s.link}">Learn more →</a></div>`;
-  const ann=document.getElementById('annotation');
-  if(s.note){ann.innerHTML=s.note;ann.style.display='block';}else{ann.style.display='none';}
-  document.getElementById('pips').innerHTML=S.map((_,i)=>`<div class="pip ${i<step?'done':i===step?'on':''}"></div>`).join('');
-  document.getElementById('prevBtn').disabled=step===0;
-  document.getElementById('nextBtn').textContent=step===S.length-1?'Restart':'Continue';
-  animateTerminal(s.term);
-  runAction(s.action);
-}
-window.go=function(d){
-  if(typing)return;
-  if(d===1&&step===S.length-1){step=0;}
-  else{step=Math.max(0,Math.min(S.length-1,step+d));}
-  renderLesson();
-};
+	function updateNavState(){
+	  document.getElementById('prevBtn').disabled=typing;
+	  document.getElementById('nextBtn').textContent=typing?'Skip':step===S.length-1?'Restart':'Continue';
+	}
 
-async function animateTerminal(lines){
-  typing=true;
-  const body=document.getElementById('term-body');
-  body.innerHTML='';
-  for(const line of lines){
-    if(line.p!==undefined){
-      await sleep(180);
-      const div=document.createElement('div');
-      const prompt=line.p==='~'?`<span class="tp">${line.p}</span> <span class="tv">❯</span> `:`<span class="tv">${line.p}</span> `;
-      div.innerHTML=prompt;
-      body.appendChild(div);
-      body.scrollTop=body.scrollHeight;
-      for(let i=0;i<line.c.length;i++){
-        await sleep(18+Math.random()*28);
-        div.innerHTML=`${prompt}<span class="tc">${line.c.slice(0,i+1)}</span><span class="cursor"></span>`;
-        body.scrollTop=body.scrollHeight;
-      }
-      await sleep(100);
-      div.innerHTML=`${prompt}<span class="tc">${line.c}</span>`;
-    } else {
-      await sleep(80);
-      const div=document.createElement('div');
-      div.innerHTML=line.o;
-      body.appendChild(div);
-    }
-    body.scrollTop=body.scrollHeight;
-  }
-  await sleep(60);
-  const cl=document.createElement('div');
-  cl.className='cursor-line';
-  cl.innerHTML=`<span class="tp">~</span> <span class="tv">❯</span> <span class="cursor"></span>`;
-  body.appendChild(cl);
-  body.scrollTop=body.scrollHeight;
-  typing=false;
-}
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+	function renderLesson(){
+	  const s=S[step];
+	  document.getElementById('lesson-card').innerHTML=`
+	    <div class="step-t">${s.t}</div>
+	    <div class="step-desc">${s.d} <a href="${s.link}">Learn more &#8594;</a></div>`;
+	  const ann=document.getElementById('annotation');
+	  if(s.note){ann.innerHTML=s.note;ann.style.display='block';}else{ann.style.display='none';}
+	  document.getElementById('pips').innerHTML=S.map((_,i)=>`<div class="pip ${i<step?'done':i===step?'on':''}" onclick="goTo(${i})"></div>`).join('');
+	  updateNavState();
+	  sceneStartedAt=performance.now();
+	  animateTerminal(s.term);
+	}
 
-// ═══════ CANVAS ═══════
-const C=document.getElementById('net'),ctx=C.getContext('2d');
-let W,H;
-function resize(){const wr=document.querySelector('.main');W=C.width=wr.clientWidth*devicePixelRatio;H=C.height=wr.clientHeight*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);}
-resize();window.addEventListener('resize',resize);
+	window.go=function(d){
+	  if(d===1&&typing){typingSkip=true;updateNavState();return;}
+	  if(typing)return;
+	  if(d===1&&step===S.length-1){step=0;}
+	  else if(d===-1&&step===0){step=S.length-1;}
+	  else{step=Math.max(0,Math.min(S.length-1,step+d));}
+	  renderLesson();
+	};
+	window.goTo=function(i){
+	  if(typing)return;
+	  step=Math.max(0,Math.min(S.length-1,i));
+	  renderLesson();
+	};
 
-const nodes=[],pkts=[];let deals=0,tick=0;
-const COL={provider:'#a78bfa',requester:'#93c5fd',marketplace:'#67e8f9'};
-function rnd(a,b){return a+Math.random()*(b-a);}
-function hid(){return Array.from({length:6},()=>'0123456789abcdef'[Math.random()*16|0]).join('');}
-function spawn(role,x,y){const w=W/devicePixelRatio,h=H/devicePixelRatio;const n={id:hid(),role,x:x??rnd(40,w-40),y:y??rnd(40,h-40),vx:rnd(-.12,.12),vy:rnd(-.12,.12),r:role==='marketplace'?20:12,color:COL[role],born:tick,ttl:role==='marketplace'?Infinity:rnd(1000,2800),a:0,label:role==='marketplace'?'MKT':role==='provider'?'P':'R'};nodes.push(n);return n;}
-function pkt(f,t,color,lbl){pkts.push({fx:f.x,fy:f.y,tx:t.x,ty:t.y,t:0,color,lbl:lbl||''});}
-const w0=(W/devicePixelRatio)/2,h0=(H/devicePixelRatio)/2;
-const mkt=spawn('marketplace',w0,h0);mkt.ttl=Infinity;
+	// ═══════ TERMINAL ANIMATION ═══════
+	function promptMarkup(p){return p==='~'?`<span class="tp">${p}</span> <span class="tv">&#10095;</span> `:`<span class="tv">${p}</span> `;}
+	function appendLine(body,line){const d=document.createElement('div');d.innerHTML=line.p!==undefined?`${promptMarkup(line.p)}<span class="tc">${line.c}</span>`:line.o;body.appendChild(d);}
+	function appendCursor(body){const c=document.createElement('div');c.className='cursor-line';c.innerHTML=`<span class="tp">~</span> <span class="tv">&#10095;</span> <span class="cursor"></span>`;body.appendChild(c);body.scrollTop=body.scrollHeight;}
+	function appendRest(body,lines,i){for(;i<lines.length;i++)appendLine(body,lines[i]);body.scrollTop=body.scrollHeight;}
+	async function waitOrSkip(ms,rid){const e=performance.now()+ms;while(performance.now()<e){if(rid!==typingRun)return'abort';if(typingSkip)return'skip';await new Promise(r=>requestAnimationFrame(r));}return rid!==typingRun?'abort':typingSkip?'skip':'ok';}
 
-function runAction(a){const w=W/devicePixelRatio;if(a==='spawn_provider'&&!nodes.find(n=>n.role==='provider'))spawn('provider',w*.3,h0);if(a==='register'){const p=nodes.find(n=>n.role==='provider');if(p)pkt(p,mkt,'#fbbf24','register');}if(a==='search'){if(!nodes.find(n=>n.role==='requester'))spawn('requester',w*.7,h0);setTimeout(()=>{const r=nodes.find(n=>n.role==='requester');if(r)pkt(r,mkt,'#93c5fd','search');},300);setTimeout(()=>{const r=nodes.find(n=>n.role==='requester');if(r)pkt(mkt,r,'#67e8f9','');},1200);}if(a==='deal'){const r=nodes.find(n=>n.role==='requester'),p=nodes.find(n=>n.role==='provider');if(r&&p){pkt(r,p,'#93c5fd','');setTimeout(()=>pkt(p,r,'#a78bfa',''),800);setTimeout(()=>pkt(r,p,'#93c5fd','deal'),1500);}}if(a==='receipt'){const r=nodes.find(n=>n.role==='requester'),p=nodes.find(n=>n.role==='provider');if(r&&p){deals++;pkt(p,r,'#6ee7b7','receipt');}}if(a==='full'){for(let i=0;i<4;i++)setTimeout(()=>spawn('provider'),i*250);for(let i=0;i<3;i++)setTimeout(()=>spawn('requester'),i*350+200);}if(a==='trust'||a==='roles'||a==='transport'||a==='payment'||a==='execution'||a==='agents'){}}
+	async function animateTerminal(lines){
+	  const rid=++typingRun;typing=true;typingSkip=false;updateNavState();
+	  const body=document.getElementById('term-body');body.innerHTML='';
+	  for(let i=0;i<lines.length;i++){
+	    const line=lines[i];
+	    if(line.p!==undefined){
+	      let s=await waitOrSkip(140,rid);if(s==='abort')return;if(s==='skip'){appendRest(body,lines,i);break;}
+	      const div=document.createElement('div');const pr=promptMarkup(line.p);div.innerHTML=pr;body.appendChild(div);body.scrollTop=body.scrollHeight;
+	      let skipped=false;
+	      for(let j=0;j<line.c.length;j++){
+	        s=await waitOrSkip(10+Math.random()*14,rid);if(s==='abort')return;if(s==='skip'){skipped=true;break;}
+	        div.innerHTML=`${pr}<span class="tc">${line.c.slice(0,j+1)}</span><span class="cursor"></span>`;body.scrollTop=body.scrollHeight;
+	      }
+	      div.innerHTML=`${pr}<span class="tc">${line.c}</span>`;body.scrollTop=body.scrollHeight;
+	      if(skipped){appendRest(body,lines,i+1);break;}
+	      s=await waitOrSkip(70,rid);if(s==='abort')return;if(s==='skip'){appendRest(body,lines,i+1);break;}
+	    }else{
+	      let s=await waitOrSkip(45,rid);if(s==='abort')return;if(s==='skip'){appendRest(body,lines,i);break;}
+	      appendLine(body,line);body.scrollTop=body.scrollHeight;
+	    }
+	  }
+	  if(rid!==typingRun)return;appendCursor(body);typing=false;typingSkip=false;updateNavState();
+	}
 
-function simTick(){tick++;const w=W/devicePixelRatio,h=H/devicePixelRatio;if(step===S.length-1&&tick%70===0){const ps=nodes.filter(n=>n.role==='provider'),rs=nodes.filter(n=>n.role==='requester');if(ps.length&&rs.length){const r=rs[Math.random()*rs.length|0],p=ps[Math.random()*ps.length|0];pkt(r,mkt,'#93c5fd','');setTimeout(()=>pkt(mkt,r,'#67e8f9',''),400);setTimeout(()=>{pkt(r,p,'#93c5fd','');deals++;},800);setTimeout(()=>pkt(p,r,'#6ee7b7',''),1300);}if(tick%160===0&&ps.length<10)spawn('provider');if(tick%220===0&&rs.length<6)spawn('requester');}for(const n of nodes){n.a=Math.min(1,n.a+.025);n.x+=n.vx;n.y+=n.vy;if(n.x<n.r+8||n.x>w-n.r-8)n.vx*=-1;if(n.y<n.r+8||n.y>h-n.r-8)n.vy*=-1;n.x=Math.max(n.r+8,Math.min(w-n.r-8,n.x));n.y=Math.max(n.r+8,Math.min(h-n.r-8,n.y));n.vx+=rnd(-.006,.006);n.vy+=rnd(-.006,.006);n.vx*=.998;n.vy*=.998;}for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){const a=nodes[i],b=nodes[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy),md=a.r+b.r+20;if(d<md&&d>0){const f=(md-d)*.01;a.vx-=dx/d*f;a.vy-=dy/d*f;b.vx+=dx/d*f;b.vy+=dy/d*f;}}for(let i=nodes.length-1;i>=0;i--){const n=nodes[i];if(tick-n.born>n.ttl){n.a-=.012;if(n.a<=0)nodes.splice(i,1);}}for(let i=pkts.length-1;i>=0;i--){pkts[i].t+=.02;if(pkts[i].t>=1)pkts.splice(i,1);}document.getElementById('sp').textContent=nodes.filter(n=>n.role==='provider').length;document.getElementById('sm').textContent=nodes.filter(n=>n.role==='marketplace').length;document.getElementById('sr').textContent=nodes.filter(n=>n.role==='requester').length;document.getElementById('sd').textContent=deals;}
+	// ═══════ WHITEBOARD CANVAS ═══════
+	const C=document.getElementById('net'),ctx=C.getContext('2d');
+	const HAND="'Kalam', cursive";
+	const MONO="'JetBrains Mono', monospace";
+	const P={
+	  bg:'#101712',
+	  grid:'rgba(231,238,222,0.035)',
+	  text:'#edf1e7',
+	  muted:'rgba(213,223,204,0.52)',
+	  accent:'#b8ff9a',
+	  accentDim:'rgba(184,255,154,0.25)',
+	  warn:'#efe39a',
+	  frame:'rgba(205,223,198,0.10)',
+	};
+	let W,H;
+	function resize(){
+	  const wr=document.getElementById('scene');
+	  W=Math.max(1,wr.clientWidth*devicePixelRatio);
+	  H=Math.max(1,wr.clientHeight*devicePixelRatio);
+	  C.width=W;C.height=H;
+	  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+	}
+	resize();window.addEventListener('resize',resize);
 
-function hex(n){return Math.round(n).toString(16).padStart(2,'0');}
+	function w(){return W/devicePixelRatio;}
+	function h(){return H/devicePixelRatio;}
 
-function draw(){
-  const w=W/devicePixelRatio, h=H/devicePixelRatio;
-  ctx.clearRect(0,0,w,h);
+	function drawBg(time){
+	  const ww=w(),hh=h();
+	  ctx.clearRect(0,0,ww,hh);ctx.fillStyle=P.bg;ctx.fillRect(0,0,ww,hh);
+	  // subtle chalk grid
+	  ctx.strokeStyle=P.grid;ctx.lineWidth=0.5;
+	  for(let y=40;y<hh;y+=44){ctx.beginPath();ctx.moveTo(30,y);ctx.lineTo(ww-30,y);ctx.stroke();}
+	  for(let x=40;x<ww;x+=Math.max(120,ww/5)){ctx.beginPath();ctx.moveTo(x,30);ctx.lineTo(x,hh-30);ctx.stroke();}
+	  // frame
+	  const pulse=0.5+0.15*Math.sin(time/1000);
+	  ctx.strokeStyle=`rgba(229,239,223,${0.06+pulse*0.04})`;ctx.lineWidth=1;
+	  ctx.strokeRect(16,16,ww-32,hh-32);
+	  // (no step label on board — clean whiteboard style)
+	}
 
-  // Dot grid
-  ctx.fillStyle='#0f1320';
-  for(let x=20;x<w;x+=32) for(let y=20;y<h;y+=32){ctx.beginPath();ctx.arc(x,y,.6,0,Math.PI*2);ctx.fill();}
+	function drawNode(nd){
+	  const ww=w(),hh=h();
+	  const cx=nd.x*ww,cy=nd.y*hh;
+	  const r=nd.small?28:48;
+	  // circle fill
+	  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+	  ctx.fillStyle=nd.highlight?'rgba(184,255,154,0.08)':'rgba(15,22,17,0.12)';ctx.fill();
+	  // chalk circle: draw arc in 3 offset passes
+	  const col=nd.highlight?P.accent:'rgba(233,240,226,0.6)';
+	  const lw=nd.highlight?1.8:1.3;
+	  [{dx:0,dy:0,a:.85},{dx:-.4,dy:.3,a:.18},{dx:.35,dy:-.25,a:.12}].forEach(o=>{
+	    ctx.save();ctx.globalAlpha=o.a;ctx.beginPath();ctx.arc(cx+o.dx,cy+o.dy,r,0,Math.PI*2);
+	    ctx.strokeStyle=col;ctx.lineWidth=lw+o.a*.6;ctx.stroke();ctx.restore();
+	  });
+	  // label
+	  ctx.font=`700 ${nd.small?13:22}px ${HAND}`;ctx.fillStyle=nd.highlight?P.accent:P.text;
+	  ctx.textAlign='center';ctx.textBaseline='middle';
+	  ctx.fillText(nd.label,cx,cy-(nd.sub?6:0));
+	  if(nd.sub){
+	    ctx.font=`400 ${nd.small?10:12}px ${HAND}`;ctx.fillStyle=P.muted;
+	    ctx.fillText(nd.sub,cx,cy+(nd.small?10:14));
+	  }
+	  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+	  return{cx,cy,r};
+	}
 
-  // Connection lines — all nodes to marketplace, soft curves
-  for(const m of nodes.filter(n=>n.role==='marketplace')){
-    for(const n of nodes){
-      if(n===m) continue;
-      const a=Math.min(n.a,1);
-      const dx=n.x-m.x, dy=n.y-m.y, dist=Math.sqrt(dx*dx+dy*dy);
-      // Fade by distance
-      const fade=Math.max(0, 1 - dist/(w*0.6));
-      ctx.beginPath();
-      ctx.moveTo(m.x,m.y);
-      // Subtle curve
-      const cx=(m.x+n.x)/2 + dy*0.08, cy=(m.y+n.y)/2 - dx*0.08;
-      ctx.quadraticCurveTo(cx,cy,n.x,n.y);
-      ctx.strokeStyle=n.color+hex(a*fade*14);
-      ctx.lineWidth=0.6;
-      ctx.stroke();
-    }
-  }
+	// Chalk-style line: draw 2-3 offset strokes for hand-drawn feel
+	function chalkLine(ax,ay,bx,by,color,width,alpha,isDashed){
+	  const offsets=[{dx:0,dy:0,a:alpha,w:width},{dx:-0.5,dy:0.4,a:alpha*0.2,w:width+0.6},{dx:0.4,dy:-0.3,a:alpha*0.15,w:width+0.9}];
+	  for(const o of offsets){
+	    ctx.save();ctx.globalAlpha=o.a;
+	    if(isDashed)ctx.setLineDash([6,8]);
+	    ctx.beginPath();ctx.moveTo(ax+o.dx,ay+o.dy);ctx.lineTo(bx+o.dx,by+o.dy);
+	    ctx.strokeStyle=color;ctx.lineWidth=o.w;ctx.lineCap='round';ctx.stroke();
+	    if(isDashed)ctx.setLineDash([]);
+	    ctx.restore();
+	  }
+	}
 
-  // Between-node connections (providers to nearby providers)
-  const provs=nodes.filter(n=>n.role==='provider');
-  for(let i=0;i<provs.length;i++){
-    for(let j=i+1;j<provs.length;j++){
-      const a=provs[i], b=provs[j];
-      const dx=b.x-a.x, dy=b.y-a.y, dist=Math.sqrt(dx*dx+dy*dy);
-      if(dist<180){
-        const fade=1-dist/180;
-        ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
-        ctx.strokeStyle='#a78bfa'+hex(Math.min(a.a,b.a)*fade*8);
-        ctx.lineWidth=0.4;ctx.stroke();
-      }
-    }
-  }
+	function drawArrowLine(x1,y1,x2,y2,label,bidi,dashed,progress){
+	  if(progress<=0)return;
+	  const dx=x2-x1,dy=y2-y1,len=Math.hypot(dx,dy);
+	  const nx=dx/len,ny=dy/len;
+	  const pad=52;
+	  const s1x=x1+nx*pad,s1y=y1+ny*pad;
+	  const s2x=x1+nx*(pad+(len-pad*2)*progress),s2y=y1+ny*(pad+(len-pad*2)*progress);
+	  chalkLine(s1x,s1y,s2x,s2y,P.accent,1.4,0.8,dashed);
+	  // arrowhead (chalk style)
+	  if(progress>0.9){
+	    const angle=Math.atan2(dy,dx),sz=8;
+	    const lx=s2x-Math.cos(angle-0.4)*sz,ly=s2y-Math.sin(angle-0.4)*sz;
+	    const rx=s2x-Math.cos(angle+0.4)*sz,ry=s2y-Math.sin(angle+0.4)*sz;
+	    chalkLine(lx,ly,s2x,s2y,P.accent,1.3,0.85,false);
+	    chalkLine(rx,ry,s2x,s2y,P.accent,1.3,0.85,false);
+	    if(bidi){
+	      const a2=angle+Math.PI;
+	      const l2x=s1x-Math.cos(a2-0.4)*sz,l2y=s1y-Math.sin(a2-0.4)*sz;
+	      const r2x=s1x-Math.cos(a2+0.4)*sz,r2y=s1y-Math.sin(a2+0.4)*sz;
+	      chalkLine(l2x,l2y,s1x,s1y,P.accent,1.3,0.85,false);
+	      chalkLine(r2x,r2y,s1x,s1y,P.accent,1.3,0.85,false);
+	    }
+	  }
+	  // label
+	  if(label&&progress>0.5){
+	    const mx=(s1x+s2x)/2,my=(s1y+s2y)/2;
+	    ctx.save();ctx.font=`700 12px ${HAND}`;ctx.fillStyle=P.accent;ctx.globalAlpha=Math.min(1,(progress-0.5)*4);
+	    ctx.textAlign='center';ctx.fillText(label,mx,my-8);ctx.textAlign='left';ctx.restore();
+	  }
+	}
 
-  // Packets — with trail and glow
-  for(const p of pkts){
-    const x=p.fx+(p.tx-p.fx)*p.t, y=p.fy+(p.ty-p.fy)*p.t;
-    const prevT=Math.max(0,p.t-0.12);
-    const px=p.fx+(p.tx-p.fx)*prevT, py=p.fy+(p.ty-p.fy)*prevT;
+	function drawNote(note){
+	  const ww=w(),hh=h();
+	  const x=note.x*ww,y=note.y*hh;
+	  const sz=note.size||13;
+	  const col=note.color==='accent'?P.accent:note.color==='warn'?P.warn:note.color==='muted'?P.muted:P.text;
+	  ctx.font=`${note.color==='accent'||note.color==='warn'?700:400} ${sz}px ${HAND}`;
+	  ctx.fillStyle=col;ctx.textAlign='left';
+	  ctx.fillText(note.text,x,y);
+	}
 
-    // Trail line
-    ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x,y);
-    ctx.strokeStyle=p.color+'60';ctx.lineWidth=1.8;ctx.stroke();
+	function drawScene(time){
+	  drawBg(time);
+	  const s=S[step];if(!s||!s.board)return;
+	  const board=s.board;
+	  const progress=Math.min(1,(time-sceneStartedAt)/1200);
+	  const ease=1-Math.pow(1-progress,3);
 
-    // Outer glow
-    const pg=ctx.createRadialGradient(x,y,0,x,y,14);
-    pg.addColorStop(0,p.color+'30');pg.addColorStop(1,p.color+'00');
-    ctx.beginPath();ctx.arc(x,y,14,0,Math.PI*2);ctx.fillStyle=pg;ctx.fill();
+	  // draw nodes
+	  const nodePos={};
+	  for(const nd of (board.nodes||[])){
+	    const p=drawNode(nd);
+	    nodePos[nd.id]=p;
+	  }
+	  // draw arrows
+	  for(let i=0;i<(board.arrows||[]).length;i++){
+	    const a=board.arrows[i];
+	    const from=nodePos[a.from],to=nodePos[a.to];
+	    if(!from||!to)continue;
+	    const aProgress=Math.min(1,Math.max(0,(ease-i*0.1)/0.6));
+	    const fy=a.y!==undefined?a.y*h():from.cy;
+	    const ty=a.y!==undefined?a.y*h():to.cy;
+	    drawArrowLine(from.cx,fy,to.cx,ty,a.label,a.bidi,a.style==='dashed',aProgress);
+	  }
+	  // draw notes with fade-in
+	  if(ease>0.4){
+	    ctx.globalAlpha=Math.min(1,(ease-0.4)*2.5);
+	    for(const note of (board.notes||[]))drawNote(note);
+	    ctx.globalAlpha=1;
+	  }
+	}
 
-    // Core dot
-    ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=p.color;ctx.fill();
-    // Inner highlight
-    ctx.beginPath();ctx.arc(x,y,1.2,0,Math.PI*2);ctx.fillStyle='#ffffff44';ctx.fill();
-
-    // Label
-    if(p.lbl){
-      ctx.font='600 7px system-ui';ctx.fillStyle=p.color+'aa';ctx.textAlign='center';
-      ctx.fillText(p.lbl,x,y-9);
-    }
-  }
-
-  // Nodes
-  for(const n of nodes){
-    const a=Math.min(1,n.a);
-    const isMkt=n.role==='marketplace';
-    const pulse=isMkt ? 1+Math.sin(tick*0.03)*0.08 : 1; // marketplace pulses gently
-
-    // Ambient glow
-    const gr=n.r*(isMkt?3.5:2.8)*pulse;
-    const g=ctx.createRadialGradient(n.x,n.y,n.r*0.3,n.x,n.y,gr);
-    g.addColorStop(0,n.color+hex(a*(isMkt?18:10)));
-    g.addColorStop(0.5,n.color+hex(a*(isMkt?8:4)));
-    g.addColorStop(1,n.color+'00');
-    ctx.beginPath();ctx.arc(n.x,n.y,gr,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
-
-    // Ring
-    const rr=n.r*pulse;
-    ctx.beginPath();ctx.arc(n.x,n.y,rr,0,Math.PI*2);
-    ctx.strokeStyle=n.color+hex(a*(isMkt?160:100));
-    ctx.lineWidth=isMkt?1.8:1.2;ctx.stroke();
-
-    // Fill
-    ctx.beginPath();ctx.arc(n.x,n.y,rr-0.8,0,Math.PI*2);
-    const fg=ctx.createRadialGradient(n.x,n.y-rr*0.3,0,n.x,n.y,rr);
-    fg.addColorStop(0,n.color+hex(a*(isMkt?30:18)));
-    fg.addColorStop(1,n.color+hex(a*(isMkt?12:6)));
-    ctx.fillStyle=fg;ctx.fill();
-
-    // Inner highlight (top-left specular)
-    ctx.beginPath();ctx.arc(n.x-rr*0.2,n.y-rr*0.2,rr*0.5,0,Math.PI*2);
-    ctx.fillStyle='rgba(255,255,255,'+(.03*a)+')';ctx.fill();
-
-    // Label
-    ctx.font=`600 ${isMkt?10:8}px system-ui`;
-    ctx.fillStyle=n.color+hex(a*(isMkt?220:180));
-    ctx.textAlign='center';
-    ctx.fillText(n.label,n.x,n.y+(isMkt?4:3));
-
-    // ID
-    ctx.font='6px SF Mono, Menlo, monospace';
-    ctx.fillStyle='#4b5563'+hex(a*130);
-    ctx.fillText(n.id,n.x,n.y+rr+10);
-  }
-
-  // Vignette
-  const vg=ctx.createRadialGradient(w/2,h/2,Math.min(w,h)*0.3,w/2,h/2,Math.max(w,h)*0.7);
-  vg.addColorStop(0,'rgba(7,9,14,0)');
-  vg.addColorStop(1,'rgba(7,9,14,0.4)');
-  ctx.fillStyle=vg;
-  ctx.fillRect(0,0,w,h);
-}
-
-function loop(){simTick();draw();requestAnimationFrame(loop);}
-loop();renderLesson();
+	function loop(time){drawScene(time||performance.now());requestAnimationFrame(loop);}
+	requestAnimationFrame(loop);
+	renderLesson();
 </script>
 </body>
 </html>

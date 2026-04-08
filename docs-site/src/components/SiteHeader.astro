@@ -1,0 +1,187 @@
+---
+import ThemeToggle from './ThemeToggle.astro';
+
+interface Props {
+	currentPath?: string;
+	embedded?: boolean;
+}
+
+const { currentPath = Astro.url.pathname, embedded = false } = Astro.props;
+const items = [
+	{ href: '/', label: 'home', desktopOnly: false },
+	{ href: '/learn/', label: 'learn', desktopOnly: false },
+	{ href: '/architecture/overview/', label: 'docs', desktopOnly: false },
+	{ href: '/demo/', label: 'demo', desktopOnly: false },
+	{ href: 'https://github.com/armanas/froglet', label: 'github', desktopOnly: true },
+];
+
+const isActive = (href: string) => {
+	if (href.startsWith('http')) return false;
+	if (href === '/') return currentPath === '/';
+	return currentPath.startsWith(href);
+};
+---
+
+<div class:list={['froglet-site-chrome', embedded && 'froglet-site-chrome--embedded']}>
+	<div class="froglet-site-chrome__inner">
+		<a href="/" class="froglet-brand">🐸 froglet</a>
+		<nav class="froglet-site-nav" aria-label="Primary">
+			{
+				items.map((item) => (
+					<a
+						href={item.href}
+						class:list={[
+							'froglet-site-nav__link',
+							item.desktopOnly && 'froglet-site-nav__link--desktop',
+							isActive(item.href) && 'is-active',
+						]}
+						target={item.href.startsWith('http') ? '_blank' : undefined}
+						rel={item.href.startsWith('http') ? 'noreferrer' : undefined}
+					>
+						{item.label}
+					</a>
+				))
+			}
+		</nav>
+		<div class="froglet-site-tools">
+			<slot name="tools" />
+			<ThemeToggle />
+		</div>
+	</div>
+</div>
+
+<style is:global>
+	.froglet-site-chrome {
+		position: sticky;
+		top: 0;
+		z-index: 40;
+		border-bottom: 1px solid hsl(var(--froglet-border));
+		background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, transparent);
+		backdrop-filter: blur(14px);
+		-webkit-backdrop-filter: blur(14px);
+	}
+
+	.froglet-site-chrome--embedded {
+		position: static;
+		border-bottom: 0;
+		background: transparent;
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+	}
+
+	.froglet-site-chrome__inner {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		width: min(1120px, calc(100% - 2rem));
+		margin: 0 auto;
+		min-height: 3.65rem;
+	}
+
+	.froglet-brand {
+		color: hsl(var(--froglet-foreground));
+		text-decoration: none;
+		font-family: var(--froglet-font-serif);
+		font-size: 1.18rem;
+		font-weight: 700;
+		letter-spacing: -0.025em;
+		white-space: nowrap;
+	}
+
+	.froglet-site-nav {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		margin-left: auto;
+	}
+
+	.froglet-site-nav__link {
+		padding: 0.48rem 0.72rem;
+		border-radius: 999px;
+		color: hsl(var(--froglet-muted));
+		text-decoration: none;
+		font-size: 0.88rem;
+		font-weight: 600;
+		transition:
+			background-color 140ms ease,
+			color 140ms ease;
+	}
+
+	.froglet-site-nav__link:hover {
+		background: hsl(var(--froglet-surface));
+		color: hsl(var(--froglet-foreground));
+	}
+
+	.froglet-site-nav__link.is-active {
+		background: hsl(var(--froglet-accent-soft));
+		color: hsl(var(--froglet-accent-strong));
+	}
+
+	.froglet-site-tools {
+		display: flex;
+		align-items: center;
+		gap: 0.65rem;
+		margin-left: 0.35rem;
+	}
+
+	.froglet-site-search {
+		display: inline-flex;
+		align-items: center;
+		min-width: min(18rem, 28vw);
+	}
+
+	.froglet-site-search :global(button[data-open-modal]) {
+		max-width: 18rem;
+		border-radius: 999px;
+		border-color: hsl(var(--froglet-border));
+		background: hsl(var(--froglet-card));
+		color: hsl(var(--froglet-muted));
+	}
+
+	.froglet-site-search :global(button[data-open-modal]:hover) {
+		border-color: hsl(var(--froglet-border-strong));
+		color: hsl(var(--froglet-foreground));
+	}
+
+	@media (max-width: 900px) {
+		.froglet-site-chrome__inner {
+			width: min(100%, calc(100% - 1.25rem));
+			gap: 0.7rem;
+		}
+
+		.froglet-site-nav {
+			gap: 0.12rem;
+		}
+
+		.froglet-site-nav__link {
+			padding-inline: 0.54rem;
+			font-size: 0.82rem;
+		}
+
+		.froglet-site-nav__link--desktop {
+			display: none;
+		}
+
+		.froglet-site-search {
+			display: none;
+		}
+
+		.froglet-theme-toggle__label {
+			display: none;
+		}
+	}
+
+	@media (max-width: 560px) {
+		.froglet-brand {
+			font-size: 1.08rem;
+		}
+
+		.froglet-site-chrome__inner {
+			gap: 0.5rem;
+		}
+
+		.froglet-site-nav__link {
+			padding-inline: 0.46rem;
+		}
+	}
+</style>

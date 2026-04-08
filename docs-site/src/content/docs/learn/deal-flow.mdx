@@ -5,11 +5,22 @@ description: Six artifacts, one evidence chain.
 
 ## The chain
 
-Click any artifact to see its details:
-
-<div style="margin:20px 0">
-<canvas id="chain-canvas" width="700" height="120" style="width:100%;max-width:700px;height:120px;cursor:pointer;border-radius:8px"></canvas>
-<div id="chain-detail" style="margin-top:12px;padding:14px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:60px"></div>
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">Click the chain or use the buttons below</p>
+    <p class="plot-subtitle">Every artifact references the previous one by hash. Tamper with any link and the chain breaks.</p>
+  </div>
+</div>
+<div class="plot-metrics">
+  <div class="plot-metric"><strong>5 provider signatures</strong><span>Descriptor, offer, quote, invoice bundle, and receipt come from the provider.</span></div>
+  <div class="plot-metric"><strong>1 requester signature</strong><span>The deal is the requester's cryptographic commitment to pay.</span></div>
+  <div class="plot-metric"><strong>1 terminal proof</strong><span>The receipt is the final artifact any third party can verify later.</span></div>
+</div>
+<canvas id="chain-canvas" class="plot-canvas" width="700" height="120" style="max-width:700px;height:120px;cursor:pointer"></canvas>
+<div id="chain-buttons" class="plot-button-row"></div>
+<div id="chain-detail" class="learn-card" style="margin-top:12px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:60px"></div>
+<p class="plot-note">The artifact chain is both the protocol flow and the audit log. The same objects used during execution are the objects you verify afterwards.</p>
 </div>
 
 <script>{`
@@ -24,7 +35,10 @@ Click any artifact to see its details:
   ];
   const c=document.getElementById('chain-canvas'),ctx=c.getContext('2d');
   const det=document.getElementById('chain-detail');
+  const buttonRow=document.getElementById('chain-buttons');
   let selected=0, hovered=-1;
+
+  buttonRow.innerHTML=items.map((it,i)=>'<button type="button" class="plot-button'+(i===0?' is-active':'')+'" data-index="'+i+'">'+it.label+'</button>').join('');
 
   function draw(){
     const w=c.width,h=c.height,n=items.length,bw=w/n;
@@ -67,6 +81,7 @@ Click any artifact to see its details:
   function showDetail(i){
     const it=items[i];
     det.innerHTML='<strong style="color:'+it.color+'">'+it.label+'</strong> <span style="color:#6b7280">(signed by '+it.signer+')</span><br>'+it.detail+(i>0?' <span style="color:#4b5563">← references previous artifact by SHA-256 hash</span>':'');
+    buttonRow.querySelectorAll('button').forEach((button,idx)=>button.classList.toggle('is-active', idx===i));
   }
 
   c.addEventListener('click',function(e){
@@ -84,12 +99,17 @@ Click any artifact to see its details:
     if(i!==hovered){hovered=i;draw();}
   });
   c.addEventListener('mouseleave',function(){hovered=-1;draw();});
+  buttonRow.addEventListener('click',function(event){
+    const button=event.target.closest('button[data-index]');
+    if(!button)return;
+    selected=Number(button.dataset.index);
+    draw();
+    showDetail(selected);
+  });
 
   draw();showDetail(0);
 })();
 `}</script>
-
-Each artifact references the previous one by hash. Tamper with any link and the chain breaks.
 
 ## Key insight: who signs what
 

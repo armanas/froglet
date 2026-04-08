@@ -34,27 +34,45 @@ Every paid deal splits into two Lightning payments:
 
 ### Interactive: outcomes by scenario
 
-Click a scenario to see what each party pays and receives:
-
-<div style="margin:20px 0">
-<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-<button id="scn-ok" onclick="showScn('ok')" style="padding:6px 14px;border-radius:6px;background:#16a34a22;border:1px solid #16a34a44;color:#4ade80;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">✓ Success</button>
-<button id="scn-fail" onclick="showScn('fail')" style="padding:6px 14px;border-radius:6px;background:#dc262622;border:1px solid #dc262644;color:#f87171;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">✗ Provider fails</button>
-<button id="scn-free" onclick="showScn('free')" style="padding:6px 14px;border-radius:6px;background:#6366f122;border:1px solid #6366f144;color:#818cf8;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">○ Free service</button>
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">Compare the three settlement outcomes</p>
+    <p class="plot-subtitle">Each scenario keeps the protocol flow intact. The difference is how much value actually changes hands.</p>
+  </div>
 </div>
-<canvas id="settle-viz" width="600" height="160" style="width:100%;max-width:600px;height:160px;border-radius:8px;background:#0d1117;border:1px solid #30363d"></canvas>
+<div class="plot-button-row">
+<button id="scn-ok" type="button" class="plot-button is-active" data-scenario="ok">Success</button>
+<button id="scn-fail" type="button" class="plot-button" data-scenario="fail">Provider fails</button>
+<button id="scn-free" type="button" class="plot-button" data-scenario="free">Free service</button>
+</div>
+<div class="plot-metrics">
+  <div class="plot-metric"><strong id="settle-requester-total">8,000 msat</strong><span>requester outflow</span></div>
+  <div class="plot-metric"><strong id="settle-provider-total">8,000 msat</strong><span>provider inflow</span></div>
+  <div class="plot-metric"><strong id="settle-rule">Both legs settle</strong><span>dominant rule in this scenario</span></div>
+</div>
+<canvas id="settle-viz" class="plot-canvas" width="600" height="160" style="max-width:600px;height:160px"></canvas>
+<p class="plot-note">The two-leg structure separates reservation risk from completion risk. That is the key economic trick in Froglet settlement.</p>
 </div>
 
 <script>{`
 const scenarios = {
-  ok: {title:'Successful execution',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#4ade80'},success:{from:'Requester',to:'Provider',amount:'5,000 msat',state:'settled',color:'#4ade80'},note:'Both fees settled. Provider earned 8 sats. Requester got result.'},
-  fail: {title:'Provider failed',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#fbbf24'},success:{from:'Requester',to:'—',amount:'5,000 msat',state:'canceled',color:'#f87171'},note:'Base fee paid (provider reserved resources). Success fee returned to requester.'},
-  free: {title:'Free service (settlement: none)',base:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},success:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},note:'No payment. Deal flow still runs. Quote, deal, execute, receipt — just no money.'},
+  ok: {title:'Successful execution',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#4ade80'},success:{from:'Requester',to:'Provider',amount:'5,000 msat',state:'settled',color:'#4ade80'},requesterTotal:'8,000 msat',providerTotal:'8,000 msat',rule:'Both legs settle',note:'Both fees settled. Provider earned 8 sats. Requester got result.'},
+  fail: {title:'Provider failed',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#fbbf24'},success:{from:'Requester',to:'—',amount:'5,000 msat',state:'canceled',color:'#f87171'},requesterTotal:'3,000 msat',providerTotal:'3,000 msat',rule:'Base only',note:'Base fee paid (provider reserved resources). Success fee returned to requester.'},
+  free: {title:'Free service (settlement: none)',base:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},success:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},requesterTotal:'0',providerTotal:'0',rule:'No value transfer',note:'No payment. Deal flow still runs. Quote, deal, execute, receipt — just no money.'},
 };
-window.showScn = function(key){
+const buttons=[...document.querySelectorAll('[data-scenario]')];
+const requesterTotal=document.getElementById('settle-requester-total');
+const providerTotal=document.getElementById('settle-provider-total');
+const rule=document.getElementById('settle-rule');
+function showScn(key){
   const s=scenarios[key];
   const c=document.getElementById('settle-viz'),ctx=c.getContext('2d');
   const w=c.width,h=c.height;
+  buttons.forEach((button)=>button.classList.toggle('is-active', button.dataset.scenario===key));
+  requesterTotal.textContent=s.requesterTotal;
+  providerTotal.textContent=s.providerTotal;
+  rule.textContent=s.rule;
   ctx.clearRect(0,0,w,h);
 
   ctx.font='bold 12px system-ui';ctx.fillStyle='#e5e7eb';ctx.textAlign='center';
@@ -88,8 +106,9 @@ window.showScn = function(key){
   // Note
   ctx.font='11px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='center';
   ctx.fillText(s.note,w/2,h-16);
-};
-window.showScn('ok');
+}
+buttons.forEach((button)=>button.addEventListener('click',()=>showScn(button.dataset.scenario)));
+showScn('ok');
 `}</script>
 
 ### Units

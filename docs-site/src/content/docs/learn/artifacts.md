@@ -5,6 +5,25 @@ description: "Froglet's atomic unit — the signed envelope."
 
 Everything in froglet is a **signed artifact**. It's a JSON envelope that wraps a payload with identity and integrity proof:
 
+<div class="learn-sequence four">
+  <div class="learn-sequence-step">
+    <strong>Payload</strong>
+    <small>The protocol-specific data, canonicalized with JCS.</small>
+  </div>
+  <div class="learn-sequence-step">
+    <strong>Payload hash</strong>
+    <small>Commits to the exact canonical bytes of that payload.</small>
+  </div>
+  <div class="learn-sequence-step">
+    <strong>Artifact hash</strong>
+    <small>Commits to signer, type, timestamp, and payload hash.</small>
+  </div>
+  <div class="learn-sequence-step">
+    <strong>Signature</strong>
+    <small>Proves the holder of the private key authored the envelope.</small>
+  </div>
+</div>
+
 ```json
 {
   "artifact_type": "offer",
@@ -20,17 +39,26 @@ Everything in froglet is a **signed artifact**. It's a JSON envelope that wraps 
 
 ## Verification
 
-1. Canonicalize the `payload` using JCS
-2. SHA-256 the canonical bytes — must match `payload_hash`
-3. Build signing bytes: `artifact_type + schema_version + signer + created_at + payload_hash`
-4. SHA-256 the signing bytes — must match `hash`
-5. Verify BIP340 Schnorr: `verify(signer, signature, hash)`
-
-If all checks pass:
-
-- The payload has not been tampered with
-- The artifact was produced by the holder of the private key corresponding to `signer`
-- The timestamp was committed at signing time
+<div class="learn-grid two">
+  <div class="learn-card">
+    <span class="learn-kicker">Verification pipeline</span>
+    <ol>
+      <li>Canonicalize the <code>payload</code> using JCS.</li>
+      <li>SHA-256 the canonical bytes and compare to <code>payload_hash</code>.</li>
+      <li>Build signing bytes from type, schema version, signer, timestamp, and payload hash.</li>
+      <li>SHA-256 those signing bytes and compare to <code>hash</code>.</li>
+      <li>Verify the BIP340 Schnorr signature against the signer key.</li>
+    </ol>
+  </div>
+  <div class="learn-card">
+    <span class="learn-kicker">What you learn if it passes</span>
+    <ul>
+      <li>The payload has not been tampered with.</li>
+      <li>The artifact came from the holder of the signer's private key.</li>
+      <li>The timestamp and payload hash were committed at signing time.</li>
+    </ul>
+  </div>
+</div>
 
 ## Six artifact types
 

@@ -248,7 +248,7 @@ async fn poll_source_once(
 }
 
 fn verify_artifact_document(document: &serde_json::Value) -> bool {
-    crate::verify::verify_artifact_signature(document)
+    crate::verify::verify_artifact_document(document)
 }
 
 async fn store_raw_artifact(

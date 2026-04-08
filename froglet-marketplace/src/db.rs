@@ -47,21 +47,24 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), String> {
         .await
         .map_err(|e| format!("migration connection: {e}"))?;
 
-    let sql = include_str!("../migrations/001_init.sql");
+    let migrations = [
+        include_str!("../migrations/001_init.sql"),
+        include_str!("../migrations/002_stakes.sql"),
+    ];
 
-    // Use batch_execute to send the entire SQL as a single protocol message,
-    // letting Postgres handle statement parsing (safe with semicolons in
-    // strings, $$ blocks, comments, etc.).
-    match client.batch_execute(sql).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            // Tables may already exist on restart — treat as success
-            if msg.contains("already exists") {
-                Ok(())
-            } else {
-                Err(format!("migration failed: {msg}"))
+    for sql in migrations {
+        match client.batch_execute(sql).await {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                // Tables may already exist on restart — treat as success
+                if msg.contains("already exists") {
+                    continue;
+                }
+                return Err(format!("migration failed: {msg}"));
             }
         }
     }
+
+    Ok(())
 }

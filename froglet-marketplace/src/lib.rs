@@ -9,6 +9,7 @@ use froglet::execution::BuiltinServiceHandler;
 use handlers::{
     provider::MarketplaceProviderHandler, receipts::MarketplaceReceiptsHandler,
     register::MarketplaceRegisterHandler, search::MarketplaceSearchHandler,
+    stake::MarketplaceStakeHandler, topup::MarketplaceTopupHandler,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,8 +18,10 @@ use tracing::{error, info};
 const MARKETPLACE_SERVICES: &[(&str, &str)] = &[
     ("marketplace.register", "Register a provider with the marketplace"),
     ("marketplace.search", "Search providers and offers"),
-    ("marketplace.provider", "Get provider details and trust"),
+    ("marketplace.provider", "Get provider details and stake"),
     ("marketplace.receipts", "Get provider receipts"),
+    ("marketplace.stake", "Stake into provider identity"),
+    ("marketplace.topup", "Top up provider identity stake"),
 ];
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,10 +92,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     info!("Marketplace provider ready — queries are served through Froglet deals");
-    info!("Service kinds: marketplace.search, marketplace.provider, marketplace.receipts");
+    let service_list: Vec<&str> = MARKETPLACE_SERVICES.iter().map(|(id, _)| *id).collect();
+    info!("Service kinds: {}", service_list.join(", "));
 
     // Start the server with our custom state (handlers injected)
-    froglet::server::run_provider_with_state(state).await?;
+    froglet::server::run_with_state(state).await?;
 
     Ok(())
 }
@@ -115,7 +119,15 @@ fn build_service_handlers(
     );
     handlers.insert(
         "marketplace.receipts".to_string(),
-        Arc::new(MarketplaceReceiptsHandler { pg }),
+        Arc::new(MarketplaceReceiptsHandler { pg: pg.clone() }),
+    );
+    handlers.insert(
+        "marketplace.stake".to_string(),
+        Arc::new(MarketplaceStakeHandler { pg: pg.clone() }),
+    );
+    handlers.insert(
+        "marketplace.topup".to_string(),
+        Arc::new(MarketplaceTopupHandler { pg }),
     );
     handlers
 }

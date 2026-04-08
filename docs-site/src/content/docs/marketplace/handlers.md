@@ -1,6 +1,6 @@
 ---
 title: Handlers
-description: The four marketplace service handlers.
+description: The six marketplace service handlers.
 ---
 
 Each handler implements `BuiltinServiceHandler` — JSON in, JSON out, Postgres queries.
@@ -39,14 +39,14 @@ Search providers by filters.
 
 ## marketplace.provider
 
-Get one provider's details with trust scores.
+Get one provider's details with stake information.
 
 **Input:**
 ```json
 { "provider_id": "02abc..." }
 ```
 
-**Output:** Full descriptor, all offers, trust summary (total/succeeded/failed receipts).
+**Output:** Full descriptor, all offers, stake summary (total_staked_msat, last_staked_at).
 
 ## marketplace.receipts
 
@@ -57,4 +57,48 @@ Provider receipt history with filtering.
 { "provider_id": "02abc...", "status": "succeeded", "limit": 20 }
 ```
 
-**Output:** Paginated receipts + trust summary.
+**Output:** Paginated receipts. Receipts are evidence — they are served as data but do not determine trust. Trust is determined solely by stake (T = total staked msat).
+
+## marketplace.stake
+
+Deposit non-refundable value into a provider's identity. T = total_staked_msat — this is the complete trust signal.
+
+**Input:**
+```json
+{ "provider_id": "02abc...", "amount_msat": 10000 }
+```
+
+**Output:**
+```json
+{
+  "provider_id": "02abc...",
+  "total_staked_msat": 10000,
+  "amount_msat": 10000,
+  "kind": "stake",
+  "status": "staked"
+}
+```
+
+**Logic:** Verify provider exists. Upsert into `marketplace_stakes` (add to total). Record in `marketplace_stake_ledger`. This is a paid marketplace service — the stake amount is the deal price.
+
+## marketplace.topup
+
+Add more value to an existing stake. Requires a prior `marketplace.stake`.
+
+**Input:**
+```json
+{ "provider_id": "02abc...", "amount_msat": 5000 }
+```
+
+**Output:**
+```json
+{
+  "provider_id": "02abc...",
+  "total_staked_msat": 15000,
+  "topup_amount_msat": 5000,
+  "kind": "topup",
+  "status": "topped_up"
+}
+```
+
+**Logic:** Update existing stake (fails if no prior stake). Record in ledger.

@@ -14,6 +14,17 @@ A workload is the computation the requester wants executed:
 | Container | OCI container image | Complex application |
 | Builtin service | Handler registered on the node | Marketplace search |
 
+<div class="learn-grid two">
+  <div class="learn-card">
+    <span class="learn-kicker">The invariant</span>
+    <p>Every runtime still feeds the same deal flow. Execution is swappable, but the signed receipt stays the final proof surface.</p>
+  </div>
+  <div class="learn-card">
+    <span class="learn-kicker">Why this matters</span>
+    <p>Requesters can compare services by the same evidence model even when providers use different runtime stacks.</p>
+  </div>
+</div>
+
 ## The WASM sandbox
 
 **WebAssembly (WASM)** is a binary instruction format designed to run in a sandboxed environment. The provider runs requester code with strict limits:
@@ -29,6 +40,25 @@ WASM modules can optionally access **host capabilities**:
 
 - `net.http.fetch` — make HTTP requests (policy-controlled)
 - `db.sqlite.query.read` — query SQLite databases (read-only)
+
+<div class="learn-sequence four">
+  <div class="learn-sequence-step">
+    <strong>Declare</strong>
+    <small>The offer states runtime, limits, and capability profile.</small>
+  </div>
+  <div class="learn-sequence-step">
+    <strong>Dispatch</strong>
+    <small>The provider selects the matching runtime adapter for the workload.</small>
+  </div>
+  <div class="learn-sequence-step">
+    <strong>Execute</strong>
+    <small>The runtime enforces memory, output, and time bounds.</small>
+  </div>
+  <div class="learn-sequence-step">
+    <strong>Receipt</strong>
+    <small>The outcome hash and settlement state become signed evidence.</small>
+  </div>
+</div>
 
 ## BuiltinServiceHandler
 

@@ -77,7 +77,10 @@ impl BuiltinServiceHandler for MarketplaceSearchHandler {
             {
                 let offer_kind = req.offer_kind.as_deref().unwrap_or("");
                 let runtime = req.runtime.as_deref().unwrap_or("");
-                let max_msat = req.max_price_sats.map(|p| p * 1000).unwrap_or(i64::MAX);
+                let max_msat = match req.max_price_sats {
+                    Some(p) => p.checked_mul(1000).ok_or("max_price_sats overflow")?,
+                    None => i64::MAX,
+                };
 
                 client
                     .query(

@@ -12,12 +12,8 @@ homepage = "https://armanas.dev"
 repository = "https://github.com/armanas/froglet"
 
 [[bin]]
-name = "froglet-provider"
-path = "src/bin/froglet-provider.rs"
-
-[[bin]]
-name = "froglet-runtime"
-path = "src/bin/froglet-runtime.rs"
+name = "froglet-node"
+path = "src/bin/froglet-node.rs"
 
 
 [dependencies]
