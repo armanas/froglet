@@ -16,7 +16,10 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 const MARKETPLACE_SERVICES: &[(&str, &str)] = &[
-    ("marketplace.register", "Register a provider with the marketplace"),
+    (
+        "marketplace.register",
+        "Register a provider with the marketplace",
+    ),
     ("marketplace.search", "Search providers and offers"),
     ("marketplace.provider", "Get provider details and stake"),
     ("marketplace.receipts", "Get provider receipts"),
@@ -65,8 +68,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state = {
         let mut state = state;
         {
-            let inner =
-                Arc::get_mut(&mut state).expect("no other Arc references at startup");
+            let inner = Arc::get_mut(&mut state).expect("no other Arc references at startup");
             inner.builtin_services = builtin_services;
             let db_clone = inner.db.clone();
             inner.event_batch_writer = Some(froglet::db::EventBatchWriter::spawn(db_clone));
@@ -101,9 +103,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_service_handlers(
-    pg: Arc<db::PgPool>,
-) -> HashMap<String, Arc<dyn BuiltinServiceHandler>> {
+fn build_service_handlers(pg: Arc<db::PgPool>) -> HashMap<String, Arc<dyn BuiltinServiceHandler>> {
     let mut handlers: HashMap<String, Arc<dyn BuiltinServiceHandler>> = HashMap::new();
     handlers.insert(
         "marketplace.register".to_string(),
@@ -159,7 +159,9 @@ async fn register_marketplace_offers(
         };
 
         let definition = froglet::api::artifact_provider_offer_definition(state.as_ref(), request)
-            .map_err(|(status, body)| format!("offer definition for {service_id}: {status} {body}"))?;
+            .map_err(|(status, body)| {
+                format!("offer definition for {service_id}: {status} {body}")
+            })?;
 
         let _response = froglet::api::persist_provider_offer_mutation(
             state.as_ref(),

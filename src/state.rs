@@ -1,8 +1,7 @@
 use crate::{
     confidential::ConfidentialPolicy, config::NodeConfig, db, db::DbPool,
     execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
-    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, tls,
-    wasm_host::WasmHostEnvironment,
+    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, tls, wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -183,8 +182,8 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
 mod tests {
     use super::*;
     use crate::config::{
-        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 

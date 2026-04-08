@@ -33,7 +33,9 @@ impl MarketplaceConfig {
         let max_dynamic_sources: usize = std::env::var("MARKETPLACE_MAX_DYNAMIC_SOURCES")
             .unwrap_or_else(|_| DEFAULT_MAX_DYNAMIC_SOURCES.to_string())
             .parse()
-            .map_err(|_| "MARKETPLACE_MAX_DYNAMIC_SOURCES must be a positive integer".to_string())?;
+            .map_err(|_| {
+                "MARKETPLACE_MAX_DYNAMIC_SOURCES must be a positive integer".to_string()
+            })?;
 
         Ok(Self {
             database_url,

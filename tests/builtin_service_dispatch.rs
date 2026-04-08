@@ -7,13 +7,12 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
-use tower::ServiceExt;
 use froglet::{
     api::public_router,
     confidential::ConfidentialConfig,
     config::{
-        IdentityConfig, LightningConfig, LightningMode,
-        NetworkMode, NodeConfig, PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig, WasmConfig,
     },
     db::DbPool,
     execution::BuiltinServiceHandler,
@@ -31,6 +30,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
+use tower::ServiceExt;
 
 static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -181,11 +181,7 @@ fn create_test_state_with_handler(
     })
 }
 
-fn runtime_request(
-    method: axum::http::Method,
-    uri: &str,
-    body: Option<Value>,
-) -> Request<Body> {
+fn runtime_request(method: axum::http::Method, uri: &str, body: Option<Value>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     let body = if let Some(value) = body {
         builder = builder.header(header::CONTENT_TYPE, "application/json");
@@ -221,9 +217,11 @@ async fn builtin_service_handler_dispatch_through_jobs_api() {
     let state = create_test_state_with_handler("test.echo", echo.clone());
     let app = public_router(state);
 
-    let execution =
-        froglet::execution::ExecutionWorkload::builtin_service("test.echo".to_string(), json!({"query": "hello froglet"}))
-            .expect("builtin execution workload");
+    let execution = froglet::execution::ExecutionWorkload::builtin_service(
+        "test.echo".to_string(),
+        json!({"query": "hello froglet"}),
+    )
+    .expect("builtin execution workload");
 
     let response = app
         .oneshot(runtime_request(
@@ -239,7 +237,11 @@ async fn builtin_service_handler_dispatch_through_jobs_api() {
         .expect("job create response");
 
     let (status, payload) = response_json(response).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "job should be accepted: {payload}");
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "job should be accepted: {payload}"
+    );
 
     let _job_id = payload["job_id"].as_str().expect("job_id").to_string();
 
@@ -332,5 +334,9 @@ async fn unknown_builtin_service_is_rejected() {
     // The important thing is the echo handler was NOT called.
     assert_eq!(status, StatusCode::ACCEPTED);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    assert_eq!(echo.calls(), 0, "echo handler should not be called for unknown service");
+    assert_eq!(
+        echo.calls(),
+        0,
+        "echo handler should not be called for unknown service"
+    );
 }

@@ -24,15 +24,35 @@ async fn project_descriptor(
     source_url: &str,
     document: &serde_json::Value,
 ) -> Result<ProjectionResult, String> {
-    let payload = document.get("payload").ok_or("descriptor missing payload")?;
+    let payload = document
+        .get("payload")
+        .ok_or("descriptor missing payload")?;
 
-    let provider_id = payload.get("provider_id").and_then(|v| v.as_str()).ok_or("missing provider_id")?;
-    let descriptor_seq = payload.get("descriptor_seq").and_then(|v| v.as_i64()).unwrap_or(0);
-    let protocol_version = payload.get("protocol_version").and_then(|v| v.as_str()).unwrap_or("");
+    let provider_id = payload
+        .get("provider_id")
+        .and_then(|v| v.as_str())
+        .ok_or("missing provider_id")?;
+    let descriptor_seq = payload
+        .get("descriptor_seq")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let protocol_version = payload
+        .get("protocol_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let descriptor_hash = document.get("hash").and_then(|v| v.as_str()).unwrap_or("");
-    let transport_endpoints = payload.get("transport_endpoints").cloned().unwrap_or(serde_json::json!([]));
-    let linked_identities = payload.get("linked_identities").cloned().unwrap_or(serde_json::json!([]));
-    let capabilities = payload.get("capabilities").cloned().unwrap_or(serde_json::json!({}));
+    let transport_endpoints = payload
+        .get("transport_endpoints")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    let linked_identities = payload
+        .get("linked_identities")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    let capabilities = payload
+        .get("capabilities")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     let doc_json = document.clone();
 
     let client = pg.get().await.map_err(|e| format!("db: {e}"))?;
@@ -78,21 +98,57 @@ async fn project_offer(
 ) -> Result<ProjectionResult, String> {
     let payload = document.get("payload").ok_or("offer missing payload")?;
 
-    let offer_hash = document.get("hash").and_then(|v| v.as_str()).ok_or("offer missing hash")?;
-    let provider_id = payload.get("provider_id").and_then(|v| v.as_str()).ok_or("offer missing provider_id")?;
-    let offer_id = payload.get("offer_id").and_then(|v| v.as_str()).unwrap_or("");
-    let descriptor_hash = payload.get("descriptor_hash").and_then(|v| v.as_str()).unwrap_or("");
-    let offer_kind = payload.get("offer_kind").and_then(|v| v.as_str()).unwrap_or("");
+    let offer_hash = document
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .ok_or("offer missing hash")?;
+    let provider_id = payload
+        .get("provider_id")
+        .and_then(|v| v.as_str())
+        .ok_or("offer missing provider_id")?;
+    let offer_id = payload
+        .get("offer_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let descriptor_hash = payload
+        .get("descriptor_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let offer_kind = payload
+        .get("offer_kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
-    let exec_profile = payload.get("execution_profile").cloned().unwrap_or(serde_json::json!({}));
-    let runtime = exec_profile.get("runtime").and_then(|v| v.as_str()).unwrap_or("");
-    let package_kind = exec_profile.get("package_kind").and_then(|v| v.as_str()).unwrap_or("");
-    let contract_version = exec_profile.get("contract_version").and_then(|v| v.as_str()).unwrap_or("");
-    let settlement_method = payload.get("settlement_method").and_then(|v| v.as_str()).unwrap_or("");
+    let exec_profile = payload
+        .get("execution_profile")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let runtime = exec_profile
+        .get("runtime")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let package_kind = exec_profile
+        .get("package_kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let contract_version = exec_profile
+        .get("contract_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let settlement_method = payload
+        .get("settlement_method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     let price_schedule = payload.get("price_schedule");
-    let base_fee_msat = price_schedule.and_then(|p| p.get("base_fee_msat")).and_then(|v| v.as_i64()).unwrap_or(0);
-    let success_fee_msat = price_schedule.and_then(|p| p.get("success_fee_msat")).and_then(|v| v.as_i64()).unwrap_or(0);
+    let base_fee_msat = price_schedule
+        .and_then(|p| p.get("base_fee_msat"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let success_fee_msat = price_schedule
+        .and_then(|p| p.get("success_fee_msat"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let doc_json = document.clone();
 
     // Attempt insert directly; skip on FK violation (provider not yet indexed)
@@ -142,14 +198,35 @@ async fn project_receipt(
 ) -> Result<ProjectionResult, String> {
     let payload = document.get("payload").ok_or("receipt missing payload")?;
 
-    let receipt_hash = document.get("hash").and_then(|v| v.as_str()).ok_or("receipt missing hash")?;
-    let provider_id = payload.get("provider_id").and_then(|v| v.as_str()).ok_or("receipt missing provider_id")?;
-    let deal_hash = payload.get("deal_hash").and_then(|v| v.as_str()).unwrap_or("");
-    let quote_hash = payload.get("quote_hash").and_then(|v| v.as_str()).unwrap_or("");
-    let requester_id = payload.get("requester_id").and_then(|v| v.as_str()).unwrap_or("");
+    let receipt_hash = document
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .ok_or("receipt missing hash")?;
+    let provider_id = payload
+        .get("provider_id")
+        .and_then(|v| v.as_str())
+        .ok_or("receipt missing provider_id")?;
+    let deal_hash = payload
+        .get("deal_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let quote_hash = payload
+        .get("quote_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let requester_id = payload
+        .get("requester_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
-    let deal_state = payload.get("deal_state").and_then(|v| v.as_str()).unwrap_or("unknown");
-    let execution_state = payload.get("execution_state").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let deal_state = payload
+        .get("deal_state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let execution_state = payload
+        .get("execution_state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
 
     let status = match (deal_state, execution_state) {
         (_, "succeeded") => "succeeded",

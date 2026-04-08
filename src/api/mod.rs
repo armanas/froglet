@@ -107,8 +107,7 @@ pub(crate) type ApiFailure = (StatusCode, serde_json::Value);
 fn private_runtime_tempdir(prefix: &str) -> Result<std::path::PathBuf, String> {
     let mut rng_bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut rng_bytes);
-    let tempdir =
-        std::env::temp_dir().join(format!("{prefix}-{}", hex::encode(rng_bytes)));
+    let tempdir = std::env::temp_dir().join(format!("{prefix}-{}", hex::encode(rng_bytes)));
     fs::create_dir_all(&tempdir)
         .map_err(|error| format!("failed to create tempdir {}: {error}", tempdir.display()))?;
     #[cfg(unix)]
@@ -836,7 +835,6 @@ async fn sync_requester_deal_from_provider(
             )
         })
 }
-
 
 pub async fn runtime_create_deal(
     State(state): State<Arc<AppState>>,
@@ -6243,9 +6241,7 @@ fn build_bound_workload_spec_from_service(
             let builtin_name = service.offer_kind.as_str();
             if builtin_name == "events.query" {
                 let Value::Object(object) = input else {
-                    return Err(
-                        "builtin events.query expects a JSON object input".to_string(),
-                    );
+                    return Err("builtin events.query expects a JSON object input".to_string());
                 };
                 let kinds = match object.get("kinds") {
                     Some(Value::Array(values)) => values
@@ -6258,21 +6254,21 @@ fn build_bound_workload_spec_from_service(
                         .collect::<Result<Vec<_>, _>>()?,
                     Some(_) => {
                         return Err(
-                            "builtin events.query kinds must be an array of strings".to_string(),
+                            "builtin events.query kinds must be an array of strings".to_string()
                         );
                     }
                     None => Vec::new(),
                 };
                 let limit = match object.get("limit") {
-                    Some(Value::Number(number)) => Some(
-                        number.as_u64().map(|value| value as usize).ok_or_else(|| {
+                    Some(Value::Number(number)) => {
+                        Some(number.as_u64().map(|value| value as usize).ok_or_else(|| {
                             "builtin events.query limit must be a non-negative integer".to_string()
-                        })?,
-                    ),
+                        })?)
+                    }
                     Some(Value::Null) | None => None,
                     Some(_) => {
                         return Err(
-                            "builtin events.query limit must be a non-negative integer".to_string(),
+                            "builtin events.query limit must be a non-negative integer".to_string()
                         );
                     }
                 };

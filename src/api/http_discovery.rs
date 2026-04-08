@@ -15,9 +15,17 @@ fn build_marketplace_deal(
     nonce: &str,
 ) -> Result<SignedArtifact<protocol::DealPayload>, String> {
     let created_at = settlement::current_unix_timestamp();
-    let provider_id = quote.get("payload").and_then(|p| p.get("provider_id")).and_then(|v| v.as_str()).unwrap_or("");
+    let provider_id = quote
+        .get("payload")
+        .and_then(|p| p.get("provider_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let quote_hash = quote.get("hash").and_then(|v| v.as_str()).unwrap_or("");
-    let workload_hash = quote.get("payload").and_then(|p| p.get("workload_hash")).and_then(|v| v.as_str()).unwrap_or("");
+    let workload_hash = quote
+        .get("payload")
+        .and_then(|p| p.get("workload_hash"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     let payload = protocol::DealPayload {
         provider_id: provider_id.to_string(),
@@ -109,13 +117,22 @@ async fn runtime_search(
     });
 
     let execution = match crate::execution::ExecutionWorkload::builtin_service(
-        "marketplace.search".to_string(), search_input,
+        "marketplace.search".to_string(),
+        search_input,
     ) {
         Ok(e) => e,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({"error": error})),
     };
 
-    match marketplace_deal(state.as_ref(), marketplace_url, "marketplace.search", &execution, "mkt-search").await {
+    match marketplace_deal(
+        state.as_ref(),
+        marketplace_url,
+        "marketplace.search",
+        &execution,
+        "mkt-search",
+    )
+    .await
+    {
         Ok(result) => (StatusCode::OK, Json(result)),
         Err((status, body)) => error_json(status, body),
     }
@@ -138,13 +155,22 @@ async fn runtime_provider_details(
     };
 
     let execution = match crate::execution::ExecutionWorkload::builtin_service(
-        "marketplace.provider".to_string(), json!({"provider_id": provider_id}),
+        "marketplace.provider".to_string(),
+        json!({"provider_id": provider_id}),
     ) {
         Ok(e) => e,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({"error": error})),
     };
 
-    match marketplace_deal(state.as_ref(), marketplace_url, "marketplace.provider", &execution, "mkt-prov").await {
+    match marketplace_deal(
+        state.as_ref(),
+        marketplace_url,
+        "marketplace.provider",
+        &execution,
+        "mkt-prov",
+    )
+    .await
+    {
         Ok(result) => (StatusCode::OK, Json(result)),
         Err((status, body)) => error_json(status, body),
     }

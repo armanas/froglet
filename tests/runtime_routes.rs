@@ -9,21 +9,19 @@ use axum::{
 use froglet::{
     api::{
         CreateDealRequest, CreateQuoteRequest, ReleaseDealPreimageRequest,
-        RuntimeAcceptDealRequest, RuntimeCreateDealRequest, RuntimeProviderRef,
-        RuntimeSearchRequest, public_router, runtime_router,
+        RuntimeAcceptDealRequest, RuntimeCreateDealRequest, RuntimeProviderRef, public_router,
+        runtime_router,
     },
     canonical_json,
     confidential::ConfidentialConfig,
     config::{
-        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig, WasmConfig,
     },
     crypto,
     db::DbPool,
     deals::DealRecord,
     execution::ExecutionRuntime,
-    jobs::FaaSDescriptor,
-    pricing::ServicePriceInfo,
     protocol::{
         self, DescriptorCapabilities, DescriptorPayload, ExecutionLimits, OfferExecutionProfile,
         OfferPayload, OfferPriceSchedule, QuotePayload, QuoteSettlementTerms, ReceiptLegState,
@@ -258,6 +256,7 @@ async fn call_json<T: DeserializeOwned>(app: Router, request: Request<Body>) -> 
 #[derive(Clone)]
 struct ProviderState {
     provider_id: String,
+    #[allow(dead_code)]
     provider_url: String,
     provider_key: Arc<crypto::NodeSigningKey>,
     descriptor: SignedArtifact<DescriptorPayload>,
@@ -338,6 +337,7 @@ struct RuntimeAcceptDealResponseView {
     deal: RequesterDealRecord,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct RuntimeProviderDetailsResponseView {
     descriptor: SignedArtifact<DescriptorPayload>,
@@ -755,6 +755,7 @@ impl Drop for TestServer {
     }
 }
 
+#[allow(dead_code)]
 async fn spawn_server(app: Router) -> TestServer {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1299,4 +1300,3 @@ async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_has
     );
     assert!(accept_response["result_hash"].as_str().is_some());
 }
-

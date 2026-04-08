@@ -24,9 +24,11 @@ from ecdsa import curves, ellipticcurve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TARGET_DIR = REPO_ROOT / "target" / "debug"
-FROGLET_PROVIDER_BIN = TARGET_DIR / "froglet-provider"
-FROGLET_RUNTIME_BIN = TARGET_DIR / "froglet-runtime"
-DISCOVERY_BIN = TARGET_DIR / "froglet-discovery"
+FROGLET_NODE_BIN = TARGET_DIR / "froglet-node"
+# Legacy aliases for backward compat with test helpers
+FROGLET_PROVIDER_BIN = FROGLET_NODE_BIN
+FROGLET_RUNTIME_BIN = FROGLET_NODE_BIN
+DISCOVERY_BIN = FROGLET_NODE_BIN
 VALID_WASM_HEX = (
     "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
     "020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432"
@@ -135,13 +137,9 @@ def ensure_binaries() -> None:
     if _BUILD_DONE:
         return
 
-    subprocess.run(["cargo", "build", "--bins"], cwd=REPO_ROOT, check=True)
-    if (
-        not FROGLET_PROVIDER_BIN.exists()
-        or not FROGLET_RUNTIME_BIN.exists()
-        or not DISCOVERY_BIN.exists()
-    ):
-        raise RuntimeError("Expected compiled froglet binaries in target/debug")
+    subprocess.run(["cargo", "build", "--bin", "froglet-node"], cwd=REPO_ROOT, check=True)
+    if not FROGLET_NODE_BIN.exists():
+        raise RuntimeError("Expected compiled froglet-node binary in target/debug")
     _BUILD_DONE = True
 
 
@@ -928,8 +926,11 @@ async def start_discovery(*, port: Optional[int] = None, extra_env: Optional[dic
     env = _clean_froglet_env()
     env.update(
         {
+            "FROGLET_NODE_ROLE": "provider",
+            "FROGLET_LISTEN_ADDR": f"127.0.0.1:{port}",
             "FROGLET_DISCOVERY_LISTEN_ADDR": f"127.0.0.1:{port}",
             "FROGLET_DISCOVERY_DB_PATH": str(db_path),
+            "FROGLET_DATA_DIR": str(temp_root / "data"),
         }
     )
     if extra_env:
@@ -1012,6 +1013,7 @@ async def start_provider(
     env = _clean_froglet_env()
     env.update(
         {
+            "FROGLET_NODE_ROLE": "provider",
             "FROGLET_NETWORK_MODE": "clearnet",
             "FROGLET_LISTEN_ADDR": f"127.0.0.1:{port}",
             "FROGLET_RUNTIME_LISTEN_ADDR": "127.0.0.1:0",
@@ -1097,6 +1099,7 @@ async def start_runtime(
     env = _clean_froglet_env()
     env.update(
         {
+            "FROGLET_NODE_ROLE": "runtime",
             "FROGLET_NETWORK_MODE": "clearnet",
             "FROGLET_LISTEN_ADDR": "127.0.0.1:0",
             "FROGLET_RUNTIME_LISTEN_ADDR": f"127.0.0.1:{runtime_port}",

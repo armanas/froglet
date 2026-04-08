@@ -41,18 +41,32 @@ impl BuiltinServiceHandler for MarketplaceTopupHandler {
                 return Err("amount_msat must be positive".to_string());
             }
             if req.amount_msat > 1_000_000_000_000 {
-                return Err("amount_msat exceeds maximum (1,000,000,000,000 msat / 1B sats)".to_string());
+                return Err(
+                    "amount_msat exceeds maximum (1,000,000,000,000 msat / 1B sats)".to_string(),
+                );
             }
 
             // Authorization: only the provider itself can top up its stake.
             match &req._caller_id {
                 Some(caller) if caller == &req.provider_id => {}
-                Some(_) => return Err("caller is not the provider; only a provider can top up its own stake".to_string()),
-                None => return Err("topup requires a deal context with verified caller identity".to_string()),
+                Some(_) => {
+                    return Err(
+                        "caller is not the provider; only a provider can top up its own stake"
+                            .to_string(),
+                    );
+                }
+                None => {
+                    return Err(
+                        "topup requires a deal context with verified caller identity".to_string(),
+                    );
+                }
             }
 
             let mut client = self.pg.get().await.map_err(|e| format!("db: {e}"))?;
-            let txn = client.transaction().await.map_err(|e| format!("db txn: {e}"))?;
+            let txn = client
+                .transaction()
+                .await
+                .map_err(|e| format!("db txn: {e}"))?;
 
             // Provider must have an existing stake
             let row = txn
@@ -75,8 +89,12 @@ impl BuiltinServiceHandler for MarketplaceTopupHandler {
             };
 
             // Record ledger entry
-            txn.execute(super::LEDGER_INSERT_SQL, &[&req.provider_id, &req.amount_msat, &"topup"])
-                .await.map_err(|e| format!("ledger insert: {e}"))?;
+            txn.execute(
+                super::LEDGER_INSERT_SQL,
+                &[&req.provider_id, &req.amount_msat, &"topup"],
+            )
+            .await
+            .map_err(|e| format!("ledger insert: {e}"))?;
 
             txn.commit().await.map_err(|e| format!("commit: {e}"))?;
 

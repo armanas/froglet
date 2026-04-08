@@ -1,4 +1,4 @@
-use deadpool_postgres::{Config, Pool, Runtime, ManagerConfig, RecyclingMethod};
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use tokio_postgres::NoTls;
 
 pub type PgPool = Pool;
@@ -18,7 +18,9 @@ pub async fn connect(database_url: &str) -> Result<PgPool, String> {
     });
     cfg.port = pg_config.get_ports().first().copied();
     cfg.user = pg_config.get_user().map(String::from);
-    cfg.password = pg_config.get_password().map(|p| String::from_utf8_lossy(p).to_string());
+    cfg.password = pg_config
+        .get_password()
+        .map(|p| String::from_utf8_lossy(p).to_string());
     cfg.manager = Some(ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     });

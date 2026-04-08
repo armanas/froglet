@@ -85,7 +85,10 @@ impl BuiltinServiceHandler for MarketplaceRegisterHandler {
             let mut offers_indexed = 0_usize;
             for offer in &req.offers {
                 if !verify_artifact_document(offer) {
-                    warn!(provider_id = provider_id, "skipping offer with invalid signature");
+                    warn!(
+                        provider_id = provider_id,
+                        "skipping offer with invalid signature"
+                    );
                     continue;
                 }
 

@@ -47,7 +47,6 @@ struct OfferDetail {
     execution_profile: Value,
 }
 
-
 impl BuiltinServiceHandler for MarketplaceProviderHandler {
     fn execute<'a>(
         &'a self,

@@ -1,8 +1,8 @@
 use froglet::{
     confidential::ConfidentialConfig,
     config::{
-        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig, WasmConfig,
     },
     db::{self, DbPool},
     pricing::ServiceId,
@@ -17,7 +17,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Duration;
 use tokio::runtime::Runtime;
 
 static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -148,7 +147,6 @@ fn in_memory_state() -> AppState {
         builtin_services: std::collections::HashMap::new(),
     }
 }
-
 
 #[test]
 fn artifact_store_reuses_existing_payload_document_for_republished_roots() {
@@ -654,4 +652,3 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
         );
     }
 }
-

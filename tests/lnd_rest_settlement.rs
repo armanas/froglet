@@ -11,9 +11,8 @@ use froglet::{
     api,
     confidential::ConfidentialConfig,
     config::{
-        IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode,
-        NetworkMode, NodeConfig, PaymentBackend, PricingConfig,
-        StorageConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningLndRestConfig, LightningMode, NetworkMode,
+        NodeConfig, PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
     },
     crypto,
     db::{self, DbPool},

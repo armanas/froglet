@@ -188,8 +188,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::{
-        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
-        PaymentBackend, PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     #[test]
     fn test_identity_sign_and_load() {

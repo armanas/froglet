@@ -111,16 +111,11 @@ impl BuiltinServiceHandler for MarketplaceSearchHandler {
             };
 
             let has_more = provider_rows.len() as i64 > limit;
-            let provider_rows: Vec<_> = provider_rows
-                .into_iter()
-                .take(limit as usize)
-                .collect();
+            let provider_rows: Vec<_> = provider_rows.into_iter().take(limit as usize).collect();
 
             // Fan-in: fetch all offers for the result set in a single query
-            let provider_ids: Vec<&str> = provider_rows
-                .iter()
-                .map(|r| r.get::<_, &str>(0))
-                .collect();
+            let provider_ids: Vec<&str> =
+                provider_rows.iter().map(|r| r.get::<_, &str>(0)).collect();
 
             let offer_rows = if provider_ids.is_empty() {
                 Vec::new()
@@ -143,15 +138,18 @@ impl BuiltinServiceHandler for MarketplaceSearchHandler {
                 std::collections::HashMap::new();
             for row in &offer_rows {
                 let pid: String = row.get(0);
-                offers_by_provider.entry(pid).or_default().push(OfferSummary {
-                    offer_hash: row.get(1),
-                    offer_id: row.get(2),
-                    offer_kind: row.get(3),
-                    runtime: row.get(4),
-                    base_fee_msat: row.get(5),
-                    success_fee_msat: row.get(6),
-                    execution_profile: row.get(7),
-                });
+                offers_by_provider
+                    .entry(pid)
+                    .or_default()
+                    .push(OfferSummary {
+                        offer_hash: row.get(1),
+                        offer_id: row.get(2),
+                        offer_kind: row.get(3),
+                        runtime: row.get(4),
+                        base_fee_msat: row.get(5),
+                        success_fee_msat: row.get(6),
+                        execution_profile: row.get(7),
+                    });
             }
 
             let mut results = Vec::with_capacity(provider_rows.len());

@@ -375,7 +375,7 @@ sync_repo_to_role() {
 copy_binaries_to_role() {
   local role="$1"
   local linux_bin_dir="$STATE_DIR/linux-bin"
-  for binary in froglet-provider froglet-runtime froglet-operator froglet-discovery; do
+  for binary in froglet-node froglet-marketplace; do
     if [[ -f "$linux_bin_dir/$binary" ]]; then
       gcp_scp_to "$role" "$linux_bin_dir/$binary" "$REMOTE_ROOT/bin/$binary"
       gcp_ssh "$role" "chmod 0755 '$REMOTE_ROOT/bin/$binary'"
@@ -470,7 +470,8 @@ Wants=network-online.target
 User=$FROGLET_GCP_REMOTE_USER
 WorkingDirectory=$REMOTE_ROOT/repo
 EnvironmentFile=$REMOTE_ROOT/etc/node.env
-ExecStart=/bin/bash -lc 'exec "$REMOTE_ROOT/bin/froglet-provider" >>"$REMOTE_ROOT/logs/provider.log" 2>&1'
+Environment=FROGLET_NODE_ROLE=provider
+ExecStart=/bin/bash -lc 'exec "$REMOTE_ROOT/bin/froglet-node" >>"$REMOTE_ROOT/logs/provider.log" 2>&1'
 Restart=always
 RestartSec=2
 
@@ -490,7 +491,8 @@ Wants=network-online.target
 User=$FROGLET_GCP_REMOTE_USER
 WorkingDirectory=$REMOTE_ROOT/repo
 EnvironmentFile=$REMOTE_ROOT/etc/node.env
-ExecStart=/bin/bash -lc 'exec "$REMOTE_ROOT/bin/froglet-runtime" >>"$REMOTE_ROOT/logs/runtime.log" 2>&1'
+Environment=FROGLET_NODE_ROLE=runtime
+ExecStart=/bin/bash -lc 'exec "$REMOTE_ROOT/bin/froglet-node" >>"$REMOTE_ROOT/logs/runtime.log" 2>&1'
 Restart=always
 RestartSec=2
 
@@ -510,7 +512,8 @@ Wants=network-online.target
 User=$FROGLET_GCP_REMOTE_USER
 WorkingDirectory=$REMOTE_ROOT/repo
 EnvironmentFile=$REMOTE_ROOT/etc/node.env
-ExecStart=/bin/bash -lc 'exec "$REMOTE_ROOT/bin/froglet-operator" >>"$REMOTE_ROOT/logs/operator.log" 2>&1'
+Environment=FROGLET_NODE_ROLE=dual
+ExecStart=/bin/bash -lc 'exec "$REMOTE_ROOT/bin/froglet-node" >>"$REMOTE_ROOT/logs/operator.log" 2>&1'
 Restart=always
 RestartSec=2
 
@@ -663,14 +666,10 @@ build_binaries() {
     export PATH=\"\$HOME/.cargo/bin:\$PATH\"
     cd '$REMOTE_ROOT/repo'
     cargo build --release \
-      --bin froglet-provider \
-      --bin froglet-runtime \
-      --bin froglet-operator \
-      --bin froglet-discovery
-    install -m 0755 target/release/froglet-provider '$REMOTE_ROOT/bin/froglet-provider'
-    install -m 0755 target/release/froglet-runtime '$REMOTE_ROOT/bin/froglet-runtime'
-    install -m 0755 target/release/froglet-operator '$REMOTE_ROOT/bin/froglet-operator'
-    install -m 0755 target/release/froglet-discovery '$REMOTE_ROOT/bin/froglet-discovery'
+      --bin froglet-node \
+      -p froglet-marketplace
+    install -m 0755 target/release/froglet-node '$REMOTE_ROOT/bin/froglet-node'
+    install -m 0755 target/release/froglet-marketplace '$REMOTE_ROOT/bin/froglet-marketplace'
   "
   for binary in froglet-provider froglet-runtime froglet-operator froglet-discovery; do
     gcp_scp_from "$build_role" "$REMOTE_ROOT/bin/$binary" "$linux_bin_dir/$binary"

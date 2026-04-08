@@ -37,7 +37,6 @@ struct ReceiptSummary {
     created_at: String,
 }
 
-
 impl BuiltinServiceHandler for MarketplaceReceiptsHandler {
     fn execute<'a>(
         &'a self,
@@ -72,10 +71,7 @@ impl BuiltinServiceHandler for MarketplaceReceiptsHandler {
                 .map_err(|e| format!("receipts query: {e}"))?;
 
             let has_more = receipt_rows.len() as i64 > limit;
-            let receipt_rows: Vec<_> = receipt_rows
-                .into_iter()
-                .take(limit as usize)
-                .collect();
+            let receipt_rows: Vec<_> = receipt_rows.into_iter().take(limit as usize).collect();
 
             let next_cursor = if has_more {
                 Some((offset + limit).to_string())

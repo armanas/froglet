@@ -42,9 +42,9 @@ pub async fn run(pg: Arc<PgPool>, config: MarketplaceConfig, http: reqwest::Clie
         let pg = pg.clone();
         let http = http.clone();
         let interval = config.poll_interval;
-        handles.push(tokio::spawn(
-            poll_source_loop(pg, http, source_url, interval),
-        ));
+        handles.push(tokio::spawn(poll_source_loop(
+            pg, http, source_url, interval,
+        )));
     }
 
     // Spawn dynamic discovery loop if discovery URL is configured
@@ -218,7 +218,11 @@ async fn poll_source_once(
 
     for artifact in &response.artifacts {
         if !verify_artifact_document(&artifact.document) {
-            warn!(hash = artifact.hash, kind = artifact.kind, "invalid signature, skipping");
+            warn!(
+                hash = artifact.hash,
+                kind = artifact.kind,
+                "invalid signature, skipping"
+            );
             new_cursor = artifact.cursor;
             continue;
         }
@@ -241,7 +245,12 @@ async fn poll_source_once(
     }
 
     if projected > 0 {
-        info!(source = source_url, projected, cursor = new_cursor, "indexed artifacts");
+        info!(
+            source = source_url,
+            projected,
+            cursor = new_cursor,
+            "indexed artifacts"
+        );
     }
 
     Ok(response.has_more)

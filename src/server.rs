@@ -90,7 +90,10 @@ pub async fn run_with_state(state: Arc<AppState>) -> Result<(), Box<dyn std::err
     run(ServiceRole::Provider, Some(state)).await
 }
 
-async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(
+    service_role: ServiceRole,
+    prebuilt_state: Option<Arc<AppState>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     tls::ensure_rustls_crypto_provider();
 
@@ -326,14 +329,14 @@ async fn run(service_role: ServiceRole, prebuilt_state: Option<Arc<AppState>>) -
             tokio::time::sleep(Duration::from_secs(2)).await;
             match api::register_with_marketplace(reg_state).await {
                 Ok(()) => {}
-                Err(error) => warn!("Marketplace registration failed (will retry on next start): {error}"),
+                Err(error) => {
+                    warn!("Marketplace registration failed (will retry on next start): {error}")
+                }
             }
         });
     }
 
-    if service_role.is_provider()
-        && node_config.payment_backend == PaymentBackend::Lightning
-    {
+    if service_role.is_provider() && node_config.payment_backend == PaymentBackend::Lightning {
         let recovery_state = state.clone();
         spawn_supervised_task(
             "lightning-remote-recovery",
@@ -606,7 +609,6 @@ async fn take_or_bind_listener(
             .map_err(|error| format!("failed to bind {label} listener on {addr}: {error}")),
     }
 }
-
 
 fn accept_error_is_transient(error: &std::io::Error) -> bool {
     if matches!(
