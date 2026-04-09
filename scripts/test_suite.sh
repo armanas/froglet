@@ -52,8 +52,12 @@ compose_test_env() {
     FROGLET_DATA_ROOT="$COMPOSE_TEST_DATA_ROOT" \
     FROGLET_TEST_DATA_ROOT="$COMPOSE_TEST_DATA_ROOT" \
     FROGLET_AUTH_TOKEN_PATH="$COMPOSE_TEST_DATA_ROOT/runtime/froglet-control.token" \
-    FROGLET_BASE_URL="${FROGLET_BASE_URL:-http://127.0.0.1:9191}" \
+    FROGLET_BASE_URL="${FROGLET_BASE_URL:-http://127.0.0.1:8080}" \
     FROGLET_PROVIDER_URL="${FROGLET_PROVIDER_URL:-http://127.0.0.1:8080}" \
+    FROGLET_RUNTIME_URL="${FROGLET_RUNTIME_URL:-http://127.0.0.1:8081}" \
+    FROGLET_PROVIDER_AUTH_TOKEN_PATH="${FROGLET_PROVIDER_AUTH_TOKEN_PATH:-$COMPOSE_TEST_DATA_ROOT/runtime/froglet-control.token}" \
+    FROGLET_RUNTIME_AUTH_TOKEN_PATH="${FROGLET_RUNTIME_AUTH_TOKEN_PATH:-$COMPOSE_TEST_DATA_ROOT/runtime/auth.token}" \
+    FROGLET_TEST_RESULTS_DIR="${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}" \
     "$@"
 }
 
@@ -167,7 +171,6 @@ run_integration() {
     step python3 -W error -m unittest \
       python.tests.test_protocol \
       python.tests.test_runtime \
-      python.tests.test_discovery \
       python.tests.test_jobs \
       python.tests.test_payments \
       python.tests.test_sandbox -v || rc=1
@@ -351,7 +354,8 @@ run_agentic() {
 
   local rc=0
   if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
-    step node integrations/openclaw/froglet/test/openai-responses-smoke.mjs || rc=1
+    step node integrations/openclaw/froglet/test/openai-responses-smoke.mjs \
+      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-curated-local.json" || rc=1
     return $rc
   fi
   if ! has_docker; then
@@ -362,7 +366,8 @@ run_agentic() {
   compose_test_setup agentic
   step compose_test_env docker compose up --build -d --wait || rc=1
   if [[ "$rc" -eq 0 ]]; then
-    step compose_test_env node integrations/openclaw/froglet/test/openai-responses-smoke.mjs || rc=1
+    step compose_test_env node integrations/openclaw/froglet/test/openai-responses-smoke.mjs \
+      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-curated-local.json" || rc=1
   fi
 
   compose_test_finish "$rc"
@@ -548,7 +553,8 @@ run_exploratory() {
   local rc=0
   export OPENAI_API_KEY="$api_key"
   if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
-    step node tests/e2e/agentic_exploratory.mjs || rc=1
+    step node tests/e2e/agentic_exploratory.mjs \
+      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-exploratory-local.json" || rc=1
     return $rc
   fi
   if ! has_docker; then
@@ -559,7 +565,8 @@ run_exploratory() {
   compose_test_setup exploratory
   step compose_test_env docker compose up --build -d --wait || rc=1
   if [[ "$rc" -eq 0 ]]; then
-    step compose_test_env node tests/e2e/agentic_exploratory.mjs || rc=1
+    step compose_test_env node tests/e2e/agentic_exploratory.mjs \
+      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-exploratory-local.json" || rc=1
   fi
 
   compose_test_finish "$rc"
@@ -656,7 +663,7 @@ run_e2e() {
 }
 
 # ---------------------------------------------------------------------------
-# Category: canary (acceptance on partial deploy — provider+discovery only)
+# Category: canary (acceptance on partial deploy — provider only)
 # ---------------------------------------------------------------------------
 run_canary() {
   banner "canary"
@@ -681,18 +688,6 @@ def get_json(url: str) -> dict:
     with urllib.request.urlopen(url) as response:
         return json.load(response)
 
-search_req = urllib.request.Request(
-    "http://127.0.0.1:9090/v1/discovery/search",
-    method="POST",
-    headers={"Content-Type": "application/json"},
-    data=b"{}",
-)
-with urllib.request.urlopen(search_req) as response:
-    search = json.load(response)
-
-nodes = search.get("nodes", [])
-assert nodes, "expected provider publication in discovery"
-
 descriptor = get_json("http://127.0.0.1:8080/v1/provider/descriptor")
 payload = descriptor["payload"]
 assert isinstance(payload["provider_id"], str) and payload["provider_id"], payload
@@ -706,7 +701,7 @@ assert isinstance(offers.get("offers"), list) and offers["offers"], offers
 
   compose_test_setup canary
 
-  step compose_test_env docker compose up --build -d --wait discovery provider || rc=1
+  step compose_test_env docker compose up --build -d --wait provider || rc=1
   if [[ "$rc" -eq 0 ]]; then
     step compose_test_env python3 -c '
 import json
@@ -715,18 +710,6 @@ import urllib.request
 def get_json(url: str) -> dict:
     with urllib.request.urlopen(url) as response:
         return json.load(response)
-
-search_req = urllib.request.Request(
-    "http://127.0.0.1:9090/v1/discovery/search",
-    method="POST",
-    headers={"Content-Type": "application/json"},
-    data=b"{}",
-)
-with urllib.request.urlopen(search_req) as response:
-    search = json.load(response)
-
-nodes = search.get("nodes", [])
-assert nodes, "expected provider publication in discovery"
 
 descriptor = get_json("http://127.0.0.1:8080/v1/provider/descriptor")
 payload = descriptor["payload"]
@@ -842,7 +825,7 @@ Available test categories:
   conformance   Kernel conformance vectors (Rust + Python)
   stress        Python stress tests (concurrent publish + query)
   smoke         Docker Compose E2E: OpenClaw + MCP compose-smoke (requires Docker)
-  agentic       OpenAI Responses smoke test (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
+  agentic       Curated blocking OpenAI/OpenClaw prompt suite (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
 
   Extended:
   performance   API latency benchmarking (p50/p95/p99) and throughput
@@ -854,11 +837,11 @@ Available test categories:
   acceptance    User acceptance testing (UAT business scenarios)
   pentest       Automated penetration testing (auth bypass, injection, replay)
   chaos         Docker failure injection (kill services, network partitions)
-  exploratory   AI-driven exploratory testing (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
+  exploratory   Blocking AI exploratory testing with anomaly gating (requires OPENCLAW_API_KEY or OPENAI_API_KEY)
   mutation      Mutation testing via cargo-mutants (requires cargo-mutants)
   vulnscan      Dependency vulnerability scanning (cargo-audit, npm audit)
   sanity        Quick health check (crypto tests + conformance vectors)
-  canary        Compose-backed provider/discovery canary probe
+  canary        Compose-backed provider canary probe
 
   Meta-categories:
   all           unit + integration + sast + security + conformance
@@ -871,6 +854,7 @@ Available test categories:
   Env vars:
   OPENCLAW_API_KEY / OPENAI_API_KEY   For agentic + exploratory tests
   FROGLET_DATA_ROOT                   Override compose-backed test data root
+  FROGLET_TEST_RESULTS_DIR            Directory for JSON LLM test artifacts (default _tmp/test-results)
   FROGLET_GCP_PROJECT                 GCP project ID for gcp_rig
   FROGLET_PERF_REQUESTS               Benchmark request count (default 500)
   FROGLET_SOAK_DURATION_MINUTES       Soak test duration (default 5)

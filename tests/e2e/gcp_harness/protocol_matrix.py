@@ -3,13 +3,11 @@ import argparse
 import asyncio
 import json
 import secrets
-import ssl
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-
-import aiohttp
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "python" / "tests"))
@@ -38,8 +36,137 @@ class RemoteNode:
         return f"{self.base_url}{path}"
 
 
+def request_json_sync(
+    ca_cert_path: str,
+    method: str,
+    url: str,
+    *,
+    headers: dict | None = None,
+    payload: dict | None = None,
+) -> tuple[int, dict]:
+    status_marker = "__FROGLET_HTTP_STATUS__:"
+    command = [
+        "curl",
+        "-sS",
+        "-X",
+        method,
+        "-w",
+        f"\\n{status_marker}%{{http_code}}",
+    ]
+    if url.startswith("https://"):
+        command.extend(["--cacert", ca_cert_path])
+    for key, value in (headers or {}).items():
+        command.extend(["-H", f"{key}: {value}"])
+    if payload is not None:
+        command.extend(["-H", "Content-Type: application/json"])
+        command.extend(["--data-binary", json.dumps(payload, separators=(",", ":"))])
+    command.append(url)
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"curl {method} {url} failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    raw = completed.stdout
+    body_text, marker, status_text = raw.rpartition(f"\n{status_marker}")
+    if not marker:
+        raise RuntimeError(f"missing HTTP status marker from curl output for {url}")
+    status = int(status_text.strip())
+    raw_body = body_text
+    if not raw_body:
+        body = {}
+    else:
+        body = json.loads(raw_body)
+    return status, body
+
+
+class UrlLibResponse:
+    def __init__(self, status: int, body: dict):
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self) -> "UrlLibResponse":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    async def json(self) -> dict:
+        return self._body
+
+
+class UrlLibRequestContext:
+    def __init__(
+        self,
+        ca_cert_path: str,
+        method: str,
+        url: str,
+        *,
+        headers: dict | None = None,
+        json_payload: dict | None = None,
+    ):
+        self.ca_cert_path = ca_cert_path
+        self.method = method
+        self.url = url
+        self.headers = headers
+        self.json_payload = json_payload
+        self._response: UrlLibResponse | None = None
+
+    async def __aenter__(self) -> UrlLibResponse:
+        status, body = await asyncio.to_thread(
+            request_json_sync,
+            self.ca_cert_path,
+            self.method,
+            self.url,
+            headers=self.headers,
+            payload=self.json_payload,
+        )
+        self._response = UrlLibResponse(status, body)
+        return self._response
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class UrlLibSession:
+    def __init__(self, ca_cert_path: str):
+        self.ca_cert_path = ca_cert_path
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict | None = None,
+        json: dict | None = None,
+        ) -> UrlLibRequestContext:
+        return UrlLibRequestContext(
+            self.ca_cert_path,
+            method,
+            url,
+            headers=headers,
+            json_payload=json,
+        )
+
+    def get(self, url: str, *, headers: dict | None = None) -> UrlLibRequestContext:
+        return self.request("GET", url, headers=headers)
+
+    def post(
+        self,
+        url: str,
+        *,
+        headers: dict | None = None,
+        json: dict | None = None,
+    ) -> UrlLibRequestContext:
+        return self.request("POST", url, headers=headers, json=json)
+
+
 async def request_json(
-    session: aiohttp.ClientSession,
+    session: UrlLibSession,
     method: str,
     url: str,
     *,
@@ -55,7 +182,7 @@ async def request_json(
 
 
 async def wait_for_deal(
-    session: aiohttp.ClientSession,
+    session: UrlLibSession,
     node: RemoteNode,
     deal_id: str,
     terminal_states: set[str],
@@ -76,17 +203,43 @@ async def wait_for_deal(
     raise AssertionError(f"timed out waiting for deal {deal_id}; last={last}")
 
 
-def gcloud_ssh(project: str, zone: str, instance: str, command: str) -> str:
+def gcloud_ssh(project: str, zone: str, instance: str, command: str, *, nat_ip: str | None = None) -> str:
+    if shutil.which("gcloud") is not None:
+        completed = subprocess.run(
+            [
+                "gcloud",
+                "compute",
+                "ssh",
+                instance,
+                f"--project={project}",
+                f"--zone={zone}",
+                "--quiet",
+                f"--command={command}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            return completed.stdout.strip()
+
+    if not nat_ip:
+        raise RuntimeError(f"failed to ssh to {instance} and no nat_ip fallback was provided")
+
+    key_path = Path.home() / ".ssh" / "google_compute_engine"
+    if not key_path.exists():
+        raise RuntimeError(f"failed to ssh to {instance}; missing fallback key {key_path}")
+
     completed = subprocess.run(
         [
-            "gcloud",
-            "compute",
             "ssh",
-            instance,
-            f"--project={project}",
-            f"--zone={zone}",
-            "--quiet",
-            f"--command={command}",
+            "-i",
+            str(key_path),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            f"armanas@{nat_ip}",
+            command,
         ],
         capture_output=True,
         text=True,
@@ -110,22 +263,32 @@ def set_mock_invoice_bundle_states(project: str, role: dict, session_id: str, *,
             "); conn.commit()"
         )
     )
-    gcloud_ssh(project, role["zone"], role["instance"], script)
+    gcloud_ssh(project, role["zone"], role["instance"], script, nat_ip=role.get("nat_ip"))
 
-
-async def check_discovery_visibility(session: aiohttp.ClientSession, inventory: dict, free_seed: dict, paid_seed: dict) -> dict:
-    discovery_url = inventory["discovery_url"]
-    _, search = await request_json(session, "POST", f"{discovery_url}/v1/discovery/search", payload={})
-    node_ids = {node["descriptor"]["node_id"] for node in search.get("nodes", [])}
+async def check_marketplace_visibility(
+    session: UrlLibSession,
+    runtime_url: str,
+    runtime_token: str,
+    free_seed: dict,
+    paid_seed: dict,
+) -> dict:
+    _, search = await request_json(
+        session,
+        "POST",
+        f"{runtime_url}/v1/runtime/search",
+        headers={"Authorization": f"Bearer {runtime_token}"},
+        payload={"limit": 20},
+    )
+    node_ids = {provider["provider_id"] for provider in search.get("providers", [])}
     assert free_seed["provider_id"] in node_ids
     assert paid_seed["provider_id"] in node_ids
     return {
         "node_ids": sorted(node_ids),
-        "search_count": len(search.get("nodes", [])),
+        "search_count": len(search.get("providers", [])),
     }
 
 
-async def check_public_service_redaction(session: aiohttp.ClientSession, free_seed: dict) -> dict:
+async def check_public_service_redaction(session: UrlLibSession, free_seed: dict) -> dict:
     provider = RemoteNode("froglet-provider-free", {"provider_public_url": free_seed["provider_public_url"]})
     hidden_service_id = free_seed["services"]["hidden"]["service_id"]
     visible_service_id = free_seed["services"]["free_python_inline"]["service_id"]
@@ -151,7 +314,7 @@ async def check_public_service_redaction(session: aiohttp.ClientSession, free_se
     }
 
 
-async def check_free_compute_chain(session: aiohttp.ClientSession, free_seed: dict) -> dict:
+async def check_free_compute_chain(session: UrlLibSession, free_seed: dict) -> dict:
     provider = RemoteNode("froglet-provider-free", {"provider_public_url": free_seed["provider_public_url"]})
     requester_key = generate_schnorr_signing_key()
     requester_id = schnorr_pubkey_hex(requester_key)
@@ -215,7 +378,7 @@ async def check_free_compute_chain(session: aiohttp.ClientSession, free_seed: di
     }
 
 
-async def check_mock_lightning(session: aiohttp.ClientSession, inventory: dict, paid_seed: dict) -> dict:
+async def check_mock_lightning(session: UrlLibSession, inventory: dict, paid_seed: dict) -> dict:
     provider_role = inventory["roles"]["froglet-provider-paid"]
     provider = RemoteNode("froglet-provider-paid", provider_role, paid_seed["provider_public_url"])
     requester_key = generate_schnorr_signing_key()
@@ -308,38 +471,40 @@ async def check_mock_lightning(session: aiohttp.ClientSession, inventory: dict, 
     }
 
 
-async def check_operator_security(
-    session: aiohttp.ClientSession,
-    operator_url: str,
-    provider_token: str,
+async def check_runtime_security(
+    session: UrlLibSession,
+    runtime_url: str,
+    runtime_token: str,
     free_seed: dict,
     paid_seed: dict,
 ) -> dict:
-    headers = {"Authorization": f"Bearer {provider_token}"}
+    headers = {"Authorization": f"Bearer {runtime_token}"}
     _, mismatch = await request_json(
         session,
         "POST",
-        f"{operator_url}/v1/froglet/compute/run",
+        f"{runtime_url}/v1/runtime/deals",
         headers=headers,
         payload={
-            "provider_id": free_seed["provider_id"],
-            "provider_url": paid_seed["provider_public_url"],
-            "runtime": "wasm",
-            "package_kind": "inline_module",
-            "wasm_module_hex": VALID_WASM_HEX,
+            "provider": {
+                "provider_id": free_seed["provider_id"],
+                "provider_url": paid_seed["provider_public_url"],
+            },
+            "offer_id": "execute.compute",
+            **build_wasm_request(VALID_WASM_HEX),
         },
         expected_statuses=(400,),
     )
     _, ssrf = await request_json(
         session,
         "POST",
-        f"{operator_url}/v1/froglet/compute/run",
+        f"{runtime_url}/v1/runtime/deals",
         headers=headers,
         payload={
-            "provider_url": "https://127.0.0.1:8080",
-            "runtime": "wasm",
-            "package_kind": "inline_module",
-            "wasm_module_hex": VALID_WASM_HEX,
+            "provider": {
+                "provider_url": "https://127.0.0.1:8080",
+            },
+            "offer_id": "execute.compute",
+            **build_wasm_request(VALID_WASM_HEX),
         },
         expected_statuses=(400,),
     )
@@ -352,16 +517,21 @@ async def check_operator_security(
 
 
 async def check_restart_recovery(
-    session: aiohttp.ClientSession,
+    session: UrlLibSession,
     inventory: dict,
     free_seed: dict,
 ) -> dict:
     provider_role = inventory["roles"]["froglet-provider-free"]
     provider = RemoteNode("froglet-provider-free", provider_role, free_seed["provider_public_url"])
-    discovery_url = inventory["discovery_url"]
 
     start = time.monotonic()
-    gcloud_ssh(inventory["project"], provider_role["zone"], provider_role["instance"], "sudo -n /usr/bin/systemctl restart froglet-provider.service")
+    gcloud_ssh(
+        inventory["project"],
+        provider_role["zone"],
+        provider_role["instance"],
+        "sudo -n /usr/bin/systemctl restart froglet-provider.service",
+        nat_ip=provider_role.get("nat_ip"),
+    )
     for _ in range(120):
         try:
             _, response = await request_json(session, "GET", provider.url("/health"))
@@ -372,25 +542,9 @@ async def check_restart_recovery(
         await asyncio.sleep(0.5)
     provider_recovery_secs = time.monotonic() - start
 
-    start = time.monotonic()
-    discovery_role = inventory["roles"]["froglet-discovery"]
-    gcloud_ssh(inventory["project"], discovery_role["zone"], discovery_role["instance"], "sudo -n /usr/bin/systemctl restart froglet-discovery.service")
-    for _ in range(120):
-        try:
-            _, search = await request_json(session, "POST", f"{discovery_url}/v1/discovery/search", payload={})
-            node_ids = {node["descriptor"]["node_id"] for node in search.get("nodes", [])}
-            if free_seed["provider_id"] in node_ids:
-                break
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
-    discovery_recovery_secs = time.monotonic() - start
-
     assert provider_recovery_secs <= 60.0
-    assert discovery_recovery_secs <= 60.0
     return {
         "provider_recovery_secs": round(provider_recovery_secs, 3),
-        "discovery_recovery_secs": round(discovery_recovery_secs, 3),
     }
 
 
@@ -399,8 +553,10 @@ async def main() -> None:
     parser.add_argument("--inventory", required=True)
     parser.add_argument("--seed-free", required=True)
     parser.add_argument("--seed-paid", required=True)
-    parser.add_argument("--operator-url", required=True)
+    parser.add_argument("--provider-url", required=True)
     parser.add_argument("--provider-token-path", required=True)
+    parser.add_argument("--runtime-url")
+    parser.add_argument("--runtime-token-path")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -408,33 +564,41 @@ async def main() -> None:
     free_seed = json.loads(Path(args.seed_free).read_text())
     paid_seed = json.loads(Path(args.seed_paid).read_text())
     provider_token = Path(args.provider_token_path).read_text().strip()
+    runtime_url = args.runtime_url or inventory["roles"]["froglet-marketplace"]["runtime_url"]
+    runtime_token_path = (
+        Path(args.runtime_token_path)
+        if args.runtime_token_path
+        else Path(inventory["roles"]["froglet-marketplace"]["token_paths"]["runtime_auth"])
+    )
+    runtime_token = runtime_token_path.read_text().strip()
+    inventory_path = Path(args.inventory).resolve()
+    run_local_ca = inventory_path.parent / "pki" / "ca.pem"
+    ca_cert_path = str(run_local_ca if run_local_ca.exists() else Path(inventory["ca_cert_path"]))
 
-    ssl_context = ssl.create_default_context(cafile=inventory["ca_cert_path"])
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        results = {
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "run_id": inventory["run_id"],
-            "checks": {},
-        }
-        results["checks"]["discovery_visibility"] = await check_discovery_visibility(
-            session, inventory, free_seed, paid_seed
-        )
-        results["checks"]["public_service_redaction"] = await check_public_service_redaction(
-            session, free_seed
-        )
-        results["checks"]["free_compute_chain"] = await check_free_compute_chain(session, free_seed)
-        results["checks"]["mock_lightning"] = await check_mock_lightning(session, inventory, paid_seed)
-        results["checks"]["operator_security"] = await check_operator_security(
-            session,
-            args.operator_url,
-            provider_token,
-            free_seed,
-            paid_seed,
-        )
-        results["checks"]["restart_recovery"] = await check_restart_recovery(
-            session, inventory, free_seed
-        )
+    session = UrlLibSession(ca_cert_path)
+    results = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "run_id": inventory["run_id"],
+        "checks": {},
+    }
+    results["checks"]["marketplace_visibility"] = await check_marketplace_visibility(
+        session, runtime_url, runtime_token, free_seed, paid_seed
+    )
+    results["checks"]["public_service_redaction"] = await check_public_service_redaction(
+        session, free_seed
+    )
+    results["checks"]["free_compute_chain"] = await check_free_compute_chain(session, free_seed)
+    results["checks"]["mock_lightning"] = await check_mock_lightning(session, inventory, paid_seed)
+    results["checks"]["runtime_security"] = await check_runtime_security(
+        session,
+        runtime_url,
+        runtime_token,
+        free_seed,
+        paid_seed,
+    )
+    results["checks"]["restart_recovery"] = await check_restart_recovery(
+        session, inventory, free_seed
+    )
 
     Path(args.out).write_text(json.dumps(results, indent=2) + "\n")
 

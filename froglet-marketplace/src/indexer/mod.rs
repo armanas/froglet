@@ -14,7 +14,6 @@ struct FeedResponse {
     #[serde(default)]
     has_more: bool,
     #[serde(default)]
-    #[allow(dead_code)]
     next_cursor: Option<i64>,
 }
 
@@ -28,134 +27,28 @@ struct FeedArtifact {
     document: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProviderOffersResponse {
+    #[serde(default)]
+    offers: Vec<serde_json::Value>,
+}
+
 pub async fn run(pg: Arc<PgPool>, config: MarketplaceConfig, http: reqwest::Client) {
-    let sources = config.feed_sources.clone();
-
-    // Track active source URLs so discovery doesn't duplicate static ones
-    let active_sources: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
-        Arc::new(tokio::sync::Mutex::new(sources.iter().cloned().collect()));
-
     let mut handles = Vec::new();
 
-    // Spawn pollers for statically configured sources
-    for source_url in sources {
+    for source_url in &config.feed_sources {
         let pg = pg.clone();
         let http = http.clone();
         let interval = config.poll_interval;
-        handles.push(tokio::spawn(poll_source_loop(
-            pg, http, source_url, interval,
-        )));
-    }
-
-    // Spawn dynamic discovery loop if discovery URL is configured
-    if let Some(discovery_url) = config.discovery_url.clone() {
-        let pg = pg.clone();
-        let http = http.clone();
-        let interval = config.poll_interval;
-        let active = active_sources.clone();
-        let max_sources = config.max_dynamic_sources;
-        handles.push(tokio::spawn(async move {
-            discover_and_poll_loop(pg, http, discovery_url, interval, active, max_sources).await;
-        }));
-        info!("Dynamic source discovery enabled");
+        let url = source_url.clone();
+        handles.push(tokio::spawn(poll_source_loop(pg, http, url, interval)));
     }
 
     if handles.is_empty() {
-        warn!("No feed sources and no discovery URL configured; indexer idle");
+        warn!("No feed sources configured; indexer idle");
     }
 
     futures::future::join_all(handles).await;
-}
-
-/// Periodically query the reference discovery server, discover new provider
-/// URLs, and spawn pollers for them.
-async fn discover_and_poll_loop(
-    pg: Arc<PgPool>,
-    http: reqwest::Client,
-    discovery_url: String,
-    poll_interval: Duration,
-    active_sources: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
-    max_dynamic_sources: usize,
-) {
-    let discovery_interval = poll_interval * 4;
-
-    loop {
-        match discover_providers(&http, &discovery_url).await {
-            Ok(urls) => {
-                let mut active = active_sources.lock().await;
-                for url in urls {
-                    if active.len() >= max_dynamic_sources {
-                        warn!(
-                            max = max_dynamic_sources,
-                            "dynamic source cap reached, skipping new providers"
-                        );
-                        break;
-                    }
-                    if active.insert(url.clone()) {
-                        info!(source = url, "discovered new provider, starting poller");
-                        let pg = pg.clone();
-                        let http = http.clone();
-                        let interval = poll_interval;
-                        tokio::spawn(poll_source_loop(pg, http, url, interval));
-                    }
-                }
-            }
-            Err(error) => {
-                warn!(error = %error, "discovery query failed");
-            }
-        }
-
-        tokio::time::sleep(discovery_interval).await;
-    }
-}
-
-/// Query the reference discovery server for active providers and extract
-/// their clearnet/onion URLs.
-async fn discover_providers(
-    http: &reqwest::Client,
-    discovery_url: &str,
-) -> Result<Vec<String>, String> {
-    let search_url = format!("{discovery_url}/v1/discovery/search");
-    let response: serde_json::Value = http
-        .post(&search_url)
-        .json(&serde_json::json!({ "limit": 200 }))
-        .send()
-        .await
-        .map_err(|e| format!("discovery search: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("discovery status: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("discovery parse: {e}"))?;
-
-    let nodes = response
-        .get("nodes")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut urls = Vec::new();
-    for node in &nodes {
-        let transports = node.get("descriptor").and_then(|d| d.get("transports"));
-        // Prefer clearnet, fall back to onion
-        if let Some(url) = transports
-            .and_then(|t| t.get("clearnet_url"))
-            .and_then(|v| v.as_str())
-        {
-            if !url.is_empty() {
-                urls.push(url.to_string());
-            }
-        } else if let Some(url) = transports
-            .and_then(|t| t.get("onion_url"))
-            .and_then(|v| v.as_str())
-        {
-            if !url.is_empty() {
-                urls.push(url.to_string());
-            }
-        }
-    }
-
-    Ok(urls)
 }
 
 async fn poll_source_loop(
@@ -240,14 +133,21 @@ async fn poll_source_once(
         new_cursor = artifact.cursor;
     }
 
+    if let Some(next_cursor) = response.next_cursor && next_cursor > new_cursor {
+        new_cursor = next_cursor;
+    }
+
+    let refreshed_offers = reconcile_provider_offers(pg, http, source_url).await?;
+
     if new_cursor > last_cursor {
         save_cursor(pg, source_url, new_cursor).await?;
     }
 
-    if projected > 0 {
+    if projected > 0 || refreshed_offers > 0 {
         info!(
             source = source_url,
             projected,
+            refreshed_offers,
             cursor = new_cursor,
             "indexed artifacts"
         );
@@ -258,6 +158,40 @@ async fn poll_source_once(
 
 fn verify_artifact_document(document: &serde_json::Value) -> bool {
     crate::verify::verify_artifact_document(document)
+}
+
+async fn reconcile_provider_offers(
+    pg: &PgPool,
+    http: &reqwest::Client,
+    source_url: &str,
+) -> Result<u32, String> {
+    let offers_url = format!("{source_url}/v1/provider/offers");
+    let response: ProviderOffersResponse = http
+        .get(&offers_url)
+        .send()
+        .await
+        .map_err(|e| format!("offers fetch: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("offers status: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("offers parse: {e}"))?;
+
+    for offer in &response.offers {
+        if !verify_artifact_document(offer) {
+            return Err("offers snapshot contained an invalid signature".to_string());
+        }
+    }
+
+    let provider_id = match projector::provider_id_for_source_url(pg, source_url).await? {
+        Some(provider_id) => provider_id,
+        None if response.offers.is_empty() => return Ok(0),
+        None => return Err(format!("provider not indexed for source {source_url}")),
+    };
+
+    projector::replace_provider_offers(pg, &provider_id, &response.offers)
+        .await
+        .map(|count| count as u32)
 }
 
 async fn store_raw_artifact(

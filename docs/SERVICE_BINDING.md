@@ -15,7 +15,7 @@ It defines:
 The following are intentionally outside this specification:
 
 - local project layout, file layout, and build pipelines
-- host-specific API shapes (`/v1/froglet/*` routes, OpenClaw/NemoClaw/MCP tool schemas)
+- host-specific API shapes (OpenClaw/NemoClaw/MCP tool schemas)
 - project authoring workflows (create, scaffold, publish)
 - deployment topology (Docker Compose, Kubernetes, cloud-native)
 

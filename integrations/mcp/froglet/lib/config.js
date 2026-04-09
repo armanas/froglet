@@ -11,15 +11,80 @@ import {
   normalizeFilesystemPath
 } from "../../../shared/froglet-lib/shared.js"
 
-export function readConfig() {
-  const baseUrl = normalizeBaseUrl(
-    process.env.FROGLET_BASE_URL,
-    "FROGLET_BASE_URL"
-  )
-  const authTokenPath = normalizeFilesystemPath(
+/**
+ * Resolve the provider URL.
+ *
+ * Priority order:
+ *   1. FROGLET_PROVIDER_URL
+ *   2. FROGLET_BASE_URL  (legacy fallback — sets both provider and runtime URLs)
+ */
+function resolveProviderUrl() {
+  const explicit = process.env.FROGLET_PROVIDER_URL
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return normalizeBaseUrl(explicit, "FROGLET_PROVIDER_URL")
+  }
+  const fallback = process.env.FROGLET_BASE_URL
+  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_PROVIDER_URL")
+}
+
+/**
+ * Resolve the runtime URL.
+ *
+ * Priority order:
+ *   1. FROGLET_RUNTIME_URL
+ *   2. FROGLET_BASE_URL  (legacy fallback — sets both provider and runtime URLs)
+ */
+function resolveRuntimeUrl() {
+  const explicit = process.env.FROGLET_RUNTIME_URL
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return normalizeBaseUrl(explicit, "FROGLET_RUNTIME_URL")
+  }
+  const fallback = process.env.FROGLET_BASE_URL
+  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_RUNTIME_URL")
+}
+
+/**
+ * Resolve the provider auth token path.
+ *
+ * Priority order:
+ *   1. FROGLET_PROVIDER_AUTH_TOKEN_PATH
+ *   2. FROGLET_AUTH_TOKEN_PATH  (legacy fallback)
+ */
+function resolveProviderAuthTokenPath() {
+  const explicit = process.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return normalizeFilesystemPath(explicit, "FROGLET_PROVIDER_AUTH_TOKEN_PATH")
+  }
+  return normalizeFilesystemPath(
     process.env.FROGLET_AUTH_TOKEN_PATH,
-    "FROGLET_AUTH_TOKEN_PATH"
+    "FROGLET_AUTH_TOKEN_PATH / FROGLET_PROVIDER_AUTH_TOKEN_PATH"
   )
+}
+
+/**
+ * Resolve the runtime auth token path.
+ *
+ * Priority order:
+ *   1. FROGLET_RUNTIME_AUTH_TOKEN_PATH
+ *   2. FROGLET_AUTH_TOKEN_PATH  (legacy fallback)
+ */
+function resolveRuntimeAuthTokenPath() {
+  const explicit = process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return normalizeFilesystemPath(explicit, "FROGLET_RUNTIME_AUTH_TOKEN_PATH")
+  }
+  return normalizeFilesystemPath(
+    process.env.FROGLET_AUTH_TOKEN_PATH,
+    "FROGLET_AUTH_TOKEN_PATH / FROGLET_RUNTIME_AUTH_TOKEN_PATH"
+  )
+}
+
+export function readConfig() {
+  const providerUrl = resolveProviderUrl()
+  const runtimeUrl = resolveRuntimeUrl()
+  const providerAuthTokenPath = resolveProviderAuthTokenPath()
+  const runtimeAuthTokenPath = resolveRuntimeAuthTokenPath()
+
   const maxSearchLimit = clampInteger(
     process.env.FROGLET_MAX_SEARCH_LIMIT,
     DEFAULT_MAX_SEARCH_LIMIT,
@@ -28,8 +93,10 @@ export function readConfig() {
   )
 
   return {
-    baseUrl,
-    authTokenPath,
+    providerUrl,
+    runtimeUrl,
+    providerAuthTokenPath,
+    runtimeAuthTokenPath,
     requestTimeoutMs: clampInteger(
       process.env.FROGLET_REQUEST_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS,

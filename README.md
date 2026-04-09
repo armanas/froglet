@@ -86,18 +86,16 @@ OCI containers remain a supported packaging and deployment path.
 ## Components
 
 Product-wise, Froglet is one node that can both provide and consume.
-The reference implementation exposes these separable binaries:
+The reference implementation exposes these binaries:
 
 | Binary | Purpose | Default Port |
 |---|---|---|
-| `froglet-runtime` | Requester-side deal and payment engine | `8081` |
-| `froglet-provider` | Provider-side public node API | `8080` |
-| `froglet-discovery` | Public discovery service | `9090` |
-| `froglet-operator` | Host-side `/v1/froglet/*` control API | `9191` |
+| `froglet-node` | Provider and/or runtime node (role configured via env) | `8080` / `8081` |
+| `froglet-marketplace` | Marketplace node (froglet-node + Postgres-backed search/registration) | `8080` |
 
 > [!TIP]
-> Marketplace is not a special protocol binary.
-> It is just another higher-layer service consuming signed Froglet artifacts.
+> The marketplace is just a froglet-node with marketplace services pre-loaded.
+> Providers self-register with it; runtimes search through it.
 
 ---
 
@@ -109,7 +107,7 @@ Bring up the default local stack:
 docker compose up --build -d
 ```
 
-That starts all four services on `127.0.0.1` at the ports listed above.
+That starts postgres, marketplace, provider, and runtime on `127.0.0.1`.
 
 **Bot-facing local control token:** `./data/runtime/froglet-control.token`
 
@@ -122,33 +120,34 @@ That starts all four services on `127.0.0.1` at the ports listed above.
 <summary><strong>Running binaries directly (without Compose)</strong></summary>
 
 ```bash
-cargo run --bin froglet-discovery
-```
-
-```bash
-FROGLET_DISCOVERY_MODE=reference \
-FROGLET_DISCOVERY_URL=http://127.0.0.1:9090 \
-FROGLET_DISCOVERY_PUBLISH=true \
+# Provider node
+FROGLET_NODE_ROLE=provider \
+FROGLET_MARKETPLACE_URL=http://127.0.0.1:8090 \
 FROGLET_PRICE_EXEC_WASM=10 \
 FROGLET_PAYMENT_BACKEND=lightning \
 FROGLET_LIGHTNING_MODE=mock \
-cargo run --bin froglet-provider
+cargo run -p froglet --bin froglet-node
 ```
 
 ```bash
-FROGLET_DISCOVERY_MODE=reference \
-FROGLET_DISCOVERY_URL=http://127.0.0.1:9090 \
+# Runtime node
+FROGLET_NODE_ROLE=runtime \
+FROGLET_MARKETPLACE_URL=http://127.0.0.1:8090 \
 FROGLET_PAYMENT_BACKEND=lightning \
 FROGLET_LIGHTNING_MODE=mock \
-cargo run --bin froglet-runtime
+cargo run -p froglet --bin froglet-node
 ```
 
 ```bash
-cargo run --bin froglet-operator
+# Marketplace (requires Postgres)
+MARKETPLACE_DATABASE_URL=postgres://froglet:froglet@127.0.0.1:5432/marketplace \
+MARKETPLACE_FEED_SOURCES=http://127.0.0.1:8080 \
+cargo run -p froglet-marketplace --bin froglet-marketplace
 ```
 
-The normal model is one node running both `froglet-provider` and
-`froglet-runtime`, so it can publish local resources and invoke remote ones.
+The normal model is one node running both provider and runtime roles
+(`FROGLET_NODE_ROLE=dual`), so it can publish local resources and invoke
+remote ones.
 
 </details>
 

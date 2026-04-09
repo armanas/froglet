@@ -1,4 +1,6 @@
 ---
+import { navLinks } from '../data/nav-links';
+
 interface Props {
 	compact?: boolean;
 }
@@ -10,11 +12,15 @@ const { compact = false } = Astro.props;
 	<div class="froglet-site-footer__inner">
 		<p class="froglet-site-footer__tagline">🐸 froglet — identity. execution. settlement.</p>
 		<nav class="froglet-site-footer__links" aria-label="Footer">
-			<a href="/">Home</a>
-			<a href="/learn/">Learn</a>
-			<a href="/architecture/overview/">Docs</a>
-			<a href="/demo/">Demo</a>
-			<a href="https://github.com/armanas/froglet" target="_blank" rel="noreferrer">GitHub</a>
+			{navLinks.map((item) => (
+				<a
+					href={item.href}
+					target={item.external ? '_blank' : undefined}
+					rel={item.external ? 'noreferrer' : undefined}
+				>
+					{item.label}
+				</a>
+			))}
 		</nav>
 	</div>
 </footer>

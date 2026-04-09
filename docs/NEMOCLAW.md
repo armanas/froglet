@@ -71,7 +71,7 @@ Inside the sandbox:
 ```bash
 TOKEN=$(cat /sandbox/.openclaw/froglet-control.token)
 curl -H "Authorization: Bearer $TOKEN" \
-  https://node.example/v1/froglet/status
+  https://node.example/health
 ```
 
 The bot-facing tool contract is identical to OpenClaw: one tool named

@@ -1,24 +1,14 @@
 import {
-  buildProject,
-  createProject,
   discoverServices,
-  frogletRestart,
   frogletStatus,
-  frogletTailLogs,
   getLocalService,
-  getProject,
   getService,
   getTask,
   invokeService,
   listLocalServices,
-  listProjects,
   publishArtifact,
-  publishProject,
-  readProjectFile,
   runCompute,
-  testProject,
-  waitTask,
-  writeProjectFile
+  waitTask
 } from "./froglet-client.js"
 import { toolTextResult } from "./shared.js"
 import {
@@ -26,15 +16,32 @@ import {
   firstDefined,
   formatObject,
   serviceAuthorityNotes,
-  summarizeProject,
   summarizeService,
   summarizeTask
 } from "./summarize.js"
 
-function ctx(config) {
+/**
+ * Extract the subset of config fields needed for provider API calls.
+ *
+ * @param {object} config
+ */
+function providerCtx(config) {
   return {
-    baseUrl: config.baseUrl,
-    authTokenPath: config.authTokenPath,
+    providerUrl: config.providerUrl,
+    providerAuthTokenPath: config.providerAuthTokenPath,
+    requestTimeoutMs: config.requestTimeoutMs
+  }
+}
+
+/**
+ * Extract the subset of config fields needed for runtime API calls.
+ *
+ * @param {object} config
+ */
+function runtimeCtx(config) {
+  return {
+    runtimeUrl: config.runtimeUrl,
+    runtimeAuthTokenPath: config.runtimeAuthTokenPath,
     requestTimeoutMs: config.requestTimeoutMs
   }
 }
@@ -63,23 +70,6 @@ function computeOfferIds(response) {
     return [response.raw_compute_offer_id]
   }
   return ["execute.compute"]
-}
-
-function resolveProjectFileTarget(args) {
-  let projectId = args.project_id
-  let filePath = args.path
-  if (typeof filePath === "string") {
-    const match = filePath.match(/\/projects\/([^/]+)\/(.+)$/)
-    if (match) {
-      if (!projectId) {
-        projectId = match[1]
-      }
-      filePath = match[2]
-    } else if (filePath.startsWith("/")) {
-      filePath = filePath.replace(/^\/+/, "")
-    }
-  }
-  return { projectId, path: filePath }
 }
 
 function summarizeMutationResponse(response) {
@@ -114,103 +104,45 @@ function summarizeMutationResponse(response) {
 }
 
 async function handleStatus(args, config, includeRaw) {
-  const response = await frogletStatus(ctx(config))
-  const runtimeHealthy = response.components?.runtime?.healthy ?? response.runtime?.healthy
-  const providerHealthy = response.components?.provider?.healthy ?? response.provider?.healthy
+  const response = await frogletStatus({
+    ...providerCtx(config),
+    ...runtimeCtx(config)
+  })
   const offerIds = computeOfferIds(response)
+  const identity = response._identity ?? {}
   const lines = [
-    `service: ${response.service ?? "froglet"}`,
     `healthy: ${response.healthy === true}`,
     `node_id: ${response.node_id ?? "unknown"}`,
-    `discovery_mode: ${response.discovery?.mode ?? "unknown"}`,
-    `reference_discovery_enabled: ${response.reference_discovery?.enabled === true}`,
-    `reference_discovery_publish_enabled: ${response.reference_discovery?.publish_enabled === true}`,
-    `reference_discovery_connected: ${response.reference_discovery?.connected === true}`,
-    `reference_discovery_url: ${response.reference_discovery?.url ?? "none"}`,
-    `reference_discovery_last_error: ${response.reference_discovery?.last_error ?? "none"}`,
-    `projects_root: ${response.projects_root ?? "unknown"}`,
+    `discovery_mode: ${identity.discovery?.mode ?? response.discovery?.mode ?? "unknown"}`,
+    `reference_discovery_enabled: ${(identity.reference_discovery ?? response.reference_discovery)?.enabled === true}`,
+    `reference_discovery_publish_enabled: ${(identity.reference_discovery ?? response.reference_discovery)?.publish_enabled === true}`,
+    `reference_discovery_connected: ${(identity.reference_discovery ?? response.reference_discovery)?.connected === true}`,
+    `reference_discovery_url: ${(identity.reference_discovery ?? response.reference_discovery)?.url ?? "none"}`,
+    `reference_discovery_last_error: ${(identity.reference_discovery ?? response.reference_discovery)?.last_error ?? "none"}`,
     `compute_offer_ids: ${offerIds.join(", ")}`,
     "",
-    `runtime_healthy: ${runtimeHealthy === true}`,
-    `provider_healthy: ${providerHealthy === true}`
-  ]
-  return renderResult(lines, response, includeRaw)
-}
-
-async function handleLogs(args, config, includeRaw) {
-  const response = await frogletTailLogs({
-    ...ctx(config),
-    target: args.target,
-    lines: args.lines
-  })
-  const logs = Array.isArray(response.logs) ? response.logs : []
-  const components = logs
-    .map((entry) => entry.component ?? entry.target)
-    .filter((value) => typeof value === "string" && value.length > 0)
-  const lines = [
-    `service: ${response.service ?? "froglet"}`,
-    `scope: ${response.scope ?? "node"}`,
-    `components: ${components.join(", ") || "none"}`,
-    "",
-    ...logs.flatMap((entry) => [
-      `${entry.component ?? entry.target ?? "unknown"}:`,
-      ...(Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines : ["no lines"]),
-      ""
-    ])
-  ]
-  return renderResult(lines, response, includeRaw)
-}
-
-async function handleRestart(args, config, includeRaw) {
-  const response = await frogletRestart({
-    ...ctx(config),
-    target: args.target
-  })
-  const results = Array.isArray(response.results) ? response.results : []
-  const lines = [
-    `service: ${response.service ?? "froglet"}`,
-    `scope: ${response.scope ?? "node"}`,
-    "",
-    ...results.flatMap((entry) => [
-      `${entry.component ?? entry.target ?? "unknown"}: ${entry.status ?? "unknown"}`,
-      `stdout_preview: ${entry.stdout_preview ?? "none"}`,
-      `stderr_preview: ${entry.stderr_preview ?? "none"}`,
-      ""
-    ])
+    `provider_healthy: ${response.provider?.healthy === true}`,
+    `runtime_healthy: ${response.runtime?.healthy === true}`
   ]
   return renderResult(lines, response, includeRaw)
 }
 
 async function handleDiscover(args, config, includeRaw) {
   const response = await discoverServices({
-    ...ctx(config),
+    ...runtimeCtx(config),
     limit: args.limit ?? config.defaultSearchLimit,
     includeInactive: args.include_inactive === true,
     query: args.query
   })
+  const providers = Array.isArray(response.providers) ? response.providers : []
   const services = Array.isArray(response.services) ? response.services : []
-  const failures = Array.isArray(response.provider_fetch_failures)
-    ? response.provider_fetch_failures
-    : []
   const lines = [
+    `providers: ${providers.length}`,
     `services: ${services.length}`,
-    `provider_nodes_discovered: ${response.provider_nodes_discovered ?? 0}`,
-    `provider_fetch_failures: ${failures.length}`,
     "",
     ...(services.length > 0
       ? services.flatMap((service, index) => [`${index + 1}.`, ...summarizeService(service), ""])
       : ["no remote services discovered"]),
-    ...(failures.length > 0
-      ? [
-          "provider fetch failures:",
-          ...failures.flatMap((failure) => [
-            `- provider_url: ${failure?.provider_url ?? "unknown"}`,
-            `  status: ${failure?.status ?? "none"}`,
-            `  error: ${failure?.error ?? "unknown"}`,
-            ""
-          ])
-        ]
-      : []),
     "Only listed fields are authoritative. Use get_service for one service at a time."
   ]
   return renderResult(lines, response, includeRaw)
@@ -218,7 +150,8 @@ async function handleDiscover(args, config, includeRaw) {
 
 async function handleGetService(args, config, includeRaw) {
   const response = await getService({
-    ...ctx(config),
+    ...runtimeCtx(config),
+    searchLimit: args.limit ?? config.defaultSearchLimit,
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
@@ -234,13 +167,13 @@ async function handleGetService(args, config, includeRaw) {
 
 async function handleInvoke(args, config, includeRaw) {
   const response = await invokeService({
-    ...ctx(config),
+    ...runtimeCtx(config),
+    searchLimit: args.limit ?? config.defaultSearchLimit,
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
       service_id: resolvedServiceId(args),
-      input: args.input,
-      timeout_secs: args.timeout_secs
+      input: args.input
     }
   })
   const effectiveResult =
@@ -262,7 +195,7 @@ async function handleLocalServices(args, config, includeRaw) {
   const serviceId = resolvedServiceId(args)
   if (serviceId) {
     const response = await getLocalService({
-      ...ctx(config),
+      ...providerCtx(config),
       serviceId
     })
     const lines = [
@@ -272,7 +205,7 @@ async function handleLocalServices(args, config, includeRaw) {
     return renderResult(lines, response, includeRaw)
   }
 
-  const response = await listLocalServices(ctx(config))
+  const response = await listLocalServices(providerCtx(config))
   const services = Array.isArray(response.services) ? response.services : []
   const lines = [
     `services: ${services.length}`,
@@ -286,171 +219,39 @@ async function handleLocalServices(args, config, includeRaw) {
   return renderResult(lines, response, includeRaw)
 }
 
-async function handleProject(args, config, includeRaw) {
-  const c = ctx(config)
-
-  switch (args.action) {
-    case "list": {
-      const response = await listProjects(c)
-      const projects = Array.isArray(response.projects) ? response.projects : []
-      const lines = [
-        `projects: ${projects.length}`,
-        "",
-        ...(projects.length > 0
-          ? projects.flatMap((project, index) => [`${index + 1}.`, ...summarizeProject(project), ""])
-          : ["no projects"])
-      ]
-      return renderResult(lines, response, includeRaw)
+async function handlePublishArtifact(args, config, includeRaw) {
+  const response = await publishArtifact({
+    ...providerCtx(config),
+    request: {
+      service_id: resolvedServiceId(args),
+      offer_id: args.offer_id,
+      summary: args.summary,
+      artifact_path: args.artifact_path,
+      wasm_module_hex: args.wasm_module_hex,
+      inline_source: args.inline_source,
+      oci_reference: args.oci_reference,
+      oci_digest: args.oci_digest,
+      runtime: args.runtime,
+      package_kind: args.package_kind,
+      entrypoint_kind: args.entrypoint_kind,
+      entrypoint: args.entrypoint,
+      contract_version: args.contract_version,
+      mounts: args.mounts,
+      mode: args.mode,
+      price_sats: args.price_sats,
+      publication_state: args.publication_state,
+      input_schema: args.input_schema,
+      output_schema: args.output_schema
     }
-    case "create": {
-      const name = firstDefined(args.name, args.project_name, args.service_name, args.title)
-      const summary = firstDefined(args.summary, args.description)
-      const resultJson = firstDefined(
-        args.result_json,
-        args.result,
-        args.returns,
-        args.response,
-        args.return_value,
-        args.output
-      )
-      const response = await createProject({
-        ...c,
-        request: {
-          project_id: args.project_id,
-          service_id: args.service_id,
-          offer_id: args.offer_id,
-          name,
-          summary,
-          runtime: args.runtime,
-          package_kind: args.package_kind,
-          entrypoint_kind: args.entrypoint_kind,
-          entrypoint: args.entrypoint,
-          contract_version: args.contract_version,
-          mounts: args.mounts,
-          inline_source: args.inline_source,
-          starter: args.starter,
-          result_json: resultJson,
-          price_sats: args.price_sats,
-          publication_state: args.publication_state,
-          mode: args.mode,
-          input_schema: args.input_schema,
-          output_schema: args.output_schema
-        }
-      })
-      const project = response.project ?? {}
-      const lines = [...summarizeProject(project)]
-      if (project.project_id && project.publication_state === "active") {
-        lines.push("")
-        lines.push("published: true")
-        lines.push("publish_status: already_published")
-        lines.push(`published_service_id: ${project.service_id ?? "unknown"}`)
-        lines.push(`published_offer_id: ${project.offer_id ?? "unknown"}`)
-      } else {
-        lines.push("")
-        lines.push("published: false")
-        lines.push("next_step: use write_file, build, test, then publish when the service is ready")
-      }
-      return renderResult(lines, response, includeRaw)
-    }
-    case "get": {
-      const response = await getProject({
-        ...c,
-        projectId: args.project_id
-      })
-      return renderResult(summarizeProject(response.project ?? {}), response, includeRaw)
-    }
-    case "read_file": {
-      const target = resolveProjectFileTarget(args)
-      const response = await readProjectFile({
-        ...c,
-        projectId: target.projectId,
-        path: target.path
-      })
-      const lines = [
-        `project_id: ${response.project_id ?? target.projectId ?? "unknown"}`,
-        `path: ${response.path ?? target.path ?? "unknown"}`,
-        "",
-        response.contents ?? ""
-      ]
-      return renderResult(lines, response, includeRaw)
-    }
-    case "write_file": {
-      const target = resolveProjectFileTarget(args)
-      const response = await writeProjectFile({
-        ...c,
-        projectId: target.projectId,
-        path: target.path,
-        contents: args.contents
-      })
-      const lines = [
-        `status: ${response.status ?? "unknown"}`,
-        `project_id: ${response.project_id ?? target.projectId ?? "unknown"}`,
-        `path: ${response.path ?? target.path ?? "unknown"}`
-      ]
-      return renderResult(lines, response, includeRaw)
-    }
-    case "build": {
-      const response = await buildProject({
-        ...c,
-        projectId: args.project_id
-      })
-      return renderResult(summarizeProject(response.project ?? {}), response, includeRaw)
-    }
-    case "test": {
-      const response = await testProject({
-        ...c,
-        projectId: args.project_id,
-        input: args.input
-      })
-      const lines = [
-        ...summarizeProject(response.project ?? {}),
-        `output: ${formatObject(response.output)}`
-      ]
-      return renderResult(lines, response, includeRaw)
-    }
-    case "publish": {
-      const response = await publishProject({
-        ...c,
-        projectId: args.project_id
-      })
-      return renderResult(summarizeMutationResponse(response), response, includeRaw)
-    }
-    case "publish_artifact": {
-      const response = await publishArtifact({
-        ...c,
-        request: {
-          service_id: resolvedServiceId(args),
-          offer_id: args.offer_id,
-          summary: args.summary,
-          artifact_path: args.artifact_path,
-          wasm_module_hex: args.wasm_module_hex,
-          inline_source: args.inline_source,
-          oci_reference: args.oci_reference,
-          oci_digest: args.oci_digest,
-          runtime: args.runtime,
-          package_kind: args.package_kind,
-          entrypoint_kind: args.entrypoint_kind,
-          entrypoint: args.entrypoint,
-          contract_version: args.contract_version,
-          mounts: args.mounts,
-          mode: args.mode,
-          price_sats: args.price_sats,
-          publication_state: args.publication_state,
-          input_schema: args.input_schema,
-          output_schema: args.output_schema
-        }
-      })
-      return renderResult(summarizeMutationResponse(response), response, includeRaw)
-    }
-    default:
-      throw new Error(`Unknown project action: ${args.action}`)
-  }
+  })
+  return renderResult(summarizeMutationResponse(response), response, includeRaw)
 }
 
 async function handleTask(args, config, includeRaw) {
   if (args.wait) {
     const response = await waitTask({
-      ...ctx(config),
+      ...providerCtx(config),
+      ...runtimeCtx(config),
       taskId: args.task_id,
       timeoutSecs: args.timeout_secs,
       pollIntervalSecs: args.poll_interval_secs
@@ -459,7 +260,8 @@ async function handleTask(args, config, includeRaw) {
   }
 
   const response = await getTask({
-    ...ctx(config),
+    ...providerCtx(config),
+    ...runtimeCtx(config),
     taskId: args.task_id
   })
   return renderResult(summarizeTask(response.task ?? {}), response, includeRaw)
@@ -467,7 +269,8 @@ async function handleTask(args, config, includeRaw) {
 
 async function handleCompute(args, config, includeRaw) {
   const response = await runCompute({
-    ...ctx(config),
+    ...runtimeCtx(config),
+    searchLimit: args.limit ?? config.defaultSearchLimit,
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
@@ -496,10 +299,6 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
   switch (args.action) {
     case "status":
       return handleStatus(args, config, includeRaw)
-    case "tail_logs":
-      return handleLogs(args, config, includeRaw)
-    case "restart":
-      return handleRestart(args, config, includeRaw)
     case "discover_services":
       return handleDiscover(args, config, includeRaw)
     case "get_service":
@@ -510,30 +309,28 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleLocalServices(args, config, includeRaw)
     case "get_local_service":
       return handleLocalServices(args, config, includeRaw)
-    case "list_projects":
-      return handleProject({ ...args, action: "list" }, config, includeRaw)
-    case "get_project":
-      return handleProject({ ...args, action: "get" }, config, includeRaw)
-    case "create_project":
-      return handleProject({ ...args, action: "create" }, config, includeRaw)
-    case "read_file":
-      return handleProject({ ...args, action: "read_file" }, config, includeRaw)
-    case "write_file":
-      return handleProject({ ...args, action: "write_file" }, config, includeRaw)
-    case "build_project":
-      return handleProject({ ...args, action: "build" }, config, includeRaw)
-    case "test_project":
-      return handleProject({ ...args, action: "test" }, config, includeRaw)
-    case "publish_project":
-      return handleProject({ ...args, action: "publish" }, config, includeRaw)
     case "publish_artifact":
-      return handleProject({ ...args, action: "publish_artifact" }, config, includeRaw)
+      return handlePublishArtifact(args, config, includeRaw)
     case "get_task":
       return handleTask({ ...args, wait: false }, config, includeRaw)
     case "wait_task":
       return handleTask({ ...args, wait: true }, config, includeRaw)
     case "run_compute":
       return handleCompute(args, config, includeRaw)
+    // Removed actions — return clear error messages
+    case "tail_logs":
+      throw new Error("Log tailing removed; use systemd journal directly")
+    case "restart":
+      throw new Error("Restart removed; use systemctl directly")
+    case "list_projects":
+    case "create_project":
+    case "get_project":
+    case "read_file":
+    case "write_file":
+    case "build_project":
+    case "test_project":
+    case "publish_project":
+      throw new Error("Project authoring not available in current API")
     default:
       throw new Error(`Unknown Froglet action: ${args.action}`)
   }

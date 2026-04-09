@@ -65,8 +65,6 @@ fn in_memory_state() -> AppState {
         public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
-        provider_control_listen_addr: "127.0.0.1:0".to_string(),
-        provider_control_allow_non_loopback: false,
         http_ca_cert_path: None,
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),

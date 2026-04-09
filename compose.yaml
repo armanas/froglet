@@ -1,17 +1,42 @@
 services:
-  discovery:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: froglet
+      POSTGRES_PASSWORD: froglet
+      POSTGRES_DB: marketplace
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ${FROGLET_DATA_ROOT:-./data}/postgres-compose:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U froglet -d marketplace"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  marketplace:
     build:
       context: .
-      target: discovery
-    image: froglet-discovery:local
+      target: marketplace
+    image: froglet-marketplace:local
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      FROGLET_DISCOVERY_DB_PATH: /data/discovery.db
+      FROGLET_DATA_ROOT: /data
+      FROGLET_PAYMENT_BACKEND: none
+      FROGLET_IDENTITY_AUTO_GENERATE: "true"
+      FROGLET_PUBLIC_BASE_URL: http://127.0.0.1:8090
+      MARKETPLACE_DATABASE_URL: postgres://froglet:froglet@postgres:5432/marketplace
+      MARKETPLACE_FEED_SOURCES: http://provider:8080
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:8090:8080"
     volumes:
-      - ${FROGLET_DATA_ROOT:-./data}/discovery:/data
+      - ${FROGLET_DATA_ROOT:-./data}/marketplace-compose:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9090/health >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -23,17 +48,16 @@ services:
       target: provider
     image: froglet-provider:local
     depends_on:
-      discovery:
+      marketplace:
         condition: service_healthy
     environment:
       FROGLET_DATA_ROOT: /data
+      FROGLET_DB_PATH: /data/provider.node.db
       FROGLET_PRICE_EXEC_WASM: ${FROGLET_PRICE_EXEC_WASM:-0}
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
-      FROGLET_DISCOVERY_MODE: reference
       FROGLET_PUBLIC_BASE_URL: http://127.0.0.1:8080
-      FROGLET_DISCOVERY_URL: http://discovery:9090
-      FROGLET_DISCOVERY_PUBLISH: "true"
+      FROGLET_MARKETPLACE_URL: http://marketplace:8080
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -45,55 +69,20 @@ services:
       retries: 10
       start_period: 5s
 
-  operator:
-    build:
-      context: .
-      target: operator
-    image: froglet-operator:local
-    depends_on:
-      discovery:
-        condition: service_healthy
-      provider:
-        condition: service_healthy
-      runtime:
-        condition: service_healthy
-    environment:
-      FROGLET_DATA_ROOT: /data
-      FROGLET_OPERATOR_LISTEN_ADDR: 0.0.0.0:9191
-      FROGLET_OPERATOR_ALLOW_NON_LOOPBACK: "true"
-      FROGLET_OPERATOR_PROVIDER_BASE_URL: http://provider:8080
-      FROGLET_OPERATOR_RUNTIME_BASE_URL: http://runtime:8081
-      FROGLET_DISCOVERY_MODE: reference
-      FROGLET_DISCOVERY_URL: http://discovery:9090
-      FROGLET_DISCOVERY_PUBLISH: "true"
-      FROGLET_PAYMENT_BACKEND: lightning
-      FROGLET_LIGHTNING_MODE: mock
-    ports:
-      - "127.0.0.1:9191:9191"
-    volumes:
-      - ${FROGLET_DATA_ROOT:-./data}:/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9191/health >/dev/null"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-
   runtime:
     build:
       context: .
       target: runtime
     image: froglet-runtime:local
     depends_on:
-      discovery:
+      marketplace:
         condition: service_healthy
       provider:
         condition: service_healthy
     environment:
       FROGLET_DATA_ROOT: /data
       FROGLET_DB_PATH: /data/runtime.node.db
-      FROGLET_DISCOVERY_MODE: reference
-      FROGLET_DISCOVERY_URL: http://discovery:9090
+      FROGLET_MARKETPLACE_URL: http://marketplace:8080
       FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock

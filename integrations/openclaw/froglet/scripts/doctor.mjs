@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 import { parseArgs } from "node:util"
+import { fileURLToPath } from "node:url"
 
 import {
   ABSOLUTE_MAX_SEARCH_LIMIT,
@@ -86,36 +87,71 @@ function getPluginConfig(document) {
   return readPluginConfig({ config: entry.config })
 }
 
-async function checkRuntime(baseUrl, authTokenPath, requestTimeoutMs) {
-  const token = (await readFile(authTokenPath, "utf8")).trim()
-  return requestJson(`${baseUrl}/v1/froglet/status`, {
-    method: "GET",
-    timeoutMs: requestTimeoutMs,
-    headers: {
-      Authorization: `Bearer ${token}`
+export async function checkApis(
+  providerUrl,
+  providerAuthTokenPath,
+  runtimeUrl,
+  requestTimeoutMs
+) {
+  const providerToken = (await readFile(providerAuthTokenPath, "utf8")).trim()
+  const providerAuthHeaders = { Authorization: `Bearer ${providerToken}` }
+
+  const [providerHealth, capabilities, identity, runtimeHealth] = await Promise.all([
+    requestJson(`${providerUrl}/health`, { method: "GET", timeoutMs: requestTimeoutMs }),
+    requestJson(`${providerUrl}/v1/node/capabilities`, {
+      method: "GET",
+      timeoutMs: requestTimeoutMs,
+      headers: providerAuthHeaders
+    }),
+    requestJson(`${providerUrl}/v1/node/identity`, {
+      method: "GET",
+      timeoutMs: requestTimeoutMs,
+      headers: providerAuthHeaders
+    }),
+    requestJson(`${runtimeUrl}/health`, { method: "GET", timeoutMs: requestTimeoutMs })
+  ])
+
+  const providerHealthy = providerHealth?.healthy === true || providerHealth?.status === "ok"
+  const runtimeHealthy = runtimeHealth?.healthy === true || runtimeHealth?.status === "ok"
+  return {
+    healthy: providerHealthy && runtimeHealthy,
+    node_id: identity?.node_id ?? identity?.id,
+    provider_healthy: providerHealthy,
+    runtime_healthy: runtimeHealthy,
+    compute_offers: capabilities?.compute_offer_ids ?? [],
+    components: {
+      provider: { healthy: providerHealthy, health: providerHealth },
+      runtime: { healthy: runtimeHealthy, health: runtimeHealth }
     }
-  })
+  }
 }
 
 function manualCommands(target, config) {
+  const providerUrl = config.providerUrl
+  const runtimeUrl = config.runtimeUrl
+  const tokenPath = config.providerAuthTokenPath
   if (target === "nemoclaw") {
     return [
       "nemoclaw <sandbox-name> status",
       "openshell sandbox get <sandbox-name>",
       "openshell sandbox upload <sandbox-name> /absolute/path/to/froglet /sandbox/froglet/integrations/openclaw/froglet",
-      `openshell sandbox upload <sandbox-name> /absolute/path/to/froglet-control.token ${config.authTokenPath}`,
+      `openshell sandbox upload <sandbox-name> /absolute/path/to/froglet-control.token ${tokenPath}`,
       "nemoclaw <sandbox-name> connect",
-      `TOKEN=$(cat ${config.authTokenPath})`,
-      `curl -H "Authorization: Bearer $TOKEN" ${config.baseUrl}/v1/froglet/status`
+      `TOKEN=$(cat ${tokenPath})`,
+      `curl -H "Authorization: Bearer $TOKEN" ${providerUrl}/health`,
+      `curl -H "Authorization: Bearer $TOKEN" ${providerUrl}/v1/node/identity`,
+      `curl ${runtimeUrl}/health`
     ]
   }
   return [
-    `TOKEN=$(cat ${config.authTokenPath})`,
-    `curl -H "Authorization: Bearer $TOKEN" ${config.baseUrl}/v1/froglet/status`
+    `TOKEN=$(cat ${tokenPath})`,
+    `curl ${providerUrl}/health`,
+    `curl -H "Authorization: Bearer $TOKEN" ${providerUrl}/v1/node/identity`,
+    `curl ${runtimeUrl}/health`
   ]
 }
 
-async function main() {
+export async function main() {
   const parsed = parseArgs({
     allowPositionals: false,
     options: {
@@ -146,19 +182,24 @@ async function main() {
     throw new Error(`doctor target ${target} requires hostProduct=${target}`)
   }
 
-  validateBaseUrl("baseUrl", pluginConfig.baseUrl)
+  validateBaseUrl("providerUrl", pluginConfig.providerUrl)
+  validateBaseUrl("runtimeUrl", pluginConfig.runtimeUrl)
   validateInteger("requestTimeoutMs", pluginConfig.requestTimeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
   validateInteger("defaultSearchLimit", pluginConfig.defaultSearchLimit, MIN_SEARCH_LIMIT, ABSOLUTE_MAX_SEARCH_LIMIT)
   validateInteger("maxSearchLimit", pluginConfig.maxSearchLimit, MIN_SEARCH_LIMIT, ABSOLUTE_MAX_SEARCH_LIMIT)
   if (pluginConfig.defaultSearchLimit > pluginConfig.maxSearchLimit) {
     throw new Error("defaultSearchLimit must be less than or equal to maxSearchLimit")
   }
-  if (!path.isAbsolute(pluginConfig.authTokenPath)) {
-    throw new Error("authTokenPath must be an absolute filesystem path")
+  if (!path.isAbsolute(pluginConfig.providerAuthTokenPath)) {
+    throw new Error("providerAuthTokenPath must be an absolute filesystem path")
+  }
+  if (!path.isAbsolute(pluginConfig.runtimeAuthTokenPath)) {
+    throw new Error("runtimeAuthTokenPath must be an absolute filesystem path")
   }
 
   const checks = []
   checks.push(buildCheck("config", "ok", "plugin config parsed", { hostProduct: pluginConfig.hostProduct }))
+
   const pluginExists = await pathReadable(pluginPath)
   checks.push(
     buildCheck(
@@ -169,31 +210,35 @@ async function main() {
         : `Plugin path is missing: ${pluginPath}`
     )
   )
-  const tokenReadable = await pathReadable(pluginConfig.authTokenPath)
+
+  const tokenReadable = await pathReadable(pluginConfig.providerAuthTokenPath)
+  const runtimeTokenReadable = await pathReadable(pluginConfig.runtimeAuthTokenPath)
   checks.push(
     buildCheck(
       "auth_token",
-      tokenReadable ? "ok" : "error",
-      tokenReadable
-        ? `Auth token is readable: ${pluginConfig.authTokenPath}`
-        : `Auth token is missing or unreadable: ${pluginConfig.authTokenPath}`
+      tokenReadable && runtimeTokenReadable ? "ok" : "error",
+      tokenReadable && runtimeTokenReadable
+        ? `Auth token is readable: ${pluginConfig.providerAuthTokenPath}`
+        : `Auth token is missing or unreadable: ${pluginConfig.providerAuthTokenPath} / ${pluginConfig.runtimeAuthTokenPath}`
     )
   )
 
-  if (parsed.values["check-runtime"] && tokenReadable) {
+  if (parsed.values["check-runtime"] && tokenReadable && runtimeTokenReadable) {
     try {
-      const status = await checkRuntime(
-        pluginConfig.baseUrl,
-        pluginConfig.authTokenPath,
+      const status = await checkApis(
+        pluginConfig.providerUrl,
+        pluginConfig.providerAuthTokenPath,
+        pluginConfig.runtimeUrl,
         pluginConfig.requestTimeoutMs
       )
       checks.push(
-        buildCheck("runtime_health", "ok", "Froglet control API responded", {
-          service: status.service,
+        buildCheck("runtime_health", "ok", "Froglet provider API responded", {
           healthy: status.healthy,
           node_id: status.node_id,
-          runtime_healthy: status.components?.runtime?.healthy ?? status.runtime?.healthy,
-          provider_healthy: status.components?.provider?.healthy ?? status.provider?.healthy
+          provider_healthy: status.provider_healthy,
+          runtime_healthy: status.runtime_healthy,
+          compute_offers: status.compute_offers,
+          components: status.components
         })
       )
     } catch (error) {
@@ -223,7 +268,9 @@ async function main() {
   )
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.message}\n`)
-  process.exit(1)
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error.message}\n`)
+    process.exit(1)
+  })
+}

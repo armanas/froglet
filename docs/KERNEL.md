@@ -732,10 +732,9 @@ The following are explicitly NOT part of the kernel. Implementations MUST NOT tr
 
 **Product surfaces:**
 - OpenClaw, NemoClaw, MCP tool contracts
-- `/v1/froglet/*` operator control API routes
+- Marketplace search, registration, and indexing
 - Project authoring, build, test, publish flows
 - Runtime payment-intent helpers
-- Status, logs, restart operations
 
 **Higher layers:**
 - Marketplaces, catalogs, brokers

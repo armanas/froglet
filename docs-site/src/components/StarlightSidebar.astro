@@ -1,0 +1,34 @@
+---
+import Search from 'virtual:starlight/components/Search';
+import Default from '@astrojs/starlight/components/Sidebar.astro';
+---
+
+<div class="froglet-sidebar-search">
+	<Search />
+</div>
+<Default {...Astro.props}><slot /></Default>
+
+<style is:global>
+	.froglet-sidebar-search {
+		padding: 0.5rem 1rem 0.75rem;
+	}
+
+	.froglet-sidebar-search site-search {
+		display: block;
+		width: 100%;
+	}
+
+	.froglet-sidebar-search button[data-open-modal] {
+		width: 100%;
+		max-width: 100%;
+		border-radius: 999px;
+		border-color: hsl(var(--froglet-border));
+		background: hsl(var(--froglet-card));
+		color: hsl(var(--froglet-muted));
+	}
+
+	.froglet-sidebar-search button[data-open-modal]:hover {
+		border-color: hsl(var(--froglet-border-strong));
+		color: hsl(var(--froglet-foreground));
+	}
+</style>

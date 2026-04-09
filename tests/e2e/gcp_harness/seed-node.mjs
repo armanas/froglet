@@ -4,12 +4,9 @@ import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import {
-  createProject,
   frogletStatus,
   getLocalService,
   publishArtifact,
-  publishProject,
-  writeProjectFile,
 } from "../../../integrations/shared/froglet-lib/froglet-client.js"
 import { parseCliArgs, readJson, repoRoot, sleep, writeJson } from "./common.mjs"
 
@@ -49,26 +46,6 @@ async function fileExists(filePath) {
   }
 }
 
-async function ensureProject(context, request) {
-  try {
-    return await createProject({
-      ...context,
-      request,
-    })
-  } catch (error) {
-    const message = String(error.message)
-    if (!message.includes("409") && !message.includes("already exists")) {
-      throw error
-    }
-    return {
-      project: {
-        project_id: request.project_id ?? request.service_id,
-        service_id: request.service_id ?? request.project_id,
-      },
-    }
-  }
-}
-
 async function ensurePublishArtifact(context, request) {
   try {
     return await publishArtifact({
@@ -96,88 +73,116 @@ async function localService(context, serviceId) {
   return response.service
 }
 
-async function seedProviderFree(context, prefix) {
-  const services = {}
+let validWasmHexCache = null
 
-  await ensureProject(context, {
-    project_id: `${prefix}-free-static`,
-    service_id: `${prefix}-free-static`,
-    name: `${prefix}-free-static`,
-    summary: "Free static JSON service",
-    result_json: { message: "pong", provider: "free" },
-    price_sats: 0,
-    publication_state: "active",
-  })
-  services.free_static = await localService(context, `${prefix}-free-static`)
+async function validWasmHex() {
+  if (validWasmHexCache !== null) {
+    return validWasmHexCache
+  }
+  validWasmHexCache = (await readFile(
+    path.join(repoRoot, "integrations", "openclaw", "froglet", "test", "fixtures", "valid-wasm.hex"),
+    "utf8"
+  )).trim()
+  return validWasmHexCache
+}
 
-  await ensureProject(context, {
-    project_id: `${prefix}-free-python`,
-    service_id: `${prefix}-free-python`,
-    name: `${prefix}-free-python`,
-    summary: "Free inline Python echo service",
+async function seedInlinePythonService(context, request) {
+  await ensurePublishArtifact(context, {
+    offer_id: request.service_id,
     runtime: "python",
     package_kind: "inline_source",
     entrypoint_kind: "handler",
     entrypoint: "handler",
     contract_version: "froglet.python.handler_json.v1",
+    ...request,
+  })
+  if (request.publication_state === "hidden") {
+    return {
+      service_id: request.service_id,
+      offer_id: request.service_id,
+      publication_state: "hidden",
+      price_sats: request.price_sats ?? 0,
+    }
+  }
+  return localService(context, request.service_id)
+}
+
+async function seedInlineWasmService(context, request) {
+  await ensurePublishArtifact(context, {
+    offer_id: request.service_id,
+    runtime: "wasm",
+    package_kind: "inline_module",
+    entrypoint_kind: "handler",
+    entrypoint: "run",
+    contract_version: "froglet.wasm.run_json.v1",
+    wasm_module_hex: await validWasmHex(),
+    ...request,
+  })
+  if (request.publication_state === "hidden") {
+    return {
+      service_id: request.service_id,
+      offer_id: request.service_id,
+      publication_state: "hidden",
+      price_sats: request.price_sats ?? 0,
+    }
+  }
+  return localService(context, request.service_id)
+}
+
+async function seedProviderFree(context, prefix) {
+  const services = {}
+
+  services.free_static = await seedInlinePythonService(context, {
+    service_id: `${prefix}-free-static`,
+    summary: "Free static JSON service",
+    inline_source:
+      "def handler(event, context):\n    return {\"message\": \"pong\", \"provider\": \"free\"}\n",
+    price_sats: 0,
+    publication_state: "active",
+  })
+
+  services.free_python_inline = await seedInlinePythonService(context, {
+    service_id: `${prefix}-free-python`,
+    summary: "Free inline Python echo service",
     inline_source:
       "def handler(event, context):\n    return {\"provider\": \"free\", \"input\": event}\n",
     price_sats: 0,
     publication_state: "active",
   })
-  services.free_python_inline = await localService(context, `${prefix}-free-python`)
 
-  await ensureProject(context, {
-    project_id: `${prefix}-wat-hello`,
+  services.wat_project = await seedInlineWasmService(context, {
     service_id: `${prefix}-wat-hello`,
-    name: `${prefix}-wat-hello`,
     summary: "WAT project fixture",
-    starter: "hello_world",
-    publication_state: "hidden",
+    price_sats: 0,
+    publication_state: "active",
   })
-  await publishProject({
-    ...context,
-    projectId: `${prefix}-wat-hello`,
-  })
-  services.wat_project = await localService(context, `${prefix}-wat-hello`)
 
-  await ensurePublishArtifact(context, {
+  services.hidden = await seedInlinePythonService(context, {
     service_id: `${prefix}-hidden`,
-    offer_id: `${prefix}-hidden`,
     summary: "Hidden inline Python fixture",
-    runtime: "python",
-    package_kind: "inline_source",
-    entrypoint_kind: "handler",
-    entrypoint: "handler",
-    contract_version: "froglet.python.handler_json.v1",
     inline_source:
       "def handler(event, context):\n    return {\"hidden\": True, \"input\": event}\n",
     price_sats: 0,
     publication_state: "hidden",
   })
-  services.hidden = await localService(context, `${prefix}-hidden`)
 
-  await ensureProject(context, {
-    project_id: `${prefix}-data-echo`,
+  services.data_echo = await seedInlinePythonService(context, {
     service_id: `${prefix}-data-echo`,
-    name: `${prefix}-data-echo`,
     summary: "Data-style echo service",
-    starter: "echo_json",
+    inline_source:
+      "def handler(event, context):\n    return event\n",
     price_sats: 0,
     publication_state: "active",
   })
-  services.data_echo = await localService(context, `${prefix}-data-echo`)
 
-  await ensureProject(context, {
-    project_id: `${prefix}-shared`,
+  services.shared_collision = await seedInlinePythonService(context, {
     service_id: `${prefix}-shared`,
-    name: `${prefix}-shared`,
     summary: "Duplicate service id on provider-free",
-    result_json: { provider: "free", duplicate: true },
+    inline_source:
+      "def handler(event, context):\n    return {\"provider\": \"free\", \"duplicate\": True}\n",
     price_sats: 0,
     publication_state: "active",
   })
-  services.shared_collision = await localService(context, `${prefix}-shared`)
 
   return services
 }
@@ -292,33 +297,18 @@ async function seedProviderPaid(context, prefix) {
   const ociContainer = await ensureLocalRegistryImage(prefix)
   const ociWasm = await ensureWasmFixture()
 
-  await ensureProject(context, {
-    project_id: `${prefix}-priced`,
+  services.priced = await seedInlinePythonService(context, {
     service_id: `${prefix}-priced`,
-    name: `${prefix}-priced`,
     summary: "Priced inline Python service",
-    runtime: "python",
-    package_kind: "inline_source",
-    entrypoint_kind: "handler",
-    entrypoint: "handler",
-    contract_version: "froglet.python.handler_json.v1",
     inline_source:
       "def handler(event, context):\n    return {\"priced\": True, \"input\": event}\n",
     price_sats: 25,
     publication_state: "active",
   })
-  services.priced = await localService(context, `${prefix}-priced`)
 
-  await ensureProject(context, {
-    project_id: `${prefix}-async`,
+  services.async_echo = await seedInlinePythonService(context, {
     service_id: `${prefix}-async`,
-    name: `${prefix}-async`,
     summary: "Async inline Python service",
-    runtime: "python",
-    package_kind: "inline_source",
-    entrypoint_kind: "handler",
-    entrypoint: "handler",
-    contract_version: "froglet.python.handler_json.v1",
     inline_source:
       "import time\n\n" +
       "def handler(event, context):\n" +
@@ -328,10 +318,10 @@ async function seedProviderPaid(context, prefix) {
     publication_state: "active",
     mode: "async",
   })
-  services.async_echo = await localService(context, `${prefix}-async`)
 
   await ensurePublishArtifact(context, {
     service_id: `${prefix}-oci-wasm`,
+    offer_id: `${prefix}-oci-wasm`,
     runtime: "wasm",
     package_kind: "oci_image",
     oci_reference: ociWasm.oci_reference,
@@ -344,6 +334,7 @@ async function seedProviderPaid(context, prefix) {
 
   await ensurePublishArtifact(context, {
     service_id: `${prefix}-oci-container`,
+    offer_id: `${prefix}-oci-container`,
     runtime: "container",
     package_kind: "oci_image",
     oci_reference: ociContainer.reference,
@@ -354,16 +345,14 @@ async function seedProviderPaid(context, prefix) {
   })
   services.oci_container = await localService(context, `${prefix}-oci-container`)
 
-  await ensureProject(context, {
-    project_id: `${prefix}-shared`,
+  services.shared_collision = await seedInlinePythonService(context, {
     service_id: `${prefix}-shared`,
-    name: `${prefix}-shared`,
     summary: "Duplicate service id on provider-paid",
-    result_json: { provider: "paid", duplicate: true },
+    inline_source:
+      "def handler(event, context):\n    return {\"provider\": \"paid\", \"duplicate\": True}\n",
     price_sats: 0,
     publication_state: "active",
   })
-  services.shared_collision = await localService(context, `${prefix}-shared`)
 
   return {
     services,
@@ -393,8 +382,10 @@ async function main() {
     throw new Error(`missing role ${values.role} in inventory`)
   }
   const context = {
-    baseUrl: role.operator_url,
-    authTokenPath: role.token_paths.provider_control,
+    providerUrl: role.provider_local_url,
+    runtimeUrl: role.runtime_url,
+    providerAuthTokenPath: role.token_paths.provider_control,
+    runtimeAuthTokenPath: role.token_paths.runtime_auth,
     requestTimeoutMs: 20_000,
   }
   const status = await frogletStatus(context)

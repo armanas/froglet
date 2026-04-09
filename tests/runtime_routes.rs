@@ -41,6 +41,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
+        OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -49,6 +50,39 @@ use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 use tower::ServiceExt;
 
 static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
+static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn test_env_lock() -> &'static Mutex<()> {
+    TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        match self.previous.as_deref() {
+            Some(value) => unsafe {
+                std::env::set_var(self.key, value);
+            },
+            None => unsafe {
+                std::env::remove_var(self.key);
+            },
+        }
+    }
+}
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
@@ -106,7 +140,7 @@ fn build_runtime_request(provider: RuntimeProviderRef) -> RuntimeCreateDealReque
 }
 
 fn create_test_state_with_identity_seed(
-    _reference_discovery_url: Option<String>,
+    marketplace_url: Option<String>,
     identity_seed: Option<[u8; 32]>,
 ) -> AppState {
     let temp_dir = unique_temp_dir("runtime-routes");
@@ -117,8 +151,6 @@ fn create_test_state_with_identity_seed(
         public_base_url: None,
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
-        provider_control_listen_addr: "127.0.0.1:0".to_string(),
-        provider_control_allow_non_loopback: false,
         http_ca_cert_path: None,
         tor: froglet::config::TorSidecarConfig {
             binary_path: "tor".to_string(),
@@ -165,7 +197,7 @@ fn create_test_state_with_identity_seed(
             policy: None,
             session_ttl_secs: 300,
         },
-        marketplace_url: None,
+        marketplace_url,
     };
 
     if let Some(seed) = identity_seed {
@@ -209,8 +241,8 @@ fn create_test_state_with_identity_seed(
     }
 }
 
-fn create_test_state(reference_discovery_url: Option<String>) -> AppState {
-    create_test_state_with_identity_seed(reference_discovery_url, None)
+fn create_test_state(marketplace_url: Option<String>) -> AppState {
+    create_test_state_with_identity_seed(marketplace_url, None)
 }
 
 fn provider_signing_seed(provider_state: &ProviderState) -> [u8; 32] {
@@ -819,6 +851,158 @@ async fn build_provider_fixture_with_delay(
     (server, state)
 }
 
+#[derive(Clone, Default)]
+struct MarketplaceFixtureState {
+    quote_requests: Arc<Mutex<Vec<Value>>>,
+    deal_requests: Arc<Mutex<Vec<Value>>>,
+    deal_statuses: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+}
+
+fn marketplace_router(state: Arc<MarketplaceFixtureState>) -> Router {
+    Router::new()
+        .route("/v1/provider/quotes", post(marketplace_quote_handler))
+        .route("/v1/provider/deals", post(marketplace_deal_handler))
+        .route(
+            "/v1/provider/deals/:deal_id",
+            get(marketplace_deal_status_handler),
+        )
+        .with_state(state)
+}
+
+async fn marketplace_quote_handler(
+    State(state): State<Arc<MarketplaceFixtureState>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    state.quote_requests.lock().await.push(payload.clone());
+    let offer_id = payload
+        .get("offer_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "hash": "aa".repeat(32),
+            "payload": {
+                "provider_id": "marketplace-provider",
+                "offer_id": offer_id,
+                "workload_hash": "bb".repeat(32),
+            }
+        })),
+    )
+}
+
+async fn marketplace_deal_handler(
+    State(state): State<Arc<MarketplaceFixtureState>>,
+    Json(payload): Json<Value>,
+) -> impl IntoResponse {
+    state.deal_requests.lock().await.push(payload.clone());
+    let offer_id = payload
+        .get("quote")
+        .and_then(|quote| quote.get("payload"))
+        .and_then(|quote| quote.get("offer_id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+
+    let result = match offer_id {
+        "marketplace.search" => json!({
+            "providers": [
+                {
+                    "provider_id": "marketplace-provider",
+                    "descriptor_hash": "",
+                    "transport_endpoints": [],
+                    "offers": [],
+                    "last_seen_at": "",
+                }
+            ],
+            "cursor": null,
+            "has_more": false,
+        }),
+        "marketplace.provider" => json!({
+            "provider": {
+                "provider_id": "marketplace-provider",
+                "descriptor_hash": "",
+                "descriptor_seq": 1,
+                "protocol_version": "froglet/v1",
+                "transport_endpoints": [],
+                "linked_identities": [],
+                "capabilities": {},
+                "first_seen_at": "",
+                "last_seen_at": "",
+                "offers": [
+                    {
+                        "offer_id": "execute.compute",
+                        "offer_hash": "",
+                        "offer_kind": "execution",
+                        "runtime": "wasm",
+                        "settlement_method": "none",
+                        "base_fee_msat": 0,
+                        "success_fee_msat": 0,
+                        "execution_profile": {}
+                    },
+                    {
+                        "offer_id": "execute.compute.generic",
+                        "offer_hash": "",
+                        "offer_kind": "execution",
+                        "runtime": "wasm",
+                        "settlement_method": "none",
+                        "base_fee_msat": 0,
+                        "success_fee_msat": 0,
+                        "execution_profile": {}
+                    }
+                ],
+                "stake": {
+                    "total_staked_msat": 0,
+                    "last_staked_at": null
+                }
+            }
+        }),
+        _ => json!({}),
+    };
+
+    let deal_id = format!(
+        "marketplace-deal-{}",
+        state.deal_requests.lock().await.len()
+    );
+    state
+        .deal_statuses
+        .lock()
+        .await
+        .insert(
+            deal_id.clone(),
+            json!({
+                "deal_id": deal_id,
+                "status": "succeeded",
+                "result": result,
+            }),
+        );
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "deal_id": deal_id,
+            "status": "accepted",
+        })),
+    )
+}
+
+async fn marketplace_deal_status_handler(
+    State(state): State<Arc<MarketplaceFixtureState>>,
+    Path(deal_id): Path<String>,
+) -> impl IntoResponse {
+    let statuses = state.deal_statuses.lock().await;
+    let Some(status) = statuses.get(&deal_id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "deal not found" })));
+    };
+    (StatusCode::OK, Json(status.clone()))
+}
+
+async fn build_marketplace_fixture() -> (TestServer, Arc<MarketplaceFixtureState>) {
+    let state = Arc::new(MarketplaceFixtureState::default());
+    let server = spawn_server(marketplace_router(state.clone())).await;
+    (server, state)
+}
+
 #[tokio::test]
 async fn runtime_auth_rejection_blocks_unauthenticated_requests() {
     let state = Arc::new(create_test_state(None));
@@ -856,8 +1040,92 @@ async fn runtime_auth_rejection_blocks_invalid_bearer_tokens() {
 }
 
 #[tokio::test]
+async fn runtime_search_requires_marketplace_url() {
+    let state = Arc::new(create_test_state(None));
+    let app = runtime_router(state);
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/search",
+        Some("Bearer test-runtime-token"),
+        Some(json!({ "limit": 5 })),
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response["error"],
+        Value::String("no marketplace configured — set FROGLET_MARKETPLACE_URL".to_string())
+    );
+}
+
+#[tokio::test]
+async fn runtime_search_proxies_through_marketplace_builtin_service() {
+    let (marketplace_server, marketplace_state) = build_marketplace_fixture().await;
+    let state = Arc::new(create_test_state(Some(marketplace_server.base_url.clone())));
+    let app = runtime_router(state);
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/search",
+        Some("Bearer test-runtime-token"),
+        Some(json!({ "limit": 7, "runtime": "wasm" })),
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["providers"][0]["provider_id"], "marketplace-provider");
+
+    let quote_requests = marketplace_state.quote_requests.lock().await;
+    assert_eq!(quote_requests.len(), 1);
+    assert_eq!(quote_requests[0]["offer_id"], "marketplace.search");
+    drop(quote_requests);
+
+    let deal_requests = marketplace_state.deal_requests.lock().await;
+    assert_eq!(deal_requests.len(), 1);
+    assert_eq!(
+        deal_requests[0]["quote"]["payload"]["offer_id"],
+        "marketplace.search"
+    );
+}
+
+#[tokio::test]
+async fn runtime_provider_details_proxies_through_marketplace_builtin_service() {
+    let (marketplace_server, marketplace_state) = build_marketplace_fixture().await;
+    let state = Arc::new(create_test_state(Some(marketplace_server.base_url.clone())));
+    let app = runtime_router(state);
+    let request = runtime_request(
+        axum::http::Method::GET,
+        "/v1/runtime/providers/marketplace-provider",
+        Some("Bearer test-runtime-token"),
+        None,
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["provider"]["provider_id"], "marketplace-provider");
+    assert_eq!(response["provider"]["offers"][0]["offer_id"], "execute.compute");
+    assert_eq!(
+        response["provider"]["offers"][1]["offer_id"],
+        "execute.compute.generic"
+    );
+
+    let quote_requests = marketplace_state.quote_requests.lock().await;
+    assert_eq!(quote_requests.len(), 1);
+    assert_eq!(quote_requests[0]["offer_id"], "marketplace.provider");
+    drop(quote_requests);
+
+    let deal_requests = marketplace_state.deal_requests.lock().await;
+    assert_eq!(deal_requests.len(), 1);
+    assert_eq!(
+        deal_requests[0]["quote"]["payload"]["offer_id"],
+        "marketplace.provider"
+    );
+}
+
+#[tokio::test]
 async fn direct_provider_runtime_roundtrip_succeeds() {
     let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -935,6 +1203,11 @@ async fn direct_provider_runtime_roundtrip_succeeds() {
 #[tokio::test]
 async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
     let (provider_server, provider_state) = build_provider_fixture(true, false, false).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -964,6 +1237,11 @@ async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
 #[tokio::test]
 async fn runtime_get_deal_should_reject_tampered_provider_receipt() {
     let (provider_server, provider_state) = build_provider_fixture(false, false, true).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -1000,6 +1278,11 @@ async fn runtime_get_deal_should_reject_tampered_provider_receipt() {
 async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
     let (provider_server, provider_state) =
         build_provider_fixture_with_delay(false, false, false, None).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let mut state =
         create_test_state_with_identity_seed(None, Some(provider_signing_seed(&provider_state)));
     state.http_client = reqwest::Client::builder()
@@ -1050,6 +1333,11 @@ async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
 #[tokio::test]
 async fn runtime_create_deal_rejects_tampered_provider_quote() {
     let (provider_server, provider_state) = build_provider_fixture(false, true, false).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -1084,6 +1372,11 @@ async fn runtime_create_deal_rejects_provider_quote_with_mismatched_workload_has
             ..ProviderTamperConfig::default()
         })
         .await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -1118,6 +1411,11 @@ async fn runtime_accept_deal_rejects_tampered_provider_receipt() {
             ..ProviderTamperConfig::default()
         })
         .await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -1204,6 +1502,11 @@ async fn runtime_accept_deal_rejects_provider_receipt_with_invalid_semantics() {
             ..ProviderTamperConfig::default()
         })
         .await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),
@@ -1253,6 +1556,11 @@ async fn runtime_accept_deal_rejects_provider_receipt_with_invalid_semantics() {
 #[tokio::test]
 async fn runtime_accept_deal_preserves_provider_conflict_for_expected_result_hash_mismatch() {
     let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
     let state = Arc::new(create_test_state_with_identity_seed(
         None,
         Some(provider_signing_seed(&provider_state)),

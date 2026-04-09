@@ -9,7 +9,6 @@ function sampleInventory() {
     inventory_path: "/tmp/inventory.json",
     roles: {
       "froglet-marketplace": {},
-      "froglet-discovery": {},
       "froglet-provider-free": {},
       "froglet-provider-paid": {},
       "froglet-settlement-lab": {},
@@ -56,7 +55,7 @@ function samplePaidSeed() {
   }
 }
 
-test("buildScenarioSet emits tool, protocol, and agentic coverage", () => {
+test("buildScenarioSet emits tool, protocol, and OpenClaw coverage", () => {
   const scenarioSet = buildScenarioSet(sampleInventory(), sampleFreeSeed(), samplePaidSeed(), {
     executionSuffix: "exec-pass-01",
   })
@@ -64,10 +63,27 @@ test("buildScenarioSet emits tool, protocol, and agentic coverage", () => {
   assert.equal(typeof scenarioSet.bootstrap.build_project_id, "string")
   assert.ok(scenarioSet.bootstrap.build_project_id.includes("exec-pass-01"))
   assert.ok(Array.isArray(scenarioSet.scenarios))
-  assert.ok(Array.isArray(scenarioSet.agentic.deterministic))
+  assert.ok(Array.isArray(scenarioSet.openclaw.scripted))
+  assert.ok(Array.isArray(scenarioSet.openclaw.curated))
   assert.equal(
     scenarioSet.seeds.free.services.free_python_inline.binding_hash,
     "2".repeat(64)
+  )
+  assert.ok(
+    scenarioSet.scenarios.every(
+      (scenario) =>
+        scenario.runner !== "tool" ||
+        ![
+          "create_project",
+          "list_projects",
+          "get_project",
+          "read_file",
+          "write_file",
+          "build_project",
+          "test_project",
+          "publish_project"
+        ].includes(scenario.action)
+    )
   )
 
   const runComputeBoundary = scenarioSet.scenarios.find(
@@ -76,6 +92,14 @@ test("buildScenarioSet emits tool, protocol, and agentic coverage", () => {
   assert.ok(runComputeBoundary)
   assert.equal(runComputeBoundary.fixture_injections.runtime, "python")
   assert.match(runComputeBoundary.fixture_injections.inline_source, /inline-python/)
+
+  const statusHappy = scenarioSet.scenarios.find(
+    (scenario) => scenario.scenario_id === "tool.status.happy"
+  )
+  assert.ok(statusHappy)
+  assert.deepEqual(statusHappy.result_oracles.raw_assertions, [
+    { path: "healthy", equals: true },
+  ])
 
   const protocolLightning = scenarioSet.scenarios.find(
     (scenario) => scenario.scenario_id === "protocol.mock_lightning_bundle_and_receipt"
@@ -90,9 +114,20 @@ test("buildScenarioSet emits tool, protocol, and agentic coverage", () => {
     "receipt",
   ])
 
-  const agenticLifecycle = scenarioSet.agentic.deterministic.find(
-    (scenario) => scenario.scenario_id === "agentic.local_project_lifecycle"
+  const openclawDirectCompute = scenarioSet.openclaw.scripted.find(
+    (scenario) => scenario.scenario_id === "openclaw.direct_compute_flow"
   )
-  assert.ok(agenticLifecycle)
-  assert.ok(agenticLifecycle.required_tool_actions.includes("publish_project"))
+  assert.ok(openclawDirectCompute)
+  assert.ok(openclawDirectCompute.required_tool_actions.includes("run_compute"))
+
+  const curatedHidden = scenarioSet.openclaw.curated.find(
+    (scenario) => scenario.scenario_id === "openclaw.curated.discovery_visibility"
+  )
+  assert.ok(curatedHidden)
+  assert.ok(curatedHidden.result_oracles.tool_output_assertions.some(
+    (assertion) =>
+      assertion.action === "discover_services" &&
+      assertion.path === "services" &&
+      assertion.not_contains?.service_id === "hidden-service"
+  ))
 })

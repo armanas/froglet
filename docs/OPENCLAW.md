@@ -4,10 +4,11 @@ OpenClaw uses the shared `froglet` plugin and exposes one bot tool: `froglet`.
 
 ## Deployment
 
-OpenClaw runs the plugin on the host. The plugin talks to a local Froglet
-control API, usually:
+OpenClaw runs the plugin on the host. The plugin talks to the local Froglet
+provider API, usually:
 
-- `http://127.0.0.1:9191`
+- `http://127.0.0.1:8080` (provider)
+- `http://127.0.0.1:8081` (runtime)
 
 Use the checked-in example config:
 

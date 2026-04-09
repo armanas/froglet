@@ -8,7 +8,7 @@ function errorResult(error) {
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For remote discovery-backed services use discover_services or get_service. For named or data-service bindings use invoke_service. For simple fixed-response services, use create_project with result_json, price_sats, and publication_state=active. For authored services use create_project, write_file, build_project, test_project, and publish_project. Use run_compute for open-ended compute through the provider's direct compute offer, and include provider_id or provider_url."
+  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider."
 
 function frogletToolInputSchema(config) {
   return {
@@ -18,46 +18,29 @@ function frogletToolInputSchema(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote discovery-backed listings, get_local_service/get_service for authoritative details, invoke_service for named or data-service execution, create_project plus explicit result_json/inline_source or the project build flow for authoring, and run_compute for open-ended compute with an explicit provider_id or provider_url.",
+          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, and run_compute for open-ended compute.",
         enum: [
           "discover_services",
           "get_service",
           "invoke_service",
           "list_local_services",
           "get_local_service",
-          "create_project",
-          "list_projects",
-          "get_project",
-          "read_file",
-          "write_file",
-          "build_project",
-          "test_project",
-          "publish_project",
           "publish_artifact",
           "status",
-          "tail_logs",
-          "restart",
           "get_task",
           "wait_task",
           "run_compute"
         ]
-      },
-      name: {
-        type: "string",
-        description:
-          "Friendly service/project name. For create_project, Froglet will derive project_id, service_id, and offer_id from this if explicit ids are omitted."
       },
       service_id: {
         type: "string",
         description:
           "Service identifier. Required for publish_artifact, get_local_service, get_service, and invoke_service."
       },
-      project_id: { type: "string" },
       offer_id: { type: "string" },
       summary: {
         type: "string",
-        description:
-          "Descriptive metadata only. Summary never generates code and is never enough to auto-publish a runnable service."
+        description: "Descriptive metadata for publish_artifact."
       },
       runtime: {
         type: "string",
@@ -91,41 +74,30 @@ function frogletToolInputSchema(config) {
       inline_source: {
         type: "string",
         description:
-          "Optional inline source for a new project or compute request. Use this when you want Froglet to author or run explicit source text, typically for runtime=python package_kind=inline_source."
+          "Optional inline source for a compute request. Use this when you want to run explicit source text, typically for runtime=python package_kind=inline_source."
       },
-      starter: {
-        type: "string",
-        description:
-          "Optional starter code scaffold. This is only initial code scaffolding, not a publish mode. Use starter only when you want Froglet to scaffold starter code explicitly."
-      },
-      path: { type: "string" },
-      contents: { type: "string" },
       input: {},
       result_json: {
         description:
-          "Optional static JSON result to scaffold into a new project. Use this for simple constant-return services. Summary is metadata only and does not generate code."
+          "Optional static JSON result. Used with publish_artifact for constant-return services."
       },
       output_schema: {},
       input_schema: {},
       price_sats: { type: "integer", minimum: 0 },
       publication_state: {
         type: "string",
-        enum: ["active", "hidden"],
-        description:
-          "Use active only when the request also includes starter, result_json, or inline_source, or when a built project is already ready to publish. Blank projects should remain hidden."
+        enum: ["active", "hidden"]
       },
       mode: { type: "string", enum: ["sync", "async"] },
-      target: { type: "string", enum: ["node", "runtime", "provider", "all"] },
-      lines: { type: "integer", minimum: 1, maximum: 500 },
       provider_id: {
         type: "string",
         description:
-          "Target provider node ID. Required for run_compute unless provider_url is supplied."
+          "Target provider node ID. Preferred for marketplace-backed get_service, invoke_service, and run_compute calls."
       },
       provider_url: {
         type: "string",
         description:
-          "Target provider base URL. Required for run_compute unless provider_id is supplied."
+          "Optional provider base URL override. Usually discovered automatically from provider_id or service_id."
       },
       limit: {
         type: "integer",

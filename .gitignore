@@ -47,6 +47,8 @@ coverage/
 /marketplace.db
 /marketplace.db-*
 /_tmp/
+/test-results/
+/.astro/
 
 # Canonical ignored staging root for local-only incubation work
 /private_work/

@@ -59,7 +59,7 @@ _gcp_compose_env_assignments() {
     FROGLET_PRICE_EXEC_WASM
     FROGLET_PAYMENT_BACKEND
     FROGLET_LIGHTNING_MODE
-    FROGLET_ALLOW_DISCOVERY_DISABLED
+    FROGLET_ALLOW_MARKETPLACE_DISABLED
   )
   local var
   for var in "${forwarded[@]}"; do
@@ -163,7 +163,7 @@ gcp_collect_logs() {
       echo '== docker compose ps =='
       sudo -n docker compose ps || true
       echo '== docker compose logs =='
-      sudo -n docker compose logs --no-color --tail=200 discovery provider operator runtime || true
+      sudo -n docker compose logs --no-color --tail=200 provider runtime || true
     fi
   " >"$_GCP_ARTIFACT_DIR/compose.log" 2>&1 || true
   echo "GCP logs written to $_GCP_ARTIFACT_DIR/compose.log"
@@ -337,7 +337,7 @@ gcp_deploy_stack() {
   echo "Waiting for health endpoints ..."
   gcp_run_cmd '
     set -euo pipefail
-    for port in 9090 8080 8081 9191; do
+    for port in 8080 8081; do
       for i in $(seq 1 30); do
         if curl -fsS "http://127.0.0.1:$port/health" >/dev/null; then
           echo "  port $port healthy"
@@ -376,14 +376,12 @@ gcp_run_test_on_vm() {
     "export FROGLET_TEST_REMOTE_STACK=1"
     "export FROGLET_TEST_PROVIDER_URL=http://127.0.0.1:8080"
     "export FROGLET_TEST_RUNTIME_URL=http://127.0.0.1:8081"
-    "export FROGLET_TEST_DISCOVERY_URL=http://127.0.0.1:9090"
-    "export FROGLET_TEST_OPERATOR_URL=http://127.0.0.1:9191"
     "export FROGLET_TEST_DATA_ROOT=$(printf '%q' "$remote_root/data")"
     "export FROGLET_DATA_ROOT=$(printf '%q' "$remote_root/data")"
     "export FROGLET_AUTH_TOKEN_PATH=$(printf '%q' "$provider_token_copy")"
     "export FROGLET_TEST_PROVIDER_CONTROL_AUTH_TOKEN_PATH=$(printf '%q' "$provider_token_copy")"
     "export FROGLET_TEST_CONSUMER_CONTROL_AUTH_TOKEN_PATH=$(printf '%q' "$consumer_token_copy")"
-    "export FROGLET_BASE_URL=http://127.0.0.1:9191"
+    "export FROGLET_BASE_URL=http://127.0.0.1:8080"
     "export FROGLET_PROVIDER_URL=http://127.0.0.1:8080"
   )
 

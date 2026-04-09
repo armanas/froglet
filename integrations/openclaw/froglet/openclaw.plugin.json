@@ -6,20 +6,46 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["baseUrl", "authTokenPath"],
+    "anyOf": [
+      {
+        "required": ["baseUrl", "authTokenPath"]
+      },
+      {
+        "required": ["providerUrl", "runtimeUrl", "providerAuthTokenPath", "runtimeAuthTokenPath"]
+      },
+      {
+        "required": ["providerUrl", "runtimeUrl", "authTokenPath"]
+      }
+    ],
     "properties": {
       "hostProduct": {
         "type": "string",
         "enum": ["openclaw", "nemoclaw"],
         "default": "openclaw"
       },
+      "providerUrl": {
+        "type": "string",
+        "description": "Froglet provider API base URL."
+      },
+      "runtimeUrl": {
+        "type": "string",
+        "description": "Froglet runtime API base URL."
+      },
       "baseUrl": {
         "type": "string",
-        "description": "Unified Froglet control API base URL."
+        "description": "Legacy unified Froglet control API base URL. When set, it is used for both providerUrl and runtimeUrl."
+      },
+      "providerAuthTokenPath": {
+        "type": "string",
+        "description": "Filesystem path to the Froglet provider control API bearer token."
+      },
+      "runtimeAuthTokenPath": {
+        "type": "string",
+        "description": "Filesystem path to the Froglet runtime API bearer token."
       },
       "authTokenPath": {
         "type": "string",
-        "description": "Filesystem path to the Froglet control API bearer token."
+        "description": "Legacy shared bearer token path used as a fallback for both providerAuthTokenPath and runtimeAuthTokenPath."
       },
       "requestTimeoutMs": {
         "type": "integer",

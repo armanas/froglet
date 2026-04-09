@@ -25,10 +25,10 @@ from ecdsa import curves, ellipticcurve
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TARGET_DIR = REPO_ROOT / "target" / "debug"
 FROGLET_NODE_BIN = TARGET_DIR / "froglet-node"
+FROGLET_MARKETPLACE_BIN = TARGET_DIR / "froglet-marketplace"
 # Legacy aliases for backward compat with test helpers
 FROGLET_PROVIDER_BIN = FROGLET_NODE_BIN
 FROGLET_RUNTIME_BIN = FROGLET_NODE_BIN
-DISCOVERY_BIN = FROGLET_NODE_BIN
 VALID_WASM_HEX = (
     "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279"
     "020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432"
@@ -43,6 +43,7 @@ LONG_RUNNING_WASM_HEX = (
 )
 
 _BUILD_DONE = False
+_MARKETPLACE_BUILD_DONE = False
 
 
 def _env_truthy(name: str) -> bool:
@@ -143,6 +144,21 @@ def ensure_binaries() -> None:
     _BUILD_DONE = True
 
 
+def ensure_marketplace_binary() -> None:
+    global _MARKETPLACE_BUILD_DONE
+    if _MARKETPLACE_BUILD_DONE:
+        return
+
+    subprocess.run(
+        ["cargo", "build", "-p", "froglet-marketplace", "--bin", "froglet-marketplace"],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    if not FROGLET_MARKETPLACE_BIN.exists():
+        raise RuntimeError("Expected compiled froglet-marketplace binary in target/debug")
+    _MARKETPLACE_BUILD_DONE = True
+
+
 def _clean_froglet_env() -> dict[str, str]:
     return {
         key: value
@@ -234,6 +250,48 @@ async def wait_for_http(url: str, timeout: float = 20.0) -> None:
     raise RuntimeError(f"Timed out waiting for {url}. Last error: {last_error}")
 
 
+async def _docker_command(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        ["docker", *args],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError(
+            f"docker {' '.join(args)} failed ({proc.returncode})\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+    return proc
+
+
+async def _wait_for_postgres_container(
+    container_name: str,
+    *,
+    timeout: float = 30.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = "postgres not ready yet"
+    while time.monotonic() < deadline:
+        proc = await _docker_command(
+            "exec",
+            container_name,
+            "pg_isready",
+            "-U",
+            "froglet",
+            "-d",
+            "marketplace",
+            check=False,
+        )
+        if proc.returncode == 0:
+            return
+        last_error = (proc.stdout or proc.stderr or last_error).strip()
+        await asyncio.sleep(0.5)
+    raise RuntimeError(
+        f"Timed out waiting for postgres container {container_name}: {last_error}"
+    )
+
+
 @dataclass
 class ManagedProcess:
     process: subprocess.Popen
@@ -304,6 +362,48 @@ class FrogletRuntime(ManagedProcess):
         return f"{self.runtime_url}{path}"
 
 
+class FrogletMarketplace(ManagedProcess):
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        log_path: Path,
+        temp_root: Path,
+        port: int,
+        data_dir: Path,
+        postgres_container_name: str,
+    ):
+        super().__init__(process=process, log_path=log_path, temp_root=temp_root)
+        self.port = port
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.data_dir = data_dir
+        self.postgres_container_name = postgres_container_name
+
+    def url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    async def stop(self) -> None:
+        if self.process.poll() is None:
+            try:
+                os.killpg(self.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                self.process.terminate()
+            await asyncio.sleep(0.5)
+
+        if self.process.poll() is None:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                self.process.kill()
+            await asyncio.sleep(0.2)
+
+        await _docker_command("rm", "-f", self.postgres_container_name, check=False)
+        shutil.rmtree(self.temp_root, ignore_errors=True)
+
+
 class FrogletNode:
     def __init__(self, provider: FrogletProvider, runtime: FrogletRuntime):
         self.provider = provider
@@ -326,17 +426,6 @@ class FrogletNode:
     async def stop(self) -> None:
         await self.runtime.stop()
         await self.provider.stop()
-
-
-class DiscoveryServer(ManagedProcess):
-    def __init__(self, process: subprocess.Popen, log_path: Path, temp_root: Path, port: int, db_path: Path):
-        super().__init__(process=process, log_path=log_path, temp_root=temp_root)
-        self.port = port
-        self.base_url = f"http://127.0.0.1:{port}"
-        self.db_path = db_path
-
-    def url(self, path: str) -> str:
-        return f"{self.base_url}{path}"
 
 
 class _RemoteProcess:
@@ -366,17 +455,6 @@ class _RemoteManagedEndpoint:
 
     async def stop(self) -> None:
         shutil.rmtree(self.temp_root, ignore_errors=True)
-
-
-class RemoteDiscoveryServer(_RemoteManagedEndpoint):
-    def __init__(self, *, base_url: str, temp_root: Path, db_path: Path):
-        super().__init__(temp_root)
-        self.port = urlparse(base_url).port or 9090
-        self.base_url = base_url.rstrip("/")
-        self.db_path = db_path
-
-    def url(self, path: str) -> str:
-        return f"{self.base_url}{path}"
 
 
 class RemoteFrogletProvider(_RemoteManagedEndpoint):
@@ -904,89 +982,6 @@ async def _wait_for_lnd_payment_ready(
     await _wait_for(op, timeout=timeout, description="alice->bob probe payment")
 
 
-async def start_discovery(*, port: Optional[int] = None, extra_env: Optional[dict[str, str]] = None) -> DiscoveryServer:
-    if remote_stack_enabled():
-        base_url = remote_stack_url("FROGLET_TEST_DISCOVERY_URL")
-        temp_root = Path(tempfile.mkdtemp(prefix="froglet-remote-discovery-"))
-        server = RemoteDiscoveryServer(
-            base_url=base_url,
-            temp_root=temp_root,
-            db_path=remote_stack_data_root() / "discovery" / "discovery.db",
-        )
-        await wait_for_http(server.url("/health"))
-        return server
-
-    ensure_binaries()
-    requested_port = port
-    port = port or 0
-    temp_root = Path(tempfile.mkdtemp(prefix="froglet-discovery-"))
-    log_path = temp_root / "discovery.log"
-    db_path = temp_root / "discovery.db"
-
-    env = _clean_froglet_env()
-    env.update(
-        {
-            "FROGLET_NODE_ROLE": "provider",
-            "FROGLET_LISTEN_ADDR": f"127.0.0.1:{port}",
-            "FROGLET_DISCOVERY_LISTEN_ADDR": f"127.0.0.1:{port}",
-            "FROGLET_DISCOVERY_DB_PATH": str(db_path),
-            "FROGLET_DATA_DIR": str(temp_root / "data"),
-        }
-    )
-    if extra_env:
-        env.update(extra_env)
-
-    with log_path.open("w") as log_file:
-        process = subprocess.Popen(
-            [str(DISCOVERY_BIN)],
-            cwd=REPO_ROOT,
-            env=env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-
-    try:
-        if requested_port is None:
-            bound_url = await wait_for_logged_url(
-                log_path,
-                "Reference Discovery API:",
-                process=process,
-            )
-            parsed = urlparse(bound_url)
-            if parsed.port is None:
-                raise RuntimeError(
-                    f"Reference discovery bound URL did not include a port: {bound_url}"
-                )
-            port = parsed.port
-    except Exception as exc:
-        await _raise_startup_failure(
-            process=process,
-            log_path=log_path,
-            temp_root=temp_root,
-            label="Reference discovery",
-            cause=exc,
-        )
-
-    server = DiscoveryServer(
-        process=process,
-        log_path=log_path,
-        temp_root=temp_root,
-        port=port,
-        db_path=db_path,
-    )
-
-    try:
-        await wait_for_http(server.url("/health"))
-    except Exception:
-        output = server.output()
-        await server.stop()
-        raise RuntimeError(f"Reference discovery failed to start:\n{output}")
-
-    return server
-
-
 async def start_provider(
     *,
     port: Optional[int] = None,
@@ -1157,6 +1152,118 @@ async def start_runtime(
         raise RuntimeError(f"Froglet runtime failed to start:\n{output}")
 
     return runtime
+
+
+async def start_marketplace(
+    *,
+    port: Optional[int] = None,
+    data_dir: Optional[Path] = None,
+    feed_sources: Optional[list[str]] = None,
+    extra_env: Optional[dict[str, str]] = None,
+) -> FrogletMarketplace:
+    ensure_marketplace_binary()
+    requested_port = port
+    port = port or 0
+    temp_root = Path(tempfile.mkdtemp(prefix="froglet-marketplace-"))
+    log_path = temp_root / "froglet-marketplace.log"
+    data_dir = data_dir or (temp_root / "data")
+    postgres_data_dir = temp_root / "postgres"
+    postgres_data_dir.mkdir(parents=True, exist_ok=True)
+    db_port = reserve_tcp_port()
+    postgres_container_name = (
+        f"froglet-marketplace-pg-{os.getpid()}-{int(time.time() * 1000)}"
+    )
+
+    try:
+        await _docker_command(
+            "run",
+            "-d",
+            "--name",
+            postgres_container_name,
+            "-e",
+            "POSTGRES_USER=froglet",
+            "-e",
+            "POSTGRES_PASSWORD=froglet",
+            "-e",
+            "POSTGRES_DB=marketplace",
+            "-p",
+            f"127.0.0.1:{db_port}:5432",
+            "-v",
+            f"{postgres_data_dir}:/var/lib/postgresql/data",
+            "postgres:16-bookworm",
+        )
+        await _wait_for_postgres_container(postgres_container_name)
+        await asyncio.sleep(1.0)
+    except Exception:
+        await _docker_command("rm", "-f", postgres_container_name, check=False)
+        shutil.rmtree(temp_root, ignore_errors=True)
+        raise
+
+    env = _clean_froglet_env()
+    env.update(
+        {
+            "FROGLET_NETWORK_MODE": "clearnet",
+            "FROGLET_LISTEN_ADDR": f"127.0.0.1:{port}",
+            "FROGLET_RUNTIME_LISTEN_ADDR": "127.0.0.1:0",
+            "FROGLET_TOR_BACKEND_LISTEN_ADDR": "127.0.0.1:0",
+            "FROGLET_DATA_DIR": str(data_dir),
+            "FROGLET_PAYMENT_BACKEND": "none",
+            "FROGLET_IDENTITY_AUTO_GENERATE": "true",
+            "MARKETPLACE_DATABASE_URL": f"postgres://froglet:froglet@127.0.0.1:{db_port}/marketplace",
+            "MARKETPLACE_FEED_SOURCES": ",".join(feed_sources or []),
+            "MARKETPLACE_POLL_INTERVAL_SECS": "1",
+        }
+    )
+    if extra_env:
+        env.update(extra_env)
+
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(
+            [str(FROGLET_MARKETPLACE_BIN)],
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+
+    try:
+        if requested_port is None:
+            public_url = await wait_for_logged_url(
+                log_path,
+                "Local API Gateway:",
+                process=process,
+            )
+            parsed_public = urlparse(public_url)
+            if parsed_public.port is None:
+                raise RuntimeError(
+                    f"Marketplace bound URL did not include a port: {public_url}"
+                )
+            port = parsed_public.port
+        marketplace = FrogletMarketplace(
+            process=process,
+            log_path=log_path,
+            temp_root=temp_root,
+            port=port,
+            data_dir=data_dir,
+            postgres_container_name=postgres_container_name,
+        )
+        await wait_for_http(marketplace.url("/health"))
+        return marketplace
+    except Exception as exc:
+        managed = FrogletMarketplace(
+            process=process,
+            log_path=log_path,
+            temp_root=temp_root,
+            port=port if isinstance(port, int) else 0,
+            data_dir=data_dir,
+            postgres_container_name=postgres_container_name,
+        )
+        output = managed.output().strip()
+        await managed.stop()
+        message = output or str(exc)
+        raise RuntimeError(f"Froglet marketplace failed to start:\n{message}") from exc
 
 
 async def start_node(**kwargs) -> FrogletNode:
@@ -1623,10 +1730,10 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(runtime.stop)
         return runtime
 
-    async def start_discovery(self, **kwargs) -> DiscoveryServer:
-        discovery = await start_discovery(**kwargs)
-        self.addAsyncCleanup(discovery.stop)
-        return discovery
+    async def start_marketplace(self, **kwargs) -> FrogletMarketplace:
+        marketplace = await start_marketplace(**kwargs)
+        self.addAsyncCleanup(marketplace.stop)
+        return marketplace
 
     async def wait_for_job(
         self, provider: FrogletProvider, job_id: str, timeout: float = 15.0

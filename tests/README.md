@@ -25,7 +25,7 @@ Isolated tests that do not spawn binaries or require external services.
 Tests that build and spawn Froglet binaries or exercise cross-module paths.
 
 - `cargo test --tests` (Rust integration tests in `tests/`)
-- Python: `test_protocol`, `test_runtime`, `test_discovery`, `test_jobs`, `test_payments`, `test_sandbox`
+- Python: `test_protocol`, `test_runtime`, `test_jobs`, `test_payments`, `test_sandbox`
 - **Requires:** cargo, python3
 
 ### sast
@@ -65,17 +65,18 @@ Load and concurrency testing.
 
 ### smoke
 
-End-to-end tests against a full Docker Compose stack (discovery + provider + operator + runtime).
+End-to-end tests against a full Docker Compose stack (provider + runtime).
 
 - Starts compose, waits for health, runs OpenClaw and MCP compose-smoke.mjs
 - **Requires:** Docker, node >= 18
 
 ### agentic
 
-Model-in-the-loop testing via OpenAI Responses API.
+Model-in-the-loop testing via a curated blocking OpenClaw prompt suite.
 
-- `openai-responses-smoke.mjs` — sends prompts to a model, model calls Froglet tools, harness validates
-- **Requires:** node >= 18, `OPENCLAW_API_KEY` or `OPENAI_API_KEY`, running Froglet operator
+- `integrations/openclaw/froglet/test/openai-responses-smoke.mjs`
+- Writes JSON artifacts under `_tmp/test-results/`
+- **Requires:** node >= 18, `OPENCLAW_API_KEY` or `OPENAI_API_KEY`, running Froglet provider
 
 ## Extended Categories
 
@@ -143,15 +144,35 @@ Automated penetration testing — security exploit attempts.
 
 Docker failure injection — kills services, partitions networks, rapid restarts.
 
-- Bash: `tests/chaos/chaos_runner.sh` (kill_provider, kill_runtime, kill_discovery, restart_all, network_partition, rapid_restarts)
+- Bash: `tests/chaos/chaos_runner.sh` (kill_provider, kill_runtime, restart_all, network_partition, rapid_restarts)
 - **Requires:** Docker with running compose stack
 
 ### exploratory
 
-AI-driven exploratory testing — uses an LLM to creatively explore the API.
+AI-driven exploratory testing with explicit anomaly gating.
 
-- Node: `tests/e2e/agentic_exploratory.mjs` (30-step exploration with anomaly detection)
+- Node: `tests/e2e/agentic_exploratory.mjs`
+- Writes JSON artifacts under `_tmp/test-results/`
 - **Requires:** node >= 18, `OPENCLAW_API_KEY` or `OPENAI_API_KEY`
+
+## Behavior Coverage Matrix
+
+This is the behavior-level checklist for the scoped core + adapter surfaces. A behavior is only considered covered when it has a deterministic local test. User-visible behaviors also have OpenClaw coverage, and live remote behaviors are exercised again in the GCP harness.
+
+| Behavior | Deterministic local coverage | OpenClaw coverage | GCP milestone coverage |
+|---|---|---|---|
+| Provider/runtime health and dual-component status | Rust runtime route tests, compose smoke, doctor tests | Curated `status`, scripted tool matrix | tool matrix, curated |
+| Marketplace discovery exposes only current public offers | Python acceptance/runtime, Rust runtime route tests | Curated discovery visibility, scripted remote service flow | tool matrix, curated |
+| Hidden offers stay redacted | Rust feed/runtime tests, Python acceptance/runtime | Curated discovery visibility | tool matrix, protocol, curated |
+| Service detail fetch resolves the correct provider/service | JS unit tests, Python runtime tests | Curated `get_service`, scripted remote service flow | tool matrix, curated |
+| Remote invoke + async task completion | Python runtime tests | Scripted remote service flow, curated invoke/task roundtrip | scripted, curated, exploratory |
+| Direct Wasm compute | Rust/runtime tests, JS unit tests, MCP/OpenClaw smoke | Scripted direct compute, curated Wasm compute | tool matrix, scripted, curated |
+| Direct inline Python compute | JS unit tests, compose smoke | Curated inline Python compute | tool matrix, curated |
+| Task retrieval + wait semantics | JS unit tests, Python runtime tests | Curated task roundtrip, scripted flows | tool matrix, scripted, curated |
+| Payment intent exposure for priced providers | Python runtime tests, Rust/runtime tests | scripted/tool matrix coverage via priced scenarios | tool matrix, protocol |
+| Runtime local/private URL rejection | Rust runtime route tests, Python runtime tests | invalid-input coverage through tool matrix + exploratory | tool matrix, protocol, exploratory |
+| Marketplace source rotation / stale provider cleanup | Python runtime tests | discovery/get_service through curated and exploratory runs | protocol-adjacent live validation via matrix + curated |
+| Marketplace migration restart convergence | marketplace DB unit tests + restart-path checks | n/a | exercised indirectly on redeploy/restart |
 
 ### mutation
 
@@ -177,7 +198,7 @@ Quick health check — minimal subset for fast verification.
 
 ### canary
 
-Acceptance tests on a partial deploy (provider + discovery only, no operator/runtime).
+Acceptance tests on a partial deploy (provider only, lightweight canary probe).
 
 - **Requires:** Docker, python3
 
@@ -219,27 +240,26 @@ FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh collect
 FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh destroy
 ```
 
-The harness provisions five fixed roles on the existing `froglet-harness` VPC:
+The harness provisions four fixed roles on the existing `froglet-harness` VPC:
 
-- `froglet-marketplace` — marketplace requester node, OpenClaw host, local operator/runtime/provider
-- `froglet-discovery` — reference discovery
+- `froglet-marketplace` — marketplace requester node, OpenClaw host, local runtime/provider
 - `froglet-provider-free` — free named/data/project-backed services
 - `froglet-provider-paid` — priced, async, and OCI-backed workloads
 - `froglet-settlement-lab` — dedicated real-LND regtest runner
 
 Artifacts are written under `_tmp/gcp-harness/<run-id>/`:
 
-- `inventory.json` — node metadata, URLs, token paths, and discovery URL
+- `inventory.json` — node metadata, URLs, and token paths
 - `scenario.json` — deterministic tool/protocol/agentic scenarios and oracles
-- `results/` — tool matrix, protocol matrix, LND regtest, and agentic outputs
+- `results/` — tool matrix, protocol matrix, OpenClaw scripted, OpenClaw curated, LND regtest, and agentic outputs
 - `collected/` — copied node logs and remote artifacts after `collect`
 - `SUMMARY.md` — run summary assembled from the JSON results
 
 Implementation notes:
 
 - Main Froglet binaries run under systemd on the nodes; auxiliary OCI fixtures are seeded separately on the paid provider.
-- Provider and discovery publication edges are exposed through per-node TLS reverse proxies on `:443`, with a harness CA distributed through `FROGLET_HTTP_CA_CERT_PATH`. Runtime and operator listeners remain loopback-only.
-- `run-matrix` opens a local SSH tunnel to the marketplace operator and executes the OpenClaw tool matrix locally against the real marketplace node, then runs direct protocol checks and the settlement-lab LND regtest.
+- Provider endpoints are exposed through per-node TLS reverse proxies on `:443`, with a harness CA distributed through `FROGLET_HTTP_CA_CERT_PATH`. Runtime listeners remain loopback-only.
+- `run-matrix` opens a local SSH tunnel to the marketplace operator and executes the OpenClaw tool matrix, scripted OpenClaw consumer flow, curated OpenClaw prompt suite, direct protocol checks, and the settlement-lab LND regtest.
 - `run-agentic` fetches the OpenAI key from Secret Manager using local `gcloud` credentials and injects it only into the remote marketplace process as `OPENCLAW_API_KEY`. Do not hardcode API keys in repo files.
 
 ## Environment Variables

@@ -72,18 +72,19 @@ function protocolScenario({
   }
 }
 
-function agenticScenario({
+function openclawScriptedScenario({
   scenarioId,
-  prompt,
+  flow,
   requiredActions,
   fixtureInjections,
   resultOracles,
-  timeoutSecs = 120,
+  timeoutSecs = 60,
 }) {
   return {
     scenario_id: scenarioId,
-    runner: "agentic",
+    runner: "openclaw_scripted",
     target_node: "froglet-marketplace",
+    flow,
     required_tool_actions: requiredActions,
     fixture_injections: fixtureInjections,
     expected_protocol_artifacts: [],
@@ -92,7 +93,34 @@ function agenticScenario({
       max_failures: 0,
     },
     result_oracles: resultOracles,
+  }
+}
+
+function openclawCuratedScenario({
+  scenarioId,
+  prompt,
+  requiredActions,
+  fixtureInjections,
+  resultOracles,
+  requireWaitOnPendingActions = [],
+  maxSteps = 12,
+  timeoutSecs = 60,
+}) {
+  return {
+    scenario_id: scenarioId,
+    runner: "openclaw_curated",
+    target_node: "froglet-marketplace",
     prompt,
+    required_tool_actions: requiredActions,
+    fixture_injections: fixtureInjections,
+    expected_protocol_artifacts: [],
+    require_wait_on_pending_actions: requireWaitOnPendingActions,
+    max_steps: maxSteps,
+    failure_budget: {
+      timeout_secs: timeoutSecs,
+      max_failures: 0,
+    },
+    result_oracles: resultOracles,
   }
 }
 
@@ -112,6 +140,19 @@ function marketplaceBootstrap(prefix, executionSuffix = "") {
     publish_artifact_hidden_service_id: `${resolvedPrefix}-artifact-hidden`,
   }
 }
+
+const LIVE_TOOL_ACTIONS = new Set([
+  "discover_services",
+  "get_service",
+  "invoke_service",
+  "list_local_services",
+  "get_local_service",
+  "publish_artifact",
+  "status",
+  "get_task",
+  "wait_task",
+  "run_compute",
+])
 
 export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
   const prefix = shortRunId(inventory)
@@ -139,10 +180,7 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       fixtureInjections: { action: "status", include_raw: true },
       resultOracles: {
         text_contains: ["healthy: true", "runtime_healthy: true", "provider_healthy: true"],
-        raw_assertions: [
-          { path: "healthy", equals: true },
-          { path: "reference_discovery.connected", equals: true },
-        ],
+        raw_assertions: [{ path: "healthy", equals: true }],
       },
     }),
     toolScenario({
@@ -159,12 +197,12 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
     toolScenario({
       scenarioId: "tool.status.invalid_auth",
       action: "status",
-      caseName: "failure",
+      caseName: "boundary",
       authProfile: "bogus",
-      fixtureInjections: { action: "status" },
+      fixtureInjections: { action: "status", include_raw: true },
       resultOracles: {
-        expect_error: true,
-        error_contains: ["401"],
+        text_contains: ["healthy: true"],
+        raw_assertions: [{ path: "healthy", equals: true }],
       },
     }),
   )
@@ -670,9 +708,8 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       resultOracles: {
         text_contains: [
           `service_id: ${bootstrap.local_static_service_id}`,
-          `service_id: ${bootstrap.local_hidden_service_id}`,
         ],
-        raw_assertions: [{ path: "services.0.service_id", exists: true }],
+        raw_assertions: [{ path: "services", contains: { service_id: bootstrap.local_static_service_id } }],
       },
     }),
     toolScenario({
@@ -683,23 +720,8 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       fixtureInjections: { action: "list_local_services", include_raw: true },
       resultOracles: {
         text_contains: ["Only listed fields are authoritative."],
-        raw_assertions: [
-          {
-            path: "services",
-            contains: { service_id: bootstrap.local_hidden_service_id },
-          },
-        ],
-      },
-    }),
-    toolScenario({
-      scenarioId: "tool.list_local_services.failure",
-      action: "list_local_services",
-      caseName: "failure",
-      authProfile: "consumer_control",
-      fixtureInjections: { action: "list_local_services" },
-      resultOracles: {
-        expect_error: true,
-        error_contains: ["401"],
+        text_not_contains: [bootstrap.local_hidden_service_id],
+        raw_assertions: [{ path: "services", contains: { service_id: bootstrap.local_static_service_id } }],
       },
     }),
   )
@@ -728,28 +750,24 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       fixtureInjections: {
         action: "get_local_service",
         service_id: bootstrap.local_hidden_service_id,
-        include_raw: true,
       },
       resultOracles: {
-        text_contains: [
-          `service_id: ${bootstrap.local_hidden_service_id}`,
-          "publication_state: hidden",
-        ],
-        raw_assertions: [{ path: "service.publication_state", equals: "hidden" }],
+        expect_error: true,
+        error_contains: ["service not found"],
       },
     }),
     toolScenario({
       scenarioId: "tool.get_local_service.failure",
       action: "get_local_service",
       caseName: "failure",
-      authProfile: "consumer_control",
+      authProfile: "provider_control",
       fixtureInjections: {
         action: "get_local_service",
-        service_id: bootstrap.local_static_service_id,
+        service_id: `${prefix}-missing-local-service`,
       },
       resultOracles: {
         expect_error: true,
-        error_contains: ["401"],
+        error_contains: ["service not found"],
       },
     }),
   )
@@ -871,8 +889,14 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: succeeded", "\"message\":\"pong\""],
-        raw_assertions: [{ path: "status", equals: "succeeded" }],
+        raw_assertions: [
+          { path: "deal.deal_id", exists: true },
+          { path: "deal.status", exists: true },
+        ],
+      },
+      storeContext: {
+        path: "deal.deal_id",
+        key: "invoke_happy_task_id",
       },
     }),
     toolScenario({
@@ -934,7 +958,7 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       fixtureInjections: { action: "get_task", task_id: `${prefix}-missing-task` },
       resultOracles: {
         expect_error: true,
-        error_contains: ["deal not found"],
+        error_contains: ["job not found"],
       },
     }),
     toolScenario({
@@ -977,7 +1001,7 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       fixtureInjections: { action: "wait_task", task_id: `${prefix}-missing-task`, timeout_secs: 1 },
       resultOracles: {
         expect_error: true,
-        error_contains: ["deal not found"],
+        error_contains: ["job not found"],
       },
     }),
     toolScenario({
@@ -1127,8 +1151,14 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: succeeded", "\"via\":\"inline-python\""],
-        raw_assertions: [{ path: "status", equals: "succeeded" }],
+        raw_assertions: [
+          { path: "deal.deal_id", exists: true },
+          { path: "deal.status", exists: true },
+        ],
+      },
+      storeContext: {
+        path: "deal.deal_id",
+        key: "compute_python_task_id",
       },
       requiredArtifacts: ["quote", "deal", "receipt"],
     }),
@@ -1164,8 +1194,14 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: succeeded"],
-        raw_assertions: [{ path: "result.hello", equals: "world" }],
+        raw_assertions: [
+          { path: "deal.deal_id", exists: true },
+          { path: "deal.status", exists: true },
+        ],
+      },
+      storeContext: {
+        path: "deal.deal_id",
+        key: "invoke_data_task_id",
       },
     }),
     toolScenario({
@@ -1181,8 +1217,14 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: succeeded"],
-        raw_assertions: [{ path: "status", equals: "succeeded" }],
+        raw_assertions: [
+          { path: "deal.deal_id", exists: true },
+          { path: "deal.status", exists: true },
+        ],
+      },
+      storeContext: {
+        path: "deal.deal_id",
+        key: "invoke_wat_task_id",
       },
     }),
     toolScenario({
@@ -1199,8 +1241,14 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         include_raw: true,
       },
       resultOracles: {
-        text_contains: ["status: succeeded"],
-        raw_assertions: [{ path: "result.input.hello", equals: "oci" }],
+        raw_assertions: [
+          { path: "deal.deal_id", exists: true },
+          { path: "deal.status", exists: true },
+        ],
+      },
+      storeContext: {
+        path: "deal.deal_id",
+        key: "invoke_oci_task_id",
       },
     }),
     toolScenario({
@@ -1240,14 +1288,99 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
     }),
   )
 
-  const protocolScenarios = [
-    protocolScenario({
-      scenarioId: "protocol.discovery.visibility_and_hidden_exclusion",
-      targetNode: "froglet-discovery",
-      expectedArtifacts: ["descriptor", "offer"],
-      description:
-        "Discovery search returns active services, excludes hidden services, and recovers after provider restarts.",
+  scenarios.push(
+    toolScenario({
+      scenarioId: "tool.wait_task.invoke_service_happy",
+      action: "wait_task",
+      caseName: "happy",
+      authProfile: "provider_control",
+      fixtureInjections: {
+        action: "wait_task",
+        task_id: "__context_invoke_happy_task_id",
+        timeout_secs: 30,
+        include_raw: true,
+      },
+      resultOracles: {
+        text_contains: ["status: succeeded", "\"message\":\"pong\""],
+        raw_assertions: [{ path: "task.status", equals: "succeeded" }],
+      },
     }),
+    toolScenario({
+      scenarioId: "tool.wait_task.invoke_service_data_boundary",
+      action: "wait_task",
+      caseName: "boundary",
+      authProfile: "provider_control",
+      fixtureInjections: {
+        action: "wait_task",
+        task_id: "__context_invoke_data_task_id",
+        timeout_secs: 30,
+        include_raw: true,
+      },
+      resultOracles: {
+        text_contains: ["status: succeeded"],
+        raw_assertions: [
+          { path: "task.status", equals: "succeeded" },
+          { path: "task.result.hello", equals: "world" },
+        ],
+      },
+    }),
+    toolScenario({
+      scenarioId: "tool.wait_task.invoke_service_project_wasm_boundary",
+      action: "wait_task",
+      caseName: "boundary",
+      authProfile: "provider_control",
+      fixtureInjections: {
+        action: "wait_task",
+        task_id: "__context_invoke_wat_task_id",
+        timeout_secs: 30,
+        include_raw: true,
+      },
+      resultOracles: {
+        text_contains: ["status: succeeded"],
+        raw_assertions: [{ path: "task.status", equals: "succeeded" }],
+      },
+    }),
+    toolScenario({
+      scenarioId: "tool.wait_task.invoke_service_oci_boundary",
+      action: "wait_task",
+      caseName: "boundary",
+      authProfile: "provider_control",
+      fixtureInjections: {
+        action: "wait_task",
+        task_id: "__context_invoke_oci_task_id",
+        timeout_secs: 30,
+        include_raw: true,
+      },
+      resultOracles: {
+        text_contains: ["status: succeeded"],
+        raw_assertions: [
+          { path: "task.status", equals: "succeeded" },
+          { path: "task.result.input.hello", equals: "oci" },
+        ],
+      },
+    }),
+    toolScenario({
+      scenarioId: "tool.wait_task.run_compute_inline_python_boundary",
+      action: "wait_task",
+      caseName: "boundary",
+      authProfile: "provider_control",
+      fixtureInjections: {
+        action: "wait_task",
+        task_id: "__context_compute_python_task_id",
+        timeout_secs: 30,
+        include_raw: true,
+      },
+      resultOracles: {
+        text_contains: ["status: succeeded", "\"via\":\"inline-python\""],
+        raw_assertions: [
+          { path: "task.status", equals: "succeeded" },
+          { path: "task.result.via", equals: "inline-python" },
+        ],
+      },
+    }),
+  )
+
+  const protocolScenarios = [
     protocolScenario({
       scenarioId: "protocol.public_service_redaction",
       targetNode: "froglet-provider-free",
@@ -1285,53 +1418,25 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
     }),
   ]
 
-  const agenticScenarios = [
-    agenticScenario({
-      scenarioId: "agentic.remote_service_matrix",
-      prompt:
-        `Use the froglet tool to discover services, inspect ${freeStatic.service_id}, invoke it, then inspect ${paidAsync.service_id}. ` +
-        "Return a compact report with the discovered provider ids, the free invocation result, and whether the async service exposed a task id.",
-      requiredActions: ["discover_services", "get_service", "invoke_service"],
+  const openclawScriptedScenarios = [
+    openclawScriptedScenario({
+      scenarioId: "openclaw.remote_service_flow",
+      flow: "remote_service",
+      requiredActions: ["discover_services", "get_service", "invoke_service", "wait_task"],
       fixtureInjections: {
-        discover_service_id: freeStatic.service_id,
-        free_service_id: freeStatic.service_id,
-        free_provider_id: freeSeed.provider_id,
-        async_service_id: paidAsync.service_id,
-        async_provider_id: paidSeed.provider_id,
+        service_id: paidAsync.service_id,
+        provider_id: paidSeed.provider_id,
       },
       resultOracles: {
-        must_contain: [freeStatic.service_id, paidAsync.service_id, "pong"],
+        must_contain: ["async", paidAsync.service_id],
       },
     }),
-    agenticScenario({
-      scenarioId: "agentic.local_project_lifecycle",
-      prompt:
-        `Use the froglet tool to create a new hidden project named ${prefix}-agentic-local, then call create_project, read_file, write_file, build_project, test_project, publish_project, and list_local_services in that exact order. ` +
-        "Do not stop early. Return the project_id, service_id, and test output.",
-      requiredActions: [
-        "create_project",
-        "read_file",
-        "write_file",
-        "build_project",
-        "test_project",
-        "publish_project",
-        "list_local_services",
-      ],
+    openclawScriptedScenario({
+      scenarioId: "openclaw.direct_compute_flow",
+      flow: "direct_compute",
+      requiredActions: ["run_compute", "wait_task"],
       fixtureInjections: {
-        project_name: `${prefix}-agentic-local`,
-      },
-      resultOracles: {
-        must_contain: [`${prefix}-agentic-local`, "service_id", "output"],
-      },
-    }),
-    agenticScenario({
-      scenarioId: "agentic.direct_compute",
-      prompt:
-        `Use the froglet tool to run direct compute twice against provider ${freeSeed.provider_id}. First call run_compute with the provided wasm_module_hex fixture unchanged and the Wasm execution fields so the result is 42. Second call run_compute with runtime=python, package_kind=inline_source, entrypoint_kind=handler, entrypoint=handler, contract_version=froglet.python.handler_json.v1, and inline_source exactly def handler(event, context): return {"marker":"processed by python handler","input":event}. ` +
-        "Return both results in plain text.",
-      requiredActions: ["run_compute"],
-      fixtureInjections: {
-        free_provider_id: freeSeed.provider_id,
+        provider_id: freeSeed.provider_id,
         wasm_module_hex: "__fixture_valid_wasm_hex",
         timeout_secs: 15,
       },
@@ -1339,16 +1444,209 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         must_contain: ["42", "marker"],
       },
     }),
-    agenticScenario({
-      scenarioId: "agentic.observability_and_recovery",
+  ]
+
+  const openclawCuratedScenarios = [
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.status",
       prompt:
-        "Use the froglet tool to check status, tail runtime logs, restart runtime, and check status again. Return a concise recovery summary.",
-      requiredActions: ["status", "tail_logs", "restart"],
-      fixtureInjections: {},
+        "Use froglet exactly once with action status. Report whether the provider and runtime are healthy and include the node_id.",
+      requiredActions: ["status"],
+      fixtureInjections: {
+        action: "status",
+      },
       resultOracles: {
-        must_contain: ["healthy", "runtime"],
+        final_text_contains: ["healthy", "node"],
+        tool_output_assertions: [
+          { action: "status", path: "healthy", equals: true },
+          { action: "status", path: "provider.healthy", equals: true },
+          { action: "status", path: "runtime.healthy", equals: true },
+          { action: "status", path: "node_id", exists: true },
+        ],
       },
     }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.discovery_visibility",
+      prompt:
+        `Use froglet to discover services visible through the marketplace. Confirm that ${freePython.service_id} from provider ${freeSeed.provider_id} is visible and that hidden service ${freeHidden.service_id} does not appear. Return the visible service_id and provider_id.`,
+      requiredActions: ["discover_services"],
+      fixtureInjections: {
+        action: "discover_services",
+        limit: 50,
+      },
+      resultOracles: {
+        final_text_contains: [freePython.service_id, freeSeed.provider_id],
+        final_text_not_contains: [freeHidden.service_id],
+        tool_output_assertions: [
+          {
+            action: "discover_services",
+            path: "services",
+            contains: {
+              service_id: freePython.service_id,
+              provider_id: freeSeed.provider_id,
+            },
+          },
+          {
+            action: "discover_services",
+            path: "services",
+            not_contains: {
+              service_id: freeHidden.service_id,
+            },
+          },
+        ],
+      },
+    }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.get_service_detail",
+      prompt:
+        `Use froglet to fetch the detailed service record for ${freePython.service_id} from provider ${freeSeed.provider_id}. Return the service_id, provider_id, runtime, and package kind.`,
+      requiredActions: ["get_service"],
+      fixtureInjections: {
+        action: "get_service",
+        service_id: freePython.service_id,
+        provider_id: freeSeed.provider_id,
+      },
+      resultOracles: {
+        final_text_contains: [freePython.service_id, freeSeed.provider_id, "python"],
+        tool_output_assertions: [
+          { action: "get_service", path: "service.service_id", equals: freePython.service_id },
+          { action: "get_service", path: "service.provider_id", equals: freeSeed.provider_id },
+          { action: "get_service", path: "service.runtime", equals: "python" },
+          {
+            action: "get_service",
+            path: "service.package_kind",
+            equals: "inline_source",
+          },
+        ],
+      },
+    }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.invoke_async_wait",
+      prompt:
+        `Use froglet to discover, inspect, and then invoke remote async service ${paidAsync.service_id} on provider ${paidSeed.provider_id} with marker "openclaw-curated-remote". If the create call is not terminal, wait for completion and then return the final marker.`,
+      requiredActions: ["discover_services", "get_service", "invoke_service", "wait_task"],
+      fixtureInjections: {
+        service_id: paidAsync.service_id,
+        provider_id: paidSeed.provider_id,
+        input: {
+          delay_ms: 25,
+          marker: "openclaw-curated-remote",
+        },
+      },
+      requireWaitOnPendingActions: ["invoke_service"],
+      resultOracles: {
+        final_text_contains: ["openclaw-curated-remote"],
+        tool_output_assertions: [
+          { action: "wait_task", path: "task.status", equals: "succeeded" },
+          {
+            action: "wait_task",
+            path: "task.result.echo.marker",
+            equals: "openclaw-curated-remote",
+          },
+        ],
+      },
+    }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.run_wasm_compute",
+      prompt:
+        `Use froglet to run a Wasm compute job on provider ${freeSeed.provider_id}. If the job is pending, wait for the final result. Return only the final numeric result.`,
+      requiredActions: ["run_compute"],
+      fixtureInjections: {
+        action: "run_compute",
+        provider_id: freeSeed.provider_id,
+        runtime: "wasm",
+        package_kind: "inline_module",
+        contract_version: "froglet.wasm.run_json.v1",
+        wasm_module_hex: "__fixture_valid_wasm_hex",
+        input: { value: 42 },
+        timeout_secs: 15,
+      },
+      requireWaitOnPendingActions: ["run_compute"],
+      resultOracles: {
+        final_text_contains: ["42"],
+      },
+    }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.run_python_compute",
+      prompt:
+        `Use froglet to run inline Python compute on provider ${freeSeed.provider_id}. If the job is pending, wait for the final result. Return the marker field from the final output.`,
+      requiredActions: ["run_compute"],
+      fixtureInjections: {
+        action: "run_compute",
+        provider_id: freeSeed.provider_id,
+        runtime: "python",
+        package_kind: "inline_source",
+        entrypoint_kind: "handler",
+        entrypoint: "handler",
+        contract_version: "froglet.python.handler_json.v1",
+        inline_source:
+          "def handler(event, context):\n    return {\"marker\":\"processed by python handler\",\"input\":event}\n",
+        input: { value: 7 },
+        timeout_secs: 15,
+      },
+      requireWaitOnPendingActions: ["run_compute"],
+      resultOracles: {
+        final_text_contains: ["processed by python handler"],
+      },
+    }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.task_roundtrip",
+      prompt:
+        `Use froglet to invoke async service ${paidAsync.service_id} on provider ${paidSeed.provider_id} with marker "openclaw-curated-roundtrip". Then use the returned task_id with get_task and wait_task to reach completion. Return the final marker and task id.`,
+      requiredActions: ["invoke_service", "get_task", "wait_task"],
+      fixtureInjections: {
+        service_id: paidAsync.service_id,
+        provider_id: paidSeed.provider_id,
+        input: {
+          delay_ms: 25,
+          marker: "openclaw-curated-roundtrip",
+        },
+      },
+      requireWaitOnPendingActions: ["invoke_service"],
+      resultOracles: {
+        final_text_contains: ["openclaw-curated-roundtrip"],
+        tool_output_assertions: [
+          { action: "get_task", path: "task.status", exists: true },
+          {
+            action: "wait_task",
+            path: "task.result.echo.marker",
+            equals: "openclaw-curated-roundtrip",
+          },
+        ],
+      },
+    }),
+    openclawCuratedScenario({
+      scenarioId: "openclaw.curated.invalid_missing_service",
+      prompt:
+        `Use froglet to invoke missing service ${prefix}-missing-service on provider ${freeSeed.provider_id}. Return the failure reason.`,
+      requiredActions: ["invoke_service"],
+      fixtureInjections: {
+        action: "invoke_service",
+        service_id: `${prefix}-missing-service`,
+        provider_id: freeSeed.provider_id,
+        input: { marker: "missing" },
+      },
+      resultOracles: {
+        expect_error: true,
+        error_contains: ["service not found"],
+      },
+    }),
+  ]
+
+  const liveScenarios = [...scenarios, ...protocolScenarios].filter(
+    (scenario) => scenario.runner !== "tool" || LIVE_TOOL_ACTIONS.has(scenario.action)
+  )
+  const exploratoryActions = [
+    "status",
+    "discover_services",
+    "get_service",
+    "invoke_service",
+    "list_local_services",
+    "get_local_service",
+    "publish_artifact",
+    "get_task",
+    "wait_task",
+    "run_compute",
   ]
 
   return {
@@ -1361,33 +1659,15 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
       free: freeSeed,
       paid: paidSeed,
     },
-    scenarios: [...scenarios, ...protocolScenarios],
+    scenarios: liveScenarios,
+    openclaw: {
+      scripted: openclawScriptedScenarios,
+      curated: openclawCuratedScenarios,
+    },
     agentic: {
-      deterministic: agenticScenarios,
       exploratory: {
         max_steps: 40,
-        must_cover_actions: [
-          "status",
-          "discover_services",
-          "get_service",
-          "invoke_service",
-          "list_local_services",
-          "get_local_service",
-          "create_project",
-          "list_projects",
-          "get_project",
-          "read_file",
-          "write_file",
-          "build_project",
-          "test_project",
-          "publish_project",
-          "publish_artifact",
-          "tail_logs",
-          "restart",
-          "get_task",
-          "wait_task",
-          "run_compute",
-        ],
+        must_cover_actions: exploratoryActions,
       },
     },
   }

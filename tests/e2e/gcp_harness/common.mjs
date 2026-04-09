@@ -72,6 +72,10 @@ export function getJsonPath(value, dottedPath) {
 }
 
 export function loadFrogletTool({
+  providerUrl,
+  runtimeUrl,
+  providerAuthTokenPath,
+  runtimeAuthTokenPath,
   baseUrl,
   authTokenPath,
   requestTimeoutMs = Number.parseInt(process.env.FROGLET_REQUEST_TIMEOUT_MS ?? "15000", 10),
@@ -82,8 +86,12 @@ export function loadFrogletTool({
   register({
     config: {
       hostProduct: "openclaw",
-      baseUrl,
-      authTokenPath,
+      ...(providerUrl ? { providerUrl } : {}),
+      ...(runtimeUrl ? { runtimeUrl } : {}),
+      ...(providerAuthTokenPath ? { providerAuthTokenPath } : {}),
+      ...(runtimeAuthTokenPath ? { runtimeAuthTokenPath } : {}),
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(authTokenPath ? { authTokenPath } : {}),
       requestTimeoutMs,
       defaultSearchLimit,
       maxSearchLimit,
@@ -107,6 +115,9 @@ export function loadFrogletTool({
 export async function executeTool(tool, args) {
   const result = await tool.execute(tool.name, args)
   const text = result.content?.[0]?.text ?? ""
+  if (text.startsWith("Error:")) {
+    throw new Error(text.slice("Error:".length).trim())
+  }
   const raw = args.include_raw === true ? extractAppendedJson(text) : null
   return { text, raw, result }
 }
@@ -128,8 +139,12 @@ export function inventoryTokenPath(inventory, roleName, tokenKind) {
   return tokenPath
 }
 
-export function inventoryOperatorUrl(inventory, roleName = "froglet-marketplace") {
-  return resolveInventoryRole(inventory, roleName).operator_url
+export function inventoryProviderUrl(inventory, roleName = "froglet-marketplace") {
+  return resolveInventoryRole(inventory, roleName).provider_local_url
+}
+
+export function inventoryRuntimeUrl(inventory, roleName = "froglet-marketplace") {
+  return resolveInventoryRole(inventory, roleName).runtime_url
 }
 
 export async function requestJson(url, {

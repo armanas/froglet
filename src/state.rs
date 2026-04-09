@@ -194,8 +194,6 @@ mod tests {
             public_base_url: public_base_url.map(str::to_string),
             runtime_listen_addr: "127.0.0.1:8081".to_string(),
             runtime_allow_non_loopback: false,
-            provider_control_listen_addr: "127.0.0.1:9191".to_string(),
-            provider_control_allow_non_loopback: false,
             http_ca_cert_path: None,
             tor: TorSidecarConfig {
                 binary_path: "tor".to_string(),

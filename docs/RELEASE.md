@@ -27,10 +27,8 @@ publishes the four role-specific images:
 - `ghcr.io/<owner>/froglet-provider:<sha-tag>`
 - `ghcr.io/<owner>/froglet-runtime:<version>`
 - `ghcr.io/<owner>/froglet-runtime:<sha-tag>`
-- `ghcr.io/<owner>/froglet-discovery:<version>`
-- `ghcr.io/<owner>/froglet-discovery:<sha-tag>`
-- `ghcr.io/<owner>/froglet-operator:<version>`
-- `ghcr.io/<owner>/froglet-operator:<sha-tag>`
+- `ghcr.io/<owner>/froglet-marketplace:<version>`
+- `ghcr.io/<owner>/froglet-marketplace:<sha-tag>`
 
 The public release surface covers the tracked Froglet protocol docs, reference
 node binaries, supported integrations, and validation assets in this repo.

@@ -297,8 +297,6 @@ pub struct NodeConfig {
     pub public_base_url: Option<String>,
     pub runtime_listen_addr: String,
     pub runtime_allow_non_loopback: bool,
-    pub provider_control_listen_addr: String,
-    pub provider_control_allow_non_loopback: bool,
     pub http_ca_cert_path: Option<PathBuf>,
     pub tor: TorSidecarConfig,
     pub identity: IdentityConfig,
@@ -328,10 +326,6 @@ impl NodeConfig {
         let runtime_listen_addr = env::var("FROGLET_RUNTIME_LISTEN_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8081".to_string());
         let runtime_allow_non_loopback = env_bool("FROGLET_RUNTIME_ALLOW_NON_LOOPBACK", false)?;
-        let provider_control_listen_addr = env::var("FROGLET_PROVIDER_CONTROL_LISTEN_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:9191".to_string());
-        let provider_control_allow_non_loopback =
-            env_bool("FROGLET_PROVIDER_CONTROL_ALLOW_NON_LOOPBACK", false)?;
         let http_ca_cert_path = env::var("FROGLET_HTTP_CA_CERT_PATH")
             .ok()
             .map(PathBuf::from);
@@ -463,8 +457,6 @@ impl NodeConfig {
             public_base_url,
             runtime_listen_addr,
             runtime_allow_non_loopback,
-            provider_control_listen_addr,
-            provider_control_allow_non_loopback,
             http_ca_cert_path,
             tor,
             identity: IdentityConfig {

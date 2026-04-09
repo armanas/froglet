@@ -2,20 +2,10 @@
 
 Froglet ships four image targets:
 
-- `provider`
-- `runtime`
-- `discovery`
-- `operator`
-
-Image contents:
-
-- `provider` and `operator` include `python3`
-- `runtime` and `discovery` stay on the slimmer non-Python base
-
-`python3` is required in the Docker targets that execute Python-backed projects:
-
-- `provider` runs published Python services
-- `operator` runs local project checks such as `test_project`
+- `provider` — provider-mode froglet-node (includes `python3`)
+- `runtime` — runtime-mode froglet-node
+- `dual` — both provider and runtime in one container
+- `marketplace` — froglet-marketplace (Postgres-backed search/registration)
 
 ## Default Local Stack
 
@@ -25,10 +15,10 @@ docker compose up --build
 
 That starts:
 
-- discovery on `127.0.0.1:9090`
+- postgres on `127.0.0.1:5432`
+- marketplace on `127.0.0.1:8090`
 - provider on `127.0.0.1:8080`
 - runtime on `127.0.0.1:8081`
-- operator on `127.0.0.1:9191`
 
 Host token path:
 
@@ -50,14 +40,12 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 ## Single-Role Compose Files
 
-- `compose.discovery.yaml`
 - `compose.provider.yaml`
 - `compose.runtime.yaml`
 
 Examples:
 
 ```bash
-docker compose -f compose.discovery.yaml up --build
 docker compose -f compose.provider.yaml up --build
 docker compose -f compose.runtime.yaml up --build
 ```
@@ -67,8 +55,8 @@ docker compose -f compose.runtime.yaml up --build
 ```bash
 docker build --target provider -t froglet-provider:local .
 docker build --target runtime -t froglet-runtime:local .
-docker build --target discovery -t froglet-discovery:local .
-docker build --target operator -t froglet-operator:local .
+docker build --target dual -t froglet-dual:local .
+docker build --target marketplace -t froglet-marketplace:local .
 ```
 
 ## Role Defaults
@@ -84,13 +72,9 @@ Runtime image:
 - runtime API on `:8081`
 - no public provider listener
 
-Discovery image:
+Marketplace image:
 
-- discovery API on `:9090`
+- provider API on `:8080`
+- requires `MARKETPLACE_DATABASE_URL` and optionally `MARKETPLACE_FEED_SOURCES`
 
-Operator image:
-
-- operator API on `:9191`
-- includes `python3` for local Python project test/build flows
-
-Use environment variables exactly as you would outside Docker to point the provider at discovery and the runtime at discovery.
+Use `FROGLET_MARKETPLACE_URL` on provider and runtime nodes to point them at the marketplace for discovery and registration.

@@ -76,10 +76,11 @@ echo "[strict] core python-backed runtime tests with warnings as errors"
 python3 -W error -m unittest \
   python.tests.test_protocol \
   python.tests.test_runtime \
-  python.tests.test_discovery \
   python.tests.test_jobs \
   python.tests.test_payments \
   python.tests.test_sandbox \
+  python.tests.test_acceptance \
+  python.tests.test_pentest \
   python.tests.test_security \
   python.tests.test_privacy \
   python.tests.test_hardening \

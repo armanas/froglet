@@ -1,5 +1,5 @@
 ---
-import ThemeToggle from './ThemeToggle.astro';
+import { navLinks } from '../data/nav-links';
 
 interface Props {
 	currentPath?: string;
@@ -7,13 +7,6 @@ interface Props {
 }
 
 const { currentPath = Astro.url.pathname, embedded = false } = Astro.props;
-const items = [
-	{ href: '/', label: 'home', desktopOnly: false },
-	{ href: '/learn/', label: 'learn', desktopOnly: false },
-	{ href: '/architecture/overview/', label: 'docs', desktopOnly: false },
-	{ href: '/demo/', label: 'demo', desktopOnly: false },
-	{ href: 'https://github.com/armanas/froglet', label: 'github', desktopOnly: true },
-];
 
 const isActive = (href: string) => {
 	if (href.startsWith('http')) return false;
@@ -27,25 +20,23 @@ const isActive = (href: string) => {
 		<a href="/" class="froglet-brand">🐸 froglet</a>
 		<nav class="froglet-site-nav" aria-label="Primary">
 			{
-				items.map((item) => (
+				navLinks.map((item) => (
 					<a
 						href={item.href}
 						class:list={[
 							'froglet-site-nav__link',
-							item.desktopOnly && 'froglet-site-nav__link--desktop',
 							isActive(item.href) && 'is-active',
 						]}
-						target={item.href.startsWith('http') ? '_blank' : undefined}
-						rel={item.href.startsWith('http') ? 'noreferrer' : undefined}
+						target={item.external ? '_blank' : undefined}
+						rel={item.external ? 'noreferrer' : undefined}
 					>
-						{item.label}
+						{item.label.toLowerCase()}
 					</a>
 				))
 			}
 		</nav>
 		<div class="froglet-site-tools">
 			<slot name="tools" />
-			<ThemeToggle />
 		</div>
 	</div>
 </div>
@@ -124,23 +115,10 @@ const isActive = (href: string) => {
 		margin-left: 0.35rem;
 	}
 
-	.froglet-site-search {
-		display: inline-flex;
-		align-items: center;
-		min-width: min(18rem, 28vw);
-	}
-
-	.froglet-site-search :global(button[data-open-modal]) {
-		max-width: 18rem;
-		border-radius: 999px;
-		border-color: hsl(var(--froglet-border));
-		background: hsl(var(--froglet-card));
-		color: hsl(var(--froglet-muted));
-	}
-
-	.froglet-site-search :global(button[data-open-modal]:hover) {
-		border-color: hsl(var(--froglet-border-strong));
-		color: hsl(var(--froglet-foreground));
+	/* Hide Starlight's built-in mobile menu toggle so our header stays consistent */
+	starlight-menu-button,
+	[data-open-sidebar] {
+		display: none !important;
 	}
 
 	@media (max-width: 900px) {
@@ -159,14 +137,6 @@ const isActive = (href: string) => {
 		}
 
 		.froglet-site-nav__link--desktop {
-			display: none;
-		}
-
-		.froglet-site-search {
-			display: none;
-		}
-
-		.froglet-theme-toggle__label {
 			display: none;
 		}
 	}

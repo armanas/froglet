@@ -5,7 +5,8 @@ WORKDIR /app
 
 COPY . .
 
-RUN cargo build --release --locked --bin froglet-node -p froglet-marketplace
+RUN cargo build --release --locked --bin froglet-node -p froglet
+RUN cargo build --release --locked -p froglet-marketplace
 
 FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update \

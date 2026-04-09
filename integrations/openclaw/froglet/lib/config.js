@@ -35,20 +35,59 @@ function normalizeHostProduct(value) {
   return normalized
 }
 
+/**
+ * Resolve the provider URL.
+ *
+ * Priority order:
+ *   1. config.providerUrl / FROGLET_PROVIDER_URL
+ *   2. config.baseUrl / FROGLET_BASE_URL  (legacy fallback — sets both URLs)
+ */
+function resolveProviderUrl(config) {
+  const explicit = resolveConfigValue(config.providerUrl, "FROGLET_PROVIDER_URL")
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return normalizeBaseUrl(explicit, "providerUrl")
+  }
+  const fallback = resolveConfigValue(config.baseUrl, "FROGLET_BASE_URL")
+  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / providerUrl")
+}
+
+/**
+ * Resolve the runtime URL.
+ *
+ * Priority order:
+ *   1. config.runtimeUrl / FROGLET_RUNTIME_URL
+ *   2. config.baseUrl / FROGLET_BASE_URL  (legacy fallback — sets both URLs)
+ */
+function resolveRuntimeUrl(config) {
+  const explicit = resolveConfigValue(config.runtimeUrl, "FROGLET_RUNTIME_URL")
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return normalizeBaseUrl(explicit, "runtimeUrl")
+  }
+  const fallback = resolveConfigValue(config.baseUrl, "FROGLET_BASE_URL")
+  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / runtimeUrl")
+}
+
 export function readPluginConfig(api) {
   const config = api?.config ?? {}
   const hostProduct = normalizeHostProduct(
     resolveConfigValue(config.hostProduct, "FROGLET_HOST_PRODUCT")
   )
 
-  const baseUrl = normalizeBaseUrl(
-    resolveConfigValue(config.baseUrl, "FROGLET_BASE_URL"),
-    "baseUrl"
+  const providerUrl = resolveProviderUrl(config)
+  const runtimeUrl = resolveRuntimeUrl(config)
+
+  const providerAuthTokenPath = normalizeFilesystemPath(
+    resolveConfigValue(config.providerAuthTokenPath ?? config.authTokenPath, "FROGLET_PROVIDER_AUTH_TOKEN_PATH") ??
+      process.env.FROGLET_AUTH_TOKEN_PATH,
+    "providerAuthTokenPath / FROGLET_PROVIDER_AUTH_TOKEN_PATH"
   )
-  const authTokenPath = normalizeFilesystemPath(
-    resolveConfigValue(config.authTokenPath, "FROGLET_AUTH_TOKEN_PATH"),
-    "authTokenPath"
+
+  const runtimeAuthTokenPath = normalizeFilesystemPath(
+    resolveConfigValue(config.runtimeAuthTokenPath ?? config.authTokenPath, "FROGLET_RUNTIME_AUTH_TOKEN_PATH") ??
+      process.env.FROGLET_AUTH_TOKEN_PATH,
+    "runtimeAuthTokenPath / FROGLET_RUNTIME_AUTH_TOKEN_PATH"
   )
+
   const maxSearchLimit = clampInteger(
     config.maxSearchLimit ?? process.env.FROGLET_MAX_SEARCH_LIMIT,
     DEFAULT_MAX_SEARCH_LIMIT,
@@ -58,8 +97,10 @@ export function readPluginConfig(api) {
 
   return {
     hostProduct,
-    baseUrl,
-    authTokenPath,
+    providerUrl,
+    runtimeUrl,
+    providerAuthTokenPath,
+    runtimeAuthTokenPath,
     requestTimeoutMs: clampInteger(
       config.requestTimeoutMs ?? process.env.FROGLET_REQUEST_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS,

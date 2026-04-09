@@ -5,6 +5,6 @@ export default function register(api) {
   const config = readPluginConfig(api)
   registerFrogletTool(api, config)
   api.logger?.info?.(
-    `Loaded Froglet OpenClaw plugin with hostProduct=${config.hostProduct} baseUrl=${config.baseUrl}`
+    `Loaded Froglet OpenClaw plugin with hostProduct=${config.hostProduct} providerUrl=${config.providerUrl} runtimeUrl=${config.runtimeUrl}`
   )
 }

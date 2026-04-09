@@ -9,6 +9,10 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/v1/provider/services/:service_id",
             get(super::get_provider_service),
         )
+        .route(
+            "/v1/provider/artifacts/publish",
+            post(super::publish_artifact),
+        )
         .route("/v1/feed", get(super::get_feed))
         .route("/v1/artifacts/:artifact_hash", get(super::get_artifact))
 }

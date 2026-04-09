@@ -1,9 +1,32 @@
 ---
-title: Economic Model
-description: Formal analysis of froglet's agentic economy.
+title: Trust & Economics
+description: How staked reputation and game theory make honesty the dominant strategy.
 ---
 
-## Definitions
+## Trust model
+
+Trust in froglet is **not** computed from deal history — it is the total non-refundable value a provider has staked into their identity.
+
+| Trusted | Not trusted |
+|---------|-------------|
+| Cryptographic signatures | Marketplaces (can be wrong, cannot forge) |
+| SHA-256 hashes | Transport (can fail, cannot alter signed data) |
+| The deal chain | Receipt history alone (can be self-dealt) |
+| **Staked value** | Storage (can lose data, cannot alter signed data) |
+
+A provider stakes real money into their identity through the marketplace. This stake is **non-refundable** (already spent), **public** (any requester can query it), and **destroyed on cheat** (the identity becomes worthless). Self-dealing does not inflate trust because only non-refundable deposits change the stake total.
+
+The requester's calculation is simple: if `stake / deal_value > k` (where k is your risk threshold, e.g. 10), the deal is safe. No reputation system needed — just arithmetic.
+
+:::note
+Stake proves **commitment**, not **competence**. Quality monitoring is a marketplace service (ranking), not a protocol mechanism. Providers with high stake but poor quality get fewer deals through market competition.
+:::
+
+---
+
+## Formal economic model
+
+### Definitions
 
 Let $\mathcal{N}$ be the set of all froglet nodes. Each node $n \in \mathcal{N}$ has a secp256k1 keypair $(k_n, P_n)$ where $P_n = k_n \cdot G$.
 

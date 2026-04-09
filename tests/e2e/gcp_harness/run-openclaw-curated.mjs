@@ -8,7 +8,7 @@ import {
   requireApiKey,
   writeJson,
 } from "./common.mjs"
-import { runExploratorySession } from "./openclaw-llm-runner.mjs"
+import { runCuratedSuite } from "./openclaw-llm-runner.mjs"
 
 async function main() {
   const { values } = parseCliArgs({
@@ -43,8 +43,10 @@ async function main() {
   }
 
   requireApiKey()
-  const scenarioSet = await readJson(values.scenarios)
-  await readJson(values.inventory)
+  const [inventory, scenarioSet] = await Promise.all([
+    readJson(values.inventory),
+    readJson(values.scenarios),
+  ])
 
   const tool = loadFrogletTool({
     providerUrl,
@@ -58,28 +60,22 @@ async function main() {
       new URL("../../../integrations/openclaw/froglet/test/fixtures/valid-wasm.hex", import.meta.url),
       "utf8"
     ).trim(),
-    exploratoryDefaults: {
-      free_provider_id: scenarioSet.seeds?.free?.provider_id,
-      paid_provider_id: scenarioSet.seeds?.paid?.provider_id,
-      paid_provider_url: scenarioSet.seeds?.paid?.provider_public_url,
-      free_service_id: scenarioSet.seeds?.free?.services?.free_static?.service_id,
-      async_service_id: scenarioSet.seeds?.paid?.services?.async_echo?.service_id,
-      wasm_module_hex: "__fixture_valid_wasm_hex",
-    },
   }
 
-  const exploratory = await runExploratorySession(tool, scenarioSet, fixtures)
+  const curated = await runCuratedSuite(
+    tool,
+    scenarioSet.openclaw?.curated ?? [],
+    fixtures,
+    { run_id: inventory.run_id }
+  )
 
   await writeJson(values.out, {
     generated_at: new Date().toISOString(),
     model: defaultModel,
-    exploratory,
+    run_id: inventory.run_id,
+    ...curated,
   })
-  if (
-    exploratory.anomalies.some((anomaly) =>
-      ["critical", "high"].includes(String(anomaly.severity ?? "").toLowerCase())
-    )
-  ) {
+  if (curated.failed > 0) {
     process.exitCode = 1
   }
 }

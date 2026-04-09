@@ -127,3 +127,22 @@ The **Deal** is the only artifact signed by the requester — it's their cryptog
 :::tip[The receipt is proof]
 Anyone holding the receipt can verify: the provider signed it, the result hash matches, the settlement is correct, the chain is unbroken. No dispute resolution — the math is the arbiter.
 :::
+
+## The signed artifact envelope
+
+Every artifact in the chain is a JSON envelope with identity and integrity proof built in:
+
+```json
+{
+  "artifact_type": "offer",
+  "schema_version": "froglet/v1",
+  "signer": "02a8d6...public_key",
+  "created_at": 1700000000,
+  "payload_hash": "sha256_of_canonical_payload",
+  "hash": "sha256_of_canonical_signing_bytes",
+  "payload": { ... },
+  "signature": "bip340_schnorr_signature"
+}
+```
+
+Verification: canonicalize the payload (RFC 8785 JCS), hash it with SHA-256, rebuild the signing bytes, verify the BIP340 Schnorr signature against the signer key. If it passes, the payload is untampered and the artifact came from the holder of the private key.

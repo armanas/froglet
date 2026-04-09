@@ -1,33 +1,32 @@
 ---
 title: Learn Froglet
-description: A guided path from bytes and signatures to settlement, trust, and markets.
+description: From first deal to protocol internals — everything you need to build on froglet.
 ---
 
 <div class="learn-hero">
   <div>
     <div class="learn-pill">Start here</div>
     <p class="learn-lead">Learn the protocol the same way the node understands it.</p>
-    <p class="learn-sublead">Start with the quickstart to run your first deal, then go deeper with the protocol chapters. This track climbs from bytes and hashes through signed artifacts and deal execution to trust and economic incentives. Each chapter stands on its own, but they build on each other.</p>
+    <p class="learn-sublead">Run your first deal with the quickstart, then go deeper into identity, the deal flow, settlement, and the trust model. Each chapter stands on its own, but they build on each other.</p>
     <div class="learn-chip-row">
-      <span class="learn-chip">~45 min total</span>
+      <span class="learn-chip">~25 min total</span>
       <span class="learn-chip">Interactive diagrams</span>
       <span class="learn-chip">Plots for trust and incentives</span>
     </div>
   </div>
   <div class="learn-roadmap">
     <a class="learn-roadmap-step" href="/learn/quickstart/"><span><strong>0. Quickstart</strong><small>run your first deal locally</small></span><span>5 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/foundations/"><span><strong>1. Foundations</strong><small>bits, bytes, hex, hashes</small></span><span>5 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/identity/"><span><strong>2. Identity</strong><small>secp256k1 and signatures</small></span><span>6 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/deal-flow/"><span><strong>3. The deal flow</strong><small>the full evidence chain</small></span><span>8 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/settlement/"><span><strong>4. Settlement</strong><small>Lightning two-leg payments</small></span><span>7 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/trust/"><span><strong>5. Trust and economics</strong><small>how the market stays honest</small></span><span>9 min</span></a>
+    <a class="learn-roadmap-step" href="/learn/identity/"><span><strong>1. Identity</strong><small>secp256k1 and signatures</small></span><span>6 min</span></a>
+    <a class="learn-roadmap-step" href="/learn/deal-flow/"><span><strong>2. The deal flow</strong><small>the full evidence chain</small></span><span>8 min</span></a>
+    <a class="learn-roadmap-step" href="/learn/settlement/"><span><strong>3. Settlement</strong><small>pluggable payment backends</small></span><span>7 min</span></a>
+    <a class="learn-roadmap-step" href="/learn/economics/"><span><strong>4. Trust & economics</strong><small>how the market stays honest</small></span><span>9 min</span></a>
   </div>
 </div>
 
 <div class="learn-stat-strip">
   <div class="learn-stat"><strong>5 min</strong><span>to run your first deal (quickstart)</span></div>
   <div class="learn-stat"><strong>6</strong><span>artifact types in the protocol chain</span></div>
-  <div class="learn-stat"><strong>10</strong><span>chapters from bytes to economics</span></div>
+  <div class="learn-stat"><strong>5</strong><span>chapters from identity to economics</span></div>
   <div class="learn-stat"><strong>0</strong><span>trusted intermediaries required</span></div>
 </div>
 
@@ -42,38 +41,13 @@ description: A guided path from bytes and signatures to settlement, trust, and m
   <div class="protocol-step"><strong>Receipt</strong><span>The provider signs the outcome, settlement state, and result hash.</span></div>
 </div>
 
-## Choose your route
-
-<div class="learn-grid three">
-  <div class="learn-card">
-    <span class="learn-kicker">Builder</span>
-    <h3>Understand how a node handles a request</h3>
-    <p>Start with <a href="/learn/introduction/">What is Froglet?</a>, then read <a href="/learn/deal-flow/">The Deal Flow</a>, <a href="/learn/execution/">Execution</a>, and <a href="/learn/network/">The Network</a>.</p>
-  </div>
-  <div class="learn-card">
-    <span class="learn-kicker">Protocol</span>
-    <h3>Understand what gets signed and verified</h3>
-    <p>Go through <a href="/learn/foundations/">Foundations</a>, <a href="/learn/identity/">Identity</a>, <a href="/learn/canonical/">Canonical Serialization</a>, and <a href="/learn/artifacts/">Signed Artifacts</a>.</p>
-  </div>
-  <div class="learn-card">
-    <span class="learn-kicker">Markets</span>
-    <h3>Understand payments, trust, and incentives</h3>
-    <p>Jump to <a href="/learn/settlement/">Settlement</a>, <a href="/learn/trust/">Trust &amp; Verification</a>, and <a href="/learn/economics/">Economic Model</a>.</p>
-  </div>
-</div>
-
 ## Chapter guide
 
 <div class="chapter-grid">
   <a class="chapter-card" href="/learn/quickstart/"><strong>Quickstart</strong><small>Clone, build, run your first deal in 5 minutes. No wallet needed.</small></a>
   <a class="chapter-card" href="/learn/introduction/"><strong>What is Froglet?</strong><small>The mental model for the whole protocol and why it exists.</small></a>
-  <a class="chapter-card" href="/learn/foundations/"><strong>Foundations</strong><small>Bytes, hex, SHA-256, and the first interactive hash visualizer.</small></a>
   <a class="chapter-card" href="/learn/identity/"><strong>Cryptographic Identity</strong><small>Why secp256k1 identities are self-sovereign and hard to forge.</small></a>
-  <a class="chapter-card" href="/learn/canonical/"><strong>Canonical Serialization</strong><small>How different implementations end up signing the exact same bytes.</small></a>
-  <a class="chapter-card" href="/learn/artifacts/"><strong>Signed Artifacts</strong><small>The envelope format shared by descriptors, offers, quotes, deals, and receipts.</small></a>
   <a class="chapter-card" href="/learn/deal-flow/"><strong>The Deal Flow</strong><small>A clickable artifact chain that shows how one interaction becomes evidence.</small></a>
   <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>How the two-leg Lightning model protects both requester and provider.</small></a>
-  <a class="chapter-card" href="/learn/execution/"><strong>Execution</strong><small>How workloads map to WASM, Python, containers, and builtin handlers.</small></a>
-  <a class="chapter-card" href="/learn/trust/"><strong>Trust &amp; Verification</strong><small>How staked reputation makes cheating economically irrational.</small></a>
-  <a class="chapter-card" href="/learn/economics/"><strong>Economic Model</strong><small>Why honest execution is the dominant strategy in a large enough market.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>How staked reputation and game theory make honesty the dominant strategy.</small></a>
 </div>

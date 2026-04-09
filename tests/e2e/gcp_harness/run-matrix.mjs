@@ -82,17 +82,6 @@ function deepResolve(value, context, fixtures) {
   return value
 }
 
-async function ensureCreateProject(tool, request) {
-  try {
-    await executeTool(tool, request)
-  } catch (error) {
-    const message = String(error.message)
-    if (!message.includes("409") && !message.includes("already exists")) {
-      throw error
-    }
-  }
-}
-
 async function ensurePublishArtifact(tool, request) {
   try {
     await executeTool(tool, request)
@@ -105,48 +94,17 @@ async function ensurePublishArtifact(tool, request) {
 }
 
 async function bootstrapMarketplaceFixtures(tool, bootstrap) {
-  await ensureCreateProject(tool, {
-    action: "create_project",
-    project_id: bootstrap.build_project_id,
-    service_id: bootstrap.build_project_id,
-    name: bootstrap.build_project_id,
-    summary: "GCP harness build-flow project",
-    publication_state: "hidden",
-    starter: "hello_world",
-  })
-  await ensureCreateProject(tool, {
-    action: "create_project",
-    project_id: bootstrap.invalid_build_project_id,
-    service_id: bootstrap.invalid_build_project_id,
-    name: bootstrap.invalid_build_project_id,
-    summary: "GCP harness invalid build project",
-    publication_state: "hidden",
-    starter: "hello_world",
-  })
-  await ensureCreateProject(tool, {
-    action: "create_project",
-    project_id: bootstrap.blank_publish_project_id,
-    service_id: bootstrap.blank_publish_project_id,
-    name: bootstrap.blank_publish_project_id,
-    summary: "GCP harness blank publish rejection fixture",
-    publication_state: "hidden",
-  })
-  await ensureCreateProject(tool, {
-    action: "create_project",
-    project_id: bootstrap.publish_ready_project_id,
-    service_id: bootstrap.publish_ready_project_id,
-    name: bootstrap.publish_ready_project_id,
-    summary: "GCP harness hidden ready-to-publish project",
-    publication_state: "hidden",
-    starter: "hello_world",
-  })
-  await ensureCreateProject(tool, {
-    action: "create_project",
-    project_id: bootstrap.local_static_service_id,
+  await ensurePublishArtifact(tool, {
+    action: "publish_artifact",
     service_id: bootstrap.local_static_service_id,
-    name: bootstrap.local_static_service_id,
     summary: "GCP harness local static service",
-    result_json: { message: "market-local" },
+    runtime: "python",
+    package_kind: "inline_source",
+    entrypoint_kind: "handler",
+    entrypoint: "handler",
+    contract_version: "froglet.python.handler_json.v1",
+    inline_source:
+      "def handler(event, context):\n    return {\"message\": \"market-local\"}\n",
     price_sats: 0,
     publication_state: "active",
   })
@@ -163,15 +121,6 @@ async function bootstrapMarketplaceFixtures(tool, bootstrap) {
       "def handler(event, context):\n    return {\"hidden\": True, \"input\": event}\n",
     price_sats: 0,
     publication_state: "hidden",
-  })
-  await executeTool(tool, {
-    action: "write_file",
-    project_id: bootstrap.invalid_build_project_id,
-    path: "source/main.wat",
-    contents: `(module
-  (func (export "run_json") (result i32)
-    local.get 9)
-)`,
   })
 }
 
@@ -254,23 +203,30 @@ async function main() {
   const { values } = parseCliArgs({
     inventory: { type: "string", short: "i" },
     scenarios: { type: "string", short: "s" },
+    "provider-url": { type: "string" },
+    "runtime-url": { type: "string" },
     "base-url": { type: "string" },
     "provider-token": { type: "string" },
+    "runtime-token": { type: "string" },
     "consumer-token": { type: "string" },
     "bogus-token": { type: "string" },
     out: { type: "string", short: "o" },
   })
+  const providerUrl = values["provider-url"] ?? values["base-url"]
+  const runtimeUrl = values["runtime-url"] ?? values["base-url"]
   if (
     !values.inventory ||
     !values.scenarios ||
-    !values["base-url"] ||
+    !providerUrl ||
+    !runtimeUrl ||
     !values["provider-token"] ||
+    !values["runtime-token"] ||
     !values["consumer-token"] ||
     !values["bogus-token"] ||
     !values.out
   ) {
     throw new Error(
-      "--inventory, --scenarios, --base-url, --provider-token, --consumer-token, --bogus-token, and --out are required"
+      "--inventory, --scenarios, --out, --provider-token, --runtime-token, --consumer-token, --bogus-token, and either split --provider-url/--runtime-url or legacy --base-url are required"
     )
   }
 
@@ -280,16 +236,22 @@ async function main() {
   ])
   const toolByProfile = {
     provider_control: loadFrogletTool({
-      baseUrl: values["base-url"],
-      authTokenPath: values["provider-token"],
+      providerUrl,
+      runtimeUrl,
+      providerAuthTokenPath: values["provider-token"],
+      runtimeAuthTokenPath: values["runtime-token"],
     }),
     consumer_control: loadFrogletTool({
-      baseUrl: values["base-url"],
-      authTokenPath: values["consumer-token"],
+      providerUrl,
+      runtimeUrl,
+      providerAuthTokenPath: values["consumer-token"],
+      runtimeAuthTokenPath: values["runtime-token"],
     }),
     bogus: loadFrogletTool({
-      baseUrl: values["base-url"],
-      authTokenPath: values["bogus-token"],
+      providerUrl,
+      runtimeUrl,
+      providerAuthTokenPath: values["bogus-token"],
+      runtimeAuthTokenPath: values["bogus-token"],
     }),
   }
 
@@ -315,7 +277,8 @@ async function main() {
   const summary = {
     generated_at: new Date().toISOString(),
     run_id: inventory.run_id,
-    base_url: values["base-url"],
+    provider_url: providerUrl,
+    runtime_url: runtimeUrl,
     total: results.length,
     passed: results.length - failed.length,
     failed: failed.length,

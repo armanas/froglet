@@ -23,8 +23,8 @@
 - Do not commit generated artifacts, local databases, or scratch outputs from `target/`, `_tmp/`, `data/`, `node.db*`, `private_work/`, coverage caches, or IDE folders.
 
 ## Key Paths
-- `src/`: Rust library code for protocol, runtime, provider, discovery, operator, storage, and execution.
-- `src/bin/`: Executable entrypoints for `froglet-runtime`, `froglet-provider`, `froglet-discovery`, and `froglet-operator`.
+- `src/`: Rust library code for protocol, runtime, provider, storage, and execution.
+- `src/bin/`: Executable entrypoint for `froglet-node`.
 - `tests/`: Rust integration tests such as runtime routes, payments/discovery, and kernel conformance vectors.
 - `python/`: Python SDK-style helpers plus `python/tests/`.
 - `integrations/shared/froglet-lib/`: Shared HTTP client and utilities used by both OpenClaw plugin and MCP server.
@@ -52,7 +52,5 @@
 - Use the root `Cargo.toml` for Rust builds and tests.
 
 ## Quick Start
-- Discovery: `cargo run --bin froglet-discovery`
-- Provider: `cargo run --bin froglet-provider`
-- Runtime: `cargo run --bin froglet-runtime`
-- Operator: `cargo run --bin froglet-operator`
+- Node (dual): `cargo run -p froglet --bin froglet-node`
+- Marketplace: `cargo run -p froglet-marketplace --bin froglet-marketplace`

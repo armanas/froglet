@@ -44,12 +44,10 @@ This is the implemented cutover architecture.
    - binding information needed to compile a service invocation into a normal
      Froglet workload
 
-3. Local control API
-   - `/v1/froglet/*`
-   - project authoring
-   - build/test/publish
-   - discovery and invocation
-   - logs and restart
+3. Provider and runtime APIs
+   - `/v1/provider/*` — catalog, deals, artifacts, settlement
+   - `/v1/runtime/*` — search, deals, payments
+   - `/v1/node/*` — jobs, events, capabilities
 
 4. Plugin
    - one plugin id: `froglet`

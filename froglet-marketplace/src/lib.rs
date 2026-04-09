@@ -136,32 +136,40 @@ async fn register_marketplace_offers(
     state: &Arc<froglet::state::AppState>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (service_id, summary) in MARKETPLACE_SERVICES {
-        let request = froglet::api::ProviderControlPublishArtifactRequest {
-            service_id: service_id.to_string(),
-            offer_id: Some(service_id.to_string()),
-            artifact_path: None,
-            wasm_module_hex: None,
+        let definition = froglet::api::ProviderManagedOfferDefinition {
+            offer_id: service_id.to_string(),
+            service_id: Some(service_id.to_string()),
+            project_id: None,
+            offer_kind: service_id.to_string(),
+            runtime: "builtin".to_string(),
+            package_kind: "builtin".to_string(),
+            entrypoint_kind: "builtin".to_string(),
+            entrypoint: service_id.to_string(),
+            contract_version: format!("froglet.builtin.{service_id}.v1"),
+            mounts: Vec::new(),
+            mode: "sync".to_string(),
+            capabilities: Vec::new(),
+            max_input_bytes: 1_048_576,
+            max_runtime_ms: state.config.execution_timeout_secs.saturating_mul(1_000),
+            max_memory_bytes: 0,
+            max_output_bytes: 1_048_576,
+            fuel_limit: 0,
+            price_sats: 0,
+            publication_state: "active".to_string(),
+            starter: None,
+            module_hash: None,
+            module_bytes_hex: None,
+            inline_source: None,
             oci_reference: None,
             oci_digest: None,
-            runtime: Some("builtin".to_string()),
-            package_kind: Some("builtin".to_string()),
-            entrypoint_kind: Some("builtin".to_string()),
-            entrypoint: Some(service_id.to_string()),
-            contract_version: Some(format!("froglet.builtin.{service_id}.v1")),
-            mounts: None,
-            inline_source: None,
+            source_path: None,
+            source_kind: "builtin".to_string(),
             summary: Some(summary.to_string()),
-            mode: None,
-            price_sats: 0,
-            publication_state: Some("active".to_string()),
             input_schema: None,
             output_schema: None,
+            terms_hash: None,
+            confidential_profile_hash: None,
         };
-
-        let definition = froglet::api::artifact_provider_offer_definition(state.as_ref(), request)
-            .map_err(|(status, body)| {
-                format!("offer definition for {service_id}: {status} {body}")
-            })?;
 
         let _response = froglet::api::persist_provider_offer_mutation(
             state.as_ref(),

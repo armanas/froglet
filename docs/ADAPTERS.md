@@ -123,5 +123,5 @@ image, and networking conventions, but they must preserve:
 
 - the same kernel semantics
 - the same signed artifact verification rules
-- the same `/v1/froglet/*` bot/operator contract
+- the same provider/runtime API contract
 - the same clearnet or Tor reachability semantics once endpoints are published

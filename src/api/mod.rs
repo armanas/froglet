@@ -12,7 +12,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap, error::Error as StdError, fs, io::Write, process::Stdio, sync::Arc,
+    collections::{BTreeMap, HashSet},
+    error::Error as StdError,
+    fs,
+    io::Write,
+    process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
@@ -1701,13 +1706,25 @@ pub async fn get_feed(
         None => 50,
     };
 
+    let current_public_feed = match current_public_feed_artifacts(state.as_ref()).await {
+        Ok(current_public_feed) => current_public_feed,
+        Err(error) => {
+            tracing::error!("Failed to build public feed snapshot: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to build protocol feed" }),
+            );
+        }
+    };
+
     match state
         .db
-        .with_read_conn(move |conn| db::list_artifacts(conn, Some(applied_cursor), limit))
+        .with_read_conn(move |conn| {
+            list_public_feed_artifacts(conn, applied_cursor, limit, &current_public_feed)
+        })
         .await
     {
-        Ok((artifacts, has_more)) => {
-            let next_cursor = artifacts.last().map(|artifact| artifact.cursor);
+        Ok((artifacts, has_more, next_cursor)) => {
             (
                 StatusCode::OK,
                 Json(json!(FeedResponse {
@@ -1729,6 +1746,89 @@ pub async fn get_feed(
             )
         }
     }
+}
+
+#[derive(Clone)]
+struct CurrentPublicFeedArtifacts {
+    descriptor_hash: String,
+    offer_hashes: HashSet<String>,
+}
+
+impl CurrentPublicFeedArtifacts {
+    fn contains(&self, artifact: &db::LedgerArtifact) -> bool {
+        match artifact.kind.as_str() {
+            ARTIFACT_KIND_DESCRIPTOR => artifact.hash == self.descriptor_hash,
+            ARTIFACT_KIND_OFFER => self.offer_hashes.contains(artifact.hash.as_str()),
+            ARTIFACT_KIND_RECEIPT => true,
+            _ => false,
+        }
+    }
+}
+
+async fn current_public_feed_artifacts(
+    state: &AppState,
+) -> Result<CurrentPublicFeedArtifacts, String> {
+    let descriptor_hash = current_descriptor_artifact(state).await?.hash;
+    let offer_hashes = current_offer_artifacts(state)
+        .await?
+        .into_iter()
+        .map(|offer| offer.hash)
+        .collect::<HashSet<_>>();
+    Ok(CurrentPublicFeedArtifacts {
+        descriptor_hash,
+        offer_hashes,
+    })
+}
+
+fn list_public_feed_artifacts(
+    conn: &rusqlite::Connection,
+    applied_cursor: i64,
+    limit: usize,
+    current_public_feed: &CurrentPublicFeedArtifacts,
+) -> Result<(Vec<db::LedgerArtifact>, bool, Option<i64>), String> {
+    let limit = limit.clamp(1, 100);
+    let mut artifacts = Vec::with_capacity(limit);
+    let mut scan_cursor = applied_cursor;
+    let mut next_cursor = applied_cursor;
+    let mut advanced = false;
+    let mut page_full = false;
+    let mut has_more = false;
+
+    loop {
+        let (batch, raw_has_more) = db::list_artifacts(conn, Some(scan_cursor), 100)?;
+        if batch.is_empty() {
+            break;
+        }
+
+        for artifact in batch {
+            scan_cursor = artifact.cursor;
+            advanced = true;
+            let is_public = current_public_feed.contains(&artifact);
+
+            if page_full {
+                if is_public {
+                    has_more = true;
+                    break;
+                }
+                next_cursor = scan_cursor;
+                continue;
+            }
+
+            next_cursor = scan_cursor;
+            if is_public {
+                artifacts.push(artifact);
+                if artifacts.len() == limit {
+                    page_full = true;
+                }
+            }
+        }
+
+        if has_more || !raw_has_more {
+            break;
+        }
+    }
+
+    Ok((artifacts, has_more, advanced.then_some(next_cursor)))
 }
 
 pub async fn get_artifact(
@@ -3564,6 +3664,36 @@ pub(crate) fn require_bearer_token(
 
 fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
     require_bearer_token(headers, &state.runtime_auth_token, "runtime")
+}
+
+fn require_provider_control_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
+    require_bearer_token(headers, &state.provider_control_auth_token, "provider-control")
+}
+
+pub(crate) async fn publish_artifact(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ProviderControlPublishArtifactRequest>,
+) -> impl IntoResponse {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let service_id = payload.service_id.clone();
+    let definition = match artifact_provider_offer_definition(state.as_ref(), payload) {
+        Ok(d) => d,
+        Err((status, body)) => return (status, Json(json!(body))).into_response(),
+    };
+    match persist_provider_offer_mutation(
+        state.as_ref(),
+        definition,
+        StatusCode::CREATED,
+        format!("published artifact {service_id}"),
+    )
+    .await
+    {
+        Ok((status, json)) => (status, json).into_response(),
+        Err((status, body)) => (status, Json(json!(body))).into_response(),
+    }
 }
 
 pub(crate) fn provider_offer_limits(
@@ -8057,7 +8187,8 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
         Some(&serde_json::json!({
             "offer_id": "marketplace.register",
             "requester_id": state.identity.node_id(),
-            "spec": { "kind": "execution", "execution": execution },
+            "kind": "execution",
+            "execution": execution,
         })),
     )
     .await
@@ -8114,7 +8245,8 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
         Some(&serde_json::json!({
             "quote": quote_response,
             "deal": deal,
-            "spec": { "kind": "execution", "execution": execution },
+            "kind": "execution",
+            "execution": execution,
         })),
     )
     .await
@@ -9762,6 +9894,14 @@ mod tests {
             }
             Self { key, previous }
         }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, previous }
+        }
     }
 
     impl Drop for ScopedEnvVar {
@@ -9791,8 +9931,6 @@ mod tests {
             public_base_url: None,
             runtime_listen_addr: "127.0.0.1:0".to_string(),
             runtime_allow_non_loopback: false,
-            provider_control_listen_addr: "127.0.0.1:0".to_string(),
-            provider_control_allow_non_loopback: false,
             http_ca_cert_path: None,
             tor: crate::config::TorSidecarConfig {
                 binary_path: "tor".to_string(),
@@ -10560,6 +10698,219 @@ mod tests {
                 .is_some_and(|value| value.contains("local or private-network")),
             "unexpected payload: {}",
             error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_rejects_loopback_without_provider_id() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+        let state = test_app_state(PaymentBackend::None);
+        let error = runtime_accessible_provider_url(state.as_ref(), "http://127.0.0.1:8080", None)
+            .await
+            .expect_err("missing provider_id loopback should be rejected");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("local or private-network")),
+            "unexpected payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_rejects_loopback_for_wrong_provider_id() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+        let state = test_app_state(PaymentBackend::None);
+        let error = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://127.0.0.1:8080",
+            Some(&"11".repeat(32)),
+        )
+        .await
+        .expect_err("wrong provider_id loopback should be rejected");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("local or private-network")),
+            "unexpected payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_requires_configured_base_url_for_local_provider() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+        let state = test_app_state(PaymentBackend::None);
+        let local_node_id = state.identity.node_id().to_string();
+        let error = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://127.0.0.1:8080",
+            Some(&local_node_id),
+        )
+        .await
+        .expect_err("local provider loopback should require configured base url");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("local or private-network")),
+            "unexpected payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn public_feed_excludes_withdrawn_hidden_offers() {
+        let state = test_app_state(PaymentBackend::None);
+        let service_id = "feed-visibility";
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: service_id.to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"message\": \"visible\"}\n"
+                        .to_string(),
+                ),
+                summary: Some("visible then hidden".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: service_id.to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"message\": \"hidden\"}\n"
+                        .to_string(),
+                ),
+                summary: Some("visible then hidden".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("hidden".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let response = public_router(state)
+            .oneshot(runtime_request(Method::GET, "/v1/feed?limit=100", None, None))
+            .await
+            .expect("feed response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let offers = payload["artifacts"]
+            .as_array()
+            .expect("feed artifacts")
+            .iter()
+            .filter(|artifact| artifact["kind"] == Value::String(ARTIFACT_KIND_OFFER.to_string()))
+            .filter(|artifact| {
+                artifact["document"]["payload"]["offer_id"].as_str() == Some(service_id)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            offers.is_empty(),
+            "hidden service offer leaked into public feed: {offers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_feed_advances_cursor_when_only_filtered_artifacts_remain() {
+        let state = test_app_state(PaymentBackend::None);
+        let initial = public_router(state.clone())
+            .oneshot(runtime_request(Method::GET, "/v1/feed?limit=100", None, None))
+            .await
+            .expect("initial feed response");
+        let (status, initial_payload): (StatusCode, Value) = response_json(initial).await;
+        assert_eq!(status, StatusCode::OK);
+        let initial_cursor = initial_payload["next_cursor"]
+            .as_i64()
+            .expect("initial next_cursor");
+
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "feed-hidden-only".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"hidden\": True}\n".to_string(),
+                ),
+                summary: Some("hidden only".to_string()),
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("hidden".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                &format!("/v1/feed?cursor={initial_cursor}&limit=10"),
+                None,
+                None,
+            ))
+            .await
+            .expect("filtered feed response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["artifacts"], Value::Array(Vec::new()));
+        assert_eq!(payload["has_more"], Value::Bool(false));
+        let advanced_cursor = payload["next_cursor"]
+            .as_i64()
+            .expect("advanced next_cursor");
+        assert!(
+            advanced_cursor > initial_cursor,
+            "expected next_cursor to advance past filtered artifacts: {payload}"
         );
     }
 

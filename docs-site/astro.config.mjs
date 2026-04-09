@@ -28,6 +28,7 @@ export default defineConfig({
 				ThemeProvider: './src/components/ThemeProvider.astro',
 				Header: './src/components/StarlightHeader.astro',
 				Footer: './src/components/StarlightFooter.astro',
+				Sidebar: './src/components/StarlightSidebar.astro',
 			},
 				sidebar: [
 					{
@@ -36,25 +37,16 @@ export default defineConfig({
 							{ label: 'Overview', slug: 'learn' },
 							{ label: 'Quickstart', slug: 'learn/quickstart' },
 							{ label: 'What is Froglet?', slug: 'learn/introduction' },
-							{ label: 'Foundations', slug: 'learn/foundations' },
 							{ label: 'Cryptographic Identity', slug: 'learn/identity' },
-							{ label: 'Canonical Serialization', slug: 'learn/canonical' },
-							{ label: 'Signed Artifacts', slug: 'learn/artifacts' },
 							{ label: 'The Deal Flow', slug: 'learn/deal-flow' },
-							{ label: 'Settlement (Lightning)', slug: 'learn/settlement' },
-							{ label: 'Execution', slug: 'learn/execution' },
-							{ label: 'The Network', slug: 'learn/network' },
-							{ label: 'Storage & Databases', slug: 'learn/storage' },
-							{ label: 'Trust & Verification', slug: 'learn/trust' },
-							{ label: 'Economic Model', slug: 'learn/economics' },
+							{ label: 'Settlement', slug: 'learn/settlement' },
+							{ label: 'Trust & Economics', slug: 'learn/economics' },
 						],
 					},
 					{
 						label: 'Marketplace',
 						items: [
-							{ label: 'How It Works', slug: 'marketplace/overview' },
-							{ label: 'Handlers', slug: 'marketplace/handlers' },
-							{ label: 'Indexer', slug: 'marketplace/indexer' },
+							{ label: 'Marketplace', slug: 'marketplace/overview' },
 						],
 					},
 					{

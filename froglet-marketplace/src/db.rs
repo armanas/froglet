@@ -1,5 +1,5 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use tokio_postgres::NoTls;
+use tokio_postgres::{NoTls, error::SqlState};
 
 pub type PgPool = Pool;
 
@@ -55,18 +55,124 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), String> {
     ];
 
     for sql in migrations {
-        match client.batch_execute(sql).await {
-            Ok(()) => {}
-            Err(e) => {
-                let msg = e.to_string();
-                // Tables may already exist on restart — treat as success
-                if msg.contains("already exists") {
-                    continue;
+        for statement in split_migration_statements(sql) {
+            match client.batch_execute(&statement).await {
+                Ok(()) => {}
+                Err(error) => {
+                    let msg = error.to_string();
+                    if is_duplicate_migration_error(&error) || msg.contains("already exists") {
+                        continue;
+                    }
+                    return Err(format!("migration failed: {msg}"));
                 }
-                return Err(format!("migration failed: {msg}"));
             }
         }
     }
 
     Ok(())
+}
+
+fn is_duplicate_migration_error(error: &tokio_postgres::Error) -> bool {
+    error.as_db_error().is_some_and(|db_error| {
+        db_error.code() == &SqlState::DUPLICATE_TABLE
+            || db_error.code() == &SqlState::DUPLICATE_OBJECT
+    })
+}
+
+fn split_migration_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut chars = sql.chars().peekable();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double_quote => {
+                current.push(ch);
+                if in_single_quote {
+                    if chars.peek() == Some(&'\'') {
+                        current.push(chars.next().expect("peeked escaped quote"));
+                    } else {
+                        in_single_quote = false;
+                    }
+                } else {
+                    in_single_quote = true;
+                }
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                current.push(ch);
+            }
+            ';' if !in_single_quote && !in_double_quote => {
+                push_migration_statement(&mut statements, &mut current, true);
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    push_migration_statement(&mut statements, &mut current, false);
+    statements
+}
+
+fn push_migration_statement(
+    statements: &mut Vec<String>,
+    current: &mut String,
+    terminated: bool,
+) {
+    let trimmed = current.trim();
+    if statement_has_sql_code(trimmed) {
+        let statement = if terminated {
+            format!("{trimmed};")
+        } else {
+            trimmed.to_string()
+        };
+        statements.push(statement);
+    }
+    current.clear();
+}
+
+fn statement_has_sql_code(statement: &str) -> bool {
+    statement.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with("--")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_migration_statements;
+
+    #[test]
+    fn split_migration_statements_preserves_multiple_statements() {
+        let sql = r#"
+            -- create provider projection table
+            CREATE TABLE marketplace_providers (
+                provider_id TEXT PRIMARY KEY,
+                source_url TEXT NOT NULL
+            );
+
+            CREATE INDEX idx_providers_source ON marketplace_providers (source_url);
+        "#;
+
+        let statements = split_migration_statements(sql);
+
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].contains("CREATE TABLE marketplace_providers"));
+        assert!(statements[1].contains("CREATE INDEX idx_providers_source"));
+    }
+
+    #[test]
+    fn split_migration_statements_keeps_semicolons_inside_strings() {
+        let sql = r#"
+            INSERT INTO notes (content) VALUES ('one;two');
+            CREATE TABLE marketplace_receipts (receipt_hash TEXT PRIMARY KEY);
+        "#;
+
+        let statements = split_migration_statements(sql);
+
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].contains("'one;two'"));
+        assert!(statements[1].contains("CREATE TABLE marketplace_receipts"));
+    }
 }

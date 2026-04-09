@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -67,7 +68,8 @@ async fn marketplace_deal(
         Some(&json!({
             "offer_id": offer_id,
             "requester_id": state.identity.node_id(),
-            "spec": { "kind": "execution", "execution": execution },
+            "kind": "execution",
+            "execution": execution,
         })),
     )
     .await
@@ -85,13 +87,91 @@ async fn marketplace_deal(
         Some(&json!({
             "quote": quote,
             "deal": deal,
-            "spec": { "kind": "execution", "execution": execution },
+            "kind": "execution",
+            "execution": execution,
         })),
     )
     .await
     .map_err(|(s, b)| (s, json!({"error":"marketplace deal failed","detail":b})))?;
 
-    Ok(response.get("result").cloned().unwrap_or(json!({})))
+    if let Some(result) = response.get("result") {
+        return Ok(result.clone());
+    }
+
+    let Some(deal_id) = response
+        .get("deal_id")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            response
+                .get("deal")
+                .and_then(|value| value.get("deal_id"))
+                .and_then(|value| value.as_str())
+        })
+    else {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "marketplace deal response missing deal_id",
+                "detail": response,
+            }),
+        ));
+    };
+
+    let status_url = format!("{marketplace_url}/v1/provider/deals/{deal_id}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut current = response;
+    loop {
+        if let Some(result) = current.get("result") {
+            return Ok(result.clone());
+        }
+
+        match current.get("status").and_then(|value| value.as_str()) {
+            Some(deals::DEAL_STATUS_FAILED) | Some(deals::DEAL_STATUS_REJECTED) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    json!({
+                        "error": "marketplace deal did not succeed",
+                        "detail": current,
+                    }),
+                ));
+            }
+            Some(deals::DEAL_STATUS_RESULT_READY) | Some(deals::DEAL_STATUS_SUCCEEDED) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    json!({
+                        "error": "marketplace deal completed without a result payload",
+                        "detail": current,
+                    }),
+                ));
+            }
+            _ => {}
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err((
+                StatusCode::GATEWAY_TIMEOUT,
+                json!({
+                    "error": "marketplace deal timed out waiting for a result payload",
+                    "detail": current,
+                }),
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        current = remote_json_request(
+            state,
+            reqwest::Method::GET,
+            status_url.clone(),
+            None::<&Value>,
+        )
+        .await
+        .map_err(|(s, b)| {
+            (
+                s,
+                json!({"error":"marketplace deal status check failed","detail":b}),
+            )
+        })?;
+    }
 }
 
 async fn runtime_search(

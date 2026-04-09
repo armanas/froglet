@@ -183,7 +183,7 @@ pub async fn runtime_accessible_provider_url(
 ) -> Result<String, ResolutionFailure> {
     let local_provider_base_url = configured_runtime_provider_base_url()?;
     let is_local_provider =
-        provider_id.is_none_or(|provider_id| provider_id == state.identity.node_id());
+        provider_id.is_some_and(|provider_id| provider_id == state.identity.node_id());
     if is_local_provider
         && let Some(base_url) = local_provider_base_url.as_deref()
         && raw_url.trim_end_matches('/') == base_url
@@ -202,9 +202,6 @@ pub async fn runtime_accessible_provider_url(
     if validated.reachability == RemoteEndpointReachability::LocalOnly {
         if is_local_provider && let Some(base_url) = local_provider_base_url {
             return Ok(base_url);
-        }
-        if provider_id.is_some() && is_local_provider {
-            return Ok(validated.normalized_url);
         }
         return Err((
             StatusCode::BAD_REQUEST,
