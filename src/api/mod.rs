@@ -1724,20 +1724,18 @@ pub async fn get_feed(
         })
         .await
     {
-        Ok((artifacts, has_more, next_cursor)) => {
-            (
-                StatusCode::OK,
-                Json(json!(FeedResponse {
-                    artifacts,
-                    cursor_type: "artifact_sequence".to_string(),
-                    cursor_semantics: "exclusive_after".to_string(),
-                    applied_cursor,
-                    page_size: limit,
-                    has_more,
-                    next_cursor,
-                })),
-            )
-        }
+        Ok((artifacts, has_more, next_cursor)) => (
+            StatusCode::OK,
+            Json(json!(FeedResponse {
+                artifacts,
+                cursor_type: "artifact_sequence".to_string(),
+                cursor_semantics: "exclusive_after".to_string(),
+                applied_cursor,
+                page_size: limit,
+                has_more,
+                next_cursor,
+            })),
+        ),
         Err(error) => {
             tracing::error!("Failed to read feed: {error}");
             error_json(
@@ -3667,7 +3665,11 @@ fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Api
 }
 
 fn require_provider_control_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
-    require_bearer_token(headers, &state.provider_control_auth_token, "provider-control")
+    require_bearer_token(
+        headers,
+        &state.provider_control_auth_token,
+        "provider-control",
+    )
 }
 
 pub(crate) async fn publish_artifact(
@@ -10829,7 +10831,12 @@ mod tests {
         .await;
 
         let response = public_router(state)
-            .oneshot(runtime_request(Method::GET, "/v1/feed?limit=100", None, None))
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
             .await
             .expect("feed response");
         let (status, payload): (StatusCode, Value) = response_json(response).await;
@@ -10854,7 +10861,12 @@ mod tests {
     async fn public_feed_advances_cursor_when_only_filtered_artifacts_remain() {
         let state = test_app_state(PaymentBackend::None);
         let initial = public_router(state.clone())
-            .oneshot(runtime_request(Method::GET, "/v1/feed?limit=100", None, None))
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
             .await
             .expect("initial feed response");
         let (status, initial_payload): (StatusCode, Value) = response_json(initial).await;

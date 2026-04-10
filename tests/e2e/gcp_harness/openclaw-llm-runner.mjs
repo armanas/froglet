@@ -103,6 +103,20 @@ function assertTextNotContains(text, needles, label) {
   }
 }
 
+export function applyCuratedFixtureArgs(args, fixtureArgs) {
+  if (!fixtureArgs || typeof fixtureArgs !== "object" || Array.isArray(fixtureArgs)) {
+    return args
+  }
+  if (!fixtureArgs.action) {
+    mergeMissing(args, fixtureArgs)
+    return args
+  }
+  if (!args.action || args.action === fixtureArgs.action) {
+    Object.assign(args, fixtureArgs)
+  }
+  return args
+}
+
 export async function runCuratedScenario(tool, scenario, fixtures = {}, context = {}) {
   const toolCalls = []
   const toolOutputs = []
@@ -195,12 +209,7 @@ export async function runCuratedScenario(tool, scenario, fixtures = {}, context 
 
     const outputs = []
     for (const call of calls) {
-      const args = JSON.parse(call.arguments || "{}")
-      if (!args.action && fixtureArgs.action) {
-        Object.assign(args, fixtureArgs)
-      } else if (args.action === fixtureArgs.action) {
-        Object.assign(args, fixtureArgs)
-      }
+      const args = applyCuratedFixtureArgs(JSON.parse(call.arguments || "{}"), fixtureArgs)
       if (
         !args.task_id &&
         context.task_id &&
@@ -279,10 +288,16 @@ export async function runExploratorySession(tool, scenarioSet, fixtures) {
   const anomalies = []
   const toolCalls = []
   let previousResponseId = null
+  const exploratoryDefaults = resolveValue(fixtures.exploratoryDefaults ?? {}, fixtures)
   let input = [
     "You are a senior QA engineer exploring Froglet through the OpenClaw froglet tool.",
     "Cover the full action surface below, starting with safe happy paths and then boundary cases.",
     `Required action coverage: ${(scenarioSet.agentic?.exploratory?.must_cover_actions ?? []).join(", ")}`,
+    "Before reporting, complete these checkpoints in order unless a tool failure blocks you:",
+    `1. Call discover_services, then call get_service for visible service ${exploratoryDefaults.free_service_id} on provider ${exploratoryDefaults.free_provider_id}.`,
+    `2. Call invoke_service for async service ${exploratoryDefaults.async_service_id} on provider ${exploratoryDefaults.paid_provider_id} with input {\"delay_ms\":25,\"marker\":\"openclaw-exploratory-remote\"}. If the create call is not terminal, call get_task once with the returned task_id and then call wait_task until completion.`,
+    `3. Call run_compute once on provider ${exploratoryDefaults.free_provider_id} using either inline Python or Wasm.`,
+    "4. After the required action coverage is complete, probe at least one invalid-input boundary case and report the result.",
     "Look for security regressions, data leaks, missing validation, inconsistent summaries vs raw payloads, and bad recovery behaviour.",
     "When you finish, report anomalies with severity critical/high/medium/low/info and reproduction steps.",
   ].join("\n")

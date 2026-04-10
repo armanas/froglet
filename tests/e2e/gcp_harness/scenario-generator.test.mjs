@@ -118,6 +118,19 @@ test("buildScenarioSet emits tool, protocol, and OpenClaw coverage", () => {
     (scenario) => scenario.scenario_id === "openclaw.direct_compute_flow"
   )
   assert.ok(openclawDirectCompute)
+
+  const curatedAsyncInvoke = scenarioSet.openclaw.curated.find(
+    (scenario) => scenario.scenario_id === "openclaw.curated.invoke_async_wait"
+  )
+  assert.ok(curatedAsyncInvoke)
+  assert.equal(curatedAsyncInvoke.fixture_injections.action, "invoke_service")
+
+  const curatedTaskRoundtrip = scenarioSet.openclaw.curated.find(
+    (scenario) => scenario.scenario_id === "openclaw.curated.task_roundtrip"
+  )
+  assert.ok(curatedTaskRoundtrip)
+  assert.equal(curatedTaskRoundtrip.fixture_injections.action, "invoke_service")
+  assert.match(curatedTaskRoundtrip.prompt, /call get_task exactly once/i)
   assert.ok(openclawDirectCompute.required_tool_actions.includes("run_compute"))
 
   const curatedHidden = scenarioSet.openclaw.curated.find(

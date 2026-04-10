@@ -133,7 +133,9 @@ async fn poll_source_once(
         new_cursor = artifact.cursor;
     }
 
-    if let Some(next_cursor) = response.next_cursor && next_cursor > new_cursor {
+    if let Some(next_cursor) = response.next_cursor
+        && next_cursor > new_cursor
+    {
         new_cursor = next_cursor;
     }
 

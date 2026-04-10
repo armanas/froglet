@@ -101,6 +101,36 @@ The reference implementation exposes these binaries:
 
 ## Quick Start
 
+### Single-Node Binary Install
+
+Install the latest tagged `froglet-node` release into `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+```
+
+Pin a version or choose a different install dir when needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | VERSION=v0.1.0 sh
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
+```
+
+Install `froglet-marketplace` as well only when you explicitly need the extra binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | INSTALL_MARKETPLACE=1 sh
+```
+
+`froglet-node` is the default binary quickstart. `froglet-marketplace` is
+available through the installer, but it still needs Postgres and is not the
+default single-node path.
+
+### Full Stack with Docker Compose
+
 Bring up the default local stack:
 
 ```bash

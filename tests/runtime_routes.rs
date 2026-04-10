@@ -40,8 +40,7 @@ use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
-        OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -964,18 +963,14 @@ async fn marketplace_deal_handler(
         "marketplace-deal-{}",
         state.deal_requests.lock().await.len()
     );
-    state
-        .deal_statuses
-        .lock()
-        .await
-        .insert(
-            deal_id.clone(),
-            json!({
-                "deal_id": deal_id,
-                "status": "succeeded",
-                "result": result,
-            }),
-        );
+    state.deal_statuses.lock().await.insert(
+        deal_id.clone(),
+        json!({
+            "deal_id": deal_id,
+            "status": "succeeded",
+            "result": result,
+        }),
+    );
 
     (
         StatusCode::ACCEPTED,
@@ -992,7 +987,10 @@ async fn marketplace_deal_status_handler(
 ) -> impl IntoResponse {
     let statuses = state.deal_statuses.lock().await;
     let Some(status) = statuses.get(&deal_id) else {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "deal not found" })));
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "deal not found" })),
+        );
     };
     (StatusCode::OK, Json(status.clone()))
 }
@@ -1070,7 +1068,10 @@ async fn runtime_search_proxies_through_marketplace_builtin_service() {
     );
     let (status, response): (StatusCode, Value) = call_json(app, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(response["providers"][0]["provider_id"], "marketplace-provider");
+    assert_eq!(
+        response["providers"][0]["provider_id"],
+        "marketplace-provider"
+    );
 
     let quote_requests = marketplace_state.quote_requests.lock().await;
     assert_eq!(quote_requests.len(), 1);
@@ -1099,7 +1100,10 @@ async fn runtime_provider_details_proxies_through_marketplace_builtin_service() 
     let (status, response): (StatusCode, Value) = call_json(app, request).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(response["provider"]["provider_id"], "marketplace-provider");
-    assert_eq!(response["provider"]["offers"][0]["offer_id"], "execute.compute");
+    assert_eq!(
+        response["provider"]["offers"][0]["offer_id"],
+        "execute.compute"
+    );
     assert_eq!(
         response["provider"]["offers"][1]["offer_id"],
         "execute.compute.generic"

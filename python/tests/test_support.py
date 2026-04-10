@@ -276,14 +276,16 @@ async def _wait_for_postgres_container(
         proc = await _docker_command(
             "exec",
             container_name,
-            "pg_isready",
+            "psql",
             "-U",
             "froglet",
             "-d",
             "marketplace",
+            "-tAc",
+            "SELECT 1",
             check=False,
         )
-        if proc.returncode == 0:
+        if proc.returncode == 0 and proc.stdout.strip() == "1":
             return
         last_error = (proc.stdout or proc.stderr or last_error).strip()
         await asyncio.sleep(0.5)

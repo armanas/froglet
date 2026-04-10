@@ -1,4 +1,5 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use std::time::{Duration, Instant};
 use tokio_postgres::{NoTls, error::SqlState};
 
 pub type PgPool = Pool;
@@ -29,18 +30,28 @@ pub async fn connect(database_url: &str) -> Result<PgPool, String> {
         .create_pool(Some(Runtime::Tokio1), NoTls)
         .map_err(|e| format!("pool creation: {e}"))?;
 
-    // Verify the connection works
-    let client = pool
-        .get()
-        .await
-        .map_err(|e| format!("database connection: {e}"))?;
-
-    client
-        .simple_query("SELECT 1")
-        .await
-        .map_err(|e| format!("database ping: {e}"))?;
-
+    wait_for_pool_connectivity(&pool).await?;
     Ok(pool)
+}
+
+async fn wait_for_pool_connectivity(pool: &PgPool) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+
+    loop {
+        let last_error = match pool.get().await {
+            Ok(client) => match client.simple_query("SELECT 1").await {
+                Ok(_) => return Ok(()),
+                Err(error) => format!("database ping: {error}"),
+            },
+            Err(error) => format!("database connection: {error}"),
+        };
+
+        if Instant::now() >= deadline {
+            return Err(last_error);
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), String> {
@@ -115,11 +126,7 @@ fn split_migration_statements(sql: &str) -> Vec<String> {
     statements
 }
 
-fn push_migration_statement(
-    statements: &mut Vec<String>,
-    current: &mut String,
-    terminated: bool,
-) {
+fn push_migration_statement(statements: &mut Vec<String>, current: &mut String, terminated: bool) {
     let trimmed = current.trim();
     if statement_has_sql_code(trimmed) {
         let statement = if terminated {

@@ -1,7 +1,7 @@
 # Release
 
-This repo now has a minimal tagged release path for the current Froglet node,
-reference discovery, and OpenClaw alpha surface.
+This repo now has a tagged release path for the current Froglet node,
+marketplace binary, Docker images, and OpenClaw alpha surface.
 
 Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
@@ -21,7 +21,7 @@ The release workflow checks this and fails if they diverge.
 
 Pushing a matching tag triggers
 [../.github/workflows/release.yml](../.github/workflows/release.yml), which
-publishes the four role-specific images:
+publishes the role-specific images:
 
 - `ghcr.io/<owner>/froglet-provider:<version>`
 - `ghcr.io/<owner>/froglet-provider:<sha-tag>`
@@ -29,6 +29,24 @@ publishes the four role-specific images:
 - `ghcr.io/<owner>/froglet-runtime:<sha-tag>`
 - `ghcr.io/<owner>/froglet-marketplace:<version>`
 - `ghcr.io/<owner>/froglet-marketplace:<sha-tag>`
+
+## Published Binaries
+
+The same tagged workflow also publishes GitHub release assets for:
+
+- `froglet-node-<tag>-linux-x86_64.tar.gz`
+- `froglet-node-<tag>-linux-arm64.tar.gz`
+- `froglet-node-<tag>-darwin-arm64.tar.gz`
+- `froglet-marketplace-<tag>-linux-x86_64.tar.gz`
+- `froglet-marketplace-<tag>-linux-arm64.tar.gz`
+- `froglet-marketplace-<tag>-darwin-arm64.tar.gz`
+- `SHA256SUMS`
+
+The one-line installer at [../scripts/install.sh](../scripts/install.sh)
+downloads from those release assets. By default it installs the latest tagged
+`froglet-node` release into `~/.local/bin`. Use `VERSION=<tag>` to pin a
+release, `INSTALL_DIR=/path` to override the destination, and
+`INSTALL_MARKETPLACE=1` to install `froglet-marketplace` too.
 
 The public release surface covers the tracked Froglet protocol docs, reference
 node binaries, supported integrations, and validation assets in this repo.
@@ -41,9 +59,10 @@ surface.
 2. Move the relevant `Unreleased` notes in [../CHANGELOG.md](../CHANGELOG.md)
    into a concrete version section.
 3. Run `./scripts/strict_checks.sh`.
-4. Confirm `docker compose up --build` still starts cleanly.
-5. Commit the version/changelog update.
-6. Push the release tag, for example:
+4. Confirm the packaged binary smoke still passes through the installer path.
+5. Confirm `docker compose up --build` still starts cleanly.
+6. Commit the version/changelog update.
+7. Push the release tag, for example:
 
 ```bash
 git tag v0.1.0-alpha.1
@@ -55,6 +74,8 @@ git push origin v0.1.0-alpha.1
 Use the matching changelog section as the release body. For the first alpha,
 the release notes should call out:
 
+- downloadable `froglet-node` and `froglet-marketplace` binaries
+- published `SHA256SUMS` for release asset verification
 - official Docker starter
 - public OpenClaw integration
 - reference discovery

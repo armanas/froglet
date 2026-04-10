@@ -1526,6 +1526,7 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
         `Use froglet to discover, inspect, and then invoke remote async service ${paidAsync.service_id} on provider ${paidSeed.provider_id} with marker "openclaw-curated-remote". If the create call is not terminal, wait for completion and then return the final marker.`,
       requiredActions: ["discover_services", "get_service", "invoke_service", "wait_task"],
       fixtureInjections: {
+        action: "invoke_service",
         service_id: paidAsync.service_id,
         provider_id: paidSeed.provider_id,
         input: {
@@ -1592,9 +1593,10 @@ export function buildScenarioSet(inventory, freeSeed, paidSeed, options = {}) {
     openclawCuratedScenario({
       scenarioId: "openclaw.curated.task_roundtrip",
       prompt:
-        `Use froglet to invoke async service ${paidAsync.service_id} on provider ${paidSeed.provider_id} with marker "openclaw-curated-roundtrip". Then use the returned task_id with get_task and wait_task to reach completion. Return the final marker and task id.`,
+        `Use froglet to invoke async service ${paidAsync.service_id} on provider ${paidSeed.provider_id} with marker "openclaw-curated-roundtrip". After invoke_service returns, call get_task exactly once with the returned task_id, then call wait_task with the same task_id until completion. Return the final marker and task id.`,
       requiredActions: ["invoke_service", "get_task", "wait_task"],
       fixtureInjections: {
+        action: "invoke_service",
         service_id: paidAsync.service_id,
         provider_id: paidSeed.provider_id,
         input: {

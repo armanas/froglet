@@ -61,6 +61,58 @@ jobs:
       - name: Run strict verification matrix
         run: ./scripts/strict_checks.sh
 
+  binary-install-smoke:
+    name: Binary Install Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [strict-checks]
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.90.0
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Derive release tag
+        id: release_meta
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
+          print(f"tag=v{version}")
+          PY
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked --bin froglet-node -p froglet
+          cargo build --release --locked -p froglet-marketplace
+
+      - name: Package release archives
+        env:
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
+        run: |
+          mkdir -p dist
+          ./scripts/package_release_assets.sh \
+            --version "$RELEASE_TAG" \
+            --platform linux \
+            --arch x86_64 \
+            --out-dir dist
+          (cd dist && sha256sum froglet-*.tar.gz > SHA256SUMS)
+          ./scripts/verify_release_assets.sh --dir dist --version "$RELEASE_TAG" --target linux:x86_64
+
+      - name: Smoke test one-line installer from packaged assets
+        env:
+          RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
+        run: ./scripts/smoke_install_from_assets.sh --assets-dir dist --version "$RELEASE_TAG"
+
   openclaw-node18:
     name: OpenClaw Node 18
     runs-on: ubuntu-latest

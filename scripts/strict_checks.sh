@@ -34,6 +34,12 @@ else
   echo "[strict] skipping clippy: cargo-clippy is not installed"
 fi
 
+echo "[strict] installer and release helper shell syntax"
+sh -n scripts/install.sh
+bash -n scripts/package_release_assets.sh
+bash -n scripts/verify_release_assets.sh
+bash -n scripts/smoke_install_from_assets.sh
+
 if command -v node >/dev/null 2>&1; then
   node_major=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')
   if [ "$node_major" -ge 18 ] 2>/dev/null; then
@@ -45,7 +51,9 @@ if command -v node >/dev/null 2>&1; then
     node --test integrations/openclaw/froglet/test/plugin.test.js \
       integrations/openclaw/froglet/test/config-profiles.test.mjs \
       integrations/openclaw/froglet/test/doctor.test.mjs \
-      integrations/openclaw/froglet/test/froglet-client.test.mjs
+      integrations/openclaw/froglet/test/froglet-client.test.mjs \
+      tests/e2e/gcp_harness/scenario-generator.test.mjs \
+      tests/e2e/gcp_harness/openclaw-llm-runner.test.mjs
 
     echo "[strict] MCP server checks"
     node --check integrations/mcp/froglet/server.js
@@ -84,6 +92,7 @@ python3 -W error -m unittest \
   python.tests.test_security \
   python.tests.test_privacy \
   python.tests.test_hardening \
+  python.tests.test_install_script \
   python.tests.test_conformance_vectors -v
 
 if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then

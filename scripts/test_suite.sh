@@ -131,7 +131,8 @@ run_unit() {
 
   if has_python; then
     step python3 -W error -m unittest \
-      python.tests.test_conformance_vectors -v || rc=1
+      python.tests.test_conformance_vectors \
+      python.tests.test_install_script -v || rc=1
   else
     skip_warn "python3 not found"
   fi
@@ -141,7 +142,9 @@ run_unit() {
       integrations/openclaw/froglet/test/plugin.test.js \
       integrations/openclaw/froglet/test/config-profiles.test.mjs \
       integrations/openclaw/froglet/test/doctor.test.mjs \
-      integrations/openclaw/froglet/test/froglet-client.test.mjs || rc=1
+      integrations/openclaw/froglet/test/froglet-client.test.mjs \
+      tests/e2e/gcp_harness/scenario-generator.test.mjs \
+      tests/e2e/gcp_harness/openclaw-llm-runner.test.mjs || rc=1
 
     if ensure_mcp_deps; then
       step node --test integrations/mcp/froglet/test/server.test.mjs || rc=1
