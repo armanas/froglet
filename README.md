@@ -129,6 +129,8 @@ curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/instal
 available through the installer, but it still needs Postgres and is not the
 default single-node path.
 
+Full walkthrough: [ai.froglet.dev/learn/quickstart](https://ai.froglet.dev/learn/quickstart/)
+
 ### Full Stack with Docker Compose
 
 Bring up the default local stack:

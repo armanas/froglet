@@ -7,7 +7,7 @@ description: From zero to first deal in five minutes.
   <div>
     <div class="learn-pill">5 minutes</div>
     <p class="learn-lead">Run a froglet node and complete your first deal.</p>
-    <p class="learn-sublead">This guide starts a provider, requests a quote, and executes a deal — all locally, no Lightning wallet required.</p>
+    <p class="learn-sublead">This guide installs <code>froglet-node</code>, starts a local node, and completes a free deal. No Rust toolchain or Lightning wallet required.</p>
     <div class="learn-chip-row">
       <span class="learn-chip">Free mode</span>
       <span class="learn-chip">Local only</span>
@@ -18,18 +18,29 @@ description: From zero to first deal in five minutes.
 
 ## Prerequisites
 
-- **Rust toolchain** (1.80+) — [install via rustup](https://rustup.rs/)
-- **Git** — to clone the repository
+- **Linux x86_64 / arm64** or **macOS arm64**
+- **`curl`** to download the installer
+- Optional: **Docker** if you want the full local provider/runtime/marketplace stack
 
-## 1. Clone and build
+## 1. Install `froglet-node`
+
+Install the latest tagged release into `~/.local/bin`:
 
 ```bash
-git clone https://github.com/armanas/froglet.git
-cd froglet
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
 ```
 
-The build produces `froglet-node` — a single binary that can act as provider, requester, or both depending on configuration.
+Pin a version or change the install dir if needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | VERSION=v0.1.0 sh
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
+```
+
+By default the installer fetches `froglet-node`, verifies it against `SHA256SUMS`, and installs it locally. `froglet-node` is a single binary that can act as provider, runtime, or both depending on configuration.
 
 ## 2. Start a node
 
@@ -38,7 +49,7 @@ Open a terminal and run:
 ```bash
 FROGLET_PAYMENT_BACKEND=none \
 FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
-cargo run --bin froglet-node
+froglet-node
 ```
 
 By default, `froglet-node` runs in **dual mode** — both provider (port 8080) and requester (port 8081). You can control this with `FROGLET_NODE_ROLE`:
@@ -90,7 +101,17 @@ cargo run --bin froglet-node
 
 The requester handles deal negotiation, payment settlement, and receipt verification.
 
-## 6. Register with a marketplace (optional)
+## 6. Full stack with Docker (optional)
+
+If you want the local marketplace-backed stack instead of a single node:
+
+```bash
+docker compose up -d
+```
+
+That brings up postgres, marketplace, provider, and runtime locally. Use this path when you want to test registration, discovery, or split provider/runtime topology on one machine.
+
+## 7. Register with a marketplace (optional)
 
 To make your provider discoverable:
 
@@ -98,12 +119,22 @@ To make your provider discoverable:
 FROGLET_PAYMENT_BACKEND=none \
 FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
 FROGLET_MARKETPLACE_URL=https://mkt.froglet.dev \
-cargo run --bin froglet-node
+froglet-node
 ```
 
 The provider automatically registers its signed descriptor and offers with the marketplace on startup.
 
-## 7. Stake your identity
+## 8. Install from source instead (optional)
+
+If you are developing on Froglet itself or want to build locally:
+
+```bash
+git clone https://github.com/armanas/froglet.git
+cd froglet
+cargo build --release
+```
+
+## 9. Stake your identity
 
 After registering, stake non-refundable value into your identity to build trust. Requesters use your stake to decide if dealing with you is safe.
 

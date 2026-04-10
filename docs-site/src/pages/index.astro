@@ -81,20 +81,23 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <section>
   <div class="section-label">See it</div>
   <div class="section-title">A deal in 30 seconds</div>
-  <div class="section-desc">Run your own node, hit the API, and close a deal with a signed receipt.</div>
+  <div class="section-desc">Install one binary, start a local node, hit the API, and close a deal with a signed receipt.</div>
   <div class="code-block">
-<span class="c"># 1. Start your node (free mode, no Lightning needed)</span>
-<span class="g">$</span> FROGLET_PAYMENT_BACKEND=none cargo run --bin froglet-node
+<span class="c"># 1. Install froglet-node</span>
+<span class="g">$</span> curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+
+<span class="c"># 2. Start your node (free mode, no Lightning needed)</span>
+<span class="g">$</span> FROGLET_PAYMENT_BACKEND=none froglet-node
 <span class="p">froglet-node listening on 127.0.0.1:8080</span>
 
-<span class="c"># 2. Get provider identity and capabilities</span>
+<span class="c"># 3. Get provider identity and capabilities</span>
 <span class="g">$</span> curl http://127.0.0.1:8080/v1/node/identity
 
-<span class="c"># 3. Request a quote for WASM execution</span>
+<span class="c"># 4. Request a quote for WASM execution</span>
 <span class="g">$</span> curl -X POST http://127.0.0.1:8080/v1/provider/quotes
 <span class="p">quote signed &#x2713;</span>
 
-<span class="c"># 4. Commit to the deal, execute, receive receipt</span>
+<span class="c"># 5. Commit to the deal, execute, receive receipt</span>
 <span class="g">$</span> curl -X POST http://127.0.0.1:8080/v1/provider/deals
 <span class="p">receipt &#x2713;</span>  <span class="y">status: succeeded</span>
   </div>

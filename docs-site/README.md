@@ -1,49 +1,22 @@
-# Starlight Starter Kit: Basics
+# Froglet Docs Site
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+Astro + Starlight source for the public Froglet documentation site.
 
-```
-npm create astro@latest -- --template starlight
-```
+## Local development
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+Run from [docs-site](/Users/armanas/Projects/github.com/armanas/froglet/docs-site):
 
-## 🚀 Project Structure
+| Command | Action |
+| :------ | :----- |
+| `npm install` | Install site dependencies |
+| `npm run dev` | Start the local docs site at `localhost:4321` |
+| `npm run build` | Build the production site into `./dist` |
+| `npm run preview` | Preview the production build locally |
 
-Inside of your Astro + Starlight project, you'll see the following folders and files:
+## Content
 
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
-```
+- [src/content/docs/learn/quickstart.mdx](/Users/armanas/Projects/github.com/armanas/froglet/docs-site/src/content/docs/learn/quickstart.mdx): install and first-run guide
+- [src/pages/index.astro](/Users/armanas/Projects/github.com/armanas/froglet/docs-site/src/pages/index.astro): homepage and landing copy
+- [src/content/docs/spec/kernel.md](/Users/armanas/Projects/github.com/armanas/froglet/docs-site/src/content/docs/spec/kernel.md): protocol/kernel reference
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
-
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
-
-Static assets, like favicons, can be placed in the `public/` directory.
-
-## 🧞 Commands
-
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+The docs site should stay aligned with the repo-level [README.md](/Users/armanas/Projects/github.com/armanas/froglet/README.md) quickstart and [docs/RELEASE.md](/Users/armanas/Projects/github.com/armanas/froglet/docs/RELEASE.md) release process.
