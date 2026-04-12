@@ -116,17 +116,17 @@ env = { "FROGLET_PROVIDER_URL" = "http://127.0.0.1:8080", "FROGLET_RUNTIME_URL" 
 
 ### Docker
 
-Build and run the MCP server as a container:
+The MCP server is published as `ghcr.io/armanas/froglet-mcp`. No Node.js required.
 
 ```bash
-# Build from repo root
-docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp .
+# Pull the public image
+docker pull ghcr.io/armanas/froglet-mcp:latest
 
 # Run (connects to host Froglet node)
 docker run --rm -i \
   -e FROGLET_PROVIDER_URL=http://host.docker.internal:8080 \
   -e FROGLET_RUNTIME_URL=http://host.docker.internal:8081 \
-  froglet-mcp
+  ghcr.io/armanas/froglet-mcp:latest
 ```
 
 Use in any MCP client config:
@@ -139,11 +139,17 @@ Use in any MCP client config:
       "args": ["run", "--rm", "-i",
         "-e", "FROGLET_PROVIDER_URL=http://host.docker.internal:8080",
         "-e", "FROGLET_RUNTIME_URL=http://host.docker.internal:8081",
-        "froglet-mcp"],
+        "ghcr.io/armanas/froglet-mcp:latest"],
       "type": "stdio"
     }
   }
 }
+```
+
+Build locally from source:
+
+```bash
+docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp .
 ```
 
 ---

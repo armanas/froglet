@@ -225,6 +225,25 @@ jobs:
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
 
+      - name: Build and push MCP server image
+        env:
+          VERSION: ${{ needs.verify-release-metadata.outputs.version }}
+          OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
+          SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
+        run: |
+          image="ghcr.io/${OWNER_LC}/froglet-mcp"
+          docker build \
+            -f integrations/mcp/froglet/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            -t "${image}:${VERSION}" \
+            -t "${image}:${SHA_TAG}" \
+            -t "${image}:latest" \
+            .
+          docker push "${image}:${VERSION}"
+          docker push "${image}:${SHA_TAG}"
+          docker push "${image}:latest"
+
       - name: Write release summary
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.version }}
@@ -240,6 +259,9 @@ jobs:
             echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${VERSION}"
             echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:latest"
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish-checksums:
