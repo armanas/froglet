@@ -55,6 +55,8 @@ impl NetworkMode {
 pub enum PaymentBackend {
     None,
     Lightning,
+    X402,
+    Stripe,
 }
 
 impl fmt::Display for PaymentBackend {
@@ -62,6 +64,8 @@ impl fmt::Display for PaymentBackend {
         match self {
             PaymentBackend::None => write!(f, "none"),
             PaymentBackend::Lightning => write!(f, "lightning"),
+            PaymentBackend::X402 => write!(f, "x402"),
+            PaymentBackend::Stripe => write!(f, "stripe"),
         }
     }
 }
@@ -71,11 +75,28 @@ impl PaymentBackend {
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
             "lightning" => Ok(Self::Lightning),
+            "x402" => Ok(Self::X402),
+            "stripe" => Ok(Self::Stripe),
             _ => Err(format!(
-                "Invalid FROGLET_PAYMENT_BACKEND value: '{s}'. Allowed values: none, lightning"
+                "Invalid FROGLET_PAYMENT_BACKEND value: '{s}'. \
+                 Allowed values: none, lightning, x402, stripe"
             )),
         }
     }
+}
+
+/// Configuration for the x402 USDC payment facilitator.
+#[derive(Debug, Clone)]
+pub struct X402Config {
+    pub facilitator_url: String,
+    pub wallet_address: String,
+    pub network: String,
+}
+
+/// Configuration for the Stripe metered payment provider.
+#[derive(Debug, Clone)]
+pub struct StripeConfig {
+    pub api_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -301,9 +322,11 @@ pub struct NodeConfig {
     pub tor: TorSidecarConfig,
     pub identity: IdentityConfig,
     pub pricing: PricingConfig,
-    pub payment_backend: PaymentBackend,
+    pub payment_backends: Vec<PaymentBackend>,
     pub execution_timeout_secs: u64,
     pub lightning: LightningConfig,
+    pub x402: Option<X402Config>,
+    pub stripe: Option<StripeConfig>,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
     pub confidential: ConfidentialConfig,
@@ -341,18 +364,75 @@ impl NodeConfig {
             execute_wasm: env_u64("FROGLET_PRICE_EXEC_WASM", 0)?,
         };
 
-        let payment_backend = match env::var("FROGLET_PAYMENT_BACKEND") {
-            Ok(val) => PaymentBackend::parse(&val)?,
-            Err(_) if pricing.has_paid_services() => PaymentBackend::Lightning,
-            Err(_) => PaymentBackend::None,
+        let payment_backends: Vec<PaymentBackend> = match env::var("FROGLET_PAYMENT_BACKEND") {
+            Ok(val) => {
+                let mut backends = Vec::new();
+                for token in val.split(',') {
+                    let token = token.trim();
+                    if !token.is_empty() {
+                        backends.push(PaymentBackend::parse(token)?);
+                    }
+                }
+                if backends.is_empty() {
+                    vec![PaymentBackend::None]
+                } else {
+                    backends
+                }
+            }
+            Err(_) if pricing.has_paid_services() => vec![PaymentBackend::Lightning],
+            Err(_) => vec![PaymentBackend::None],
         };
 
-        if pricing.has_paid_services() && matches!(payment_backend, PaymentBackend::None) {
-            return Err("Paid services require FROGLET_PAYMENT_BACKEND=lightning".into());
+        let has_non_none_backend = payment_backends
+            .iter()
+            .any(|b| !matches!(b, PaymentBackend::None));
+
+        if pricing.has_paid_services() && !has_non_none_backend {
+            return Err(
+                "Paid services require at least one non-none FROGLET_PAYMENT_BACKEND".into(),
+            );
         }
 
+        // Validate x402 configuration when x402 backend is active.
+        let x402_active = payment_backends.contains(&PaymentBackend::X402);
+        let stripe_active = payment_backends.contains(&PaymentBackend::Stripe);
+
+        let x402 = if x402_active {
+            let wallet_address =
+                env::var("FROGLET_X402_WALLET_ADDRESS").map_err(|_| {
+                    "FROGLET_X402_WALLET_ADDRESS is required when x402 is in payment backends"
+                        .to_string()
+                })?;
+            Some(X402Config {
+                facilitator_url: env::var("FROGLET_X402_FACILITATOR_URL").unwrap_or_else(|_| {
+                    "https://api.cdp.coinbase.com/platform/v2/x402".to_string()
+                }),
+                wallet_address,
+                network: env::var("FROGLET_X402_NETWORK")
+                    .unwrap_or_else(|_| "base".to_string()),
+            })
+        } else {
+            None
+        };
+
+        if stripe_active {
+            env::var("FROGLET_STRIPE_SECRET_KEY").map_err(|_| {
+                "FROGLET_STRIPE_SECRET_KEY is required when stripe is in payment backends"
+                    .to_string()
+            })?;
+        }
+
+        let stripe = if stripe_active {
+            Some(StripeConfig {
+                api_version: env::var("FROGLET_STRIPE_API_VERSION")
+                    .unwrap_or_else(|_| "2026-03-04.preview".to_string()),
+            })
+        } else {
+            None
+        };
+
         let execution_timeout_secs = env_u64("FROGLET_EXECUTION_TIMEOUT_SECS", 10)?.clamp(1, 300);
-        let lightning_required = matches!(payment_backend, PaymentBackend::Lightning);
+        let lightning_required = payment_backends.contains(&PaymentBackend::Lightning);
         let lightning_mode = match env::var("FROGLET_LIGHTNING_MODE") {
             Ok(val) => LightningMode::parse(&val)?,
             Err(_) if lightning_required => {
@@ -463,9 +543,11 @@ impl NodeConfig {
                 auto_generate: env_bool("FROGLET_IDENTITY_AUTO_GENERATE", true)?,
             },
             pricing,
-            payment_backend,
+            payment_backends,
             execution_timeout_secs,
             lightning,
+            x402,
+            stripe,
             storage: StorageConfig {
                 data_dir,
                 db_path,

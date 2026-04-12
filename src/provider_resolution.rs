@@ -131,7 +131,7 @@ pub async fn classify_remote_endpoint_url(
     })
 }
 
-pub async fn validate_discovery_endpoint_url(raw_url: &str) -> Result<String, String> {
+pub(crate) async fn validate_discovery_endpoint_url(raw_url: &str) -> Result<String, String> {
     let validated = classify_remote_endpoint_url(raw_url, "endpoint URL").await?;
     if validated.reachability != RemoteEndpointReachability::LocalOnly {
         return Ok(validated.normalized_url);

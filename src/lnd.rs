@@ -1,6 +1,7 @@
 use crate::config::LightningLndRestConfig;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, Url};
+use zeroize::Zeroizing;
 use rustls::{
     ClientConfig as RustlsClientConfig, DigitallySignedStruct, Error as RustlsError,
     SignatureScheme,
@@ -69,7 +70,7 @@ pub enum LndRestError {
 pub struct LndRestClient {
     base_url: Url,
     client: Client,
-    macaroon_hex: String,
+    macaroon_hex: Zeroizing<String>,
 }
 
 impl LndRestClient {
@@ -113,9 +114,11 @@ impl LndRestClient {
         let client = builder
             .build()
             .map_err(|error| LndRestError::Client(error.to_string()))?;
-        let macaroon_hex = hex::encode(fs::read(&config.macaroon_path).map_err(|error| {
-            LndRestError::Io(format!("{}: {error}", config.macaroon_path.display()))
-        })?);
+        let macaroon_hex = Zeroizing::new(hex::encode(
+            fs::read(&config.macaroon_path).map_err(|error| {
+                LndRestError::Io(format!("{}: {error}", config.macaroon_path.display()))
+            })?,
+        ));
 
         Ok(Self {
             base_url,
@@ -229,7 +232,7 @@ impl LndRestClient {
         let response = self
             .client
             .get(url)
-            .header("Grpc-Metadata-macaroon", &self.macaroon_hex)
+            .header("Grpc-Metadata-macaroon", self.macaroon_hex.as_str())
             .send()
             .await
             .map_err(|error| LndRestError::Http(format_reqwest_error(&error)))?;
@@ -245,7 +248,7 @@ impl LndRestClient {
         let response = self
             .client
             .post(url)
-            .header("Grpc-Metadata-macaroon", &self.macaroon_hex)
+            .header("Grpc-Metadata-macaroon", self.macaroon_hex.as_str())
             .json(payload)
             .send()
             .await

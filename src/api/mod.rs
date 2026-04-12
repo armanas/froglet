@@ -223,27 +223,39 @@ fn common_routes() -> Router<Arc<AppState>> {
         .route("/health", get(health_check))
         .route("/v1/node/capabilities", get(node_capabilities))
         .route("/v1/node/identity", get(node_identity))
+        .route("/v1/openapi.yaml", get(openapi_spec))
         .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::SERVER,
-            HeaderValue::from_static("nginx/1.18.0"),
+            HeaderValue::from_static("froglet"),
         ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 pub fn public_router(state: Arc<AppState>) -> Router {
+    // NOTE: Per-IP rate limiting requires axum 0.8+ and tower_governor.
+    // The provider_routes already enforce ConcurrencyLimitLayer(16) which
+    // limits total in-flight requests. When upgrading to axum 0.8, add
+    // tower_governor::GovernorLayer for per-caller throttling.
     common_routes()
         .merge(events_query_routes(&state))
         .merge(provider_routes())
         .merge(publish_routes())
+        .with_state(state)
+}
+
+pub fn runtime_router(state: Arc<AppState>) -> Router {
+    common_routes()
+        .merge(runtime_routes())
         .merge(execute_wasm_routes(&state))
         .merge(jobs_routes())
         .with_state(state)
 }
 
-pub fn runtime_router(state: Arc<AppState>) -> Router {
-    common_routes().merge(runtime_routes()).with_state(state)
-}
-
+/// Combined router with all routes (public + runtime). Used only in dual-mode
+/// and in tests. **Do not use for internet-facing deployments** — execute_wasm
+/// and jobs endpoints are included without authentication. Use `public_router`
+/// and `runtime_router` separately for production.
+#[cfg_attr(not(test), deprecated(note = "use public_router + runtime_router for production"))]
 pub fn router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(events_query_routes(&state))
@@ -259,6 +271,15 @@ pub async fn health_check() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(json!({"status": "ok", "service": "froglet"})),
+    )
+}
+
+pub async fn openapi_spec() -> impl IntoResponse {
+    static SPEC: &str = include_str!("../../docs/openapi.yaml");
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/x-yaml")],
+        SPEC,
     )
 }
 
@@ -749,9 +770,10 @@ async fn sync_requester_deal_from_provider(
         .with_read_conn(move |conn| requester_deals::get_requester_deal(conn, &lookup_deal_id))
         .await
         .map_err(|error| {
+            tracing::error!("database error fetching deal {deal_id}: {error}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("database error: {error}") }),
+                json!({ "error": "internal error" }),
             )
         })?
         .ok_or_else(|| {
@@ -828,9 +850,10 @@ async fn sync_requester_deal_from_provider(
         })
         .await
         .map_err(|error| {
+            tracing::error!("database error syncing deal {deal_id}: {error}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("database error: {error}") }),
+                json!({ "error": "internal error" }),
             )
         })?
         .ok_or_else(|| {
@@ -1033,9 +1056,10 @@ pub async fn runtime_create_deal(
     {
         Ok(stored) => stored,
         Err(error) => {
+            tracing::error!("database error persisting deal: {error}");
             return error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("database error: {error}") }),
+                json!({ "error": "internal error" }),
             );
         }
     };
@@ -1096,7 +1120,7 @@ pub async fn runtime_mock_pay_deal(
         return error_json(error.0, error.1);
     }
 
-    if state.config.payment_backend != PaymentBackend::Lightning
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning)
         || state.config.lightning.mode != LightningMode::Mock
     {
         return error_json(
@@ -1278,9 +1302,10 @@ pub async fn runtime_accept_deal(
             );
         }
         Err(error) => {
+            tracing::error!("database error fetching deal {deal_id}: {error}");
             return error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("database error: {error}") }),
+                json!({ "error": "internal error" }),
             );
         }
     };
@@ -1416,7 +1441,7 @@ fn build_requester_signed_deal_artifact(
 fn quote_uses_lightning_bundle(state: &AppState, quote: &SignedArtifact<QuotePayload>) -> bool {
     let total_msat = quote.payload.settlement_terms.base_fee_msat
         + quote.payload.settlement_terms.success_fee_msat;
-    state.config.payment_backend == PaymentBackend::Lightning
+    state.config.payment_backends.contains(&PaymentBackend::Lightning)
         && total_msat > 0
         && quote.payload.settlement_terms.method == "lightning.base_fee_plus_success_fee.v1"
 }
@@ -2000,7 +2025,7 @@ pub async fn mock_pay_deal(
     Path(deal_id): Path<String>,
     Json(payload): Json<MockPayDealRequest>,
 ) -> impl IntoResponse {
-    if state.config.payment_backend != PaymentBackend::Lightning
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning)
         || state.config.lightning.mode != LightningMode::Mock
     {
         return error_json(
@@ -2762,7 +2787,7 @@ fn legacy_paid_endpoint_requires_protocol_deal(
     endpoint_path: &str,
 ) -> Option<(StatusCode, Json<serde_json::Value>)> {
     let price_sats = state.pricing.price_for(service_id);
-    if state.config.payment_backend != PaymentBackend::Lightning || price_sats == 0 {
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) || price_sats == 0 {
         return None;
     }
 
@@ -3392,6 +3417,7 @@ async fn current_descriptor_artifact(
             execution_runtimes,
             max_concurrent_deals: Some(sandbox::wasm_concurrency_limit() as u32),
         },
+        accepted_payment_methods: settlement::accepted_payment_methods(state),
     };
 
     let actor_id = state.identity.node_id().to_string();
@@ -5081,8 +5107,8 @@ async fn create_deal_record(
     let quoted_total_msat = payload.quote.payload.settlement_terms.base_fee_msat
         + payload.quote.payload.settlement_terms.success_fee_msat;
     let quoted_total_sats = quoted_total_msat / 1_000;
-    let uses_lightning_bundle =
-        quoted_total_sats > 0 && state.config.payment_backend == PaymentBackend::Lightning;
+    let uses_lightning_bundle = quoted_total_sats > 0
+        && state.config.payment_backends.contains(&PaymentBackend::Lightning);
     if let Err((status, message)) =
         validate_deal_deadlines(&payload.quote, &payload.deal, now, uses_lightning_bundle)
     {
@@ -7152,7 +7178,7 @@ async fn reconcile_lightning_deal(
 }
 
 pub async fn reconcile_lightning_settlement_once(state: Arc<AppState>) -> Result<(), String> {
-    if state.config.payment_backend != PaymentBackend::Lightning {
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) {
         return Ok(());
     }
 
@@ -8063,11 +8089,11 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
 
         match deal {
             Some(deal) => {
-                let requires_remote_cancellation = state.config.payment_backend
-                    == PaymentBackend::Lightning
-                    && matches!(state.config.lightning.mode, LightningMode::LndRest)
-                    && record.materialization_kind == "lightning_invoice_bundle"
-                    && deal.payment_method.as_deref() == Some("lightning");
+                let requires_remote_cancellation =
+                    state.config.payment_backends.contains(&PaymentBackend::Lightning)
+                        && matches!(state.config.lightning.mode, LightningMode::LndRest)
+                        && record.materialization_kind == "lightning_invoice_bundle"
+                        && deal.payment_method.as_deref() == Some("lightning");
                 if requires_remote_cancellation {
                     continue;
                 }
@@ -8089,7 +8115,7 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
 }
 
 async fn recover_orphaned_deal_materializations_remote(state: Arc<AppState>) -> Result<(), String> {
-    if state.config.payment_backend != PaymentBackend::Lightning {
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) {
         return Ok(());
     }
 
@@ -8199,7 +8225,7 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
     let quote_hash = quote_response
         .get("hash")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .ok_or_else(|| "marketplace quote response missing 'hash' field".to_string())?
         .to_string();
 
     // Create and sign a deal referencing the quote
@@ -8208,15 +8234,20 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
         .get("payload")
         .and_then(|p| p.get("workload_hash"))
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .ok_or_else(|| {
+            "marketplace quote response missing 'payload.workload_hash' field".to_string()
+        })?
+        .to_string();
+    let provider_id = quote_response
+        .get("payload")
+        .and_then(|p| p.get("provider_id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            "marketplace quote response missing 'payload.provider_id' field".to_string()
+        })?
         .to_string();
     let deal_payload = protocol::DealPayload {
-        provider_id: quote_response
-            .get("payload")
-            .and_then(|p| p.get("provider_id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        provider_id,
         requester_id: state.identity.node_id().to_string(),
         quote_hash: quote_hash.clone(),
         workload_hash,
@@ -8304,7 +8335,7 @@ pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), Str
 }
 
 pub async fn recover_runtime_state_remote(state: Arc<AppState>) -> Result<(), String> {
-    if state.config.payment_backend != PaymentBackend::Lightning {
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) {
         return Ok(());
     }
 
@@ -9847,6 +9878,7 @@ mod tests {
         identity::NodeIdentity,
         pricing::PricingTable,
         sandbox::WasmSandbox,
+        settlement::SettlementRegistry,
         state::TransportStatus,
         wasm::{
             ComputeWasmWorkload, FROGLET_SCHEMA_V1, JCS_JSON_FORMAT, OciWasmSubmission,
@@ -9946,7 +9978,7 @@ mod tests {
                 events_query: 10,
                 execute_wasm: 30,
             },
-            payment_backend,
+            payment_backends: vec![payment_backend],
             execution_timeout_secs: 5,
             lightning: LightningConfig {
                 mode: lightning_mode,
@@ -9958,6 +9990,8 @@ mod tests {
                 sync_interval_ms: 100,
                 lnd_rest: None,
             },
+            x402: None,
+            stripe: None,
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: db_path.clone(),
@@ -9987,6 +10021,7 @@ mod tests {
         let db = DbPool::open(&db_path).expect("db pool");
         let events_query_capacity = db.read_connection_count().max(1);
         let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
+        let settlement_registry = SettlementRegistry::new(&node_config.payment_backends);
 
         Arc::new(AppState {
             db,
@@ -10017,6 +10052,7 @@ mod tests {
             lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
             event_batch_writer: None,
             builtin_services: std::collections::HashMap::new(),
+            settlement_registry,
         })
     }
 
@@ -11375,7 +11411,7 @@ mod tests {
     #[tokio::test]
     async fn create_job_reuses_existing_job_for_canonical_wasm_submission() {
         let state = test_app_state_with_free_pricing(PaymentBackend::None);
-        let public = public_router(state.clone());
+        let public = router(state.clone());
 
         let first_submission = test_wasm_submission_with_input(json!({ "b": 2, "a": 1 }));
         let mut second_submission = test_wasm_submission_with_input(json!({ "a": 1, "b": 2 }));
@@ -11452,7 +11488,7 @@ mod tests {
     #[tokio::test]
     async fn create_execution_job_persists_request_hash_and_evidence() {
         let state = test_app_state_with_free_pricing(PaymentBackend::None);
-        let public = public_router(state.clone());
+        let public = router(state.clone());
         let created_at = settlement::current_unix_timestamp();
         let mut event = NodeEventEnvelope {
             id: String::new(),

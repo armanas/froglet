@@ -8,10 +8,24 @@ interface Props {
 
 const { currentPath = Astro.url.pathname, embedded = false } = Astro.props;
 
-const isActive = (href: string) => {
-	if (href.startsWith('http')) return false;
-	if (href === '/') return currentPath === '/';
-	return currentPath.startsWith(href);
+const normalizePath = (path: string) =>
+	path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
+
+const currentPathNormalized = normalizePath(currentPath);
+
+const matchesPrefix = (prefix: string) => {
+	if (prefix === '/') return currentPathNormalized === '/';
+	const normalizedPrefix = normalizePath(prefix);
+	return (
+		currentPathNormalized === normalizedPrefix ||
+		currentPathNormalized.startsWith(`${normalizedPrefix}/`)
+	);
+};
+
+const isActive = (item: (typeof navLinks)[number]) => {
+	if (item.href.startsWith('http')) return false;
+	if (item.activePrefixes?.some(matchesPrefix)) return true;
+	return matchesPrefix(item.href);
 };
 ---
 
@@ -25,7 +39,7 @@ const isActive = (href: string) => {
 						href={item.href}
 						class:list={[
 							'froglet-site-nav__link',
-							isActive(item.href) && 'is-active',
+							isActive(item) && 'is-active',
 						]}
 						target={item.external ? '_blank' : undefined}
 						rel={item.external ? 'noreferrer' : undefined}
@@ -64,7 +78,7 @@ const isActive = (href: string) => {
 		display: flex;
 		align-items: center;
 		gap: 1rem;
-		width: min(1120px, calc(100% - 2rem));
+		width: min(var(--froglet-shell-max-width), calc(100% - (var(--froglet-shell-gutter) * 2)));
 		margin: 0 auto;
 		min-height: 3.65rem;
 	}
@@ -115,15 +129,46 @@ const isActive = (href: string) => {
 		margin-left: 0.35rem;
 	}
 
-	/* Hide Starlight's built-in mobile menu toggle so our header stays consistent */
-	starlight-menu-button,
-	[data-open-sidebar] {
-		display: none !important;
+	/* Hide Starlight's built-in mobile menu toggle on desktop where the sidebar
+	   is always visible. Restore it on mobile so /learn/* pages remain navigable.
+	   On mobile, position it fixed in the top-left so it doesn't overlap our nav. */
+	@media (min-width: 901px) {
+		starlight-menu-button,
+		[data-open-sidebar] {
+			display: none !important;
+		}
+	}
+
+	/* On mobile docs pages, show Starlight's menu button as a fixed icon in the
+	   bottom-right corner so it never conflicts with the custom header layout.
+	   Give the sidebar pane an opaque background so it covers page content. */
+	@media (max-width: 900px) {
+		starlight-menu-button {
+			position: fixed;
+			bottom: 1rem;
+			right: 1rem;
+			z-index: 50;
+			width: 48px;
+			height: 48px;
+			display: flex !important;
+			align-items: center;
+			justify-content: center;
+			border-radius: 50%;
+			background: hsl(var(--froglet-accent));
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+		}
+
+		starlight-menu-button button {
+			color: hsl(var(--froglet-accent-foreground));
+		}
+
+		nav.sidebar .sidebar-pane {
+			background: hsl(var(--froglet-background));
+		}
 	}
 
 	@media (max-width: 900px) {
 		.froglet-site-chrome__inner {
-			width: min(100%, calc(100% - 1.25rem));
 			gap: 0.7rem;
 		}
 

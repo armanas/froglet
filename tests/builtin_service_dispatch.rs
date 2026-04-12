@@ -8,7 +8,7 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use froglet::{
-    api::public_router,
+    api::router,
     confidential::ConfidentialConfig,
     config::{
         IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
@@ -105,7 +105,7 @@ fn create_test_state_with_handler(
             events_query: 0,
             execute_wasm: 0,
         },
-        payment_backend: PaymentBackend::None,
+        payment_backends: vec![PaymentBackend::None],
         execution_timeout_secs: 10,
         lightning: LightningConfig {
             mode: LightningMode::Mock,
@@ -116,6 +116,8 @@ fn create_test_state_with_handler(
             sync_interval_ms: 1_000,
             lnd_rest: None,
         },
+        x402: None,
+        stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -146,6 +148,8 @@ fn create_test_state_with_handler(
     let identity =
         froglet::identity::NodeIdentity::load_or_create(&node_config).expect("create identity");
     let pricing = PricingTable::from_config(node_config.pricing);
+    let settlement_registry =
+        froglet::settlement::SettlementRegistry::new(&node_config.payment_backends);
 
     let mut builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>> = HashMap::new();
     builtin_services.insert(handler_name.to_string(), handler);
@@ -176,6 +180,7 @@ fn create_test_state_with_handler(
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services,
+        settlement_registry,
     })
 }
 
@@ -213,7 +218,7 @@ async fn response_json(response: axum::response::Response<Body>) -> (StatusCode,
 async fn builtin_service_handler_dispatch_through_jobs_api() {
     let echo = Arc::new(EchoHandler::new());
     let state = create_test_state_with_handler("test.echo", echo.clone());
-    let app = public_router(state);
+    let app = router(state);
 
     let execution = froglet::execution::ExecutionWorkload::builtin_service(
         "test.echo".to_string(),
@@ -264,7 +269,7 @@ async fn builtin_service_handler_dispatch_through_jobs_api() {
 async fn events_query_still_works_with_custom_handlers_registered() {
     let echo = Arc::new(EchoHandler::new());
     let state = create_test_state_with_handler("test.echo", echo.clone());
-    let app = public_router(state);
+    let app = router(state);
 
     let execution = froglet::execution::ExecutionWorkload::builtin_events_query(
         vec!["market.listing".to_string()],
@@ -306,7 +311,7 @@ async fn events_query_still_works_with_custom_handlers_registered() {
 async fn unknown_builtin_service_is_rejected() {
     let echo = Arc::new(EchoHandler::new());
     let state = create_test_state_with_handler("test.echo", echo.clone());
-    let app = public_router(state);
+    let app = router(state);
 
     let execution = froglet::execution::ExecutionWorkload::builtin_service(
         "nonexistent.service".to_string(),

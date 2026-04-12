@@ -1,0 +1,920 @@
+/* ── Reusable component styles ───────────────────────────────────────
+   Card, button, grid, and interactive component patterns used across
+   learn pages, landing page, and MDX content.  Hard-coded values are
+   replaced with Design Tokens from tokens.css where applicable.
+   ──────────────────────────────────────────────────────────────────── */
+
+/* ── Focus-visible ──────────────────────────────────────────────────── */
+
+.btn:focus-visible,
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible,
+.learn-card a:focus-visible,
+.chapter-card:focus-visible,
+.froglet-site-nav__link:focus-visible,
+.learn-roadmap-step:focus-visible {
+	outline: 2px solid hsl(var(--froglet-accent));
+	outline-offset: 2px;
+}
+
+/* ── Learn hero ──────────────────────────────────────────────────────── */
+
+.learn-hero {
+	display: grid;
+	grid-template-columns: minmax(0, 1.35fr) minmax(270px, 0.95fr);
+	gap: 1.25rem;
+	padding: var(--froglet-card-padding-roomy);
+	margin: 1.4rem 0 2rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.learn-hero.compact {
+	grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+}
+
+/* ── Learn pill / kicker / lead ──────────────────────────────────────── */
+
+.learn-pill {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.34rem 0.72rem;
+	border-radius: 999px;
+	background: hsl(var(--froglet-accent-soft));
+	color: hsl(var(--froglet-accent-strong));
+	font-size: 0.74rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+
+.learn-lead {
+	margin: 0.85rem 0 0.65rem;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: clamp(2rem, 2.8vw, 3.15rem);
+	line-height: 1.03;
+	letter-spacing: -0.04em;
+}
+
+.learn-sublead {
+	max-width: 41rem;
+	color: color-mix(in srgb, hsl(var(--froglet-foreground)) 78%, transparent);
+	font-size: 1.01rem;
+	line-height: 1.72;
+}
+
+.learn-kicker {
+	display: block;
+	margin-bottom: 0.45rem;
+	color: hsl(var(--froglet-accent));
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.11em;
+	text-transform: uppercase;
+}
+
+/* ── Learn chip row ──────────────────────────────────────────────────── */
+
+.learn-chip-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.55rem;
+	margin-top: 1rem;
+}
+
+.learn-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.36rem 0.72rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 999px;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+}
+
+/* ── Learn buttons ───────────────────────────────────────────────────── */
+
+.learn-button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.65rem;
+}
+
+/* Small button variant — used by .learn-button and .plot-button in MDX content */
+.learn-button,
+.plot-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.45rem;
+	padding: 0.55rem 0.9rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 999px;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font: inherit;
+	font-size: 0.84rem;
+	font-weight: 600;
+	text-decoration: none;
+	cursor: pointer;
+	transition:
+		border-color var(--froglet-transition-fast),
+		background-color var(--froglet-transition-fast),
+		color var(--froglet-transition-fast);
+}
+
+.learn-button:hover,
+.learn-button:focus-visible,
+.plot-button:hover,
+.plot-button:focus-visible {
+	border-color: hsl(var(--froglet-border-strong));
+	background: hsl(var(--froglet-card));
+	color: hsl(var(--froglet-foreground));
+}
+
+/* ── Learn roadmap ───────────────────────────────────────────────────── */
+
+.learn-roadmap {
+	display: grid;
+	gap: 0.6rem;
+	padding: 0.7rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-surface));
+}
+
+.learn-roadmap-step {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 0.85rem;
+	align-items: center;
+	padding: 0.78rem 0.88rem;
+	border: 1px solid transparent;
+	border-radius: 0.85rem;
+	color: inherit;
+	text-decoration: none;
+	transition:
+		background-color var(--froglet-transition-fast),
+		border-color var(--froglet-transition-fast),
+		transform var(--froglet-transition-fast);
+}
+
+.learn-roadmap-step:hover {
+	border-color: hsl(var(--froglet-border-strong));
+	background: hsl(var(--froglet-card));
+	transform: translateY(var(--froglet-card-hover-shift));
+}
+
+.learn-roadmap-step strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-weight: 700;
+}
+
+.learn-roadmap-step small {
+	display: block;
+	margin-top: 0.18rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.learn-roadmap-step > span:last-child {
+	padding: 0.24rem 0.55rem;
+	border-radius: 999px;
+	background: hsl(var(--froglet-card));
+	color: hsl(var(--froglet-muted));
+	font-family: var(--froglet-font-code);
+	font-size: 0.76rem;
+}
+
+/* ── Learn stat strip ────────────────────────────────────────────────── */
+
+.learn-stat-strip {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+	gap: 0.8rem;
+	margin: 1.35rem 0 2rem;
+}
+
+/* ── Shared card pattern ─────────────────────────────────────────────
+   Req 15.1 — single card pattern (border, radius, padding, shadow, bg)
+   applied consistently to .learn-card, .gc, .compare-card, .plot-shell,
+   .chapter-card, and related elements.
+   ──────────────────────────────────────────────────────────────────── */
+
+.learn-stat,
+.learn-card,
+.chapter-card,
+.learn-code-box,
+.learn-sequence-step,
+.learn-path,
+.plot-metric {
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.learn-stat {
+	padding: 0.92rem 1rem;
+}
+
+.learn-stat strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1.5rem;
+	line-height: 1.05;
+}
+
+.learn-stat span {
+	display: block;
+	margin-top: 0.32rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	line-height: 1.45;
+}
+
+/* ── Learn grid ──────────────────────────────────────────────────────
+   Req 15.3 — grid gap via Design Tokens
+   ──────────────────────────────────────────────────────────────────── */
+
+.learn-grid {
+	display: grid;
+	gap: var(--froglet-grid-gap);
+	margin: 1.3rem 0 1.8rem;
+}
+
+.learn-grid.two {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.learn-grid.three {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* ── Learn card ──────────────────────────────────────────────────────── */
+
+.learn-card {
+	padding: var(--froglet-card-padding) calc(var(--froglet-card-padding) + 0.05rem);
+}
+
+.learn-card.tight {
+	padding: 0.85rem 0.9rem;
+}
+
+.learn-card h2,
+.learn-card h3,
+.learn-card h4,
+.learn-card p:last-child,
+.learn-card ul:last-child,
+.learn-card pre:last-child,
+.chapter-card p:last-child,
+.learn-path p:last-child,
+.learn-sequence-step p:last-child {
+	margin-bottom: 0;
+}
+
+.learn-card strong,
+.learn-card h3,
+.learn-card h4,
+.chapter-card strong,
+.learn-path strong,
+.learn-sequence-step strong {
+	color: hsl(var(--froglet-foreground));
+}
+
+/* ── Chapter grid / card ─────────────────────────────────────────────── */
+
+.chapter-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 0.9rem;
+	margin: 1.25rem 0 2rem;
+}
+
+.chapter-card {
+	display: block;
+	padding: var(--froglet-card-padding);
+	color: inherit;
+	text-decoration: none;
+	transition:
+		transform var(--froglet-transition-fast),
+		border-color var(--froglet-transition-fast);
+}
+
+/* Req 15.4 — consistent hover treatment across card variants */
+.chapter-card:hover {
+	transform: translateY(var(--froglet-card-hover-shift));
+	border-color: hsl(var(--froglet-border-strong));
+}
+
+.chapter-card small {
+	display: block;
+	margin-top: 0.22rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	line-height: 1.5;
+}
+
+/* ── Protocol chain ──────────────────────────────────────────────────── */
+
+.protocol-chain {
+	display: grid;
+	grid-template-columns: repeat(6, minmax(0, 1fr));
+	gap: 0.75rem;
+	margin: 1.35rem 0;
+}
+
+.protocol-step {
+	position: relative;
+	padding: 0.95rem 0.85rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-surface));
+}
+
+.protocol-step::after {
+	content: '';
+	position: absolute;
+	top: 50%;
+	right: -0.62rem;
+	width: 0.8rem;
+	height: 1px;
+	background: hsl(var(--froglet-border-strong));
+}
+
+.protocol-step:last-child::after {
+	display: none;
+}
+
+.protocol-step strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-size: 0.92rem;
+	font-weight: 700;
+}
+
+.protocol-step span {
+	display: block;
+	margin-top: 0.28rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+/* ── Learn compare ───────────────────────────────────────────────────── */
+
+.learn-compare {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--froglet-grid-gap);
+	margin: 1.35rem 0 1.75rem;
+}
+
+/* ── Learn code box ──────────────────────────────────────────────────── */
+
+.learn-code-box {
+	padding: var(--froglet-card-padding) calc(var(--froglet-card-padding) + 0.05rem);
+}
+
+.learn-code-box pre {
+	margin: 0.7rem 0 0;
+	padding: 0.95rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 0.9rem;
+	background: hsl(var(--froglet-code));
+	color: hsl(0 0% 96%);
+}
+
+/* ── Learn sequence ──────────────────────────────────────────────────── */
+
+.learn-sequence {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.8rem;
+	margin: 1.25rem 0;
+}
+
+.learn-sequence.four {
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.learn-sequence-step {
+	padding: 0.92rem;
+}
+
+.learn-sequence-step small {
+	display: block;
+	margin-top: 0.32rem;
+	color: hsl(var(--froglet-muted));
+	line-height: 1.5;
+}
+
+/* ── Learn paths ─────────────────────────────────────────────────────── */
+
+.learn-paths {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--froglet-grid-gap);
+	margin: 1.25rem 0 1.7rem;
+}
+
+.learn-path {
+	padding: var(--froglet-card-padding);
+}
+
+.learn-path ol,
+.learn-path ul {
+	margin-bottom: 0;
+}
+
+/* ── Plot shell / chart container ────────────────────────────────────── */
+
+.plot-shell {
+	padding: 1.15rem;
+	margin: 1.4rem 0 1.85rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.plot-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 1rem;
+	margin-bottom: 1rem;
+}
+
+.plot-title {
+	margin: 0;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1.2rem;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+.plot-subtitle {
+	margin: 0.28rem 0 0;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.96rem;
+	line-height: 1.65;
+}
+
+.plot-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	align-items: center;
+}
+
+.plot-control {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.45rem;
+	align-items: center;
+	padding: 0.45rem 0.7rem;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 0.8rem;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+}
+
+.plot-control span {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+}
+
+.plot-controls input[type='range'] {
+	accent-color: hsl(var(--froglet-accent));
+}
+
+/* ── Plot buttons ────────────────────────────────────────────────────
+   Req 15.2 — single button pattern with Design Token transitions
+   ──────────────────────────────────────────────────────────────────── */
+
+.plot-button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.65rem;
+	margin: 1rem 0 0.9rem;
+}
+
+/* .plot-button base styles merged with .learn-button above */
+
+.plot-button.is-active {
+	border-color: hsl(var(--froglet-accent));
+	background: hsl(var(--froglet-accent));
+	color: hsl(var(--froglet-accent-foreground));
+}
+
+/* ── Plot metrics ────────────────────────────────────────────────────── */
+
+.plot-metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 0.75rem;
+	margin: 0.95rem 0 1rem;
+}
+
+.plot-metric {
+	padding: 0.8rem 0.9rem;
+}
+
+.plot-metric strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 1rem;
+}
+
+.plot-metric span {
+	display: block;
+	margin-top: 0.3rem;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+/* ── Plot canvas ─────────────────────────────────────────────────────── */
+
+.plot-canvas,
+.plot-shell canvas {
+	display: block;
+	width: 100%;
+	max-width: 100%;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 0.95rem;
+	background: hsl(var(--froglet-code));
+}
+
+.plot-note {
+	margin: 0.85rem 0 0;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	line-height: 1.55;
+}
+
+/* ── Compare card ────────────────────────────────────────────────────
+   Req 15.1 — uses shared card tokens for consistency with .gc,
+   .learn-card, .chapter-card, .plot-shell
+   ──────────────────────────────────────────────────────────────────── */
+
+.compare-card {
+	display: flex;
+	flex-direction: column;
+	min-height: 100%;
+}
+
+.compare-card h3 {
+	font-family: var(--froglet-font-sans);
+	font-size: 1.55rem;
+	line-height: 1.08;
+	letter-spacing: -0.03em;
+	margin: 0 0 14px;
+	color: hsl(var(--froglet-foreground));
+}
+
+.compare-summary {
+	margin: 0 0 var(--froglet-grid-gap);
+	color: hsl(var(--froglet-muted));
+	font-size: 1rem;
+	line-height: 1.68;
+}
+
+.compare-list {
+	display: grid;
+	gap: 12px;
+	padding-left: 1.2rem;
+	margin: 0;
+}
+
+.compare-list li {
+	color: hsl(var(--froglet-muted));
+	line-height: 1.62;
+}
+
+.compare-list li::marker {
+	color: hsl(var(--froglet-accent));
+}
+
+.compare-footer {
+	display: grid;
+	gap: 14px;
+	margin-top: auto;
+	padding-top: 24px;
+}
+
+.compare-shell {
+	display: grid;
+	gap: var(--froglet-grid-gap-sm);
+}
+
+.compare-shell-label {
+	margin-bottom: 0;
+}
+
+.compare-command-row {
+	display: grid;
+	gap: 0.75rem;
+}
+
+.compare-shell.learn-code-box {
+	padding: var(--froglet-card-padding) calc(var(--froglet-card-padding) + 0.05rem);
+}
+
+.compare-shell.learn-code-box pre {
+	margin: 0;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.compare-shell.learn-code-box pre code {
+	white-space: inherit;
+}
+
+.compare-copy {
+	justify-self: start;
+}
+
+.compare-note {
+	color: hsl(var(--froglet-muted));
+	font-size: 0.9rem;
+	line-height: 1.58;
+}
+
+.compare-actions {
+	margin-top: 0.1rem;
+}
+
+/* ── Generic buttons (.btn, .btn-ghost) ──────────────────────────────
+   Req 15.2 — single button pattern with Design Token transitions
+   ──────────────────────────────────────────────────────────────────── */
+
+.btn {
+	padding: 12px 22px;
+	border-radius: 999px;
+	font-size: 0.95rem;
+	font-weight: 600;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	transition: all var(--froglet-transition-fast);
+}
+
+.btn-primary {
+	background: hsl(var(--froglet-accent));
+	border: 1px solid hsl(var(--froglet-accent));
+	color: hsl(var(--froglet-accent-foreground));
+	text-decoration: none;
+}
+
+.btn-primary:hover {
+	background: hsl(var(--froglet-accent-strong));
+	border-color: hsl(var(--froglet-accent-strong));
+	color: hsl(var(--froglet-accent-foreground));
+}
+
+.btn-ghost {
+	background: hsl(var(--froglet-card));
+	border: 1px solid hsl(var(--froglet-border));
+	color: hsl(var(--froglet-foreground));
+	text-decoration: none;
+}
+
+.btn-ghost:hover {
+	border-color: hsl(var(--froglet-border-strong));
+	background: hsl(var(--froglet-card));
+}
+
+/* ── Grid card (.gc) ─────────────────────────────────────────────────
+   Req 15.1 — shared card pattern using Design Tokens
+   Req 15.4 — consistent hover treatment
+   ──────────────────────────────────────────────────────────────────── */
+
+.gc {
+	background: hsl(var(--froglet-card));
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	padding: var(--froglet-card-padding) calc(var(--froglet-card-padding) + 0.05rem);
+	min-height: 140px;
+	box-shadow: var(--froglet-shadow);
+	transition:
+		border-color var(--froglet-transition-fast),
+		transform var(--froglet-transition-fast);
+}
+
+.gc:hover {
+	border-color: hsl(var(--froglet-border-strong));
+	transform: translateY(var(--froglet-card-hover-shift));
+}
+
+.gc h4 {
+	color: hsl(var(--froglet-foreground));
+	font-size: 1rem;
+	font-weight: 700;
+	margin-bottom: 7px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.gc p {
+	color: hsl(var(--froglet-muted));
+	line-height: 1.65;
+	font-size: 0.96rem;
+}
+
+/* ── Tag badge ───────────────────────────────────────────────────────
+   Req 15.5 — tag colors via Design Tokens from tokens.css
+   ──────────────────────────────────────────────────────────────────── */
+
+.tag {
+	display: inline-block;
+	padding: 3px 8px;
+	border-radius: 999px;
+	font-size: 0.66rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	background: hsl(var(--froglet-accent-soft));
+	color: hsl(var(--froglet-accent-strong));
+}
+
+.tag-purple {
+	background: hsl(var(--froglet-tag-purple) / 0.14);
+	color: hsl(var(--froglet-tag-purple));
+}
+
+.tag-blue {
+	background: hsl(var(--froglet-tag-blue) / 0.14);
+	color: hsl(var(--froglet-tag-blue));
+}
+
+.tag-cyan {
+	background: hsl(var(--froglet-tag-cyan) / 0.14);
+	color: hsl(var(--froglet-tag-cyan));
+}
+
+.tag-green {
+	background: hsl(var(--froglet-tag-green) / 0.14);
+	color: hsl(var(--froglet-tag-green));
+}
+
+.tag-yellow {
+	background: hsl(var(--froglet-tag-yellow) / 0.14);
+	color: hsl(var(--froglet-tag-yellow));
+}
+
+/* ── Grid layout ─────────────────────────────────────────────────────
+   Req 15.3 — grid gap via Design Tokens
+   ──────────────────────────────────────────────────────────────────── */
+
+.grid {
+	display: grid;
+	gap: var(--froglet-grid-gap);
+	grid-template-columns: repeat(2, 1fr);
+}
+
+/* ── Trust graph ─────────────────────────────────────────────────────── */
+
+.trust-graph-wrap {
+	margin-top: 8px;
+	background: hsl(var(--froglet-card));
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	padding: calc(var(--froglet-card-padding) + 0.35rem);
+	box-shadow: var(--froglet-shadow);
+}
+
+.trust-graph-wrap canvas {
+	display: block;
+	width: 100%;
+	max-width: 700px;
+	height: auto;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 12px;
+	margin-top: 16px;
+}
+
+.trust-controls {
+	display: flex;
+	gap: 16px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+
+.trust-control {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 14px;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 12px;
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font-size: 0.84rem;
+	font-weight: 600;
+}
+
+.trust-control span {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+	min-width: 3ch;
+}
+
+.trust-control input[type='range'] {
+	width: 110px;
+	accent-color: hsl(var(--froglet-accent));
+}
+
+.trust-metrics {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: var(--froglet-grid-gap-sm);
+}
+
+.trust-metric {
+	padding: 10px 14px;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 12px;
+	background: hsl(var(--froglet-surface));
+}
+
+.trust-metric strong {
+	display: block;
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+	font-size: 1.1rem;
+}
+
+.trust-metric span {
+	display: block;
+	margin-top: 2px;
+	color: hsl(var(--froglet-muted));
+	font-size: 0.78rem;
+	line-height: 1.4;
+}
+
+.trust-note {
+	margin-top: 12px;
+	font-size: 0.82rem;
+	color: hsl(var(--froglet-muted));
+	line-height: 1.55;
+}
+
+/* ── Responsive: component breakpoints ───────────────────────────────── */
+
+@media (max-width: 900px) {
+	.learn-hero,
+	.learn-hero.compact,
+	.learn-grid.two,
+	.learn-grid.three,
+	.chapter-grid,
+	.learn-compare,
+	.learn-paths,
+	.learn-sequence,
+	.learn-sequence.four {
+		grid-template-columns: 1fr;
+	}
+
+	.protocol-chain {
+		grid-template-columns: 1fr;
+	}
+
+	.protocol-step::after {
+		top: auto;
+		right: auto;
+		left: 50%;
+		bottom: -0.62rem;
+		width: 1px;
+		height: 0.8rem;
+		background: hsl(var(--froglet-border-strong));
+	}
+
+	.plot-header {
+		flex-direction: column;
+	}
+
+	.grid {
+		grid-template-columns: 1fr;
+	}
+
+	.trust-controls {
+		flex-direction: column;
+	}
+
+	.trust-metrics {
+		grid-template-columns: repeat(2, 1fr);
+	}
+}

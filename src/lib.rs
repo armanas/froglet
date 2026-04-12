@@ -20,16 +20,11 @@ pub use froglet_protocol::crypto;
 pub mod confidential;
 pub mod config;
 pub mod db;
-pub mod deals;
 pub mod execution;
 pub mod identity;
-pub mod jobs;
 pub mod lnd;
-pub mod nostr;
 pub mod pricing;
 pub mod protocol;
-pub mod provider_catalog;
-pub mod provider_resolution;
 pub mod requester_deals;
 pub mod runtime_auth;
 pub mod sandbox;
@@ -37,8 +32,18 @@ pub mod server;
 pub mod settlement;
 pub mod state;
 pub mod tls;
-pub mod tor;
 pub mod wasm;
-pub mod wasm_db;
-pub mod wasm_host;
-pub mod wasm_http;
+
+pub mod deals;
+
+// Internal modules — not part of the public library API
+pub(crate) mod jobs;
+pub(crate) mod nostr;
+#[allow(dead_code)]
+pub(crate) mod provider_catalog;
+#[allow(dead_code)]
+pub(crate) mod provider_resolution;
+pub(crate) mod tor;
+pub(crate) mod wasm_db;
+pub(crate) mod wasm_host;
+pub(crate) mod wasm_http;

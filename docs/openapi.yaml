@@ -1,0 +1,3405 @@
+openapi: 3.1.0
+
+info:
+  title: Froglet Node API
+  version: 1.0.0
+  description: >
+    HTTP API for a Froglet node. Froglet is a service-execution framework; the
+    node exposes two distinct ports:
+
+    - **Provider port** (default 8080) — unauthenticated endpoints used by
+      requesters to discover offers, create deals, and settle payments.
+
+    - **Runtime port** (default 8081) — Bearer-authenticated endpoints used by
+      the local operator to create deals via the marketplace, manage the wallet,
+      and launch workloads.
+
+    Both ports also expose the shared `/health`, `/v1/node/capabilities`, and
+    `/v1/node/identity` endpoints.
+
+servers:
+  - url: http://localhost:8080
+    description: Provider port (public-facing, no auth required)
+  - url: http://localhost:8081
+    description: Runtime port (local operator, Bearer auth required)
+
+tags:
+  - name: Common
+    description: Health and node-identity endpoints available on both ports.
+  - name: Catalog
+    description: >
+      Provider-port endpoints for discovering offers and services hosted by
+      this node.
+  - name: Deals (Provider)
+    description: >
+      Provider-port endpoints for the deal lifecycle — quoting, creating, and
+      inspecting deals submitted by requesters.
+  - name: Settlement (Provider)
+    description: >
+      Provider-port endpoints for Lightning payment bundles, preimage release,
+      and receipt/bundle verification.
+  - name: Events
+    description: Publish and query signed node events. Also Nostr and curated-list verification.
+  - name: Execution
+    description: >
+      Runtime-port endpoints for synchronous WASM execution and async job
+      management. No Bearer auth is enforced in the handler itself — protect
+      these endpoints at the network layer by exposing them only on the runtime
+      port.
+  - name: Deals (Runtime)
+    description: >
+      Runtime-port endpoints for creating and tracking outbound deals through
+      a remote provider (quote + deal negotiated automatically).
+  - name: Settlement (Runtime)
+    description: Runtime-port endpoints for wallet balance and deal payment-intent management.
+  - name: Discovery (Runtime)
+    description: Marketplace search and provider-detail lookup via the runtime port.
+  - name: Feed & Artifacts
+    description: Paginated artifact feed and single-artifact retrieval.
+  - name: Confidential
+    description: TEE confidential-profile and session management.
+
+security: []
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Static Bearer token configured via `FROGLET_RUNTIME_AUTH_TOKEN`.
+        Pass as `Authorization: Bearer <token>` on all runtime-port endpoints
+        that require authentication.
+
+  schemas:
+
+    Error:
+      type: object
+      description: Standard error envelope returned on 4xx and 5xx responses.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+          example: deal not found
+        details:
+          type: string
+          description: Additional diagnostic context, present on some errors.
+        deal_id:
+          type: string
+          description: >
+            Echoed deal ID, present when the error is scoped to a specific deal.
+
+    SignedArtifact:
+      type: object
+      description: >
+        Froglet signed artifact envelope. Every on-chain document is wrapped in
+        this envelope. The `payload` field carries the type-specific data.
+        `hash` is the SHA-256 of the canonical signing bytes; `signature` is
+        the ed25519 hex signature over those same bytes.
+      required:
+        - artifact_type
+        - schema_version
+        - signer
+        - created_at
+        - payload_hash
+        - payload
+        - signature
+      properties:
+        artifact_type:
+          type: string
+          description: >
+            Kind discriminator. One of `descriptor`, `offer`, `quote`, `deal`,
+            `receipt`, `curated_list`, `confidential_profile`,
+            `confidential_session`, `invoice_bundle`.
+          example: deal
+        schema_version:
+          type: string
+          description: Always `froglet/v1` for the current protocol revision.
+          example: froglet/v1
+        signer:
+          type: string
+          description: Hex-encoded ed25519 public key of the signing node.
+          example: "abcd1234..."
+        created_at:
+          type: integer
+          format: int64
+          description: Unix timestamp (seconds) when the artifact was signed.
+        payload_hash:
+          type: string
+          description: SHA-256 hex digest of the canonical JSON payload.
+        hash:
+          type: string
+          description: >
+            SHA-256 hex digest of the canonical signing bytes. Serves as the
+            global artifact identifier.
+        payload:
+          type: object
+          description: Type-specific payload. See the concrete payload schemas below.
+          additionalProperties: true
+        signature:
+          type: string
+          description: Ed25519 signature (hex) over the canonical signing bytes.
+
+    DescriptorPayload:
+      type: object
+      description: >
+        Payload carried inside a `descriptor` SignedArtifact. Describes the
+        provider's identity, transport endpoints, and declared capabilities.
+      required:
+        - provider_id
+        - protocol_version
+        - capabilities
+      properties:
+        provider_id:
+          type: string
+          description: Stable identifier for this provider (hex public key).
+        descriptor_seq:
+          type: integer
+          format: int64
+          description: Monotonically increasing descriptor sequence number.
+        protocol_version:
+          type: string
+          example: froglet/v1
+        expires_at:
+          type: integer
+          format: int64
+          description: Optional Unix timestamp after which this descriptor should be refreshed.
+        linked_identities:
+          type: array
+          description: External identities linked to this provider (e.g. Nostr pubkey).
+          items:
+            $ref: '#/components/schemas/LinkedIdentity'
+        transport_endpoints:
+          type: array
+          description: Reachable transport endpoints for this provider.
+          items:
+            $ref: '#/components/schemas/TransportEndpoint'
+        capabilities:
+          type: object
+          description: Declared service and execution capabilities.
+          properties:
+            service_kinds:
+              type: array
+              items:
+                type: string
+              example: ["compute.execution.v1"]
+            execution_runtimes:
+              type: array
+              items:
+                type: string
+              example: ["wasm", "python", "container"]
+            max_concurrent_deals:
+              type: integer
+              description: Maximum concurrent deals the provider will accept. Absent means no declared limit.
+
+    LinkedIdentity:
+      type: object
+      description: Cross-identity link (e.g. a Nostr public key attesting this provider).
+      required:
+        - identity_kind
+        - identity
+        - scope
+        - created_at
+        - signature_algorithm
+        - linked_signature
+      properties:
+        identity_kind:
+          type: string
+          example: nostr
+        identity:
+          type: string
+          description: The external identity (e.g. Nostr hex pubkey).
+        scope:
+          type: array
+          items:
+            type: string
+          description: Scopes granted to this linked identity.
+        created_at:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+        signature_algorithm:
+          type: string
+          example: secp256k1_schnorr_bip340
+        linked_signature:
+          type: string
+
+    TransportEndpoint:
+      type: object
+      description: A reachable network endpoint for this provider.
+      required:
+        - transport
+        - uri
+        - priority
+      properties:
+        transport:
+          type: string
+          example: clearnet
+        uri:
+          type: string
+          example: https://provider.example
+        created_at:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+        priority:
+          type: integer
+          format: int32
+          description: Lower value means higher preference.
+        features:
+          type: array
+          items:
+            type: string
+
+    OfferPayload:
+      type: object
+      description: >
+        Payload inside an `offer` SignedArtifact. Describes a priced execution
+        offer that requesters can reference when creating quotes.
+      required:
+        - provider_id
+        - offer_id
+        - descriptor_hash
+        - offer_kind
+        - settlement_method
+        - quote_ttl_secs
+        - execution_profile
+        - price_schedule
+      properties:
+        provider_id:
+          type: string
+        offer_id:
+          type: string
+          example: service.echo
+        descriptor_hash:
+          type: string
+        expires_at:
+          type: integer
+          format: int64
+        offer_kind:
+          type: string
+          example: compute.execution.v1
+        settlement_method:
+          type: string
+          example: lightning
+        quote_ttl_secs:
+          type: integer
+          format: int64
+        execution_profile:
+          type: object
+          description: Resource limits and runtime constraints for this offer.
+          properties:
+            runtime:
+              type: string
+              example: wasm
+            package_kind:
+              type: string
+            contract_version:
+              type: string
+            access_handles:
+              type: array
+              items:
+                type: string
+            abi_version:
+              type: string
+            capabilities:
+              type: array
+              items:
+                type: string
+            max_input_bytes:
+              type: integer
+            max_runtime_ms:
+              type: integer
+              format: int64
+            max_memory_bytes:
+              type: integer
+            max_output_bytes:
+              type: integer
+            fuel_limit:
+              type: integer
+              format: int64
+        price_schedule:
+          type: object
+          properties:
+            base_fee_msat:
+              type: integer
+              format: int64
+              description: Fixed fee in millisatoshis regardless of outcome.
+            success_fee_msat:
+              type: integer
+              format: int64
+              description: Fee in millisatoshis charged only on successful execution.
+        terms_hash:
+          type: string
+        confidential_profile_hash:
+          type: string
+
+    QuotePayload:
+      type: object
+      description: >
+        Payload inside a `quote` SignedArtifact. Issued by the provider in
+        response to a quote request. Binds a requester, a workload, and
+        settlement terms together with an expiry.
+      required:
+        - provider_id
+        - requester_id
+        - descriptor_hash
+        - offer_hash
+        - expires_at
+        - workload_kind
+        - workload_hash
+        - settlement_terms
+        - execution_limits
+      properties:
+        provider_id:
+          type: string
+        requester_id:
+          type: string
+        descriptor_hash:
+          type: string
+        offer_hash:
+          type: string
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix timestamp after which this quote must not be used.
+        workload_kind:
+          type: string
+          example: compute.execution.v1
+        workload_hash:
+          type: string
+          description: SHA-256 of the canonical workload specification.
+        confidential_session_hash:
+          type: string
+        capabilities_granted:
+          type: array
+          items:
+            type: string
+        extension_refs:
+          type: array
+          items:
+            type: string
+        quote_use:
+          type: string
+        settlement_terms:
+          $ref: '#/components/schemas/QuoteSettlementTerms'
+        execution_limits:
+          $ref: '#/components/schemas/ExecutionLimits'
+
+    QuoteSettlementTerms:
+      type: object
+      description: Lightning settlement parameters baked into a quote.
+      required:
+        - method
+        - destination_identity
+        - base_fee_msat
+        - success_fee_msat
+        - max_base_invoice_expiry_secs
+        - max_success_hold_expiry_secs
+        - min_final_cltv_expiry
+      properties:
+        method:
+          type: string
+          example: lightning
+        destination_identity:
+          type: string
+          description: Lightning node public key (hex) to which payments are routed.
+        base_fee_msat:
+          type: integer
+          format: int64
+        success_fee_msat:
+          type: integer
+          format: int64
+        max_base_invoice_expiry_secs:
+          type: integer
+          format: int64
+        max_success_hold_expiry_secs:
+          type: integer
+          format: int64
+        min_final_cltv_expiry:
+          type: integer
+          format: int32
+
+    ExecutionLimits:
+      type: object
+      description: Resource limits applied during execution and echoed in receipts.
+      required:
+        - max_input_bytes
+        - max_runtime_ms
+        - max_memory_bytes
+        - max_output_bytes
+        - fuel_limit
+      properties:
+        max_input_bytes:
+          type: integer
+        max_runtime_ms:
+          type: integer
+          format: int64
+        max_memory_bytes:
+          type: integer
+        max_output_bytes:
+          type: integer
+        fuel_limit:
+          type: integer
+          format: int64
+
+    DealPayload:
+      type: object
+      description: >
+        Payload inside a `deal` SignedArtifact. Signed by the requester. Commits
+        both parties to the terms established in the referenced quote.
+      required:
+        - requester_id
+        - provider_id
+        - quote_hash
+        - workload_hash
+        - success_payment_hash
+        - admission_deadline
+        - completion_deadline
+        - acceptance_deadline
+      properties:
+        requester_id:
+          type: string
+        provider_id:
+          type: string
+        quote_hash:
+          type: string
+        workload_hash:
+          type: string
+        confidential_session_hash:
+          type: string
+        extension_refs:
+          type: array
+          items:
+            type: string
+        authority_ref:
+          type: string
+        supersedes_deal_hash:
+          type: string
+        client_nonce:
+          type: string
+        success_payment_hash:
+          type: string
+          description: >
+            SHA-256 hash of the success preimage. Used in Lightning hold-invoice
+            settlement as the payment hash for the success leg.
+        admission_deadline:
+          type: integer
+          format: int64
+          description: Unix timestamp by which the provider must admit the deal.
+        completion_deadline:
+          type: integer
+          format: int64
+          description: Unix timestamp by which execution must complete.
+        acceptance_deadline:
+          type: integer
+          format: int64
+          description: Unix timestamp by which the requester must release the preimage.
+
+    ReceiptPayload:
+      type: object
+      description: >
+        Payload inside a `receipt` SignedArtifact. Issued by the provider after
+        execution. Attests execution outcome, settlement legs, and resource usage.
+      required:
+        - provider_id
+        - requester_id
+        - deal_hash
+        - quote_hash
+        - finished_at
+        - deal_state
+        - execution_state
+        - settlement_state
+        - executor
+        - limits_applied
+        - settlement_refs
+      properties:
+        provider_id:
+          type: string
+        requester_id:
+          type: string
+        deal_hash:
+          type: string
+        quote_hash:
+          type: string
+        extension_refs:
+          type: array
+          items:
+            type: string
+        acceptance_ref:
+          type: string
+        started_at:
+          type: integer
+          format: int64
+        finished_at:
+          type: integer
+          format: int64
+        deal_state:
+          type: string
+          example: succeeded
+        execution_state:
+          type: string
+          example: succeeded
+        settlement_state:
+          type: string
+          example: settled
+        result_hash:
+          type: string
+          description: SHA-256 of the canonical result JSON.
+        confidential_session_hash:
+          type: string
+        result_envelope_hash:
+          type: string
+        result_format:
+          type: string
+        executor:
+          type: object
+          description: Runtime context in which the workload was executed.
+          properties:
+            runtime:
+              type: string
+              example: wasm
+            runtime_version:
+              type: string
+            execution_mode:
+              type: string
+            attestation_platform:
+              type: string
+            measurement:
+              type: string
+            abi_version:
+              type: string
+            module_hash:
+              type: string
+            capabilities_granted:
+              type: array
+              items:
+                type: string
+        limits_applied:
+          $ref: '#/components/schemas/ExecutionLimits'
+        settlement_refs:
+          type: object
+          description: Settlement method and per-leg state at receipt issuance time.
+          properties:
+            method:
+              type: string
+            bundle_hash:
+              type: string
+            destination_identity:
+              type: string
+            base_fee:
+              $ref: '#/components/schemas/ReceiptSettlementLeg'
+            success_fee:
+              $ref: '#/components/schemas/ReceiptSettlementLeg'
+        failure_code:
+          type: string
+        failure_message:
+          type: string
+        result_ref:
+          type: string
+
+    ReceiptSettlementLeg:
+      type: object
+      description: Per-leg payment state captured inside a receipt.
+      required:
+        - amount_msat
+        - invoice_hash
+        - payment_hash
+        - state
+      properties:
+        amount_msat:
+          type: integer
+          format: int64
+        invoice_hash:
+          type: string
+        payment_hash:
+          type: string
+        state:
+          type: string
+          enum: [open, accepted, settled, canceled, expired]
+
+    InvoiceBundlePayload:
+      type: object
+      description: >
+        Payload inside an `invoice_bundle` SignedArtifact. Contains two
+        Lightning hold invoices — `base_fee` (unconditional) and `success_fee`
+        (released only on success).
+      required:
+        - provider_id
+        - requester_id
+        - quote_hash
+        - deal_hash
+        - expires_at
+        - destination_identity
+        - base_fee
+        - success_fee
+        - min_final_cltv_expiry
+      properties:
+        provider_id:
+          type: string
+        requester_id:
+          type: string
+        quote_hash:
+          type: string
+        deal_hash:
+          type: string
+        expires_at:
+          type: integer
+          format: int64
+        destination_identity:
+          type: string
+        base_fee:
+          $ref: '#/components/schemas/InvoiceBundleLeg'
+        success_fee:
+          $ref: '#/components/schemas/InvoiceBundleLeg'
+        min_final_cltv_expiry:
+          type: integer
+          format: int32
+
+    InvoiceBundleLeg:
+      type: object
+      description: A single Lightning hold invoice inside an invoice bundle.
+      required:
+        - amount_msat
+        - invoice_bolt11
+        - invoice_hash
+        - payment_hash
+        - state
+      properties:
+        amount_msat:
+          type: integer
+          format: int64
+        invoice_bolt11:
+          type: string
+          description: BOLT-11 encoded Lightning invoice string.
+        invoice_hash:
+          type: string
+        payment_hash:
+          type: string
+        state:
+          type: string
+          enum: [open, accepted, settled, canceled, expired]
+
+    DealRecord:
+      type: object
+      description: >
+        Provider-side view of a deal. Returned by the provider-port deal endpoints.
+        `status` progresses through: `accepted` -> `payment_pending` ->
+        `running` -> `result_ready` | `succeeded` | `failed` | `rejected`.
+      required:
+        - deal_id
+        - status
+        - workload_kind
+        - deal
+        - quote
+        - created_at
+        - updated_at
+      properties:
+        deal_id:
+          type: string
+        idempotency_key:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+            - payment_pending
+            - running
+            - result_ready
+            - succeeded
+            - failed
+            - rejected
+        workload_kind:
+          type: string
+        deal:
+          $ref: '#/components/schemas/SignedArtifact'
+        quote:
+          $ref: '#/components/schemas/SignedArtifact'
+        result:
+          description: Execution result payload, present when status is `result_ready` or `succeeded`.
+          type: object
+          additionalProperties: true
+        result_hash:
+          type: string
+        error:
+          type: string
+          description: Failure description, present when status is `failed` or `rejected`.
+        receipt:
+          $ref: '#/components/schemas/SignedArtifact'
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    RequesterDealRecord:
+      type: object
+      description: >
+        Runtime-side view of an outbound deal. Mirrors DealRecord but adds
+        `provider_id` and `provider_url` from the local requester database.
+      required:
+        - deal_id
+        - provider_id
+        - provider_url
+        - status
+        - workload_kind
+        - deal
+        - quote
+        - created_at
+        - updated_at
+      properties:
+        deal_id:
+          type: string
+        idempotency_key:
+          type: string
+        provider_id:
+          type: string
+        provider_url:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+            - payment_pending
+            - running
+            - result_ready
+            - succeeded
+            - failed
+            - rejected
+        workload_kind:
+          type: string
+        quote:
+          $ref: '#/components/schemas/SignedArtifact'
+        deal:
+          $ref: '#/components/schemas/SignedArtifact'
+        result:
+          type: object
+          additionalProperties: true
+        result_hash:
+          type: string
+        error:
+          type: string
+        receipt:
+          $ref: '#/components/schemas/SignedArtifact'
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    JobRecord:
+      type: object
+      description: >
+        Async job record. Status progresses through: `queued` -> `running` ->
+        `succeeded` | `failed`.
+      required:
+        - job_id
+        - service_id
+        - kind
+        - status
+        - created_at
+        - updated_at
+      properties:
+        job_id:
+          type: string
+          description: Hex job identifier.
+        idempotency_key:
+          type: string
+        service_id:
+          type: string
+          description: Internal service class (`execute_wasm`, `events_query`, etc.).
+        kind:
+          type: string
+          description: Job kind discriminator matching the JobSpec variant (`wasm`, `execution`, `oci_wasm`).
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        result:
+          type: object
+          additionalProperties: true
+          description: Present when status is `succeeded`.
+        error:
+          type: string
+          description: Present when status is `failed`.
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    LedgerArtifact:
+      type: object
+      description: A single entry in the artifact feed, including its full document.
+      required:
+        - cursor
+        - hash
+        - payload_hash
+        - kind
+        - actor_id
+        - created_at
+        - document
+      properties:
+        cursor:
+          type: integer
+          format: int64
+          description: Opaque pagination cursor (monotonically increasing feed sequence).
+        hash:
+          type: string
+          description: SHA-256 artifact hash, used as the artifact identifier.
+        payload_hash:
+          type: string
+        kind:
+          type: string
+          example: deal
+        actor_id:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        document:
+          $ref: '#/components/schemas/SignedArtifact'
+
+    LightningWalletIntent:
+      type: object
+      description: >
+        Wallet payment intent returned after creating a deal that requires
+        Lightning settlement. Provides all the information a wallet needs to
+        display pending invoices and trigger preimage release.
+      required:
+        - backend
+        - mode
+        - session_id
+        - bundle_hash
+        - deal_id
+        - deal_status
+        - quote_hash
+        - deal_hash
+        - destination_identity
+        - admission_ready
+        - result_ready
+        - can_release_preimage
+        - payment_requests
+      properties:
+        backend:
+          type: string
+          example: lightning
+        mode:
+          type: string
+          example: lnd_rest
+        session_id:
+          type: string
+        bundle_hash:
+          type: string
+        deal_id:
+          type: string
+        deal_status:
+          type: string
+        quote_hash:
+          type: string
+        deal_hash:
+          type: string
+        destination_identity:
+          type: string
+        admission_ready:
+          type: boolean
+          description: Whether the base-fee invoice is ready to pay.
+        result_ready:
+          type: boolean
+          description: Whether the success-fee invoice is ready to pay.
+        can_release_preimage:
+          type: boolean
+          description: Whether the requester can now release the preimage to finalize payment.
+        payment_requests:
+          type: array
+          items:
+            type: object
+            description: Individual Lightning invoice details.
+            properties:
+              role:
+                type: string
+                enum: [base_fee, success_fee]
+              invoice:
+                type: string
+                description: BOLT-11 encoded invoice.
+              amount_msat:
+                type: integer
+                format: int64
+              payment_hash:
+                type: string
+              state:
+                type: string
+                enum: [open, accepted, settled, canceled, expired]
+        mock_action:
+          type: object
+          description: Present in mock-payment mode. Provides the path to call to simulate payment.
+          properties:
+            endpoint_path:
+              type: string
+        release_action:
+          type: object
+          description: Present when the preimage can be released. Provides the path to call.
+          properties:
+            endpoint_path:
+              type: string
+            payment_hash:
+              type: string
+            expected_result_hash:
+              type: string
+
+    NodeCapabilities:
+      type: object
+      description: Full capability advertisement returned by `/v1/node/capabilities`.
+      required:
+        - api_version
+        - version
+        - identity
+        - discovery
+        - transports
+        - execution
+        - limits
+        - pricing
+        - payments
+        - faas
+      properties:
+        api_version:
+          type: string
+          example: v1
+        version:
+          type: string
+          description: Froglet node binary version (semver).
+        identity:
+          $ref: '#/components/schemas/IdentityInfo'
+        discovery:
+          type: object
+          properties:
+            mode:
+              type: string
+              example: none
+        transports:
+          type: object
+          properties:
+            clearnet:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                url:
+                  type: string
+            tor:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                onion_url:
+                  type: string
+                status:
+                  type: string
+        execution:
+          type: object
+          properties:
+            wasm:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                fuel_limit:
+                  type: integer
+                  format: int64
+                entrypoints:
+                  type: array
+                  items:
+                    type: string
+        limits:
+          type: object
+          properties:
+            events_query_limit_default:
+              type: integer
+            events_query_limit_max:
+              type: integer
+            body_limit_bytes:
+              type: integer
+            wasm_hex_limit_bytes:
+              type: integer
+            wasm_input_limit_bytes:
+              type: integer
+        pricing:
+          type: object
+          description: Provider pricing configuration (structure mirrors `PricingInfo`).
+          additionalProperties: true
+        payments:
+          type: object
+          properties:
+            backend:
+              type: string
+            verifier_mode:
+              type: string
+            accepted_payment_methods:
+              type: array
+              items:
+                type: string
+            reservations:
+              type: boolean
+            receipts:
+              type: boolean
+        faas:
+          type: object
+          properties:
+            jobs_api:
+              type: boolean
+            async_jobs:
+              type: boolean
+            idempotency_keys:
+              type: boolean
+            runtimes:
+              type: array
+              items:
+                type: string
+
+    IdentityInfo:
+      type: object
+      description: Node identity (returned by `/v1/node/identity` and embedded in capabilities).
+      required:
+        - node_id
+        - public_key
+      properties:
+        node_id:
+          type: string
+          description: Stable node identifier (hex ed25519 public key).
+        public_key:
+          type: string
+          description: Same as `node_id`; the hex-encoded ed25519 public key.
+
+    ProviderServiceRecord:
+      type: object
+      description: A service as seen from the provider's catalog.
+      required:
+        - service_id
+        - offer_id
+        - summary
+        - mode
+        - price_sats
+        - publication_state
+        - provider_id
+      properties:
+        service_id:
+          type: string
+        offer_id:
+          type: string
+        offer_kind:
+          type: string
+        resource_kind:
+          type: string
+          example: service
+        project_id:
+          type: string
+        summary:
+          type: string
+        runtime:
+          type: string
+        package_kind:
+          type: string
+        entrypoint_kind:
+          type: string
+        entrypoint:
+          type: string
+        contract_version:
+          type: string
+        mounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        mode:
+          type: string
+          enum: [sync, async]
+        price_sats:
+          type: integer
+          format: int64
+        publication_state:
+          type: string
+          enum: [active, hidden]
+        provider_id:
+          type: string
+        module_hash:
+          type: string
+        binding_hash:
+          type: string
+        input_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+
+    WorkloadSpec:
+      type: object
+      description: >
+        Polymorphic workload specification used in quote and deal requests.
+        Discriminated by the `kind` field. The most common variants are shown;
+        all variants are tagged with `"kind"` in the serialized JSON.
+      required:
+        - kind
+      discriminator:
+        propertyName: kind
+      properties:
+        kind:
+          type: string
+          description: Workload variant discriminator.
+          enum:
+            - execution
+            - wasm
+            - oci_wasm
+            - confidential_service
+            - attested_wasm
+            - events_query
+      oneOf:
+        - title: Execution workload
+          type: object
+          required: [kind, execution]
+          properties:
+            kind:
+              type: string
+              enum: [execution]
+            execution:
+              type: object
+              description: >
+                Describes a Python, container, WASM, or builtin execution.
+                The full `ExecutionWorkload` struct fields depend on runtime.
+              additionalProperties: true
+        - title: WASM submission
+          type: object
+          required: [kind, submission]
+          properties:
+            kind:
+              type: string
+              enum: [wasm]
+            submission:
+              type: object
+              description: Inline WASM module bytes (hex) plus input value.
+              properties:
+                schema_version:
+                  type: string
+                submission_type:
+                  type: string
+                workload:
+                  type: object
+                  additionalProperties: true
+                module_bytes_hex:
+                  type: string
+                input:
+                  type: object
+                  additionalProperties: true
+        - title: OCI WASM workload
+          type: object
+          required: [kind, submission]
+          properties:
+            kind:
+              type: string
+              enum: [oci_wasm]
+            submission:
+              type: object
+              description: OCI image reference for a WASM module.
+              properties:
+                schema_version:
+                  type: string
+                submission_type:
+                  type: string
+                workload:
+                  type: object
+                  additionalProperties: true
+                input:
+                  type: object
+                  additionalProperties: true
+        - title: Events query
+          type: object
+          required: [kind, kinds]
+          properties:
+            kind:
+              type: string
+              enum: [events_query]
+            kinds:
+              type: array
+              items:
+                type: string
+              description: Event kind strings to query.
+            limit:
+              type: integer
+              description: Maximum number of events to return.
+        - title: Confidential service
+          type: object
+          required: [kind, confidential_session_hash, service_id, request_envelope]
+          properties:
+            kind:
+              type: string
+              enum: [confidential_service]
+            confidential_session_hash:
+              type: string
+            service_id:
+              type: string
+            request_envelope:
+              type: object
+              description: Encrypted request envelope for the confidential session.
+              additionalProperties: true
+
+    ProvidedPayment:
+      type: object
+      description: >
+        Pre-provided payment token. Allows callers to supply a payment reservation
+        token alongside the deal request instead of using the Lightning invoice bundle flow.
+      required:
+        - kind
+        - token
+      properties:
+        kind:
+          type: string
+          description: Payment method kind (e.g. `mock`, `lightning`).
+          example: mock
+        token:
+          type: string
+          description: Opaque payment token issued by the payment backend.
+
+    NodeEventEnvelope:
+      type: object
+      description: >
+        Signed node event. Structure mirrors NIP-01 Nostr events but uses
+        froglet-specific kinds and is signed with the node's ed25519 key.
+      required:
+        - id
+        - pubkey
+        - created_at
+        - kind
+        - tags
+        - content
+        - sig
+      properties:
+        id:
+          type: string
+          description: Hex SHA-256 event ID computed over the canonical event fields.
+        pubkey:
+          type: string
+          description: Hex ed25519 public key of the signing node.
+        created_at:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          description: Event kind string (e.g. `froglet.deal.created`).
+        tags:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        content:
+          type: string
+          description: Event content (often a JSON-serialized payload).
+        sig:
+          type: string
+          description: Ed25519 signature (hex) over the canonical signing bytes.
+
+    ConfidentialProfilePayload:
+      type: object
+      description: >
+        TEE service profile. Describes the attestation platform, measurement,
+        and encryption parameters for a confidential execution environment.
+      required:
+        - provider_id
+        - profile_id
+        - service_class
+        - allowed_workload_kind
+        - execution_mode
+        - attestation_platform
+        - measurement
+        - key_release_policy_hash
+        - input_encryption_algorithm
+        - output_encryption_algorithm
+        - max_input_bytes
+        - max_runtime_ms
+        - max_output_bytes
+      properties:
+        provider_id:
+          type: string
+        profile_id:
+          type: string
+        service_class:
+          type: string
+        allowed_workload_kind:
+          type: string
+        execution_mode:
+          type: string
+        attestation_platform:
+          type: string
+          example: nvidia_hopper
+        measurement:
+          type: string
+          description: Hex-encoded platform measurement (PCR values or equivalent).
+        key_release_policy_hash:
+          type: string
+        input_encryption_algorithm:
+          type: string
+          example: x25519-xsalsa20-poly1305
+        output_encryption_algorithm:
+          type: string
+        service_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+        max_input_bytes:
+          type: integer
+        max_runtime_ms:
+          type: integer
+          format: int64
+        max_output_bytes:
+          type: integer
+
+    ConfidentialSessionPayload:
+      type: object
+      description: >
+        TEE session payload. Binds a requester public key to a provider TEE
+        session, enabling encrypted input/output exchange.
+      required:
+        - provider_id
+        - requester_id
+        - session_id
+        - confidential_profile_hash
+        - allowed_workload_kind
+        - execution_mode
+        - attestation_platform
+        - measurement
+        - attestation_evidence_hash
+        - key_release_policy_hash
+        - session_public_key
+        - requester_public_key
+        - encryption_algorithm
+        - expires_at
+      properties:
+        provider_id:
+          type: string
+        requester_id:
+          type: string
+        session_id:
+          type: string
+        confidential_profile_hash:
+          type: string
+        allowed_workload_kind:
+          type: string
+        execution_mode:
+          type: string
+        attestation_platform:
+          type: string
+        measurement:
+          type: string
+        attestation_evidence_hash:
+          type: string
+        key_release_policy_hash:
+          type: string
+        session_public_key:
+          type: string
+          description: Ephemeral public key for this session (curve25519 hex).
+        requester_public_key:
+          type: string
+          description: Requester-provided curve25519 public key for response encryption.
+        encryption_algorithm:
+          type: string
+          example: x25519-xsalsa20-poly1305
+        expires_at:
+          type: integer
+          format: int64
+
+    AttestationBundle:
+      type: object
+      description: >
+        Raw TEE attestation evidence bundle. Passed alongside the session
+        artifact so requesters can independently verify the TEE measurement.
+      required:
+        - schema_version
+        - platform
+        - backend
+        - measurement
+        - session_public_key
+        - key_release_policy_hash
+        - issued_at
+        - expires_at
+        - claims
+      properties:
+        schema_version:
+          type: string
+        platform:
+          type: string
+        backend:
+          type: string
+        measurement:
+          type: string
+        session_public_key:
+          type: string
+        key_release_policy_hash:
+          type: string
+        issued_at:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+        claims:
+          type: object
+          description: Platform-specific attestation claims (JSON).
+          additionalProperties: true
+
+    CuratedListPayload:
+      type: object
+      description: >
+        A curator-signed list of trusted provider IDs. Used to bootstrap
+        trust in a network without a central registry.
+      additionalProperties: true
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Common endpoints (both ports)
+  # ---------------------------------------------------------------------------
+
+  /health:
+    get:
+      operationId: getHealth
+      summary: Node health check
+      description: >
+        Returns a static `{"status":"ok","service":"froglet"}` body.
+        Suitable for use as a liveness probe.
+      tags: [Common]
+      security: []
+      responses:
+        '200':
+          description: Node is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: froglet
+
+  /v1/node/capabilities:
+    get:
+      operationId: getNodeCapabilities
+      summary: Node capabilities advertisement
+      description: >
+        Returns the full capability set of this node: version, identity,
+        transport endpoints, execution runtimes, resource limits, payment
+        backend, and FaaS features. Requesters use this to decide whether a
+        node is compatible with their workload.
+      tags: [Common]
+      security: []
+      responses:
+        '200':
+          description: Capability advertisement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeCapabilities'
+
+  /v1/node/identity:
+    get:
+      operationId: getNodeIdentity
+      summary: Node identity
+      description: Returns the node's stable identifier and ed25519 public key.
+      tags: [Common]
+      security: []
+      responses:
+        '200':
+          description: Node identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityInfo'
+
+  /v1/openapi.json:
+    get:
+      operationId: getOpenApiSpec
+      summary: OpenAPI specification
+      description: >
+        Returns the OpenAPI specification for this node's API. The spec is
+        served as JSON (this file is the YAML source). Use this endpoint
+        to discover the exact schema supported by a running node.
+      tags: [Common]
+      security: []
+      responses:
+        '200':
+          description: OpenAPI 3.1 specification document.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  # ---------------------------------------------------------------------------
+  # Catalog — Provider port
+  # ---------------------------------------------------------------------------
+
+  /v1/provider/descriptor:
+    get:
+      operationId: getProviderDescriptor
+      summary: Provider descriptor
+      description: >
+        Returns the signed descriptor artifact for this provider. The descriptor
+        contains the provider's identity, transport endpoints, and capability
+        advertisement. Requesters should verify the artifact signature before
+        trusting any of its fields.
+      tags: [Catalog]
+      security: []
+      responses:
+        '200':
+          description: Signed descriptor artifact.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SignedArtifact'
+                  - type: object
+                    properties:
+                      payload:
+                        $ref: '#/components/schemas/DescriptorPayload'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/offers:
+    get:
+      operationId: listProviderOffers
+      summary: List active offers
+      description: >
+        Returns all signed offer artifacts currently published by this provider.
+        Only `active` offers are returned by default. Each offer specifies a
+        priced execution profile that requesters can reference in quote requests.
+      tags: [Catalog]
+      security: []
+      responses:
+        '200':
+          description: Array of signed offer artifacts.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/SignedArtifact'
+                    - type: object
+                      properties:
+                        payload:
+                          $ref: '#/components/schemas/OfferPayload'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/services:
+    get:
+      operationId: listProviderServices
+      summary: List provider services
+      description: >
+        Returns a structured catalog of named services hosted by this provider.
+        Services are a higher-level abstraction over offers, including human-
+        readable summaries, input/output schemas, and publication state.
+      tags: [Catalog]
+      security: []
+      responses:
+        '200':
+          description: List of services.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [services]
+                properties:
+                  services:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProviderServiceRecord'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/services/{service_id}:
+    get:
+      operationId: getProviderService
+      summary: Get a single provider service
+      description: Returns the full record for a specific named service.
+      tags: [Catalog]
+      security: []
+      parameters:
+        - name: service_id
+          in: path
+          required: true
+          description: The service identifier (e.g. `service.echo`).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Single service record.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [service]
+                properties:
+                  service:
+                    $ref: '#/components/schemas/ProviderServiceRecord'
+        '404':
+          description: Service not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Deals — Provider port
+  # ---------------------------------------------------------------------------
+
+  /v1/provider/quotes:
+    post:
+      operationId: createQuote
+      summary: Create a quote
+      description: >
+        The requester sends a quote request specifying the offer, their node ID,
+        and the workload. The provider validates the workload, checks resource
+        limits and pricing, and returns a signed `quote` artifact that can be
+        used to open a deal. Quotes expire at the `expires_at` timestamp in the
+        payload.
+      tags: [Deals (Provider)]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - offer_id
+                - requester_id
+                - kind
+              properties:
+                offer_id:
+                  type: string
+                  description: The offer to quote against (e.g. `service.echo`).
+                  example: service.echo
+                requester_id:
+                  type: string
+                  description: The requester's node ID (hex ed25519 public key).
+                max_price_sats:
+                  type: integer
+                  format: int64
+                  description: >
+                    Optional ceiling on the total price (base + success fee) in
+                    satoshis. The provider will reject the quote if its price
+                    exceeds this value.
+              allOf:
+                - $ref: '#/components/schemas/WorkloadSpec'
+      responses:
+        '200':
+          description: Signed quote artifact.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SignedArtifact'
+                  - type: object
+                    properties:
+                      payload:
+                        $ref: '#/components/schemas/QuotePayload'
+        '400':
+          description: Invalid request body or workload spec.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/deals:
+    post:
+      operationId: createDeal
+      summary: Create a deal
+      description: >
+        The requester submits a signed `deal` artifact alongside the previously
+        obtained signed `quote` and the workload spec. The provider verifies
+        both artifacts, checks that the deal payment hash is consistent, and
+        begins execution (or queues a payment step for Lightning settlement).
+        Returns a `DealRecord` with the initial status.
+      tags: [Deals (Provider)]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - quote
+                - deal
+                - kind
+              properties:
+                quote:
+                  $ref: '#/components/schemas/SignedArtifact'
+                  description: The signed quote artifact obtained from `POST /v1/provider/quotes`.
+                deal:
+                  $ref: '#/components/schemas/SignedArtifact'
+                  description: The requester-signed deal artifact.
+                idempotency_key:
+                  type: string
+                  description: >
+                    Optional idempotency key (max 128 bytes). If a deal with this
+                    key already exists for the same requester, the existing deal
+                    record is returned instead of creating a new one.
+                payment:
+                  $ref: '#/components/schemas/ProvidedPayment'
+              allOf:
+                - $ref: '#/components/schemas/WorkloadSpec'
+      responses:
+        '200':
+          description: Deal record (may be new or idempotently returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DealRecord'
+        '400':
+          description: Invalid deal or quote artifact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/deals/{deal_id}:
+    get:
+      operationId: getDealStatus
+      summary: Get provider deal status
+      description: >
+        Returns the current `DealRecord` for a deal submitted to this provider.
+        Poll this endpoint to observe status transitions. When `status` is
+        `result_ready` or `succeeded` the `result` and `receipt` fields are
+        populated.
+      tags: [Deals (Provider)]
+      security: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: The deal identifier (artifact hash of the `deal` artifact).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deal record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DealRecord'
+        '404':
+          description: Deal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Settlement — Provider port
+  # ---------------------------------------------------------------------------
+
+  /v1/provider/deals/{deal_id}/accept:
+    post:
+      operationId: releaseDealPreimage
+      summary: Release the Lightning preimage (provider accept)
+      description: >
+        The requester calls this after confirming the result. Supplying the
+        `success_preimage` allows the provider to settle the success-fee invoice.
+        Optionally the requester can supply `expected_result_hash` for the
+        provider to verify before releasing.
+      tags: [Settlement (Provider)]
+      security: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - success_preimage
+              properties:
+                success_preimage:
+                  type: string
+                  description: Hex-encoded 32-byte preimage whose SHA-256 matches the `success_payment_hash` in the deal.
+                expected_result_hash:
+                  type: string
+                  description: >
+                    Optional SHA-256 of the expected result. If supplied, the
+                    provider will verify the actual result hash matches before
+                    releasing the preimage.
+      responses:
+        '200':
+          description: Deal updated; preimage released.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DealRecord'
+        '400':
+          description: Invalid preimage or result hash mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Deal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/deals/{deal_id}/mock-pay:
+    post:
+      operationId: mockPayDeal
+      summary: Mock-pay a deal (test only)
+      description: >
+        Simulates Lightning payment on both invoice bundle legs. Only available
+        when the node is running in `mock_hold_invoice` payment mode. Used in
+        integration tests and local development to advance deals without a real
+        Lightning node.
+      tags: [Settlement (Provider)]
+      security: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - success_preimage
+              properties:
+                success_preimage:
+                  type: string
+                  description: Hex-encoded 32-byte preimage to settle the success-fee invoice.
+      responses:
+        '200':
+          description: Deal record after mock payment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DealRecord'
+        '400':
+          description: Mock payment not available or invalid preimage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Deal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/deals/{deal_id}/invoice-bundle:
+    get:
+      operationId: getDealInvoiceBundle
+      summary: Get the Lightning invoice bundle for a deal
+      description: >
+        Returns the signed `invoice_bundle` artifact for a deal that uses
+        Lightning settlement. Contains two BOLT-11 hold invoices: `base_fee`
+        (must be paid before execution) and `success_fee` (settled on success
+        by the requester releasing the preimage).
+      tags: [Settlement (Provider)]
+      security: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed invoice bundle artifact.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SignedArtifact'
+                  - type: object
+                    properties:
+                      payload:
+                        $ref: '#/components/schemas/InvoiceBundlePayload'
+        '404':
+          description: Deal or invoice bundle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/invoice-bundles/verify:
+    post:
+      operationId: verifyInvoiceBundle
+      summary: Verify an invoice bundle artifact
+      description: >
+        Verifies the signature on an invoice bundle artifact and validates that
+        it is correctly bound to the provided quote and deal artifacts. Returns
+        a report listing any validation issues found.
+      tags: [Settlement (Provider)]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - bundle
+                - quote
+                - deal
+              properties:
+                bundle:
+                  $ref: '#/components/schemas/SignedArtifact'
+                  description: The signed invoice bundle artifact to verify.
+                quote:
+                  $ref: '#/components/schemas/SignedArtifact'
+                  description: The signed quote artifact the bundle is bound to.
+                deal:
+                  $ref: '#/components/schemas/SignedArtifact'
+                  description: The signed deal artifact the bundle is bound to.
+                requester_id:
+                  type: string
+                  description: >
+                    Optional requester ID to verify. If omitted, the check is
+                    skipped.
+      responses:
+        '200':
+          description: Verification report.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - valid
+                  - bundle_hash
+                  - quote_hash
+                  - deal_hash
+                  - issues
+                properties:
+                  valid:
+                    type: boolean
+                  bundle_hash:
+                    type: string
+                  quote_hash:
+                    type: string
+                  deal_hash:
+                    type: string
+                  expected_requester_id:
+                    type: string
+                  issues:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code:
+                          type: string
+                        message:
+                          type: string
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/receipts/verify:
+    post:
+      operationId: verifyReceipt
+      summary: Verify a receipt artifact
+      description: >
+        Verifies the ed25519 signature and semantic integrity of a `receipt`
+        SignedArtifact. Returns a simple `{valid: bool}` response plus any
+        validation issues.
+      tags: [Settlement (Provider)]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - receipt
+              properties:
+                receipt:
+                  $ref: '#/components/schemas/SignedArtifact'
+                  description: The signed receipt artifact to verify.
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid:
+                    type: boolean
+                  issues:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code:
+                          type: string
+                        message:
+                          type: string
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Events
+  # ---------------------------------------------------------------------------
+
+  /v1/node/events/publish:
+    post:
+      operationId: publishEvent
+      summary: Publish a signed node event
+      description: >
+        Stores a signed node event in the local event ledger. The event must be
+        signed by the local node key. Maximum content size is 64 KiB. Events
+        are retrievable via `POST /v1/node/events/query`.
+      tags: [Events]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - event
+              properties:
+                event:
+                  $ref: '#/components/schemas/NodeEventEnvelope'
+      responses:
+        '200':
+          description: Event accepted and stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        '400':
+          description: Invalid event signature or malformed body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/node/events/query:
+    post:
+      operationId: queryEvents
+      summary: Query node events
+      description: >
+        Returns stored node events matching the requested `kinds`. Results are
+        ordered by `created_at` descending. The default page size is 100 and
+        the hard maximum is 500.
+      tags: [Events]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - kinds
+              properties:
+                kinds:
+                  type: array
+                  items:
+                    type: string
+                  description: >
+                    Event kind strings to filter by (maximum 100 kinds per request).
+                  example: ["froglet.deal.created", "froglet.deal.succeeded"]
+                limit:
+                  type: integer
+                  description: Maximum number of events to return (default 100, max 500).
+                payment:
+                  $ref: '#/components/schemas/ProvidedPayment'
+                  description: Optional payment token if the provider charges for queries.
+      responses:
+        '200':
+          description: Matching events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NodeEventEnvelope'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/curated-lists/verify:
+    post:
+      operationId: verifyCuratedList
+      summary: Verify a curated list artifact
+      description: >
+        Verifies the signature and structure of a curator-signed list of
+        provider IDs. Returns the list hash, curator identity, and expiry.
+      tags: [Events]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - curated_list
+              properties:
+                curated_list:
+                  $ref: '#/components/schemas/SignedArtifact'
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - valid
+                  - list_hash
+                  - curator_id
+                  - list_id
+                  - expires_at
+                properties:
+                  valid:
+                    type: boolean
+                  list_hash:
+                    type: string
+                  curator_id:
+                    type: string
+                  list_id:
+                    type: string
+                  expires_at:
+                    type: integer
+                    format: int64
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/nostr/events/verify:
+    post:
+      operationId: verifyNostrEvent
+      summary: Verify a Nostr event
+      description: >
+        Verifies the BIP-340 Schnorr signature on a Nostr event and validates
+        the event ID. Returns the event ID, pubkey, and kind on success.
+      tags: [Events]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - event
+              properties:
+                event:
+                  type: object
+                  description: A NIP-01 Nostr event object.
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - valid
+                  - event_id
+                  - pubkey
+                  - kind
+                properties:
+                  valid:
+                    type: boolean
+                  event_id:
+                    type: string
+                  pubkey:
+                    type: string
+                  kind:
+                    type: integer
+                    format: int32
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Execution — Runtime port (no per-handler auth; secure at network layer)
+  # ---------------------------------------------------------------------------
+
+  /v1/node/execute/wasm:
+    post:
+      operationId: executeWasm
+      summary: Execute a WASM module synchronously
+      description: >
+        Submits an inline WASM module (hex-encoded) with input for immediate
+        execution. Blocks until execution completes or the per-node timeout
+        elapses. Maximum module size is 512 KiB (hex). Maximum input is 128 KiB
+        (hex). Only available on the runtime port; secure it at the network layer.
+      tags: [Execution]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - submission
+              properties:
+                submission:
+                  type: object
+                  description: WASM submission details.
+                  required:
+                    - schema_version
+                    - submission_type
+                    - workload
+                    - module_bytes_hex
+                  properties:
+                    schema_version:
+                      type: string
+                    submission_type:
+                      type: string
+                    workload:
+                      type: object
+                      additionalProperties: true
+                    module_bytes_hex:
+                      type: string
+                      description: Hex-encoded WASM module bytes. Max 512 KiB hex.
+                    input:
+                      type: object
+                      additionalProperties: true
+                      description: Input value passed to the WASM entrypoint.
+                payment:
+                  $ref: '#/components/schemas/ProvidedPayment'
+      responses:
+        '200':
+          description: Execution result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid submission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Concurrency limit reached; try again later.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Execution error or internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/node/jobs:
+    post:
+      operationId: createJob
+      summary: Create an async job
+      description: >
+        Enqueues an async job. Supported job kinds: `wasm` (inline module),
+        `oci_wasm` (OCI image reference), and `execution` (arbitrary execution
+        workload). The job ID is returned immediately; poll
+        `GET /v1/node/jobs/{job_id}` for status.
+        An optional `idempotency_key` ensures at-most-once creation.
+      tags: [Execution]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - kind
+              properties:
+                kind:
+                  type: string
+                  enum: [wasm, oci_wasm, execution]
+                  description: Job variant discriminator.
+                idempotency_key:
+                  type: string
+                  description: >
+                    Optional idempotency key (max 128 bytes). Repeated requests
+                    with the same key return the existing job.
+                payment:
+                  $ref: '#/components/schemas/ProvidedPayment'
+              additionalProperties: true
+              description: >
+                Additional fields depend on `kind`. For `wasm` include a
+                `submission` object; for `execution` include an `execution`
+                object. See `WorkloadSpec` variants for details.
+      responses:
+        '200':
+          description: Created (or idempotently returned) job record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecord'
+        '400':
+          description: Invalid job specification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/node/jobs/{job_id}:
+    get:
+      operationId: getJobStatus
+      summary: Poll async job status
+      description: >
+        Returns the current state of an async job. When `status` is `succeeded`,
+        the `result` field contains the execution output. When `status` is
+        `failed`, the `error` field is populated.
+      tags: [Execution]
+      security: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Hex job identifier returned by `POST /v1/node/jobs`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecord'
+        '404':
+          description: Job not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Deals — Runtime port
+  # ---------------------------------------------------------------------------
+
+  /v1/runtime/deals:
+    post:
+      operationId: runtimeCreateDeal
+      summary: Create an outbound deal via a provider
+      description: >
+        Orchestrates the full quote-and-deal flow against a remote provider:
+        fetches the descriptor, obtains a quote, builds and signs the deal
+        artifact, and submits it to the provider. Returns the signed quote and
+        the resulting `RequesterDealRecord`. If Lightning settlement is required,
+        a `payment_intent` is included with the invoices to pay.
+      tags: [Deals (Runtime)]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - provider
+                - offer_id
+                - kind
+              properties:
+                provider:
+                  type: object
+                  description: Provider reference. Supply at least one of `provider_id` or `provider_url`.
+                  properties:
+                    provider_id:
+                      type: string
+                      description: Provider node ID. Required if `provider_url` is omitted.
+                    provider_url:
+                      type: string
+                      description: Direct URL of the provider's provider-port API.
+                offer_id:
+                  type: string
+                  description: The offer to use (e.g. `service.echo`).
+                max_price_sats:
+                  type: integer
+                  format: int64
+                  description: >
+                    Optional price ceiling in satoshis. The deal is aborted if
+                    the provider's quote exceeds this amount.
+                idempotency_key:
+                  type: string
+                  description: Optional idempotency key (max 128 bytes).
+                payment:
+                  $ref: '#/components/schemas/ProvidedPayment'
+              allOf:
+                - $ref: '#/components/schemas/WorkloadSpec'
+      responses:
+        '200':
+          description: Deal created. Includes quote, deal record, and optional payment intent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - provider_id
+                  - provider_url
+                  - quote
+                  - deal
+                properties:
+                  provider_id:
+                    type: string
+                  provider_url:
+                    type: string
+                  quote:
+                    $ref: '#/components/schemas/SignedArtifact'
+                  deal:
+                    $ref: '#/components/schemas/RequesterDealRecord'
+                  payment_intent_path:
+                    type: string
+                    description: Relative path to poll for the payment intent.
+                  payment_intent:
+                    $ref: '#/components/schemas/LightningWalletIntent'
+        '400':
+          description: Invalid request or provider resolution failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Upstream provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/runtime/deals/{deal_id}:
+    get:
+      operationId: runtimeGetDeal
+      summary: Get outbound deal status
+      description: >
+        Fetches the latest state of an outbound deal by syncing with the
+        remote provider. Verifies the provider's receipt signature before
+        updating the local state. Returns the `RequesterDealRecord`.
+      tags: [Deals (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier (artifact hash of the requester-signed deal).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Requester deal record.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deal]
+                properties:
+                  deal:
+                    $ref: '#/components/schemas/RequesterDealRecord'
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Deal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Upstream provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/runtime/archive/{subject_kind}/{subject_id}:
+    get:
+      operationId: runtimeArchiveSubject
+      summary: Export artifact archive for a deal or job
+      description: >
+        Exports a full cryptographic archive for a deal or job, including all
+        signed artifacts, feed entries, execution evidence records, and Lightning
+        invoice bundles. Useful for auditing and dispute resolution.
+      tags: [Deals (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: subject_kind
+          in: path
+          required: true
+          description: Archive subject type. One of `deal`, `job`.
+          schema:
+            type: string
+            enum: [deal, job]
+        - name: subject_id
+          in: path
+          required: true
+          description: The deal ID or job ID to archive.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Archive export.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - schema_version
+                  - export_type
+                  - subject_kind
+                  - subject_id
+                  - exported_at
+                  - artifact_documents
+                  - artifact_feed
+                  - execution_evidence
+                  - lightning_invoice_bundles
+                properties:
+                  schema_version:
+                    type: string
+                  export_type:
+                    type: string
+                  subject_kind:
+                    type: string
+                  subject_id:
+                    type: string
+                  exported_at:
+                    type: integer
+                    format: int64
+                  artifact_documents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        artifact_hash:
+                          type: string
+                        payload_hash:
+                          type: string
+                        artifact_kind:
+                          type: string
+                        actor_id:
+                          type: string
+                        created_at:
+                          type: integer
+                          format: int64
+                        document:
+                          $ref: '#/components/schemas/SignedArtifact'
+                  artifact_feed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sequence:
+                          type: integer
+                          format: int64
+                        artifact_hash:
+                          type: string
+                        observed_at:
+                          type: integer
+                          format: int64
+                  execution_evidence:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        evidence_id:
+                          type: integer
+                          format: int64
+                        subject_kind:
+                          type: string
+                        subject_id:
+                          type: string
+                        evidence_kind:
+                          type: string
+                        content_hash:
+                          type: string
+                        created_at:
+                          type: integer
+                          format: int64
+                        content:
+                          type: object
+                          additionalProperties: true
+                  lightning_invoice_bundles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        session_id:
+                          type: string
+                        bundle:
+                          $ref: '#/components/schemas/SignedArtifact'
+                        base_state:
+                          type: string
+                        success_state:
+                          type: string
+                        created_at:
+                          type: integer
+                          format: int64
+                        updated_at:
+                          type: integer
+                          format: int64
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Subject not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Discovery — Runtime port
+  # ---------------------------------------------------------------------------
+
+  /v1/runtime/search:
+    post:
+      operationId: runtimeSearch
+      summary: Search the marketplace for providers and offers
+      description: >
+        Proxies a search query through the configured marketplace node.
+        Requires `FROGLET_MARKETPLACE_URL` to be set. The runtime node creates
+        a marketplace deal internally and returns the search results.
+      tags: [Discovery (Runtime)]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                offer_kind:
+                  type: string
+                  description: Filter by offer kind (e.g. `compute.execution.v1`).
+                runtime:
+                  type: string
+                  description: Filter by execution runtime (e.g. `python`, `wasm`).
+                limit:
+                  type: integer
+                  description: Maximum number of results (default 20).
+      responses:
+        '200':
+          description: Search results (structure determined by marketplace).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: No marketplace URL configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Marketplace request failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/runtime/providers/{provider_id}:
+    get:
+      operationId: runtimeGetProviderDetails
+      summary: Get provider details via marketplace
+      description: >
+        Fetches descriptor and offer details for a specific provider through
+        the configured marketplace node. Requires `FROGLET_MARKETPLACE_URL`.
+      tags: [Discovery (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          description: Provider node ID (hex ed25519 public key).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Provider descriptor and offer list.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: No marketplace URL configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Marketplace request failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Settlement — Runtime port
+  # ---------------------------------------------------------------------------
+
+  /v1/runtime/wallet/balance:
+    get:
+      operationId: getRuntimeWalletBalance
+      summary: Get wallet balance snapshot
+      description: >
+        Returns the current Lightning wallet balance and payment-backend status.
+        `balance_known` will be `false` if the backend cannot report a balance
+        (e.g. in mock mode or when the LND connection is down).
+      tags: [Settlement (Runtime)]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Wallet balance snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - backend
+                  - mode
+                  - balance_known
+                  - accepted_payment_methods
+                  - reservations
+                  - receipts
+                properties:
+                  backend:
+                    type: string
+                    example: lightning
+                  mode:
+                    type: string
+                    example: lnd_rest
+                  balance_known:
+                    type: boolean
+                  balance_sats:
+                    type: integer
+                    format: int64
+                    description: Present when `balance_known` is true.
+                  accepted_payment_methods:
+                    type: array
+                    items:
+                      type: string
+                  reservations:
+                    type: boolean
+                  receipts:
+                    type: boolean
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/runtime/deals/{deal_id}/payment-intent:
+    get:
+      operationId: getRuntimeDealPaymentIntent
+      summary: Get Lightning payment intent for an outbound deal
+      description: >
+        Returns the current `LightningWalletIntent` for an outbound deal.
+        Call this to obtain invoice details, check payment state, and determine
+        whether the preimage can be released. Poll this endpoint as invoices
+        are paid to observe state transitions.
+      tags: [Settlement (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Payment intent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment_intent]
+                properties:
+                  payment_intent:
+                    $ref: '#/components/schemas/LightningWalletIntent'
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Deal or invoice bundle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/runtime/deals/{deal_id}/mock-pay:
+    post:
+      operationId: runtimeMockPayDeal
+      summary: Mock-pay an outbound deal (test only)
+      description: >
+        Simulates Lightning payment for an outbound deal on the runtime side.
+        Only functional in `mock_hold_invoice` mode. Triggers the provider's
+        mock-pay endpoint and returns the updated deal and payment intent.
+      tags: [Settlement (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier.
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Empty body accepted; no fields required for mock payment.
+      responses:
+        '200':
+          description: Updated deal record and payment intent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deal]
+                properties:
+                  deal:
+                    $ref: '#/components/schemas/RequesterDealRecord'
+                  payment_intent_path:
+                    type: string
+                  payment_intent:
+                    $ref: '#/components/schemas/LightningWalletIntent'
+        '400':
+          description: Mock payment not available or deal in wrong state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Deal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/runtime/deals/{deal_id}/accept:
+    post:
+      operationId: runtimeAcceptDeal
+      summary: Accept an outbound deal (release preimage)
+      description: >
+        Releases the success preimage to the provider, finalizing the
+        Lightning success-fee settlement. Call this after verifying the deal
+        result to your satisfaction. Optionally supply `expected_result_hash`
+        as an additional safety check.
+      tags: [Settlement (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          description: Deal identifier.
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_result_hash:
+                  type: string
+                  description: >
+                    Optional SHA-256 hash of the expected result. If supplied,
+                    the runtime verifies the actual result hash matches before
+                    releasing the preimage.
+      responses:
+        '200':
+          description: Deal accepted; preimage released.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deal]
+                properties:
+                  deal:
+                    $ref: '#/components/schemas/RequesterDealRecord'
+        '400':
+          description: Deal in wrong state or result hash mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid Bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Deal not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Feed & Artifacts
+  # ---------------------------------------------------------------------------
+
+  /v1/feed:
+    get:
+      operationId: getArtifactFeed
+      summary: Paginated artifact feed
+      description: >
+        Returns a cursor-paginated feed of all artifacts written to this node's
+        ledger (deals, quotes, receipts, offers, etc.). Use the `next_cursor`
+        value from a response as the `cursor` parameter on the next request to
+        page forward. When `has_more` is `false` you have reached the end of
+        the feed.
+      tags: [Feed & Artifacts]
+      security: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Opaque integer cursor from a previous response's `next_cursor` field.
+            Omit (or pass `0`) to start from the beginning of the feed.
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of artifacts per page. Server may apply a lower cap.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Feed page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - artifacts
+                  - cursor_type
+                  - cursor_semantics
+                  - applied_cursor
+                  - page_size
+                  - has_more
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LedgerArtifact'
+                  cursor_type:
+                    type: string
+                    description: Cursor type identifier (always `sequence`).
+                  cursor_semantics:
+                    type: string
+                    description: Human-readable description of cursor semantics.
+                  applied_cursor:
+                    type: integer
+                    format: int64
+                    description: The cursor value applied for this response.
+                  page_size:
+                    type: integer
+                    description: Number of artifacts returned in this page.
+                  has_more:
+                    type: boolean
+                    description: Whether more artifacts are available beyond this page.
+                  next_cursor:
+                    type: integer
+                    format: int64
+                    description: >
+                      Cursor to pass on the next request. Present only when
+                      `has_more` is `true`.
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/artifacts/{artifact_hash}:
+    get:
+      operationId: getArtifact
+      summary: Get a single artifact by hash
+      description: >
+        Returns the full signed artifact document identified by its SHA-256
+        hash. The hash is the `hash` field of the `SignedArtifact` envelope.
+      tags: [Feed & Artifacts]
+      security: []
+      parameters:
+        - name: artifact_hash
+          in: path
+          required: true
+          description: SHA-256 hex digest of the artifact (the `hash` field of the SignedArtifact).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed artifact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedArtifact'
+        '404':
+          description: Artifact not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ---------------------------------------------------------------------------
+  # Confidential — Provider port
+  # ---------------------------------------------------------------------------
+
+  /v1/provider/confidential/profiles/{artifact_hash}:
+    get:
+      operationId: getConfidentialProfile
+      summary: Get a confidential execution profile
+      description: >
+        Returns the signed `confidential_profile` artifact for a TEE service.
+        The profile describes the attestation platform, measurement, and
+        encryption parameters that a requester must verify before opening a
+        confidential session.
+      tags: [Confidential]
+      security: []
+      parameters:
+        - name: artifact_hash
+          in: path
+          required: true
+          description: SHA-256 hash of the confidential profile artifact.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed confidential profile artifact.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SignedArtifact'
+                  - type: object
+                    properties:
+                      payload:
+                        $ref: '#/components/schemas/ConfidentialProfilePayload'
+        '404':
+          description: Profile not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/confidential/sessions:
+    post:
+      operationId: openConfidentialSession
+      summary: Open a confidential execution session
+      description: >
+        Opens a TEE session for confidential workloads. The provider generates
+        an ephemeral key pair inside the TEE, obtains an attestation bundle,
+        and returns the signed session artifact alongside the attestation.
+        The requester must verify the attestation measurement matches the
+        expected value from the profile before encrypting any input.
+      tags: [Confidential]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >
+                Session open request. The exact fields mirror
+                `ConfidentialSessionOpenRequest` from `src/confidential.rs`.
+              properties:
+                profile_hash:
+                  type: string
+                  description: Hash of the confidential profile to use for this session.
+                requester_public_key:
+                  type: string
+                  description: >
+                    Requester's ephemeral curve25519 public key (hex). The
+                    provider will encrypt session output using this key.
+              additionalProperties: true
+      responses:
+        '200':
+          description: Session opened. Contains profile, session artifact, and attestation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - profile
+                  - session
+                  - attestation
+                properties:
+                  profile:
+                    allOf:
+                      - $ref: '#/components/schemas/SignedArtifact'
+                      - type: object
+                        properties:
+                          payload:
+                            $ref: '#/components/schemas/ConfidentialProfilePayload'
+                  session:
+                    allOf:
+                      - $ref: '#/components/schemas/SignedArtifact'
+                      - type: object
+                        properties:
+                          payload:
+                            $ref: '#/components/schemas/ConfidentialSessionPayload'
+                  attestation:
+                    $ref: '#/components/schemas/AttestationBundle'
+        '400':
+          description: Invalid request or profile not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: TEE error or internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/confidential/sessions/{session_id}:
+    get:
+      operationId: getConfidentialSession
+      summary: Get confidential session status
+      description: >
+        Returns the current state of a confidential session, including the
+        session artifact and attestation bundle. Use this to re-fetch session
+        details if needed (e.g. after a restart).
+      tags: [Confidential]
+      security: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          description: Session identifier returned by `POST /v1/provider/confidential/sessions`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session details.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - profile
+                  - session
+                  - attestation
+                properties:
+                  profile:
+                    allOf:
+                      - $ref: '#/components/schemas/SignedArtifact'
+                      - type: object
+                        properties:
+                          payload:
+                            $ref: '#/components/schemas/ConfidentialProfilePayload'
+                  session:
+                    allOf:
+                      - $ref: '#/components/schemas/SignedArtifact'
+                      - type: object
+                        properties:
+                          payload:
+                            $ref: '#/components/schemas/ConfidentialSessionPayload'
+                  attestation:
+                    $ref: '#/components/schemas/AttestationBundle'
+        '404':
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'

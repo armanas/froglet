@@ -1,9 +1,12 @@
+use hmac::{Hmac, Mac};
 use k256::schnorr::{
     Signature as SchnorrSignature, SigningKey, VerifyingKey,
     signature::{Signer, Verifier},
 };
 use k256::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
+
+type HmacSha256 = Hmac<Sha256>;
 
 pub use k256::schnorr::SigningKey as NodeSigningKey;
 
@@ -70,39 +73,12 @@ pub fn sha256_hex(input: impl AsRef<[u8]>) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// HMAC-SHA256 using the RFC 2104 construction.
-/// Returns the hex-encoded MAC.
+/// HMAC-SHA256 (RFC 2104). Returns the hex-encoded MAC.
 pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
-    const BLOCK_SIZE: usize = 64;
-    let key_block = if key.len() > BLOCK_SIZE {
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        let hashed: [u8; 32] = hasher.finalize().into();
-        let mut padded = [0u8; BLOCK_SIZE];
-        padded[..32].copy_from_slice(&hashed);
-        padded
-    } else {
-        let mut padded = [0u8; BLOCK_SIZE];
-        padded[..key.len()].copy_from_slice(key);
-        padded
-    };
-
-    let mut ipad = [0x36u8; BLOCK_SIZE];
-    let mut opad = [0x5cu8; BLOCK_SIZE];
-    for i in 0..BLOCK_SIZE {
-        ipad[i] ^= key_block[i];
-        opad[i] ^= key_block[i];
-    }
-
-    let mut inner_hasher = Sha256::new();
-    inner_hasher.update(ipad);
-    inner_hasher.update(message);
-    let inner_hash = inner_hasher.finalize();
-
-    let mut outer_hasher = Sha256::new();
-    outer_hasher.update(opad);
-    outer_hasher.update(inner_hash);
-    hex::encode(outer_hasher.finalize())
+    let mut mac =
+        HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts any key length");
+    mac.update(message);
+    hex::encode(mac.finalize().into_bytes())
 }
 
 #[cfg(test)]

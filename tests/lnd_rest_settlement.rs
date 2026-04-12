@@ -468,7 +468,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             events_query: 10,
             execute_wasm: 30,
         },
-        payment_backend: PaymentBackend::Lightning,
+        payment_backends: vec![PaymentBackend::Lightning],
         execution_timeout_secs: 10,
         lightning: LightningConfig {
             mode: LightningMode::LndRest,
@@ -479,6 +479,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             sync_interval_ms: 100,
             lnd_rest: Some(fake_lnd.config()),
         },
+        x402: None,
+        stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -516,6 +518,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             .expect("lnd rest config"),
     )
     .expect("cached lnd client");
+    let settlement_registry =
+        froglet::settlement::SettlementRegistry::new(&node_config.payment_backends);
 
     AppState {
         db: pool,
@@ -538,6 +542,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
+        settlement_registry,
     }
 }
 

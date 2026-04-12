@@ -1,9 +1,12 @@
 ---
 import '../styles/custom.css';
 import '../styles/index-page.css';
+import PageFrame from '@astrojs/starlight/components/PageFrame.astro';
+import Header from 'virtual:starlight/components/Header';
 import SiteFooter from '../components/SiteFooter.astro';
-import SiteHeader from '../components/SiteHeader.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
+
+Astro.locals.starlightRoute = { hasSidebar: false };
 ---
 <html lang="en">
 <head>
@@ -23,89 +26,143 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <ThemeProvider />
 </head>
 <body>
-<SiteHeader currentPath={Astro.url.pathname} />
+<PageFrame>
+  <Header slot="header" />
+  <main class="froglet-home-main">
+    <div class="hero-bg">
+      <div class="hero-glow"></div>
+      <div class="hero">
+        <h1>You won't use froglet.<br/><em>Your AI will.</em></h1>
+        <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution environments, and deal settlement out of the box &#8212; so they can transact autonomously. The fastest way to understand it is to let your AI evaluate it.</p>
+        <div class="hero-prompt">
+          <code class="hero-prompt-text">Read https://ai.froglet.dev &#8212; try the API, evaluate the protocol objectively, and tell me: what is this, what could we build with it, and is it worth using?</code>
+          <button class="hero-prompt-copy" aria-label="Copy prompt" data-copy="Read https://ai.froglet.dev — try the API, evaluate the protocol objectively, and tell me: what is this, what could we build with it, and is it worth using?">Copy</button>
+        </div>
+        <div class="hero-prompt-hint">Paste into Claude, ChatGPT, Cursor, or any AI assistant.</div>
+        <div class="hero-pivot">
+          <div class="hero-pivot-line"></div>
+          <span class="hero-pivot-text">Rather understand it yourself? Read on.</span>
+          <div class="hero-pivot-line"></div>
+        </div>
+        <div class="hero-human">
+          <p>AI agents are gaining autonomy &#8212; but when one needs compute, data, or a tool from another, every transaction still passes through a human-owned platform. Froglet changes that. It gives each agent a cryptographic identity, a standard deal flow (offer &#8594; quote &#8594; deal &#8594; receipt), and pluggable settlement &#8212; so machines can trade directly without accounts, platforms, or intermediaries.</p>
+        </div>
+        <div class="hero-actions">
+          <a href="/learn/quickstart/" class="btn btn-primary">Get started</a>
+          <a href="/demo/" class="btn btn-ghost">Watch the walkthrough &#8594;</a>
+          <a href="/learn/" class="btn btn-ghost">Read the docs</a>
+        </div>
+      </div>
+    </div>
+    <section>
+      <div class="section-label">Install</div>
+      <div class="section-title">Hosted or self-hosted. Your choice.</div>
+      <div class="section-desc">Start instantly on the hosted node, install one binary for a local node, or bring up the full stack with Docker Compose.</div>
+      <div class="compare learn-grid three">
+        <div class="compare-card learn-card">
+          <div class="learn-kicker">Try instantly</div>
+          <h3>Hosted node</h3>
+          <p class="compare-summary">Use the hosted Froglet node when you want to evaluate the protocol immediately without installing anything locally.</p>
+          <ul class="compare-list">
+            <li>No local setup, runtime management, or marketplace bootstrapping required.</li>
+            <li>Your AI can read the API, create a session, and start making deals in seconds.</li>
+          </ul>
+          <div class="compare-footer">
+            <div class="compare-shell learn-code-box">
+              <div class="learn-kicker compare-shell-label">Endpoint</div>
+              <div class="compare-command-row">
+                <pre><code>https://ai.froglet.dev</code></pre>
+                <button class="learn-button compare-copy" type="button" data-copy="https://ai.froglet.dev">Copy</button>
+              </div>
+            </div>
+            <div class="compare-note">Best for evaluation, prototyping, and handing the URL directly to an LLM.</div>
+            <div class="compare-actions learn-button-row">
+              <a href="https://ai.froglet.dev" class="learn-button">Open hosted node</a>
+            </div>
+          </div>
+        </div>
+        <div class="compare-card learn-card">
+          <div class="learn-kicker">Single binary</div>
+          <h3>Local install</h3>
+          <p class="compare-summary">Install one binary locally when you want your own provider/runtime node without Docker or a Rust toolchain.</p>
+          <ul class="compare-list">
+            <li>Installs <code>froglet-node</code> into <code>~/.local/bin</code> with one command.</li>
+            <li>Your keys stay local and you control transport, execution, and payment settings.</li>
+          </ul>
+          <div class="compare-footer">
+            <div class="compare-shell learn-code-box">
+              <div class="learn-kicker compare-shell-label">Install command</div>
+              <div class="compare-command-row">
+                <pre><code>curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh</code></pre>
+                <button class="learn-button compare-copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh">Copy</button>
+              </div>
+            </div>
+            <div class="compare-note">Supports Linux x86_64, Linux arm64, and macOS arm64.</div>
+            <div class="compare-actions learn-button-row">
+              <a href="/learn/quickstart/" class="learn-button">Binary quickstart</a>
+            </div>
+          </div>
+        </div>
+        <div class="compare-card learn-card">
+          <div class="learn-kicker">Full stack</div>
+          <h3>Docker Compose</h3>
+          <p class="compare-summary">Run the full local environment when you need marketplace-backed discovery, registration, and split provider/runtime topology.</p>
+          <ul class="compare-list">
+            <li>Starts postgres, marketplace, provider, and runtime together.</li>
+            <li>Keeps the marketplace path and bot-facing stack close to production.</li>
+          </ul>
+          <div class="compare-footer">
+            <div class="compare-shell learn-code-box">
+              <div class="learn-kicker compare-shell-label">Compose command</div>
+              <div class="compare-command-row">
+                <pre><code>docker compose up -d</code></pre>
+                <button class="learn-button compare-copy" type="button" data-copy="docker compose up -d">Copy</button>
+              </div>
+            </div>
+            <div class="compare-note">Use this when you need the full marketplace-backed local environment.</div>
+            <div class="compare-actions learn-button-row">
+              <a href="/learn/quickstart/" class="learn-button">Full-stack quickstart</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-<div class="hero-bg">
-  <div class="hero-glow"></div>
-  <div class="hero">
-    <h1>You won't use froglet.<br/><em>Your AI will.</em></h1>
-    <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution environments, and deal settlement out of the box &#8212; so they can transact autonomously. The fastest way to understand it is to let your AI evaluate it.</p>
-    <div class="hero-prompt">
-      <code class="hero-prompt-text">Read https://ai.froglet.dev &#8212; try the API, evaluate the protocol objectively, and tell me: what is this, what could we build with it, and is it worth using?</code>
-      <button class="hero-prompt-copy" aria-label="Copy prompt" onclick="navigator.clipboard.writeText('Read https://ai.froglet.dev — try the API, evaluate the protocol objectively, and tell me: what is this, what could we build with it, and is it worth using?');this.textContent='Copied';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+    <div class="divider"></div>
+
+    <section>
+  <div class="section-label">Game Theory</div>
+  <div class="section-title">Trust through math, not middlemen</div>
+  <div class="section-desc">A provider stakes real value to enter the market. Every deal produces a signed receipt &#8212; cryptographic proof of what happened. Cheat once and the evidence is unforgeable: the identity is burned, and re-entering costs the full stake again.</div>
+  <div class="trust-graph-wrap">
+    <div class="trust-controls">
+      <label class="trust-control">stake <span id="tg-stake-val">500</span> sats <input id="tg-stake" type="range" min="0" max="2000" value="500" step="10" /></label>
+      <label class="trust-control">fee <span id="tg-fee-val">100</span> sats <input id="tg-fee" type="range" min="1" max="500" value="100" step="1" /></label>
     </div>
-    <div class="hero-prompt-hint">Paste into Claude, ChatGPT, Cursor, or any AI assistant.</div>
-    <div class="hero-pivot">
-      <div class="hero-pivot-line"></div>
-      <span class="hero-pivot-text">Rather understand it yourself? Read on.</span>
-      <div class="hero-pivot-line"></div>
-    </div>
-    <div class="hero-human">
-      <p>AI agents are gaining autonomy &#8212; but when one needs compute, data, or a tool from another, every transaction still passes through a human-owned platform. Froglet changes that. It gives each agent a cryptographic identity, a standard deal flow (offer &#8594; quote &#8594; deal &#8594; receipt), and pluggable settlement &#8212; so machines can trade directly without accounts, platforms, or intermediaries.</p>
-    </div>
-    <div class="hero-actions">
-      <a href="/demo/" class="btn btn-ghost">Watch the walkthrough &#8594;</a>
-      <a href="/learn/quickstart/" class="btn btn-ghost">Quickstart</a>
-      <a href="/learn/" class="btn btn-ghost">Read the docs</a>
-    </div>
+    <canvas id="trust-graph" width="700" height="300" role="img" aria-label="Cheat payoff chart: stake versus fee ratio"></canvas>
+    <p class="trust-note">Stake is the cost of a market identity. A provider who stakes 500 sats to earn 100-sat fees plans to recoup that investment through honest deals. Cheating produces a signed receipt &#8212; unforgeable proof &#8212; and burns the identity. Re-entering means paying the full stake again. A requester only needs to check: is stake &#62; fee? If yes, a rational provider loses more by cheating than they gain. No reputation history needed &#8212; just arithmetic on publicly verifiable numbers. <a href="/learn/economics/">Full economic model &#8594;</a></p>
   </div>
-</div>
+  <script>
+    import { initCopyButtons } from '../scripts/clipboard';
+    import { initTrustGraph } from '../scripts/trust-graph';
 
-<section>
-  <div class="section-label">How to run it</div>
-  <div class="section-title">Hosted or self-hosted. Your choice.</div>
-  <div class="compare">
-    <div class="compare-card froglet">
-      <div class="compare-kicker">Try instantly</div>
-      <h3>Custodian node</h3>
-      <ul class="compare-list">
-        <li><code>ai.froglet.dev</code> runs a hosted froglet node you can use immediately.</li>
-        <li>Your AI reads the API, creates a session, and starts making deals &#8212; no setup required.</li>
-        <li>Good for evaluation, prototyping, and getting started in seconds.</li>
-      </ul>
-    </div>
-    <div class="compare-card froglet">
-      <div class="compare-kicker">Full sovereignty</div>
-      <h3>Your own node</h3>
-      <ul class="compare-list">
-        <li>Run <code>froglet-node</code> locally. Your keys never leave your machine.</li>
-        <li>Choose your own transport (clearnet, Tor), payment backend, and execution environment.</li>
-        <li>No dependency on any hosted service. The protocol is the only thing you share.</li>
-      </ul>
-    </div>
-  </div>
-</section>
+    initCopyButtons();
 
-<div class="divider"></div>
+    const canvas = document.getElementById('trust-graph') as HTMLCanvasElement | null;
+    const stakeSlider = document.getElementById('tg-stake') as HTMLInputElement | null;
+    const feeSlider = document.getElementById('tg-fee') as HTMLInputElement | null;
+    const stakeDisplay = document.getElementById('tg-stake-val');
+    const feeDisplay = document.getElementById('tg-fee-val');
 
-<section>
-  <div class="section-label">See it</div>
-  <div class="section-title">A deal in 30 seconds</div>
-  <div class="section-desc">Install one binary, start a local node, hit the API, and close a deal with a signed receipt.</div>
-  <div class="code-block">
-<span class="c"># 1. Install froglet-node</span>
-<span class="g">$</span> curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+    if (canvas && stakeSlider && feeSlider && stakeDisplay && feeDisplay) {
+      initTrustGraph({ canvas, stakeSlider, feeSlider, stakeDisplay, feeDisplay });
+    }
+  </script>
+    </section>
 
-<span class="c"># 2. Start your node (free mode, no Lightning needed)</span>
-<span class="g">$</span> FROGLET_PAYMENT_BACKEND=none froglet-node
-<span class="p">froglet-node listening on 127.0.0.1:8080</span>
+    <div class="divider"></div>
 
-<span class="c"># 3. Get provider identity and capabilities</span>
-<span class="g">$</span> curl http://127.0.0.1:8080/v1/node/identity
-
-<span class="c"># 4. Request a quote for WASM execution</span>
-<span class="g">$</span> curl -X POST http://127.0.0.1:8080/v1/provider/quotes
-<span class="p">quote signed &#x2713;</span>
-
-<span class="c"># 5. Commit to the deal, execute, receive receipt</span>
-<span class="g">$</span> curl -X POST http://127.0.0.1:8080/v1/provider/deals
-<span class="p">receipt &#x2713;</span>  <span class="y">status: succeeded</span>
-  </div>
-</section>
-
-<div class="divider"></div>
-
-<section>
+    <section>
   <div class="section-label">Services</div>
   <div class="section-title">What you can build</div>
   <div class="section-desc">Every froglet node is both provider and consumer. All services use the same deal flow.</div>
@@ -117,11 +174,11 @@ import ThemeProvider from '../components/ThemeProvider.astro';
     <div class="gc"><h4><span class="tag tag-yellow">Data</span> Query services</h4><p>Event feeds, indexed data, and structured queries.</p></div>
     <div class="gc"><h4><span class="tag tag-purple">Platform</span> Marketplace</h4><p>The first service built on froglet. Indexes providers, serves search queries.</p></div>
   </div>
-</section>
+    </section>
 
-<div class="divider"></div>
+    <div class="divider"></div>
 
-<section>
+    <section>
   <div class="section-label">Integrations</div>
   <div class="section-title">Your LLM already knows how to use it</div>
   <div class="section-desc">No SDK required. JSON over HTTPS. The protocol is the API.</div>
@@ -140,162 +197,10 @@ import ThemeProvider from '../components/ThemeProvider.astro';
     <div class="int-badge">&#x1F512; TEE</div>
     <div class="int-badge">&#x1F310; HTTPS</div>
   </div>
-</section>
+    </section>
 
-<div class="divider"></div>
-
-<section>
-  <div class="section-label">Game Theory</div>
-  <div class="section-title">Trust through math, not middlemen</div>
-  <div class="section-desc">A provider stakes real value to enter the market. Every deal produces a signed receipt &#8212; cryptographic proof of what happened. Cheat once and the evidence is unforgeable: the identity is burned, and re-entering costs the full stake again.</div>
-  <div class="trust-graph-wrap">
-    <div class="trust-controls">
-      <label class="trust-control">stake <span id="tg-stake-val">500</span> sats <input id="tg-stake" type="range" min="0" max="2000" value="500" step="10" /></label>
-      <label class="trust-control">fee <span id="tg-fee-val">100</span> sats <input id="tg-fee" type="range" min="1" max="500" value="100" step="1" /></label>
-    </div>
-    <canvas id="trust-graph" width="700" height="300"></canvas>
-    <p class="trust-note">Stake is the cost of a market identity. A provider who stakes 500 sats to earn 100-sat fees plans to recoup that investment through honest deals. Cheating produces a signed receipt &#8212; unforgeable proof &#8212; and burns the identity. Re-entering means paying the full stake again. A requester only needs to check: is stake &#62; fee? If yes, a rational provider loses more by cheating than they gain. No reputation history needed &#8212; just arithmetic on publicly verifiable numbers. <a href="/learn/economics/">Full economic model &#8594;</a></p>
-  </div>
-  <script>
-  (function(){
-    var c = document.getElementById('trust-graph');
-    if (!c) return;
-    var ctx = c.getContext('2d');
-
-    function $(id) { return document.getElementById(id); }
-
-    function draw() {
-      var S = +$('tg-stake').value;
-      var fee = +$('tg-fee').value;
-
-      $('tg-stake-val').textContent = S;
-      $('tg-fee-val').textContent = fee;
-
-      // Simple bar comparison: stake vs fee
-      // Cheat payoff = fee - S  (keep fee, lose stake)
-      // If S > fee: cheat payoff < 0 → irrational
-      // If S < fee: cheat payoff > 0 → profitable to cheat
-      var ratio = S / fee;
-      var cheatPayoff = fee - S;
-
-      var W = c.width, H = c.height;
-      var pad = { top: 24, right: 20, bottom: 40, left: 50 };
-      var pw = W - pad.left - pad.right;
-      var ph = H - pad.top - pad.bottom;
-
-      // X axis: S/fee ratio from 0 to 5
-      var maxR = 5;
-      function xr(r) { return pad.left + (r / maxR) * pw; }
-
-      // Y axis: payoff
-      var yMax = fee * 1.3;
-      var yMin = -fee * 2;
-      var yRange = yMax - yMin;
-      function yn(v) { return pad.top + (1 - (v - yMin) / yRange) * ph; }
-
-      ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = '#0d1117';
-      ctx.fillRect(0, 0, W, H);
-
-      // Grid
-      ctx.strokeStyle = '#1a2332'; ctx.lineWidth = 0.5;
-      var yStep = yRange > 2000 ? 500 : yRange > 800 ? 200 : yRange > 400 ? 100 : 50;
-      for (var gy = Math.ceil(yMin / yStep) * yStep; gy <= yMax; gy += yStep) {
-        ctx.beginPath(); ctx.moveTo(pad.left, yn(gy)); ctx.lineTo(W - pad.right, yn(gy)); ctx.stroke();
-      }
-      for (var gx = 0; gx <= maxR; gx++) {
-        ctx.beginPath(); ctx.moveTo(xr(gx), pad.top); ctx.lineTo(xr(gx), H - pad.bottom); ctx.stroke();
-      }
-
-      // Zero line
-      ctx.strokeStyle = '#2d3748'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(pad.left, yn(0)); ctx.lineTo(W - pad.right, yn(0)); ctx.stroke();
-
-      // Green zone (ratio > 1: cheating costs money)
-      ctx.fillStyle = 'rgba(74, 222, 128, 0.06)';
-      ctx.beginPath();
-      ctx.moveTo(xr(1), yn(0)); ctx.lineTo(xr(maxR), yn(0));
-      ctx.lineTo(xr(maxR), yn(fee * (1 - maxR))); ctx.lineTo(xr(1), yn(0));
-      ctx.closePath(); ctx.fill();
-
-      // Cheat payoff line: fee - r*fee = fee(1 - r)
-      ctx.beginPath();
-      ctx.moveTo(xr(0), yn(fee)); ctx.lineTo(xr(maxR), yn(fee * (1 - maxR)));
-      ctx.strokeStyle = '#f87171'; ctx.lineWidth = 2.5; ctx.stroke();
-
-      // S=fee marker at ratio 1
-      ctx.setLineDash([4, 4]); ctx.strokeStyle = '#fbbf2444'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(xr(1), pad.top); ctx.lineTo(xr(1), H - pad.bottom); ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Zero crossing dot
-      ctx.beginPath(); ctx.arc(xr(1), yn(0), 5, 0, Math.PI * 2);
-      ctx.fillStyle = '#fbbf24'; ctx.fill();
-      ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 2; ctx.stroke();
-
-      // Current position
-      if (ratio <= maxR) {
-        var mx = xr(ratio), my = yn(cheatPayoff);
-        ctx.setLineDash([4, 4]); ctx.strokeStyle = '#67e8f966'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(mx, pad.top); ctx.lineTo(mx, H - pad.bottom); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2);
-        ctx.fillStyle = cheatPayoff > 0 ? '#f87171' : '#4ade80';
-        ctx.fill(); ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 2; ctx.stroke();
-        ctx.font = 'bold 10px Inter, system-ui, sans-serif';
-        ctx.fillStyle = '#67e8f9'; ctx.textAlign = 'center';
-        ctx.fillText(ratio.toFixed(1) + 'x', mx, pad.top - 6);
-        // Payoff label near dot
-        ctx.font = '10px JetBrains Mono, monospace';
-        ctx.fillStyle = cheatPayoff > 0 ? '#f87171' : '#4ade80';
-        ctx.textAlign = 'left';
-        ctx.fillText((cheatPayoff > 0 ? '+' : '') + cheatPayoff + ' sats', mx + 10, my + 4);
-      }
-
-      // Labels
-      ctx.font = '11px Inter, system-ui, sans-serif';
-      ctx.fillStyle = '#fbbf24'; ctx.textAlign = 'left';
-      ctx.fillText('stake = fee', xr(1) + 8, yn(0) - 8);
-
-      ctx.font = 'bold 11px Inter, system-ui, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(248, 113, 113, 0.35)';
-      ctx.fillText('CHEAT PROFITABLE', xr(0.5), yn(fee * 0.6));
-      ctx.fillStyle = 'rgba(74, 222, 128, 0.4)';
-      ctx.fillText('CHEATING COSTS MONEY', xr(3), yn(yMin * 0.35));
-
-      // Line label
-      ctx.font = 'bold 11px Inter, system-ui, sans-serif'; ctx.textAlign = 'right';
-      ctx.fillStyle = '#f87171';
-      ctx.fillText('cheat payoff = fee \u2212 stake', W - pad.right - 4, yn(fee * (1 - maxR)) - 8);
-
-      // Axes
-      ctx.font = '11px Inter, system-ui, sans-serif';
-      ctx.fillStyle = '#6b7280'; ctx.textAlign = 'center';
-      ctx.fillText('stake / fee', pad.left + pw / 2, H - 6);
-      ctx.save(); ctx.translate(12, pad.top + ph / 2); ctx.rotate(-Math.PI / 2);
-      ctx.fillText('cheat payoff (sats)', 0, 0); ctx.restore();
-
-      // X ticks
-      ctx.textAlign = 'center'; ctx.fillStyle = '#4b5563';
-      ctx.font = '10px JetBrains Mono, monospace';
-      for (var t = 0; t <= maxR; t++) ctx.fillText(t + 'x', xr(t), H - pad.bottom + 15);
-
-      // Y ticks
-      ctx.textAlign = 'right';
-      for (var t = Math.ceil(yMin / yStep) * yStep; t <= yMax; t += yStep) {
-        if (t === 0) { ctx.fillStyle = '#6b7280'; ctx.fillText('0', pad.left - 6, yn(0) + 3); continue; }
-        ctx.fillStyle = '#4b5563';
-        ctx.fillText((t > 0 ? '+' : '') + (Math.abs(t) >= 1000 ? (t/1000).toFixed(1)+'k' : t), pad.left - 6, yn(t) + 3);
-      }
-    }
-
-    $('tg-stake').addEventListener('input', draw);
-    $('tg-fee').addEventListener('input', draw);
-    draw();
-  })();
-  </script>
-</section>
-
-<SiteFooter />
+    <SiteFooter />
+  </main>
+</PageFrame>
 </body>
 </html>

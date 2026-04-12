@@ -25,6 +25,12 @@ pub const ARTIFACT_KIND_CONFIDENTIAL_PROFILE: &str = ARTIFACT_TYPE_CONFIDENTIAL_
 pub const ARTIFACT_KIND_CONFIDENTIAL_SESSION: &str = ARTIFACT_TYPE_CONFIDENTIAL_SESSION;
 pub const TRANSPORT_KIND_INVOICE_BUNDLE: &str = TRANSPORT_TYPE_INVOICE_BUNDLE;
 
+// Payment method identifiers
+pub const PAYMENT_METHOD_FREE: &str = "free";
+pub const PAYMENT_METHOD_LIGHTNING: &str = "lightning";
+pub const PAYMENT_METHOD_X402_USDC: &str = "x402_usdc";
+pub const PAYMENT_METHOD_STRIPE_MPP: &str = "stripe_mpp";
+
 pub const LINKED_IDENTITY_KIND_NOSTR: &str = "nostr";
 pub const LINKED_IDENTITY_SCOPE_PUBLICATION_NOSTR: &str = "publication.nostr";
 pub const LINKED_IDENTITY_SIGNATURE_ALGORITHM_BIP340: &str = "secp256k1_schnorr_bip340";
@@ -115,6 +121,10 @@ pub struct DescriptorPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transport_endpoints: Vec<TransportEndpoint>,
     pub capabilities: DescriptorCapabilities,
+    // Payment methods accepted by this node. Backward-compatible: old descriptors
+    // without this field deserialize with an empty vec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_payment_methods: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

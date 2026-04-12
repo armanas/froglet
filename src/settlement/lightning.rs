@@ -4,51 +4,28 @@ use crate::{
     db::{self, LightningInvoiceBundleRecord},
     deals,
     lnd::{LndRestClient, LndRestError},
-    pricing::ServiceId,
     protocol::{
-        InvoiceBundleLeg, InvoiceBundleLegState, InvoiceBundlePayload, QuotePayload,
-        QuoteSettlementTerms, SettlementStatus, SignedArtifact, TRANSPORT_KIND_INVOICE_BUNDLE,
-        sign_artifact, verify_artifact,
+        DealPayload, InvoiceBundleLeg, InvoiceBundleLegState, InvoiceBundlePayload, QuotePayload,
+        QuoteSettlementTerms, SignedArtifact, TRANSPORT_KIND_INVOICE_BUNDLE, sign_artifact,
+        verify_artifact,
     },
     state::AppState,
 };
-use axum::http::StatusCode;
 use futures::future::BoxFuture;
 use lightning_invoice::Bolt11Invoice;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+
+use super::{
+    PaymentError, PaymentReservation, PaymentReceipt, PreparePaymentRequest,
+    SettlementDriver, SettlementDriverDescriptor, WalletBalanceSnapshot, current_unix_timestamp,
+    new_request_id,
+};
 
 pub const LIGHTNING_MOCK_MODE: &str = "mock_hold_invoice";
 pub const LIGHTNING_LND_REST_MODE: &str = "lnd_rest";
 const LND_INVOICE_EXPIRY_GUARD_SECS: u64 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProvidedPayment {
-    pub kind: String,
-    pub token: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PaymentReservation {
-    pub request_id: String,
-    pub method: String,
-    pub service_id: ServiceId,
-    pub amount_sats: u64,
-    pub token_hash: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PaymentReceipt {
-    pub service_id: String,
-    pub method: String,
-    pub settlement_status: SettlementStatus,
-    pub reserved_amount_sats: u64,
-    pub committed_amount_sats: u64,
-    pub token_hash: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settlement_reference: Option<String>,
-}
+// ─── Public lightning-specific types ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildLightningInvoiceBundleRequest {
@@ -133,256 +110,40 @@ pub struct LightningWalletIntent {
     pub release_action: Option<LightningWalletReleaseAction>,
 }
 
-impl PaymentReservation {
-    pub fn receipt(
-        &self,
-        settlement_status: SettlementStatus,
-        committed_amount_sats: u64,
-        settlement_reference: Option<String>,
-    ) -> PaymentReceipt {
-        PaymentReceipt {
-            service_id: self.service_id.as_str().to_string(),
-            method: self.method.clone(),
-            settlement_status,
-            reserved_amount_sats: self.amount_sats,
-            committed_amount_sats,
-            token_hash: self.token_hash.clone(),
-            settlement_reference,
-        }
-    }
+// ─── Private internal types ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MockBolt11Fields {
+    prefix: String,
+    amount_msat: u64,
+    payment_hash: String,
+    expires_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SettlementDriverDescriptor {
-    pub backend: String,
-    pub mode: String,
-    pub accepted_payment_methods: Vec<String>,
-    pub capabilities: Vec<String>,
-    pub reservations: bool,
-    pub receipts: bool,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedLightningInvoice {
+    amount_msat: u64,
+    payment_hash: String,
+    expires_at: i64,
+    destination_identity: String,
+    min_final_cltv_expiry: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct WalletBalanceSnapshot {
-    pub backend: String,
-    pub mode: String,
-    pub balance_known: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub balance_sats: Option<u64>,
-    pub accepted_payment_methods: Vec<String>,
-    pub capabilities: Vec<String>,
-    pub reservations: bool,
-    pub receipts: bool,
+struct LightningInvoiceBundleSignature {
+    session_id: String,
+    provider_id: String,
+    request: BuildLightningInvoiceBundleRequest,
+    base_invoice_expiry_secs: u64,
+    success_hold_expiry_secs: u64,
+    destination_identity: String,
+    base_invoice_bolt11: String,
+    base_payment_hash: String,
+    base_state: InvoiceBundleLegState,
+    success_hold_invoice_bolt11: String,
+    success_state: InvoiceBundleLegState,
 }
 
-impl WalletBalanceSnapshot {
-    fn from_descriptor(descriptor: SettlementDriverDescriptor) -> Self {
-        Self {
-            backend: descriptor.backend,
-            mode: descriptor.mode,
-            balance_known: false,
-            balance_sats: None,
-            accepted_payment_methods: descriptor.accepted_payment_methods,
-            capabilities: descriptor.capabilities,
-            reservations: descriptor.reservations,
-            receipts: descriptor.receipts,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct PreparePaymentRequest {
-    pub service_id: ServiceId,
-    pub price_sats: u64,
-    pub payment: Option<ProvidedPayment>,
-    pub request_id: Option<String>,
-}
-
-#[derive(Debug, Error)]
-pub enum PaymentError {
-    #[error("payment required")]
-    PaymentRequired {
-        service_id: String,
-        price_sats: u64,
-        accepted_payment_methods: Vec<String>,
-    },
-    #[error("unsupported payment kind")]
-    UnsupportedKind {
-        service_id: String,
-        price_sats: u64,
-        kind: String,
-        accepted_payment_methods: Vec<String>,
-    },
-    #[error("payment backend unavailable")]
-    BackendUnavailable {
-        service_id: String,
-        price_sats: u64,
-        backend: String,
-    },
-    #[error("database error: {0}")]
-    Database(String),
-}
-
-impl PaymentError {
-    pub fn status_code(&self) -> StatusCode {
-        match self {
-            PaymentError::PaymentRequired { .. } => StatusCode::PAYMENT_REQUIRED,
-            PaymentError::UnsupportedKind { .. } => StatusCode::BAD_REQUEST,
-            PaymentError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            PaymentError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    pub fn details(&self) -> serde_json::Value {
-        match self {
-            PaymentError::PaymentRequired {
-                service_id,
-                price_sats,
-                accepted_payment_methods,
-            } => serde_json::json!({
-                "error": "payment required",
-                "service_id": service_id,
-                "price_sats": price_sats,
-                "accepted_payment_methods": accepted_payment_methods
-            }),
-            PaymentError::UnsupportedKind {
-                service_id,
-                price_sats,
-                kind,
-                accepted_payment_methods,
-            } => serde_json::json!({
-                "error": format!("unsupported payment kind: {kind}"),
-                "service_id": service_id,
-                "price_sats": price_sats,
-                "accepted_payment_methods": accepted_payment_methods
-            }),
-            PaymentError::BackendUnavailable {
-                service_id,
-                price_sats,
-                backend,
-            } => serde_json::json!({
-                "error": "payment backend unavailable",
-                "service_id": service_id,
-                "price_sats": price_sats,
-                "backend": backend
-            }),
-            PaymentError::Database(message) => {
-                tracing::error!("Settlement database error: {message}");
-                serde_json::json!({
-                    "error": "internal settlement database error"
-                })
-            }
-        }
-    }
-}
-
-pub trait SettlementDriver: Send + Sync {
-    fn descriptor(&self, state: &AppState) -> SettlementDriverDescriptor;
-
-    fn wallet_balance<'a>(
-        &'a self,
-        state: &'a AppState,
-    ) -> BoxFuture<'a, Result<WalletBalanceSnapshot, PaymentError>>;
-
-    fn prepare<'a>(
-        &'a self,
-        state: &'a AppState,
-        request: PreparePaymentRequest,
-    ) -> BoxFuture<'a, Result<Option<PaymentReservation>, PaymentError>>;
-
-    fn commit<'a>(
-        &'a self,
-        state: &'a AppState,
-        reservation: PaymentReservation,
-    ) -> BoxFuture<'a, Result<PaymentReceipt, PaymentError>>;
-
-    fn release<'a>(
-        &'a self,
-        state: &'a AppState,
-        reservation: &'a PaymentReservation,
-    ) -> BoxFuture<'a, Result<(), String>>;
-}
-
-pub fn driver_descriptor(state: &AppState) -> SettlementDriverDescriptor {
-    selected_driver(state).descriptor(state)
-}
-
-pub fn accepted_payment_methods(state: &AppState) -> Vec<String> {
-    driver_descriptor(state).accepted_payment_methods
-}
-
-pub async fn wallet_balance_snapshot(
-    state: &AppState,
-) -> Result<WalletBalanceSnapshot, PaymentError> {
-    selected_driver(state).wallet_balance(state).await
-}
-
-pub async fn prepare_payment(
-    state: &AppState,
-    service_id: ServiceId,
-    payment: Option<ProvidedPayment>,
-    request_id: Option<String>,
-) -> Result<Option<PaymentReservation>, PaymentError> {
-    let price_sats = state.pricing.price_for(service_id);
-    prepare_payment_for_amount(state, service_id, price_sats, payment, request_id).await
-}
-
-pub async fn prepare_payment_for_amount(
-    state: &AppState,
-    service_id: ServiceId,
-    price_sats: u64,
-    payment: Option<ProvidedPayment>,
-    request_id: Option<String>,
-) -> Result<Option<PaymentReservation>, PaymentError> {
-    selected_driver(state)
-        .prepare(
-            state,
-            PreparePaymentRequest {
-                service_id,
-                price_sats,
-                payment,
-                request_id,
-            },
-        )
-        .await
-}
-
-pub async fn commit_payment(
-    state: &AppState,
-    reservation: PaymentReservation,
-) -> Result<PaymentReceipt, PaymentError> {
-    selected_driver(state).commit(state, reservation).await
-}
-
-pub async fn release_payment(
-    state: &AppState,
-    reservation: &PaymentReservation,
-) -> Result<(), String> {
-    selected_driver(state).release(state, reservation).await
-}
-
-pub fn current_unix_timestamp() -> i64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(error) => {
-            tracing::error!("System clock is before the Unix epoch: {error}");
-            0
-        }
-    }
-}
-
-fn selected_driver(state: &AppState) -> &'static dyn SettlementDriver {
-    match state.config.payment_backend {
-        PaymentBackend::None => &NO_SETTLEMENT_DRIVER,
-        PaymentBackend::Lightning => &LIGHTNING_DRIVER,
-    }
-}
-
-fn new_request_id() -> String {
-    let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
+// ─── Helper functions ─────────────────────────────────────────────────────────
 
 fn deterministic_base_fee_preimage_hex(state: &AppState, session_id: &str) -> String {
     state
@@ -398,6 +159,280 @@ fn deterministic_base_fee_payment_hash(
         .map_err(|e| format!("invalid hex preimage: {e}"))?;
     Ok(crypto::sha256_hex(preimage_bytes))
 }
+
+fn lnd_rest_client(state: &AppState) -> Result<LndRestClient, String> {
+    state
+        .lnd_rest_client
+        .as_ref()
+        .map(|client| client.as_ref().clone())
+        .ok_or_else(|| "missing lnd_rest configuration".to_string())
+}
+
+fn configured_lightning_destination_identity(state: &AppState) -> String {
+    state
+        .config
+        .lightning
+        .destination_identity
+        .clone()
+        .unwrap_or_else(|| state.identity.compressed_public_key_hex().to_string())
+}
+
+fn mock_bolt11(prefix: &str, amount_msat: u64, payment_hash: &str, expires_at: i64) -> String {
+    format!("lnmock-{prefix}-{amount_msat}-{payment_hash}-{expires_at}")
+}
+
+fn parse_mock_bolt11(invoice: &str) -> Result<MockBolt11Fields, String> {
+    let Some(rest) = invoice.strip_prefix("lnmock-") else {
+        return Err("invoice is not in Froglet mock Lightning format".to_string());
+    };
+    let mut parts = rest.splitn(4, '-');
+    let prefix = parts
+        .next()
+        .ok_or_else(|| "missing invoice prefix".to_string())?;
+    let amount_msat = parts
+        .next()
+        .ok_or_else(|| "missing invoice amount".to_string())?
+        .parse::<u64>()
+        .map_err(|_| "invalid invoice amount".to_string())?;
+    let payment_hash = parts
+        .next()
+        .ok_or_else(|| "missing invoice payment hash".to_string())?
+        .to_string();
+    let expires_at = parts
+        .next()
+        .ok_or_else(|| "missing invoice expiry".to_string())?
+        .parse::<i64>()
+        .map_err(|_| "invalid invoice expiry".to_string())?;
+
+    Ok(MockBolt11Fields {
+        prefix: prefix.to_string(),
+        amount_msat,
+        payment_hash,
+        expires_at,
+    })
+}
+
+fn decode_lightning_invoice(invoice: &str) -> Result<DecodedLightningInvoice, String> {
+    if let Ok(mock) = parse_mock_bolt11(invoice) {
+        return Ok(DecodedLightningInvoice {
+            amount_msat: mock.amount_msat,
+            payment_hash: mock.payment_hash,
+            expires_at: mock.expires_at,
+            destination_identity: String::new(),
+            min_final_cltv_expiry: 0,
+        });
+    }
+
+    let invoice = invoice
+        .parse::<Bolt11Invoice>()
+        .map_err(|error| error.to_string())?;
+    let amount_msat = invoice
+        .amount_milli_satoshis()
+        .ok_or_else(|| "invoice is missing an amount".to_string())?;
+    let expires_at = invoice
+        .expires_at()
+        .ok_or_else(|| "invoice expiry overflowed".to_string())?
+        .as_secs() as i64;
+    let destination_identity = hex::encode(invoice.get_payee_pub_key().serialize());
+
+    Ok(DecodedLightningInvoice {
+        amount_msat,
+        payment_hash: invoice.payment_hash().to_string(),
+        expires_at,
+        destination_identity,
+        min_final_cltv_expiry: invoice.min_final_cltv_expiry_delta() as u32,
+    })
+}
+
+fn map_invoice_state(state: crate::lnd::InvoiceState) -> InvoiceBundleLegState {
+    match state {
+        crate::lnd::InvoiceState::Open => InvoiceBundleLegState::Open,
+        crate::lnd::InvoiceState::Accepted => InvoiceBundleLegState::Accepted,
+        crate::lnd::InvoiceState::Settled => InvoiceBundleLegState::Settled,
+        crate::lnd::InvoiceState::Canceled => InvoiceBundleLegState::Canceled,
+    }
+}
+
+fn map_lightning_bundle_record(
+    record: LightningInvoiceBundleRecord,
+) -> LightningInvoiceBundleSession {
+    LightningInvoiceBundleSession {
+        session_id: record.session_id,
+        bundle: record.bundle,
+        base_state: record.base_state,
+        success_state: record.success_state,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+fn expire_open_invoice_legs_if_due(
+    session: LightningInvoiceBundleSession,
+    now: i64,
+) -> Result<Option<(InvoiceBundleLegState, InvoiceBundleLegState)>, String> {
+    let mut base_state = session.base_state.clone();
+    let mut success_state = session.success_state.clone();
+
+    if matches!(base_state, InvoiceBundleLegState::Open) {
+        let decoded = decode_lightning_invoice(&session.bundle.payload.base_fee.invoice_bolt11)?;
+        if now >= decoded.expires_at {
+            base_state = InvoiceBundleLegState::Expired;
+        }
+    }
+
+    if matches!(success_state, InvoiceBundleLegState::Open) {
+        let decoded = decode_lightning_invoice(&session.bundle.payload.success_fee.invoice_bolt11)?;
+        if now >= decoded.expires_at {
+            success_state = InvoiceBundleLegState::Expired;
+        }
+    }
+
+    if base_state == session.base_state && success_state == session.success_state {
+        Ok(None)
+    } else {
+        Ok(Some((base_state, success_state)))
+    }
+}
+
+fn sign_lightning_invoice_bundle(
+    state: &AppState,
+    signature: LightningInvoiceBundleSignature,
+) -> Result<LightningInvoiceBundleSession, String> {
+    let base_expires_at = signature.request.created_at + signature.base_invoice_expiry_secs as i64;
+    let success_expires_at =
+        signature.request.created_at + signature.success_hold_expiry_secs as i64;
+    let bundle_expires_at = base_expires_at.max(success_expires_at);
+    let bundle = sign_artifact(
+        &signature.provider_id,
+        |message| state.identity.sign_message_hex(message),
+        TRANSPORT_KIND_INVOICE_BUNDLE,
+        signature.request.created_at,
+        InvoiceBundlePayload {
+            provider_id: signature.provider_id.clone(),
+            requester_id: signature.request.requester_id.clone(),
+            quote_hash: signature.request.quote_hash.clone(),
+            deal_hash: signature.request.deal_hash.clone(),
+            expires_at: bundle_expires_at,
+            destination_identity: signature.destination_identity,
+            base_fee: InvoiceBundleLeg {
+                amount_msat: signature.request.base_fee_msat,
+                invoice_bolt11: signature.base_invoice_bolt11.clone(),
+                invoice_hash: crypto::sha256_hex(signature.base_invoice_bolt11.as_bytes()),
+                payment_hash: signature.base_payment_hash,
+                state: signature.base_state.clone(),
+            },
+            success_fee: InvoiceBundleLeg {
+                amount_msat: signature.request.success_fee_msat,
+                invoice_bolt11: signature.success_hold_invoice_bolt11.clone(),
+                invoice_hash: crypto::sha256_hex(
+                    signature.success_hold_invoice_bolt11.as_bytes(),
+                ),
+                payment_hash: signature.request.success_payment_hash.clone(),
+                state: signature.success_state.clone(),
+            },
+            min_final_cltv_expiry: state.config.lightning.min_final_cltv_expiry,
+        },
+    )?;
+
+    Ok(LightningInvoiceBundleSession {
+        session_id: signature.session_id,
+        bundle,
+        base_state: signature.base_state,
+        success_state: signature.success_state,
+        created_at: signature.request.created_at,
+        updated_at: signature.request.created_at,
+    })
+}
+
+fn effective_bundle_expiry_secs(
+    state: &AppState,
+    request: &BuildLightningInvoiceBundleRequest,
+) -> Result<(u64, u64), String> {
+    let mut base_invoice_expiry_secs = state.config.lightning.base_invoice_expiry_secs;
+    let mut success_hold_expiry_secs = state.config.lightning.success_hold_expiry_secs;
+
+    if let Some(admission_deadline) = request.admission_deadline {
+        let remaining_secs = admission_deadline.saturating_sub(request.created_at);
+        if remaining_secs <= 0 {
+            return Err(
+                "deal admission_deadline passed before lightning invoice bundle issuance"
+                    .to_string(),
+            );
+        }
+        let remaining_secs = remaining_secs as u64;
+        base_invoice_expiry_secs = base_invoice_expiry_secs.min(remaining_secs);
+        success_hold_expiry_secs = success_hold_expiry_secs.min(remaining_secs);
+    }
+
+    Ok((base_invoice_expiry_secs, success_hold_expiry_secs))
+}
+
+fn guarded_lnd_invoice_expiry_secs(expiry_secs: u64) -> u64 {
+    expiry_secs
+        .saturating_sub(LND_INVOICE_EXPIRY_GUARD_SECS)
+        .max(1)
+}
+
+fn push_bundle_issue(
+    issues: &mut Vec<InvoiceBundleValidationIssue>,
+    code: &str,
+    message: impl Into<String>,
+) {
+    issues.push(InvoiceBundleValidationIssue {
+        code: code.to_string(),
+        message: message.into(),
+    });
+}
+
+async fn cleanup_failed_lnd_bundle_issue(
+    client: &LndRestClient,
+    payment_hashes: &[String],
+    issue_error: String,
+) -> String {
+    match cancel_lnd_invoices(client, payment_hashes).await {
+        Ok(()) => issue_error,
+        Err(cancel_error) => {
+            format!("{issue_error}; additionally failed to cancel issued invoices: {cancel_error}")
+        }
+    }
+}
+
+async fn cancel_lnd_invoices(
+    client: &LndRestClient,
+    payment_hashes: &[String],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for payment_hash in payment_hashes {
+        if let Err(error) = client.cancel_invoice(payment_hash).await {
+            failures.push(format!("{payment_hash}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+async fn cancel_lnd_invoices_allowing_missing(
+    client: &LndRestClient,
+    payment_hashes: &[String],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for payment_hash in payment_hashes {
+        match client.cancel_invoice(payment_hash).await {
+            Ok(()) | Err(LndRestError::Status { status: 404, .. }) => {}
+            Err(error) => failures.push(format!("{payment_hash}: {error}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+// ─── Public lightning functions ───────────────────────────────────────────────
 
 pub async fn create_lightning_invoice_bundle(
     state: &AppState,
@@ -499,47 +534,6 @@ pub async fn update_lightning_invoice_bundle_states(
                 .map(|record| record.map(map_lightning_bundle_record))
         })
         .await
-}
-
-fn map_lightning_bundle_record(
-    record: LightningInvoiceBundleRecord,
-) -> LightningInvoiceBundleSession {
-    LightningInvoiceBundleSession {
-        session_id: record.session_id,
-        bundle: record.bundle,
-        base_state: record.base_state,
-        success_state: record.success_state,
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-    }
-}
-
-fn expire_open_invoice_legs_if_due(
-    session: LightningInvoiceBundleSession,
-    now: i64,
-) -> Result<Option<(InvoiceBundleLegState, InvoiceBundleLegState)>, String> {
-    let mut base_state = session.base_state.clone();
-    let mut success_state = session.success_state.clone();
-
-    if matches!(base_state, InvoiceBundleLegState::Open) {
-        let decoded = decode_lightning_invoice(&session.bundle.payload.base_fee.invoice_bolt11)?;
-        if now >= decoded.expires_at {
-            base_state = InvoiceBundleLegState::Expired;
-        }
-    }
-
-    if matches!(success_state, InvoiceBundleLegState::Open) {
-        let decoded = decode_lightning_invoice(&session.bundle.payload.success_fee.invoice_bolt11)?;
-        if now >= decoded.expires_at {
-            success_state = InvoiceBundleLegState::Expired;
-        }
-    }
-
-    if base_state == session.base_state && success_state == session.success_state {
-        Ok(None)
-    } else {
-        Ok(Some((base_state, success_state)))
-    }
 }
 
 pub async fn issue_lightning_invoice_bundle(
@@ -724,23 +718,6 @@ pub async fn cancel_pending_lightning_materialization_request(
     }
 }
 
-fn lnd_rest_client(state: &AppState) -> Result<LndRestClient, String> {
-    state
-        .lnd_rest_client
-        .as_ref()
-        .map(|client| client.as_ref().clone())
-        .ok_or_else(|| "missing lnd_rest configuration".to_string())
-}
-
-fn configured_lightning_destination_identity(state: &AppState) -> String {
-    state
-        .config
-        .lightning
-        .destination_identity
-        .clone()
-        .unwrap_or_else(|| state.identity.compressed_public_key_hex().to_string())
-}
-
 pub async fn resolve_lightning_destination_identity(state: &AppState) -> Result<String, String> {
     if let Some(destination_identity) = state.config.lightning.destination_identity.clone() {
         return Ok(destination_identity);
@@ -807,15 +784,11 @@ pub async fn cancel_and_sync_lightning_invoice_bundle(
     }
 }
 
-fn mock_bolt11(prefix: &str, amount_msat: u64, payment_hash: &str, expires_at: i64) -> String {
-    format!("lnmock-{prefix}-{amount_msat}-{payment_hash}-{expires_at}")
-}
-
 pub async fn quoted_lightning_settlement_terms(
     state: &AppState,
     price_sats: u64,
 ) -> Result<Option<QuoteSettlementTerms>, String> {
-    if state.config.payment_backend != PaymentBackend::Lightning || price_sats == 0 {
+    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) || price_sats == 0 {
         return Ok(None);
     }
 
@@ -836,7 +809,7 @@ pub fn lightning_quote_expires_at(
     price_sats: u64,
     execution_window_secs: u64,
 ) -> i64 {
-    if state.config.payment_backend == PaymentBackend::Lightning && price_sats > 0 {
+    if state.config.payment_backends.contains(&PaymentBackend::Lightning) && price_sats > 0 {
         let admission_window_secs = state
             .config
             .lightning
@@ -848,95 +821,6 @@ pub fn lightning_quote_expires_at(
             + state.config.lightning.success_hold_expiry_secs as i64
     } else {
         created_at + 60
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MockBolt11Fields {
-    prefix: String,
-    amount_msat: u64,
-    payment_hash: String,
-    expires_at: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DecodedLightningInvoice {
-    amount_msat: u64,
-    payment_hash: String,
-    expires_at: i64,
-    destination_identity: String,
-    min_final_cltv_expiry: u32,
-}
-
-fn parse_mock_bolt11(invoice: &str) -> Result<MockBolt11Fields, String> {
-    let Some(rest) = invoice.strip_prefix("lnmock-") else {
-        return Err("invoice is not in Froglet mock Lightning format".to_string());
-    };
-    let mut parts = rest.splitn(4, '-');
-    let prefix = parts
-        .next()
-        .ok_or_else(|| "missing invoice prefix".to_string())?;
-    let amount_msat = parts
-        .next()
-        .ok_or_else(|| "missing invoice amount".to_string())?
-        .parse::<u64>()
-        .map_err(|_| "invalid invoice amount".to_string())?;
-    let payment_hash = parts
-        .next()
-        .ok_or_else(|| "missing invoice payment hash".to_string())?
-        .to_string();
-    let expires_at = parts
-        .next()
-        .ok_or_else(|| "missing invoice expiry".to_string())?
-        .parse::<i64>()
-        .map_err(|_| "invalid invoice expiry".to_string())?;
-
-    Ok(MockBolt11Fields {
-        prefix: prefix.to_string(),
-        amount_msat,
-        payment_hash,
-        expires_at,
-    })
-}
-
-fn decode_lightning_invoice(invoice: &str) -> Result<DecodedLightningInvoice, String> {
-    if let Ok(mock) = parse_mock_bolt11(invoice) {
-        return Ok(DecodedLightningInvoice {
-            amount_msat: mock.amount_msat,
-            payment_hash: mock.payment_hash,
-            expires_at: mock.expires_at,
-            destination_identity: String::new(),
-            min_final_cltv_expiry: 0,
-        });
-    }
-
-    let invoice = invoice
-        .parse::<Bolt11Invoice>()
-        .map_err(|error| error.to_string())?;
-    let amount_msat = invoice
-        .amount_milli_satoshis()
-        .ok_or_else(|| "invoice is missing an amount".to_string())?;
-    let expires_at = invoice
-        .expires_at()
-        .ok_or_else(|| "invoice expiry overflowed".to_string())?
-        .as_secs() as i64;
-    let destination_identity = hex::encode(invoice.get_payee_pub_key().serialize());
-
-    Ok(DecodedLightningInvoice {
-        amount_msat,
-        payment_hash: invoice.payment_hash().to_string(),
-        expires_at,
-        destination_identity,
-        min_final_cltv_expiry: invoice.min_final_cltv_expiry_delta() as u32,
-    })
-}
-
-fn map_invoice_state(state: crate::lnd::InvoiceState) -> InvoiceBundleLegState {
-    match state {
-        crate::lnd::InvoiceState::Open => InvoiceBundleLegState::Open,
-        crate::lnd::InvoiceState::Accepted => InvoiceBundleLegState::Accepted,
-        crate::lnd::InvoiceState::Settled => InvoiceBundleLegState::Settled,
-        crate::lnd::InvoiceState::Canceled => InvoiceBundleLegState::Canceled,
     }
 }
 
@@ -1019,112 +903,10 @@ pub fn build_lightning_wallet_intent(
     }
 }
 
-struct LightningInvoiceBundleSignature {
-    session_id: String,
-    provider_id: String,
-    request: BuildLightningInvoiceBundleRequest,
-    base_invoice_expiry_secs: u64,
-    success_hold_expiry_secs: u64,
-    destination_identity: String,
-    base_invoice_bolt11: String,
-    base_payment_hash: String,
-    base_state: InvoiceBundleLegState,
-    success_hold_invoice_bolt11: String,
-    success_state: InvoiceBundleLegState,
-}
-
-fn sign_lightning_invoice_bundle(
-    state: &AppState,
-    signature: LightningInvoiceBundleSignature,
-) -> Result<LightningInvoiceBundleSession, String> {
-    let base_expires_at = signature.request.created_at + signature.base_invoice_expiry_secs as i64;
-    let success_expires_at =
-        signature.request.created_at + signature.success_hold_expiry_secs as i64;
-    let bundle_expires_at = base_expires_at.max(success_expires_at);
-    let bundle = sign_artifact(
-        &signature.provider_id,
-        |message| state.identity.sign_message_hex(message),
-        TRANSPORT_KIND_INVOICE_BUNDLE,
-        signature.request.created_at,
-        InvoiceBundlePayload {
-            provider_id: signature.provider_id.clone(),
-            requester_id: signature.request.requester_id.clone(),
-            quote_hash: signature.request.quote_hash.clone(),
-            deal_hash: signature.request.deal_hash.clone(),
-            expires_at: bundle_expires_at,
-            destination_identity: signature.destination_identity,
-            base_fee: InvoiceBundleLeg {
-                amount_msat: signature.request.base_fee_msat,
-                invoice_bolt11: signature.base_invoice_bolt11.clone(),
-                invoice_hash: crypto::sha256_hex(signature.base_invoice_bolt11.as_bytes()),
-                payment_hash: signature.base_payment_hash,
-                state: signature.base_state.clone(),
-            },
-            success_fee: InvoiceBundleLeg {
-                amount_msat: signature.request.success_fee_msat,
-                invoice_bolt11: signature.success_hold_invoice_bolt11.clone(),
-                invoice_hash: crypto::sha256_hex(signature.success_hold_invoice_bolt11.as_bytes()),
-                payment_hash: signature.request.success_payment_hash.clone(),
-                state: signature.success_state.clone(),
-            },
-            min_final_cltv_expiry: state.config.lightning.min_final_cltv_expiry,
-        },
-    )?;
-
-    Ok(LightningInvoiceBundleSession {
-        session_id: signature.session_id,
-        bundle,
-        base_state: signature.base_state,
-        success_state: signature.success_state,
-        created_at: signature.request.created_at,
-        updated_at: signature.request.created_at,
-    })
-}
-
-fn effective_bundle_expiry_secs(
-    state: &AppState,
-    request: &BuildLightningInvoiceBundleRequest,
-) -> Result<(u64, u64), String> {
-    let mut base_invoice_expiry_secs = state.config.lightning.base_invoice_expiry_secs;
-    let mut success_hold_expiry_secs = state.config.lightning.success_hold_expiry_secs;
-
-    if let Some(admission_deadline) = request.admission_deadline {
-        let remaining_secs = admission_deadline.saturating_sub(request.created_at);
-        if remaining_secs <= 0 {
-            return Err(
-                "deal admission_deadline passed before lightning invoice bundle issuance"
-                    .to_string(),
-            );
-        }
-        let remaining_secs = remaining_secs as u64;
-        base_invoice_expiry_secs = base_invoice_expiry_secs.min(remaining_secs);
-        success_hold_expiry_secs = success_hold_expiry_secs.min(remaining_secs);
-    }
-
-    Ok((base_invoice_expiry_secs, success_hold_expiry_secs))
-}
-
-fn guarded_lnd_invoice_expiry_secs(expiry_secs: u64) -> u64 {
-    expiry_secs
-        .saturating_sub(LND_INVOICE_EXPIRY_GUARD_SECS)
-        .max(1)
-}
-
-fn push_bundle_issue(
-    issues: &mut Vec<InvoiceBundleValidationIssue>,
-    code: &str,
-    message: impl Into<String>,
-) {
-    issues.push(InvoiceBundleValidationIssue {
-        code: code.to_string(),
-        message: message.into(),
-    });
-}
-
 pub fn validate_lightning_invoice_bundle(
     bundle: &SignedArtifact<InvoiceBundlePayload>,
     quote: &SignedArtifact<QuotePayload>,
-    deal: &SignedArtifact<crate::protocol::DealPayload>,
+    deal: &SignedArtifact<DealPayload>,
     expected_requester_id: Option<&str>,
 ) -> InvoiceBundleValidationReport {
     let mut issues = Vec::new();
@@ -1330,7 +1112,9 @@ pub fn validate_lightning_invoice_bundle(
                     push_bundle_issue(
                         &mut issues,
                         "invoice_payment_hash_mismatch",
-                        format!("{leg_name} invoice payment hash does not match the signed bundle"),
+                        format!(
+                            "{leg_name} invoice payment hash does not match the signed bundle"
+                        ),
                     );
                 }
                 if !decoded.destination_identity.is_empty()
@@ -1652,121 +1436,9 @@ async fn issue_lnd_rest_invoice_bundle(
     )
 }
 
-async fn cleanup_failed_lnd_bundle_issue(
-    client: &LndRestClient,
-    payment_hashes: &[String],
-    issue_error: String,
-) -> String {
-    match cancel_lnd_invoices(client, payment_hashes).await {
-        Ok(()) => issue_error,
-        Err(cancel_error) => {
-            format!("{issue_error}; additionally failed to cancel issued invoices: {cancel_error}")
-        }
-    }
-}
+// ─── LightningDriver implementation ──────────────────────────────────────────
 
-async fn cancel_lnd_invoices(
-    client: &LndRestClient,
-    payment_hashes: &[String],
-) -> Result<(), String> {
-    let mut failures = Vec::new();
-    for payment_hash in payment_hashes {
-        if let Err(error) = client.cancel_invoice(payment_hash).await {
-            failures.push(format!("{payment_hash}: {error}"));
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(failures.join("; "))
-    }
-}
-
-async fn cancel_lnd_invoices_allowing_missing(
-    client: &LndRestClient,
-    payment_hashes: &[String],
-) -> Result<(), String> {
-    let mut failures = Vec::new();
-    for payment_hash in payment_hashes {
-        match client.cancel_invoice(payment_hash).await {
-            Ok(()) | Err(LndRestError::Status { status: 404, .. }) => {}
-            Err(error) => failures.push(format!("{payment_hash}: {error}")),
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(failures.join("; "))
-    }
-}
-
-struct NoSettlementDriver;
-
-impl SettlementDriver for NoSettlementDriver {
-    fn descriptor(&self, _state: &AppState) -> SettlementDriverDescriptor {
-        SettlementDriverDescriptor {
-            backend: PaymentBackend::None.to_string(),
-            mode: "disabled".to_string(),
-            accepted_payment_methods: Vec::new(),
-            capabilities: Vec::new(),
-            reservations: false,
-            receipts: false,
-        }
-    }
-
-    fn wallet_balance<'a>(
-        &'a self,
-        state: &'a AppState,
-    ) -> BoxFuture<'a, Result<WalletBalanceSnapshot, PaymentError>> {
-        Box::pin(async move {
-            Ok(WalletBalanceSnapshot::from_descriptor(
-                self.descriptor(state),
-            ))
-        })
-    }
-
-    fn prepare<'a>(
-        &'a self,
-        _state: &'a AppState,
-        request: PreparePaymentRequest,
-    ) -> BoxFuture<'a, Result<Option<PaymentReservation>, PaymentError>> {
-        Box::pin(async move {
-            if request.price_sats == 0 {
-                return Ok(None);
-            }
-
-            Err(PaymentError::BackendUnavailable {
-                service_id: request.service_id.as_str().to_string(),
-                price_sats: request.price_sats,
-                backend: PaymentBackend::None.to_string(),
-            })
-        })
-    }
-
-    fn commit<'a>(
-        &'a self,
-        _state: &'a AppState,
-        _reservation: PaymentReservation,
-    ) -> BoxFuture<'a, Result<PaymentReceipt, PaymentError>> {
-        Box::pin(async move {
-            Err(PaymentError::BackendUnavailable {
-                service_id: "unknown".to_string(),
-                price_sats: 0,
-                backend: PaymentBackend::None.to_string(),
-            })
-        })
-    }
-
-    fn release<'a>(
-        &'a self,
-        _state: &'a AppState,
-        _reservation: &'a PaymentReservation,
-    ) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move { Ok(()) })
-    }
-}
-
-struct LightningDriver;
+pub(crate) struct LightningDriver;
 
 impl LightningDriver {
     fn descriptor_inner(&self, state: &AppState) -> SettlementDriverDescriptor {
@@ -1847,5 +1519,4 @@ impl SettlementDriver for LightningDriver {
     }
 }
 
-static NO_SETTLEMENT_DRIVER: NoSettlementDriver = NoSettlementDriver;
-static LIGHTNING_DRIVER: LightningDriver = LightningDriver;
+pub(crate) static LIGHTNING_DRIVER: LightningDriver = LightningDriver;

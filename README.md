@@ -7,7 +7,7 @@
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.90.0-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.91.0-orange.svg)](https://www.rust-lang.org/)
 [![Edition](https://img.shields.io/badge/Edition-2024-purple.svg)](https://doc.rust-lang.org/edition-guide/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED.svg)](https://github.com/armanas/froglet/pkgs/container/froglet-provider)
 
@@ -98,6 +98,16 @@ The reference implementation exposes these binaries:
 > Providers self-register with it; runtimes search through it.
 
 ---
+
+## Prerequisites
+
+**Binary install (quickest):** curl, tar, sha256sum (Linux) or shasum (macOS).
+Supported: Linux x86_64/arm64, macOS arm64.
+
+**Build from source:** Rust 1.91+, Python 3.12+ (for tests), Node 18+
+(optional, for MCP/OpenClaw integration tests).
+
+**Docker:** Docker with Compose v2.
 
 ## Quick Start
 

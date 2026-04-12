@@ -1,5 +1,6 @@
 use crate::{config::NodeConfig, crypto};
 use std::{fs, path::Path, time::UNIX_EPOCH};
+use zeroize::Zeroize;
 
 #[derive(Clone)]
 pub struct NodeIdentity {
@@ -75,19 +76,23 @@ impl NodeIdentity {
     /// Derives a keyed HMAC-SHA256 hex string using the node's identity seed as key.
     /// This ensures the output is unpredictable without knowledge of the private key.
     pub fn keyed_hmac_hex(&self, message: &[u8]) -> String {
-        let seed = crypto::signing_key_seed_bytes(&self.signing_key);
-        crypto::hmac_sha256_hex(&seed, message)
+        let mut seed = crypto::signing_key_seed_bytes(&self.signing_key);
+        let result = crypto::hmac_sha256_hex(&seed, message);
+        seed.zeroize();
+        result
     }
 }
 
 fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
-    let seed_hex = fs::read_to_string(path)
+    let mut seed_hex = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read node identity seed {}: {e}", path.display()))?;
-    let seed_hex = seed_hex.trim();
-    let bytes = hex::decode(seed_hex)
+    let trimmed = seed_hex.trim().to_string();
+    seed_hex.zeroize();
+    let mut bytes = hex::decode(&trimmed)
         .map_err(|e| format!("Invalid hex in node identity seed {}: {e}", path.display()))?;
 
     if bytes.len() != 32 {
+        bytes.zeroize();
         return Err(format!(
             "Invalid node identity seed length in {}: expected 32 bytes, got {}",
             path.display(),
@@ -95,14 +100,18 @@ fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
         ));
     }
 
-    let seed: [u8; 32] = bytes
+    let mut seed: [u8; 32] = bytes
         .try_into()
         .expect("length validated as 32 bytes above");
-    crypto::signing_key_from_seed_bytes(&seed)
+    let result = crypto::signing_key_from_seed_bytes(&seed);
+    seed.zeroize();
+    result
 }
 
 fn persist_signing_key(path: &Path, signing_key: &crypto::NodeSigningKey) -> Result<(), String> {
-    let seed_hex = hex::encode(crypto::signing_key_seed_bytes(signing_key));
+    let mut seed_bytes = crypto::signing_key_seed_bytes(signing_key);
+    let mut seed_hex = hex::encode(seed_bytes.as_slice());
+    seed_bytes.zeroize();
 
     #[cfg(unix)]
     {
@@ -125,10 +134,11 @@ fn persist_signing_key(path: &Path, signing_key: &crypto::NodeSigningKey) -> Res
 
     #[cfg(not(unix))]
     {
-        fs::write(path, seed_hex)
+        fs::write(path, seed_hex.as_bytes())
             .map_err(|e| format!("Failed to write node identity seed {}: {e}", path.display()))?;
     }
 
+    seed_hex.zeroize();
     Ok(())
 }
 
@@ -213,7 +223,7 @@ mod tests {
                 events_query: 0,
                 execute_wasm: 0,
             },
-            payment_backend: PaymentBackend::None,
+            payment_backends: vec![PaymentBackend::None],
             execution_timeout_secs: 10,
             lightning: LightningConfig {
                 mode: LightningMode::Mock,
@@ -224,6 +234,8 @@ mod tests {
                 sync_interval_ms: 1_000,
                 lnd_rest: None,
             },
+            x402: None,
+            stripe: None,
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: temp_dir.join("node.db"),

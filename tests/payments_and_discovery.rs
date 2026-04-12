@@ -78,7 +78,7 @@ fn in_memory_state() -> AppState {
             events_query: 10,
             execute_wasm: 30,
         },
-        payment_backend: PaymentBackend::Lightning,
+        payment_backends: vec![PaymentBackend::Lightning],
         execution_timeout_secs: 10,
         lightning: LightningConfig {
             mode: LightningMode::Mock,
@@ -89,6 +89,8 @@ fn in_memory_state() -> AppState {
             sync_interval_ms: 1_000,
             lnd_rest: None,
         },
+        x402: None,
+        stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -119,6 +121,8 @@ fn in_memory_state() -> AppState {
 
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
+    let settlement_registry =
+        settlement::SettlementRegistry::new(&node_config.payment_backends);
 
     AppState {
         db: pool,
@@ -143,6 +147,7 @@ fn in_memory_state() -> AppState {
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
+        settlement_registry,
     }
 }
 
@@ -195,8 +200,11 @@ fn payments_enforce_all_error_paths() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
 
-    // Backend unavailable when backend is None and price > 0.
-    state.config.payment_backend = PaymentBackend::None;
+    // PaymentRequired when no payment token is provided and price > 0 (any backend
+    // configuration).  The registry dispatches on payment kind, so an absent token
+    // triggers PaymentRequired rather than BackendUnavailable.
+    state.config.payment_backends = vec![PaymentBackend::None];
+    state.settlement_registry = settlement::SettlementRegistry::new(&[PaymentBackend::None]);
     let err = rt
         .block_on(settlement::prepare_payment(
             &state,
@@ -207,11 +215,13 @@ fn payments_enforce_all_error_paths() {
         .unwrap_err();
     assert!(matches!(
         err,
-        settlement::PaymentError::BackendUnavailable { .. }
+        settlement::PaymentError::PaymentRequired { .. }
     ));
 
-    // Lightning-priced legacy helpers are also unavailable through inline payments.
-    state.config.payment_backend = PaymentBackend::Lightning;
+    // Same for Lightning: no token provided → PaymentRequired.
+    state.config.payment_backends = vec![PaymentBackend::Lightning];
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&[PaymentBackend::Lightning]);
     let err = rt
         .block_on(settlement::prepare_payment(
             &state,
@@ -222,7 +232,7 @@ fn payments_enforce_all_error_paths() {
         .unwrap_err();
     assert!(matches!(
         err,
-        settlement::PaymentError::BackendUnavailable { .. }
+        settlement::PaymentError::PaymentRequired { .. }
     ));
 }
 
@@ -278,7 +288,8 @@ fn settlement_driver_reports_capabilities_consistently() {
         ]
     );
 
-    state.config.payment_backend = PaymentBackend::None;
+    state.config.payment_backends = vec![PaymentBackend::None];
+    state.settlement_registry = settlement::SettlementRegistry::new(&[PaymentBackend::None]);
     let none_descriptor = settlement::driver_descriptor(&state);
     assert_eq!(none_descriptor.backend, "none");
     assert_eq!(none_descriptor.mode, "disabled");
@@ -300,7 +311,9 @@ fn settlement_driver_reports_capabilities_consistently() {
 fn lightning_mock_invoice_bundle_persists_and_updates_state() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
-    state.config.payment_backend = PaymentBackend::Lightning;
+    state.config.payment_backends = vec![PaymentBackend::Lightning];
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&[PaymentBackend::Lightning]);
 
     let created = rt
         .block_on(settlement::create_lightning_invoice_bundle(
@@ -361,7 +374,9 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
 fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
-    state.config.payment_backend = PaymentBackend::Lightning;
+    state.config.payment_backends = vec![PaymentBackend::Lightning];
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&[PaymentBackend::Lightning]);
 
     let now = 1_700_000_000;
     let settlement_terms = rt
@@ -480,7 +495,9 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
 fn randomized_invoice_bundle_validation_reports_targeted_issues() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
-    state.config.payment_backend = PaymentBackend::Lightning;
+    state.config.payment_backends = vec![PaymentBackend::Lightning];
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&[PaymentBackend::Lightning]);
     let mut rng = StdRng::seed_from_u64(0x000F_06A1_E7B0_0D1E);
 
     for iteration in 0..27_u64 {

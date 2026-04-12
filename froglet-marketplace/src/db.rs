@@ -1,6 +1,7 @@
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio_postgres::{NoTls, error::SqlState};
+use tokio_postgres::error::SqlState;
 
 pub type PgPool = Pool;
 
@@ -10,13 +11,15 @@ pub async fn connect(database_url: &str) -> Result<PgPool, String> {
         .parse()
         .map_err(|e| format!("invalid database URL: {e}"))?;
 
-    let mut cfg = Config::new();
-    cfg.dbname = pg_config.get_dbname().map(String::from);
-    cfg.host = pg_config.get_hosts().first().map(|h| match h {
+    let host_str = pg_config.get_hosts().first().map(|h| match h {
         tokio_postgres::config::Host::Tcp(s) => s.clone(),
         #[cfg(unix)]
         tokio_postgres::config::Host::Unix(p) => p.to_string_lossy().to_string(),
     });
+
+    let mut cfg = Config::new();
+    cfg.dbname = pg_config.get_dbname().map(String::from);
+    cfg.host = host_str.clone();
     cfg.port = pg_config.get_ports().first().copied();
     cfg.user = pg_config.get_user().map(String::from);
     cfg.password = pg_config
@@ -26,12 +29,57 @@ pub async fn connect(database_url: &str) -> Result<PgPool, String> {
         recycling_method: RecyclingMethod::Fast,
     });
 
-    let pool = cfg
-        .create_pool(Some(Runtime::Tokio1), NoTls)
-        .map_err(|e| format!("pool creation: {e}"))?;
+    let use_tls = should_use_tls(host_str.as_deref());
+    let pool = if use_tls {
+        let tls_config = build_rustls_config()
+            .map_err(|e| format!("TLS configuration error: {e}"))?;
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+        cfg.create_pool(Some(Runtime::Tokio1), tls)
+            .map_err(|e| format!("pool creation (TLS): {e}"))?
+    } else {
+        cfg.create_pool(Some(Runtime::Tokio1), tokio_postgres::NoTls)
+            .map_err(|e| format!("pool creation: {e}"))?
+    };
+
+    if use_tls {
+        tracing::info!("PostgreSQL connection pool created with TLS");
+    } else {
+        tracing::info!("PostgreSQL connection pool created without TLS (loopback)");
+    }
 
     wait_for_pool_connectivity(&pool).await?;
     Ok(pool)
+}
+
+/// Use TLS for any non-loopback host. Can be overridden with FROGLET_MARKETPLACE_DB_TLS.
+fn should_use_tls(host: Option<&str>) -> bool {
+    if let Ok(val) = std::env::var("FROGLET_MARKETPLACE_DB_TLS") {
+        let disabled = matches!(val.as_str(), "0" | "false" | "off");
+        if disabled {
+            let is_loopback = host
+                .is_some_and(|h| matches!(h, "127.0.0.1" | "localhost" | "::1"));
+            if !is_loopback {
+                tracing::warn!(
+                    "FROGLET_MARKETPLACE_DB_TLS is disabled for non-loopback host {:?} \
+                     — database traffic will be unencrypted",
+                    host.unwrap_or("(unknown)")
+                );
+            }
+        }
+        return !disabled;
+    }
+    let Some(host) = host else { return false };
+    !matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn build_rustls_config() -> Result<rustls::ClientConfig, rustls::Error> {
+    froglet::tls::ensure_rustls_crypto_provider();
+    let root_store = rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+    );
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(Arc::new(root_store))
+        .with_no_client_auth())
 }
 
 async fn wait_for_pool_connectivity(pool: &PgPool) -> Result<(), String> {

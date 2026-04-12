@@ -759,7 +759,7 @@ fn encrypt_envelope<T: Serialize>(
     )?;
     let mut nonce_bytes = [0u8; 12];
     use rand::RngCore as _;
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let cipher = Aes256GcmSiv::new_from_slice(&key).map_err(|error| error.to_string())?;
     let aad = envelope_aad(confidential_session_hash, direction, payload_format)?;
     let ciphertext = cipher

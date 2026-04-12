@@ -1,7 +1,8 @@
 use crate::{
     confidential::ConfidentialPolicy, config::NodeConfig, db, db::DbPool,
     execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
-    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, tls, wasm_host::WasmHostEnvironment,
+    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, settlement::SettlementRegistry,
+    tls, wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -95,6 +96,7 @@ pub struct AppState {
     pub lightning_destination_identity: Arc<OnceCell<String>>,
     pub event_batch_writer: Option<db::EventBatchWriter>,
     pub builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>>,
+    pub settlement_registry: SettlementRegistry,
 }
 
 pub fn ensure_storage_dirs(config: &NodeConfig) -> Result<(), String> {
@@ -154,6 +156,8 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         .map_err(|error| format!("failed to initialize cached LND REST client: {error}"))?
         .map(Arc::new);
 
+    let settlement_registry = SettlementRegistry::new(&config.payment_backends);
+
     Ok(Arc::new(AppState {
         db: db_pool,
         transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&config))),
@@ -175,15 +179,19 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         lightning_destination_identity: Arc::new(OnceCell::new()),
         event_batch_writer: None,
         builtin_services: HashMap::new(),
+        settlement_registry,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
-        PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
+    use crate::{
+        config::{
+            IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+            PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
+        },
+        settlement::SettlementRegistry,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -207,7 +215,7 @@ mod tests {
                 events_query: 0,
                 execute_wasm: 0,
             },
-            payment_backend: PaymentBackend::None,
+            payment_backends: vec![PaymentBackend::None],
             execution_timeout_secs: 10,
             lightning: LightningConfig {
                 mode: LightningMode::Mock,
@@ -218,6 +226,8 @@ mod tests {
                 sync_interval_ms: 1_000,
                 lnd_rest: None,
             },
+            x402: None,
+            stripe: None,
             storage: StorageConfig {
                 data_dir: PathBuf::from("./data"),
                 db_path: PathBuf::from("./data/node.db"),

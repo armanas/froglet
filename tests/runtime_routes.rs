@@ -163,7 +163,7 @@ fn create_test_state_with_identity_seed(
             events_query: 0,
             execute_wasm: 0,
         },
-        payment_backend: PaymentBackend::None,
+        payment_backends: vec![PaymentBackend::None],
         execution_timeout_secs: 10,
         lightning: LightningConfig {
             mode: LightningMode::Mock,
@@ -174,6 +174,8 @@ fn create_test_state_with_identity_seed(
             sync_interval_ms: 1_000,
             lnd_rest: None,
         },
+        x402: None,
+        stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),

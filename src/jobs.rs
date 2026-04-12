@@ -336,6 +336,7 @@ pub fn complete_job_failure(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn fail_incomplete_jobs(conn: &Connection, message: &str, now: i64) -> Result<(), String> {
     conn.execute(
         "UPDATE jobs

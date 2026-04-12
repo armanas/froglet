@@ -128,7 +128,7 @@ async fn run(
             let mut state = state;
             let db_clone = state.db.clone();
             Arc::get_mut(&mut state)
-                .expect("no other Arc references at startup")
+                .ok_or("unexpected Arc clone before event batch writer init")?
                 .event_batch_writer = Some(db::EventBatchWriter::spawn(db_clone));
             state
         };
@@ -145,15 +145,9 @@ async fn run(
     );
     set_mode(&node_config.storage.db_path, 0o600)?;
 
-    sanitize_persisted_deals(state.clone())
-        .await
-        .expect("Failed to sanitize persisted deal state");
-    log_startup_db_metrics(state.clone(), &node_config.storage.db_path)
-        .await
-        .expect("Failed to collect SQLite startup metrics");
-    audit_duplicate_deal_hashes(state.clone())
-        .await
-        .expect("Failed to audit duplicate deal hashes");
+    sanitize_persisted_deals(state.clone()).await?;
+    log_startup_db_metrics(state.clone(), &node_config.storage.db_path).await?;
+    audit_duplicate_deal_hashes(state.clone()).await?;
 
     let restart_policy = SupervisionPolicy::Restart {
         min_delay: Duration::from_secs(SUPERVISOR_RESTART_MIN_DELAY_SECS),
@@ -174,7 +168,7 @@ async fn run(
             .tor
             .backend_listen_addr
             .parse()
-            .expect("Invalid Tor backend listen address format");
+            .map_err(|e| format!("invalid FROGLET_TOR_BACKEND_LISTEN_ADDR: {e}"))?;
         if !tor_backend_addr.ip().is_loopback() {
             error!(
                 "FROGLET_TOR_BACKEND_LISTEN_ADDR must bind to a loopback address, got {}",
@@ -225,7 +219,7 @@ async fn run(
         let runtime_addr: SocketAddr = node_config
             .runtime_listen_addr
             .parse()
-            .expect("Invalid runtime listen address format");
+            .map_err(|e| format!("invalid FROGLET_RUNTIME_LISTEN_ADDR: {e}"))?;
         if !runtime_addr.ip().is_loopback() && !node_config.runtime_allow_non_loopback {
             error!(
                 "FROGLET_RUNTIME_LISTEN_ADDR must bind to a loopback address, got {}",
@@ -274,7 +268,7 @@ async fn run(
         let addr: SocketAddr = node_config
             .listen_addr
             .parse()
-            .expect("Invalid listen address format");
+            .map_err(|e| format!("invalid FROGLET_LISTEN_ADDR: {e}"))?;
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
         {
@@ -316,9 +310,7 @@ async fn run(
     }
 
     if service_role.is_provider() {
-        api::recover_runtime_state_local(state.clone())
-            .await
-            .expect("Failed to recover local runtime state");
+        api::recover_runtime_state_local(state.clone()).await?;
     }
 
     // Register with marketplace if configured (non-blocking — failures are logged, not fatal)
@@ -336,7 +328,9 @@ async fn run(
         });
     }
 
-    if service_role.is_provider() && node_config.payment_backend == PaymentBackend::Lightning {
+    if service_role.is_provider()
+        && node_config.payment_backends.contains(&PaymentBackend::Lightning)
+    {
         let recovery_state = state.clone();
         spawn_supervised_task(
             "lightning-remote-recovery",
