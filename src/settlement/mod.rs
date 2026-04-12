@@ -8,6 +8,7 @@ use thiserror::Error;
 
 pub mod lightning;
 pub mod none;
+pub mod stripe;
 pub mod x402;
 
 // ─── Settlement Registry ──────────────────────────────────────────────────────
@@ -59,10 +60,31 @@ impl SettlementRegistry {
                     }
                 }
                 crate::config::PaymentBackend::Stripe => {
-                    tracing::warn!(
-                        "Payment backend 'stripe' is configured but not yet implemented; \
-                         it will be skipped until Phase 4 integration is complete"
-                    );
+                    if let Some(stripe_config) = &config.stripe {
+                        let api_key = std::env::var("FROGLET_STRIPE_SECRET_KEY")
+                            .unwrap_or_default();
+                        if !api_key.is_empty() {
+                            drivers.push((
+                                "stripe_mpp".to_string(),
+                                Arc::new(stripe::StripeDriver::new(
+                                    stripe_config.clone(),
+                                    api_key,
+                                )),
+                            ));
+                        } else {
+                            tracing::warn!(
+                                "Payment backend 'stripe' is configured but \
+                                 FROGLET_STRIPE_SECRET_KEY is not set; \
+                                 the Stripe MPP driver will be skipped"
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            "Payment backend 'stripe' is configured but no \
+                             StripeConfig is present (check FROGLET_STRIPE_API_VERSION); \
+                             the Stripe MPP driver will be skipped"
+                        );
+                    }
                 }
             }
         }
