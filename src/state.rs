@@ -186,12 +186,9 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::{
-            IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
-            PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
-        },
-        settlement::SettlementRegistry,
+    use crate::config::{
+        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
+        PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 

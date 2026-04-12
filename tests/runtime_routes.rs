@@ -28,6 +28,7 @@ use froglet::{
         ReceiptPayload, ReceiptSettlementLeg, ReceiptSettlementRefs, SignedArtifact, WorkloadSpec,
     },
     requester_deals::RequesterDealRecord,
+    settlement::SettlementRegistry,
     state::{AppState, TransportStatus},
     wasm::{
         ComputeWasmWorkload, FROGLET_SCHEMA_V1, JCS_JSON_FORMAT, WASM_MODULE_FORMAT,
@@ -212,6 +213,7 @@ fn create_test_state_with_identity_seed(
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config)
         .expect("create test identity");
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
+    let settlement_registry = SettlementRegistry::new(&node_config.payment_backends);
 
     AppState {
         db: pool,
@@ -239,6 +241,7 @@ fn create_test_state_with_identity_seed(
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
+        settlement_registry,
     }
 }
 
@@ -407,6 +410,7 @@ fn sign_descriptor(
                 execution_runtimes: vec!["wasm".to_string()],
                 max_concurrent_deals: Some(4),
             },
+            accepted_payment_methods: Vec::new(),
         },
     )
     .expect("sign descriptor")
