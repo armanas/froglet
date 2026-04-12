@@ -56,6 +56,27 @@ Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/cla
 }
 ```
 
+## Cursor Integration
+
+Same config format. Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "command": "node",
+      "args": ["<path-to-repo>/integrations/mcp/froglet/server.js"],
+      "env": {
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+      }
+    }
+  }
+}
+```
+
+Example config files: `examples/claude-desktop-config.json`, `examples/cursor-mcp-config.json`.
+
 ## Compose Stack
 
 When running the Docker Compose stack, the MCP server connects to the

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "froglet": {
+      "command": "node",
+      "args": ["integrations/mcp/froglet/server.js"],
+      "env": {
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "froglet",
+  "version": "0.1.0",
+  "description": "Discover, invoke, and publish services on the Froglet protocol. Search the marketplace, run compute, manage async tasks.",
+  "author": "Armanas Povilionis-Muradian",
+  "homepage": "https://ai.froglet.dev",
+  "repository": "https://github.com/armanas/froglet",
+  "license": "Apache-2.0",
+  "runtime": "node",
+  "runtimeVersion": ">=18",
+  "entrypoint": "server.js",
+  "transport": "stdio",
+  "capabilities": {
+    "tools": true
+  },
+  "configuration": {
+    "FROGLET_PROVIDER_URL": {
+      "required": true,
+      "description": "Provider base URL (e.g. http://127.0.0.1:8080). Fallback: FROGLET_BASE_URL"
+    },
+    "FROGLET_RUNTIME_URL": {
+      "required": true,
+      "description": "Runtime base URL (e.g. http://127.0.0.1:8081). Fallback: FROGLET_BASE_URL"
+    },
+    "FROGLET_PROVIDER_AUTH_TOKEN_PATH": {
+      "required": false,
+      "description": "Path to provider auth token file. Fallback: FROGLET_AUTH_TOKEN_PATH"
+    },
+    "FROGLET_RUNTIME_AUTH_TOKEN_PATH": {
+      "required": false,
+      "description": "Path to runtime auth token file. Fallback: FROGLET_AUTH_TOKEN_PATH"
+    },
+    "FROGLET_REQUEST_TIMEOUT_MS": {
+      "required": false,
+      "description": "HTTP request timeout in milliseconds (default: 10000, max: 60000)"
+    },
+    "FROGLET_DEFAULT_SEARCH_LIMIT": {
+      "required": false,
+      "description": "Default search result limit (default: 10)"
+    },
+    "FROGLET_MAX_SEARCH_LIMIT": {
+      "required": false,
+      "description": "Maximum search result limit (default: 50, absolute max: 200)"
+    }
+  },
+  "tags": ["compute", "services", "marketplace", "ai-agents", "lightning", "wasm"]
+}

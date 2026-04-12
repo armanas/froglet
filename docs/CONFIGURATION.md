@@ -45,7 +45,7 @@ the `FROGLET_` prefix. Unset variables fall back to sensible defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_PAYMENT_BACKEND` | `none` | Payment backend: `none` or `lightning`. Auto-set to `lightning` when any price > 0 |
+| `FROGLET_PAYMENT_BACKEND` | `none` | Payment backends (comma-separated): `none`, `lightning`, `x402`, `stripe`. Example: `lightning,x402`. Auto-set to `lightning` when any price > 0 |
 | `FROGLET_LIGHTNING_MODE` | `mock` | Lightning mode: `mock` or `lnd_rest`. Required when payment backend is `lightning` |
 | `FROGLET_LIGHTNING_REST_URL` | *(none)* | LND REST API URL. Required when mode is `lnd_rest` |
 | `FROGLET_LIGHTNING_TLS_CERT_PATH` | *(none)* | Path to the LND TLS certificate. Required for `https://` REST URLs |
@@ -56,6 +56,21 @@ the `FROGLET_` prefix. Unset variables fall back to sensible defaults.
 | `FROGLET_LIGHTNING_SUCCESS_HOLD_EXPIRY_SECS` | `300` | Success hold invoice expiry (60-3600) |
 | `FROGLET_LIGHTNING_MIN_FINAL_CLTV_EXPIRY` | `18` | Minimum CLTV delta for invoices (1-144) |
 | `FROGLET_LIGHTNING_SYNC_INTERVAL_MS` | `1000` | Settlement sync polling interval (100-60000) |
+
+## x402 (USDC on Base)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_X402_FACILITATOR_URL` | `https://api.cdp.coinbase.com/platform/v2/x402` | x402 facilitator endpoint for verify/settle |
+| `FROGLET_X402_WALLET_ADDRESS` | *(required)* | Your Base wallet address to receive USDC payments |
+| `FROGLET_X402_NETWORK` | `base` | Chain network identifier |
+
+## Stripe MPP
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe secret API key (starts with `sk_`) |
+| `FROGLET_STRIPE_API_VERSION` | `2026-03-04.preview` | Stripe API version (required for MPP features) |
 
 ## Execution
 
