@@ -213,7 +213,7 @@ fn create_test_state_with_identity_seed(
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config)
         .expect("create test identity");
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
-    let settlement_registry = SettlementRegistry::new(&node_config.payment_backends);
+    let settlement_registry = SettlementRegistry::new(&node_config);
 
     AppState {
         db: pool,

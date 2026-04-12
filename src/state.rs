@@ -156,7 +156,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         .map_err(|error| format!("failed to initialize cached LND REST client: {error}"))?
         .map(Arc::new);
 
-    let settlement_registry = SettlementRegistry::new(&config.payment_backends);
+    let settlement_registry = SettlementRegistry::new(&config);
 
     Ok(Arc::new(AppState {
         db: db_pool,

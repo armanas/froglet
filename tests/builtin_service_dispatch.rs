@@ -149,7 +149,7 @@ fn create_test_state_with_handler(
         froglet::identity::NodeIdentity::load_or_create(&node_config).expect("create identity");
     let pricing = PricingTable::from_config(node_config.pricing);
     let settlement_registry =
-        froglet::settlement::SettlementRegistry::new(&node_config.payment_backends);
+        froglet::settlement::SettlementRegistry::new(&node_config);
 
     let mut builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>> = HashMap::new();
     builtin_services.insert(handler_name.to_string(), handler);

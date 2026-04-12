@@ -1,41 +1,67 @@
-use crate::{config::PaymentBackend, pricing::ServiceId, state::AppState};
+use crate::{config::NodeConfig, pricing::ServiceId, state::AppState};
 use axum::http::StatusCode;
 use futures::future::BoxFuture;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use thiserror::Error;
 
 pub mod lightning;
 pub mod none;
+pub mod x402;
 
 // ─── Settlement Registry ──────────────────────────────────────────────────────
 
 /// Registry of active settlement drivers, constructed from the node's payment
 /// backend configuration at startup.  Each entry pairs a payment-method name
-/// (e.g. `"lightning"`) with a reference to the corresponding static driver.
+/// (e.g. `"lightning"`) with an `Arc` to the corresponding driver.
+///
+/// Using `Arc<dyn SettlementDriver>` rather than `&'static` references allows
+/// drivers like [`x402::X402Driver`] that require runtime configuration to be
+/// constructed from the node's config without leaking memory.
 pub struct SettlementRegistry {
-    drivers: Vec<(String, &'static dyn SettlementDriver)>,
+    drivers: Vec<(String, Arc<dyn SettlementDriver>)>,
 }
 
 impl SettlementRegistry {
-    /// Build a registry from the configured payment backends.
-    /// Backends that are not yet implemented (X402, Stripe) log a warning and
-    /// are skipped; they will be wired up in later phases.
-    pub fn new(backends: &[PaymentBackend]) -> Self {
-        let mut drivers: Vec<(String, &'static dyn SettlementDriver)> = Vec::new();
-        for backend in backends {
+    /// Build a registry from the node configuration.
+    ///
+    /// - `PaymentBackend::Lightning` registers the Lightning hold-invoice
+    ///   driver.
+    /// - `PaymentBackend::X402` registers the x402 USDC facilitator driver
+    ///   when `config.x402` is present; logs a warning and skips otherwise.
+    /// - `PaymentBackend::Stripe` is reserved for Phase 4 and is skipped with
+    ///   a warning.
+    /// - `PaymentBackend::None` is silently ignored (no driver is registered).
+    pub fn new(config: &NodeConfig) -> Self {
+        let mut drivers: Vec<(String, Arc<dyn SettlementDriver>)> = Vec::new();
+        for backend in &config.payment_backends {
             match backend {
-                PaymentBackend::None => {}
-                PaymentBackend::Lightning => {
+                crate::config::PaymentBackend::None => {}
+                crate::config::PaymentBackend::Lightning => {
                     drivers.push((
                         "lightning".to_string(),
-                        &lightning::LIGHTNING_DRIVER as &'static dyn SettlementDriver,
+                        Arc::new(lightning::LightningDriver),
                     ));
                 }
-                PaymentBackend::X402 | PaymentBackend::Stripe => {
+                crate::config::PaymentBackend::X402 => {
+                    if let Some(x402_config) = &config.x402 {
+                        drivers.push((
+                            "x402_usdc".to_string(),
+                            Arc::new(x402::X402Driver::new(x402_config.clone())),
+                        ));
+                    } else {
+                        tracing::warn!(
+                            "Payment backend 'x402' is configured but \
+                             FROGLET_X402_FACILITATOR_URL / FROGLET_X402_WALLET_ADDRESS \
+                             are not set; the x402 driver will be skipped"
+                        );
+                    }
+                }
+                crate::config::PaymentBackend::Stripe => {
                     tracing::warn!(
-                        "Payment backend '{backend}' is configured but not yet implemented; \
-                         it will be skipped until Phase 3-4 integration is complete"
+                        "Payment backend 'stripe' is configured but not yet implemented; \
+                         it will be skipped until Phase 4 integration is complete"
                     );
                 }
             }
@@ -45,19 +71,19 @@ impl SettlementRegistry {
 
     /// Return the driver responsible for `payment_kind`, or `None` if no
     /// registered driver handles that kind.
-    pub fn driver_for(&self, payment_kind: &str) -> Option<&'static dyn SettlementDriver> {
+    pub fn driver_for(&self, payment_kind: &str) -> Option<&dyn SettlementDriver> {
         self.drivers
             .iter()
             .find(|(name, _)| name == payment_kind)
-            .map(|(_, driver)| *driver)
+            .map(|(_, driver)| driver.as_ref())
     }
 
     /// Return the first registered driver, falling back to the no-op driver
     /// when no backends are configured.
-    pub fn primary_driver(&self) -> &'static dyn SettlementDriver {
+    pub fn primary_driver(&self) -> &dyn SettlementDriver {
         self.drivers
             .first()
-            .map(|(_, driver)| *driver)
+            .map(|(_, driver)| driver.as_ref())
             .unwrap_or(&none::NO_SETTLEMENT_DRIVER)
     }
 
@@ -71,6 +97,7 @@ impl SettlementRegistry {
     pub fn is_empty(&self) -> bool {
         self.drivers.is_empty()
     }
+
 }
 
 // Re-export everything from lightning that was previously accessible as settlement::X

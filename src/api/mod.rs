@@ -10021,7 +10021,7 @@ mod tests {
         let db = DbPool::open(&db_path).expect("db pool");
         let events_query_capacity = db.read_connection_count().max(1);
         let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
-        let settlement_registry = SettlementRegistry::new(&node_config.payment_backends);
+        let settlement_registry = SettlementRegistry::new(&node_config);
 
         Arc::new(AppState {
             db,
