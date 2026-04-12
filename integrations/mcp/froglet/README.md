@@ -1,11 +1,11 @@
 # Froglet MCP Server
 
 MCP (Model Context Protocol) server that exposes Froglet services, compute,
-and project management to AI agents (Claude, Cursor, Windsurf, etc.).
+and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 18+ (or Docker)
 - A running Froglet provider (and optionally a runtime)
 
 ## Quick Start
@@ -37,28 +37,14 @@ All configuration is through environment variables:
 Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.
 
-## Claude Desktop Integration
+---
 
-Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+## IDE / Agent Integration
 
-```json
-{
-  "mcpServers": {
-    "froglet": {
-      "command": "node",
-      "args": ["<path-to-repo>/integrations/mcp/froglet/server.js"],
-      "env": {
-        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
-        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
-      }
-    }
-  }
-}
-```
+### Claude Desktop
 
-## Cursor Integration
-
-Same config format. Add to `.cursor/mcp.json`:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+or `%APPDATA%/Claude/claude_desktop_config.json` (Windows):
 
 ```json
 {
@@ -75,7 +61,102 @@ Same config format. Add to `.cursor/mcp.json`:
 }
 ```
 
-Example config files: `examples/claude-desktop-config.json`, `examples/cursor-mcp-config.json`.
+### Claude Code (CLI)
+
+Drop `.mcp.json` in the project root (already included in this repo):
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["integrations/mcp/froglet/server.js"],
+      "env": {
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+      }
+    }
+  }
+}
+```
+
+Or add via CLI: `claude mcp add froglet -- node integrations/mcp/froglet/server.js`
+
+### Cursor
+
+Add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["<path-to-repo>/integrations/mcp/froglet/server.js"],
+      "env": {
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+      }
+    }
+  }
+}
+```
+
+### OpenAI Codex CLI
+
+Add to `~/.codex/config.toml` (global) or `.codex/config.toml` (project):
+
+```toml
+[mcp_servers.froglet]
+command = "node"
+args = ["integrations/mcp/froglet/server.js"]
+env = { "FROGLET_PROVIDER_URL" = "http://127.0.0.1:8080", "FROGLET_RUNTIME_URL" = "http://127.0.0.1:8081" }
+```
+
+### Docker
+
+Build and run the MCP server as a container:
+
+```bash
+# Build from repo root
+docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp .
+
+# Run (connects to host Froglet node)
+docker run --rm -i \
+  -e FROGLET_PROVIDER_URL=http://host.docker.internal:8080 \
+  -e FROGLET_RUNTIME_URL=http://host.docker.internal:8081 \
+  froglet-mcp
+```
+
+Use in any MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i",
+        "-e", "FROGLET_PROVIDER_URL=http://host.docker.internal:8080",
+        "-e", "FROGLET_RUNTIME_URL=http://host.docker.internal:8081",
+        "froglet-mcp"],
+      "type": "stdio"
+    }
+  }
+}
+```
+
+---
+
+## Example Config Files
+
+| Platform | File | Format |
+|----------|------|--------|
+| Claude Desktop | `examples/claude-desktop-config.json` | JSON |
+| Cursor | `examples/cursor-mcp-config.json` | JSON |
+| Codex CLI | `examples/codex-mcp-config.toml` | TOML |
+| Docker | `examples/docker-mcp-config.json` | JSON |
+| Claude Code | `.mcp.json` (repo root) | JSON |
 
 ## Compose Stack
 
@@ -111,3 +192,6 @@ curl http://127.0.0.1:8080/health
 
 **Timeout errors** — Increase `FROGLET_REQUEST_TIMEOUT_MS` for slow networks
 or large responses.
+
+**Docker: connection refused to host** — Use `host.docker.internal` instead
+of `127.0.0.1` for URLs when the Froglet node runs on the host machine.

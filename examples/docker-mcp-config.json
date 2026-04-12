@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "froglet": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "FROGLET_PROVIDER_URL",
+        "-e", "FROGLET_RUNTIME_URL",
+        "ghcr.io/armanas/froglet-mcp:latest"
+      ],
+      "env": {
+        "FROGLET_PROVIDER_URL": "http://host.docker.internal:8080",
+        "FROGLET_RUNTIME_URL": "http://host.docker.internal:8081"
+      }
+    }
+  }
+}
