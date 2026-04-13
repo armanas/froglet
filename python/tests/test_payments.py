@@ -37,7 +37,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
         self.assertEqual(payload["deal_path"], "/v1/provider/deals")
 
     async def test_lightning_priced_execute_helper_requires_protocol_deal_flow(self) -> None:
-        provider = await self.start_provider(
+        runtime = await self.start_runtime(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -47,7 +47,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                provider.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json=build_wasm_request(VALID_WASM_HEX),
             ) as resp:
                 payload = await resp.json()
@@ -58,7 +58,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
         self.assertEqual(payload["legacy_endpoint"], "/v1/node/execute/wasm")
 
     async def test_lightning_priced_job_helper_requires_protocol_deal_flow(self) -> None:
-        provider = await self.start_provider(
+        runtime = await self.start_runtime(
             extra_env={
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "lightning",
@@ -68,7 +68,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                provider.url("/v1/node/jobs"),
+                runtime.url("/v1/node/jobs"),
                 json={"idempotency_key": "legacy-job-helper", **build_wasm_request(VALID_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()

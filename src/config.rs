@@ -398,18 +398,16 @@ impl NodeConfig {
         let stripe_active = payment_backends.contains(&PaymentBackend::Stripe);
 
         let x402 = if x402_active {
-            let wallet_address =
-                env::var("FROGLET_X402_WALLET_ADDRESS").map_err(|_| {
-                    "FROGLET_X402_WALLET_ADDRESS is required when x402 is in payment backends"
-                        .to_string()
-                })?;
+            let wallet_address = env::var("FROGLET_X402_WALLET_ADDRESS").map_err(|_| {
+                "FROGLET_X402_WALLET_ADDRESS is required when x402 is in payment backends"
+                    .to_string()
+            })?;
             Some(X402Config {
                 facilitator_url: env::var("FROGLET_X402_FACILITATOR_URL").unwrap_or_else(|_| {
                     "https://api.cdp.coinbase.com/platform/v2/x402".to_string()
                 }),
                 wallet_address,
-                network: env::var("FROGLET_X402_NETWORK")
-                    .unwrap_or_else(|_| "base".to_string()),
+                network: env::var("FROGLET_X402_NETWORK").unwrap_or_else(|_| "base".to_string()),
             })
         } else {
             None

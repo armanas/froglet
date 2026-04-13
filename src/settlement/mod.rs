@@ -31,8 +31,8 @@ impl SettlementRegistry {
     ///   driver.
     /// - `PaymentBackend::X402` registers the x402 USDC facilitator driver
     ///   when `config.x402` is present; logs a warning and skips otherwise.
-    /// - `PaymentBackend::Stripe` is reserved for Phase 4 and is skipped with
-    ///   a warning.
+    /// - `PaymentBackend::Stripe` registers the Stripe Machine Payments
+    ///   driver when the API version and secret key are present.
     /// - `PaymentBackend::None` is silently ignored (no driver is registered).
     pub fn new(config: &NodeConfig) -> Self {
         let mut drivers: Vec<(String, Arc<dyn SettlementDriver>)> = Vec::new();
@@ -61,15 +61,12 @@ impl SettlementRegistry {
                 }
                 crate::config::PaymentBackend::Stripe => {
                     if let Some(stripe_config) = &config.stripe {
-                        let api_key = std::env::var("FROGLET_STRIPE_SECRET_KEY")
-                            .unwrap_or_default();
+                        let api_key =
+                            std::env::var("FROGLET_STRIPE_SECRET_KEY").unwrap_or_default();
                         if !api_key.is_empty() {
                             drivers.push((
                                 "stripe_mpp".to_string(),
-                                Arc::new(stripe::StripeDriver::new(
-                                    stripe_config.clone(),
-                                    api_key,
-                                )),
+                                Arc::new(stripe::StripeDriver::new(stripe_config.clone(), api_key)),
                             ));
                         } else {
                             tracing::warn!(
@@ -119,24 +116,22 @@ impl SettlementRegistry {
     pub fn is_empty(&self) -> bool {
         self.drivers.is_empty()
     }
-
 }
 
 // Re-export everything from lightning that was previously accessible as settlement::X
 pub use lightning::{
-    build_lightning_invoice_bundle, build_lightning_wallet_intent,
-    cancel_and_sync_lightning_invoice_bundle, cancel_lightning_invoice_bundle,
-    cancel_pending_lightning_materialization_request, create_lightning_invoice_bundle,
-    get_lightning_invoice_bundle, get_lightning_invoice_bundle_by_deal_hash,
-    issue_lightning_invoice_bundle, lightning_bundle_can_settle_success,
-    lightning_bundle_is_funded, lightning_quote_expires_at,
+    BuildLightningInvoiceBundleRequest, InvoiceBundleValidationIssue,
+    InvoiceBundleValidationReport, LIGHTNING_LND_REST_MODE, LIGHTNING_MOCK_MODE,
+    LightningInvoiceBundleSession, LightningWalletIntent, LightningWalletMockAction,
+    LightningWalletPaymentRequest, LightningWalletReleaseAction, build_lightning_invoice_bundle,
+    build_lightning_wallet_intent, cancel_and_sync_lightning_invoice_bundle,
+    cancel_lightning_invoice_bundle, cancel_pending_lightning_materialization_request,
+    create_lightning_invoice_bundle, get_lightning_invoice_bundle,
+    get_lightning_invoice_bundle_by_deal_hash, issue_lightning_invoice_bundle,
+    lightning_bundle_can_settle_success, lightning_bundle_is_funded, lightning_quote_expires_at,
     quoted_lightning_settlement_terms, resolve_lightning_destination_identity,
     settle_lightning_success_hold_invoice, sync_lightning_invoice_bundle_session,
     update_lightning_invoice_bundle_states, validate_lightning_invoice_bundle,
-    BuildLightningInvoiceBundleRequest, InvoiceBundleValidationIssue,
-    InvoiceBundleValidationReport, LightningInvoiceBundleSession, LightningWalletIntent,
-    LightningWalletMockAction, LightningWalletPaymentRequest, LightningWalletReleaseAction,
-    LIGHTNING_LND_REST_MODE, LIGHTNING_MOCK_MODE,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,15 +373,14 @@ pub async fn prepare_payment_for_amount(
     let accepted = state.settlement_registry.accepted_payment_methods();
 
     let driver = match payment.as_ref().map(|p| p.kind.as_str()) {
-        Some(kind) => state
-            .settlement_registry
-            .driver_for(kind)
-            .ok_or_else(|| PaymentError::UnsupportedKind {
+        Some(kind) => state.settlement_registry.driver_for(kind).ok_or_else(|| {
+            PaymentError::UnsupportedKind {
                 service_id: service_id.as_str().to_string(),
                 price_sats,
                 kind: kind.to_string(),
                 accepted_payment_methods: accepted.clone(),
-            })?,
+            }
+        })?,
         None => {
             return Err(PaymentError::PaymentRequired {
                 service_id: service_id.as_str().to_string(),

@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-v",
+        "/absolute/path/to/froglet/data/runtime:/tokens:ro",
+        "-e",
+        "FROGLET_PROVIDER_URL=http://host.docker.internal:8080",
+        "-e",
+        "FROGLET_RUNTIME_URL=http://host.docker.internal:8081",
+        "-e",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH=/tokens/froglet-control.token",
+        "-e",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH=/tokens/auth.token",
+        "ghcr.io/armanas/froglet-mcp:latest"
+      ]
+    }
+  }
+}

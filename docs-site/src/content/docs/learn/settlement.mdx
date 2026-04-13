@@ -6,6 +6,10 @@ description: How payments are cryptographically bound to deals.
 import SettlementVizInit from '../../../components/SettlementVizInit.astro';
 import SettlementCalcInit from '../../../components/SettlementCalcInit.astro';
 
+:::note
+The launch-ready payment rails are Lightning, Stripe, and x402. This page explains the reference Lightning bundle because it is the most explicit artifact-bound flow. The local operator guides for all three rails live under [Payment Rails](/learn/payment-rails/).
+:::
+
 ## The Lightning Network
 
 The **Lightning Network** is a payment layer built on Bitcoin. It enables instant, low-fee payments by creating payment channels between nodes. Instead of recording every transaction on the blockchain, parties exchange signed IOUs and only settle to the chain when channels open or close.

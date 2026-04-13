@@ -5,7 +5,7 @@
   "type": "module",
   "description": "MCP server for Froglet services, projects, and compute.",
   "author": "Armanas Povilionis-Muradian",
-  "homepage": "https://armanas.dev",
+  "homepage": "https://ai.froglet.dev",
   "repository": "https://github.com/armanas/froglet",
   "engines": {
     "node": ">=18"
@@ -19,7 +19,7 @@
   "scripts": {
     "check": "node --check server.js",
     "smoke:compose": "node test/compose-smoke.mjs",
-    "test": "node --test test/server.test.mjs",
+    "test": "node --test test/server.test.mjs test/example-configs.test.mjs",
     "start": "node server.js"
   }
 }

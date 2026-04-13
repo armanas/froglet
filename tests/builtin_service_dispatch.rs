@@ -8,7 +8,7 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use froglet::{
-    api::router,
+    api::runtime_router,
     confidential::ConfidentialConfig,
     config::{
         IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
@@ -148,8 +148,7 @@ fn create_test_state_with_handler(
     let identity =
         froglet::identity::NodeIdentity::load_or_create(&node_config).expect("create identity");
     let pricing = PricingTable::from_config(node_config.pricing);
-    let settlement_registry =
-        froglet::settlement::SettlementRegistry::new(&node_config);
+    let settlement_registry = froglet::settlement::SettlementRegistry::new(&node_config);
 
     let mut builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>> = HashMap::new();
     builtin_services.insert(handler_name.to_string(), handler);
@@ -218,7 +217,7 @@ async fn response_json(response: axum::response::Response<Body>) -> (StatusCode,
 async fn builtin_service_handler_dispatch_through_jobs_api() {
     let echo = Arc::new(EchoHandler::new());
     let state = create_test_state_with_handler("test.echo", echo.clone());
-    let app = router(state);
+    let app = runtime_router(state);
 
     let execution = froglet::execution::ExecutionWorkload::builtin_service(
         "test.echo".to_string(),
@@ -269,7 +268,7 @@ async fn builtin_service_handler_dispatch_through_jobs_api() {
 async fn events_query_still_works_with_custom_handlers_registered() {
     let echo = Arc::new(EchoHandler::new());
     let state = create_test_state_with_handler("test.echo", echo.clone());
-    let app = router(state);
+    let app = runtime_router(state);
 
     let execution = froglet::execution::ExecutionWorkload::builtin_events_query(
         vec!["market.listing".to_string()],
@@ -311,7 +310,7 @@ async fn events_query_still_works_with_custom_handlers_registered() {
 async fn unknown_builtin_service_is_rejected() {
     let echo = Arc::new(EchoHandler::new());
     let state = create_test_state_with_handler("test.echo", echo.clone());
-    let app = router(state);
+    let app = runtime_router(state);
 
     let execution = froglet::execution::ExecutionWorkload::builtin_service(
         "nonexistent.service".to_string(),

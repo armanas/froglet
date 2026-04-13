@@ -1,7 +1,7 @@
 # Release
 
 This repo now has a tagged release path for the current Froglet node,
-marketplace binary, Docker images, and OpenClaw alpha surface.
+marketplace binary, Docker images, MCP image, and public docs site.
 
 Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
@@ -29,6 +29,15 @@ publishes the role-specific images:
 - `ghcr.io/<owner>/froglet-runtime:<sha-tag>`
 - `ghcr.io/<owner>/froglet-marketplace:<version>`
 - `ghcr.io/<owner>/froglet-marketplace:<sha-tag>`
+- `ghcr.io/<owner>/froglet-mcp:<version>`
+- `ghcr.io/<owner>/froglet-mcp:<sha-tag>`
+- `ghcr.io/<owner>/froglet-mcp:latest`
+
+## Published Docs
+
+The docs site deploy workflow builds `docs-site/` and publishes it to:
+
+- `https://ai.froglet.dev`
 
 ## Published Binaries
 
@@ -48,10 +57,10 @@ downloads from those release assets. By default it installs the latest tagged
 release, `INSTALL_DIR=/path` to override the destination, and
 `INSTALL_MARKETPLACE=1` to install `froglet-marketplace` too.
 
-The public release surface covers the tracked Froglet protocol docs, reference
-node binaries, supported integrations, and validation assets in this repo.
-Ignored local-only incubation under `private_work/` is not part of the release
-surface.
+The public release surface covers the tracked Froglet protocol docs, the public
+docs site, reference node binaries, supported integrations, and validation
+assets in this repo. Ignored local-only incubation under `private_work/` is not
+part of the release surface.
 
 ## Alpha Cut Checklist
 
@@ -60,9 +69,10 @@ surface.
    into a concrete version section.
 3. Run `./scripts/strict_checks.sh`.
 4. Confirm the packaged binary smoke still passes through the installer path.
-5. Confirm `docker compose up --build` still starts cleanly.
-6. Commit the version/changelog update.
-7. Push the release tag, for example:
+5. Confirm the published docs site still builds from `docs-site/`.
+6. Confirm `docker compose up --build` still starts cleanly.
+7. Commit the version/changelog update.
+8. Push the release tag, for example:
 
 ```bash
 git tag v0.1.0-alpha.1
@@ -76,10 +86,11 @@ the release notes should call out:
 
 - downloadable `froglet-node` and `froglet-marketplace` binaries
 - published `SHA256SUMS` for release asset verification
-- official Docker starter
+- published provider, runtime, marketplace, and MCP images
+- official docs site at `ai.froglet.dev`
 - public OpenClaw integration
 - reference discovery
 - public operator image
-- v1 Lightning reference settlement path
+- launch payment rails: Lightning, Stripe, and x402
 - any intentionally deferred layers, especially external broker and closed higher-layer
   services

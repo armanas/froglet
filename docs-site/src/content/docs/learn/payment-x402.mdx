@@ -1,0 +1,52 @@
+---
+title: x402
+description: Operator setup and verification for the x402 launch rail.
+---
+
+## Setup
+
+Provide the Base wallet address that will back the authorization flow:
+
+```bash
+FROGLET_X402_WALLET_ADDRESS=0x... \
+./scripts/setup-payment.sh x402
+```
+
+Optional overrides:
+
+```bash
+FROGLET_X402_WALLET_ADDRESS=0x... \
+FROGLET_X402_NETWORK=base \
+FROGLET_X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402 \
+./scripts/setup-payment.sh x402
+```
+
+That writes `.froglet/payment/x402.env` with the selected wallet, network, and facilitator URL. The current Froglet x402 implementation supports `base` only.
+
+## Verification
+
+The setup helper validates the wallet syntax locally, requires `FROGLET_X402_NETWORK=base`, and then probes facilitator reachability through:
+
+```text
+POST <facilitator>/verify
+```
+
+The probe treats a real `200`, `400`, `401`, `403`, or `422` response from `/verify` as proof that the facilitator endpoint is there and speaking the expected protocol surface. It does not claim that a payment is fully spendable until a real authorization is presented at runtime.
+
+The current public adapter expects the signed token amount to exactly match the
+configured numeric service price. It does not perform FX conversion from sats
+into backend-native token units.
+
+## Runtime behavior
+
+x402 maps Froglet's local `/v1/node/*` lifecycle to a facilitator-backed authorization flow:
+
+- descriptor exposes `x402_usdc`
+- prepare validates the signed payment token with the facilitator
+- commit settles through the facilitator
+- release is a no-op because the authorization either settles or it does not
+
+This adapter does not currently add x402-specific quote/deal settlement terms
+to the signed kernel flow.
+
+Use this rail when you want USDC-style machine payment instead of Lightning or Stripe.

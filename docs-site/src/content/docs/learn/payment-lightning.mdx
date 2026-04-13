@@ -1,0 +1,52 @@
+---
+title: Lightning
+description: Operator setup and verification for the Lightning launch rail.
+---
+
+## Local mock mode
+
+The fastest launch-safe local setup is Lightning mock mode:
+
+```bash
+./scripts/setup-payment.sh lightning
+```
+
+That writes `.froglet/payment/lightning.env` with:
+
+```bash
+FROGLET_PAYMENT_BACKEND=lightning
+FROGLET_LIGHTNING_MODE=mock
+```
+
+Verification for mock mode is local-only because no external wallet is required.
+
+## LND REST mode
+
+When you want a real wallet-backed probe, switch to `lnd_rest`:
+
+```bash
+FROGLET_LIGHTNING_MODE=lnd_rest \
+FROGLET_LIGHTNING_REST_URL=https://your-lnd.example:8080 \
+FROGLET_LIGHTNING_MACAROON_PATH=/path/to/admin.macaroon \
+FROGLET_LIGHTNING_TLS_CERT_PATH=/path/to/tls.cert \
+./scripts/setup-payment.sh lightning --mode lnd_rest
+```
+
+Required inputs:
+
+- `FROGLET_LIGHTNING_REST_URL`
+- `FROGLET_LIGHTNING_MACAROON_PATH`
+- `FROGLET_LIGHTNING_TLS_CERT_PATH` for `https://` endpoints
+
+The verification probe calls `GET /v1/getinfo` on the configured LND REST endpoint with the provided macaroon.
+
+## Runtime behavior
+
+Lightning is the reference rail for Froglet's explicit two-leg settlement flow:
+
+- descriptor exposes `lightning`
+- prepare reserves the deal through the invoice bundle flow
+- commit settles the success leg
+- release cancels or expires the pending hold
+
+More on the artifact model: [Settlement (Lightning)](/learn/settlement/)

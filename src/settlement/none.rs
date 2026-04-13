@@ -2,8 +2,8 @@ use crate::{config::PaymentBackend, state::AppState};
 use futures::future::BoxFuture;
 
 use super::{
-    PaymentError, PaymentReservation, PaymentReceipt, PreparePaymentRequest,
-    SettlementDriver, SettlementDriverDescriptor, WalletBalanceSnapshot,
+    PaymentError, PaymentReceipt, PaymentReservation, PreparePaymentRequest, SettlementDriver,
+    SettlementDriverDescriptor, WalletBalanceSnapshot,
 };
 
 pub(crate) struct NoSettlementDriver;

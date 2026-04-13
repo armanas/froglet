@@ -23,6 +23,8 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 ## Operations
 
 - [DOCKER.md](DOCKER.md): local compose and container deployment
+- [GCP_SINGLE_VM.md](GCP_SINGLE_VM.md): single-VM self-host deployment wrapper
+- [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the separate hosted trial
 - [RELEASE.md](RELEASE.md): release process and published image contract
 
 ## Integrations

@@ -166,7 +166,6 @@ jobs:
           docker compose config
           docker compose -f compose.provider.yaml config
           docker compose -f compose.runtime.yaml config
-          docker compose -f compose.marketplace.yaml config
 
       - name: Log in to GHCR
         env:

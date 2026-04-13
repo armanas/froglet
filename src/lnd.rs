@@ -1,7 +1,6 @@
 use crate::config::LightningLndRestConfig;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, Url};
-use zeroize::Zeroizing;
 use rustls::{
     ClientConfig as RustlsClientConfig, DigitallySignedStruct, Error as RustlsError,
     SignatureScheme,
@@ -13,6 +12,7 @@ use serde::de::{self, DeserializeOwned};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{error::Error as StdError, fs, path::Path, sync::Arc, time::Duration};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LndNodeInfo {
@@ -114,11 +114,9 @@ impl LndRestClient {
         let client = builder
             .build()
             .map_err(|error| LndRestError::Client(error.to_string()))?;
-        let macaroon_hex = Zeroizing::new(hex::encode(
-            fs::read(&config.macaroon_path).map_err(|error| {
-                LndRestError::Io(format!("{}: {error}", config.macaroon_path.display()))
-            })?,
-        ));
+        let macaroon_hex = Zeroizing::new(hex::encode(fs::read(&config.macaroon_path).map_err(
+            |error| LndRestError::Io(format!("{}: {error}", config.macaroon_path.display())),
+        )?));
 
         Ok(Self {
             base_url,

@@ -146,6 +146,33 @@ jobs:
           RELEASE_TAG: ${{ steps.release_meta.outputs.tag }}
         run: ./scripts/smoke_install_from_assets.sh --assets-dir dist --version "$RELEASE_TAG"
 
+  docs-site:
+    name: Docs Site
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install docs site dependencies
+        run: npm ci --prefix docs-site
+
+      - name: Run docs site tests
+        run: npm test --prefix docs-site
+
+      - name: Build docs site
+        env:
+          SITE_URL: https://ai.froglet.dev
+        run: npm run build --prefix docs-site
+
   openclaw-node18:
     name: OpenClaw Node 18
     runs-on: ubuntu-latest

@@ -75,8 +75,7 @@ pub fn sha256_hex(input: impl AsRef<[u8]>) -> String {
 
 /// HMAC-SHA256 (RFC 2104). Returns the hex-encoded MAC.
 pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts any key length");
     mac.update(message);
     hex::encode(mac.finalize().into_bytes())
 }

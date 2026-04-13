@@ -107,7 +107,7 @@ class BlackBoxApiTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                node.runtime.url("/v1/node/execute/wasm"),
                 json=request,
             ) as resp:
                 self.assertIn(resp.status, (200, 202), f"Unexpected status: {resp.status}")

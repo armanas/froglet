@@ -12,11 +12,11 @@ from test_support import (
 
 class SandboxTests(FrogletAsyncTestCase):
     async def test_wasm_infinite_loop_hits_runtime_limits(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={"submission": build_wasm_submission(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
@@ -28,11 +28,11 @@ class SandboxTests(FrogletAsyncTestCase):
         )
 
     async def test_valid_wasm_executes(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={"submission": build_wasm_submission(VALID_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
@@ -41,11 +41,11 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertEqual(payload["result"], 42)
 
     async def test_invalid_wasm_hex_is_rejected(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={
                     "submission": {
                         **build_wasm_submission(VALID_WASM_HEX),
@@ -59,13 +59,13 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertIn("invalid hex", payload["error"])
 
     async def test_execute_wasm_rejects_module_hash_mismatch(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         submission = build_wasm_submission(VALID_WASM_HEX)
         submission["workload"]["module_hash"] = "11" * 32
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={"submission": submission},
             ) as resp:
                 payload = await resp.json()
@@ -74,13 +74,13 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertIn("module hash", payload["error"].lower())
 
     async def test_execute_wasm_rejects_unsupported_abi_version(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         submission = build_wasm_submission(VALID_WASM_HEX)
         submission["workload"]["abi_version"] = "froglet.wasm.run_json.v0"
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={"submission": submission},
             ) as resp:
                 payload = await resp.json()
@@ -89,13 +89,13 @@ class SandboxTests(FrogletAsyncTestCase):
         self.assertIn("abi_version", payload["error"])
 
     async def test_execute_wasm_rejects_requested_capabilities(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         submission = build_wasm_submission(VALID_WASM_HEX)
         submission["workload"]["requested_capabilities"] = ["net.http.fetch"]
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={"submission": submission},
             ) as resp:
                 payload = await resp.json()

@@ -16,7 +16,7 @@ class PrivacyAndOpsecTests(FrogletAsyncTestCase):
                 body = await resp.json()
 
         self.assertEqual(resp.status, 200)
-        self.assertEqual(headers.get("Server"), "nginx/1.18.0")
+        self.assertEqual(headers.get("Server"), "froglet")
         self.assertIsNotNone(headers.get("Date"))
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["service"], "froglet")

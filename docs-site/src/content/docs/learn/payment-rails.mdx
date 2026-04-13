@@ -1,0 +1,59 @@
+---
+title: Payment Rails
+description: Choose between Lightning, Stripe, and x402 for the local Froglet launch path.
+---
+
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">Launch rails</div>
+    <p class="learn-lead">Lightning, Stripe, and x402 are the launch-blocking rails.</p>
+    <p class="learn-sublead">Each rail has a setup helper, operator docs, and a verification probe. PayPal is out of scope for launch. GPU stays docs-only and does not change the payment surface.</p>
+  </div>
+</div>
+
+## One helper
+
+```bash
+./scripts/setup-payment.sh lightning
+./scripts/setup-payment.sh stripe
+./scripts/setup-payment.sh x402
+```
+
+Each command:
+
+- writes a validated env snippet
+- prints the exact secrets or inputs still required
+- runs a verification probe for that rail
+
+## Choosing a rail
+
+| Rail | Best first use | Verification path |
+|------|----------------|-------------------|
+| Lightning | local paid-flow development and Bitcoin-native settlement | mock mode locally, optional `lnd_rest` probe |
+| Stripe | card-backed test-mode and hosted merchant flows | `GET /v1/account` with a test secret key and `livemode=false` |
+| x402 | USDC-style machine-to-machine flow | local Base-address/network validation plus facilitator `/verify` reachability |
+
+The current public Stripe and x402 adapters reuse the configured numeric
+service price directly on the local runtime path. They do not perform FX
+conversion from sats into backend-native fiat or token units.
+
+## Operator guides
+
+- [Lightning](/learn/payment-lightning/)
+- [Stripe](/learn/payment-stripe/)
+- [x402](/learn/payment-x402/)
+
+## Verification lifecycle
+
+Across all three launch rails, the local `/v1/node/*` runtime helpers use the
+same stages:
+
+1. descriptor exposure
+2. payment prepare or reserve
+3. commit or capture
+4. cancellation or release
+
+Only Lightning currently extends that lifecycle into standardized
+quote/deal settlement terms and invoice-bundle artifacts. The rail-specific
+docs below explain how each backend maps the local runtime stages to its own
+provider.

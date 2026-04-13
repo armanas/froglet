@@ -31,8 +31,8 @@ pub async fn connect(database_url: &str) -> Result<PgPool, String> {
 
     let use_tls = should_use_tls(host_str.as_deref());
     let pool = if use_tls {
-        let tls_config = build_rustls_config()
-            .map_err(|e| format!("TLS configuration error: {e}"))?;
+        let tls_config =
+            build_rustls_config().map_err(|e| format!("TLS configuration error: {e}"))?;
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
         cfg.create_pool(Some(Runtime::Tokio1), tls)
             .map_err(|e| format!("pool creation (TLS): {e}"))?
@@ -56,8 +56,7 @@ fn should_use_tls(host: Option<&str>) -> bool {
     if let Ok(val) = std::env::var("FROGLET_MARKETPLACE_DB_TLS") {
         let disabled = matches!(val.as_str(), "0" | "false" | "off");
         if disabled {
-            let is_loopback = host
-                .is_some_and(|h| matches!(h, "127.0.0.1" | "localhost" | "::1"));
+            let is_loopback = host.is_some_and(|h| matches!(h, "127.0.0.1" | "localhost" | "::1"));
             if !is_loopback {
                 tracing::warn!(
                     "FROGLET_MARKETPLACE_DB_TLS is disabled for non-loopback host {:?} \
@@ -74,9 +73,8 @@ fn should_use_tls(host: Option<&str>) -> bool {
 
 fn build_rustls_config() -> Result<rustls::ClientConfig, rustls::Error> {
     froglet::tls::ensure_rustls_crypto_provider();
-    let root_store = rustls::RootCertStore::from_iter(
-        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-    );
+    let root_store =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     Ok(rustls::ClientConfig::builder()
         .with_root_certificates(Arc::new(root_store))
         .with_no_client_auth())

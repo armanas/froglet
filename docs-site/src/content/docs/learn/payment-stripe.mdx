@@ -1,0 +1,50 @@
+---
+title: Stripe
+description: Operator setup and verification for the Stripe launch rail.
+---
+
+## Setup
+
+Use a Stripe test-mode secret key:
+
+```bash
+FROGLET_STRIPE_SECRET_KEY=sk_test_... \
+./scripts/setup-payment.sh stripe
+```
+
+That writes `.froglet/payment/stripe.env` with:
+
+```bash
+FROGLET_PAYMENT_BACKEND=stripe
+FROGLET_STRIPE_SECRET_KEY=sk_test_...
+FROGLET_STRIPE_API_VERSION=2026-03-04.preview
+```
+
+## Verification
+
+The setup helper probes Stripe by calling:
+
+```text
+GET https://api.stripe.com/v1/account
+```
+
+The probe uses the configured secret key and Stripe API version header, then
+requires Stripe to report `livemode=false`. Live keys are rejected on this
+public local setup path.
+
+The current public adapter reuses the configured numeric service price
+directly for the PaymentIntent amount. It does not perform FX conversion from
+sats into Stripe fiat units.
+
+## Runtime behavior
+
+For Froglet's local `/v1/node/*` settlement lifecycle, Stripe maps to:
+
+- descriptor exposes `stripe_mpp`
+- prepare validates the shared payment token and creates a manual-capture payment intent
+- commit captures the payment intent
+- release cancels the uncaptured payment intent
+
+This keeps the same local prepare/commit/release lifecycle as the other launch
+rails while using Stripe's own primitives underneath. It does not currently add
+Stripe-specific quote/deal settlement terms to the signed kernel flow.

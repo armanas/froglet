@@ -1,8 +1,8 @@
 use crate::{
     confidential::ConfidentialPolicy, config::NodeConfig, db, db::DbPool,
     execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
-    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, settlement::SettlementRegistry,
-    tls, wasm_host::WasmHostEnvironment,
+    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, settlement::SettlementRegistry, tls,
+    wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};

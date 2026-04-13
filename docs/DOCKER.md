@@ -1,11 +1,12 @@
 # Docker
 
-Froglet ships four image targets:
+Froglet ships these public image targets:
 
 - `provider` — provider-mode froglet-node (includes `python3`)
 - `runtime` — runtime-mode froglet-node
 - `dual` — both provider and runtime in one container
 - `marketplace` — froglet-marketplace (Postgres-backed search/registration)
+- `froglet-mcp` — MCP server image published to GHCR
 
 ## Default Local Stack
 
@@ -24,9 +25,9 @@ Host token path:
 
 - `./data/runtime/froglet-control.token`
 
-The default Compose file no longer makes that token host-readable. Set
-`FROGLET_HOST_READABLE_CONTROL_TOKEN=true` only for explicit local-development
-workflows that need direct host access to the provider control token.
+The default Compose file does not make that token host-readable. Set
+`FROGLET_HOST_READABLE_CONTROL_TOKEN=true` whenever a host-side agent or MCP
+client needs direct access to `./data/runtime/froglet-control.token`.
 
 This is the default local development topology and the one used by the OpenClaw
 and MCP compose smoke coverage.
@@ -57,7 +58,17 @@ docker build --target provider -t froglet-provider:local .
 docker build --target runtime -t froglet-runtime:local .
 docker build --target dual -t froglet-dual:local .
 docker build --target marketplace -t froglet-marketplace:local .
+docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp:local .
 ```
+
+## Published Images
+
+The tagged release workflow publishes:
+
+- `ghcr.io/<owner>/froglet-provider:<version>`
+- `ghcr.io/<owner>/froglet-runtime:<version>`
+- `ghcr.io/<owner>/froglet-marketplace:<version>`
+- `ghcr.io/<owner>/froglet-mcp:<version>`
 
 ## Role Defaults
 

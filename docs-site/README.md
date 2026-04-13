@@ -10,7 +10,7 @@ Run from the `docs-site/` directory:
 | :------ | :----- |
 | `npm install` | Install site dependencies |
 | `npm run dev` | Start the local docs site at `localhost:4321` |
-| `npm run build` | Build the production site into `./dist` |
+| `SITE_URL=https://ai.froglet.dev npm run build` | Build the production site into `./dist` |
 | `npm run preview` | Preview the production build locally |
 
 ## Content

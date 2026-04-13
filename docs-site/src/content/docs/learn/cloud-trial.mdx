@@ -1,0 +1,56 @@
+---
+title: Try In Cloud
+description: The hosted Froglet trial uses temporary identities, a shared gateway, and free-only deal flow at launch.
+---
+
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">Hosted trial</div>
+    <p class="learn-lead">Temporary identity, free-only deal flow, optional email claim.</p>
+    <p class="learn-sublead">This path is a separate hosted product on GCP. It is not implemented in this public repo. The public docs define the user promise and the external API contract.</p>
+    <div class="learn-chip-row">
+      <span class="learn-chip">15-minute TTL</span>
+      <span class="learn-chip">Shared gateway</span>
+      <span class="learn-chip">Keep by email</span>
+    </div>
+  </div>
+</div>
+
+## Launch promise
+
+- create a temporary identity with a 15-minute TTL
+- run the hosted flow through a shared Froglet gateway
+- keep the temporary identity by binding an email address
+- stay free-only at launch
+- keep payment-rail onboarding on the local path
+
+## Public API contract
+
+The hosted gateway exposes these endpoints:
+
+```text
+POST /api/sessions
+POST /api/sessions/claim
+POST /api/sessions/verify
+POST /api/sessions/resume
+```
+
+Session-scoped discovery, quote, deal, and execute endpoints sit behind the session created by `POST /api/sessions`.
+
+## User flow
+
+1. `POST /api/sessions` creates a temporary identity.
+2. The session can discover services, request a quote, create a deal, and execute a free-only flow.
+3. `POST /api/sessions/claim` sends a 6-digit code to the supplied email address.
+4. `POST /api/sessions/verify` binds the email to the session and converts it to long-term ownership.
+5. `POST /api/sessions/resume` reopens a saved identity with email plus verification code.
+
+## Boundary
+
+This public repo does **not** contain the hosted gateway implementation, its operator controls, or its email and abuse-control stack. Those pieces belong in the separate private repo that serves `try.froglet.dev`.
+
+The public side of that split is documented here so the launch story stays strict and the local repo does not pretend to ship the hosted backend.
+
+## Local path
+
+When you need payment-rail onboarding or full self-host control, use [Run Locally](/learn/quickstart/).

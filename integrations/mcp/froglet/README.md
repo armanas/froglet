@@ -20,6 +20,13 @@ FROGLET_RUNTIME_URL=http://127.0.0.1:8081 \
   node integrations/mcp/froglet/server.js
 ```
 
+For project-local launch files, use the public helper:
+
+```bash
+./scripts/setup-agent.sh --target claude-code
+./scripts/setup-agent.sh --target codex
+```
+
 ## Configuration
 
 All configuration is through environment variables:
@@ -31,8 +38,8 @@ All configuration is through environment variables:
 | `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | No | Path to provider auth token file |
 | `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | No | Path to runtime auth token file |
 | `FROGLET_REQUEST_TIMEOUT_MS` | No | HTTP timeout in ms (default: 10000) |
-| `FROGLET_DEFAULT_SEARCH_LIMIT` | No | Default search results (default: 20) |
-| `FROGLET_MAX_SEARCH_LIMIT` | No | Max search results (default: 100) |
+| `FROGLET_DEFAULT_SEARCH_LIMIT` | No | Default search results (default: 10) |
+| `FROGLET_MAX_SEARCH_LIMIT` | No | Max search results (default: 50) |
 
 Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.
@@ -81,6 +88,12 @@ Drop `.mcp.json` in the project root (already included in this repo):
 }
 ```
 
+Or generate it directly:
+
+```bash
+./scripts/setup-agent.sh --target claude-code
+```
+
 Or add via CLI: `claude mcp add froglet -- node integrations/mcp/froglet/server.js`
 
 ### Cursor
@@ -112,6 +125,12 @@ Add to `~/.codex/config.toml` (global) or `.codex/config.toml` (project):
 command = "node"
 args = ["integrations/mcp/froglet/server.js"]
 env = { "FROGLET_PROVIDER_URL" = "http://127.0.0.1:8080", "FROGLET_RUNTIME_URL" = "http://127.0.0.1:8081" }
+```
+
+Or generate the project-local file:
+
+```bash
+./scripts/setup-agent.sh --target codex
 ```
 
 ### Docker
@@ -163,6 +182,8 @@ docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp .
 | Codex CLI | `examples/codex-mcp-config.toml` | TOML |
 | Docker | `examples/docker-mcp-config.json` | JSON |
 | Claude Code | `.mcp.json` (repo root) | JSON |
+
+The checked-in examples are covered by `integrations/mcp/froglet/test/example-configs.test.mjs`.
 
 ## Compose Stack
 

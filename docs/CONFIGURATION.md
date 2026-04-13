@@ -41,6 +41,10 @@ the `FROGLET_` prefix. Unset variables fall back to sensible defaults.
 | `FROGLET_PRICE_EVENTS_QUERY` | `0` | Price in sats per events query (0 = free) |
 | `FROGLET_PRICE_EXEC_WASM` | `0` | Price in sats per WASM execution (0 = free) |
 
+The current public Stripe and x402 runtime adapters reuse that configured
+numeric price directly on the local `/v1/node/*` flow. They do not perform FX
+conversion from sats into backend-native fiat or token units.
+
 ## Payment & Lightning
 
 | Variable | Default | Description |
@@ -63,13 +67,13 @@ the `FROGLET_` prefix. Unset variables fall back to sensible defaults.
 |----------|---------|-------------|
 | `FROGLET_X402_FACILITATOR_URL` | `https://api.cdp.coinbase.com/platform/v2/x402` | x402 facilitator endpoint for verify/settle |
 | `FROGLET_X402_WALLET_ADDRESS` | *(required)* | Your Base wallet address to receive USDC payments |
-| `FROGLET_X402_NETWORK` | `base` | Chain network identifier |
+| `FROGLET_X402_NETWORK` | `base` | Chain network identifier (`base` only in the current public implementation) |
 
 ## Stripe MPP
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe secret API key (starts with `sk_`) |
+| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe test secret API key for the public local helper (must start with `sk_test_`) |
 | `FROGLET_STRIPE_API_VERSION` | `2026-03-04.preview` | Stripe API version (required for MPP features) |
 
 ## Execution

@@ -518,8 +518,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             .expect("lnd rest config"),
     )
     .expect("cached lnd client");
-    let settlement_registry =
-        froglet::settlement::SettlementRegistry::new(&node_config);
+    let settlement_registry = froglet::settlement::SettlementRegistry::new(&node_config);
 
     AppState {
         db: pool,

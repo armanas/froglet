@@ -255,7 +255,10 @@ pub fn runtime_router(state: Arc<AppState>) -> Router {
 /// and in tests. **Do not use for internet-facing deployments** — execute_wasm
 /// and jobs endpoints are included without authentication. Use `public_router`
 /// and `runtime_router` separately for production.
-#[cfg_attr(not(test), deprecated(note = "use public_router + runtime_router for production"))]
+#[cfg_attr(
+    not(test),
+    deprecated(note = "use public_router + runtime_router for production")
+)]
 pub fn router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(events_query_routes(&state))
@@ -1120,7 +1123,10 @@ pub async fn runtime_mock_pay_deal(
         return error_json(error.0, error.1);
     }
 
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning)
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
         || state.config.lightning.mode != LightningMode::Mock
     {
         return error_json(
@@ -1441,7 +1447,10 @@ fn build_requester_signed_deal_artifact(
 fn quote_uses_lightning_bundle(state: &AppState, quote: &SignedArtifact<QuotePayload>) -> bool {
     let total_msat = quote.payload.settlement_terms.base_fee_msat
         + quote.payload.settlement_terms.success_fee_msat;
-    state.config.payment_backends.contains(&PaymentBackend::Lightning)
+    state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
         && total_msat > 0
         && quote.payload.settlement_terms.method == "lightning.base_fee_plus_success_fee.v1"
 }
@@ -2025,7 +2034,10 @@ pub async fn mock_pay_deal(
     Path(deal_id): Path<String>,
     Json(payload): Json<MockPayDealRequest>,
 ) -> impl IntoResponse {
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning)
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
         || state.config.lightning.mode != LightningMode::Mock
     {
         return error_json(
@@ -2787,7 +2799,12 @@ fn legacy_paid_endpoint_requires_protocol_deal(
     endpoint_path: &str,
 ) -> Option<(StatusCode, Json<serde_json::Value>)> {
     let price_sats = state.pricing.price_for(service_id);
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) || price_sats == 0 {
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+        || price_sats == 0
+    {
         return None;
     }
 
@@ -5108,7 +5125,10 @@ async fn create_deal_record(
         + payload.quote.payload.settlement_terms.success_fee_msat;
     let quoted_total_sats = quoted_total_msat / 1_000;
     let uses_lightning_bundle = quoted_total_sats > 0
-        && state.config.payment_backends.contains(&PaymentBackend::Lightning);
+        && state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Lightning);
     if let Err((status, message)) =
         validate_deal_deadlines(&payload.quote, &payload.deal, now, uses_lightning_bundle)
     {
@@ -7178,7 +7198,11 @@ async fn reconcile_lightning_deal(
 }
 
 pub async fn reconcile_lightning_settlement_once(state: Arc<AppState>) -> Result<(), String> {
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) {
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+    {
         return Ok(());
     }
 
@@ -8089,11 +8113,13 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
 
         match deal {
             Some(deal) => {
-                let requires_remote_cancellation =
-                    state.config.payment_backends.contains(&PaymentBackend::Lightning)
-                        && matches!(state.config.lightning.mode, LightningMode::LndRest)
-                        && record.materialization_kind == "lightning_invoice_bundle"
-                        && deal.payment_method.as_deref() == Some("lightning");
+                let requires_remote_cancellation = state
+                    .config
+                    .payment_backends
+                    .contains(&PaymentBackend::Lightning)
+                    && matches!(state.config.lightning.mode, LightningMode::LndRest)
+                    && record.materialization_kind == "lightning_invoice_bundle"
+                    && deal.payment_method.as_deref() == Some("lightning");
                 if requires_remote_cancellation {
                     continue;
                 }
@@ -8115,7 +8141,11 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
 }
 
 async fn recover_orphaned_deal_materializations_remote(state: Arc<AppState>) -> Result<(), String> {
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) {
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+    {
         return Ok(());
     }
 
@@ -8335,7 +8365,11 @@ pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), Str
 }
 
 pub async fn recover_runtime_state_remote(state: Arc<AppState>) -> Result<(), String> {
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) {
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+    {
         return Ok(());
     }
 

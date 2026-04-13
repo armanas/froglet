@@ -4,7 +4,7 @@ import starlight from '@astrojs/starlight';
 import remarkMath from 'remark-math';
 import rehypeMathjax from 'rehype-mathjax';
 
-const site = process.env.SITE_URL ?? 'https://armanas.dev';
+const site = process.env.SITE_URL ?? 'https://ai.froglet.dev';
 
 export default defineConfig({
 	site,
@@ -36,6 +36,12 @@ export default defineConfig({
 						items: [
 							{ label: 'Overview', slug: 'learn' },
 							{ label: 'Quickstart', slug: 'learn/quickstart' },
+							{ label: 'Try In Cloud', slug: 'learn/cloud-trial' },
+							{ label: 'Connect Agents', slug: 'learn/agents' },
+							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
+							{ label: 'Lightning', slug: 'learn/payment-lightning' },
+							{ label: 'Stripe', slug: 'learn/payment-stripe' },
+							{ label: 'x402', slug: 'learn/payment-x402' },
 							{ label: 'What is Froglet?', slug: 'learn/introduction' },
 							{ label: 'Cryptographic Identity', slug: 'learn/identity' },
 							{ label: 'The Deal Flow', slug: 'learn/deal-flow' },

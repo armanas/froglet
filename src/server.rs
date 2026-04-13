@@ -329,7 +329,9 @@ async fn run(
     }
 
     if service_role.is_provider()
-        && node_config.payment_backends.contains(&PaymentBackend::Lightning)
+        && node_config
+            .payment_backends
+            .contains(&PaymentBackend::Lightning)
     {
         let recovery_state = state.clone();
         spawn_supervised_task(

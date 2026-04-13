@@ -1737,14 +1737,12 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(marketplace.stop)
         return marketplace
 
-    async def wait_for_job(
-        self, provider: FrogletProvider, job_id: str, timeout: float = 15.0
-    ) -> dict:
+    async def wait_for_runtime_job(self, runtime, job_id: str, timeout: float = 15.0) -> dict:
         deadline = time.monotonic() + timeout
 
         async with aiohttp.ClientSession() as session:
             while time.monotonic() < deadline:
-                async with session.get(provider.url(f"/v1/node/jobs/{job_id}")) as resp:
+                async with session.get(runtime.url(f"/v1/node/jobs/{job_id}")) as resp:
                     payload = await resp.json()
                 if payload["status"] in {"succeeded", "failed"}:
                     return payload

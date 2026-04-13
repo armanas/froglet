@@ -1,0 +1,58 @@
+name: Docs Site Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/docs-site.yml"
+      - "docs-site/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs-site
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Docs Site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install docs site dependencies
+        run: npm ci --prefix docs-site
+
+      - name: Build docs site
+        env:
+          SITE_URL: https://ai.froglet.dev
+        run: npm run build --prefix docs-site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/dist
+
+      - name: Deploy docs site
+        id: deployment
+        uses: actions/deploy-pages@v4

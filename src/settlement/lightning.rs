@@ -16,9 +16,8 @@ use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    PaymentError, PaymentReservation, PaymentReceipt, PreparePaymentRequest,
-    SettlementDriver, SettlementDriverDescriptor, WalletBalanceSnapshot, current_unix_timestamp,
-    new_request_id,
+    PaymentError, PaymentReceipt, PaymentReservation, PreparePaymentRequest, SettlementDriver,
+    SettlementDriverDescriptor, WalletBalanceSnapshot, current_unix_timestamp, new_request_id,
 };
 
 pub const LIGHTNING_MOCK_MODE: &str = "mock_hold_invoice";
@@ -324,9 +323,7 @@ fn sign_lightning_invoice_bundle(
             success_fee: InvoiceBundleLeg {
                 amount_msat: signature.request.success_fee_msat,
                 invoice_bolt11: signature.success_hold_invoice_bolt11.clone(),
-                invoice_hash: crypto::sha256_hex(
-                    signature.success_hold_invoice_bolt11.as_bytes(),
-                ),
+                invoice_hash: crypto::sha256_hex(signature.success_hold_invoice_bolt11.as_bytes()),
                 payment_hash: signature.request.success_payment_hash.clone(),
                 state: signature.success_state.clone(),
             },
@@ -788,7 +785,12 @@ pub async fn quoted_lightning_settlement_terms(
     state: &AppState,
     price_sats: u64,
 ) -> Result<Option<QuoteSettlementTerms>, String> {
-    if !state.config.payment_backends.contains(&PaymentBackend::Lightning) || price_sats == 0 {
+    if !state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+        || price_sats == 0
+    {
         return Ok(None);
     }
 
@@ -809,7 +811,12 @@ pub fn lightning_quote_expires_at(
     price_sats: u64,
     execution_window_secs: u64,
 ) -> i64 {
-    if state.config.payment_backends.contains(&PaymentBackend::Lightning) && price_sats > 0 {
+    if state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+        && price_sats > 0
+    {
         let admission_window_secs = state
             .config
             .lightning
@@ -1112,9 +1119,7 @@ pub fn validate_lightning_invoice_bundle(
                     push_bundle_issue(
                         &mut issues,
                         "invoice_payment_hash_mismatch",
-                        format!(
-                            "{leg_name} invoice payment hash does not match the signed bundle"
-                        ),
+                        format!("{leg_name} invoice payment hash does not match the signed bundle"),
                     );
                 }
                 if !decoded.destination_identity.is_empty()
@@ -1518,4 +1523,3 @@ impl SettlementDriver for LightningDriver {
         Box::pin(async move { Ok(()) })
     }
 }
-

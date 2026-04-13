@@ -59,6 +59,9 @@ coverage/
 .qodo/
 .claude/
 .ai/
+.codex/
+.cursor/
+.froglet/
 
 # OS files
 .DS_Store

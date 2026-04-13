@@ -36,6 +36,9 @@ fi
 
 echo "[strict] installer and release helper shell syntax"
 sh -n scripts/install.sh
+bash -n scripts/setup-agent.sh
+bash -n scripts/setup-payment.sh
+bash -n scripts/deploy_gcp_single_vm.sh
 bash -n scripts/package_release_assets.sh
 bash -n scripts/verify_release_assets.sh
 bash -n scripts/smoke_install_from_assets.sh
@@ -57,7 +60,8 @@ if command -v node >/dev/null 2>&1; then
 
     echo "[strict] MCP server checks"
     node --check integrations/mcp/froglet/server.js
-    node --test integrations/mcp/froglet/test/server.test.mjs
+    node --test integrations/mcp/froglet/test/server.test.mjs \
+      integrations/mcp/froglet/test/example-configs.test.mjs
 
     if [[ "${FROGLET_RUN_COMPOSE_SMOKE:-0}" == "1" ]]; then
       if ! command -v docker >/dev/null 2>&1; then
@@ -93,6 +97,7 @@ python3 -W error -m unittest \
   python.tests.test_privacy \
   python.tests.test_hardening \
   python.tests.test_install_script \
+  python.tests.test_setup_scripts \
   python.tests.test_conformance_vectors -v
 
 if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then

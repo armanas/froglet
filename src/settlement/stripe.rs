@@ -18,8 +18,8 @@ use crate::{config::StripeConfig, state::AppState};
 use futures::future::BoxFuture;
 
 use super::{
-    new_request_id, PaymentError, PaymentReceipt, PaymentReservation, PreparePaymentRequest,
-    SettlementDriver, SettlementDriverDescriptor, WalletBalanceSnapshot,
+    PaymentError, PaymentReceipt, PaymentReservation, PreparePaymentRequest, SettlementDriver,
+    SettlementDriverDescriptor, WalletBalanceSnapshot, new_request_id,
 };
 
 // ─── Driver ───────────────────────────────────────────────────────────────────
@@ -27,16 +27,26 @@ use super::{
 pub(crate) struct StripeDriver {
     api_key: String,
     api_version: String,
+    api_base_url: String,
     http_client: reqwest::Client,
 }
 
 impl StripeDriver {
     pub(crate) fn new(config: StripeConfig, api_key: String) -> Self {
+        Self::with_base_url(config, api_key, "https://api.stripe.com")
+    }
+
+    fn with_base_url(config: StripeConfig, api_key: String, api_base_url: &str) -> Self {
         Self {
             api_key,
             api_version: config.api_version,
+            api_base_url: api_base_url.trim_end_matches('/').to_string(),
             http_client: reqwest::Client::new(),
         }
+    }
+
+    fn api_url(&self, path: &str) -> String {
+        format!("{}{}", self.api_base_url, path)
     }
 
     /// Perform an authenticated GET against the Stripe API and return the
@@ -44,7 +54,7 @@ impl StripeDriver {
     async fn stripe_get(&self, path: &str) -> Result<serde_json::Value, String> {
         let response = self
             .http_client
-            .get(format!("https://api.stripe.com{path}"))
+            .get(self.api_url(path))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Stripe-Version", &self.api_version)
             .send()
@@ -85,7 +95,7 @@ impl StripeDriver {
 
         let response = self
             .http_client
-            .post(format!("https://api.stripe.com{path}"))
+            .post(self.api_url(path))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Stripe-Version", &self.api_version)
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -345,13 +355,7 @@ impl SettlementDriver for StripeDriver {
 fn encode_form_params(params: &[(&str, &str)]) -> String {
     params
         .iter()
-        .map(|(k, v)| {
-            format!(
-                "{}={}",
-                urlencoding::encode(k),
-                urlencoding::encode(v)
-            )
-        })
+        .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
         .collect::<Vec<_>>()
         .join("&")
 }
@@ -364,21 +368,28 @@ mod tests {
     use crate::{
         confidential::ConfidentialConfig,
         config::{
-            IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
-            PricingConfig, StorageConfig, StripeConfig, TorSidecarConfig, WasmConfig,
+            IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+            PaymentBackend, PricingConfig, StorageConfig, StripeConfig, TorSidecarConfig,
+            WasmConfig,
         },
         db::DbPool,
         pricing::ServiceId,
         settlement::{PreparePaymentRequest, ProvidedPayment, SettlementRegistry},
         state::{AppState, TransportStatus},
     };
+    use axum::{
+        Json, Router,
+        extract::{Path, State},
+        routing::{get, post},
+    };
     use std::{
         collections::HashMap,
         sync::{
-            atomic::{AtomicU64, Ordering},
             Arc,
+            atomic::{AtomicU64, Ordering},
         },
     };
+    use tokio::net::TcpListener;
     use tokio::sync::{Mutex as TokioMutex, OnceCell, Semaphore};
 
     static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -390,6 +401,99 @@ mod tests {
             },
             "sk_test_placeholder".to_string(),
         )
+    }
+
+    #[derive(Debug, Default)]
+    struct MockStripeState {
+        calls: TokioMutex<Vec<String>>,
+    }
+
+    async fn start_mock_stripe() -> (String, Arc<MockStripeState>, tokio::task::JoinHandle<()>) {
+        async fn get_granted_token(
+            State(state): State<Arc<MockStripeState>>,
+            Path(token_id): Path<String>,
+        ) -> Json<serde_json::Value> {
+            state
+                .calls
+                .lock()
+                .await
+                .push(format!("GET:/v1/shared_payment/granted_tokens/{token_id}"));
+            Json(serde_json::json!({
+                "id": token_id,
+                "expires_at": super::super::current_unix_timestamp() + 600,
+                "maximum_amount": 50_000
+            }))
+        }
+
+        async fn create_payment_intent(
+            State(state): State<Arc<MockStripeState>>,
+            body: String,
+        ) -> Json<serde_json::Value> {
+            state
+                .calls
+                .lock()
+                .await
+                .push(format!("POST:/v1/payment_intents:{body}"));
+            Json(serde_json::json!({
+                "id": "pi_test_123",
+                "status": "requires_capture"
+            }))
+        }
+
+        async fn capture_payment_intent(
+            State(state): State<Arc<MockStripeState>>,
+            Path(intent_id): Path<String>,
+        ) -> Json<serde_json::Value> {
+            state
+                .calls
+                .lock()
+                .await
+                .push(format!("POST:/v1/payment_intents/{intent_id}/capture"));
+            Json(serde_json::json!({
+                "id": intent_id,
+                "status": "succeeded"
+            }))
+        }
+
+        async fn cancel_payment_intent(
+            State(state): State<Arc<MockStripeState>>,
+            Path(intent_id): Path<String>,
+        ) -> Json<serde_json::Value> {
+            state
+                .calls
+                .lock()
+                .await
+                .push(format!("POST:/v1/payment_intents/{intent_id}/cancel"));
+            Json(serde_json::json!({
+                "id": intent_id,
+                "status": "canceled"
+            }))
+        }
+
+        let state = Arc::new(MockStripeState::default());
+        let app = Router::new()
+            .route(
+                "/v1/shared_payment/granted_tokens/:token_id",
+                get(get_granted_token),
+            )
+            .route("/v1/payment_intents", post(create_payment_intent))
+            .route(
+                "/v1/payment_intents/:intent_id/capture",
+                post(capture_payment_intent),
+            )
+            .route(
+                "/v1/payment_intents/:intent_id/cancel",
+                post(cancel_payment_intent),
+            )
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock stripe");
+        let address = listener.local_addr().expect("listener address");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock stripe");
+        });
+        (format!("http://{address}"), state, handle)
     }
 
     /// Build a minimal in-memory `AppState` suitable for unit tests.
@@ -422,7 +526,9 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:0".to_string(),
                 startup_timeout_secs: 90,
             },
-            identity: IdentityConfig { auto_generate: true },
+            identity: IdentityConfig {
+                auto_generate: true,
+            },
             pricing: PricingConfig {
                 events_query: 10,
                 execute_wasm: 30,
@@ -475,12 +581,8 @@ mod tests {
 
         AppState {
             db: pool,
-            transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(
-                &node_config,
-            ))),
-            wasm_sandbox: Arc::new(
-                crate::sandbox::WasmSandbox::from_env().expect("wasm sandbox"),
-            ),
+            transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&node_config))),
+            wasm_sandbox: Arc::new(crate::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
             config: node_config,
             identity: Arc::new(identity),
             pricing,
@@ -519,7 +621,10 @@ mod tests {
             desc.capabilities.contains(&"payment_intents".to_string()),
             "capabilities should include payment_intents"
         );
-        assert!(desc.reservations, "stripe driver should support reservations");
+        assert!(
+            desc.reservations,
+            "stripe driver should support reservations"
+        );
         assert!(desc.receipts, "stripe driver should support receipts");
     }
 
@@ -552,7 +657,10 @@ mod tests {
             request_id: None,
         };
         let result = driver.prepare(&state, request).await;
-        assert!(result.is_err(), "priced service without payment should fail");
+        assert!(
+            result.is_err(),
+            "priced service without payment should fail"
+        );
         assert!(
             matches!(result.unwrap_err(), PaymentError::PaymentRequired { .. }),
             "error should be PaymentRequired"
@@ -573,13 +681,118 @@ mod tests {
             request_id: None,
         };
         let result = driver.prepare(&state, request).await;
-        assert!(
-            result.is_err(),
-            "wrong payment kind should be rejected"
-        );
+        assert!(result.is_err(), "wrong payment kind should be rejected");
         assert!(
             matches!(result.unwrap_err(), PaymentError::UnsupportedKind { .. }),
             "error should be UnsupportedKind"
         );
+    }
+
+    #[tokio::test]
+    async fn stripe_driver_prepare_and_commit_uses_payment_intents() {
+        let (base_url, mock_state, handle) = start_mock_stripe().await;
+        let driver = StripeDriver::with_base_url(
+            StripeConfig {
+                api_version: "2024-06-20".to_string(),
+            },
+            "sk_test_placeholder".to_string(),
+            &base_url,
+        );
+        let state = make_state();
+        let reservation = driver
+            .prepare(
+                &state,
+                PreparePaymentRequest {
+                    service_id: ServiceId::EventsQuery,
+                    price_sats: 100,
+                    payment: Some(ProvidedPayment {
+                        kind: "stripe_mpp".to_string(),
+                        token: "spt_test_123".to_string(),
+                    }),
+                    request_id: Some("stripe-prepare".to_string()),
+                },
+            )
+            .await
+            .expect("prepare should succeed")
+            .expect("priced flow should reserve");
+
+        assert_eq!(reservation.method, "stripe_mpp");
+        assert_eq!(reservation.token_hash, "pi_test_123");
+
+        let receipt = driver
+            .commit(&state, reservation)
+            .await
+            .expect("commit should succeed");
+        assert_eq!(receipt.method, "stripe_mpp");
+        assert_eq!(
+            receipt.settlement_status,
+            crate::protocol::SettlementStatus::Committed
+        );
+        assert_eq!(receipt.settlement_reference.as_deref(), Some("pi_test_123"));
+
+        let calls = mock_state.calls.lock().await.clone();
+        assert!(
+            calls
+                .iter()
+                .any(|call| { call == "GET:/v1/shared_payment/granted_tokens/spt_test_123" }),
+            "prepare should validate the shared payment token"
+        );
+        assert!(
+            calls.iter().any(|call| {
+                call.contains("POST:/v1/payment_intents:amount=100")
+                    && call.contains("capture_method=manual")
+            }),
+            "prepare should create a manual-capture payment intent"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == "POST:/v1/payment_intents/pi_test_123/capture"),
+            "commit should capture the payment intent"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn stripe_driver_release_cancels_payment_intent() {
+        let (base_url, mock_state, handle) = start_mock_stripe().await;
+        let driver = StripeDriver::with_base_url(
+            StripeConfig {
+                api_version: "2024-06-20".to_string(),
+            },
+            "sk_test_placeholder".to_string(),
+            &base_url,
+        );
+        let state = make_state();
+        let reservation = driver
+            .prepare(
+                &state,
+                PreparePaymentRequest {
+                    service_id: ServiceId::EventsQuery,
+                    price_sats: 100,
+                    payment: Some(ProvidedPayment {
+                        kind: "stripe_mpp".to_string(),
+                        token: "spt_release_456".to_string(),
+                    }),
+                    request_id: Some("stripe-release".to_string()),
+                },
+            )
+            .await
+            .expect("prepare should succeed")
+            .expect("priced flow should reserve");
+
+        driver
+            .release(&state, &reservation)
+            .await
+            .expect("release should succeed");
+
+        let calls = mock_state.calls.lock().await.clone();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == "POST:/v1/payment_intents/pi_test_123/cancel"),
+            "release should cancel the payment intent"
+        );
+        handle.abort();
     }
 }

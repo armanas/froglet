@@ -14,10 +14,12 @@ a:hover{color:var(--accent-strong)}
 .hero-sub{font-size:1.22rem;max-width:600px}
 
 /* Hero prompt block */
-.hero-prompt{position:relative;display:flex;align-items:stretch;max-width:640px;margin:0 auto 12px;background:var(--code);border:1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 18%, hsl(var(--froglet-border)));border-radius:14px;overflow:hidden}
-.hero-prompt-text{flex:1;display:block;padding:16px 18px;font-family:'JetBrains Mono',monospace;font-size:.92rem;line-height:1.6;color:#ccd6d1;white-space:normal;word-break:break-word;user-select:all;background:transparent;border:0}
-.hero-prompt-copy{appearance:none;border:0;border-left:1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 14%, hsl(var(--froglet-border)));background:color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent);color:var(--accent-strong);padding:0 18px;font-family:'Inter',system-ui,sans-serif;font-size:.82rem;font-weight:700;cursor:pointer;transition:background .18s;white-space:nowrap}
-.hero-prompt-copy:hover{background:color-mix(in srgb, hsl(var(--froglet-accent)) 16%, transparent)}
+.hero-prompt{max-width:760px;margin:0 auto 12px;text-align:left}
+.hero-prompt .expressive-code{margin:0}
+.hero-prompt .expressive-code .copy button,
+.compare-shell .expressive-code .copy button{opacity:1}
+.hero-prompt .expressive-code .copy button::after,
+.compare-shell .expressive-code .copy button::after{background-color:hsl(var(--froglet-foreground))}
 .hero-prompt-hint{font-size:.86rem;color:var(--muted);margin-bottom:0}
 
 /* Hero pivot and human explanation */
@@ -40,12 +42,7 @@ a:hover{color:var(--accent-strong)}
 .compare-list li::marker{color:var(--accent)}
 .compare-footer{display:grid;gap:var(--stack-sm);margin-top:auto;padding-top:var(--stack-lg)}
 .compare-shell{display:grid;gap:10px}
-.compare-shell-label{margin-bottom:0}
-.compare-command-row{display:grid;gap:.75rem}
-.compare-shell.learn-code-box{padding:1rem 1.05rem}
-.compare-shell.learn-code-box pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
-.compare-shell.learn-code-box pre code{white-space:inherit}
-.compare-copy{justify-self:start}
+.compare-shell .expressive-code{margin:0}
 .compare-note{color:var(--muted);font-size:.9rem;line-height:1.58}
 .compare-actions{margin-top:0.1rem}
 
@@ -93,7 +90,6 @@ section{width:min(var(--froglet-shell-max-width),calc(100% - (var(--froglet-shel
   .hero{padding:80px 0 56px}
   .hero h1{max-width:none}
   section{padding:var(--froglet-section-space) 0}
-  .compare-copy{width:100%}
   .trust-controls{flex-direction:column}
   .trust-metrics{grid-template-columns:repeat(2,1fr)}
 }

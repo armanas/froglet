@@ -18,24 +18,24 @@ from test_support import (
 
 class JobApiTests(FrogletAsyncTestCase):
     async def test_wasm_job_executes_and_idempotency_reuses_same_job(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         request = build_wasm_request(VALID_WASM_HEX)
         request["idempotency_key"] = "wasm-hello-jobs"
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(node.url("/v1/node/jobs"), json=request) as resp:
+            async with session.post(runtime.url("/v1/node/jobs"), json=request) as resp:
                 first_payload = await resp.json()
-            async with session.post(node.url("/v1/node/jobs"), json=request) as resp:
+            async with session.post(runtime.url("/v1/node/jobs"), json=request) as resp:
                 second_payload = await resp.json()
 
         self.assertEqual(first_payload["job_id"], second_payload["job_id"])
         self.assertIn(first_payload["status"], {"queued", "running"})
-        completed = await self.wait_for_job(node, first_payload["job_id"])
+        completed = await self.wait_for_runtime_job(runtime, first_payload["job_id"])
         self.assertEqual(completed["status"], "succeeded")
         self.assertEqual(completed["result"], 42)
 
     async def test_job_idempotency_uses_canonical_workload_not_transport_hex_casing(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         first_request = build_wasm_request(VALID_WASM_HEX, input={"b": 2, "a": 1})
         first_request["idempotency_key"] = "wasm-canonical-idempotency"
         second_request = build_wasm_request(VALID_WASM_HEX.upper(), input={"a": 1, "b": 2})
@@ -43,22 +43,22 @@ class JobApiTests(FrogletAsyncTestCase):
         second_request["submission"]["workload"] = first_request["submission"]["workload"]
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(node.url("/v1/node/jobs"), json=first_request) as resp:
+            async with session.post(runtime.url("/v1/node/jobs"), json=first_request) as resp:
                 first_payload = await resp.json()
-            async with session.post(node.url("/v1/node/jobs"), json=second_request) as resp:
+            async with session.post(runtime.url("/v1/node/jobs"), json=second_request) as resp:
                 second_payload = await resp.json()
 
         self.assertEqual(first_payload["job_id"], second_payload["job_id"])
-        completed = await self.wait_for_job(node, first_payload["job_id"])
+        completed = await self.wait_for_runtime_job(runtime, first_payload["job_id"])
         self.assertEqual(completed["status"], "succeeded")
 
     async def test_job_persistence_keeps_wasm_submission_and_workload_hash(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         submission = build_wasm_submission(VALID_WASM_HEX, input={"task": "persist"})
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/jobs"),
+                runtime.url("/v1/node/jobs"),
                 json={
                     "kind": "wasm",
                     "submission": submission,
@@ -67,11 +67,11 @@ class JobApiTests(FrogletAsyncTestCase):
             ) as resp:
                 created = await resp.json()
 
-        completed = await self.wait_for_job(node, created["job_id"])
+        completed = await self.wait_for_runtime_job(runtime, created["job_id"])
         self.assertEqual(completed["status"], "succeeded")
 
         request_hash, payload_json = read_db_row(
-            node.data_dir / "node.db",
+            runtime.data_dir / "node.db",
             "SELECT request_hash, payload_json FROM jobs WHERE job_id = ?",
             (created["job_id"],),
         )
@@ -87,7 +87,7 @@ class JobApiTests(FrogletAsyncTestCase):
         evidence_kinds = {
             row[0]
             for row in read_db_rows(
-                node.data_dir / "node.db",
+                runtime.data_dir / "node.db",
                 "SELECT evidence_kind FROM execution_evidence WHERE subject_kind = 'job' AND subject_id = ? ORDER BY evidence_id ASC",
                 (created["job_id"],),
             )
@@ -95,24 +95,24 @@ class JobApiTests(FrogletAsyncTestCase):
         self.assertEqual(evidence_kinds, {"execution_result", "workload_spec"})
 
     async def test_job_reads_from_evidence_when_cache_columns_are_corrupted(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         request = build_wasm_request(VALID_WASM_HEX, input={"task": "cache-corruption"})
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(node.url("/v1/node/jobs"), json=request) as resp:
+            async with session.post(runtime.url("/v1/node/jobs"), json=request) as resp:
                 created = await resp.json()
 
-        completed = await self.wait_for_job(node, created["job_id"])
+        completed = await self.wait_for_runtime_job(runtime, created["job_id"])
         self.assertEqual(completed["status"], "succeeded")
 
         execute_db(
-            node.data_dir / "node.db",
+            runtime.data_dir / "node.db",
             "UPDATE jobs SET payload_json = ?, result_json = ? WHERE job_id = ?",
             ("{", "{", created["job_id"]),
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(node.url(f"/v1/node/jobs/{created['job_id']}")) as resp:
+            async with session.get(runtime.url(f"/v1/node/jobs/{created['job_id']}")) as resp:
                 reread = await resp.json()
 
         self.assertEqual(resp.status, 200)
@@ -121,13 +121,13 @@ class JobApiTests(FrogletAsyncTestCase):
         self.assertEqual(reread["result"], 42)
 
     async def test_job_rejects_input_hash_mismatch(self) -> None:
-        node = await self.start_node()
+        runtime = await self.start_runtime()
         submission = build_wasm_submission(VALID_WASM_HEX, input={"answer": 42})
         submission["workload"]["input_hash"] = "33" * 32
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/jobs"),
+                runtime.url("/v1/node/jobs"),
                 json={"kind": "wasm", "submission": submission},
             ) as resp:
                 payload = await resp.json()

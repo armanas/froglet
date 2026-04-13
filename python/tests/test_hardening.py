@@ -47,14 +47,14 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
     async def test_execute_wasm_enforces_wall_clock_timeout(self) -> None:
-        provider = await self.start_provider(
+        node = await self.start_node(
             extra_env={
                 "FROGLET_EXECUTION_TIMEOUT_SECS": "1",
             }
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(provider.url("/v1/provider/offers")) as resp:
+            async with session.get(node.provider.url("/v1/provider/offers")) as resp:
                 offers = await resp.json()
             self.assertEqual(resp.status, 200)
             wasm_offer = next(
@@ -67,7 +67,7 @@ class HardeningTests(FrogletAsyncTestCase):
             )
 
             async with session.post(
-                provider.url("/v1/node/execute/wasm"),
+                node.runtime.url("/v1/node/execute/wasm"),
                 json={"submission": build_wasm_submission(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
@@ -163,13 +163,13 @@ class HardeningTests(FrogletAsyncTestCase):
         )
 
     async def test_execute_wasm_rejects_module_hash_mismatch(self) -> None:
-        provider = await self.start_provider()
+        runtime = await self.start_runtime()
         submission = build_wasm_submission(VALID_WASM_HEX)
         submission["workload"]["module_hash"] = "00" * 32
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                provider.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json={"submission": submission},
             ) as resp:
                 payload = await resp.json()

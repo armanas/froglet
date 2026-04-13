@@ -1,17 +1,17 @@
 ---
 title: Quickstart
-description: From zero to first deal in five minutes.
+description: "Run Froglet locally in three steps: install, connect an agent, connect a payment rail."
 ---
 
 <div class="learn-hero compact">
   <div>
-    <div class="learn-pill">5 minutes</div>
-    <p class="learn-lead">Run a froglet node and complete your first deal.</p>
-    <p class="learn-sublead">This guide installs <code>froglet-node</code>, starts a local node, and completes a free deal. No Rust toolchain or Lightning wallet required.</p>
+    <div class="learn-pill">10 minutes</div>
+    <p class="learn-lead">Run Froglet locally in three steps.</p>
+    <p class="learn-sublead">The public self-host path is strict: install Froglet, connect an agent, connect a payment rail. This page uses the launch-ready local defaults and keeps the hosted trial separate.</p>
     <div class="learn-chip-row">
-      <span class="learn-chip">Free mode</span>
-      <span class="learn-chip">Local only</span>
-      <span class="learn-chip">No wallet needed</span>
+      <span class="learn-chip">Linux and macOS</span>
+      <span class="learn-chip">Claude Code / Codex / OpenClaw</span>
+      <span class="learn-chip">Lightning / Stripe / x402</span>
     </div>
   </div>
 </div>
@@ -20,9 +20,11 @@ description: From zero to first deal in five minutes.
 
 - **Linux x86_64 / arm64** or **macOS arm64**
 - **`curl`** to download the installer
-- Optional: **Docker** if you want the full local provider/runtime/marketplace stack
+- **Node.js 18+** if you want the local MCP server for Claude Code or Codex
+- Optional: **Docker** if you want the full local provider/runtime/marketplace stack or the published images
+- Optional: a configured **GCP project** if you want the single-VM self-host wrapper
 
-## 1. Install `froglet-node`
+## 1. Install Froglet
 
 Install the latest tagged release into `~/.local/bin`:
 
@@ -40,57 +42,136 @@ curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/instal
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
-By default the installer fetches `froglet-node`, verifies it against `SHA256SUMS`, and installs it locally. `froglet-node` is a single binary that can act as provider, runtime, or both depending on configuration.
+By default the installer fetches `froglet-node`, verifies it against `SHA256SUMS`, and installs it locally. `froglet-node` is the public single-binary path. The release pipeline also publishes provider, runtime, marketplace, and MCP Docker images.
 
-## 2. Start a node
+## 2. Connect an agent
 
-Open a terminal and run:
+Generate the exact local config file for the agent you plan to use:
 
 ```bash
-FROGLET_PAYMENT_BACKEND=none \
-FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
-froglet-node
+./scripts/setup-agent.sh --target claude-code
 ```
 
-By default, `froglet-node` runs in **dual mode** — both provider (port 8080) and requester (port 8081). You can control this with `FROGLET_NODE_ROLE`:
-
-| Value | Behavior |
-|-------|----------|
-| `dual` (default) | Both provider and requester |
-| `provider` | Provider only |
-| `runtime` | Requester only |
-
-You should see:
-
-```
-froglet-node listening on 127.0.0.1:8080
+```bash
+./scripts/setup-agent.sh --target codex
 ```
 
-## 3. Check node identity
+```bash
+./scripts/setup-agent.sh --target openclaw
+```
 
-In a second terminal:
+The helper writes a ready-to-use file instead of asking you to hand-edit JSON or TOML:
+
+| Target | Default output |
+|-------|----------------|
+| `claude-code` | `.mcp.json` |
+| `codex` | `.codex/config.toml` |
+| `openclaw` | `.froglet/openclaw.config.json` |
+
+The generated files default to:
+
+- provider URL `http://127.0.0.1:8080`
+- runtime URL `http://127.0.0.1:8081`
+- provider token path `<repo-root>/data/runtime/froglet-control.token`
+- runtime token path `<repo-root>/data/runtime/auth.token`
+
+If you plan to use the generated config against Docker Compose, start Compose
+with `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so `<repo-root>/data/runtime/froglet-control.token`
+is readable on the host. The single-binary path does not need this opt-in.
+
+More detail: [Connect Agents](/learn/agents/)
+
+## 3. Connect a payment rail
+
+Generate a validated env snippet for the rail you want to launch with:
+
+```bash
+./scripts/setup-payment.sh lightning
+```
+
+That path uses Lightning mock mode by default, which is enough to exercise the paid-deal flow locally without a wallet.
+
+For the other launch rails:
+
+```bash
+FROGLET_STRIPE_SECRET_KEY=sk_test_... ./scripts/setup-payment.sh stripe
+```
+
+```bash
+FROGLET_X402_WALLET_ADDRESS=0x... ./scripts/setup-payment.sh x402
+```
+
+Each run writes an env snippet, prints the exact inputs still required, and runs a verification probe for that rail.
+
+More detail: [Payment Rails](/learn/payment-rails/)
+
+## 4. Start the local stack
+
+Load the payment snippet you generated and start the default local topology:
+
+```bash
+set -a
+. ./.froglet/payment/lightning.env
+set +a
+export FROGLET_HOST_READABLE_CONTROL_TOKEN=true
+docker compose up --build -d
+```
+
+Replace `lightning.env` with `stripe.env` or `x402.env` when that is the rail
+you configured.
+
+That starts:
+
+- postgres on `127.0.0.1:5432`
+- marketplace on `127.0.0.1:8090`
+- provider on `127.0.0.1:8080`
+- runtime on `127.0.0.1:8081`
+
+That opt-in is required only when host-side agents read the provider control
+token from `./data/runtime/froglet-control.token`. If you want the single-binary
+path instead of Docker Compose, start `froglet-node` directly after loading the
+same env snippet.
+
+For a single GCP VM, the public wrapper keeps a stable interface:
+
+```bash
+FROGLET_GCP_PROJECT=your-project ./scripts/deploy_gcp_single_vm.sh create
+FROGLET_GCP_PROJECT=your-project ./scripts/deploy_gcp_single_vm.sh deploy
+FROGLET_GCP_PROJECT=your-project ./scripts/deploy_gcp_single_vm.sh status
+```
+
+## 5. Check the local control plane
+
+Confirm the provider and runtime are healthy:
+
+```bash
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8081/health
+```
+
+Inspect the provider identity:
 
 ```bash
 curl http://127.0.0.1:8080/v1/node/identity
 ```
 
-This returns your node's public key — the same key that signs every artifact.
-
-## 4. Execute a WASM workload
+## 6. Execute a WASM workload
 
 Submit a WASM binary for execution:
 
 ```bash
 WASM_HEX=0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432
 
-curl -X POST http://127.0.0.1:8080/v1/node/execute/wasm \
+curl -X POST http://127.0.0.1:8081/v1/node/execute/wasm \
   -H "Content-Type: application/json" \
   -d "{\"wasm_hex\":\"$WASM_HEX\",\"input\":{}}"
 ```
 
-The provider quotes, executes, and returns a signed receipt — all in one request.
+This local runtime helper executes the workload and returns the result plus a
+local payment receipt when one is used. The signed quote/deal flow is separate
+and uses `/v1/provider/quotes` plus `/v1/provider/deals`.
 
-## 5. Requester side
+## 7. Requester side
 
 If you started in dual mode (the default), the requester API is already running on port 8081. If you started as provider-only, start a second node for the requester:
 
@@ -103,17 +184,7 @@ froglet-node
 
 The requester handles deal negotiation, payment settlement, and receipt verification.
 
-## 6. Full stack with Docker (optional)
-
-If you want the local marketplace-backed stack instead of a single node:
-
-```bash
-docker compose up -d
-```
-
-That brings up postgres, marketplace, provider, and runtime locally. Use this path when you want to test registration, discovery, or split provider/runtime topology on one machine.
-
-## 7. Register with a marketplace (optional)
+## 8. Register with a marketplace (optional)
 
 To make your provider discoverable:
 
@@ -126,7 +197,7 @@ froglet-node
 
 The provider automatically registers its signed descriptor and offers with the marketplace on startup.
 
-## 8. Install from source instead (optional)
+## 9. Install from source instead (optional)
 
 If you are developing on Froglet itself or want to build locally:
 
@@ -136,7 +207,7 @@ cd froglet
 cargo build --release
 ```
 
-## 9. Stake your identity
+## 10. Stake your identity
 
 After registering, stake non-refundable value into your identity to build trust. Requesters use your stake to decide if dealing with you is safe.
 
@@ -181,8 +252,11 @@ Each artifact references the previous by SHA-256 hash. Tamper with any link and 
 | `FROGLET_NODE_ROLE` | `dual` | `dual`, `provider`, or `runtime` |
 | `FROGLET_LISTEN_ADDR` | `127.0.0.1:8080` | Provider API bind address |
 | `FROGLET_RUNTIME_LISTEN_ADDR` | `127.0.0.1:8081` | Runtime API bind address |
-| `FROGLET_PAYMENT_BACKEND` | `none` | `none` or `lightning` |
+| `FROGLET_PAYMENT_BACKEND` | `none` | `none`, `lightning`, `stripe`, or `x402` |
 | `FROGLET_LIGHTNING_MODE` | `mock` | `mock` or `lnd_rest` |
+| `FROGLET_STRIPE_SECRET_KEY` | — | Stripe test secret key for `stripe` |
+| `FROGLET_X402_WALLET_ADDRESS` | — | Wallet address for `x402` |
+| `FROGLET_X402_NETWORK` | `base` | x402 network selection (`base` only) |
 | `FROGLET_NETWORK_MODE` | `clearnet` | `clearnet`, `tor`, or `dual` |
 | `FROGLET_MARKETPLACE_URL` | — | Auto-register with marketplace |
 | `FROGLET_DATA_DIR` | `./data` | Data directory for SQLite and keys |

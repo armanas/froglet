@@ -1,0 +1,75 @@
+---
+title: Connect Agents
+description: Generate ready-to-use local config for Claude Code, Codex, and OpenClaw.
+---
+
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">Agent setup</div>
+    <p class="learn-lead">One helper script, three supported local agent targets.</p>
+    <p class="learn-sublead">The public local path avoids hand-editing MCP JSON or TOML. The helper generates the exact file each supported agent expects and fills in the local provider, runtime, and token paths.</p>
+  </div>
+</div>
+
+## Generate a config
+
+```bash
+./scripts/setup-agent.sh --target claude-code
+./scripts/setup-agent.sh --target codex
+./scripts/setup-agent.sh --target openclaw
+```
+
+Optional override:
+
+```bash
+./scripts/setup-agent.sh --target codex --out /tmp/froglet-codex.toml
+```
+
+## Default outputs
+
+| Target | Default output | What it configures |
+|-------|----------------|--------------------|
+| `claude-code` | `.mcp.json` | Project-local MCP server for Claude Code |
+| `codex` | `.codex/config.toml` | Project-local MCP server for Codex |
+| `openclaw` | `.froglet/openclaw.config.json` | OpenClaw plugin config with the checked-in Froglet plugin |
+
+## Default values
+
+The helper uses these defaults unless you override them with environment variables:
+
+- `FROGLET_PROVIDER_URL=http://127.0.0.1:8080`
+- `FROGLET_RUNTIME_URL=http://127.0.0.1:8081`
+- `FROGLET_PROVIDER_AUTH_TOKEN_PATH=<repo-root>/data/runtime/froglet-control.token`
+- `FROGLET_RUNTIME_AUTH_TOKEN_PATH=<repo-root>/data/runtime/auth.token`
+
+When you run the local stack with Docker Compose, start it with
+`FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so the provider token path above is
+actually readable from the host. The direct `froglet-node` path does not need
+that opt-in.
+
+## Activation
+
+- **Claude Code**: restart Claude Code in the repo so it reloads `.mcp.json`.
+- **Codex**: start Codex from the repo so it picks up `.codex/config.toml`.
+- **OpenClaw**: use the generated config file directly and verify it with:
+
+```bash
+node integrations/openclaw/froglet/scripts/doctor.mjs \
+  --config .froglet/openclaw.config.json \
+  --target openclaw
+```
+
+## Checked-in MCP examples
+
+The repo also ships checked-in MCP examples for:
+
+- Claude Desktop
+- Cursor
+- Codex
+- Docker-backed MCP
+
+Those live under `integrations/mcp/froglet/examples/` and are covered by test.
+
+## Next step
+
+After the agent config exists, move to [Payment Rails](/learn/payment-rails/).

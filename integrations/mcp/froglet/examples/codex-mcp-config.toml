@@ -1,0 +1,4 @@
+[mcp_servers.froglet]
+command = "node"
+args = ["/absolute/path/to/froglet/integrations/mcp/froglet/server.js"]
+env = { FROGLET_PROVIDER_URL = "http://127.0.0.1:8080", FROGLET_RUNTIME_URL = "http://127.0.0.1:8081", FROGLET_PROVIDER_AUTH_TOKEN_PATH = "/absolute/path/to/froglet/data/runtime/froglet-control.token", FROGLET_RUNTIME_AUTH_TOKEN_PATH = "/absolute/path/to/froglet/data/runtime/auth.token", FROGLET_REQUEST_TIMEOUT_MS = "10000", FROGLET_DEFAULT_SEARCH_LIMIT = "10", FROGLET_MAX_SEARCH_LIMIT = "50" }

@@ -95,7 +95,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
         start = time.perf_counter()
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                node.runtime.url("/v1/node/execute/wasm"),
                 json=request,
             ) as resp:
                 self.assertIn(resp.status, (200, 202))
@@ -120,6 +120,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
         provider = await self.start_provider(
             extra_env=None if remote_stack_enabled() else provider_extra_env
         )
+        runtime = await self.start_runtime(extra_env=provider_extra_env)
         remote_provider_url = remote_stack_url("FROGLET_TEST_PROVIDER_URL") if remote_stack_enabled() else None
         if remote_provider_url and provider.base_url == remote_provider_url:
             priced_service_id = f"uat-priced-compute-{int(time.time() * 1000)}"
@@ -158,7 +159,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             # Step 1: Raw invoke is rejected with 409
             async with session.post(
-                provider.url("/v1/node/execute/wasm"),
+                runtime.url("/v1/node/execute/wasm"),
                 json=request,
             ) as resp:
                 self.assertEqual(resp.status, 409)
@@ -208,7 +209,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                node.url("/v1/node/execute/wasm"),
+                node.runtime.url("/v1/node/execute/wasm"),
                 json=request,
             ) as resp:
                 result = await resp.json()
