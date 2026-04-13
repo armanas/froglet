@@ -1,0 +1,24 @@
+---
+/**
+ * Initializer component for the settlement calculator widget.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the settlement-calculator.ts module.
+ */
+---
+
+<script>
+  import { initSettlementCalculator } from '../scripts/settlement-calculator';
+
+  const container = document.getElementById('settlement-calculator');
+  if (container) {
+    try {
+      initSettlementCalculator(container);
+    } catch (err) {
+      console.error('[settlement-calculator] init failed:', err);
+      container.innerHTML =
+        '<p class="plot-note">Calculator could not be loaded. Please try refreshing the page.</p>';
+    }
+  } else {
+    console.warn('[settlement-calculator] container element not found');
+  }
+</script>

@@ -1,0 +1,22 @@
+---
+/**
+ * Initializer component for the trust threshold diagram.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the trust-threshold.ts module.
+ */
+---
+
+<script>
+  import { initTrustThreshold } from '../scripts/trust-threshold';
+
+  const canvas = document.querySelector<HTMLCanvasElement>('#trust-threshold');
+  const thresholdSlider = document.querySelector<HTMLInputElement>('#threshold-slider');
+  const thresholdDisplay = document.getElementById('threshold-val');
+  const resultEl = document.getElementById('threshold-result');
+
+  if (canvas && thresholdSlider && thresholdDisplay && resultEl) {
+    initTrustThreshold(canvas, thresholdSlider, thresholdDisplay, resultEl);
+  } else {
+    console.warn('[trust-threshold] required DOM elements not found');
+  }
+</script>

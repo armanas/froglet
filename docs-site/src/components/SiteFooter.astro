@@ -36,7 +36,7 @@ const { compact = false } = Astro.props;
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem;
-		width: min(1120px, calc(100% - 2rem));
+		width: min(var(--froglet-shell-max-width), calc(100% - (var(--froglet-shell-gutter) * 2)));
 		margin: 0 auto;
 		padding: 1.1rem 0 1.3rem;
 		color: hsl(var(--froglet-muted));

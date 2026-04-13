@@ -1,0 +1,42 @@
+---
+/**
+ * Initializer component for the profit chart canvas.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the profit-chart.ts module.
+ */
+---
+
+<script>
+  import { initProfitChart } from '../scripts/profit-chart';
+
+  const canvas = document.querySelector<HTMLCanvasElement>('#profit-chart');
+  const baseFeeSlider = document.querySelector<HTMLInputElement>('#bf-slider');
+  const successFeeSlider = document.querySelector<HTMLInputElement>('#sf-slider');
+  const costSlider = document.querySelector<HTMLInputElement>('#c-slider');
+  const baseFeeDisplay = document.getElementById('bf-val');
+  const successFeeDisplay = document.getElementById('sf-val');
+  const costDisplay = document.getElementById('c-val');
+  const profitAtZeroDisplay = document.getElementById('profit-at-zero');
+  const profitAtOneDisplay = document.getElementById('profit-at-one');
+  const breakEvenDisplay = document.getElementById('break-even-q');
+
+  if (canvas && baseFeeSlider && successFeeSlider && costSlider &&
+      baseFeeDisplay && successFeeDisplay && costDisplay &&
+      profitAtZeroDisplay && profitAtOneDisplay && breakEvenDisplay) {
+    initProfitChart({
+      canvas,
+      baseFeeSlider,
+      successFeeSlider,
+      costSlider,
+      baseFeeDisplay,
+      successFeeDisplay,
+      costDisplay,
+      profitAtZeroDisplay,
+      profitAtOneDisplay,
+      breakEvenDisplay,
+      requesterValue: 10,
+    });
+  } else {
+    console.warn('[profit-chart] required DOM elements not found');
+  }
+</script>

@@ -1,0 +1,273 @@
+/* ── Starlight theme overrides ──────────────────────────────────────────
+   Rules targeting Starlight structural selectors: header, sidebar,
+   right sidebar (TOC), content panel, markdown content, and pagination.
+   Also includes global element resets that depend on Design Tokens.
+   ──────────────────────────────────────────────────────────────────── */
+
+/* ── Global resets ───────────────────────────────────────────────────── */
+
+html {
+	background: hsl(var(--froglet-background));
+}
+
+body {
+	margin: 0;
+	background:
+		radial-gradient(circle at top, color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent), transparent 24%),
+		hsl(var(--froglet-background));
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-sans);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+* {
+	border-color: hsl(var(--froglet-border));
+}
+
+mjx-container {
+	overflow-x: auto;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+
+body > .page > header {
+	padding: 0;
+	border-bottom: 1px solid hsl(var(--froglet-border));
+	background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, transparent);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	position: sticky;
+	top: 0;
+	z-index: 40;
+}
+
+body > .page > header .site-title,
+body > .page > header .site-title span {
+	display: none;
+}
+
+body > .page > header button,
+body > .page > header select,
+body > .page > header svg {
+	color: hsl(var(--froglet-muted));
+}
+
+body > .page > header button:hover,
+body > .page > header select:hover {
+	color: hsl(var(--froglet-foreground));
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+
+nav.sidebar .sidebar-pane {
+	border-inline-end: 1px solid hsl(var(--froglet-border));
+	background: transparent;
+}
+
+nav.sidebar .sidebar-content {
+	padding-top: 0.85rem;
+}
+
+nav.sidebar summary,
+nav.sidebar a {
+	border-radius: 0.8rem;
+	transition:
+		background-color 140ms ease,
+		color 140ms ease,
+		border-color 140ms ease;
+}
+
+nav.sidebar summary:hover,
+nav.sidebar a:hover {
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-foreground));
+}
+
+nav.sidebar .group-label .large {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: 0.97rem;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+}
+
+nav.sidebar a[aria-current='page'] {
+	background: hsl(var(--froglet-accent-soft));
+	color: hsl(var(--froglet-accent-strong));
+	font-weight: 600;
+}
+
+/* ── Right sidebar (TOC) ─────────────────────────────────────────────── */
+
+.right-sidebar-panel > .sl-container {
+	border-inline-start: 1px solid hsl(var(--froglet-border));
+}
+
+.right-sidebar-panel nav h2 {
+	color: hsl(var(--froglet-muted));
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+
+.right-sidebar-panel nav a {
+	color: hsl(var(--froglet-muted));
+}
+
+.right-sidebar-panel nav a:hover,
+.right-sidebar-panel nav a[aria-current='true'] {
+	color: hsl(var(--froglet-accent));
+}
+
+/* ── Content panel ───────────────────────────────────────────────────── */
+
+main[data-pagefind-body] > .content-panel {
+	background: transparent;
+}
+
+main[data-pagefind-body] > .content-panel:first-child {
+	border-bottom: 1px solid hsl(var(--froglet-border));
+}
+
+main[data-pagefind-body] > .content-panel:first-child .sl-container {
+	padding-block: 1.8rem 1.05rem;
+}
+
+main[data-pagefind-body] > .content-panel:first-child h1 {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-size: clamp(2.25rem, 5vw, 3.6rem);
+	font-weight: 700;
+	letter-spacing: -0.04em;
+	line-height: 1.04;
+}
+
+/* ── Markdown content ────────────────────────────────────────────────── */
+
+.sl-markdown-content {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-sans);
+	font-size: 1.03rem;
+	line-height: 1.75;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4) {
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-serif);
+	font-weight: 700;
+	letter-spacing: -0.03em;
+	line-height: 1.12;
+}
+
+.sl-markdown-content h2 {
+	margin-top: 2.8rem;
+	font-size: clamp(1.75rem, 2.3vw, 2.15rem);
+}
+
+.sl-markdown-content h3 {
+	margin-top: 2.1rem;
+	font-size: clamp(1.35rem, 1.7vw, 1.6rem);
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+	color: color-mix(in srgb, hsl(var(--froglet-foreground)) 84%, transparent);
+}
+
+.sl-markdown-content a {
+	color: hsl(var(--froglet-accent));
+	text-decoration-color: color-mix(in srgb, hsl(var(--froglet-accent)) 36%, transparent);
+	text-underline-offset: 0.18em;
+	transition: color 140ms ease, text-decoration-color 140ms ease;
+}
+
+.sl-markdown-content a:hover,
+.sl-markdown-content a:focus-visible {
+	color: hsl(var(--froglet-accent-strong));
+	text-decoration-color: hsl(var(--froglet-accent));
+}
+
+.sl-markdown-content blockquote {
+	margin: 1.6rem 0;
+	padding: 1rem 1.1rem;
+	border-inline-start: 3px solid hsl(var(--froglet-accent));
+	border-radius: 0 0.9rem 0.9rem 0;
+	background: hsl(var(--froglet-surface));
+}
+
+.sl-markdown-content hr {
+	border-color: hsl(var(--froglet-border));
+}
+
+.sl-markdown-content :not(pre) > code {
+	padding: 0.14rem 0.36rem;
+	border-radius: 0.35rem;
+	background: hsl(var(--froglet-surface-2));
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+	font-size: 0.92em;
+}
+
+.sl-markdown-content pre,
+.sl-markdown-content .expressive-code {
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	box-shadow: none;
+}
+
+.sl-markdown-content pre {
+	background: hsl(var(--froglet-code));
+	color: hsl(var(--froglet-foreground));
+	font-family: var(--froglet-font-code);
+}
+
+.sl-markdown-content table {
+	display: block;
+	width: 100%;
+	overflow-x: auto;
+	margin: 1.5rem 0 1.8rem;
+	border-collapse: separate;
+	border-spacing: 0;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: 1rem;
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.sl-markdown-content :is(th, td) {
+	padding: 0.8rem 0.95rem;
+	vertical-align: top;
+}
+
+.sl-markdown-content thead th {
+	color: hsl(var(--froglet-foreground));
+	font-size: 0.83rem;
+	font-weight: 700;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	background: hsl(var(--froglet-surface));
+}
+
+.sl-markdown-content tbody td {
+	color: color-mix(in srgb, hsl(var(--froglet-foreground)) 88%, transparent);
+	border-top: 1px solid hsl(var(--froglet-border));
+}
+
+.sl-markdown-content img {
+	border-radius: 1rem;
+}
+
+/* ── Pagination ──────────────────────────────────────────────────────── */
+
+.pagination-links a {
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-card));
+	box-shadow: var(--froglet-shadow);
+}
+
+.pagination-links a:hover {
+	border-color: hsl(var(--froglet-border-strong));
+}

@@ -3,11 +3,37 @@ title: "Cryptographic Identity"
 description: How public-key cryptography creates unforgeable identity.
 ---
 
+import IdentityDiagramInit from '../../../components/IdentityDiagramInit.astro';
+
 ## Public-key cryptography
 
 Imagine a special lock with two keys: one that only locks (the **private key**) and one that only unlocks (the **public key**). Anyone can verify a locked message with the public key, but only the holder of the private key could have locked it.
 
 In cryptography, "locking" is called **signing** and "unlocking" is called **verifying**.
+
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">From private key to node identity</p>
+    <p class="plot-subtitle">Click each element to see how keypair generation produces your unforgeable identity.</p>
+  </div>
+</div>
+<canvas id="identity-diagram" class="plot-canvas" width="700" height="110" role="img" aria-label="Interactive diagram showing keypair generation: private key to public key via secp256k1 multiplication, then to node identity via hex encoding" style="max-width:700px;height:110px;cursor:pointer"></canvas>
+<noscript>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;padding:12px 0">
+    <span style="color:#f87171">Private Key</span>
+    <span style="color:#6b7280">→ secp256k1 · G →</span>
+    <span style="color:#a78bfa">Public Key</span>
+    <span style="color:#6b7280">→ x-only hex encode →</span>
+    <span style="color:#4ade80">Node ID</span>
+  </div>
+  <p class="plot-note">Enable JavaScript for the interactive version.</p>
+</noscript>
+<div id="identity-detail" class="learn-card" style="margin-top:12px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:48px"></div>
+<p class="plot-note">The math is one-way: you cannot derive the private key from the public key. This is the elliptic curve discrete logarithm problem.</p>
+</div>
+
+<IdentityDiagramInit />
 
 ## secp256k1
 

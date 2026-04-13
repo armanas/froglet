@@ -1,0 +1,20 @@
+---
+/**
+ * Initializer component for the deal flow sequence diagram.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the deal-flow-sequence.ts module.
+ */
+---
+
+<script>
+  import { initDealFlowSequence } from '../scripts/deal-flow-sequence';
+
+  const canvas = document.querySelector<HTMLCanvasElement>('#deal-flow-sequence');
+  const playPauseBtn = document.querySelector<HTMLButtonElement>('#deal-flow-sequence-btn');
+
+  if (canvas && playPauseBtn) {
+    initDealFlowSequence(canvas, playPauseBtn);
+  } else {
+    console.warn('[deal-flow-sequence] required DOM elements not found');
+  }
+</script>

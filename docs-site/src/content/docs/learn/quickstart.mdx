@@ -81,9 +81,11 @@ This returns your node's public key — the same key that signs every artifact.
 Submit a WASM binary for execution:
 
 ```bash
+WASM_HEX=0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432
+
 curl -X POST http://127.0.0.1:8080/v1/node/execute/wasm \
   -H "Content-Type: application/json" \
-  -d '{"wasm_hex": "0061736d...", "input": {}}'
+  -d "{\"wasm_hex\":\"$WASM_HEX\",\"input\":{}}"
 ```
 
 The provider quotes, executes, and returns a signed receipt — all in one request.
@@ -96,7 +98,7 @@ If you started in dual mode (the default), the requester API is already running 
 FROGLET_NODE_ROLE=runtime \
 FROGLET_RUNTIME_LISTEN_ADDR=127.0.0.1:8081 \
 FROGLET_PAYMENT_BACKEND=none \
-cargo run --bin froglet-node
+froglet-node
 ```
 
 The requester handles deal negotiation, payment settlement, and receipt verification.
@@ -149,7 +151,7 @@ curl -X POST http://127.0.0.1:8080/v1/provider/deals \
 
 The marketplace records a non-refundable deposit. Your stake T = total_staked_msat is the complete trust signal. Requesters check: is `stake / deal_value` large enough? If your stake is 10,000 msat and the deal costs 8 msat, the safety ratio is 1,250x — cheating would be irrational.
 
-Top up your stake over time with `marketplace.topup`. See [Trust](/learn/trust/) for the full staked reputation model.
+Top up your stake over time with `marketplace.topup`. See [Economics](/learn/economics/) for the full staked reputation model.
 
 ## What just happened
 
@@ -168,7 +170,7 @@ Each artifact references the previous by SHA-256 hash. Tamper with any link and 
 <div class="chapter-grid">
   <a class="chapter-card" href="/learn/deal-flow/"><strong>The Deal Flow</strong><small>See the full artifact chain with an interactive diagram.</small></a>
   <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>Add Lightning payments with base fee + success fee.</small></a>
-  <a class="chapter-card" href="/learn/trust/"><strong>Trust</strong><small>How staked reputation makes cheating economically irrational.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>How staked reputation makes cheating economically irrational.</small></a>
   <a class="chapter-card" href="/learn/economics/"><strong>Economics</strong><small>Why honest execution is the dominant strategy.</small></a>
 </div>
 

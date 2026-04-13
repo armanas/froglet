@@ -4,7 +4,7 @@ Astro + Starlight source for the public Froglet documentation site.
 
 ## Local development
 
-Run from [docs-site](/Users/armanas/Projects/github.com/armanas/froglet/docs-site):
+Run from the `docs-site/` directory:
 
 | Command | Action |
 | :------ | :----- |
@@ -15,8 +15,8 @@ Run from [docs-site](/Users/armanas/Projects/github.com/armanas/froglet/docs-sit
 
 ## Content
 
-- [src/content/docs/learn/quickstart.mdx](/Users/armanas/Projects/github.com/armanas/froglet/docs-site/src/content/docs/learn/quickstart.mdx): install and first-run guide
-- [src/pages/index.astro](/Users/armanas/Projects/github.com/armanas/froglet/docs-site/src/pages/index.astro): homepage and landing copy
-- [src/content/docs/spec/kernel.md](/Users/armanas/Projects/github.com/armanas/froglet/docs-site/src/content/docs/spec/kernel.md): protocol/kernel reference
+- [src/content/docs/learn/quickstart.mdx](./src/content/docs/learn/quickstart.mdx): install and first-run guide
+- [src/pages/index.astro](./src/pages/index.astro): homepage and landing copy
+- [src/content/docs/spec/kernel.md](./src/content/docs/spec/kernel.md): protocol/kernel reference
 
-The docs site should stay aligned with the repo-level [README.md](/Users/armanas/Projects/github.com/armanas/froglet/README.md) quickstart and [docs/RELEASE.md](/Users/armanas/Projects/github.com/armanas/froglet/docs/RELEASE.md) release process.
+The docs site should stay aligned with the repo-level [README.md](../README.md) quickstart and [docs/RELEASE.md](../docs/RELEASE.md) release process.

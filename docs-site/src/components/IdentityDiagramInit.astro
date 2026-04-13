@@ -1,0 +1,20 @@
+---
+/**
+ * Initializer component for the identity diagram canvas.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the identity-diagram.ts module.
+ */
+---
+
+<script>
+  import { initIdentityDiagram } from '../scripts/identity-diagram';
+
+  const canvas = document.querySelector<HTMLCanvasElement>('#identity-diagram');
+  const detailEl = document.getElementById('identity-detail');
+
+  if (canvas && detailEl) {
+    initIdentityDiagram(canvas, detailEl);
+  } else {
+    console.warn('[identity-diagram] required DOM elements not found');
+  }
+</script>

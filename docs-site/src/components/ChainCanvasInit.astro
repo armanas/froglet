@@ -1,0 +1,21 @@
+---
+/**
+ * Initializer component for the deal flow chain canvas.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the chain-canvas.ts module.
+ */
+---
+
+<script>
+  import { initChainCanvas } from '../scripts/chain-canvas';
+
+  const canvas = document.querySelector<HTMLCanvasElement>('#chain-canvas');
+  const detailEl = document.getElementById('chain-detail');
+  const buttonRow = document.getElementById('chain-buttons');
+
+  if (canvas && detailEl && buttonRow) {
+    initChainCanvas(canvas, detailEl, buttonRow);
+  } else {
+    console.warn('[chain-canvas] required DOM elements not found');
+  }
+</script>

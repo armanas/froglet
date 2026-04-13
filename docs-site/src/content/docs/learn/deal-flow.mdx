@@ -3,6 +3,9 @@ title: "The Deal Flow"
 description: Six artifacts, one evidence chain.
 ---
 
+import ChainCanvasInit from '../../../components/ChainCanvasInit.astro';
+import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro';
+
 ## The chain
 
 <div class="plot-shell">
@@ -17,99 +20,48 @@ description: Six artifacts, one evidence chain.
   <div class="plot-metric"><strong>1 requester signature</strong><span>The deal is the requester's cryptographic commitment to pay.</span></div>
   <div class="plot-metric"><strong>1 terminal proof</strong><span>The receipt is the final artifact any third party can verify later.</span></div>
 </div>
-<canvas id="chain-canvas" class="plot-canvas" width="700" height="120" style="max-width:700px;height:120px;cursor:pointer"></canvas>
+<canvas id="chain-canvas" class="plot-canvas" width="700" height="120" role="img" aria-label="Interactive artifact chain: descriptor, offer, quote, deal, invoice, receipt" style="max-width:700px;height:120px;cursor:pointer"></canvas>
+<noscript>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;padding:12px 0">
+    <span style="color:#a78bfa">Descriptor</span> →
+    <span style="color:#818cf8">Offer</span> →
+    <span style="color:#67e8f9">Quote</span> →
+    <span style="color:#93c5fd">Deal</span> →
+    <span style="color:#fbbf24">Invoice</span> →
+    <span style="color:#4ade80">Receipt</span>
+  </div>
+  <p class="plot-note">Each artifact references the previous one by SHA-256 hash. Enable JavaScript for the interactive version.</p>
+</noscript>
 <div id="chain-buttons" class="plot-button-row"></div>
 <div id="chain-detail" class="learn-card" style="margin-top:12px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:60px"></div>
 <p class="plot-note">The artifact chain is both the protocol flow and the audit log. The same objects used during execution are the objects you verify afterwards.</p>
 </div>
 
-<script>{`
-(function(){
-  const items=[
-    {label:'Descriptor',sub:'who',color:'#a78bfa',signer:'provider',detail:'Provider declares identity, capabilities, and transport endpoints. Signed by the provider.'},
-    {label:'Offer',sub:'what',color:'#818cf8',signer:'provider',detail:'Specific service with pricing and execution profile. References the descriptor by hash.'},
-    {label:'Quote',sub:'price',color:'#67e8f9',signer:'provider',detail:'Prices a workload for a specific requester. Ephemeral — has an expiry. References the offer by hash.'},
-    {label:'Deal',sub:'commit',color:'#93c5fd',signer:'requester',detail:'Requester commits to the quote. Signed by the REQUESTER (not provider). References the quote by hash.'},
-    {label:'Invoice',sub:'payment',color:'#fbbf24',signer:'provider',detail:'Two Lightning invoices — base fee (locks upfront) and success fee (settles on completion). Only for paid deals.'},
-    {label:'Receipt',sub:'proof',color:'#4ade80',signer:'provider',detail:'Terminal artifact. Cryptographic proof of execution, result hash, and settlement state. The chain ends here.'},
-  ];
-  const c=document.getElementById('chain-canvas'),ctx=c.getContext('2d');
-  const det=document.getElementById('chain-detail');
-  const buttonRow=document.getElementById('chain-buttons');
-  let selected=0, hovered=-1;
+<ChainCanvasInit />
 
-  buttonRow.innerHTML=items.map((it,i)=>'<button type="button" class="plot-button'+(i===0?' is-active':'')+'" data-index="'+i+'">'+it.label+'</button>').join('');
+## Message exchange
 
-  function draw(){
-    const w=c.width,h=c.height,n=items.length,bw=w/n;
-    ctx.clearRect(0,0,w,h);
-    // Arrows
-    for(let i=0;i<n-1;i++){
-      const x1=(i+1)*bw-8, x2=(i+1)*bw+8;
-      ctx.beginPath();ctx.moveTo(x1,h/2);ctx.lineTo(x2,h/2);
-      ctx.strokeStyle='#30363d';ctx.lineWidth=2;ctx.stroke();
-      ctx.beginPath();ctx.moveTo(x2-4,h/2-4);ctx.lineTo(x2,h/2);ctx.lineTo(x2-4,h/2+4);
-      ctx.strokeStyle='#30363d';ctx.lineWidth=1.5;ctx.stroke();
-    }
-    // Boxes
-    for(let i=0;i<n;i++){
-      const it=items[i],cx=i*bw+bw/2,cy=h/2;
-      const isS=i===selected,isH=i===hovered;
-      const r=isS?26:isH?24:22;
-      // Glow
-      if(isS){
-        const g=ctx.createRadialGradient(cx,cy,r,cx,cy,r*2);
-        g.addColorStop(0,it.color+'20');g.addColorStop(1,it.color+'00');
-        ctx.beginPath();ctx.arc(cx,cy,r*2,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
-      }
-      // Circle
-      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
-      ctx.fillStyle=isS?it.color+'25':it.color+'10';ctx.fill();
-      ctx.strokeStyle=isS?it.color:it.color+'66';ctx.lineWidth=isS?2:1.2;ctx.stroke();
-      // Label
-      ctx.font='bold 9px system-ui';ctx.fillStyle=isS?it.color:it.color+'cc';
-      ctx.textAlign='center';ctx.fillText(it.label,cx,cy+3);
-      // Sub label
-      ctx.font='8px system-ui';ctx.fillStyle='#6b7280';
-      ctx.fillText(it.sub,cx,cy+r+14);
-      // Signer indicator
-      ctx.font='7px system-ui';ctx.fillStyle=it.signer==='requester'?'#93c5fd88':'#a78bfa88';
-      ctx.fillText(it.signer,cx,cy-r-6);
-    }
-  }
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">Requester ↔ Provider message flow</p>
+    <p class="plot-subtitle">Watch the four-step exchange that turns a quote into a verifiable receipt.</p>
+  </div>
+</div>
+<canvas id="deal-flow-sequence" class="plot-canvas" width="520" height="240" role="img" aria-label="Animated sequence diagram: requester sends request quote, provider returns signed quote, requester sends signed deal, provider returns execute and receipt" style="max-width:520px;height:240px"></canvas>
+<noscript>
+  <ol style="padding-left:1.2em;color:#9ca3af;font-size:13px">
+    <li>Requester → Provider: request quote</li>
+    <li>Provider → Requester: signed quote</li>
+    <li>Requester → Provider: signed deal</li>
+    <li>Provider → Requester: execute + receipt</li>
+  </ol>
+  <p class="plot-note">Enable JavaScript to see the animated sequence diagram.</p>
+</noscript>
+<button id="deal-flow-sequence-btn" class="plot-button" type="button" aria-label="Pause animation">⏸ Pause</button>
+</div>
 
-  function showDetail(i){
-    const it=items[i];
-    det.innerHTML='<strong style="color:'+it.color+'">'+it.label+'</strong> <span style="color:#6b7280">(signed by '+it.signer+')</span><br>'+it.detail+(i>0?' <span style="color:#4b5563">← references previous artifact by SHA-256 hash</span>':'');
-    buttonRow.querySelectorAll('button').forEach((button,idx)=>button.classList.toggle('is-active', idx===i));
-  }
-
-  c.addEventListener('click',function(e){
-    const rect=c.getBoundingClientRect();
-    const x=(e.clientX-rect.left)*(c.width/rect.width);
-    const bw=c.width/items.length;
-    const i=Math.floor(x/bw);
-    if(i>=0&&i<items.length){selected=i;draw();showDetail(i);}
-  });
-  c.addEventListener('mousemove',function(e){
-    const rect=c.getBoundingClientRect();
-    const x=(e.clientX-rect.left)*(c.width/rect.width);
-    const bw=c.width/items.length;
-    const i=Math.floor(x/bw);
-    if(i!==hovered){hovered=i;draw();}
-  });
-  c.addEventListener('mouseleave',function(){hovered=-1;draw();});
-  buttonRow.addEventListener('click',function(event){
-    const button=event.target.closest('button[data-index]');
-    if(!button)return;
-    selected=Number(button.dataset.index);
-    draw();
-    showDetail(selected);
-  });
-
-  draw();showDetail(0);
-})();
-`}</script>
+<DealFlowSequenceInit />
 
 ## Key insight: who signs what
 

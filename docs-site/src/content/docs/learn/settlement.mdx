@@ -3,6 +3,9 @@ title: "Settlement (Lightning)"
 description: How payments are cryptographically bound to deals.
 ---
 
+import SettlementVizInit from '../../../components/SettlementVizInit.astro';
+import SettlementCalcInit from '../../../components/SettlementCalcInit.astro';
+
 ## The Lightning Network
 
 The **Lightning Network** is a payment layer built on Bitcoin. It enables instant, low-fee payments by creating payment channels between nodes. Instead of recording every transaction on the blockchain, parties exchange signed IOUs and only settle to the chain when channels open or close.
@@ -51,65 +54,30 @@ Every paid deal splits into two Lightning payments:
   <div class="plot-metric"><strong id="settle-provider-total">8,000 msat</strong><span>provider inflow</span></div>
   <div class="plot-metric"><strong id="settle-rule">Both legs settle</strong><span>dominant rule in this scenario</span></div>
 </div>
-<canvas id="settle-viz" class="plot-canvas" width="600" height="160" style="max-width:600px;height:160px"></canvas>
+<canvas id="settle-viz" class="plot-canvas" width="600" height="160" role="img" aria-label="Settlement outcome visualization showing requester outflow and provider inflow for success, failure, and free scenarios" style="max-width:600px;height:160px"></canvas>
+<noscript><p class="plot-note">Enable JavaScript to see the interactive settlement outcome visualization.</p></noscript>
 <p class="plot-note">The two-leg structure separates reservation risk from completion risk. That is the key economic trick in Froglet settlement.</p>
 </div>
 
-<script>{`
-const scenarios = {
-  ok: {title:'Successful execution',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#4ade80'},success:{from:'Requester',to:'Provider',amount:'5,000 msat',state:'settled',color:'#4ade80'},requesterTotal:'8,000 msat',providerTotal:'8,000 msat',rule:'Both legs settle',note:'Both fees settled. Provider earned 8 sats. Requester got result.'},
-  fail: {title:'Provider failed',base:{from:'Requester',to:'Provider',amount:'3,000 msat',state:'settled',color:'#fbbf24'},success:{from:'Requester',to:'—',amount:'5,000 msat',state:'canceled',color:'#f87171'},requesterTotal:'3,000 msat',providerTotal:'3,000 msat',rule:'Base only',note:'Base fee paid (provider reserved resources). Success fee returned to requester.'},
-  free: {title:'Free service (settlement: none)',base:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},success:{from:'—',to:'—',amount:'0',state:'n/a',color:'#818cf8'},requesterTotal:'0',providerTotal:'0',rule:'No value transfer',note:'No payment. Deal flow still runs. Quote, deal, execute, receipt — just no money.'},
-};
-const buttons=[...document.querySelectorAll('[data-scenario]')];
-const requesterTotal=document.getElementById('settle-requester-total');
-const providerTotal=document.getElementById('settle-provider-total');
-const rule=document.getElementById('settle-rule');
-function showScn(key){
-  const s=scenarios[key];
-  const c=document.getElementById('settle-viz'),ctx=c.getContext('2d');
-  const w=c.width,h=c.height;
-  buttons.forEach((button)=>button.classList.toggle('is-active', button.dataset.scenario===key));
-  requesterTotal.textContent=s.requesterTotal;
-  providerTotal.textContent=s.providerTotal;
-  rule.textContent=s.rule;
-  ctx.clearRect(0,0,w,h);
+<SettlementVizInit />
 
-  ctx.font='bold 12px system-ui';ctx.fillStyle='#e5e7eb';ctx.textAlign='center';
-  ctx.fillText(s.title,w/2,20);
+### Try it: settlement calculator
 
-  // Base fee
-  const by=55;
-  ctx.font='10px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='left';
-  ctx.fillText('base fee',20,by);
-  ctx.fillStyle=s.base.color;ctx.fillText(s.base.amount,120,by);
-  ctx.fillStyle='#6b7280';ctx.fillText(s.base.state,240,by);
-  // Arrow
-  ctx.beginPath();ctx.moveTo(310,by-4);ctx.lineTo(380,by-4);
-  ctx.strokeStyle=s.base.color+'88';ctx.lineWidth=1.5;ctx.stroke();
-  ctx.fillStyle=s.base.color+'88';ctx.beginPath();ctx.moveTo(380,by-4);ctx.lineTo(374,by-8);ctx.lineTo(374,by);ctx.fill();
-  ctx.font='9px system-ui';ctx.fillStyle='#6b7280';ctx.textAlign='left';
-  ctx.fillText(s.base.from,390,by);
+Plug in your own numbers to see how the two-leg model settles under each scenario.
 
-  // Success fee
-  const sy=90;
-  ctx.font='10px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='left';
-  ctx.fillText('success fee',20,sy);
-  ctx.fillStyle=s.success.color;ctx.fillText(s.success.amount,120,sy);
-  ctx.fillStyle='#6b7280';ctx.fillText(s.success.state,240,sy);
-  ctx.beginPath();ctx.moveTo(310,sy-4);ctx.lineTo(380,sy-4);
-  ctx.strokeStyle=s.success.color+'88';ctx.lineWidth=1.5;ctx.stroke();
-  ctx.fillStyle=s.success.color+'88';ctx.beginPath();ctx.moveTo(380,sy-4);ctx.lineTo(374,sy-8);ctx.lineTo(374,sy);ctx.fill();
-  ctx.font='9px system-ui';ctx.fillStyle='#6b7280';ctx.textAlign='left';
-  ctx.fillText(s.success.from,390,sy);
+<div id="settlement-calculator" class="plot-shell">
+  <div class="plot-header">
+    <div>
+      <p class="plot-title">Settlement calculator</p>
+      <p class="plot-subtitle">Adjust base fee, success fee, and provider cost to explore outcomes, break-even threshold, and profitability.</p>
+    </div>
+  </div>
+  <noscript>
+    <p class="plot-note">This interactive calculator requires JavaScript.</p>
+  </noscript>
+</div>
 
-  // Note
-  ctx.font='11px system-ui';ctx.fillStyle='#9ca3af';ctx.textAlign='center';
-  ctx.fillText(s.note,w/2,h-16);
-}
-buttons.forEach((button)=>button.addEventListener('click',()=>showScn(button.dataset.scenario)));
-showScn('ok');
-`}</script>
+<SettlementCalcInit />
 
 ### Units
 

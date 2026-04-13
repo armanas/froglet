@@ -3,6 +3,9 @@ title: Trust & Economics
 description: How staked reputation and game theory make honesty the dominant strategy.
 ---
 
+import ProfitChartInit from '../../../components/ProfitChartInit.astro';
+import TrustThresholdInit from '../../../components/TrustThresholdInit.astro';
+
 ## Trust model
 
 Trust in froglet is **not** computed from deal history — it is the total non-refundable value a provider has staked into their identity.
@@ -21,6 +24,28 @@ The requester's calculation is simple: if `stake / deal_value > k` (where k is y
 :::note
 Stake proves **commitment**, not **competence**. Quality monitoring is a marketplace service (ranking), not a protocol mechanism. Providers with high stake but poor quality get fewer deals through market competition.
 :::
+
+### Interactive: trust threshold check
+
+<div class="plot-shell">
+<div class="plot-header">
+  <div>
+    <p class="plot-title">Set your risk threshold and see which deals pass</p>
+    <p class="plot-subtitle">Adjust k to see which example stake-to-deal-value ratios satisfy <code>stake / deal_value &gt; k</code>. Green bars pass the safety check, red bars fail.</p>
+  </div>
+</div>
+<div class="plot-controls">
+  <label class="plot-control">risk threshold k: <span id="threshold-val">1.0</span> <input id="threshold-slider" type="range" min="1" max="100" value="10" style="width:180px;accent-color:#fbbf24" /></label>
+</div>
+<div class="plot-metrics">
+  <div class="plot-metric"><span id="threshold-result">Loading…</span></div>
+</div>
+<canvas id="trust-threshold" class="plot-canvas" width="600" height="320" role="img" aria-label="Interactive trust threshold diagram showing which stake-to-deal-value ratios pass the safety check" style="max-width:600px;height:320px"></canvas>
+<noscript><p class="plot-note">Enable JavaScript to use the interactive trust threshold diagram.</p></noscript>
+<p class="plot-note">Each bar represents an example deal. Bar length = stake/deal_value ratio. The dashed line marks your threshold k.</p>
+</div>
+
+<TrustThresholdInit />
 
 ---
 
@@ -95,74 +120,12 @@ The success fee acts as the provider's marginal incentive for reliability. Highe
   <div class="plot-metric"><strong id="profit-at-one">6.0 sat</strong><span>provider payoff at q = 1</span></div>
   <div class="plot-metric"><strong id="break-even-q">0.00</strong><span>break-even quality threshold</span></div>
 </div>
-<canvas id="profit-chart" class="plot-canvas" width="600" height="220" style="max-width:600px;height:220px"></canvas>
+<canvas id="profit-chart" class="plot-canvas" width="600" height="220" role="img" aria-label="Interactive profit chart: provider profit and requester payoff as functions of provider quality q" style="max-width:600px;height:220px"></canvas>
+<noscript><p class="plot-note">Enable JavaScript to use the interactive profit chart.</p></noscript>
 <p class="plot-note">X = provider quality (q). Green = provider profit. Blue = requester payoff with requester value fixed at 10 sat.</p>
 </div>
 
-<script>{`
-  (function(){
-    const bfs=document.getElementById('bf-slider'),sfs=document.getElementById('sf-slider'),cs=document.getElementById('c-slider');
-    const bfv=document.getElementById('bf-val'),sfv=document.getElementById('sf-val'),cv=document.getElementById('c-val');
-    const profitAtZero=document.getElementById('profit-at-zero');
-    const profitAtOne=document.getElementById('profit-at-one');
-    const breakEven=document.getElementById('break-even-q');
-    const c=document.getElementById('profit-chart'),ctx=c.getContext('2d');
-    const v=10;
-    function draw(){
-      const bf=+bfs.value,sf=+sfs.value,cost=+cs.value;
-      bfv.textContent=bf;sfv.textContent=sf;cv.textContent=cost;
-      const zeroProfit=bf-cost;
-      const fullProfit=bf+sf-cost;
-      const threshold=sf===0?(zeroProfit>=0?0:Infinity):Math.max(0,(cost-bf)/sf);
-      profitAtZero.textContent=zeroProfit.toFixed(1)+' sat';
-      profitAtOne.textContent=fullProfit.toFixed(1)+' sat';
-      breakEven.textContent=Number.isFinite(threshold)?threshold.toFixed(2):'never';
-      const w=c.width,h=c.height,pad=20,ph=h-2*pad;
-    ctx.clearRect(0,0,w,h);
-    ctx.strokeStyle='#1a1f2b';ctx.lineWidth=0.5;
-    for(let y=pad;y<=h-pad;y+=ph/4){ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();}
-    // Zero line
-    const zeroY=pad+ph/2;
-    ctx.strokeStyle='#30363d';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad,zeroY);ctx.lineTo(w-pad,zeroY);ctx.stroke();
-    // Labels
-    ctx.font='9px system-ui';ctx.fillStyle='#4b5563';ctx.textAlign='center';
-    ctx.fillText('quality (q) →',w/2,h-2);
-    ctx.textAlign='left';ctx.fillText('profit',2,pad-4);
-    ctx.fillText('0',pad-14,zeroY+3);ctx.fillText('1.0',w-pad+2,h-pad+3);ctx.fillText('0.0',pad-2,h-pad+3);
-
-    const maxVal=Math.max(bf+sf,v,10);
-    function yOf(val){return zeroY-val*(ph/2)/maxVal;}
-
-    // Provider profit: E[π_P] = bf + q*sf - cost
-    ctx.beginPath();
-    for(let i=0;i<=100;i++){
-      const q=i/100, x=pad+i*(w-2*pad)/100;
-      const profit=bf+q*sf-cost;
-      const y=yOf(profit);
-      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-    }
-    ctx.strokeStyle='#4ade80';ctx.lineWidth=2;ctx.stroke();
-
-    // Requester payoff: E[π_R] = q*v - bf - q*sf
-    ctx.beginPath();
-    for(let i=0;i<=100;i++){
-      const q=i/100, x=pad+i*(w-2*pad)/100;
-      const payoff=q*v-bf-q*sf;
-      const y=yOf(payoff);
-      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-    }
-    ctx.strokeStyle='#93c5fd';ctx.lineWidth=2;ctx.stroke();
-
-    // Legend
-    ctx.font='10px system-ui';
-    ctx.fillStyle='#4ade80';ctx.textAlign='left';ctx.fillText('provider profit',pad+8,pad+12);
-    ctx.fillStyle='#93c5fd';ctx.fillText('requester payoff (v='+v+')',pad+8,pad+24);
-    ctx.fillStyle='#fbbf24';ctx.fillText('slope = success_fee = '+sf+' (incentive strength)',pad+8,pad+36);
-  }
-  bfs.addEventListener('input',draw);sfs.addEventListener('input',draw);cs.addEventListener('input',draw);
-  draw();
-})();
-`}</script>
+<ProfitChartInit />
 
 ### Optimal fee structure
 

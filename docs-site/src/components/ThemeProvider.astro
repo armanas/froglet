@@ -1,4 +1,66 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+---
+
+{/* Inlined to avoid FOUC — runs synchronously before paint. */}
 <script is:inline>
-	document.documentElement.dataset.theme = 'dark';
-	document.documentElement.style.colorScheme = 'dark';
+	window.StarlightThemeProvider = (() => {
+		const storageKey = 'starlight-theme';
+
+		/** Read stored theme preference from localStorage. */
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem(storageKey);
+
+		/** Detect system color scheme preference. */
+		const systemQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+		/** Resolve the effective theme: stored override wins, otherwise follow system. */
+		function resolveTheme() {
+			if (storedTheme === 'dark' || storedTheme === 'light') return storedTheme;
+			return systemQuery.matches ? 'dark' : 'light';
+		}
+
+		/** Apply theme to the document root. */
+		function applyTheme(theme) {
+			document.documentElement.dataset.theme = theme;
+			document.documentElement.style.colorScheme = theme;
+		}
+
+		// Apply immediately to prevent flash of wrong theme.
+		const initial = resolveTheme();
+		applyTheme(initial);
+
+		// Listen for system preference changes — update only when no stored override.
+		systemQuery.addEventListener('change', () => {
+			const current =
+				typeof localStorage !== 'undefined' && localStorage.getItem(storageKey);
+			if (!current || current === 'auto' || current === '') {
+				applyTheme(systemQuery.matches ? 'dark' : 'light');
+			}
+		});
+
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector('#theme-icons');
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
 </script>
+
+<template id="theme-icons">
+	<Icon name="sun" class="light" />
+	<Icon name="moon" class="dark" />
+	<Icon name="laptop" class="auto" />
+</template>

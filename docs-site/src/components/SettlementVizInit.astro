@@ -1,0 +1,29 @@
+---
+/**
+ * Initializer component for the settlement visualization canvas.
+ * Wraps the module import in an Astro-processed <script> tag
+ * so Vite can bundle the settlement-viz.ts module.
+ */
+---
+
+<script>
+  import { initSettlementViz } from '../scripts/settlement-viz';
+
+  const canvas = document.querySelector<HTMLCanvasElement>('#settle-viz');
+  const buttons = [...document.querySelectorAll<HTMLElement>('[data-scenario]')];
+  const requesterTotalEl = document.getElementById('settle-requester-total');
+  const providerTotalEl = document.getElementById('settle-provider-total');
+  const ruleEl = document.getElementById('settle-rule');
+
+  if (canvas && buttons.length > 0 && requesterTotalEl && providerTotalEl && ruleEl) {
+    initSettlementViz({
+      canvas,
+      buttons,
+      requesterTotalEl,
+      providerTotalEl,
+      ruleEl,
+    });
+  } else {
+    console.warn('[settle-viz] required DOM elements not found');
+  }
+</script>

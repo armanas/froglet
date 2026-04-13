@@ -1519,4 +1519,3 @@ impl SettlementDriver for LightningDriver {
     }
 }
 
-pub(crate) static LIGHTNING_DRIVER: LightningDriver = LightningDriver;
