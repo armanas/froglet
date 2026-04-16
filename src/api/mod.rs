@@ -490,6 +490,11 @@ fn verify_provider_descriptor_artifact(
             "provider descriptor signature verification failed",
         ));
     }
+    if let Err(error) = protocol::validate_descriptor_artifact(descriptor) {
+        return Err(provider_bad_gateway(&format!(
+            "provider descriptor semantic validation failed: {error}"
+        )));
+    }
     Ok(())
 }
 

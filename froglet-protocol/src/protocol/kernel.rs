@@ -626,6 +626,48 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
     Ok(())
 }
 
+/// Validate a descriptor artifact beyond its cryptographic signature.
+///
+/// Enforces `signer == payload.provider_id` so a descriptor cannot be signed by
+/// one key while claiming to describe a different provider. Mirrors
+/// `validate_receipt_artifact`. Always call this after `verify_artifact`; a
+/// valid signature alone does not bind the artifact to the claimed provider.
+pub fn validate_descriptor_artifact(
+    descriptor: &SignedArtifact<DescriptorPayload>,
+) -> Result<(), String> {
+    if descriptor.signer != descriptor.payload.provider_id {
+        return Err("descriptor signer does not match provider_id".to_string());
+    }
+
+    if descriptor.payload.protocol_version.trim().is_empty() {
+        return Err("descriptor protocol_version must be non-empty".to_string());
+    }
+
+    Ok(())
+}
+
+/// Validate an offer artifact beyond its cryptographic signature.
+///
+/// Enforces `signer == payload.provider_id` so an offer cannot be attributed to
+/// a provider other than its signer. Also asserts required identifiers are
+/// present. Mirrors `validate_receipt_artifact`. Always call this after
+/// `verify_artifact`.
+pub fn validate_offer_artifact(offer: &SignedArtifact<OfferPayload>) -> Result<(), String> {
+    if offer.signer != offer.payload.provider_id {
+        return Err("offer signer does not match provider_id".to_string());
+    }
+
+    if offer.payload.offer_id.trim().is_empty() {
+        return Err("offer offer_id must be non-empty".to_string());
+    }
+
+    if offer.payload.descriptor_hash.trim().is_empty() {
+        return Err("offer descriptor_hash must be non-empty".to_string());
+    }
+
+    Ok(())
+}
+
 pub fn artifact_hash<T: Serialize>(artifact: &SignedArtifact<T>) -> Result<String, String> {
     let payload_hash = payload_hash(&artifact.payload)?;
     canonical_signing_bytes(
@@ -1038,6 +1080,205 @@ mod tests {
         assert_eq!(
             validate_receipt_artifact(&receipt).unwrap_err(),
             "free receipt settlement_state must be none"
+        );
+    }
+
+    fn valid_descriptor_payload(provider_id: &str) -> DescriptorPayload {
+        DescriptorPayload {
+            provider_id: provider_id.to_string(),
+            descriptor_seq: 1,
+            protocol_version: FROGLET_SCHEMA_V1.to_string(),
+            expires_at: None,
+            linked_identities: Vec::new(),
+            transport_endpoints: Vec::new(),
+            capabilities: DescriptorCapabilities {
+                service_kinds: vec!["compute.wasm.v1".to_string()],
+                execution_runtimes: vec!["wasm".to_string()],
+                max_concurrent_deals: None,
+            },
+            accepted_payment_methods: vec![PAYMENT_METHOD_FREE.to_string()],
+        }
+    }
+
+    fn valid_offer_payload(provider_id: &str) -> OfferPayload {
+        OfferPayload {
+            provider_id: provider_id.to_string(),
+            offer_id: "offer-1".to_string(),
+            descriptor_hash: "aa".repeat(32),
+            expires_at: None,
+            offer_kind: "named.v1".to_string(),
+            settlement_method: "none".to_string(),
+            quote_ttl_secs: 60,
+            execution_profile: OfferExecutionProfile {
+                runtime: ExecutionRuntime::Wasm,
+                package_kind: "inline_module".to_string(),
+                contract_version: "froglet.wasm.run_json.v1".to_string(),
+                access_handles: Vec::new(),
+                abi_version: "froglet.wasm.run_json.v1".to_string(),
+                capabilities: Vec::new(),
+                max_input_bytes: 1,
+                max_runtime_ms: 2,
+                max_memory_bytes: 3,
+                max_output_bytes: 4,
+                fuel_limit: 5,
+            },
+            price_schedule: OfferPriceSchedule {
+                base_fee_msat: 0,
+                success_fee_msat: 0,
+            },
+            terms_hash: None,
+            confidential_profile_hash: None,
+        }
+    }
+
+    #[test]
+    fn descriptor_with_matching_signer_passes_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            123,
+            valid_descriptor_payload(&signer),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&descriptor));
+        assert!(validate_descriptor_artifact(&descriptor).is_ok());
+    }
+
+    #[test]
+    fn descriptor_with_mismatched_signer_fails_validation() {
+        // Attacker key signs the descriptor but payload.provider_id claims a
+        // different identity. Signature alone verifies; semantic validation
+        // must reject.
+        let attacker_key = crypto::generate_signing_key();
+        let attacker_signer = crypto::public_key_hex(&attacker_key);
+        let victim_key = crypto::generate_signing_key();
+        let victim_signer = crypto::public_key_hex(&victim_key);
+        assert_ne!(attacker_signer, victim_signer);
+
+        let descriptor = sign_artifact(
+            &attacker_signer,
+            |message| crypto::sign_message_hex(&attacker_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            123,
+            valid_descriptor_payload(&victim_signer),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&descriptor));
+        assert_eq!(
+            validate_descriptor_artifact(&descriptor).unwrap_err(),
+            "descriptor signer does not match provider_id"
+        );
+    }
+
+    #[test]
+    fn descriptor_with_empty_protocol_version_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_descriptor_payload(&signer);
+        payload.protocol_version = String::new();
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&descriptor));
+        assert_eq!(
+            validate_descriptor_artifact(&descriptor).unwrap_err(),
+            "descriptor protocol_version must be non-empty"
+        );
+    }
+
+    #[test]
+    fn offer_with_matching_signer_passes_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let offer = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            valid_offer_payload(&signer),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&offer));
+        assert!(validate_offer_artifact(&offer).is_ok());
+    }
+
+    #[test]
+    fn offer_with_mismatched_signer_fails_validation() {
+        let attacker_key = crypto::generate_signing_key();
+        let attacker_signer = crypto::public_key_hex(&attacker_key);
+        let victim_key = crypto::generate_signing_key();
+        let victim_signer = crypto::public_key_hex(&victim_key);
+        assert_ne!(attacker_signer, victim_signer);
+
+        let offer = sign_artifact(
+            &attacker_signer,
+            |message| crypto::sign_message_hex(&attacker_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            valid_offer_payload(&victim_signer),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&offer));
+        assert_eq!(
+            validate_offer_artifact(&offer).unwrap_err(),
+            "offer signer does not match provider_id"
+        );
+    }
+
+    #[test]
+    fn offer_with_empty_offer_id_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_offer_payload(&signer);
+        payload.offer_id = String::new();
+        let offer = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&offer));
+        assert_eq!(
+            validate_offer_artifact(&offer).unwrap_err(),
+            "offer offer_id must be non-empty"
+        );
+    }
+
+    #[test]
+    fn offer_with_empty_descriptor_hash_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_offer_payload(&signer);
+        payload.descriptor_hash = String::new();
+        let offer = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&offer));
+        assert_eq!(
+            validate_offer_artifact(&offer).unwrap_err(),
+            "offer descriptor_hash must be non-empty"
         );
     }
 }

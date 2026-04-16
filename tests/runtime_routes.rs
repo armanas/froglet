@@ -305,6 +305,11 @@ struct ProviderState {
     tamper_receipt: bool,
     tamper_accept_receipt: bool,
     tamper_accept_receipt_semantics: bool,
+    /// Optional attacker key. When present, `/v1/provider/descriptor` returns
+    /// a descriptor re-signed by this key while the payload still claims the
+    /// original `provider_id` — used to exercise the signer/provider_id
+    /// binding check in `validate_descriptor_artifact`.
+    attacker_key: Option<Arc<crypto::NodeSigningKey>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -315,6 +320,10 @@ struct ProviderTamperConfig {
     deal_receipt: bool,
     accept_receipt: bool,
     accept_receipt_semantics: bool,
+    /// When true, the descriptor is re-signed by an attacker key while the
+    /// payload keeps the legitimate `provider_id`. Signature verification
+    /// passes (valid sig for attacker); semantic validation must reject.
+    descriptor_forge_signer: bool,
 }
 
 impl ProviderState {
@@ -335,6 +344,12 @@ impl ProviderState {
             created_at,
         )];
 
+        let attacker_key = if tamper.descriptor_forge_signer {
+            Some(Arc::new(crypto::generate_signing_key()))
+        } else {
+            None
+        };
+
         Self {
             provider_id,
             provider_url,
@@ -349,6 +364,7 @@ impl ProviderState {
             tamper_receipt: tamper.deal_receipt,
             tamper_accept_receipt: tamper.accept_receipt,
             tamper_accept_receipt_semantics: tamper.accept_receipt_semantics,
+            attacker_key,
         }
     }
 }
@@ -615,6 +631,21 @@ fn provider_router(state: Arc<ProviderState>) -> Router {
 
 async fn provider_descriptor(State(state): State<Arc<ProviderState>>) -> impl IntoResponse {
     let mut descriptor = state.descriptor.clone();
+    if let Some(attacker_key) = state.attacker_key.as_ref() {
+        // Re-sign the descriptor payload with an attacker key. The resulting
+        // artifact has a valid signature for `signer = attacker_pub` while the
+        // payload still claims `provider_id = victim_pub`. `verify_artifact`
+        // passes; `validate_descriptor_artifact` must reject.
+        let attacker_signer = crypto::public_key_hex(attacker_key.as_ref());
+        descriptor = protocol::sign_artifact(
+            &attacker_signer,
+            |message| crypto::sign_message_hex(attacker_key.as_ref(), message),
+            protocol::ARTIFACT_TYPE_DESCRIPTOR,
+            descriptor.created_at,
+            descriptor.payload.clone(),
+        )
+        .expect("re-sign descriptor with attacker key");
+    }
     if state.tamper_descriptor {
         tamper_signature(&mut descriptor);
     }
@@ -1241,6 +1272,54 @@ async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
     assert_eq!(
         response["error"],
         Value::String("provider descriptor signature verification failed".to_string())
+    );
+}
+
+#[tokio::test]
+async fn runtime_create_deal_rejects_descriptor_with_forged_signer() {
+    // A malicious provider URL serves a descriptor whose signature is valid
+    // under an attacker key, but whose payload.provider_id claims the victim
+    // provider's identity. `verify_artifact` passes; `validate_descriptor_artifact`
+    // must reject with a semantic-validation BAD_GATEWAY.
+    let (provider_server, provider_state) =
+        build_provider_fixture_with_tamper(ProviderTamperConfig {
+            descriptor_forge_signer: true,
+            ..ProviderTamperConfig::default()
+        })
+        .await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
+    let app = runtime_router(state);
+
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/deals",
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
+                provider_id: Some(provider_state.provider_id.clone()),
+                provider_url: Some(provider_server.base_url.clone()),
+            }))
+            .expect("serialize request"),
+        ),
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let error = response["error"]
+        .as_str()
+        .expect("error message")
+        .to_string();
+    assert!(
+        error.contains("descriptor")
+            && error.contains("signer does not match provider_id"),
+        "expected descriptor signer-mismatch error, got: {error}"
     );
 }
 
