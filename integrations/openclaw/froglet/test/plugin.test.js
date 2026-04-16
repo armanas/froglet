@@ -280,7 +280,7 @@ test("run_compute executes deal flow on target provider URL", async () => {
         return new Response(
           JSON.stringify({
             provider_id: "prov-1",
-            provider_url: "http://127.0.0.2:8080",
+            provider_url: "https://1.1.1.1:8080",
             quote: { hash: "quote-hash" },
             deal: { deal_id: "deal-1", status: "succeeded", result: { ok: true } }
           }),
@@ -290,9 +290,13 @@ test("run_compute executes deal flow on target provider URL", async () => {
       throw new Error(`unexpected URL ${urlStr}`)
     }
     const froglet = tools.get("froglet")
+    // Use a public https literal so the LLM-controlled provider_url validator
+    // (scheme check + private-IP block + DNS classify) accepts it. The
+    // `fetch` mock above intercepts the actual runtime call, so no real
+    // network traffic is issued to 1.1.1.1.
     const result = await froglet.definition.execute("tool-3", {
       action: "run_compute",
-      provider_url: "http://127.0.0.2:8080",
+      provider_url: "https://1.1.1.1:8080",
       runtime: "wasm",
       package_kind: "inline_module",
       contract_version: "froglet.wasm.run_json.v1",

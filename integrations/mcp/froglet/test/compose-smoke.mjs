@@ -129,11 +129,13 @@ async function main() {
     })
     assert.ok(typeof localListText === "string", "list_local_services should return text")
 
-    // Verify run_compute works
+    // Verify run_compute works. The tool-argument `provider_url` override is
+    // locked down to https-only, non-loopback on the LLM-controlled surface;
+    // resolve via `provider_id` through the operator-configured runtime so
+    // the compose smoke can still point at a local stack.
     const computeText = await callToolText(client, "froglet", {
       action: "run_compute",
       provider_id: providerId,
-      provider_url: process.env.FROGLET_PROVIDER_URL ?? "http://127.0.0.1:8080",
       runtime: "wasm",
       package_kind: "inline_module",
       wasm_module_hex: validWasmHex

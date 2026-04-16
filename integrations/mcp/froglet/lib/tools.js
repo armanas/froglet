@@ -96,8 +96,10 @@ function frogletToolInputSchema(config) {
       },
       provider_url: {
         type: "string",
+        format: "uri",
+        pattern: "^https://[^\\s]+$",
         description:
-          "Optional provider base URL override. Usually discovered automatically from provider_id or service_id."
+          "Optional provider base URL override. Must be https (Tor onion providers must be accessed via the runtime, not this override). Usually discovered automatically from provider_id or service_id."
       },
       limit: {
         type: "integer",

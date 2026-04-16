@@ -229,12 +229,15 @@ describe("froglet MCP actions", () => {
       throw new Error(`unexpected URL: ${urlStr}`)
     })
     try {
+      // Use a public https literal so the LLM-controlled provider_url
+      // validator passes without real DNS; the runtime call is intercepted by
+      // mockFetch, so no outbound traffic reaches 1.1.1.1.
       const result = await handleToolCall(
         "froglet",
         {
           action: "run_compute",
           provider_id: "prov-1",
-          provider_url: "https://provider.example",
+          provider_url: "https://1.1.1.1",
           runtime: "wasm",
           package_kind: "inline_module",
           wasm_module_hex: "0061736d01000000"

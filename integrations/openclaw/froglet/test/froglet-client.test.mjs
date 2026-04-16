@@ -51,7 +51,7 @@ function providerSearchResponse() {
         provider_id: "prov-1",
         descriptor_hash: "desc-1",
         transport_endpoints: [
-          { uri: "https://provider.example", features: ["quote_http"], priority: 10 },
+          { uri: "https://93.184.216.34", features: ["quote_http"], priority: 10 },
           { uri: "http://127.0.0.1:8080", features: ["quote_http"], priority: 20 }
         ],
         offers: [
@@ -108,11 +108,11 @@ test("project authoring helpers throw removal errors", async () => {
 
 test("selectTransportEndpoint prefers lowest-priority quote_http https endpoint", () => {
   const endpoint = selectTransportEndpoint([
-    { uri: "http://provider.example", features: ["quote_http"], priority: 20 },
-    { uri: "https://provider.example", features: ["quote_http"], priority: 10 },
-    { uri: "https://provider.example/no-quote", features: [], priority: 1 }
+    { uri: "http://93.184.216.34", features: ["quote_http"], priority: 20 },
+    { uri: "https://93.184.216.34", features: ["quote_http"], priority: 10 },
+    { uri: "https://93.184.216.34/no-quote", features: [], priority: 1 }
   ])
-  assert.equal(endpoint?.uri, "https://provider.example")
+  assert.equal(endpoint?.uri, "https://93.184.216.34")
 })
 
 test("flattenMarketplaceProviders preserves providers and flattens offers into compatibility services", () => {
@@ -132,7 +132,7 @@ test("flattenMarketplaceProviders preserves providers and flattens offers into c
     price_sats: 3,
     publication_state: "unknown",
     provider_id: "prov-1",
-    provider_url: "https://provider.example",
+    provider_url: "https://93.184.216.34",
     descriptor_hash: "desc-1",
     settlement_method: "none"
   })
@@ -278,7 +278,7 @@ test("discoverServices reads marketplace providers and flattens compatibility se
       assert.deepEqual(capturedBody, { limit: 5, include_inactive: false })
       assert.equal(response.providers.length, 1)
       assert.equal(response.services.length, 1)
-      assert.equal(response.services[0].provider_url, "https://provider.example")
+      assert.equal(response.services[0].provider_url, "https://93.184.216.34")
     } finally {
       global.fetch = previousFetch
     }
@@ -295,7 +295,7 @@ test("getService resolves provider from runtime search and fetches provider publ
       if (urlStr.endsWith("/v1/runtime/search")) {
         return new Response(JSON.stringify(providerSearchResponse()), { status: 200 })
       }
-      if (urlStr === "https://provider.example/v1/provider/services/svc-1") {
+      if (urlStr === "https://93.184.216.34/v1/provider/services/svc-1") {
         return new Response(
           JSON.stringify({
             service: {
@@ -319,7 +319,7 @@ test("getService resolves provider from runtime search and fetches provider publ
         request: { service_id: "svc-1" }
       })
       assert.equal(response.service.service_id, "svc-1")
-      assert.equal(response.service.provider_url, "https://provider.example")
+      assert.equal(response.service.provider_url, "https://93.184.216.34")
       assert.ok(hitUrls.some((url) => url.endsWith("/v1/runtime/search")))
       assert.ok(hitUrls.some((url) => url.endsWith("/v1/provider/services/svc-1")))
     } finally {
@@ -340,14 +340,14 @@ test("invokeService resolves provider details, fetches canonical service record,
             provider: {
               provider_id: "prov-1",
               transport_endpoints: [
-                { uri: "https://provider.example", features: ["quote_http"], priority: 1 }
+                { uri: "https://93.184.216.34", features: ["quote_http"], priority: 1 }
               ]
             }
           }),
           { status: 200 }
         )
       }
-      if (urlStr === "https://provider.example/v1/provider/services/svc-1") {
+      if (urlStr === "https://93.184.216.34/v1/provider/services/svc-1") {
         return new Response(
           JSON.stringify({
             service: {
@@ -371,7 +371,7 @@ test("invokeService resolves provider details, fetches canonical service record,
         return new Response(
           JSON.stringify({
             provider_id: "prov-1",
-            provider_url: "https://provider.example",
+            provider_url: "https://93.184.216.34",
             quote: { hash: "quote-hash" },
             deal: { deal_id: "deal-1", status: "succeeded", result: { pong: true } }
           }),
@@ -396,7 +396,7 @@ test("invokeService resolves provider details, fetches canonical service record,
       assert.deepEqual(response.result, { pong: true })
       assert.deepEqual(runtimeDealBody.provider, {
         provider_id: "prov-1",
-        provider_url: "https://provider.example"
+        provider_url: "https://93.184.216.34"
       })
       assert.equal(runtimeDealBody.offer_id, "svc-1")
       assert.equal(runtimeDealBody.kind, "execution")
@@ -421,7 +421,7 @@ test("runCompute posts a canonical runtime Wasm deal and normalizes terminal dea
         return new Response(
           JSON.stringify({
             provider_id: "prov-1",
-            provider_url: "https://provider.example",
+            provider_url: "https://93.184.216.34",
             quote: { hash: "quote-hash" },
             deal: { deal_id: "deal-2", status: "succeeded", result: 42 }
           }),
@@ -437,7 +437,7 @@ test("runCompute posts a canonical runtime Wasm deal and normalizes terminal dea
         requestTimeoutMs: 1000,
         request: {
           provider_id: "prov-1",
-          provider_url: "https://provider.example",
+          provider_url: "https://93.184.216.34",
           runtime: "wasm",
           package_kind: "inline_module",
           wasm_module_hex: "0061736d01000000",
@@ -470,7 +470,7 @@ test("runCompute uses execute.compute.generic for execution workloads", async ()
         return new Response(
           JSON.stringify({
             provider_id: "prov-1",
-            provider_url: "https://provider.example",
+            provider_url: "https://93.184.216.34",
             quote: { hash: "quote-hash" },
             deal: { deal_id: "deal-3", status: "succeeded", result: { ok: true } }
           }),
@@ -486,7 +486,7 @@ test("runCompute uses execute.compute.generic for execution workloads", async ()
         requestTimeoutMs: 1000,
         request: {
           provider_id: "prov-1",
-          provider_url: "https://provider.example",
+          provider_url: "https://93.184.216.34",
           runtime: "python",
           package_kind: "inline_source",
           inline_source: "def handler(event, context):\n    return event\n",

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 
+import { pinnedJsonRequest, validateProviderUrl } from "./url-safety.js"
+
 const FROGLET_SCHEMA_V1 = "froglet/v1"
 const WORKLOAD_KIND_EXECUTION_V1 = "compute.execution.v1"
 const WORKLOAD_KIND_COMPUTE_WASM_V1 = "compute.wasm.v1"
@@ -148,8 +150,23 @@ async function jsonRequest(
     headers = {},
     jsonBody,
     expectedStatuses = [200],
+    pin,
   } = {}
 ) {
+  // `pin` is produced by `validateProviderUrl`. When present, route through a
+  // DNS-pinned https.request so rebinding between validation and fetch cannot
+  // redirect the connection to a local or metadata address.
+  if (pin) {
+    return pinnedJsonRequest(url, {
+      method,
+      timeoutMs,
+      headers,
+      jsonBody,
+      expectedStatuses,
+      pinnedAddress: pin.pinnedAddress,
+      family: pin.family,
+    })
+  }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -235,11 +252,12 @@ async function frogletRequestWithStatus(
   })
 }
 
-async function frogletPublicRequest(baseUrl, timeoutMs, path, { expectedStatuses } = {}) {
+async function frogletPublicRequest(baseUrl, timeoutMs, path, { expectedStatuses, pin } = {}) {
   const { payload } = await jsonRequest(`${baseUrl}${path}`, {
     method: "GET",
     timeoutMs,
     expectedStatuses,
+    pin,
   })
   return payload
 }
@@ -662,11 +680,12 @@ async function runtimeProviderDetails({
   )
 }
 
-async function fetchPublicProviderService({ providerUrl, requestTimeoutMs, serviceId }) {
+async function fetchPublicProviderService({ providerUrl, requestTimeoutMs, serviceId, pin }) {
   return frogletPublicRequest(
     providerUrl,
     requestTimeoutMs,
-    `/v1/provider/services/${encodeURIComponent(serviceId)}`
+    `/v1/provider/services/${encodeURIComponent(serviceId)}`,
+    { pin }
   )
 }
 
@@ -686,7 +705,24 @@ async function resolveProviderReference({
   request,
   searchLimit = 100,
 }) {
-  const explicitProviderUrl = normalizeUrl(request?.provider_url)
+  // The operator-configured `runtimeUrl` goes through the strict
+  // `normalizeBaseUrl` helper at config-load time and is trusted thereafter.
+  // The `request.provider_url` field, in contrast, is LLM-controlled and must
+  // pass the SSRF validator: https-only, no private/loopback/metadata
+  // addresses, IP-pinned at the socket layer to prevent DNS rebinding.
+  let explicitProviderUrl = null
+  let explicitPin = null
+  if (typeof request?.provider_url === "string" && request.provider_url.trim().length > 0) {
+    const validated = await validateProviderUrl(
+      request.provider_url,
+      "request.provider_url"
+    )
+    explicitProviderUrl = validated.normalizedUrl
+    explicitPin = {
+      pinnedAddress: validated.pinnedAddress,
+      family: validated.family,
+    }
+  }
   const explicitProviderId =
     typeof request?.provider_id === "string" && request.provider_id.trim().length > 0
       ? request.provider_id.trim()
@@ -700,6 +736,7 @@ async function resolveProviderReference({
     return {
       providerId: explicitProviderId,
       providerUrl: explicitProviderUrl,
+      pin: explicitPin,
       matchSource: "provider_url",
     }
   }
@@ -784,6 +821,7 @@ async function resolveRemoteService({
     providerUrl: provider.providerUrl,
     requestTimeoutMs,
     serviceId,
+    pin: provider.pin,
   })
   const service = serviceResponse?.service
   if (!service) {
