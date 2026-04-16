@@ -331,6 +331,12 @@ pub struct NodeConfig {
     pub wasm: WasmConfig,
     pub confidential: ConfidentialConfig,
     pub marketplace_url: Option<String>,
+    /// Operator-configured data-source mounts. Key is the mount handle
+    /// (e.g. "analytics"); value is the DSN / connection string the workload
+    /// gets through `FROGLET_MOUNT_<handle>_URL` when its capability is
+    /// granted. Currently populated from `FROGLET_MOUNT_postgres_<handle>`
+    /// env vars. See docs/MOUNTS.md.
+    pub postgres_mounts: std::collections::BTreeMap<String, String>,
 }
 
 impl NodeConfig {
@@ -570,8 +576,29 @@ impl NodeConfig {
                     .clamp(30, 3600),
             },
             marketplace_url: env::var("FROGLET_MARKETPLACE_URL").ok(),
+            postgres_mounts: load_postgres_mounts_from_env(),
         })
     }
+}
+
+/// Read `FROGLET_MOUNT_postgres_<handle>=<dsn>` env vars into a map keyed on
+/// `<handle>`. Handles are normalised (trimmed, lowercased) so capability
+/// strings stay stable across operator config styles.
+fn load_postgres_mounts_from_env() -> std::collections::BTreeMap<String, String> {
+    const PREFIX: &str = "FROGLET_MOUNT_postgres_";
+    let mut out = std::collections::BTreeMap::new();
+    for (key, value) in env::vars() {
+        if let Some(rest) = key.strip_prefix(PREFIX)
+            && !rest.is_empty()
+            && !value.is_empty()
+        {
+            let handle = rest.trim().to_ascii_lowercase();
+            if !handle.is_empty() {
+                out.insert(handle, value);
+            }
+        }
+    }
+    out
 }
 
 fn default_http_max_calls_per_execution() -> u32 {

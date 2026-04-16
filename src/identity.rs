@@ -260,6 +260,7 @@ mod tests {
                 session_ttl_secs: 300,
             },
             marketplace_url: None,
+            postgres_mounts: std::collections::BTreeMap::new(),
         };
 
         let identity = NodeIdentity::load_or_create(&config).unwrap();

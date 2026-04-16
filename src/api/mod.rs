@@ -6019,6 +6019,51 @@ fn validate_execution_workload(
     }
 }
 
+/// Return the env vars to inject into a Python workload for every granted
+/// `postgres` mount. Each mount produces
+///
+/// - `FROGLET_MOUNT_<handle>_URL` — operator-configured DSN
+/// - `FROGLET_MOUNT_<handle>_READ_ONLY` — `"true"` or `"false"`
+///
+/// A mount is included only when the workload declared it with
+/// `kind == "postgres"`, the capability is in `granted_access`, and the
+/// operator configured a DSN via `FROGLET_MOUNT_postgres_<handle>`. Handles
+/// are matched case-insensitively to tolerate env-var case quirks.
+fn collect_postgres_mount_env(
+    execution: &ExecutionWorkload,
+    granted_access: &[String],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for mount in &execution.mounts {
+        if !mount.kind.eq_ignore_ascii_case("postgres") {
+            continue;
+        }
+        let capability = format!(
+            "mount.{}.{}.{}",
+            mount.kind,
+            if mount.read_only { "read" } else { "write" },
+            mount.handle
+        );
+        if !granted_access.is_empty() && !granted_access.iter().any(|c| c == &capability) {
+            continue;
+        }
+        let env_key = format!("FROGLET_MOUNT_postgres_{}", mount.handle);
+        let Ok(dsn) = std::env::var(&env_key) else {
+            continue;
+        };
+        if dsn.is_empty() {
+            continue;
+        }
+        let safe_handle = mount.handle.to_ascii_uppercase();
+        out.push((format!("FROGLET_MOUNT_{safe_handle}_URL"), dsn));
+        out.push((
+            format!("FROGLET_MOUNT_{safe_handle}_READ_ONLY"),
+            if mount.read_only { "true" } else { "false" }.to_string(),
+        ));
+    }
+    out
+}
+
 fn execution_mount_context(execution: &ExecutionWorkload, granted_access: &[String]) -> Value {
     let mounts = execution
         .mounts
@@ -6099,10 +6144,22 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     let input_json_clone = input_json.clone();
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
     let kill_handle_clone = Arc::clone(&kill_handle);
+    // Resolve operator-configured postgres mounts that this invocation was
+    // granted. A mount is injected only when (a) the workload declared a
+    // mount with kind=postgres for this handle, (b) the capability list
+    // granted access to it, and (c) the operator configured a DSN for the
+    // handle via FROGLET_MOUNT_postgres_<handle>. See docs/MOUNTS.md.
+    let postgres_mount_env = collect_postgres_mount_env(execution, granted_access);
     // Per-invocation sandbox policy: read Python stdlib + CA certs, write
-    // only to the invocation tempdir, no outbound network (workloads that
-    // need network must use a mount that explicitly grants it).
-    let sandbox_config = crate::python_sandbox::SandboxConfig::for_python(&tempdir);
+    // only to the invocation tempdir, no outbound network by default. When a
+    // postgres mount is granted, flip allow_network=true so the workload can
+    // reach the DB host. This is coarse-grained (any outbound TCP is then
+    // permitted, not just the DB tuple); tightening to a specific host:port
+    // is tracked as a hardening follow-up.
+    let mut sandbox_config = crate::python_sandbox::SandboxConfig::for_python(&tempdir);
+    if !postgres_mount_env.is_empty() {
+        sandbox_config.allow_network = true;
+    }
     let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let mut command = std::process::Command::new("python3");
         command
@@ -6116,6 +6173,9 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for (name, value) in &postgres_mount_env {
+            command.env(name, value);
+        }
         crate::python_sandbox::harden_command(&mut command, sandbox_config.clone())
             .map_err(|error| format!("failed to install python sandbox: {error}"))?;
         let mut child = command
@@ -10132,6 +10192,7 @@ mod tests {
                 session_ttl_secs: 300,
             },
             marketplace_url: None,
+            postgres_mounts: std::collections::BTreeMap::new(),
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
@@ -11766,6 +11827,127 @@ mod tests {
             payload["requested_workload_kind"],
             crate::execution::WORKLOAD_KIND_EXECUTION_V1
         );
+    }
+
+    #[test]
+    fn postgres_mount_injects_env_when_capability_granted_and_dsn_configured() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        // SAFETY: test-only env mutation; Rust 2024 marks set_var unsafe.
+        unsafe {
+            std::env::set_var(
+                "FROGLET_MOUNT_postgres_analytics",
+                "postgres://user:pass@db.local:5432/analytics",
+            );
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "analytics".to_string(),
+                kind: "postgres".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+        let env = collect_postgres_mount_env(
+            &execution,
+            &["mount.postgres.read.analytics".to_string()],
+        );
+        assert_eq!(env.len(), 2);
+        assert!(env.contains(&(
+            "FROGLET_MOUNT_ANALYTICS_URL".to_string(),
+            "postgres://user:pass@db.local:5432/analytics".to_string()
+        )));
+        assert!(env.contains(&(
+            "FROGLET_MOUNT_ANALYTICS_READ_ONLY".to_string(),
+            "true".to_string()
+        )));
+        // SAFETY: test-only env cleanup.
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_postgres_analytics");
+        }
+    }
+
+    #[test]
+    fn postgres_mount_omits_env_when_capability_not_granted() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        unsafe {
+            std::env::set_var(
+                "FROGLET_MOUNT_postgres_finance",
+                "postgres://nope",
+            );
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "finance".to_string(),
+                kind: "postgres".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+        // Capability list does not include the finance mount: reject.
+        let env = collect_postgres_mount_env(
+            &execution,
+            &["mount.postgres.read.analytics".to_string()],
+        );
+        assert!(env.is_empty());
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_postgres_finance");
+        }
+    }
+
+    #[test]
+    fn postgres_mount_omits_env_when_dsn_not_configured() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        // Explicitly clear to defeat cross-test pollution.
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_postgres_unset");
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "unset".to_string(),
+                kind: "postgres".to_string(),
+                read_only: false,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+        let env = collect_postgres_mount_env(
+            &execution,
+            &["mount.postgres.write.unset".to_string()],
+        );
+        assert!(env.is_empty());
+    }
+
+    fn execution_for_mount_tests() -> crate::execution::ExecutionWorkload {
+        use crate::execution::{
+            ExecutionEntrypoint, ExecutionEntrypointKind, ExecutionPackageKind, ExecutionSecurity,
+        };
+        use froglet_protocol::ExecutionRuntime;
+        crate::execution::ExecutionWorkload {
+            schema_version: "froglet/v1".to_string(),
+            workload_kind: "execution.v1".to_string(),
+            runtime: ExecutionRuntime::Python,
+            package_kind: ExecutionPackageKind::InlineSource,
+            entrypoint: ExecutionEntrypoint {
+                kind: ExecutionEntrypointKind::Handler,
+                value: "handler".to_string(),
+            },
+            contract_version: "froglet.python.handler_json.v1".to_string(),
+            input_format: "application/json".to_string(),
+            input_hash: "00".repeat(32),
+            requested_access: Vec::new(),
+            security: ExecutionSecurity::default(),
+            mounts: Vec::new(),
+            inline_source: Some("def handler(event, ctx):\n    return event\n".to_string()),
+            module_hash: None,
+            module_bytes_hex: None,
+            source_hash: None,
+            oci_reference: None,
+            oci_digest: None,
+            builtin_name: None,
+            input: serde_json::Value::Null,
+        }
     }
 
     #[test]
