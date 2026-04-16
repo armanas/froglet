@@ -104,14 +104,7 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for auto-registration (e.g. `http://127.0.0.1:8090`) |
-
-### Marketplace-Specific (froglet-marketplace binary only)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MARKETPLACE_DATABASE_URL` | *(required)* | PostgreSQL connection string (e.g. `postgres://user:pass@localhost/froglet`) |
-| `FROGLET_MARKETPLACE_DB_TLS` | *(auto)* | Force TLS on/off: `1`/`true`/`on` or `0`/`false`/`off`. Default: TLS for non-loopback hosts |
+| `FROGLET_MARKETPLACE_URL` | *(none)* | External marketplace URL for provider auto-registration and runtime discovery. The default marketplace implementation exists outside this public repo. |
 
 ## MCP Server (integrations/mcp/froglet)
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 cmd="${1:-}"
 
-ALLOWED_COMMANDS="froglet-node froglet-marketplace"
+ALLOWED_COMMANDS="froglet-node"
 
 ensure_dir() {
   path="$1"
@@ -16,7 +16,7 @@ ensure_dir() {
 umask 077
 
 case "$cmd" in
-  froglet-node|froglet-marketplace)
+  froglet-node)
     data_dir="${FROGLET_DATA_DIR:-/data}"
     data_dir_mode=700
     case "${FROGLET_HOST_READABLE_CONTROL_TOKEN:-}" in

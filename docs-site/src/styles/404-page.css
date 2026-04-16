@@ -14,14 +14,9 @@ body {
   min-height: 100svh;
   display: flex;
   flex-direction: column;
-  background: radial-gradient(
-      circle at top,
-      color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent),
-      transparent 24%
-    ),
-    hsl(var(--froglet-background));
+  background: hsl(var(--froglet-background));
   color: hsl(var(--froglet-foreground));
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--froglet-font-sans);
 }
 
 .not-found-main {
@@ -35,7 +30,7 @@ body {
   max-width: 760px;
   padding: 36px;
   border: 1px solid hsl(var(--froglet-border));
-  border-radius: 28px;
+  border-radius: 0;
   background: hsl(var(--froglet-card));
   box-shadow: var(--froglet-shadow);
 }
@@ -43,7 +38,7 @@ body {
 .pill {
   display: inline-flex;
   padding: 6px 12px;
-  border-radius: 999px;
+  border-radius: 0;
   background: hsl(var(--froglet-accent-soft));
   border: 1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 16%, transparent);
   color: hsl(var(--froglet-accent-strong));
@@ -55,7 +50,7 @@ body {
 
 h1 {
   margin: 18px 0 12px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--froglet-font-serif);
   font-size: clamp(42px, 7vw, 72px);
   line-height: 0.94;
   letter-spacing: -0.04em;
@@ -81,7 +76,7 @@ p {
   align-items: center;
   justify-content: center;
   padding: 12px 18px;
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid hsl(var(--froglet-border));
   color: hsl(var(--froglet-foreground));
   text-decoration: none;

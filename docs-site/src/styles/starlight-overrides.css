@@ -12,9 +12,7 @@ html {
 
 body {
 	margin: 0;
-	background:
-		radial-gradient(circle at top, color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent), transparent 24%),
-		hsl(var(--froglet-background));
+	background: hsl(var(--froglet-background));
 	color: hsl(var(--froglet-foreground));
 	font-family: var(--froglet-font-sans);
 	-webkit-font-smoothing: antialiased;
@@ -29,14 +27,19 @@ mjx-container {
 	overflow-x: auto;
 }
 
+/* Brutalist: kill all remaining border-radius globally */
+*,
+*::before,
+*::after {
+	border-radius: 0 !important;
+}
+
 /* ── Header ──────────────────────────────────────────────────────────── */
 
 body > .page > header {
 	padding: 0;
 	border-bottom: 1px solid hsl(var(--froglet-border));
-	background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, transparent);
-	backdrop-filter: blur(14px);
-	-webkit-backdrop-filter: blur(14px);
+	background: hsl(var(--froglet-background));
 	position: sticky;
 	top: 0;
 	z-index: 40;
@@ -71,7 +74,7 @@ nav.sidebar .sidebar-content {
 
 nav.sidebar summary,
 nav.sidebar a {
-	border-radius: 0.8rem;
+	border-radius: 0;
 	transition:
 		background-color 140ms ease,
 		color 140ms ease,
@@ -193,7 +196,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	margin: 1.6rem 0;
 	padding: 1rem 1.1rem;
 	border-inline-start: 3px solid hsl(var(--froglet-accent));
-	border-radius: 0 0.9rem 0.9rem 0;
+	border-radius: 0;
 	background: hsl(var(--froglet-surface));
 }
 
@@ -203,7 +206,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 
 .sl-markdown-content :not(pre) > code {
 	padding: 0.14rem 0.36rem;
-	border-radius: 0.35rem;
+	border-radius: 0;
 	background: hsl(var(--froglet-surface-2));
 	color: hsl(var(--froglet-foreground));
 	font-family: var(--froglet-font-code);
@@ -213,7 +216,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 .sl-markdown-content pre,
 .sl-markdown-content .expressive-code {
 	border: 1px solid hsl(var(--froglet-border));
-	border-radius: 1rem;
+	border-radius: 0;
 	box-shadow: none;
 }
 
@@ -231,7 +234,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	border-collapse: separate;
 	border-spacing: 0;
 	border: 1px solid hsl(var(--froglet-border));
-	border-radius: 1rem;
+	border-radius: 0;
 	background: hsl(var(--froglet-card));
 	box-shadow: var(--froglet-shadow);
 }
@@ -256,16 +259,15 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 }
 
 .sl-markdown-content img {
-	border-radius: 1rem;
+	border-radius: 0;
 }
 
 /* ── Pagination ──────────────────────────────────────────────────────── */
 
 .pagination-links a {
 	border: 1px solid hsl(var(--froglet-border));
-	border-radius: var(--froglet-card-radius);
+	border-radius: 0;
 	background: hsl(var(--froglet-card));
-	box-shadow: var(--froglet-shadow);
 }
 
 .pagination-links a:hover {

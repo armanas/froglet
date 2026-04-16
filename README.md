@@ -92,11 +92,12 @@ The reference implementation exposes these binaries:
 | Binary | Purpose | Default Port |
 |---|---|---|
 | `froglet-node` | Provider and/or runtime node (role configured via env) | `8080` / `8081` |
-| `froglet-marketplace` | Marketplace node (froglet-node + Postgres-backed search/registration) | `8080` |
 
 > [!TIP]
-> The marketplace is just a froglet-node with marketplace services pre-loaded.
-> Providers self-register with it; runtimes search through it.
+> Marketplace integration remains public. Providers and runtimes can point at
+> an external marketplace with `FROGLET_MARKETPLACE_URL`, and a default
+> marketplace exists outside this repo. The approved boundary is recorded in
+> [docs/MARKETPLACE_SPLIT.md](docs/MARKETPLACE_SPLIT.md).
 
 ---
 
@@ -177,7 +178,7 @@ docker compose up --build -d
 Replace `lightning.env` with `stripe.env` or `x402.env` when that is the rail
 you configured.
 
-That starts postgres, marketplace, provider, and runtime on `127.0.0.1`.
+That starts provider and runtime on `127.0.0.1`.
 
 **Bot-facing local control token:** `./data/runtime/froglet-control.token`
 
@@ -190,7 +191,7 @@ That starts postgres, marketplace, provider, and runtime on `127.0.0.1`.
 Additional public launch surfaces in this repo:
 
 - one-line binary install for Linux x86_64/arm64 and macOS arm64
-- published provider, runtime, marketplace, and MCP Docker images
+- published provider, runtime, and MCP Docker images
 - checked-in MCP example configs under `integrations/mcp/froglet/examples/`
 - a supported GCP single-VM wrapper: `scripts/deploy_gcp_single_vm.sh create|deploy|status|destroy`
 
@@ -202,7 +203,6 @@ Full walkthrough: [ai.froglet.dev/learn/quickstart](https://ai.froglet.dev/learn
 ```bash
 # Provider node
 FROGLET_NODE_ROLE=provider \
-FROGLET_MARKETPLACE_URL=http://127.0.0.1:8090 \
 FROGLET_PRICE_EXEC_WASM=10 \
 FROGLET_PAYMENT_BACKEND=lightning \
 FROGLET_LIGHTNING_MODE=mock \
@@ -212,22 +212,17 @@ cargo run -p froglet --bin froglet-node
 ```bash
 # Runtime node
 FROGLET_NODE_ROLE=runtime \
-FROGLET_MARKETPLACE_URL=http://127.0.0.1:8090 \
 FROGLET_PAYMENT_BACKEND=lightning \
 FROGLET_LIGHTNING_MODE=mock \
 cargo run -p froglet --bin froglet-node
 ```
 
-```bash
-# Marketplace (requires Postgres)
-MARKETPLACE_DATABASE_URL=postgres://froglet:froglet@127.0.0.1:5432/marketplace \
-MARKETPLACE_FEED_SOURCES=http://127.0.0.1:8080 \
-cargo run -p froglet-marketplace --bin froglet-marketplace
-```
-
 The normal model is one node running both provider and runtime roles
 (`FROGLET_NODE_ROLE=dual`), so it can publish local resources and invoke
 remote ones.
+
+Set `FROGLET_MARKETPLACE_URL` on provider and runtime nodes when you want to
+register with or search through an external marketplace.
 
 </details>
 
@@ -249,13 +244,21 @@ Use the shared plugin package in
 | Key | Purpose |
 |---|---|
 | `hostProduct` | Target host product |
-| `baseUrl` | Base URL for the Froglet node |
-| `authTokenPath` | Path to the control token |
+| `providerUrl` | Provider/public API base URL |
+| `runtimeUrl` | Runtime API base URL |
+| `providerAuthTokenPath` | Path to the provider control token |
+| `runtimeAuthTokenPath` | Path to the runtime auth token |
+| `baseUrl` | Legacy single-surface fallback URL |
+| `authTokenPath` | Legacy single-token fallback path |
 | `requestTimeoutMs` | HTTP request timeout |
 | `defaultSearchLimit` | Default discovery result limit |
 | `maxSearchLimit` | Maximum discovery result limit |
 
 </details>
+
+The generated local OpenClaw config uses the split provider/runtime keys above.
+Legacy `baseUrl` and `authTokenPath` remain supported for single-surface
+configs such as the checked-in NemoClaw examples.
 
 The one `froglet` tool covers:
 

@@ -74,9 +74,7 @@ End-to-end tests against a full Docker Compose stack (provider + runtime).
 
 Model-in-the-loop testing via a curated blocking OpenClaw prompt suite.
 
-- `integrations/openclaw/froglet/test/openai-responses-smoke.mjs`
-- Writes JSON artifacts under `_tmp/test-results/`
-- **Requires:** node >= 18, `OPENCLAW_API_KEY` or `OPENAI_API_KEY`, running Froglet provider
+Marketplace-backed agentic E2E moved to `../froglet-services`.
 
 ## Extended Categories
 
@@ -151,28 +149,26 @@ Docker failure injection — kills services, partitions networks, rapid restarts
 
 AI-driven exploratory testing with explicit anomaly gating.
 
-- Node: `tests/e2e/agentic_exploratory.mjs`
-- Writes JSON artifacts under `_tmp/test-results/`
-- **Requires:** node >= 18, `OPENCLAW_API_KEY` or `OPENAI_API_KEY`
+Marketplace-backed exploratory E2E moved to `../froglet-services`.
 
 ## Behavior Coverage Matrix
 
-This is the behavior-level checklist for the scoped core + adapter surfaces. A behavior is only considered covered when it has a deterministic local test. User-visible behaviors also have OpenClaw coverage, and live remote behaviors are exercised again in the GCP harness.
+This is the behavior-level checklist for the scoped core + adapter surfaces. A behavior is only considered covered when it has a deterministic local test. User-visible behaviors also have OpenClaw coverage, and hosted marketplace behaviors are exercised again in the `froglet-services` harness.
 
 | Behavior | Deterministic local coverage | OpenClaw coverage | GCP milestone coverage |
 |---|---|---|---|
 | Provider/runtime health and dual-component status | Rust runtime route tests, compose smoke, doctor tests | Curated `status`, scripted tool matrix | tool matrix, curated |
-| Marketplace discovery exposes only current public offers | Python acceptance/runtime, Rust runtime route tests | Curated discovery visibility, scripted remote service flow | tool matrix, curated |
-| Hidden offers stay redacted | Rust feed/runtime tests, Python acceptance/runtime | Curated discovery visibility | tool matrix, protocol, curated |
-| Service detail fetch resolves the correct provider/service | JS unit tests, Python runtime tests | Curated `get_service`, scripted remote service flow | tool matrix, curated |
-| Remote invoke + async task completion | Python runtime tests | Scripted remote service flow, curated invoke/task roundtrip | scripted, curated, exploratory |
+| Marketplace discovery exposes only current public offers | Rust runtime route tests, JS MCP/OpenClaw client tests | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
+| Hidden offers stay redacted | Rust feed/runtime tests | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
+| Service detail fetch resolves the correct provider/service | Rust runtime route tests, JS MCP/OpenClaw client tests | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
+| Remote invoke + async task completion | Python protocol/jobs tests, JS MCP/OpenClaw server tests | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
 | Direct Wasm compute | Rust/runtime tests, JS unit tests, MCP/OpenClaw smoke | Scripted direct compute, curated Wasm compute | tool matrix, scripted, curated |
 | Direct inline Python compute | JS unit tests, compose smoke | Curated inline Python compute | tool matrix, curated |
-| Task retrieval + wait semantics | JS unit tests, Python runtime tests | Curated task roundtrip, scripted flows | tool matrix, scripted, curated |
-| Payment intent exposure for priced providers | Python runtime tests, Rust/runtime tests | scripted/tool matrix coverage via priced scenarios | tool matrix, protocol |
+| Task retrieval + wait semantics | JS unit tests, Python job tests | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
+| Payment intent exposure for priced providers | Rust runtime route tests | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
 | Runtime local/private URL rejection | Rust runtime route tests, Python runtime tests | invalid-input coverage through tool matrix + exploratory | tool matrix, protocol, exploratory |
-| Marketplace source rotation / stale provider cleanup | Python runtime tests | discovery/get_service through curated and exploratory runs | protocol-adjacent live validation via matrix + curated |
-| Marketplace migration restart convergence | marketplace DB unit tests + restart-path checks | n/a | exercised indirectly on redeploy/restart |
+| Marketplace source rotation / stale provider cleanup | n/a in public repo after the split; hosted validation lives in `../froglet-services` | hosted marketplace harness in `../froglet-services` | hosted marketplace harness |
+| Marketplace migration restart convergence | n/a in public repo after the split; hosted validation lives in `../froglet-services` | n/a | hosted marketplace harness |
 
 ### mutation
 
@@ -224,43 +220,12 @@ FROGLET_GCP_PROJECT=my-project GCP_RIG_CATEGORIES="fuzz pentest" ./scripts/test_
 **Required:** `FROGLET_GCP_PROJECT`, `gcloud` CLI configured.
 **Optional:** `FROGLET_GCP_ZONE` (default us-central1-a), `FROGLET_GCP_MACHINE_TYPE` (default e2-standard-4), `GCP_RIG_CATEGORIES` (categories to run on VM, default: performance spike fuzz blackbox acceptance pentest).
 
-## Multi-Node GCP Harness
+## Hosted Marketplace Harness
 
-For end-to-end OpenClaw + Froglet marketplace coverage on GCP, use `scripts/gcp_harness.sh`.
-Here `froglet-marketplace` is only a harness role name for the requester/OpenClaw
-node; it is not a separate tracked product tree in this repo.
-
-```bash
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh provision
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh deploy
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh seed
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh run-matrix
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh run-agentic
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh collect
-FROGLET_GCP_PROJECT=bcr1-488220 ./scripts/gcp_harness.sh destroy
-```
-
-The harness provisions four fixed roles on the existing `froglet-harness` VPC:
-
-- `froglet-marketplace` — marketplace requester node, OpenClaw host, local runtime/provider
-- `froglet-provider-free` — free named/data/project-backed services
-- `froglet-provider-paid` — priced, async, and OCI-backed workloads
-- `froglet-settlement-lab` — dedicated real-LND regtest runner
-
-Artifacts are written under `_tmp/gcp-harness/<run-id>/`:
-
-- `inventory.json` — node metadata, URLs, and token paths
-- `scenario.json` — deterministic tool/protocol/agentic scenarios and oracles
-- `results/` — tool matrix, protocol matrix, OpenClaw scripted, OpenClaw curated, LND regtest, and agentic outputs
-- `collected/` — copied node logs and remote artifacts after `collect`
-- `SUMMARY.md` — run summary assembled from the JSON results
-
-Implementation notes:
-
-- Main Froglet binaries run under systemd on the nodes; auxiliary OCI fixtures are seeded separately on the paid provider.
-- Provider endpoints are exposed through per-node TLS reverse proxies on `:443`, with a harness CA distributed through `FROGLET_HTTP_CA_CERT_PATH`. Runtime listeners remain loopback-only.
-- `run-matrix` opens a local SSH tunnel to the marketplace operator and executes the OpenClaw tool matrix, scripted OpenClaw consumer flow, curated OpenClaw prompt suite, direct protocol checks, and the settlement-lab LND regtest.
-- `run-agentic` fetches the OpenAI key from Secret Manager using local `gcloud` credentials and injects it only into the remote marketplace process as `OPENCLAW_API_KEY`. Do not hardcode API keys in repo files.
+The real marketplace GCP harness moved to `../froglet-services`. This public
+repo keeps fixture-based marketplace contract coverage, including the runtime
+route tests that exercise provider lookup and search behavior against stub
+marketplace endpoints.
 
 ## Environment Variables
 
@@ -272,9 +237,6 @@ Implementation notes:
 | `FROGLET_GCP_ZONE` | gcp_rig | GCP zone (default us-central1-a) |
 | `FROGLET_GCP_MACHINE_TYPE` | gcp_rig | VM machine type (default e2-standard-4) |
 | `GCP_RIG_CATEGORIES` | gcp_rig | Categories to run on VM |
-| `FROGLET_GCP_OPENAI_SECRET` | gcp_harness | Secret Manager secret name used by `run-agentic` (default `openclaw-api-key`) |
-| `FROGLET_GCP_HARNESS_STATE_DIR` | gcp_harness | Override the local harness state directory |
-| `FROGLET_GCP_HARNESS_RUN_ID` | gcp_harness | Override the generated harness run id |
 | `FROGLET_PERF_REQUESTS` | performance | Requests per endpoint (default 500) |
 | `FROGLET_PERF_CONCURRENCY` | performance | Max parallel requests (default 40) |
 | `FROGLET_SOAK_DURATION_MINUTES` | soak | Endurance test duration (default 5) |

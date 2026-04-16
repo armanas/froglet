@@ -6,7 +6,6 @@ WORKDIR /app
 COPY . .
 
 RUN cargo build --release --locked --bin froglet-node -p froglet
-RUN cargo build --release --locked -p froglet-marketplace
 
 FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update \
@@ -80,17 +79,3 @@ VOLUME ["/data"]
 EXPOSE 8080 8081
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["froglet-node"]
-
-# ── froglet-marketplace ───────────────────────────────────────────
-FROM runtime-base AS marketplace
-COPY --from=builder /app/target/release/froglet-marketplace /usr/local/bin/froglet-marketplace
-
-ENV FROGLET_DATA_DIR=/data \
-    FROGLET_IDENTITY_AUTO_GENERATE=true \
-    FROGLET_LISTEN_ADDR=0.0.0.0:8080 \
-    FROGLET_PAYMENT_BACKEND=none
-
-VOLUME ["/data"]
-EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["froglet-marketplace"]

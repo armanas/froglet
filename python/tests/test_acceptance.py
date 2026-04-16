@@ -24,7 +24,6 @@ from test_support import (
     provider_control_auth_token_path,
     remote_stack_enabled,
     remote_stack_url,
-    reserve_tcp_port,
     schnorr_pubkey_hex,
     workload_hash_from_submission,
 )
@@ -32,57 +31,6 @@ from test_support import (
 
 class AcceptanceTests(FrogletAsyncTestCase):
     """UAT scenarios validating Froglet business requirements."""
-
-    # -----------------------------------------------------------------------
-    # UAT-1: Provider registers a service and it becomes discoverable
-    # -----------------------------------------------------------------------
-    async def test_uat1_service_discoverable_via_marketplace(self) -> None:
-        """A provider publishes an event and it appears in marketplace search."""
-        provider_port = reserve_tcp_port()
-        provider_url = f"http://127.0.0.1:{provider_port}"
-        marketplace = await self.start_marketplace(feed_sources=[provider_url])
-        node = await self.start_node(
-            port=provider_port,
-            extra_env={"FROGLET_MARKETPLACE_URL": marketplace.base_url},
-        )
-        runtime_headers = {
-            "Authorization": (
-                f"Bearer {node.runtime.runtime_auth_token_path.read_text(encoding='utf-8').strip()}"
-            )
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(node.url("/v1/node/capabilities")) as resp:
-                self.assertEqual(resp.status, 200)
-                provider_caps = await resp.json()
-        provider_id = provider_caps["identity"]["node_id"]
-
-        async with aiohttp.ClientSession() as session:
-            deadline = time.monotonic() + 30
-            found_provider = None
-            while time.monotonic() < deadline:
-                async with session.post(
-                    f"{node.runtime_url}/v1/runtime/search",
-                    headers=runtime_headers,
-                    json={"limit": 10},
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        for provider in result.get("providers", []):
-                            if provider.get("provider_id") == provider_id:
-                                found_provider = provider
-                                break
-                        if found_provider is not None:
-                            break
-                await asyncio.sleep(1)
-
-        self.assertIsNotNone(
-            found_provider,
-            "Provider did not appear in marketplace search within 30s",
-        )
-        self.assertTrue(
-            any(offer.get("offer_id") == "execute.compute" for offer in found_provider["offers"])
-        )
 
     # -----------------------------------------------------------------------
     # UAT-2: Free WASM compute executes within SLA

@@ -81,4 +81,3 @@ package_binary() {
 }
 
 package_binary "froglet-node" "$repo_root/target/release/froglet-node"
-package_binary "froglet-marketplace" "$repo_root/target/release/froglet-marketplace"

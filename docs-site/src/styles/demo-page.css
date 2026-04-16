@@ -1,25 +1,13 @@
 /* ============================================================
-   Demo Page Styles
-   Extracted from demo.astro inline <style is:inline> block.
-   References Design Tokens from tokens.css instead of
-   re-declaring shorthand aliases.
+   Demo Page Styles — dark-only, brutalist
    ============================================================ */
 
-/* Demo-specific scene tokens (not aliases of froglet tokens) */
 :root {
-  --demo-scene: #101618;
-  --demo-scene-border: rgba(122, 215, 143, 0.18);
-  --demo-term: #1b2327;
+  --demo-scene: #0a0f11;
+  --demo-scene-border: rgba(154, 217, 192, 0.15);
+  --demo-term: #0c1215;
   --demo-term-bar: hsl(var(--froglet-surface));
-  --demo-term-text: #d1d8d5;
-}
-
-[data-theme='dark'] {
-  --demo-scene: #0a1012;
-  --demo-scene-border: rgba(154, 217, 192, 0.2);
-  --demo-term: #0d1417;
-  --demo-term-bar: hsl(var(--froglet-surface-2));
-  --demo-term-text: #d8e1dd;
+  --demo-term-text: #cdd6d1;
 }
 
 * {
@@ -30,14 +18,9 @@
 
 body {
   margin: 0;
-  background: radial-gradient(
-      circle at top,
-      color-mix(in srgb, hsl(var(--froglet-accent)) 8%, transparent),
-      transparent 24%
-    ),
-    hsl(var(--froglet-background));
+  background: hsl(var(--froglet-background));
   color: hsl(var(--froglet-foreground));
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--froglet-font-sans);
   min-height: 100svh;
   display: flex;
   flex-direction: column;
@@ -54,24 +37,24 @@ body {
 .main {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: 'lesson scene' 'term scene';
-  gap: 18px;
-  padding: 20px;
+  gap: 14px;
+  padding: 16px;
   min-height: 640px;
   align-items: stretch;
 }
+
+/* ---- Scene / canvas ---- */
 
 #scene {
   grid-area: scene;
   position: relative;
   inset: auto;
   border: 1px solid var(--demo-scene-border);
-  border-radius: 24px;
   overflow: hidden;
   background: var(--demo-scene);
-  box-shadow: var(--froglet-shadow);
   min-height: 0;
 }
 
@@ -92,7 +75,7 @@ canvas {
   z-index: 3;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   pointer-events: none;
   align-self: start;
 }
@@ -102,34 +85,32 @@ canvas {
 }
 
 #lesson-card {
-  padding: 22px 24px;
-  background: color-mix(in srgb, hsl(var(--froglet-card)) 96%, transparent);
+  padding: 20px 22px;
+  background: hsl(var(--froglet-card));
   border: 1px solid hsl(var(--froglet-border));
-  border-radius: 20px;
-  box-shadow: var(--froglet-shadow);
 }
 
 .step-n {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   color: hsl(var(--froglet-accent));
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .step-t {
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 1.5rem;
+  font-family: var(--froglet-font-serif);
+  font-size: 1.4rem;
   font-weight: 700;
   color: hsl(var(--froglet-foreground));
-  line-height: 1.15;
+  line-height: 1.12;
   margin-bottom: 8px;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
 .step-desc {
-  font-size: 0.98rem;
+  font-size: 0.92rem;
   line-height: 1.65;
   color: hsl(var(--froglet-muted));
 }
@@ -137,14 +118,17 @@ canvas {
 .step-desc a {
   color: hsl(var(--froglet-accent));
   text-decoration: none;
-  border-bottom: 1px solid rgba(47, 138, 76, 0.25);
+  border-bottom: 1px solid hsl(var(--froglet-accent-soft));
+}
+
+.step-desc a:hover {
+  color: hsl(var(--froglet-accent-strong));
 }
 
 .step-desc code {
   background: hsl(var(--froglet-surface));
   padding: 2px 6px;
-  border-radius: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--froglet-font-code);
   font-size: 0.8rem;
   color: hsl(var(--froglet-accent-strong));
 }
@@ -152,17 +136,15 @@ canvas {
 /* ---- Annotation ---- */
 
 #annotation {
-  padding: 11px 14px;
-  background: color-mix(in srgb, hsl(var(--froglet-surface)) 94%, transparent);
+  padding: 12px 14px;
+  background: hsl(var(--froglet-surface));
   border: 1px solid hsl(var(--froglet-border));
-  border-radius: 14px;
   font-size: 0.82rem;
   line-height: 1.6;
   color: hsl(var(--froglet-muted));
   display: none;
-  max-height: 110px;
+  max-height: 120px;
   overflow-y: auto;
-  box-shadow: var(--froglet-shadow);
 }
 
 #annotation strong {
@@ -187,35 +169,32 @@ canvas {
   z-index: 3;
   display: flex;
   flex-direction: column;
-  border-radius: 18px;
   overflow: hidden;
   background: var(--demo-term);
   border: 1px solid var(--demo-scene-border);
-  box-shadow: 0 18px 42px rgba(24, 23, 20, 0.18);
   align-self: end;
 }
 
 #term-bar {
-  height: 34px;
+  height: 32px;
   background: var(--demo-term-bar);
   display: flex;
   align-items: center;
   padding: 0 12px;
   gap: 8px;
   flex-shrink: 0;
-  border-bottom: 1px solid #d4d8d7;
+  border-bottom: 1px solid hsl(var(--froglet-border));
 }
 
 .traffic {
   display: flex;
-  gap: 7px;
+  gap: 6px;
   align-items: center;
 }
 
 .tl {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
+  width: 10px;
+  height: 10px;
   position: relative;
 }
 
@@ -226,26 +205,26 @@ canvas {
 #term-title {
   flex: 1;
   text-align: center;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 600;
-  color: #67706f;
-  font-family: 'Inter', system-ui, sans-serif;
+  color: hsl(var(--froglet-muted));
+  font-family: var(--froglet-font-sans);
 }
 
 #term-body {
   flex: 1;
-  padding: 6px 10px;
+  padding: 8px 12px;
   overflow-y: auto;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--froglet-font-code);
   font-size: 0.72rem;
-  line-height: 1.55;
+  line-height: 1.6;
   background: var(--demo-term);
   color: var(--demo-term-text);
 }
 
-#term-body::-webkit-scrollbar       { width: 5px; }
+#term-body::-webkit-scrollbar       { width: 4px; }
 #term-body::-webkit-scrollbar-track  { background: transparent; }
-#term-body::-webkit-scrollbar-thumb  { background: #394245; border-radius: 3px; }
+#term-body::-webkit-scrollbar-thumb  { background: hsl(var(--froglet-border)); }
 
 /* ---- Terminal syntax colors ---- */
 
@@ -254,7 +233,7 @@ canvas {
 .to { color: #b7c0bd; }
 .th { color: #d7c779; }
 .ts { color: #7ad78f; }
-.tm { color: #73807c; }
+.tm { color: #5a6663; }
 .te { color: #ff786f; }
 .tv { color: #96b9a2; }
 
@@ -264,12 +243,11 @@ canvas {
 }
 
 .cursor {
-  width: 7.2px;
-  height: 15px;
-  background: #7ad78f;
+  width: 7px;
+  height: 14px;
+  background: hsl(var(--froglet-accent));
   display: inline-block;
   animation: blink 1s step-end infinite;
-  border-radius: 1px;
 }
 
 @keyframes blink {
@@ -279,47 +257,43 @@ canvas {
 /* ---- Navigation bar ---- */
 
 #nav {
-  height: 60px;
-  background: color-mix(in srgb, hsl(var(--froglet-background)) 92%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  height: 56px;
+  background: hsl(var(--froglet-background));
   border-top: 1px solid hsl(var(--froglet-border));
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  gap: 12px;
+  padding: 0 16px;
+  gap: 10px;
   flex-shrink: 0;
 }
 
 .pips {
   display: flex;
-  gap: 5px;
+  gap: 4px;
   flex: 1;
 }
 
 .pip {
   width: 20px;
-  height: 4px;
-  border-radius: 999px;
-  background: #dcd4c8;
-  transition: all 0.3s;
+  height: 3px;
+  background: hsl(var(--froglet-border));
+  transition: background 0.2s ease;
   cursor: pointer;
 }
 
-.pip:hover { background: #a8b8a0; }
-.pip.done  { background: #7db78d; }
+.pip:hover { background: hsl(var(--froglet-muted)); }
+.pip.done  { background: hsl(var(--froglet-accent-soft)); }
 .pip.on    { background: hsl(var(--froglet-accent)); }
 
 #prevBtn,
 #nextBtn {
-  padding: 10px 18px;
-  border-radius: 999px;
-  font-size: 0.9rem;
+  padding: 8px 16px;
+  font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
   border: 1px solid hsl(var(--froglet-border));
-  transition: all 0.15s;
+  transition: all 0.12s ease;
 }
 
 #prevBtn {
@@ -332,14 +306,14 @@ canvas {
 }
 
 #prevBtn:disabled {
-  opacity: 0.45;
+  opacity: 0.35;
   cursor: default;
 }
 
 #nextBtn {
   background: hsl(var(--froglet-accent));
   border-color: hsl(var(--froglet-accent));
-  color: #f8f6f1;
+  color: hsl(var(--froglet-accent-foreground));
 }
 
 #nextBtn:hover {
@@ -358,8 +332,8 @@ canvas {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
     grid-template-areas: 'lesson' 'scene' 'term';
-    gap: 16px;
-    padding: 16px;
+    gap: 12px;
+    padding: 12px;
     overflow: visible;
     min-height: auto;
   }
@@ -368,8 +342,7 @@ canvas {
     position: relative;
     inset: auto;
     grid-area: scene;
-    min-height: 400px;
-    border-radius: 20px;
+    min-height: 380px;
   }
 
   #lesson-wrap {
@@ -380,9 +353,9 @@ canvas {
     left: auto;
   }
 
-  #lesson-card { padding: 18px 18px; }
-  .step-t { font-size: 1.28rem; }
-  .step-desc { font-size: 0.93rem; line-height: 1.55; }
+  #lesson-card { padding: 16px; }
+  .step-t { font-size: 1.2rem; }
+  .step-desc { font-size: 0.88rem; line-height: 1.55; }
   #annotation { font-size: 0.78rem; line-height: 1.5; }
 
   #term {
@@ -398,7 +371,7 @@ canvas {
   }
 
   #nav {
-    padding: 12px 16px 18px;
+    padding: 10px 12px 14px;
     background: transparent;
     border-top: none;
     justify-content: flex-end;

@@ -61,9 +61,7 @@ const isActive = (item: (typeof navLinks)[number]) => {
 		top: 0;
 		z-index: 40;
 		border-bottom: 1px solid hsl(var(--froglet-border));
-		background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, transparent);
-		backdrop-filter: blur(14px);
-		-webkit-backdrop-filter: blur(14px);
+		background: hsl(var(--froglet-background));
 	}
 
 	.froglet-site-chrome--embedded {
@@ -102,7 +100,7 @@ const isActive = (item: (typeof navLinks)[number]) => {
 
 	.froglet-site-nav__link {
 		padding: 0.48rem 0.72rem;
-		border-radius: 999px;
+		border-radius: 0;
 		color: hsl(var(--froglet-muted));
 		text-decoration: none;
 		font-size: 0.88rem;
@@ -153,9 +151,9 @@ const isActive = (item: (typeof navLinks)[number]) => {
 			display: flex !important;
 			align-items: center;
 			justify-content: center;
-			border-radius: 50%;
+			border-radius: 0;
 			background: hsl(var(--froglet-accent));
-			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+			box-shadow: none;
 		}
 
 		starlight-menu-button button {

@@ -1,6 +1,6 @@
 ---
 title: Crate Structure
-description: Three crates — protocol, node, marketplace.
+description: Two public crates — protocol and node.
 ---
 
 ## Workspace
@@ -8,7 +8,6 @@ description: Three crates — protocol, node, marketplace.
 ```
 froglet-protocol/     open source — the kernel
 froglet/              open source — the node framework
-froglet-marketplace/  closed source — first service
 ```
 
 ## froglet-protocol (1,354 lines)
@@ -37,18 +36,5 @@ The node framework. Re-exports kernel types from `froglet-protocol`.
 | **Transport** | `tls`, `tor`, `nostr` |
 | **Runtime** | `api/*`, `server`, `config`, `state`, `db`, `deals`, `jobs` |
 
-## froglet-marketplace (1,398 lines)
-
-The first service built on froglet.
-
-| Module | Purpose |
-|--------|---------|
-| `handlers/register` | Accept signed descriptor + offers |
-| `handlers/search` | Filter providers by kind/runtime/price |
-| `handlers/provider` | Provider details + stake info |
-| `handlers/receipts` | Receipt history |
-| `handlers/stake` | Identity stake deposit |
-| `handlers/topup` | Stake topup |
-| `indexer` | Feed polling, signature verification, projection |
-| `db` | Postgres connection pool |
-| `verify` | Shared artifact signature verification |
+The default marketplace implementation now lives outside this public repo while
+continuing to use Froglet's public marketplace integration contract.

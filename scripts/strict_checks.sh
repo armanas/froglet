@@ -54,9 +54,7 @@ if command -v node >/dev/null 2>&1; then
     node --test integrations/openclaw/froglet/test/plugin.test.js \
       integrations/openclaw/froglet/test/config-profiles.test.mjs \
       integrations/openclaw/froglet/test/doctor.test.mjs \
-      integrations/openclaw/froglet/test/froglet-client.test.mjs \
-      tests/e2e/gcp_harness/scenario-generator.test.mjs \
-      tests/e2e/gcp_harness/openclaw-llm-runner.test.mjs
+      integrations/openclaw/froglet/test/froglet-client.test.mjs
 
     echo "[strict] MCP server checks"
     node --check integrations/mcp/froglet/server.js

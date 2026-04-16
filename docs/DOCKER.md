@@ -5,7 +5,6 @@ Froglet ships these public image targets:
 - `provider` — provider-mode froglet-node (includes `python3`)
 - `runtime` — runtime-mode froglet-node
 - `dual` — both provider and runtime in one container
-- `marketplace` — froglet-marketplace (Postgres-backed search/registration)
 - `froglet-mcp` — MCP server image published to GHCR
 
 ## Default Local Stack
@@ -16,18 +15,18 @@ docker compose up --build
 
 That starts:
 
-- postgres on `127.0.0.1:5432`
-- marketplace on `127.0.0.1:8090`
 - provider on `127.0.0.1:8080`
 - runtime on `127.0.0.1:8081`
 
-Host token path:
+Host token paths used by the generated host-side agent configs:
 
 - `./data/runtime/froglet-control.token`
+- `./data/runtime/auth.token`
 
-The default Compose file does not make that token host-readable. Set
-`FROGLET_HOST_READABLE_CONTROL_TOKEN=true` whenever a host-side agent or MCP
-client needs direct access to `./data/runtime/froglet-control.token`.
+The default Compose file does not make the provider control token host-readable.
+Set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` whenever a host-side agent or
+MCP client needs direct access to `./data/runtime/froglet-control.token`. Those
+same generated configs also read `./data/runtime/auth.token`.
 
 This is the default local development topology and the one used by the OpenClaw
 and MCP compose smoke coverage.
@@ -57,7 +56,6 @@ docker compose -f compose.runtime.yaml up --build
 docker build --target provider -t froglet-provider:local .
 docker build --target runtime -t froglet-runtime:local .
 docker build --target dual -t froglet-dual:local .
-docker build --target marketplace -t froglet-marketplace:local .
 docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp:local .
 ```
 
@@ -67,7 +65,6 @@ The tagged release workflow publishes:
 
 - `ghcr.io/<owner>/froglet-provider:<version>`
 - `ghcr.io/<owner>/froglet-runtime:<version>`
-- `ghcr.io/<owner>/froglet-marketplace:<version>`
 - `ghcr.io/<owner>/froglet-mcp:<version>`
 
 ## Role Defaults
@@ -83,9 +80,7 @@ Runtime image:
 - runtime API on `:8081`
 - no public provider listener
 
-Marketplace image:
-
-- provider API on `:8080`
-- requires `MARKETPLACE_DATABASE_URL` and optionally `MARKETPLACE_FEED_SOURCES`
-
-Use `FROGLET_MARKETPLACE_URL` on provider and runtime nodes to point them at the marketplace for discovery and registration.
+Use `FROGLET_MARKETPLACE_URL` on provider and runtime nodes to point them at an
+external marketplace for discovery and registration. The default marketplace
+implementation is split out from this public repo; see
+[MARKETPLACE_SPLIT.md](MARKETPLACE_SPLIT.md).

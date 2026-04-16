@@ -504,18 +504,18 @@ test("runCompute uses execute.compute.generic for execution workloads", async ()
   })
 })
 
-test("getTask prefers runtime requester deals and falls back to provider jobs on 404", async () => {
+test("getTask falls back to provider jobs when runtime and provider share one API base", async () => {
   await withTokenPath(async (tokenPath) => {
     const previousFetch = global.fetch
     const hitUrls = []
     global.fetch = async (url) => {
       const urlStr = String(url)
       hitUrls.push(urlStr)
-      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals/task-1") {
+      if (urlStr === "http://127.0.0.1:8080/v1/runtime/deals/task-1") {
         return new Response(JSON.stringify({ deal: { deal_id: "task-1", status: "running" } }), { status: 200 })
       }
-      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals/task-2") {
-        return new Response(JSON.stringify({ error: "missing" }), { status: 404 })
+      if (urlStr === "http://127.0.0.1:8080/v1/runtime/deals/task-2") {
+        return new Response(JSON.stringify({ error: "deal not found" }), { status: 404 })
       }
       if (urlStr === "http://127.0.0.1:8080/v1/node/jobs/task-2") {
         return new Response(JSON.stringify({ task: { task_id: "task-2", state: "completed" } }), { status: 200 })
@@ -526,7 +526,7 @@ test("getTask prefers runtime requester deals and falls back to provider jobs on
       const runtimeTask = await getTask({
         providerUrl: "http://127.0.0.1:8080",
         providerAuthTokenPath: tokenPath,
-        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeUrl: "http://127.0.0.1:8080",
         runtimeAuthTokenPath: tokenPath,
         requestTimeoutMs: 1000,
         taskId: "task-1"
@@ -536,13 +536,45 @@ test("getTask prefers runtime requester deals and falls back to provider jobs on
       const providerTask = await getTask({
         providerUrl: "http://127.0.0.1:8080",
         providerAuthTokenPath: tokenPath,
-        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeUrl: "http://127.0.0.1:8080",
         runtimeAuthTokenPath: tokenPath,
         requestTimeoutMs: 1000,
         taskId: "task-2"
       })
       assert.equal(providerTask.task.task_id, "task-2")
       assert.ok(hitUrls.includes("http://127.0.0.1:8080/v1/node/jobs/task-2"))
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("getTask returns job not found without probing provider jobs on split deployments", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    const hitUrls = []
+    global.fetch = async (url) => {
+      const urlStr = String(url)
+      hitUrls.push(urlStr)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals/task-missing") {
+        return new Response(JSON.stringify({ error: "deal not found" }), { status: 404 })
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    }
+    try {
+      await assert.rejects(
+        () =>
+          getTask({
+            providerUrl: "http://127.0.0.1:8080",
+            providerAuthTokenPath: tokenPath,
+            runtimeUrl: "http://127.0.0.1:8081",
+            runtimeAuthTokenPath: tokenPath,
+            requestTimeoutMs: 1000,
+            taskId: "task-missing"
+          }),
+        /job not found/
+      )
+      assert.deepEqual(hitUrls, ["http://127.0.0.1:8081/v1/runtime/deals/task-missing"])
     } finally {
       global.fetch = previousFetch
     }
@@ -575,6 +607,40 @@ test("waitTask polls runtime deals until terminal state", async () => {
       })
       assert.ok(callCount >= 3)
       assert.equal(response.task.status, "succeeded")
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("waitTask surfaces job not found immediately on split deployments", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    const hitUrls = []
+    global.fetch = async (url) => {
+      const urlStr = String(url)
+      hitUrls.push(urlStr)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals/task-missing") {
+        return new Response(JSON.stringify({ error: "deal not found" }), { status: 404 })
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    }
+    try {
+      await assert.rejects(
+        () =>
+          waitTask({
+            providerUrl: "http://127.0.0.1:8080",
+            providerAuthTokenPath: tokenPath,
+            runtimeUrl: "http://127.0.0.1:8081",
+            runtimeAuthTokenPath: tokenPath,
+            requestTimeoutMs: 1000,
+            taskId: "task-missing",
+            timeoutSecs: 5,
+            pollIntervalSecs: 0.05
+          }),
+        /job not found/
+      )
+      assert.deepEqual(hitUrls, ["http://127.0.0.1:8081/v1/runtime/deals/task-missing"])
     } finally {
       global.fetch = previousFetch
     }

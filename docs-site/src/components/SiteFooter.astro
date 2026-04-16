@@ -10,7 +10,10 @@ const { compact = false } = Astro.props;
 
 <footer class:list={['froglet-site-footer', compact && 'froglet-site-footer--compact']}>
 	<div class="froglet-site-footer__inner">
-		<p class="froglet-site-footer__tagline">🐸 froglet — identity. execution. settlement.</p>
+		<div>
+			<p class="froglet-site-footer__tagline">🐸 froglet — identity. execution. settlement.</p>
+			<p class="froglet-site-footer__credit">Built by <a href="https://armanas.dev" target="_blank" rel="noreferrer">Armanas Povilionis-Muradian</a></p>
+		</div>
 		<nav class="froglet-site-footer__links" aria-label="Footer">
 			{navLinks.map((item) => (
 				<a
@@ -50,6 +53,20 @@ const { compact = false } = Astro.props;
 
 	.froglet-site-footer__tagline {
 		margin: 0;
+	}
+
+	.froglet-site-footer__credit {
+		margin: 0.3rem 0 0;
+		font-size: 0.8rem;
+	}
+
+	.froglet-site-footer__credit a {
+		color: hsl(var(--froglet-muted));
+		text-decoration: none;
+	}
+
+	.froglet-site-footer__credit a:hover {
+		color: hsl(var(--froglet-foreground));
 	}
 
 	.froglet-site-footer__links {

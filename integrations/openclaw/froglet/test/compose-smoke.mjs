@@ -54,34 +54,6 @@ async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
   )
 }
 
-async function waitForDiscovery(froglet, serviceId, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs
-  let lastText = ""
-  let lastError = null
-
-  while (Date.now() < deadline) {
-    try {
-      const discover = await froglet.definition.execute("discover", {
-        action: "discover_services",
-        limit: 10,
-        include_inactive: false
-      })
-      lastText = discover.content[0].text
-      lastError = null
-      if (lastText.includes(`service_id: ${serviceId}`)) {
-        return lastText
-      }
-    } catch (error) {
-      lastError = error
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
-
-  throw new Error(
-    `service ${serviceId} did not appear in discovery: ${lastText}${lastError ? `; last_error=${lastError.message}` : ""}`
-  )
-}
-
 function assertConfigValueMatchesSchema(key, value, schema) {
   const expectedType = schema?.type
   switch (expectedType) {
@@ -182,9 +154,24 @@ async function main() {
   })
   assert.equal(typeof local.content[0].text, "string")
 
-  // Verify marketplace discovery works
-  const discoverText = await waitForDiscovery(froglet, "execute.compute")
-  assert.ok(discoverText.includes("service_id: execute.compute"))
+  // Verify direct compute still works without a bundled local marketplace.
+  const status = await froglet.definition.execute("status", {
+    action: "status",
+    include_raw: true
+  })
+  const rawStatus = extractAppendedJson(status.content[0].text)
+  const providerId = rawStatus.node_id
+  assert.equal(typeof providerId, "string")
+
+  const compute = await froglet.definition.execute("compute", {
+    action: "run_compute",
+    provider_id: providerId,
+    provider_url: pluginConfig.providerUrl,
+    runtime: "wasm",
+    package_kind: "inline_module",
+    wasm_module_hex: "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432"
+  })
+  assert.equal(typeof compute.content[0].text, "string")
 }
 
 main().catch((error) => {

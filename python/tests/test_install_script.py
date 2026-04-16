@@ -157,19 +157,6 @@ esac
         log = self.curl_log.read_text(encoding="utf-8")
         self.assertIn(f"froglet-node-{version}-darwin-arm64.tar.gz", log)
 
-    def test_optionally_installs_marketplace_binary(self):
-        version = "v4.0.0"
-        asset_dir = self._create_release_assets(version, "linux", "x86_64")
-
-        result = self._run_installer(
-            asset_dir,
-            extra_env={"VERSION": version, "INSTALL_MARKETPLACE": "1"},
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.install_dir / "froglet-node").exists())
-        self.assertTrue((self.install_dir / "froglet-marketplace").exists())
-
     def test_fails_on_checksum_mismatch(self):
         version = "v5.0.0"
         asset_dir = self._create_release_assets(version, "linux", "x86_64")
@@ -212,11 +199,10 @@ esac
         version_dir.mkdir(parents=True, exist_ok=True)
 
         sums = []
-        for binary in ("froglet-node", "froglet-marketplace"):
-            archive = version_dir / f"{binary}-{version}-{platform}-{arch}.tar.gz"
-            self._write_tarball(archive, binary)
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-            sums.append(f"{digest}  {archive.name}")
+        archive = version_dir / f"froglet-node-{version}-{platform}-{arch}.tar.gz"
+        self._write_tarball(archive, "froglet-node")
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        sums.append(f"{digest}  {archive.name}")
 
         (version_dir / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
         return version_dir

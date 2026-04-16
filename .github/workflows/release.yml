@@ -131,7 +131,6 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release --locked --bin froglet-node -p froglet
-          cargo build --release --locked -p froglet-marketplace
 
       - name: Package archives
         env:
@@ -207,23 +206,6 @@ jobs:
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
 
-      - name: Build and push marketplace image
-        env:
-          VERSION: ${{ needs.verify-release-metadata.outputs.version }}
-          OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
-          SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
-        run: |
-          image="ghcr.io/${OWNER_LC}/froglet-marketplace"
-          docker build \
-            --target marketplace \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.version=${VERSION}" \
-            -t "${image}:${VERSION}" \
-            -t "${image}:${SHA_TAG}" \
-            .
-          docker push "${image}:${VERSION}"
-          docker push "${image}:${SHA_TAG}"
-
       - name: Build and push MCP server image
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.version }}
@@ -256,8 +238,6 @@ jobs:
             echo "- ghcr.io/${OWNER_LC}/froglet-provider:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${VERSION}"
             echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${SHA_TAG}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${VERSION}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-marketplace:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${VERSION}"
             echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-mcp:latest"
@@ -291,11 +271,8 @@ jobs:
           expected = sorted(
               [
                   f"froglet-node-{tag}-linux-x86_64.tar.gz",
-                  f"froglet-marketplace-{tag}-linux-x86_64.tar.gz",
                   f"froglet-node-{tag}-linux-arm64.tar.gz",
-                  f"froglet-marketplace-{tag}-linux-arm64.tar.gz",
                   f"froglet-node-{tag}-darwin-arm64.tar.gz",
-                  f"froglet-marketplace-{tag}-darwin-arm64.tar.gz",
               ]
           )
           actual = sorted(path.name for path in Path("dist").glob("*.tar.gz"))

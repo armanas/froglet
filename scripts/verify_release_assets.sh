@@ -53,15 +53,13 @@ fi
 for target in "${targets[@]}"; do
   platform="${target%%:*}"
   arch="${target##*:}"
-  for binary in froglet-node froglet-marketplace; do
-    asset="$dir/${binary}-${version}-${platform}-${arch}.tar.gz"
-    [[ -f "$asset" ]] || {
-      echo "missing release asset: $asset" >&2
-      exit 1
-    }
-    tar -tzf "$asset" | grep -Fx "$binary" >/dev/null
-    tar -tzf "$asset" | grep -Fx "LICENSE" >/dev/null
-  done
+  asset="$dir/froglet-node-${version}-${platform}-${arch}.tar.gz"
+  [[ -f "$asset" ]] || {
+    echo "missing release asset: $asset" >&2
+    exit 1
+  }
+  tar -tzf "$asset" | grep -Fx "froglet-node" >/dev/null
+  tar -tzf "$asset" | grep -Fx "LICENSE" >/dev/null
 done
 
 if [[ -f "$dir/SHA256SUMS" ]]; then

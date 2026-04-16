@@ -10,7 +10,7 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 ## Architecture
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): system layering — kernel, adapters, runtime, services
-- [froglet-marketplace ARCHITECTURE.md](../froglet-marketplace/ARCHITECTURE.md): marketplace service architecture
+- [MARKETPLACE_SPLIT.md](MARKETPLACE_SPLIT.md): approved public/private marketplace boundary
 
 ## Companion Docs
 

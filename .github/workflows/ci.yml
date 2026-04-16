@@ -126,7 +126,6 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release --locked --bin froglet-node -p froglet
-          cargo build --release --locked -p froglet-marketplace
 
       - name: Package release archives
         env:
@@ -196,8 +195,8 @@ jobs:
             integrations/openclaw/froglet/test/doctor.test.mjs \
             integrations/openclaw/froglet/test/froglet-client.test.mjs
 
-  docker-three-role:
-    name: Docker Three Role
+  docker-compose:
+    name: Docker Compose
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -224,16 +223,13 @@ jobs:
         run: docker compose config
 
       - name: Build images
-        run: docker compose build provider marketplace postgres runtime
+        run: docker compose build provider runtime
 
       - name: Start stack
-        run: docker compose up -d --wait provider marketplace postgres runtime
+        run: docker compose up -d --wait provider runtime
 
       - name: Wait for provider health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8080/health
-
-      - name: Wait for marketplace health
-        run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8090/health
 
       - name: Wait for runtime health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8081/health
@@ -275,7 +271,7 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: docker compose logs --no-color provider marketplace postgres runtime
+        run: docker compose logs --no-color provider runtime
 
       - name: Stop stack
         if: always()
@@ -360,7 +356,6 @@ jobs:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_RIG_CATEGORIES: acceptance
           FROGLET_ACCEPTANCE_TESTS: >-
-            python.tests.test_acceptance.AcceptanceTests.test_uat1_service_discoverable_via_marketplace
             python.tests.test_acceptance.AcceptanceTests.test_uat2_free_wasm_compute_within_sla
             python.tests.test_acceptance.AcceptanceTests.test_uat4_wasm_resource_limits_enforced
             python.tests.test_acceptance.AcceptanceTests.test_uat5_event_content_integrity

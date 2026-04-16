@@ -99,6 +99,29 @@ function normalizeUrl(value) {
   return value.trim().replace(/\/$/, "")
 }
 
+function sameApiBaseUrl(left, right) {
+  const normalizedLeft = normalizeUrl(left)
+  const normalizedRight = normalizeUrl(right)
+  return normalizedLeft !== null && normalizedLeft === normalizedRight
+}
+
+function missingTaskMessage(payload) {
+  const error =
+    typeof payload?.error === "string" && payload.error.trim().length > 0 ? payload.error.trim() : null
+  if (!error || error === "deal not found" || error === "deal not found after sync") {
+    return "job not found"
+  }
+  return error
+}
+
+function normalizeProviderJobLookupError(error) {
+  const message = String(error?.message ?? error)
+  if (message.includes("/v1/node/jobs/") && message.includes("failed with 404")) {
+    return new Error("job not found")
+  }
+  return error
+}
+
 function isHealthyResponse(payload) {
   return payload?.healthy === true || payload?.status === "ok"
 }
@@ -1133,7 +1156,8 @@ export async function runCompute({ runtimeUrl, runtimeAuthTokenPath, requestTime
 }
 
 /**
- * Get a task from runtime requester deals first, then fall back to provider jobs.
+ * Get a task from runtime requester deals first, then fall back to provider jobs
+ * only when provider and runtime share the same API surface.
  *
  * @param {{ providerUrl: string, providerAuthTokenPath: string, runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, taskId: string }} config
  */
@@ -1156,17 +1180,25 @@ export async function getTask({
   if (runtimeResponse.status === 200) {
     return normalizeRuntimeTaskResponse(runtimeResponse.payload)
   }
-  return frogletRequest(
-    providerUrl,
-    providerAuthTokenPath,
-    requestTimeoutMs,
-    "GET",
-    `/v1/node/jobs/${encodeURIComponent(taskId)}`
-  )
+  if (!sameApiBaseUrl(providerUrl, runtimeUrl)) {
+    throw new Error(missingTaskMessage(runtimeResponse.payload))
+  }
+  try {
+    return await frogletRequest(
+      providerUrl,
+      providerAuthTokenPath,
+      requestTimeoutMs,
+      "GET",
+      `/v1/node/jobs/${encodeURIComponent(taskId)}`
+    )
+  } catch (error) {
+    throw normalizeProviderJobLookupError(error)
+  }
 }
 
 /**
- * Poll runtime requester deals first, then fall back to provider jobs, until a terminal state or timeout.
+ * Poll runtime requester deals first, then fall back to provider jobs on shared-surface
+ * deployments, until a terminal state or timeout.
  *
  * @param {{ providerUrl: string, providerAuthTokenPath: string, runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, taskId: string, timeoutSecs?: number, pollIntervalSecs?: number }} config
  */

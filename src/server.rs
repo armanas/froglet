@@ -84,8 +84,8 @@ pub async fn run_with_role(role: ServiceRole) -> Result<(), Box<dyn std::error::
 
 /// Start a Froglet provider node with a pre-built `AppState`.
 ///
-/// Used by froglet-marketplace to inject custom builtin service handlers
-/// before starting the server.
+/// Used by external marketplace or other higher-layer service implementations
+/// to inject custom builtin service handlers before starting the server.
 pub async fn run_with_state(state: Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
     run(ServiceRole::Provider, Some(state)).await
 }

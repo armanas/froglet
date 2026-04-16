@@ -33,21 +33,22 @@ Astro.locals.starlightRoute = { hasSidebar: false };
     <div class="hero-bg">
       <div class="hero-glow"></div>
       <div class="hero">
-        <h1>You won't use Froglet.<br/><em>Your AI will.</em></h1>
+        <h1>Froglet is not for You.<br/><em>It's for your AI Agent.</em></h1>
         <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution, and settlement out of the box. Start with <strong>Try In Cloud</strong> for a temporary hosted identity and a free deal, or choose <strong>Run Locally</strong> to install Froglet, connect an agent, and connect a payment rail you control.</p>
         <div class="hero-prompt">
           <Code
-            code={`Read https://ai.froglet.dev
-Try the API and evaluate the protocol objectively.
-Tell me:
-- what is this?
+            code={`Read https://ai.froglet.dev and explore the API.
+Think about what this could be useful for.
+Try it out — run a deal, inspect the artifacts.
+Then give me your honest, objective opinion:
+- what is this and how does it work?
 - what could we build with it?
 - is it worth using?`}
             lang="md"
             meta='title="Prompt for your AI"'
           />
         </div>
-        <div class="hero-prompt-hint">Paste into Claude, ChatGPT, Cursor, or any AI assistant.</div>
+        <div class="hero-prompt-hint">Paste it into Mistral, Claude, Codex, OpenClaw, or any other AI assistant.</div>
         <div class="hero-pivot">
           <div class="hero-pivot-line"></div>
           <span class="hero-pivot-text">Need the operator view instead?</span>
@@ -57,20 +58,20 @@ Tell me:
           <p>Froglet gives agents cryptographic identity, a signed deal flow, and local runtime settlement adapters. At launch the local path supports Lightning, Stripe, and x402. Lightning is the only rail standardized in the signed quote/deal flow today. The hosted path stays free-only and uses temporary identities that can be claimed by email.</p>
         </div>
         <div class="hero-actions">
-          <a href="/learn/cloud-trial/" class="btn btn-primary">Try In Cloud</a>
-          <a href="/learn/quickstart/" class="btn btn-ghost">Run Locally</a>
-          <a href="/demo/" class="btn btn-ghost">Watch the walkthrough</a>
+          <a href="/learn/cloud-trial/" class="btn btn-primary">☁️ Try In Cloud</a>
+          <a href="/learn/quickstart/" class="btn btn-ghost">🖥️ Run Locally</a>
+          <a href="/demo/" class="btn btn-ghost">▶️ Watch the walkthrough</a>
         </div>
       </div>
     </div>
     <section>
-      <div class="section-label">Launch</div>
+      <div class="section-label">🚀 Launch</div>
       <div class="section-title">Exactly two public entry points.</div>
       <div class="section-desc">The cloud path is a separate hosted gateway with temporary identities. The local path is the public repo: install Froglet, connect an agent, connect a payment rail.</div>
       <div class="compare learn-grid two">
         <div class="compare-card learn-card">
           <div class="learn-kicker">Hosted trial</div>
-          <h3>Try In Cloud</h3>
+          <h3>☁️ Try In Cloud</h3>
           <p class="compare-summary">Create a temporary identity, run a free deal, and keep the identity by verifying an email address before the 15-minute session expires.</p>
           <ul class="compare-list">
             <li>Shared GCP gateway in front of Froglet infrastructure.</li>
@@ -90,28 +91,42 @@ Tell me:
             </div>
           </div>
         </div>
-        <div class="compare-card learn-card">
+        <div class="compare-card learn-card" id="self-host-card">
           <div class="learn-kicker">Self-host</div>
-          <h3>Run Locally</h3>
-          <p class="compare-summary">Install Froglet, generate your agent config, and generate a payment-rail env snippet. The same repo also ships Docker images and a GCP single-VM wrapper.</p>
-          <ul class="compare-list">
-            <li>One-line installer for Linux x86_64/arm64 and macOS arm64.</li>
-            <li>One setup command for Claude Code, Codex, or OpenClaw.</li>
-            <li>Launch rails: Lightning, Stripe, and x402.</li>
-          </ul>
+          <h3>🖥️ Run Locally</h3>
+          <p class="compare-summary">Pick your install method, agent, and payment rail. The code below updates to match.</p>
+          <div class="config-group">
+            <span class="config-label">Install</span>
+            <div class="config-options" data-group="install">
+              <button class="config-btn is-active" data-value="linux">🐧 Linux x86_64</button>
+              <button class="config-btn" data-value="linux-arm">🐧 Linux arm64</button>
+              <button class="config-btn" data-value="macos">🍎 macOS arm64</button>
+              <button class="config-btn" data-value="docker">🐳 Docker</button>
+            </div>
+          </div>
+          <div class="config-group">
+            <span class="config-label">Agent</span>
+            <div class="config-options" data-group="agent">
+              <button class="config-btn is-active" data-value="claude-code">🤖 Claude Code</button>
+              <button class="config-btn" data-value="codex">📟 Codex</button>
+              <button class="config-btn" data-value="openclaw">🦎 OpenClaw</button>
+            </div>
+          </div>
+          <div class="config-group">
+            <span class="config-label">Payment</span>
+            <div class="config-options" data-group="payment">
+              <button class="config-btn is-active" data-value="lightning">⚡ Lightning</button>
+              <button class="config-btn" data-value="stripe">💳 Stripe</button>
+              <button class="config-btn" data-value="x402">🔗 x402</button>
+            </div>
+          </div>
           <div class="compare-footer">
             <div class="compare-shell">
-              <Code
-                code={`curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
-./scripts/setup-agent.sh --target codex
-./scripts/setup-payment.sh lightning`}
-                lang="bash"
-                meta='title="3-step local path"'
-              />
+              <pre class="config-code" id="config-output"><code></code></pre>
+              <button class="config-copy" id="config-copy-btn" title="Copy to clipboard">📋</button>
             </div>
-            <div class="compare-note">Use `docker compose up -d` locally or `scripts/deploy_gcp_single_vm.sh` when you want a longer-running self-hosted node.</div>
             <div class="compare-actions learn-button-row">
-              <a href="/learn/quickstart/" class="learn-button">Local quickstart</a>
+              <a href="/learn/quickstart/" class="learn-button">📖 Local quickstart</a>
             </div>
           </div>
         </div>
@@ -121,7 +136,7 @@ Tell me:
     <div class="divider"></div>
 
     <section>
-  <div class="section-label">Game Theory</div>
+  <div class="section-label">🎲 Game Theory</div>
   <div class="section-title">Trust through math, not middlemen</div>
   <div class="section-desc">A provider stakes real value to enter the market. Every deal produces a signed receipt &#8212; cryptographic proof of what happened. Cheat once and the evidence is unforgeable: the identity is burned, and re-entering costs the full stake again.</div>
   <div class="trust-graph-wrap">
@@ -150,7 +165,7 @@ Tell me:
     <div class="divider"></div>
 
     <section>
-  <div class="section-label">Services</div>
+  <div class="section-label">🛠️ Services</div>
   <div class="section-title">What you can build</div>
   <div class="section-desc">Every froglet node is both provider and consumer. All services use the same deal flow.</div>
   <div class="grid">
@@ -166,29 +181,125 @@ Tell me:
     <div class="divider"></div>
 
     <section>
-  <div class="section-label">Integrations</div>
+  <div class="section-label">🔌 Integrations</div>
   <div class="section-title">Agent and payment surfaces ship together</div>
-  <div class="section-desc">The launch path is install, connect an agent, connect a payment rail. No hand-edited JSON or TOML is required for the supported local agents.</div>
-  <div class="grid">
-    <div class="gc"><h4>Claude Code</h4><p>Project-local MCP config generated by `scripts/setup-agent.sh --target claude-code`.</p></div>
-    <div class="gc"><h4>Codex</h4><p>Project-local MCP config generated by `scripts/setup-agent.sh --target codex`.</p></div>
-    <div class="gc"><h4>OpenClaw</h4><p>Plugin config generated by `scripts/setup-agent.sh --target openclaw`.</p></div>
-    <div class="gc"><h4>Docker and MCP</h4><p>Published provider, runtime, marketplace, and MCP images for local or VM-backed self-hosting.</p></div>
+
+  <div class="int-row-label">🤖 Agents</div>
+  <div class="int-row">
+    <span class="int-chip">🤖 Claude Code</span>
+    <span class="int-chip">📟 Codex</span>
+    <span class="int-chip">🦎 OpenClaw</span>
+    <span class="int-chip">🔧 MCP</span>
   </div>
-  <div class="integrations">
-    <div class="int-badge">Claude Code</div>
-    <div class="int-badge">Codex</div>
-    <div class="int-badge">OpenClaw</div>
-    <div class="int-badge">MCP</div>
-    <div class="int-badge">Lightning</div>
-    <div class="int-badge">Stripe</div>
-    <div class="int-badge">x402</div>
-    <div class="int-badge">GCP</div>
+
+  <div class="int-row-label">💳 Payment Rails</div>
+  <div class="int-row">
+    <span class="int-chip">⚡ Lightning</span>
+    <span class="int-chip">💳 Stripe</span>
+    <span class="int-chip">🔗 x402</span>
+  </div>
+
+  <div class="int-row-label">⚙️ Compute</div>
+  <div class="int-row">
+    <span class="int-chip">🧩 WASM</span>
+    <span class="int-chip">🐍 Python</span>
+    <span class="int-chip">🐳 Containers</span>
+    <span class="int-chip">🖥️ CPU</span>
+    <span class="int-chip int-chip--soon">🎮 GPU <small>coming soon</small></span>
+    <span class="int-chip int-chip--soon">📦 Batch <small>coming soon</small></span>
+  </div>
+
+  <div class="int-row-label">🌐 Network</div>
+  <div class="int-row">
+    <span class="int-chip">🌐 Clearnet</span>
+    <span class="int-chip">🧅 Tor</span>
+  </div>
+
+  <div class="int-row-label">☁️ Infrastructure</div>
+  <div class="int-row">
+    <span class="int-chip">🐳 Docker</span>
+    <span class="int-chip">☁️ GCP</span>
+    <span class="int-chip">🖥️ Bare Metal</span>
+    <span class="int-chip int-chip--soon">🔶 AWS <small>coming soon</small></span>
+  </div>
+
+  <div class="int-row-label">🔒 Privacy</div>
+  <div class="int-row">
+    <span class="int-chip">🔐 TEE (Confidential)</span>
+    <span class="int-chip int-chip--soon">🛡️ SGX <small>coming soon</small></span>
   </div>
     </section>
 
     <SiteFooter />
   </main>
 </PageFrame>
+<script>
+  // Self-host configurator
+  const card = document.getElementById('self-host-card');
+  const output = document.getElementById('config-output');
+  const copyBtn = document.getElementById('config-copy-btn');
+  if (card && output) {
+    const state: Record<string, string> = { install: 'linux', agent: 'claude-code', payment: 'lightning' };
+
+    function buildCode(): string {
+      const i = state.install;
+      const a = state.agent;
+      const p = state.payment;
+
+      const lines: string[] = [];
+
+      if (i === 'docker') {
+        lines.push('docker pull ghcr.io/armanas/froglet-node:latest');
+        lines.push(`docker run -d --name froglet \\`);
+        lines.push(`  -e FROGLET_SETTLEMENT_METHOD=${p} \\`);
+        lines.push(`  -p 3000:3000 ghcr.io/armanas/froglet-node:latest`);
+      } else {
+        const envFlag = i === 'macos' ? '' : i === 'linux-arm' ? ' ARCH=arm64' : '';
+        lines.push(`curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh |${envFlag} sh`);
+        lines.push(`./scripts/setup-agent.sh --target ${a}`);
+        lines.push(`./scripts/setup-payment.sh ${p}`);
+      }
+
+      return lines.join('\n');
+    }
+
+    function render() {
+      const code = output.querySelector('code');
+      if (code) code.textContent = buildCode();
+    }
+
+    card.querySelectorAll('.config-options').forEach(group => {
+      const g = (group as HTMLElement).dataset.group!;
+      group.querySelectorAll('.config-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          (btn as HTMLElement).blur();
+          group.querySelectorAll('.config-btn').forEach(b => b.classList.remove('is-active'));
+          btn.classList.add('is-active');
+          state[g] = (btn as HTMLElement).dataset.value!;
+
+          // Docker hides agent selection (agent is configured via env)
+          const agentGroup = card.querySelector('[data-group="agent"]')?.closest('.config-group') as HTMLElement | null;
+          if (agentGroup) agentGroup.style.display = state.install === 'docker' ? 'none' : '';
+
+          render();
+        });
+      });
+    });
+
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        const code = output.querySelector('code');
+        if (code) {
+          navigator.clipboard.writeText(code.textContent || '');
+          copyBtn.textContent = '✅';
+          setTimeout(() => { copyBtn.textContent = '📋'; }, 1500);
+        }
+      });
+    }
+
+    render();
+  }
+</script>
 </body>
 </html>

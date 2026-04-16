@@ -54,34 +54,6 @@ async function callToolText(client, name, args = {}) {
   return getTextResult(await client.callTool({ name, arguments: args }))
 }
 
-async function waitForDiscovery(client, serviceId, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs
-  let lastText = ""
-  let lastError = null
-
-  while (Date.now() < deadline) {
-    try {
-      lastText = await callToolText(client, "froglet", {
-        action: "discover_services",
-        query: serviceId,
-        limit: 10
-      })
-      lastError = null
-      if (lastText.includes(`service_id: ${serviceId}`)) {
-        return lastText
-      }
-    } catch (error) {
-      lastError = error
-      lastText = `error: ${error?.message ?? String(error)}`
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
-
-  throw new Error(
-    `service ${serviceId} did not appear in discovery\n${lastText}${lastError ? `\nlast_error: ${lastError.message}` : ""}`
-  )
-}
-
 async function waitForHealthyStatus(client, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs
   let lastText = ""
@@ -157,17 +129,11 @@ async function main() {
     })
     assert.ok(typeof localListText === "string", "list_local_services should return text")
 
-    // Verify marketplace discovery works
-    const discoverText = await callToolText(client, "froglet", {
-      action: "discover_services",
-      limit: 10
-    })
-    assert.ok(typeof discoverText === "string", "discover_services should return text")
-
     // Verify run_compute works
     const computeText = await callToolText(client, "froglet", {
       action: "run_compute",
       provider_id: providerId,
+      provider_url: process.env.FROGLET_PROVIDER_URL ?? "http://127.0.0.1:8080",
       runtime: "wasm",
       package_kind: "inline_module",
       wasm_module_hex: validWasmHex

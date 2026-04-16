@@ -78,20 +78,10 @@ description: Every source file in the codebase.
 | `http_settlement.rs` | 42 | Settlement routes |
 | `http_confidential.rs` | 17 | Confidential profile/session routes |
 
-## froglet-marketplace/src/
+## Marketplace Boundary
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `lib.rs` | 165 | Startup: Postgres, handlers, offers, indexer, server |
-| `config.rs` | 46 | MarketplaceConfig from env |
-| `db.rs` | 67 | Postgres pool, migrations |
-| `verify.rs` | 21 | Shared artifact signature verification |
-| `handlers/search.rs` | 180 | marketplace.search handler |
-| `handlers/provider.rs` | 139 | marketplace.provider handler |
-| `handlers/receipts.rs` | 121 | marketplace.receipts handler |
-| `handlers/register.rs` | 134 | marketplace.register handler |
-| `indexer/mod.rs` | 319 | Feed polling, dynamic discovery |
-| `indexer/projector.rs` | 185 | Artifact projection to Postgres |
+Marketplace remains a public Froglet integration surface, but the first-party
+implementation is no longer part of this public source tree.
 
 ## tests/
 

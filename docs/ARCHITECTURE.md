@@ -121,12 +121,12 @@ data services, anything built on Froglet.
 Services are Froglet providers that serve domain-specific queries or
 computations through the standard deal flow.
 
-The marketplace is the first service. It:
+Marketplaces are one example of that service layer. From the public Froglet
+boundary they stay external integration points for:
 
-- indexes provider descriptors and offers from the network
-- serves search, provider details, and trust queries
-- accepts provider registrations
-- is itself discoverable and invocable through the deal flow
+- provider registration
+- runtime discovery and provider lookup
+- marketplace-specific ranking or trust policy layered above the signed protocol
 
 Services are not privileged protocol actors. They consume signed artifacts.
 They are not the source of truth — the signed artifacts are.
@@ -146,10 +146,10 @@ difference is the handler runs in-process instead of in a sandbox.
 ## 7. Network Model
 
 ```
-Node B (provider)                 Node C (marketplace)
+Node B (provider)                 Node C (external marketplace)
 
 private by default                a Froglet provider
-generates identity locally        indexes the network
+generates identity locally        serves discovery through the same deal flow
 publishes to marketplace          serves search as deals
   (optional, explicit)
       │                                  │
@@ -203,11 +203,9 @@ froglet/                 open source node framework
   lnd                     Lightning driver
   tls, tor                transport adapters
 
-froglet-marketplace/     closed source first service
-  handlers/               search, provider, receipts, register
-  indexer/                feed polling, artifact projection
-  db                      Postgres connection pool
-  config                  marketplace-specific config
+default marketplace      first-party implementation lives outside this repo
+  public contract        registration + runtime discovery stay in froglet
+  implementation         see ../froglet-services and MARKETPLACE_SPLIT.md
 ```
 
 `froglet-protocol` is the single source of truth for kernel types. `froglet`

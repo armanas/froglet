@@ -3,7 +3,6 @@ set -eu
 
 REPO="${FROGLET_INSTALL_REPO:-armanas/froglet}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-INSTALL_MARKETPLACE="${INSTALL_MARKETPLACE:-0}"
 LATEST_URL="${FROGLET_INSTALL_LATEST_URL:-https://github.com/$REPO/releases/latest}"
 DOWNLOAD_BASE_URL="${FROGLET_INSTALL_BASE_URL:-https://github.com/$REPO/releases/download}"
 
@@ -124,11 +123,6 @@ trap cleanup EXIT HUP INT TERM
 mkdir -p "$INSTALL_DIR"
 
 BINARIES="froglet-node"
-case "$INSTALL_MARKETPLACE" in
-  1|true|TRUE|yes|YES)
-    BINARIES="$BINARIES froglet-marketplace"
-    ;;
-esac
 
 CHECKSUM_URL="$DOWNLOAD_BASE_URL/$TAG/SHA256SUMS"
 curl -fsSL "$CHECKSUM_URL" -o "$TMP_DIR/SHA256SUMS.all"

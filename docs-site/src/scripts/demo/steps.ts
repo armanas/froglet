@@ -9,6 +9,7 @@ export interface BoardNode {
   y: number;  // 0..1 normalized
   highlight?: boolean;
   small?: boolean;
+  lifeline?: number;  // 0..1 normalized Y where the lifeline ends
 }
 
 export interface BoardArrow {
@@ -194,18 +195,18 @@ export const STEPS: Step[] = [
   note:`The requester searches, picks a provider, gets a quote, signs the deal, workload executes, receipt returned. <span class="hl">Every step is hash-linked.</span>`,
   board:{
     nodes:[
-      {id:'fr',label:'F^R',sub:'requester',x:.18,y:.35},
-      {id:'fp',label:'F^P',sub:'provider',x:.82,y:.35},
+      {id:'fr',label:'F^R',sub:'requester',x:.18,y:.12,lifeline:.72},
+      {id:'fp',label:'F^P',sub:'provider',x:.82,y:.12,lifeline:.72},
     ],
     arrows:[
-      {from:'fr',to:'fp',label:'1. request quote'},
-      {from:'fp',to:'fr',label:'2. signed quote',y:.45},
-      {from:'fr',to:'fp',label:'3. signed deal',y:.55},
-      {from:'fp',to:'fr',label:'4. execute + receipt',y:.65},
+      {from:'fr',to:'fp',label:'1. request quote',y:.28},
+      {from:'fp',to:'fr',label:'2. signed quote',y:.38},
+      {from:'fr',to:'fp',label:'3. signed deal',y:.50},
+      {from:'fp',to:'fr',label:'4. execute + receipt',y:.62},
     ],
     notes:[
-      {text:'base fee locks on acceptance',x:.28,y:.78,size:13,color:'muted'},
-      {text:'success fee settles on success',x:.28,y:.84,size:13,color:'muted'},
+      {text:'base fee locks on acceptance',x:.28,y:.80,size:13,color:'muted'},
+      {text:'success fee settles on success',x:.28,y:.87,size:13,color:'muted'},
     ],
   },
   term:[

@@ -142,9 +142,7 @@ run_unit() {
       integrations/openclaw/froglet/test/plugin.test.js \
       integrations/openclaw/froglet/test/config-profiles.test.mjs \
       integrations/openclaw/froglet/test/doctor.test.mjs \
-      integrations/openclaw/froglet/test/froglet-client.test.mjs \
-      tests/e2e/gcp_harness/scenario-generator.test.mjs \
-      tests/e2e/gcp_harness/openclaw-llm-runner.test.mjs || rc=1
+      integrations/openclaw/froglet/test/froglet-client.test.mjs || rc=1
 
     if ensure_mcp_deps; then
       step node --test integrations/mcp/froglet/test/server.test.mjs || rc=1
@@ -339,41 +337,7 @@ run_smoke() {
 # ---------------------------------------------------------------------------
 run_agentic() {
   banner "agentic"
-
-  # Support OPENCLAW_API_KEY with OPENAI_API_KEY fallback
-  local api_key="${OPENCLAW_API_KEY:-${OPENAI_API_KEY:-}}"
-  if [[ -z "$api_key" ]]; then
-    skip_warn "agentic tests require OPENCLAW_API_KEY or OPENAI_API_KEY"
-    return 0
-  fi
-  export OPENAI_API_KEY="$api_key"
-  if ! has_node; then
-    skip_warn "agentic tests require node >= 18"
-    return 0
-  fi
-  if ! ensure_mcp_deps; then
-    return 1
-  fi
-
-  local rc=0
-  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
-    step node integrations/openclaw/froglet/test/openai-responses-smoke.mjs \
-      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-curated-local.json" || rc=1
-    return $rc
-  fi
-  if ! has_docker; then
-    skip_warn "agentic tests require Docker or FROGLET_TEST_REMOTE_STACK=1"
-    return 0
-  fi
-
-  compose_test_setup agentic
-  step compose_test_env docker compose up --build -d --wait || rc=1
-  if [[ "$rc" -eq 0 ]]; then
-    step compose_test_env node integrations/openclaw/froglet/test/openai-responses-smoke.mjs \
-      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-curated-local.json" || rc=1
-  fi
-
-  compose_test_finish "$rc"
+  skip_warn "agentic marketplace E2E moved to ../froglet-services"
 }
 
 # ---------------------------------------------------------------------------
@@ -539,40 +503,7 @@ run_chaos() {
 # ---------------------------------------------------------------------------
 run_exploratory() {
   banner "exploratory"
-
-  local api_key="${OPENCLAW_API_KEY:-${OPENAI_API_KEY:-}}"
-  if [[ -z "$api_key" ]]; then
-    skip_warn "exploratory tests require OPENCLAW_API_KEY or OPENAI_API_KEY"
-    return 0
-  fi
-  if ! has_node; then
-    skip_warn "exploratory tests require node >= 18"
-    return 0
-  fi
-  if ! ensure_mcp_deps; then
-    return 1
-  fi
-
-  local rc=0
-  export OPENAI_API_KEY="$api_key"
-  if [[ "${FROGLET_TEST_REMOTE_STACK:-0}" == "1" ]]; then
-    step node tests/e2e/agentic_exploratory.mjs \
-      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-exploratory-local.json" || rc=1
-    return $rc
-  fi
-  if ! has_docker; then
-    skip_warn "exploratory tests require Docker or FROGLET_TEST_REMOTE_STACK=1"
-    return 0
-  fi
-
-  compose_test_setup exploratory
-  step compose_test_env docker compose up --build -d --wait || rc=1
-  if [[ "$rc" -eq 0 ]]; then
-    step compose_test_env node tests/e2e/agentic_exploratory.mjs \
-      --out "${FROGLET_TEST_RESULTS_DIR:-$repo_root/_tmp/test-results}/openclaw-exploratory-local.json" || rc=1
-  fi
-
-  compose_test_finish "$rc"
+  skip_warn "exploratory marketplace E2E moved to ../froglet-services"
 }
 
 # ---------------------------------------------------------------------------

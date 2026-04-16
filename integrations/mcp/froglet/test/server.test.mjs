@@ -251,11 +251,12 @@ describe("froglet MCP actions", () => {
     }
   })
 
-  it("reads runtime deals first and falls back to provider jobs for get_task", async () => {
+  it("reads runtime deals first and falls back to provider jobs on a shared API base", async () => {
+    const sharedSurfaceConfig = { ...config, runtimeUrl: config.providerUrl }
     const restore = mockFetch(async (url) => {
       const urlStr = String(url)
-      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals/task-1") {
-        return new Response(JSON.stringify({ error: "missing" }), { status: 404 })
+      if (urlStr === "http://127.0.0.1:8080/v1/runtime/deals/task-1") {
+        return new Response(JSON.stringify({ error: "deal not found" }), { status: 404 })
       }
       if (urlStr === "http://127.0.0.1:8080/v1/node/jobs/task-1") {
         return new Response(JSON.stringify({ task: { task_id: "task-1", state: "completed", result: 42 } }))
@@ -266,11 +267,32 @@ describe("froglet MCP actions", () => {
       const result = await handleToolCall(
         "froglet",
         { action: "get_task", task_id: "task-1" },
-        config
+        sharedSurfaceConfig
       )
       const text = result.content[0].text
       assert.match(text, /task_id: task-1/)
       assert.match(text, /result: 42/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("reports job not found without provider fallback on split deployments", async () => {
+    const restore = mockFetch(async (url) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals/task-missing") {
+        return new Response(JSON.stringify({ error: "deal not found" }), { status: 404 })
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        { action: "get_task", task_id: "task-missing" },
+        config
+      )
+      assert.equal(result.isError, true)
+      assert.match(result.content[0].text, /job not found/)
     } finally {
       restore()
     }

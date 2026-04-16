@@ -58,7 +58,7 @@ export const WHITEBOARD = {
     defaultStroke: 'rgba(233,240,226,0.6)',
   },
   FONTS: {
-    hand: "'Inter', system-ui, sans-serif",
+    hand: "'Source Sans 3', system-ui, sans-serif",
     mono: "'JetBrains Mono', monospace",
   },
 } as const;
@@ -186,27 +186,29 @@ export function initWhiteboard(
     const cy = nd.y * hh;
     const r = nd.small ? WB.NODE_RADIUS_SMALL : WB.NODE_RADIUS;
 
-    // circle fill
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    // square fill
     ctx.fillStyle = nd.highlight ? WB.COLORS.highlightFill : WB.COLORS.defaultFill;
-    ctx.fill();
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
 
-    // chalk circle: multi-pass offset rendering
+    // chalk square: multi-pass offset rendering
     const col = nd.highlight ? WB.COLORS.highlightStroke : WB.COLORS.defaultStroke;
     const lw = nd.highlight ? WB.NODE_HIGHLIGHT_LINE_WIDTH : WB.NODE_DEFAULT_LINE_WIDTH;
     for (const o of WB.CHALK_OFFSETS) {
       ctx.save();
       ctx.globalAlpha = o.alpha;
-      ctx.beginPath();
-      ctx.arc(cx + o.dx, cy + o.dy, r, 0, Math.PI * 2);
       ctx.strokeStyle = col;
       ctx.lineWidth = lw + o.alpha * 0.6;
-      ctx.stroke();
+      ctx.strokeRect(cx - r + o.dx, cy - r + o.dy, r * 2, r * 2);
       ctx.restore();
     }
 
-    // Text label inside the circle (Req 13.3: accessibility)
+    // Sequence diagram lifeline (dashed vertical line below node)
+    if (nd.lifeline !== undefined) {
+      const lifelineEnd = nd.lifeline * hh;
+      chalkLine(cx, cy + r, cx, lifelineEnd, WB.COLORS.defaultStroke, 0.8, 0.4, true);
+    }
+
+    // Text label inside the square (Req 13.3: accessibility)
     const labelSize = nd.small ? WB.NODE_LABEL_FONT_SIZE_SMALL : WB.NODE_LABEL_FONT_SIZE;
     ctx.font = `700 ${labelSize}px ${WB.FONTS.hand}`;
     ctx.fillStyle = nd.highlight ? WB.COLORS.accent : WB.COLORS.text;

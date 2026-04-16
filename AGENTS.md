@@ -53,4 +53,4 @@
 
 ## Quick Start
 - Node (dual): `cargo run -p froglet --bin froglet-node`
-- Marketplace: `cargo run -p froglet-marketplace --bin froglet-marketplace`
+- Marketplace integration: point `FROGLET_MARKETPLACE_URL` at an external marketplace when you need registration or discovery coverage

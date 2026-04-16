@@ -5,38 +5,36 @@
 
 :root {
 	/* Typography */
-	--froglet-font-sans: 'Inter', system-ui, sans-serif;
-	--froglet-font-serif: 'Inter', system-ui, sans-serif;
+	--froglet-font-sans: 'Source Sans 3', system-ui, sans-serif;
+	--froglet-font-serif: 'Source Serif 4', Georgia, serif;
 	--froglet-font-code: 'JetBrains Mono', monospace;
 
-	/* Core palette (HSL channels — wrap with hsl() when used) */
-	--froglet-background: 43 30% 95%;
-	--froglet-foreground: 30 10% 12%;
-	--froglet-surface: 43 25% 93%;
-	--froglet-surface-2: 40 18% 88%;
-	--froglet-card: 43 28% 97%;
-	--froglet-muted: 30 8% 45%;
-	--froglet-border: 38 15% 82%;
-	--froglet-border-strong: 141 24% 72%;
-	--froglet-accent: 141 43% 36%;
-	--froglet-accent-foreground: 43 30% 95%;
-	--froglet-accent-soft: 141 40% 93%;
-	--froglet-accent-strong: 142 47% 24%;
-	--froglet-code: 218 18% 14%;
-	--froglet-code-surface: 218 16% 18%;
+	/* Dark-only palette (HSL channels — wrap with hsl() when used) */
+	--froglet-background: 220 10% 8%;
+	--froglet-foreground: 220 10% 90%;
+	--froglet-surface: 220 10% 12%;
+	--froglet-surface-2: 220 10% 18%;
+	--froglet-card: 220 10% 11%;
+	--froglet-muted: 220 8% 65%;
+	--froglet-border: 220 10% 25%;
+	--froglet-border-strong: 141 24% 32%;
+	--froglet-accent: 141 40% 54%;
+	--froglet-accent-foreground: 220 10% 10%;
+	--froglet-accent-soft: 141 24% 18%;
+	--froglet-accent-strong: 141 35% 72%;
+	--froglet-code: 220 12% 10%;
+	--froglet-code-surface: 220 10% 15%;
 
-	/* Elevation */
-	--froglet-shadow:
-		0 1px 2px rgba(24, 23, 20, 0.05),
-		0 18px 40px rgba(24, 23, 20, 0.06);
+	/* Brutalist: no elevation */
+	--froglet-shadow: none;
 
 	/* Layout */
 	--froglet-shell-max-width: 1120px;
 	--froglet-shell-gutter: 1rem;
 	--froglet-section-space: 4.75rem;
 
-	/* Card */
-	--froglet-card-radius: 1rem;
+	/* Card — square, no radius */
+	--froglet-card-radius: 0;
 	--froglet-card-padding: 1rem;
 	--froglet-card-padding-roomy: 1.6rem;
 	--froglet-card-hover-shift: -1px;
@@ -59,36 +57,6 @@
 	--sl-font: var(--froglet-font-sans);
 	--sl-font-system: var(--froglet-font-sans);
 	--sl-font-system-mono: var(--froglet-font-code);
-	--sl-color-accent-low: hsl(var(--froglet-accent-soft));
-	--sl-color-accent: hsl(var(--froglet-accent));
-	--sl-color-accent-high: hsl(var(--froglet-accent-strong));
-	--sl-color-white: hsl(var(--froglet-foreground));
-	--sl-color-gray-1: hsl(30 10% 18%);
-	--sl-color-gray-2: hsl(var(--froglet-muted));
-	--sl-color-gray-3: hsl(30 8% 56%);
-	--sl-color-gray-4: hsl(var(--froglet-border));
-	--sl-color-gray-5: hsl(var(--froglet-surface-2));
-	--sl-color-gray-6: hsl(var(--froglet-surface));
-	--sl-color-black: hsl(var(--froglet-background));
-}
-
-[data-theme='dark'] {
-	--froglet-background: 220 10% 8%;
-	--froglet-foreground: 220 10% 90%;
-	--froglet-surface: 220 10% 12%;
-	--froglet-surface-2: 220 10% 18%;
-	--froglet-card: 220 10% 11%;
-	--froglet-muted: 220 8% 65%;
-	--froglet-border: 220 10% 25%;
-	--froglet-border-strong: 141 24% 32%;
-	--froglet-accent: 141 40% 54%;
-	--froglet-accent-foreground: 220 10% 10%;
-	--froglet-accent-soft: 141 24% 18%;
-	--froglet-accent-strong: 141 35% 72%;
-	--froglet-code: 220 12% 10%;
-	--froglet-code-surface: 220 10% 15%;
-	--froglet-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
-
 	--sl-color-accent-low: hsl(var(--froglet-accent-soft));
 	--sl-color-accent: hsl(var(--froglet-accent));
 	--sl-color-accent-high: hsl(var(--froglet-accent-strong));

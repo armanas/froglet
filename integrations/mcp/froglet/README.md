@@ -6,7 +6,7 @@ and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
 ## Requirements
 
 - Node.js 18+ (or Docker)
-- A running Froglet provider (and optionally a runtime)
+- A running Froglet provider and runtime, or one node that exposes both surfaces
 
 ## Quick Start
 
@@ -17,6 +17,8 @@ npm ci --prefix integrations/mcp/froglet
 # Start the server (stdio transport)
 FROGLET_PROVIDER_URL=http://127.0.0.1:8080 \
 FROGLET_RUNTIME_URL=http://127.0.0.1:8081 \
+FROGLET_PROVIDER_AUTH_TOKEN_PATH=./data/runtime/froglet-control.token \
+FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token \
   node integrations/mcp/froglet/server.js
 ```
 
@@ -61,7 +63,9 @@ or `%APPDATA%/Claude/claude_desktop_config.json` (Windows):
       "args": ["<path-to-repo>/integrations/mcp/froglet/server.js"],
       "env": {
         "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
-        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "/absolute/path/to/froglet/data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "/absolute/path/to/froglet/data/runtime/auth.token"
       }
     }
   }
@@ -81,7 +85,9 @@ Drop `.mcp.json` in the project root (already included in this repo):
       "args": ["integrations/mcp/froglet/server.js"],
       "env": {
         "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
-        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "data/runtime/auth.token"
       }
     }
   }
@@ -109,7 +115,9 @@ Add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
       "args": ["<path-to-repo>/integrations/mcp/froglet/server.js"],
       "env": {
         "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
-        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081"
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "/absolute/path/to/froglet/data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "/absolute/path/to/froglet/data/runtime/auth.token"
       }
     }
   }
@@ -124,7 +132,7 @@ Add to `~/.codex/config.toml` (global) or `.codex/config.toml` (project):
 [mcp_servers.froglet]
 command = "node"
 args = ["integrations/mcp/froglet/server.js"]
-env = { "FROGLET_PROVIDER_URL" = "http://127.0.0.1:8080", "FROGLET_RUNTIME_URL" = "http://127.0.0.1:8081" }
+env = { "FROGLET_PROVIDER_URL" = "http://127.0.0.1:8080", "FROGLET_RUNTIME_URL" = "http://127.0.0.1:8081", "FROGLET_PROVIDER_AUTH_TOKEN_PATH" = "/absolute/path/to/froglet/data/runtime/froglet-control.token", "FROGLET_RUNTIME_AUTH_TOKEN_PATH" = "/absolute/path/to/froglet/data/runtime/auth.token" }
 ```
 
 Or generate the project-local file:
@@ -143,8 +151,11 @@ docker pull ghcr.io/armanas/froglet-mcp:latest
 
 # Run (connects to host Froglet node)
 docker run --rm -i \
+  -v /absolute/path/to/froglet/data/runtime:/tokens:ro \
   -e FROGLET_PROVIDER_URL=http://host.docker.internal:8080 \
   -e FROGLET_RUNTIME_URL=http://host.docker.internal:8081 \
+  -e FROGLET_PROVIDER_AUTH_TOKEN_PATH=/tokens/froglet-control.token \
+  -e FROGLET_RUNTIME_AUTH_TOKEN_PATH=/tokens/auth.token \
   ghcr.io/armanas/froglet-mcp:latest
 ```
 
@@ -156,8 +167,11 @@ Use in any MCP client config:
     "froglet": {
       "command": "docker",
       "args": ["run", "--rm", "-i",
+        "-v", "/absolute/path/to/froglet/data/runtime:/tokens:ro",
         "-e", "FROGLET_PROVIDER_URL=http://host.docker.internal:8080",
         "-e", "FROGLET_RUNTIME_URL=http://host.docker.internal:8081",
+        "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH=/tokens/froglet-control.token",
+        "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH=/tokens/auth.token",
         "ghcr.io/armanas/froglet-mcp:latest"],
       "type": "stdio"
     }
@@ -193,8 +207,14 @@ locally-bound ports:
 ```bash
 FROGLET_PROVIDER_URL=http://127.0.0.1:8080 \
 FROGLET_RUNTIME_URL=http://127.0.0.1:8081 \
+FROGLET_PROVIDER_AUTH_TOKEN_PATH=./data/runtime/froglet-control.token \
+FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token \
   node integrations/mcp/froglet/server.js
 ```
+
+If you want to use the generated host-side agent configs against Docker Compose,
+start Compose with `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so
+`./data/runtime/froglet-control.token` is readable on the host.
 
 ## Tests
 
@@ -213,9 +233,10 @@ npm run smoke:compose --prefix integrations/mcp/froglet
 curl http://127.0.0.1:8080/health
 ```
 
-**401 Unauthorized** — The endpoint requires an auth token. Set
-`FROGLET_PROVIDER_AUTH_TOKEN_PATH` to the token file path (e.g.
-`./data/runtime/froglet-control.token`).
+**401 Unauthorized** — The endpoint requires an auth token. Set the provider
+and runtime token paths to the matching files for the action you are calling:
+`FROGLET_PROVIDER_AUTH_TOKEN_PATH=./data/runtime/froglet-control.token` and
+`FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token`.
 
 **Timeout errors** — Increase `FROGLET_REQUEST_TIMEOUT_MS` for slow networks
 or large responses.
