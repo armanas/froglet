@@ -66,8 +66,18 @@ oci-registry-client = "0.2.3"
 urlencoding = "2.1"
 wat = "1"
 
+# Security Sandbox (Python) — Linux-only.
+# landlock restricts filesystem access; seccompiler installs BPF syscall filters.
+# On non-Linux hosts the src/python_sandbox.rs module gates Python execution
+# behind FROGLET_ALLOW_UNSANDBOXED_PYTHON=1 and skips the sandbox entirely.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"
+libc = "0.2"
+
 [dev-dependencies]
 bitcoin = "0.32.8"
 proptest = "1"
 rcgen = "0.13"
+tempfile = "3"
 tokio-rustls = "0.26"

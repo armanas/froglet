@@ -25,6 +25,7 @@ pub mod identity;
 pub mod lnd;
 pub mod pricing;
 pub mod protocol;
+pub mod python_sandbox;
 pub mod requester_deals;
 pub mod runtime_auth;
 pub mod sandbox;

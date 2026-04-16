@@ -6030,8 +6030,13 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     let input_json_clone = input_json.clone();
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
     let kill_handle_clone = Arc::clone(&kill_handle);
+    // Per-invocation sandbox policy: read Python stdlib + CA certs, write
+    // only to the invocation tempdir, no outbound network (workloads that
+    // need network must use a mount that explicitly grants it).
+    let sandbox_config = crate::python_sandbox::SandboxConfig::for_python(&tempdir);
     let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
-        let mut child = std::process::Command::new("python3")
+        let mut command = std::process::Command::new("python3");
+        command
             .arg("-I")
             .arg("-c")
             .arg(runner)
@@ -6041,7 +6046,10 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             .env("FROGLET_CONTEXT", context_json)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        crate::python_sandbox::harden_command(&mut command, sandbox_config.clone())
+            .map_err(|error| format!("failed to install python sandbox: {error}"))?;
+        let mut child = command
             .spawn()
             .map_err(|error| format!("failed to spawn python3: {error}"))?;
         if let Some(mut stdin) = child.stdin.take() {
@@ -11097,6 +11105,14 @@ mod tests {
 
     #[tokio::test]
     async fn service_addressed_python_execution_runs_from_redacted_service_record() {
+        // Python runtime needs the Linux landlock+seccomp sandbox. On macOS /
+        // other dev hosts the sandbox refuses to run without this explicit
+        // opt-out; set it so `cargo test` passes locally without weakening
+        // the production default.
+        // SAFETY: test-only env mutation; Rust 2024 edition marks set_var unsafe.
+        unsafe {
+            std::env::set_var("FROGLET_ALLOW_UNSANDBOXED_PYTHON", "1");
+        }
         let state = test_app_state(PaymentBackend::None);
         publish_test_service(
             &state,
