@@ -636,6 +636,69 @@ Definition of done: `.onion` hostnames on the LLM-controlled path are routed via
 
 Execution: 🤝 Mixed. The LLM can implement and test; a human should review the new production dependency before it lands.
 
+### ⬜ 🔭 🤖 Container-wrap Python as an alternative sandbox mode
+Order: 73
+
+Specification: The Python sandbox that ships with Froglet today uses Linux landlock + seccomp installed via `Command::pre_exec` in [`src/python_sandbox.rs`](src/python_sandbox.rs). That works uniformly whether Froglet runs on host or inside Docker. For operators who prefer container-level isolation (e.g., who already run every workload in a container) add an alternative mode gated by `FROGLET_PYTHON_SANDBOX=container`. In that mode `run_python_execution` routes through the existing `run_container_execution` path with a Python base image (`python:3.12-slim` or similar) pinned by sha256, `--network none`, and the invocation tempdir volume-mounted. Does not replace the landlock path as default; ships alongside.
+
+Definition of done: setting the env var switches Python execution through the container runner; existing landlock path stays the default; both modes have integration tests; docs/RUNTIME.md documents the trade-off (needs docker socket access on the host if Froglet itself runs in Docker — see `docs/MOUNTS.md` commentary about docker-in-docker constraints).
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🔭 🤝 Replace the `nvidia.mock.v1` TEE attestation backend with a real one
+Order: 74
+
+Specification: `src/confidential.rs:37` currently ships only `ATTESTATION_BACKEND_NVIDIA_MOCK_V1` as a real-looking placeholder for TEE/confidential-execution attestation. Every confidential flow ends at a mocked attestation, which is fine for CI and integration tests but not for any deployment that actually relies on confidential guarantees. Replace with at least one real backend: AWS Nitro Enclaves (via `nsm-api`), AMD SEV-SNP, Intel TDX, or real NVIDIA H100 via NVIDIA's NRAS. Pick by target hardware; keep the mock available under a clearly-named `_test_only` flag so CI does not break.
+
+Definition of done: at least one real attestation backend is wired into `issue_attestation` / `verify_attestation` in [`src/confidential.rs`](src/confidential.rs); the existing tests still pass against the mock when an explicit `FROGLET_ATTESTATION_BACKEND=mock` is set; an end-to-end test on the chosen real backend runs in a suitable hardware CI job (may be skipped locally).
+
+Execution: 🤝 Mixed. Vendor SDKs, credentials, and hardware access are human prerequisites; the wiring itself is LLM-doable.
+
+### ⬜ 🔭 🤝 Firecracker / gVisor microVM isolation tier for hosted.froglet.dev
+Order: 75
+
+Specification: The landlock + seccomp sandbox (Order-73 companion) is the right answer for single-tenant self-hosts. For a future managed hosted Froglet instance that serves multiple tenants from one node, add a microVM isolation tier using either AWS Firecracker or Google gVisor. This runs each Python (and Container) workload in its own kernel-level isolation boundary, closes kernel-level side-channel risks landlock alone cannot address, and is the industry-standard choice for genuinely-multi-tenant code execution (Lambda, Cloud Run). Gate behind `FROGLET_EXECUTION_ISOLATION=microvm` with Firecracker as the default choice.
+
+Definition of done: `run_python_execution` and `run_container_execution` can both be routed through a microVM runner; a hosted-ready deployment recipe exists; documentation explains the trade-off (cost, latency, operational complexity) vs. the landlock default.
+
+Execution: 🤝 Mixed. Meaningful operational research plus code. Not urgent until the hosted product is live.
+
+### ⬜ 🔭 🤝 LLM-guided local install flow from a hosted Froglet instance
+Order: 76
+
+Specification: The long-term product flow is "user visits `ai.froglet.dev` → their LLM (Claude Code / Codex / etc.) is connected to the hosted instance → user asks to install Froglet locally → the LLM uses its own shell-execution capability to run the 4-line quickstart." No new Froglet-side MCP action is required; what's needed is (a) a reliable copy-paste quickstart (shipped as Order-71 / item C above) and (b) the hosted instance emitting clear "install me locally" tool-output text when a user asks, so the LLM reaches for the right commands. Write the hosted-instance UX copy, the docs section addressed to an LLM reader, and a test that the copy-paste block from `README.md` actually runs clean on a fresh host.
+
+Definition of done: documented flow from hosted Froglet to a running local stack without human intervention beyond approving the LLM's shell commands; end-to-end test runs the quickstart block in a disposable VM; hosted instance produces recognisable tool output.
+
+Execution: 🤝 Mixed. Needs hosted instance control (live UX); the docs + local test are LLM-doable.
+
+### ⬜ 🔭 🤖 Additional mount connectors beyond Postgres (SQLite, S3, KV)
+Order: 77
+
+Specification: The Postgres mount landed in the same cycle as this TODO entry ([`docs/MOUNTS.md`](docs/MOUNTS.md), [`src/api/mod.rs::collect_postgres_mount_env`](src/api/mod.rs)). Extend the pattern to SQLite (local file path mounts, read-only + read-write variants), S3-compatible object stores (DSN-style config, credentials passed as separate env vars), and a generic key-value handle for Redis / DynamoDB / etc. Each kind follows the same shape: operator config via `FROGLET_MOUNT_<kind>_<handle>`, capability gating via `mount.<kind>.<read|write>.<handle>`, env-var injection into the workload, and sandbox network-allowlist toggling when the kind needs outbound TCP.
+
+Definition of done: at least one more mount kind past Postgres shipped end-to-end with tests; `docs/MOUNTS.md` updated with the new kinds and their DSN/env-var shape.
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🔭 🤖 Third-party marketplace deploy recipe
+Order: 78
+
+Specification: `froglet-services/services/marketplace-node` is architecturally a standalone Froglet service — it registers the marketplace Builtin handlers and runs the normal provider/runtime server. But there's no documented recipe for a third party to run their own marketplace instance. Write `ops/compose.third-party.yaml` (or equivalent) + `docs/THIRD_PARTY_MARKETPLACE.md` that explains: which env vars the operator must set, which config (stake parameters, fee schedule, identity) is theirs to choose vs. must stay compatible with the Froglet marketplace contract, and how to verify that a self-run marketplace accepts deals from a vanilla Froglet node pointed at it via `FROGLET_MARKETPLACE_URL`.
+
+Definition of done: docs exist; smoke test runs a self-hosted marketplace against a vanilla Froglet and verifies the end-to-end flow.
+
+Execution: 🤖 LLM-doable docs + ops. Lives primarily in `froglet-services` repo.
+
+### ⬜ 🔭 🤖 Marketplace builtin-service wrappers as first-class MCP actions
+Order: 79
+
+Specification: Today `marketplace.register`, `marketplace.search`, `marketplace.provider`, `marketplace.receipts`, `marketplace.stake`, and `marketplace.topup` are reachable via the generic `invoke_service` MCP action, but require the LLM to know the exact service_id string and the precise argument shape for each one. Add ergonomic wrapper actions — `marketplace_register`, `marketplace_search`, `marketplace_stake`, `marketplace_topup` — that accept friendlier parameter shapes and construct the `invoke_service` call underneath. Parallels the shape of the settlement-visibility wrappers added in Order-equivalent (this cycle's item B).
+
+Definition of done: 4+ new MCP actions land in `integrations/mcp/froglet/lib/tools.js` with corresponding handlers and tests; MCP tool description explains when to use each; the `invoke_service` escape hatch stays available.
+
+Execution: 🤖 Entirely LLM-doable.
+
 ## Zero-Cost Launch Channels
 
 ### ⬜ 🚀 🧑 Build the launch distribution matrix
