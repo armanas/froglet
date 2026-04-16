@@ -87,13 +87,100 @@ describe("tool definitions", () => {
       "status",
       "get_task",
       "wait_task",
-      "run_compute"
+      "run_compute",
+      "get_wallet_balance",
+      "list_settlement_activity",
+      "get_payment_intent",
+      "get_invoice_bundle"
     ])
     assert.match(tools[0].description, /provider_id/)
   })
 })
 
 describe("froglet MCP actions", () => {
+  it("exposes wallet balance through the settlement MCP action", async () => {
+    const restore = mockFetch(async (url) => {
+      assert.equal(String(url), "http://127.0.0.1:8081/v1/runtime/wallet/balance")
+      return new Response(
+        JSON.stringify({
+          backend: "lightning",
+          mode: "mock",
+          balance_known: true,
+          balance_sats: 4242,
+          accepted_payment_methods: ["lightning"],
+          reservations: true,
+          receipts: true
+        })
+      )
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        { action: "get_wallet_balance" },
+        config
+      )
+      const text = result.content[0].text
+      assert.match(text, /backend: lightning/)
+      assert.match(text, /balance_sats: 4242/)
+      assert.equal(result.isError, undefined)
+    } finally {
+      restore()
+    }
+  })
+
+  it("surfaces settlement activity rows to the LLM", async () => {
+    const restore = mockFetch(async (url) => {
+      assert.ok(
+        String(url).startsWith("http://127.0.0.1:8081/v1/runtime/settlement/activity"),
+        `unexpected url: ${url}`
+      )
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              deal_id: "deal-xyz",
+              provider_id: "prov-1",
+              status: "succeeded",
+              workload_kind: "events.query",
+              settlement_method: "none",
+              base_fee_msat: 0,
+              success_fee_msat: 0,
+              has_receipt: true,
+              has_result: true,
+              created_at: 1,
+              updated_at: 2
+            }
+          ],
+          limit: 25
+        })
+      )
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        { action: "list_settlement_activity" },
+        config
+      )
+      const text = result.content[0].text
+      assert.match(text, /count: 1/)
+      assert.match(text, /deal_id: deal-xyz/)
+      assert.match(text, /status: succeeded/)
+      assert.equal(result.isError, undefined)
+    } finally {
+      restore()
+    }
+  })
+
+  it("returns isError when get_payment_intent is called without a deal_id", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      { action: "get_payment_intent" },
+      config
+    )
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /deal_id is required/)
+  })
+
   it("formats dual-health status output", async () => {
     const restore = mockFetch(async (url) => {
       const urlStr = String(url)

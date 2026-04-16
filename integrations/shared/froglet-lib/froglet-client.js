@@ -1194,6 +1194,86 @@ export async function runCompute({ runtimeUrl, runtimeAuthTokenPath, requestTime
 }
 
 /**
+ * Settlement visibility: wallet balance snapshot from the runtime's configured
+ * settlement driver. Wraps GET /v1/runtime/wallet/balance.
+ *
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number }} config
+ */
+export async function getWalletBalance({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs }) {
+  return frogletRequest(
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    requestTimeoutMs,
+    "GET",
+    "/v1/runtime/wallet/balance"
+  )
+}
+
+/**
+ * List recent requester-side deals with compact settlement state. Wraps GET
+ * /v1/runtime/settlement/activity.
+ *
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, limit?: number }} config
+ */
+export async function listSettlementActivity({
+  runtimeUrl,
+  runtimeAuthTokenPath,
+  requestTimeoutMs,
+  limit,
+}) {
+  const query = typeof limit === "number" ? `?limit=${encodeURIComponent(limit)}` : ""
+  return frogletRequest(
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    requestTimeoutMs,
+    "GET",
+    `/v1/runtime/settlement/activity${query}`
+  )
+}
+
+/**
+ * Get the payment-intent payload for a specific requester deal. Wraps GET
+ * /v1/runtime/deals/:deal_id/payment-intent.
+ *
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, dealId: string }} config
+ */
+export async function getDealPaymentIntent({
+  runtimeUrl,
+  runtimeAuthTokenPath,
+  requestTimeoutMs,
+  dealId,
+}) {
+  return frogletRequest(
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    requestTimeoutMs,
+    "GET",
+    `/v1/runtime/deals/${encodeURIComponent(dealId)}/payment-intent`
+  )
+}
+
+/**
+ * Get the invoice bundle for a specific provider-side deal. Wraps GET
+ * /v1/provider/deals/:deal_id/invoice-bundle.
+ *
+ * @param {{ providerUrl: string, providerAuthTokenPath: string, requestTimeoutMs: number, dealId: string }} config
+ */
+export async function getDealInvoiceBundle({
+  providerUrl,
+  providerAuthTokenPath,
+  requestTimeoutMs,
+  dealId,
+}) {
+  return frogletRequest(
+    providerUrl,
+    providerAuthTokenPath,
+    requestTimeoutMs,
+    "GET",
+    `/v1/provider/deals/${encodeURIComponent(dealId)}/invoice-bundle`
+  )
+}
+
+/**
  * Get a task from runtime requester deals first, then fall back to provider jobs
  * only when provider and runtime share the same API surface.
  *

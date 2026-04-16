@@ -11,11 +11,15 @@ import {
   frogletRestart,
   frogletStatus,
   frogletTailLogs,
+  getDealInvoiceBundle,
+  getDealPaymentIntent,
   getProject,
   getService,
   getTask,
+  getWalletBalance,
   invokeService,
   listProjects,
+  listSettlementActivity,
   publishArtifact,
   publishProject,
   readProjectFile,
@@ -641,6 +645,142 @@ test("waitTask surfaces job not found immediately on split deployments", async (
         /job not found/
       )
       assert.deepEqual(hitUrls, ["http://127.0.0.1:8081/v1/runtime/deals/task-missing"])
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("getWalletBalance fetches the runtime wallet snapshot with bearer auth", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    let capturedUrl
+    let capturedAuth
+    global.fetch = async (url, options = {}) => {
+      capturedUrl = String(url)
+      capturedAuth = options.headers?.Authorization
+      return new Response(
+        JSON.stringify({
+          backend: "lightning",
+          mode: "mock",
+          balance_known: true,
+          balance_sats: 21,
+          accepted_payment_methods: ["lightning"],
+          reservations: true,
+          receipts: true
+        }),
+        { status: 200 }
+      )
+    }
+    try {
+      const response = await getWalletBalance({
+        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeAuthTokenPath: tokenPath,
+        requestTimeoutMs: 1000
+      })
+      assert.equal(capturedUrl, "http://127.0.0.1:8081/v1/runtime/wallet/balance")
+      assert.equal(capturedAuth, "Bearer froglet-test-token")
+      assert.equal(response.balance_sats, 21)
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("listSettlementActivity passes limit as query string", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    let capturedUrl
+    global.fetch = async (url) => {
+      capturedUrl = String(url)
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              deal_id: "deal-1",
+              provider_id: "prov-1",
+              status: "succeeded",
+              workload_kind: "events.query",
+              settlement_method: "none",
+              base_fee_msat: 0,
+              success_fee_msat: 0,
+              has_receipt: true,
+              has_result: true,
+              created_at: 1,
+              updated_at: 2
+            }
+          ],
+          limit: 10
+        }),
+        { status: 200 }
+      )
+    }
+    try {
+      const response = await listSettlementActivity({
+        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeAuthTokenPath: tokenPath,
+        requestTimeoutMs: 1000,
+        limit: 10
+      })
+      assert.ok(capturedUrl.endsWith("/v1/runtime/settlement/activity?limit=10"))
+      assert.equal(response.items.length, 1)
+      assert.equal(response.items[0].deal_id, "deal-1")
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("getDealPaymentIntent URL-encodes the deal id", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    let capturedUrl
+    global.fetch = async (url) => {
+      capturedUrl = String(url)
+      return new Response(
+        JSON.stringify({ payment_intent: { deal_id: "a/b", amount_msat: 1000 } }),
+        { status: 200 }
+      )
+    }
+    try {
+      await getDealPaymentIntent({
+        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeAuthTokenPath: tokenPath,
+        requestTimeoutMs: 1000,
+        dealId: "a/b"
+      })
+      assert.equal(
+        capturedUrl,
+        "http://127.0.0.1:8081/v1/runtime/deals/a%2Fb/payment-intent"
+      )
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("getDealInvoiceBundle hits the provider invoice-bundle endpoint", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    let capturedUrl
+    global.fetch = async (url) => {
+      capturedUrl = String(url)
+      return new Response(
+        JSON.stringify({ bundle: { deal_id: "deal-2", legs: [] } }),
+        { status: 200 }
+      )
+    }
+    try {
+      await getDealInvoiceBundle({
+        providerUrl: "http://127.0.0.1:8080",
+        providerAuthTokenPath: tokenPath,
+        requestTimeoutMs: 1000,
+        dealId: "deal-2"
+      })
+      assert.equal(
+        capturedUrl,
+        "http://127.0.0.1:8080/v1/provider/deals/deal-2/invoice-bundle"
+      )
     } finally {
       global.fetch = previousFetch
     }

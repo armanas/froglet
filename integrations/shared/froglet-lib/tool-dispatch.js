@@ -1,11 +1,15 @@
 import {
   discoverServices,
   frogletStatus,
+  getDealInvoiceBundle,
+  getDealPaymentIntent,
   getLocalService,
   getService,
   getTask,
+  getWalletBalance,
   invokeService,
   listLocalServices,
+  listSettlementActivity,
   publishArtifact,
   runCompute,
   waitTask
@@ -295,6 +299,92 @@ async function handleCompute(args, config, includeRaw) {
   return renderResult(lines, response, includeRaw)
 }
 
+async function handleWalletBalance(args, config, includeRaw) {
+  const response = await getWalletBalance(runtimeCtx(config))
+  const lines = [
+    `backend: ${response.backend ?? "unknown"}`,
+    `mode: ${response.mode ?? "unknown"}`,
+    `balance_known: ${response.balance_known === true}`,
+    `balance_sats: ${response.balance_sats ?? "unknown"}`,
+    `accepted_payment_methods: ${
+      Array.isArray(response.accepted_payment_methods)
+        ? response.accepted_payment_methods.join(", ") || "none"
+        : "unknown"
+    }`,
+    `reservations: ${response.reservations === true}`,
+    `receipts: ${response.receipts === true}`
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleSettlementActivity(args, config, includeRaw) {
+  const response = await listSettlementActivity({
+    ...runtimeCtx(config),
+    limit: typeof args.limit === "number" ? args.limit : undefined
+  })
+  const items = Array.isArray(response.items) ? response.items : []
+  const lines = [
+    `count: ${items.length}`,
+    `limit: ${response.limit ?? "unknown"}`,
+    ""
+  ]
+  if (items.length === 0) {
+    lines.push("no recent settlement activity")
+  } else {
+    for (const [index, item] of items.entries()) {
+      lines.push(
+        `${index + 1}.`,
+        `  deal_id: ${item.deal_id}`,
+        `  provider_id: ${item.provider_id}`,
+        `  status: ${item.status}`,
+        `  workload_kind: ${item.workload_kind ?? "unknown"}`,
+        `  settlement_method: ${item.settlement_method ?? "unknown"}`,
+        `  base_fee_msat: ${item.base_fee_msat ?? 0}`,
+        `  success_fee_msat: ${item.success_fee_msat ?? 0}`,
+        `  has_receipt: ${item.has_receipt === true}`,
+        `  has_result: ${item.has_result === true}`,
+        ...(item.error ? [`  error: ${item.error}`] : []),
+        ""
+      )
+    }
+  }
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleDealPaymentIntent(args, config, includeRaw) {
+  const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
+  if (dealId.length === 0) {
+    throw new Error("deal_id is required for get_payment_intent")
+  }
+  const response = await getDealPaymentIntent({
+    ...runtimeCtx(config),
+    dealId
+  })
+  const intent = response.payment_intent ?? response.intent ?? response
+  const lines = [
+    `deal_id: ${dealId}`,
+    `intent: ${formatObject(intent)}`
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleDealInvoiceBundle(args, config, includeRaw) {
+  const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
+  if (dealId.length === 0) {
+    throw new Error("deal_id is required for get_invoice_bundle")
+  }
+  const response = await getDealInvoiceBundle({
+    ...providerCtx(config),
+    dealId
+  })
+  const bundle = response.bundle ?? response.invoice_bundle ?? response
+  const lines = [
+    `deal_id: ${dealId}`,
+    `bundle: ${formatObject(bundle)}`
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
 export async function dispatchFrogletAction(args, config, { includeRaw = false } = {}) {
   switch (args.action) {
     case "status":
@@ -317,6 +407,14 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleTask({ ...args, wait: true }, config, includeRaw)
     case "run_compute":
       return handleCompute(args, config, includeRaw)
+    case "get_wallet_balance":
+      return handleWalletBalance(args, config, includeRaw)
+    case "list_settlement_activity":
+      return handleSettlementActivity(args, config, includeRaw)
+    case "get_payment_intent":
+      return handleDealPaymentIntent(args, config, includeRaw)
+    case "get_invoice_bundle":
+      return handleDealInvoiceBundle(args, config, includeRaw)
     // Removed actions — return clear error messages
     case "tail_logs":
       throw new Error("Log tailing removed; use systemd journal directly")

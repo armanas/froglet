@@ -381,6 +381,75 @@ pub async fn runtime_wallet_balance(
     }
 }
 
+/// Return a compact summary of recent requester-side deals and their
+/// settlement state. Complements the per-deal `/v1/runtime/deals/:id`
+/// endpoint with a list view; used by the MCP `list_settlement_activity`
+/// action so an LLM can reason about pending/settled deals without knowing
+/// specific deal ids.
+pub async fn runtime_settlement_activity(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<SettlementActivityQuery>,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+
+    let limit = params
+        .limit
+        .unwrap_or(SETTLEMENT_ACTIVITY_DEFAULT_LIMIT)
+        .clamp(1, SETTLEMENT_ACTIVITY_MAX_LIMIT);
+
+    let records = match state
+        .db
+        .with_read_conn(move |conn| crate::requester_deals::list_recent_requester_deals(conn, limit))
+        .await
+    {
+        Ok(records) => records,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("list requester deals: {error}") }),
+            );
+        }
+    };
+
+    let items: Vec<SettlementActivityItem> = records
+        .iter()
+        .map(|record| {
+            let terms = &record.quote.payload.settlement_terms;
+            SettlementActivityItem {
+                deal_id: record.deal_id.clone(),
+                provider_id: record.provider_id.clone(),
+                status: record.status.clone(),
+                workload_kind: record.spec.workload_kind().to_string(),
+                settlement_method: terms.method.clone(),
+                base_fee_msat: terms.base_fee_msat,
+                success_fee_msat: terms.success_fee_msat,
+                has_receipt: record.receipt.is_some(),
+                has_result: record.result.is_some(),
+                error: record.error.clone(),
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            }
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!(RuntimeSettlementActivityResponse { items, limit })),
+    )
+}
+
+const SETTLEMENT_ACTIVITY_DEFAULT_LIMIT: usize = 25;
+const SETTLEMENT_ACTIVITY_MAX_LIMIT: usize = 200;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SettlementActivityQuery {
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 fn format_reqwest_error(error: &reqwest::Error) -> String {
     let mut parts = vec![error.to_string()];
     let mut source: Option<&(dyn StdError + 'static)> = error.source();

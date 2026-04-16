@@ -219,6 +219,32 @@ pub struct RuntimeWalletBalanceResponse {
     pub receipts: bool,
 }
 
+/// Summary of a recent requester-side deal for the settlement-activity list.
+/// Shape-stable across backends so the MCP surface has a single response
+/// pattern regardless of which settlement driver is active.
+#[derive(Debug, Serialize)]
+pub struct SettlementActivityItem {
+    pub deal_id: String,
+    pub provider_id: String,
+    pub status: String,
+    pub workload_kind: String,
+    pub settlement_method: String,
+    pub base_fee_msat: u64,
+    pub success_fee_msat: u64,
+    pub has_receipt: bool,
+    pub has_result: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeSettlementActivityResponse {
+    pub items: Vec<SettlementActivityItem>,
+    pub limit: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeProviderRef {
     #[serde(default)]

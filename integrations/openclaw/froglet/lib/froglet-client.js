@@ -18,5 +18,9 @@ export {
   invokeService,
   runCompute,
   getTask,
-  waitTask
+  waitTask,
+  getWalletBalance,
+  listSettlementActivity,
+  getDealPaymentIntent,
+  getDealInvoiceBundle
 } from "../../../shared/froglet-lib/froglet-client.js"

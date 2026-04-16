@@ -8,7 +8,7 @@ function errorResult(error) {
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider."
+  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle)."
 
 function frogletToolInputSchema(config) {
   return {
@@ -18,7 +18,7 @@ function frogletToolInputSchema(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, and run_compute for open-ended compute.",
+          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance for the runtime's current funds snapshot, list_settlement_activity for recent deal-level settlement state, get_payment_intent for the unpaid invoice/intent of a specific deal, get_invoice_bundle for the provider-side bundle artifact.",
         enum: [
           "discover_services",
           "get_service",
@@ -29,7 +29,11 @@ function frogletToolInputSchema(config) {
           "status",
           "get_task",
           "wait_task",
-          "run_compute"
+          "run_compute",
+          "get_wallet_balance",
+          "list_settlement_activity",
+          "get_payment_intent",
+          "get_invoice_bundle"
         ]
       },
       service_id: {
@@ -109,6 +113,10 @@ function frogletToolInputSchema(config) {
       include_inactive: { type: "boolean" },
       query: { type: "string" },
       task_id: { type: "string" },
+      deal_id: {
+        type: "string",
+        description: "Target deal id. Required for get_payment_intent and get_invoice_bundle."
+      },
       timeout_secs: { type: "integer", minimum: 1, maximum: 600 },
       poll_interval_secs: { type: "number", minimum: 0.1, maximum: 10 },
       artifact_path: { type: "string" },

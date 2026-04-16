@@ -28,6 +28,10 @@ pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
             get(super::runtime_wallet_balance),
         )
         .route(
+            "/v1/runtime/settlement/activity",
+            get(super::runtime_settlement_activity),
+        )
+        .route(
             "/v1/runtime/deals/:deal_id/payment-intent",
             get(super::runtime_deal_payment_intent),
         )
