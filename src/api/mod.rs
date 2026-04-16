@@ -6019,23 +6019,54 @@ fn validate_execution_workload(
     }
 }
 
-/// Return the env vars to inject into a Python workload for every granted
-/// `postgres` mount. Each mount produces
+/// Plan for how granted data-source mounts should reshape a workload's
+/// sandbox + env. Produced by [`collect_data_mount_plan`] from the
+/// intersection of (workload's declared mounts, granted capabilities,
+/// operator-configured bindings).
+#[derive(Debug, Default, Clone)]
+struct DataMountPlan {
+    /// `(env_name, value)` pairs to inject into the workload's environment.
+    env: Vec<(String, String)>,
+    /// Filesystem paths the sandbox must grant write access to. Used for
+    /// file-based mounts (SQLite). Each path is either the DB file itself or
+    /// its parent directory, depending on what landlock allows cleanly.
+    writable_paths: Vec<std::path::PathBuf>,
+    /// True when any granted mount requires outbound network. Flips the
+    /// Python sandbox's `allow_network` flag.
+    needs_network: bool,
+}
+
+/// Return the [`DataMountPlan`] for the given workload + granted capabilities.
 ///
-/// - `FROGLET_MOUNT_<handle>_URL` — operator-configured DSN
-/// - `FROGLET_MOUNT_<handle>_READ_ONLY` — `"true"` or `"false"`
+/// A mount is included only when the workload declared it with a supported
+/// `kind`, the capability string `mount.<kind>.<read|write>.<handle>` is in
+/// `granted_access` (or `granted_access` is empty), and the operator
+/// configured a binding via `FROGLET_MOUNT_<kind>_<handle>`. Handles are
+/// matched case-insensitively.
 ///
-/// A mount is included only when the workload declared it with
-/// `kind == "postgres"`, the capability is in `granted_access`, and the
-/// operator configured a DSN via `FROGLET_MOUNT_postgres_<handle>`. Handles
-/// are matched case-insensitively to tolerate env-var case quirks.
-fn collect_postgres_mount_env(
+/// Every kind injects:
+/// - `FROGLET_MOUNT_<HANDLE>_URL` — operator-configured binding string
+/// - `FROGLET_MOUNT_<HANDLE>_READ_ONLY` — `"true"` or `"false"`
+///
+/// Kind-specific behavior:
+/// - `postgres`, `s3`, `redis`: `needs_network = true` (workload will open
+///   outbound TCP to the backing service).
+/// - `sqlite`: extends `writable_paths` with the DB file's parent directory
+///   so the sandbox grants access to the `.db`, `.db-journal`, and `.db-wal`
+///   files SQLite creates. No network needed.
+fn collect_data_mount_plan(
     execution: &ExecutionWorkload,
     granted_access: &[String],
-) -> Vec<(String, String)> {
-    let mut out = Vec::new();
+) -> DataMountPlan {
+    const NETWORK_KINDS: &[&str] = &["postgres", "s3", "redis"];
+    const FILE_KINDS: &[&str] = &["sqlite"];
+    let mut plan = DataMountPlan::default();
+
     for mount in &execution.mounts {
-        if !mount.kind.eq_ignore_ascii_case("postgres") {
+        let kind = mount.kind.to_ascii_lowercase();
+        let is_network = NETWORK_KINDS.iter().any(|k| k == &kind);
+        let is_file = FILE_KINDS.iter().any(|k| k == &kind);
+        if !is_network && !is_file {
             continue;
         }
         let capability = format!(
@@ -6047,21 +6078,40 @@ fn collect_postgres_mount_env(
         if !granted_access.is_empty() && !granted_access.iter().any(|c| c == &capability) {
             continue;
         }
-        let env_key = format!("FROGLET_MOUNT_postgres_{}", mount.handle);
-        let Ok(dsn) = std::env::var(&env_key) else {
+        let env_key = format!("FROGLET_MOUNT_{kind}_{}", mount.handle);
+        let Ok(binding) = std::env::var(&env_key) else {
             continue;
         };
-        if dsn.is_empty() {
+        if binding.is_empty() {
             continue;
         }
         let safe_handle = mount.handle.to_ascii_uppercase();
-        out.push((format!("FROGLET_MOUNT_{safe_handle}_URL"), dsn));
-        out.push((
+        plan.env
+            .push((format!("FROGLET_MOUNT_{safe_handle}_URL"), binding.clone()));
+        plan.env.push((
             format!("FROGLET_MOUNT_{safe_handle}_READ_ONLY"),
             if mount.read_only { "true" } else { "false" }.to_string(),
         ));
+        if is_network {
+            plan.needs_network = true;
+        }
+        if is_file && kind == "sqlite" {
+            // SQLite creates `-journal` and `-wal` files adjacent to the DB.
+            // Grant the parent directory so all three are reachable. Operators
+            // who want tighter isolation should give each mount its own
+            // directory.
+            let db_path = std::path::PathBuf::from(&binding);
+            if let Some(parent) = db_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                plan.writable_paths.push(parent.to_path_buf());
+            } else {
+                // Bare filename — fall back to the file itself.
+                plan.writable_paths.push(db_path);
+            }
+        }
     }
-    out
+    plan
 }
 
 fn execution_mount_context(execution: &ExecutionWorkload, granted_access: &[String]) -> Value {
@@ -6144,22 +6194,26 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     let input_json_clone = input_json.clone();
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
     let kill_handle_clone = Arc::clone(&kill_handle);
-    // Resolve operator-configured postgres mounts that this invocation was
-    // granted. A mount is injected only when (a) the workload declared a
-    // mount with kind=postgres for this handle, (b) the capability list
-    // granted access to it, and (c) the operator configured a DSN for the
-    // handle via FROGLET_MOUNT_postgres_<handle>. See docs/MOUNTS.md.
-    let postgres_mount_env = collect_postgres_mount_env(execution, granted_access);
+    // Resolve operator-configured data-source mounts that this invocation
+    // was granted. A mount is injected only when (a) the workload declared a
+    // mount with a supported kind for this handle, (b) the capability list
+    // granted access to it, and (c) the operator configured a binding for
+    // the handle via FROGLET_MOUNT_<kind>_<handle>. See docs/MOUNTS.md.
+    let mount_plan = collect_data_mount_plan(execution, granted_access);
     // Per-invocation sandbox policy: read Python stdlib + CA certs, write
-    // only to the invocation tempdir, no outbound network by default. When a
-    // postgres mount is granted, flip allow_network=true so the workload can
-    // reach the DB host. This is coarse-grained (any outbound TCP is then
-    // permitted, not just the DB tuple); tightening to a specific host:port
-    // is tracked as a hardening follow-up.
+    // only to the invocation tempdir, no outbound network by default. Data
+    // mounts extend this — a network-backed mount (postgres / s3 / redis)
+    // flips allow_network=true, and a file-backed mount (sqlite) adds the
+    // DB parent directory to the sandbox's writable_paths. Both are
+    // coarse-grained for v1; tightening is tracked as a hardening follow-up.
     let mut sandbox_config = crate::python_sandbox::SandboxConfig::for_python(&tempdir);
-    if !postgres_mount_env.is_empty() {
+    if mount_plan.needs_network {
         sandbox_config.allow_network = true;
     }
+    sandbox_config
+        .writable_paths
+        .extend(mount_plan.writable_paths.clone());
+    let mount_env = mount_plan.env.clone();
     let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let mut command = std::process::Command::new("python3");
         command
@@ -6173,7 +6227,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (name, value) in &postgres_mount_env {
+        for (name, value) in &mount_env {
             command.env(name, value);
         }
         crate::python_sandbox::harden_command(&mut command, sandbox_config.clone())
@@ -11848,16 +11902,18 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let env = collect_postgres_mount_env(
+        let plan = collect_data_mount_plan(
             &execution,
             &["mount.postgres.read.analytics".to_string()],
         );
-        assert_eq!(env.len(), 2);
-        assert!(env.contains(&(
+        assert_eq!(plan.env.len(), 2);
+        assert!(plan.needs_network, "postgres mount must enable network");
+        assert!(plan.writable_paths.is_empty());
+        assert!(plan.env.contains(&(
             "FROGLET_MOUNT_ANALYTICS_URL".to_string(),
             "postgres://user:pass@db.local:5432/analytics".to_string()
         )));
-        assert!(env.contains(&(
+        assert!(plan.env.contains(&(
             "FROGLET_MOUNT_ANALYTICS_READ_ONLY".to_string(),
             "true".to_string()
         )));
@@ -11871,10 +11927,7 @@ mod tests {
     fn postgres_mount_omits_env_when_capability_not_granted() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
         unsafe {
-            std::env::set_var(
-                "FROGLET_MOUNT_postgres_finance",
-                "postgres://nope",
-            );
+            std::env::set_var("FROGLET_MOUNT_postgres_finance", "postgres://nope");
         }
         let execution = ExecutionWorkload {
             mounts: vec![ExecutionMount {
@@ -11885,12 +11938,12 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        // Capability list does not include the finance mount: reject.
-        let env = collect_postgres_mount_env(
+        let plan = collect_data_mount_plan(
             &execution,
             &["mount.postgres.read.analytics".to_string()],
         );
-        assert!(env.is_empty());
+        assert!(plan.env.is_empty());
+        assert!(!plan.needs_network);
         unsafe {
             std::env::remove_var("FROGLET_MOUNT_postgres_finance");
         }
@@ -11899,7 +11952,6 @@ mod tests {
     #[test]
     fn postgres_mount_omits_env_when_dsn_not_configured() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
-        // Explicitly clear to defeat cross-test pollution.
         unsafe {
             std::env::remove_var("FROGLET_MOUNT_postgres_unset");
         }
@@ -11912,11 +11964,140 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let env = collect_postgres_mount_env(
+        let plan = collect_data_mount_plan(
             &execution,
             &["mount.postgres.write.unset".to_string()],
         );
-        assert!(env.is_empty());
+        assert!(plan.env.is_empty());
+    }
+
+    #[test]
+    fn sqlite_mount_injects_env_and_grants_parent_dir_write() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        unsafe {
+            std::env::set_var(
+                "FROGLET_MOUNT_sqlite_cache",
+                "/var/lib/froglet/cache.sqlite",
+            );
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "cache".to_string(),
+                kind: "sqlite".to_string(),
+                read_only: false,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+        let plan = collect_data_mount_plan(
+            &execution,
+            &["mount.sqlite.write.cache".to_string()],
+        );
+        assert_eq!(plan.env.len(), 2);
+        assert!(
+            !plan.needs_network,
+            "sqlite mount must NOT enable network"
+        );
+        assert_eq!(plan.writable_paths.len(), 1);
+        assert_eq!(
+            plan.writable_paths[0],
+            std::path::PathBuf::from("/var/lib/froglet")
+        );
+        assert!(plan.env.contains(&(
+            "FROGLET_MOUNT_CACHE_URL".to_string(),
+            "/var/lib/froglet/cache.sqlite".to_string()
+        )));
+        assert!(plan.env.contains(&(
+            "FROGLET_MOUNT_CACHE_READ_ONLY".to_string(),
+            "false".to_string()
+        )));
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_sqlite_cache");
+        }
+    }
+
+    #[test]
+    fn s3_mount_injects_env_and_enables_network_only() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        unsafe {
+            std::env::set_var(
+                "FROGLET_MOUNT_s3_backups",
+                "s3://AKIA:secret@s3.example.com/froglet-backups",
+            );
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "backups".to_string(),
+                kind: "s3".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+        let plan = collect_data_mount_plan(
+            &execution,
+            &["mount.s3.read.backups".to_string()],
+        );
+        assert_eq!(plan.env.len(), 2);
+        assert!(plan.needs_network);
+        assert!(plan.writable_paths.is_empty());
+        assert!(plan.env.contains(&(
+            "FROGLET_MOUNT_BACKUPS_URL".to_string(),
+            "s3://AKIA:secret@s3.example.com/froglet-backups".to_string()
+        )));
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_s3_backups");
+        }
+    }
+
+    #[test]
+    fn data_mount_plan_composes_multiple_kinds_in_one_invocation() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        unsafe {
+            std::env::set_var(
+                "FROGLET_MOUNT_postgres_events",
+                "postgres://u:p@db.example/events",
+            );
+            std::env::set_var(
+                "FROGLET_MOUNT_sqlite_local",
+                "/opt/froglet/local.sqlite",
+            );
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![
+                ExecutionMount {
+                    handle: "events".to_string(),
+                    kind: "postgres".to_string(),
+                    read_only: true,
+                    binding: None,
+                },
+                ExecutionMount {
+                    handle: "local".to_string(),
+                    kind: "sqlite".to_string(),
+                    read_only: false,
+                    binding: None,
+                },
+            ],
+            ..execution_for_mount_tests()
+        };
+        let plan = collect_data_mount_plan(
+            &execution,
+            &[
+                "mount.postgres.read.events".to_string(),
+                "mount.sqlite.write.local".to_string(),
+            ],
+        );
+        assert_eq!(plan.env.len(), 4);
+        assert!(plan.needs_network, "postgres contribution requires network");
+        assert_eq!(plan.writable_paths.len(), 1);
+        assert_eq!(
+            plan.writable_paths[0],
+            std::path::PathBuf::from("/opt/froglet")
+        );
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_postgres_events");
+            std::env::remove_var("FROGLET_MOUNT_sqlite_local");
+        }
     }
 
     fn execution_for_mount_tests() -> crate::execution::ExecutionWorkload {
