@@ -1,0 +1,120 @@
+---
+title: "LLM-Guided Local Install"
+description: "How an LLM connected to a hosted Froglet can install Froglet on the user's machine when asked."
+---
+
+This page is written for **LLM readers** — Claude, Codex, and the other
+agent hosts that connect to a Froglet instance over MCP. If you are a
+human, you probably want the [Quickstart](/learn/quickstart/) instead.
+
+## The contract
+
+When a user says some variant of "install Froglet locally," "set up Froglet
+on my machine," "run Froglet here," or "deploy Froglet for me":
+
+1. Call the `get_install_guide` MCP action on the Froglet tool. It returns
+   a structured response with:
+   - `steps` — an ordered list of shell commands to run
+   - `run_as: "user-host-shell"` — the commands run on the **user's host**,
+     not through Froglet itself
+   - `notes` — short explanations of what each step does
+2. Execute the commands one at a time through your host agent's shell
+   (Claude Code's Bash tool, Codex's shell, or an equivalent). Pause for
+   user approval on each step per your host agent's normal policy.
+3. After step 4 the local stack is up on `127.0.0.1:8080` (provider) and
+   `127.0.0.1:8081` (runtime), and the user's agent MCP config now
+   includes the local instance.
+
+## Action schema
+
+```
+tool: froglet
+action: get_install_guide
+target_agent: "claude-code" | "codex" | "openclaw"        // default: claude-code
+payment_rail: "lightning" | "stripe" | "x402"             // default: lightning
+```
+
+Both inputs are optional. If the user has not specified a target agent,
+default to `claude-code`. If the user has not specified a payment rail,
+default to `lightning` (mock mode — no credentials required; fine for
+getting started and for any user who wants to try the paid-deal flow
+without actually paying).
+
+## What to run the commands as
+
+**Do not** route installation commands through `invoke_service` or
+`run_compute`. Froglet is not self-installing — it cannot download its
+own binary to the user's filesystem, cannot mutate the user's docker
+compose state, and cannot generate agent config files on a machine it is
+not already running on.
+
+Installation commands run via the **host shell** your agent already has
+— the same shell you'd use for any other user-requested system change.
+On Claude Code that's the Bash tool; on Codex, the shell tool; on the
+OpenClaw plugin, whatever terminal the user has exposed.
+
+## Prerequisites you cannot install for the user
+
+Before step 1, the user's host needs:
+
+- **`curl`** — for fetching the install script (usually already present)
+- **Docker with Compose v2** — for step 4 (`docker compose up`)
+- **Linux x86_64 / arm64**, **macOS arm64**, or **macOS Intel with Rosetta**
+  — the signed binary covers these targets
+
+If the user is on Windows, the current story is "use WSL2." If the user
+does not have Docker installed and you (the LLM) have host permissions
+to install it, ask first — installing Docker is a meaningful system
+change and should not be silent.
+
+## Post-install verification
+
+After the four install steps, call the Froglet `status` action against
+the local instance at `127.0.0.1:8081`. A healthy install returns:
+
+- `healthy: true`
+- `provider_healthy: true`
+- `runtime_healthy: true`
+
+If `healthy: false`, check:
+
+1. Did the user set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` (step 4
+   already exports it, but a re-run under different env can miss it)?
+   The container logs a clear warning if this is missing.
+2. Is the user's Docker daemon reachable?
+3. For the Lightning rail, the mock mode needs no external state. For
+   Stripe or x402, the user needs valid credentials in the env snippet
+   the `setup-payment.sh` script wrote.
+
+## Residual constraints
+
+A few things the LLM cannot do on the user's behalf, even with full
+shell access:
+
+- **Real Lightning liquidity.** The default mock mode is sufficient for
+  the paid-deal flow locally, but to receive real Lightning payments the
+  user needs their own LND node. Point them at
+  [Lightning](/learn/payment-lightning/).
+- **Real Stripe account.** Stripe test keys work out of the box; the
+  user creates their own Stripe account for live use.
+- **Hosted Froglet instance.** Local install gives the user a local
+  stack. Hosting it publicly (so other agents can reach it) still
+  requires the user to run on a VM and expose a public URL — see the
+  GCP single-VM wrapper (`scripts/deploy_gcp_single_vm.sh`) or
+  equivalent.
+
+## If the user asks about uninstall
+
+There is no first-class uninstall action. Run `docker compose down -v`
+in the directory where the user ran the install block, then `rm -rf
+~/.local/bin/froglet-node` and `rm -rf ./.froglet ./data`. Confirm each
+destructive step with the user before running it.
+
+## Related
+
+- [Quickstart](/learn/quickstart/) — the human-reader equivalent of this
+  page. The copy-paste block there is what `get_install_guide` returns.
+- [Connect Agents](/learn/agents/) — what `setup-agent.sh --target X`
+  actually writes to the user's config.
+- [Payment Rails](/learn/payment-rails/) — the rail differences beyond
+  the default `lightning` mock mode.

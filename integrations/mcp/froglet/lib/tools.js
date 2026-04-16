@@ -8,7 +8,7 @@ function errorResult(error) {
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle)."
+  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). When the user asks to install Froglet locally, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime."
 
 function frogletToolInputSchema(config) {
   return {
@@ -18,7 +18,7 @@ function frogletToolInputSchema(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance for the runtime's current funds snapshot, list_settlement_activity for recent deal-level settlement state, get_payment_intent for the unpaid invoice/intent of a specific deal, get_invoice_bundle for the provider-side bundle artifact.",
+          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance for the runtime's current funds snapshot, list_settlement_activity for recent deal-level settlement state, get_payment_intent for the unpaid invoice/intent of a specific deal, get_invoice_bundle for the provider-side bundle artifact. get_install_guide returns the canonical shell commands for installing Froglet on the user's host — execute those through your own shell, not the Froglet runtime.",
         enum: [
           "discover_services",
           "get_service",
@@ -33,7 +33,8 @@ function frogletToolInputSchema(config) {
           "get_wallet_balance",
           "list_settlement_activity",
           "get_payment_intent",
-          "get_invoice_bundle"
+          "get_invoice_bundle",
+          "get_install_guide"
         ]
       },
       service_id: {
@@ -116,6 +117,18 @@ function frogletToolInputSchema(config) {
       deal_id: {
         type: "string",
         description: "Target deal id. Required for get_payment_intent and get_invoice_bundle."
+      },
+      target_agent: {
+        type: "string",
+        enum: ["claude-code", "codex", "openclaw"],
+        description:
+          "Agent target for get_install_guide. Defaults to claude-code; pick whichever agent will run on the user's machine after install."
+      },
+      payment_rail: {
+        type: "string",
+        enum: ["lightning", "stripe", "x402"],
+        description:
+          "Payment rail for get_install_guide. Defaults to lightning (mock mode; no wallet credentials required)."
       },
       timeout_secs: { type: "integer", minimum: 1, maximum: 600 },
       poll_interval_secs: { type: "number", minimum: 0.1, maximum: 10 },

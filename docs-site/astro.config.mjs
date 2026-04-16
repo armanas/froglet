@@ -38,6 +38,7 @@ export default defineConfig({
 							{ label: '⚡ Quickstart', slug: 'learn/quickstart' },
 							{ label: '☁️ Try In Cloud', slug: 'learn/cloud-trial' },
 							{ label: '🤖 Connect Agents', slug: 'learn/agents' },
+								{ label: '🦾 LLM Self-Install', slug: 'learn/llm-self-install' },
 							{ label: '💳 Payment Rails', slug: 'learn/payment-rails' },
 							{ label: '⚡ Lightning', slug: 'learn/payment-lightning' },
 							{ label: '💳 Stripe', slug: 'learn/payment-stripe' },

@@ -1,10 +1,15 @@
 import { after, before, describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, writeFile, rm } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
+import { join, dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 
 import { buildToolDefinitions, handleToolCall } from "../lib/tools.js"
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const REPO_ROOT = resolve(__dirname, "../../../../")
 
 let tmpDir
 let tokenPath
@@ -91,7 +96,8 @@ describe("tool definitions", () => {
       "get_wallet_balance",
       "list_settlement_activity",
       "get_payment_intent",
-      "get_invoice_bundle"
+      "get_invoice_bundle",
+      "get_install_guide"
     ])
     assert.match(tools[0].description, /provider_id/)
   })
@@ -168,6 +174,95 @@ describe("froglet MCP actions", () => {
       assert.equal(result.isError, undefined)
     } finally {
       restore()
+    }
+  })
+
+  it("returns the canonical install block for claude-code + lightning by default", async () => {
+    // The helper never makes an HTTP call, so no fetch mock is needed.
+    const result = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide" },
+      config
+    )
+    assert.equal(result.isError, undefined)
+    const text = result.content[0].text
+    assert.match(text, /target_agent: claude-code/)
+    assert.match(text, /payment_rail: lightning/)
+    assert.match(text, /run_as: user-host-shell/)
+    assert.match(text, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/armanas\/froglet\/main\/scripts\/install\.sh \| sh/)
+    assert.match(text, /\.\/scripts\/setup-agent\.sh --target claude-code/)
+    assert.match(text, /\.\/scripts\/setup-payment\.sh lightning/)
+    assert.match(text, /docker compose up --build -d/)
+    assert.match(text, /FROGLET_HOST_READABLE_CONTROL_TOKEN=true/)
+  })
+
+  it("swaps the agent and rail placeholders when the LLM picks different targets", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide", target_agent: "codex", payment_rail: "stripe" },
+      config
+    )
+    assert.equal(result.isError, undefined)
+    const text = result.content[0].text
+    assert.match(text, /target_agent: codex/)
+    assert.match(text, /payment_rail: stripe/)
+    assert.match(text, /\.\/scripts\/setup-agent\.sh --target codex/)
+    assert.match(text, /FROGLET_STRIPE_SECRET_KEY=sk_test_\.\.\. \.\/scripts\/setup-payment\.sh stripe/)
+    assert.match(text, /set -a && \. \.\/\.froglet\/payment\/stripe\.env/)
+  })
+
+  it("rejects unknown target_agent or payment_rail with a clear error", async () => {
+    const badAgent = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide", target_agent: "emacs" },
+      config
+    )
+    assert.equal(badAgent.isError, true)
+    assert.match(badAgent.content[0].text, /target_agent must be one of/)
+
+    const badRail = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide", payment_rail: "gold-pieces" },
+      config
+    )
+    assert.equal(badRail.isError, true)
+    assert.match(badRail.content[0].text, /payment_rail must be one of/)
+  })
+
+  it("keeps the install guide synchronized with README and docs-site quickstart", async () => {
+    // The canonical copy-paste block lives in three places today: the MCP
+    // action response, README.md, and docs-site/.../quickstart.mdx. If any
+    // one drifts, humans and LLMs will disagree about what to run. This
+    // test fails if the MCP output no longer matches the README block.
+    const result = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide" },
+      config
+    )
+    const text = result.content[0].text
+    const steps = text
+      .split("\n")
+      .filter((line) => /^\s*\d+\.\s+/.test(line))
+      .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
+    assert.equal(steps.length, 4, `expected 4 commands, got ${steps.length}`)
+
+    const readme = await readFile(join(REPO_ROOT, "README.md"), "utf8")
+    for (const step of steps) {
+      assert.ok(
+        readme.includes(step),
+        `README.md is missing install-guide step: ${step}`
+      )
+    }
+
+    const quickstart = await readFile(
+      join(REPO_ROOT, "docs-site/src/content/docs/learn/quickstart.mdx"),
+      "utf8"
+    )
+    for (const step of steps) {
+      assert.ok(
+        quickstart.includes(step),
+        `docs-site quickstart is missing install-guide step: ${step}`
+      )
     }
   })
 

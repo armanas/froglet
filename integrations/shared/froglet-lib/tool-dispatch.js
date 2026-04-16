@@ -368,6 +368,89 @@ async function handleDealPaymentIntent(args, config, includeRaw) {
   return renderResult(lines, response, includeRaw)
 }
 
+const SUPPORTED_INSTALL_AGENTS = new Set(["claude-code", "codex", "openclaw"])
+const SUPPORTED_INSTALL_RAILS = new Set(["lightning", "stripe", "x402"])
+
+function renderInstallBlock({ targetAgent, paymentRail }) {
+  // The copy-paste install block is identical across targets and rails.
+  // Only the setup-agent / setup-payment args differ. Keep this in sync
+  // with README.md and docs-site/src/content/docs/learn/quickstart.mdx.
+  const paymentExtra =
+    paymentRail === "stripe"
+      ? "FROGLET_STRIPE_SECRET_KEY=sk_test_... "
+      : paymentRail === "x402"
+        ? "FROGLET_X402_WALLET_ADDRESS=0x... "
+        : ""
+  const stepOne =
+    "curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh"
+  const stepTwo = `./scripts/setup-agent.sh --target ${targetAgent}`
+  const stepThree = `${paymentExtra}./scripts/setup-payment.sh ${paymentRail}`
+  const stepFour = `set -a && . ./.froglet/payment/${paymentRail}.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d`
+  return [stepOne, stepTwo, stepThree, stepFour]
+}
+
+async function handleInstallGuide(args, _config, includeRaw) {
+  // Surface guidance for an LLM whose user has just asked to install Froglet
+  // locally. The LLM is expected to execute the returned commands through
+  // its own host shell (Claude Code's Bash, Codex's shell, etc.) — NOT
+  // through the Froglet runtime, which has no way to touch the user's host
+  // filesystem or docker socket.
+  const rawTarget =
+    typeof args.target_agent === "string" && args.target_agent.trim().length > 0
+      ? args.target_agent.trim().toLowerCase()
+      : "claude-code"
+  if (!SUPPORTED_INSTALL_AGENTS.has(rawTarget)) {
+    throw new Error(
+      `target_agent must be one of: ${[...SUPPORTED_INSTALL_AGENTS].join(", ")}`
+    )
+  }
+  const rawRail =
+    typeof args.payment_rail === "string" && args.payment_rail.trim().length > 0
+      ? args.payment_rail.trim().toLowerCase()
+      : "lightning"
+  if (!SUPPORTED_INSTALL_RAILS.has(rawRail)) {
+    throw new Error(
+      `payment_rail must be one of: ${[...SUPPORTED_INSTALL_RAILS].join(", ")}`
+    )
+  }
+
+  const steps = renderInstallBlock({ targetAgent: rawTarget, paymentRail: rawRail })
+  const payload = {
+    target_agent: rawTarget,
+    payment_rail: rawRail,
+    steps,
+    run_as: "user-host-shell",
+    notes: [
+      "Run these commands on the user's machine, via your host agent's shell execution (e.g. Claude Code's Bash tool). Do NOT route them through the Froglet runtime — Froglet cannot install itself on the user's host.",
+      "Step 1 downloads and installs the signed froglet-node binary to ~/.local/bin.",
+      `Step 2 writes the ${rawTarget} MCP config so the agent can talk to the local Froglet.`,
+      `Step 3 generates the ${rawRail} payment-rail env snippet under ./.froglet/payment/.`,
+      "Step 4 loads that snippet, enables host-readable control tokens, and brings up the provider+runtime via docker compose.",
+      "After step 4, the local stack listens on 127.0.0.1:8080 (provider) and 127.0.0.1:8081 (runtime); the agent MCP config points there.",
+      `${
+        rawRail === "stripe"
+          ? "Stripe: set FROGLET_STRIPE_SECRET_KEY=sk_test_... before running step 3."
+          : rawRail === "x402"
+            ? "x402: set FROGLET_X402_WALLET_ADDRESS=0x... before running step 3."
+            : "Lightning: step 3 ships in mock mode by default; no wallet credentials required."
+      }`
+    ]
+  }
+
+  const lines = [
+    `target_agent: ${rawTarget}`,
+    `payment_rail: ${rawRail}`,
+    `run_as: ${payload.run_as}`,
+    "",
+    "Commands to execute on the user's host (one per line):",
+    ...steps.map((step, index) => `  ${index + 1}. ${step}`),
+    "",
+    "Notes:",
+    ...payload.notes.map((note) => `  - ${note}`)
+  ]
+  return renderResult(lines, payload, includeRaw)
+}
+
 async function handleDealInvoiceBundle(args, config, includeRaw) {
   const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
   if (dealId.length === 0) {
@@ -415,6 +498,8 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleDealPaymentIntent(args, config, includeRaw)
     case "get_invoice_bundle":
       return handleDealInvoiceBundle(args, config, includeRaw)
+    case "get_install_guide":
+      return handleInstallGuide(args, config, includeRaw)
     // Removed actions — return clear error messages
     case "tail_logs":
       throw new Error("Log tailing removed; use systemd journal directly")
