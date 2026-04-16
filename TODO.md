@@ -1,6 +1,6 @@
 # Froglet TODO
 
-As of 2026-04-14, this file tracks the release backlog for taking Froglet from verified local/distributed testing to a public hosted launch.
+As of 2026-04-16, this file tracks the release backlog for taking Froglet from verified local/distributed testing to a public hosted launch.
 
 ## Legend
 
@@ -34,6 +34,23 @@ Items marked 🔭 are intentionally outside that first public release bar. They 
 
 Beyond MVP currently includes: Cursor host validation, AWS automation, PayPal, GPU work, broader data integrations, long-task batch support, Matrix and Telegram distribution, arXiv, and wider cross-posting channels that do not materially change whether the first public release is usable.
 
+## Post-Launch v0.2 Scope
+
+Within the 🔭 bucket, these items are the intended scope of an explicit v0.2 release in the first two to three months after initial launch, as opposed to deferred indefinitely. Separating them from the "someday" bucket makes the near-term roadmap visible.
+
+- Long-task batch support (Order 44)
+- Cursor MCP host validation (Order 41)
+- PayPal support (Order 43)
+- Dev.to technical deep dive (Order 36)
+- One additional external data integration (subset of Order 46)
+
+Items that remain 🔭 without a near-term target:
+
+- GPU support (Order 45) — waits on a real workload driving the requirement
+- Matrix integration (Order 47) and Telegram integration (Order 48) — only if user demand materializes
+- arXiv submission (Order 40) — only if there is a paper-worthy artifact
+- AWS deploys (Order 42) — only after GCP is proven and there is user demand for AWS-native deployment
+
 ## External Constraints Informing This Backlog
 
 - Astro now steers new Cloudflare deployments toward Workers rather than legacy Pages-first assumptions, so docs hosting should default to Workers/Workers Builds for new setup: <https://docs.astro.build/en/guides/deploy/cloudflare/>
@@ -52,11 +69,14 @@ Beyond MVP currently includes: Cursor host validation, AWS automation, PayPal, G
 ## Recommended Release Order
 
 1. Lock the public/private repo boundary and extract marketplace work that should not stay in the public repo.
-2. Publish Docker artifacts and stand up the hosted docs site plus the hosted Froglet environment.
-3. Make hosted verification repeatable: health, MCP, payment, and rollback checks.
-4. Close the remaining MVP host-validation gap on Claude.
-5. Prepare the release packet: changelog, screenshots, demo flow, pricing/payment notes, launch FAQs.
-6. Launch from owned channels first, then distribute to community channels that fit the audience and rules.
+2. Clear the "Froglet" name for public use and purchase the primary domain and subdomain baseline.
+3. Publish Docker artifacts and stand up the hosted environment services (TLS edge, Lightning, Postgres, webhooks, rate limiting, logs, status page).
+4. Stand up the hosted docs site and the hosted Froglet environment behind the new domain.
+5. Make hosted verification repeatable: health, MCP, payment, and rollback checks.
+6. Close the remaining MVP host-validation gap on Claude, with a dated fallback so it cannot block launch indefinitely.
+7. Complete launch hygiene: security pass, community scaffolding, license and contribution policy, privacy posture, feedback loop.
+8. Prepare the release packet: changelog, screenshots, demo flow, pricing/payment notes, launch FAQs.
+9. Launch from owned channels first, then distribute to community channels that fit the audience and rules, driven by one distribution matrix rather than ad hoc per-channel posting.
 
 ## Public Boundary And Repo Hygiene
 
@@ -96,6 +116,43 @@ Definition of done: The same release gate used before launch passes against the 
 
 Execution: 🤖 Entirely LLM-doable, assuming the same local/cloud credentials already used in prior validation remain available.
 
+## Domain And Naming
+
+### ⬜ 🚀 🧑 Basic name and registry coherence check for "Froglet"
+Order: 50
+
+Specification: Froglet is an open source protocol name, not a startup brand, so this is a lightweight check rather than a full trademark clearance. Do a basic web search plus a USPTO TESS search for obvious conflicts in the software or infrastructure space (the goal is only to avoid stepping on a clearly-conflicting existing name), and verify the Docker org, npm scope, PyPI name, and GitHub org are coherent so the protocol does not collide with itself across registries. If usage later picks up and a commercial entity is formed, that entity will use a different name, so brand clearance is explicitly out of scope here.
+
+Definition of done: There is a short written note confirming no obvious name conflicts in the relevant package registries and no flagrant trademark collision in the software space, and the relevant package and registry names are either owned or confirmed available.
+
+Execution: 🧑 Manual-heavy. The LLM can run the public searches and draft the note, but the decision to proceed is manual.
+
+### ⬜ 🚀 🤝 Purchase the primary domain and set the DNS and email baseline
+Order: 51
+
+Specification: Purchase the primary Froglet domain (candidates: `froglet.sh`, `froglet.dev`, `froglet.io`, `froglet.app`) after the trademark sweep clears. Pick a registrar that also handles DNS cleanly (Cloudflare Registrar, Porkbun, or Namecheap). Configure DMARC, SPF, and DKIM for the email domain before the launch post mentions any contact address, so outbound mail is not silently filtered.
+
+Definition of done: The domain is owned, DNS is authoritative at the chosen provider, and email authentication records exist for the launch email domain.
+
+Execution: 🤝 Mixed. The LLM can document the registrar choice and produce the DNS and email records, but a human must own the purchase and the payment method.
+
+### ⬜ 🚀 🤝 Allocate the subdomain plan
+Order: 52
+
+Specification: Decide and document the subdomain layout for the launch surface. Froglet is a protocol, not a startup, so the apex is the open source project landing page rather than a company marketing site. Baseline plan:
+
+- `froglet.X` — protocol landing page (what it is, link to GitHub, docs, and the hosted instance)
+- `docs.froglet.X` — docs site (Astro Starlight from the public repo)
+- `ai.froglet.X` — the hosted Froglet provider environment (the reference protocol instance)
+- `marketplace.froglet.X` — the marketplace read API served from `froglet-services`
+- `status.froglet.X` — public status page
+
+All subdomains should be provisioned with valid TLS before launch day.
+
+Definition of done: The subdomain map is written down, DNS records exist for each planned subdomain, TLS is valid on each, and every subdomain either serves its intended content or returns an explicit placeholder page.
+
+Execution: 🤝 Mixed. The LLM can configure DNS and deploy scripts, but a human must own the registrar and cloud accounts.
+
 ## Hosting And Deploy
 
 ### ⬜ 🚀 🤝 Host the documentation website
@@ -132,6 +189,8 @@ Specification: Build a repeatable GCP deploy path that publishes images, provisi
 
 Definition of done: A single documented command or CI job can deploy a fresh environment or update the existing one, and the post-deploy smoke suite confirms health, MCP reachability, and the core flow.
 
+Related: Order 26 (operator deployment guide) should be derived from these scripts, not written as a parallel document.
+
 Execution: 🤝 Mixed. The LLM can write and test the deploy scripts, but a human must provide GCP credentials, service accounts, and any final production approvals.
 
 ### ⬜ 🔭 🤝 Automate AWS deploys
@@ -160,6 +219,118 @@ Specification: Define the minimum hosted operations layer: logs, uptime checks, 
 Definition of done: An operator can detect a broken deploy, identify the failing component, and roll back to the previous known-good state without improvising.
 
 Execution: 🤝 Mixed. The LLM can prepare runbooks and configs, but a human must connect real alert destinations and decide the on-call path.
+
+## Hosted Environment Services
+
+These are the concrete services the hosted Froglet environment depends on. They are called out separately because "host Froglet" above conflates a dozen operational concerns into one bullet. Each item here is its own surface with its own failure mode, and each one has bitten hosted services at launch before.
+
+### ⬜ 🚀 🤝 Reverse proxy and TLS automation
+Order: 53
+
+Specification: Stand up the public HTTPS edge for the hosted Froglet environment. Caddy or Cloudflare in front of the node, with automatic certificate issuance and renewal, HTTP-to-HTTPS redirect, and HSTS. The edge must handle the clearnet entry point and any webhook receivers on the same hostname tree.
+
+Definition of done: Public HTTPS terminates correctly for all launch subdomains, certificates auto-renew, and a documented runbook covers cert failure recovery.
+
+Execution: 🤝 Mixed. The LLM can produce the config and renewal checks, but a human must own DNS and the hosting account.
+
+### ⬜ 🚀 🤝 Hosted Lightning node beyond regtest
+Order: 54
+
+Specification: Decide between self-hosting LND or using Voltage or Greenlight, then stand up the chosen path with real channel liquidity appropriate to expected volume. The node must be reachable from the public Froglet provider and from external peers. This is distinct from Order 22, which verifies the signed flow against the hosted node; this item is about the node existing at all.
+
+Definition of done: A real Lightning node is running, has inbound and outbound capacity, is monitored, and is wired into the Froglet provider's settlement adapter with documented credentials injection.
+
+Execution: 🤝 Mixed. The code is ready; the node choice, funding decision, and key custody are manual.
+
+### ⬜ 🚀 🤖 LND channel-state backup automation
+Order: 55
+
+Specification: Automate static channel backup export and off-site replication. Losing channel state on a live Lightning node means losing money with no recovery path. Backups must be encrypted, replicated to at least one off-host destination, and restoration must be tested before launch.
+
+Definition of done: Channel backups rotate automatically, off-site copies exist, a test restore has been performed successfully on a non-production node, and the runbook documents the recovery procedure.
+
+Execution: 🤖 Entirely LLM-doable given access to the hosting and storage accounts.
+
+### ⬜ 🚀 🤝 Postgres hosting decision and setup
+Order: 56
+
+Specification: Decide between a managed Postgres (Cloud SQL, Neon, Supabase) or Postgres on the same VM for the marketplace indexer and read API state. The decision affects cost, backup posture, and connection pooling. Provision the chosen option, load the schema, and wire the indexer and API to it.
+
+Definition of done: Postgres is reachable from the indexer and API, automated backups exist, and the migration path from empty to populated state is scripted.
+
+Execution: 🤝 Mixed. The LLM can automate provisioning and schema, but a human must accept the cost and hosting choice.
+
+### ⬜ 🚀 🤖 Stripe webhook receiver
+Order: 57
+
+Specification: Expose a public HTTPS endpoint that receives Stripe webhook events, verifies the signature, deduplicates by event id, and updates settlement state idempotently. The endpoint must be reachable only via HTTPS with a valid Stripe signing secret and must survive Stripe retry semantics without double-settling.
+
+Definition of done: Stripe delivers sandbox events to the hosted endpoint, signature verification rejects forged events, idempotent retries do not double-settle, and failures surface in logs and alerts.
+
+Execution: 🤖 Entirely LLM-doable once the Stripe account and signing secret are available.
+
+### ⬜ 🚀 🤖 Rate limiting and abuse prevention at the edge
+Order: 58
+
+Specification: A public compute endpoint without rate limiting becomes an abuse vector within hours of being discoverable. Add per-IP and per-identity rate limits at the edge, with a documented policy covering limits, burst, lockout behavior, and exceptions for signed internal traffic.
+
+Definition of done: The rate limit policy is written, enforced at the edge, observable via logs or metrics, and easy to tune without a code deploy.
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🚀 🤝 Tor hidden service decision and setup
+Order: 59
+
+Specification: The README currently claims signed deals can be served over clearnet or Tor onion endpoints. Decide whether the first hosted release ships with an onion endpoint or whether that sentence is softened until a follow-up release. If shipping, configure a Tor hidden service, verify the node serves the same signed artifacts on both transports, and document the setup. If not shipping, update the README and docs so no public material overpromises.
+
+Definition of done: Either an onion endpoint is live and documented, or the README and docs no longer promise Tor support at launch. The decision is reflected consistently in all public materials.
+
+Execution: 🤝 Mixed. The LLM can configure the hidden service and run verification, but a human must approve operating an onion endpoint and any associated policy.
+
+### ⬜ 🚀 🤖 Log aggregation for the hosted environment
+Order: 60
+
+Specification: Ship hosted-node and related service logs to a single queryable location. A minimal setup is acceptable (journald plus a simple tail-to-file ingest, or free-tier Loki or Grafana Cloud), but the operator must be able to answer "what happened at 03:17 UTC" without SSHing into the box.
+
+Definition of done: Logs from the node, reverse proxy, indexer, and webhook receiver land in one queryable place with a documented retention window and access procedure.
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🚀 🤝 Operator admin surface
+Order: 61
+
+Specification: A minimal authenticated surface for the operator to view node health, in-flight deals, settlement queue state, and invoke a kill switch or paused-mode toggle. This does not need to be a full dashboard; it needs to be reachable, authenticated, and sufficient for incident response without editing config files or restarting services.
+
+Definition of done: The operator can see the state they need and take the actions they need during an incident, using only the admin surface.
+
+Execution: 🤝 Mixed. The LLM can build it; a human must decide the authn path and any exposure boundary.
+
+### ⬜ 🚀 🤖 Key and identity rotation runbook
+Order: 62
+
+Specification: Document and rehearse the procedure for rotating the node's identity key, Stripe signing secret, Lightning macaroons, and any MCP tokens. A compromise response where the operator has no documented rotation procedure is a multi-hour outage.
+
+Definition of done: There is a single runbook covering each secret's rotation steps, the rehearsal has been performed on a non-production instance, and the runbook links to the monitoring expectations during rotation.
+
+Execution: 🤖 Entirely LLM-doable given access to the hosted environment and its secrets.
+
+### ⬜ 🚀 🤝 Public status page
+Order: 63
+
+Specification: Expected baseline for any public hosted service. Use a free tier (UptimeRobot, BetterStack free, or self-hosted Uptime Kuma) that can monitor the docs site, the hosted node, and the marketplace read API, and publish a public URL the launch post can link to.
+
+Definition of done: A public status URL exists, is monitoring the launch-critical endpoints, and is linked from the launch page and docs.
+
+Execution: 🤝 Mixed. The LLM can configure the checks; a human chooses the provider and owns the account.
+
+### ⬜ 🚀 🤖 Deploy the marketplace read API and indexer
+Order: 64
+
+Specification: The read side of the marketplace (indexer plus API) is already built in `froglet-services`. Deploy the publicly-appropriate subset behind `marketplace.froglet.X` with Postgres wired in, health checks, and the same smoke suite used for the core node. Confirm which endpoints are public at launch versus held for later, and document that boundary.
+
+Definition of done: The read API responds on its public URL, the indexer is tailing the feed, the projected endpoints return real data, and the public surface matches the documented public contract with no private-only routes exposed.
+
+Execution: 🤖 Entirely LLM-doable. Boundary decisions about which routes are public are manual, but the surface itself is small.
 
 ## Packaging And Agent Surfaces
 
@@ -329,21 +500,32 @@ Definition of done: Already satisfied for the current tree. Keep docs checks in 
 
 Execution: 🤖 Entirely LLM-doable.
 
-### ⬜ 🚀 🤝 Build the public website or startup front
+### ⬜ 🚀 🤝 Finish the public protocol landing page and resolve launch blockers
 Order: 27
 
-Specification: Define the non-docs public-facing site or front page that explains Froglet in one pass for early adopters. This should link cleanly to docs, hosted Froglet, GitHub, and launch posts, and it should make the hosted versus self-hosted distinction obvious.
+Specification: The site in the `froglet-website` repo is the public landing page for the Froglet protocol, not a startup marketing site. There is no company yet; a commercial entity may be formed later under a different name if and when usage picks up. The site's job is therefore narrow: explain what the protocol is, link to GitHub and docs, and point to the hosted reference instance at `ai.froglet.X` and the marketplace read API at `marketplace.froglet.X`. It is already well underway and is closer to "ship" than to "build," but significant current content assumes a startup framing that needs to come out before launch.
 
-Definition of done: There is a public landing/front page with working navigation, crisp product framing, demo or screenshots, and clear calls to the hosted version and technical docs.
+Remaining work (concrete blocker list):
 
-Execution: 🤝 Mixed. The LLM can build the site, but a human should approve positioning, branding, domain, and any customer-facing claims.
+- Replace the hardcoded `"#"` GitHub URL in `src/lib/constants.ts` with the real public repo URL.
+- Remove or hide the footer Discord and Twitter placeholder `href="#"` links. There are no official community channels yet; either create them or hide the icons entirely rather than ship broken links.
+- Remove the visible "PLACEHOLDER · CONNECT MARKETPLACE API TO GO LIVE" text in the MarketplaceTraction section; either wire it to the real read API (Order 64) or replace with a static screenshot.
+- Implement actual docs page routing so `/docs` links go somewhere useful (most likely, redirect to `docs.froglet.X` once Order 18 lands).
+- Remove or repurpose the "Pro" and "Enterprise" pricing tiers. There is no SaaS product being sold; the site should not imply one. Either drop the pricing page entirely, or reframe as "hosted access" with clear "reference instance, no SLA, no commercial entity behind it" language. The decision to reintroduce pricing waits until a commercial entity exists under a different name.
+- Drop `sales@` contact addresses; there is no sales function. Keep only a `hello@` or `contact@` address, and verify it receives mail before publishing it; coordinate with Order 51.
+- Stand up a deploy pipeline (the repo has `fly.toml` but no CI deploy); pick one path and document it.
+- Make the hosted-versus-self-hosted distinction explicit: self-hosted Froglet is the default; `ai.froglet.X` is a convenience reference instance, not a commercial offering.
+
+Definition of done: There is a public protocol landing page with working navigation, all blocker items above resolved, framing that does not imply a company that does not exist, clear calls to GitHub, docs, the hosted reference instance, and the marketplace read API, and an automated or documented deploy path.
+
+Execution: 🤝 Mixed. The LLM can implement the fixes and deploy config, but a human should approve positioning and any claims about hosted availability or support.
 
 ### ⬜ 🚀 🤖 Add an operator deployment and verification guide
 Order: 26
 
-Specification: Write one operator-focused guide that covers image selection, tokens, compose or cloud deployment, hosted smoke checks, payment verification, and rollback. This should be the document followed during release week.
+Specification: Write one operator-focused guide that covers image selection, tokens, compose or cloud deployment, hosted smoke checks, payment verification, and rollback. This should be the document followed during release week. The guide should be derived from the Order 15 deploy automation (quoting scripts and expected output) rather than written as an independent parallel document, so the two cannot drift.
 
-Definition of done: A new operator can deploy and verify the stack from the guide without relying on tribal knowledge or old chat logs.
+Definition of done: A new operator can deploy and verify the stack from the guide without relying on tribal knowledge or old chat logs, and the guide cites the deploy automation as its source of truth.
 
 Execution: 🤖 Entirely LLM-doable.
 
@@ -374,7 +556,96 @@ Definition of done: A tagged release exists with a changelog, install paths, ima
 
 Execution: 🤝 Mixed. The LLM can draft and assemble the release, but a human typically owns the final publish action and version choice.
 
+## Launch Hygiene
+
+These items are cheap individually, easy to forget, and highly visible when missing. They are not covered by the sections above.
+
+### ⬜ 🚀 🤖 Pre-launch security pass
+Order: 65
+
+Specification: One-shot review that combines dependency audits, secret scanning across the whole git history of the public repo, and a short threat model sketch for the public hosted node. The point is not to stand up a security program; it is to catch the high-probability misses (committed tokens, vulnerable transitive dependencies, unauthenticated internal endpoints) before the launch post hits aggregators.
+
+Definition of done: A written security-pass note exists covering dep audit output, secret scan output across history, and a short threat model for the hosted surface. Any findings are either fixed or explicitly accepted with a documented reason.
+
+Execution: 🤖 Entirely LLM-doable. Remediation may require human approval if it changes public behavior.
+
+### ⬜ 🚀 🤖 Add CODE_OF_CONDUCT, issue and PR templates, and enable Discussions
+Order: 66
+
+Specification: Standard public repo scaffolding. Add a CODE_OF_CONDUCT.md (Contributor Covenant or similar), bug and feature issue templates, a PR template that mirrors the release gate checklist, and enable GitHub Discussions for non-issue conversation.
+
+Definition of done: All four items are present in the public repo, referenced from the README, and the templates render correctly when opening a new issue or PR.
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🚀 🧑 License and contribution policy decision
+Order: 67
+
+Specification: The repo is Apache-2.0. Decide whether external contributions require a CLA, a DCO sign-off, or nothing beyond the LICENSE. Document the decision in CONTRIBUTING.md and install any required bot or workflow. This has legal consequences and should not be decided by automation.
+
+Definition of done: CONTRIBUTING.md states the contribution policy, any required bots are installed, and the first outside PR has a documented path through the process.
+
+Execution: 🧑 Manual-heavy. The LLM can draft the policy once a direction is chosen.
+
+### ⬜ 🚀 🤝 Privacy and cookie posture on the landing page and docs site
+Order: 68
+
+Specification: If the protocol landing page or docs site adds analytics, session replay, or any third-party script, they need a privacy policy, a cookie notice where required, and a documented data-retention position. A zero-analytics launch is a valid choice and skips most of this, but the decision has to be explicit, not accidental. Since there is no commercial entity behind the site, the privacy policy should be written as an open source project notice rather than a company policy.
+
+Definition of done: Either the sites run with no trackable third-party scripts and that is documented, or a privacy policy and cookie notice exist and match the actual third parties in use.
+
+Execution: 🤝 Mixed. The LLM can draft the policy; a human accepts the legal posture.
+
+### ⬜ 🚀 🤖 Post-launch feedback loop
+Order: 69
+
+Specification: Define how the project will learn from the first four weeks after launch. Minimum set: analytics choice (or explicit decision to skip), a single inbox or channel for feedback, and a weekly triage ritual that reviews issues, discussions, and direct feedback. Without this, early signal gets lost.
+
+Definition of done: The analytics choice is implemented or explicitly skipped, the feedback channel is documented in the README and launch post, and the first triage run is scheduled on the calendar.
+
+Execution: 🤖 Entirely LLM-doable for implementation; the decision to skip analytics is manual.
+
+## Security Hardening Follow-ups
+
+These items are defense-in-depth extensions beyond the closed-out findings from the 2026-04-16 security review. None is a known exploitable vulnerability; each narrows a residual risk or restores a capability that was intentionally scoped out of the initial fix.
+
+### ⬜ 🔭 🤖 Extend IP pinning to operator-configured URL paths (FROGLET_EGRESS_MODE=strict)
+Order: 70
+
+Specification: The Node MCP / OpenClaw integration already IP-pins outbound requests on the LLM-controlled `request.provider_url` path via the `pinnedJsonRequest` helper added in `integrations/shared/froglet-lib/url-safety.js`. Operator-configured `runtimeUrl` and `providerUrl` still go through stock `fetch`, which re-resolves DNS per request. An operator whose DNS resolver is compromised could therefore be rebound. Extend pinning to those paths behind an explicit opt-in `FROGLET_EGRESS_MODE=strict` environment flag so enterprise and high-assurance deployments get uniform pinning without forcing the custom dispatcher on everyone. Thread the same `pin` option through `frogletRequest` and `frogletRequestWithStatus` in `integrations/shared/froglet-lib/froglet-client.js`, validate the operator-configured URLs at config-load time using the same `validateProviderUrl` helper, and document the flag in the integrations README.
+
+Definition of done: When `FROGLET_EGRESS_MODE=strict` is set, every outbound HTTP request issued by the Node integrations goes through a DNS-pinned dispatcher; when unset, behavior is unchanged. A test fixture confirms the pinned path is used in strict mode and stock `fetch` is used otherwise.
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🔭 🤖 Cryptographic offer-to-descriptor binding at the service layer
+Order: 71
+
+Specification: `validate_offer_artifact` in `froglet-protocol` enforces `offer.signer == offer.payload.provider_id` but does not verify that `offer.payload.descriptor_hash` refers to a descriptor actually signed by the same provider. This is consistent with the rest of the kernel, which stays storage-free, so the check cannot live there. Add it at the service layer in `froglet-services/services/marketplace-node`: before accepting an offer, look up the referenced descriptor by hash in Postgres and confirm the stored descriptor's `signer` matches the offer's `signer`. Reject otherwise. This closes a low-impact integrity gap where an attacker who controls provider A could attach a valid offer referencing a `descriptor_hash` that was never actually signed by A.
+
+Definition of done: The marketplace register handler and the indexer offer-projection path both run the descriptor-lookup binding check; tests cover the accept case, reject case when the descriptor is absent, and reject case when the descriptor exists but has a different signer.
+
+Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🔭 🤝 Restore Tor `.onion` routing via the LLM-controlled `provider_url` surface
+Order: 72
+
+Specification: The LLM-controlled `provider_url` on the Node integration currently rejects `.onion` hostnames with a clear error pointing the caller at the Rust runtime, which handles Tor natively. That preserves correctness at the cost of one capability: callers cannot point `get_service` or `invoke_service` directly at a Tor onion provider via the tool-argument override. Add it back by introducing a `torSocksDispatcher(torSocksUrl)` helper in `integrations/shared/froglet-lib/url-safety.js` that wraps the established `socks-proxy-agent` package (or an equivalent audited SOCKS5 client), read `FROGLET_TOR_SOCKS_URL` from the environment, and replace the `.onion` rejection branch with dispatcher construction. Adding a production dependency requires human review.
+
+Definition of done: `.onion` hostnames on the LLM-controlled path are routed via a SOCKS5 dispatcher when `FROGLET_TOR_SOCKS_URL` is set, rejected with a clear error when unset, and tests cover both. The new dependency is called out in the commit body for reviewer attention.
+
+Execution: 🤝 Mixed. The LLM can implement and test; a human should review the new production dependency before it lands.
+
 ## Zero-Cost Launch Channels
+
+### ⬜ 🚀 🧑 Build the launch distribution matrix
+Order: 31a
+
+Specification: Before publishing any individual launch post, produce one distribution plan that lists every target channel in priority order, the tailored copy for each, the post timing, and the per-channel rules check (HN guidelines, Reddit subreddit rules, Lobsters self-promo ratio, Product Hunt vote-solicitation rules, each community's norms). The individual per-channel tasks below (blog, HN, Reddit, X/LinkedIn, communities, Dev.to, Product Hunt, Indie Hackers, Lobsters, arXiv) execute against this plan rather than being planned ad hoc.
+
+Definition of done: A single distribution matrix document exists, lists each target channel with tailored copy, timing, and rules check, and every individual channel post below references it as its source.
+
+Execution: 🧑 Manual-heavy. The LLM can produce the draft matrix and per-channel copy variants; a human owns final channel selection and posting identity.
 
 ### ⬜ 🚀 🧑 Publish the launch post on your own blog
 Order: 31
@@ -433,7 +704,7 @@ Execution: 🧑 Manual-heavy. The LLM can draft the technical framing, but a hum
 ### ⬜ 🔭 🧑 Publish a Dev.to technical deep dive
 Order: 36
 
-Specification: Write a technical post that teaches something concrete, such as how Froglet bridges MCP, hosted runtime, and payment flows, rather than just repeating release marketing. This should create searchable long-tail value.
+Specification: Write a technical post that teaches something concrete, such as how Froglet bridges MCP, hosted runtime, and payment flows, rather than just repeating the release announcement. This should create searchable long-tail value.
 
 Definition of done: A Dev.to post is live, technically useful on its own, and links back to the docs and release.
 
@@ -492,6 +763,8 @@ Order: 11
 Specification: Supply valid Claude auth, keep the compose or hosted stack up, and rerun the same project-config MCP smoke that already works through Codex.
 
 Definition of done: Claude host validation is either green or precisely classified.
+
+Fallback: if Claude auth remains blocked by 2026-05-15, ship with Claude host validation explicitly classified as pending. The release notes and launch post must link to the specific auth or account blocker so the gap is visible and not hidden. This prevents a single external dependency from blocking the launch indefinitely.
 
 Execution: 🤝 Mixed.
 
