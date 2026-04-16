@@ -128,64 +128,39 @@ Hosted trial docs: [ai.froglet.dev/learn/cloud-trial](https://ai.froglet.dev/lea
 
 ### Run Locally
 
-The local path is the public repo's primary launch surface:
-
-1. Install Froglet
-2. Connect an agent
-3. Connect a payment rail
-
-Install the latest tagged `froglet-node` release into `~/.local/bin`:
+Copy-paste the block below to go from zero to a running local stack with
+Lightning mock settlement and a ready-to-use Claude Code MCP config:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
-```
-
-Generate the local agent config:
-
-```bash
 ./scripts/setup-agent.sh --target claude-code
-./scripts/setup-agent.sh --target codex
-./scripts/setup-agent.sh --target openclaw
-```
-
-If you plan to use that config against the Docker Compose stack, start Compose
-with `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so the generated host token path
-actually exists and is readable on the host.
-
-Generate the payment-rail env snippet:
-
-```bash
 ./scripts/setup-payment.sh lightning
-FROGLET_STRIPE_SECRET_KEY=sk_test_... ./scripts/setup-payment.sh stripe
-FROGLET_X402_WALLET_ADDRESS=0x... ./scripts/setup-payment.sh x402
+set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
 ```
 
-On the current public local runtime path, the Stripe and x402 adapters reuse
-the configured numeric service price directly. They do not perform FX
-conversion from sats into backend-native fiat or token units.
+That runs in four independent steps:
 
-Bring up the default local stack after loading the payment snippet you
-generated:
-
-```bash
-set -a
-. ./.froglet/payment/lightning.env
-set +a
-export FROGLET_HOST_READABLE_CONTROL_TOKEN=true
-docker compose up --build -d
-```
-
-Replace `lightning.env` with `stripe.env` or `x402.env` when that is the rail
-you configured.
-
-That starts provider and runtime on `127.0.0.1`.
+1. **Install** — downloads the latest signed `froglet-node` binary into
+   `~/.local/bin`.
+2. **Connect an agent** — generates `.mcp.json` (or the target's equivalent)
+   pointed at the local provider + runtime. Swap `claude-code` for `codex`
+   or `openclaw` if that is your agent.
+3. **Connect a payment rail** — writes a `./.froglet/payment/lightning.env`
+   snippet. Swap `lightning` for `stripe` (requires `FROGLET_STRIPE_SECRET_KEY=sk_test_…`)
+   or `x402` (requires `FROGLET_X402_WALLET_ADDRESS=0x…`). The Stripe and
+   x402 adapters currently reuse the configured numeric service price
+   directly — no FX conversion from sats.
+4. **Bring up the stack** — loads the payment env, sets
+   `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so agent tooling can read the
+   control token from the host-mounted `./data/runtime/`, and runs Compose
+   in the background.
 
 **Bot-facing local control token:** `./data/runtime/froglet-control.token`
 
-> [!WARNING]
-> Compose-backed agent and MCP usage requires
-> `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so
-> `./data/runtime/froglet-control.token` is readable on the host. The
+> [!NOTE]
+> `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` is required for the Compose
+> path any time you plan to use the MCP / OpenClaw agent from the host;
+> the container emits a clear warning on start if it's unset. The
 > single-binary path does not need this opt-in.
 
 Additional public launch surfaces in this repo:

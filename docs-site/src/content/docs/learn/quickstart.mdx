@@ -16,6 +16,23 @@ description: "Run Froglet locally in three steps: install, connect an agent, con
   </div>
 </div>
 
+## TL;DR — one copy-paste block
+
+If you already have Docker installed and just want the local stack up, this
+single block goes from zero to running Froglet with a Claude Code MCP config
+and Lightning mock settlement:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+./scripts/setup-agent.sh --target claude-code
+./scripts/setup-payment.sh lightning
+set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
+```
+
+The rest of this page walks the four steps individually if you want to swap
+the agent target, change the payment rail, or understand what each step
+actually does.
+
 ## Prerequisites
 
 - **Linux x86_64 / arm64** or **macOS arm64**
