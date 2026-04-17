@@ -33,9 +33,9 @@ publishes the role-specific images:
 
 ## Published Docs
 
-The docs site deploy workflow builds `docs-site/` and publishes it to:
-
-- `https://ai.froglet.dev`
+The docs site deploy workflow builds `docs-site/` and publishes it to
+apex `https://froglet.dev` with `https://docs.froglet.dev` mirroring the
+same deployment (see [SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
 
 ## Published Binaries
 
@@ -106,7 +106,7 @@ the release notes should call out:
 - published `SHA256SUMS` for release asset verification
 - published provider, runtime, and MCP images
 - downloadable `froglet-node` binaries
-- official docs site at `ai.froglet.dev`
+- official site at `froglet.dev` (with `docs.froglet.dev` mirror)
 - public OpenClaw integration
 - reference discovery
 - public operator image

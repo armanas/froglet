@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Single-tool OpenClaw/NemoClaw plugin for Froglet services and generic compute.",
   "author": "Armanas Povilionis-Muradian",
-  "homepage": "https://ai.froglet.dev",
+  "homepage": "https://froglet.dev",
   "repository": "https://github.com/armanas/froglet",
   "engines": {
     "node": ">=18"

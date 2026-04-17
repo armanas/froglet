@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "author": "Armanas Povilionis-Muradian",
-  "homepage": "https://ai.froglet.dev",
+  "homepage": "https://froglet.dev",
   "repository": "https://github.com/armanas/froglet",
   "engines": {
     "node": ">=18"

@@ -45,7 +45,7 @@ jobs:
 
       - name: Build docs site
         env:
-          SITE_URL: https://ai.froglet.dev
+          SITE_URL: https://froglet.dev
         run: npm run build --prefix docs-site
 
       - name: Upload Pages artifact

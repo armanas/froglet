@@ -127,16 +127,18 @@ Definition of done: There is a short written note confirming no obvious name con
 
 Execution: 🧑 Manual-heavy. The LLM can run the public searches and draft the note, but the decision to proceed is manual.
 
-### ⬜ 🚀 🤝 Purchase the primary domain and set the DNS and email baseline
+### 🟡 🚀 🤝 Purchase the primary domain and set the DNS and email baseline
 Order: 51
 
 Specification: Purchase the primary Froglet domain (candidates: `froglet.sh`, `froglet.dev`, `froglet.io`, `froglet.app`) after the trademark sweep clears. Pick a registrar that also handles DNS cleanly (Cloudflare Registrar, Porkbun, or Namecheap). Configure DMARC, SPF, and DKIM for the email domain before the launch post mentions any contact address, so outbound mail is not silently filtered.
 
 Definition of done: The domain is owned, DNS is authoritative at the chosen provider, and email authentication records exist for the launch email domain.
 
+Status (2026-04-17): `froglet.dev` purchased. Registrar + DNS authority pending (Cloudflare Registrar is the current-best default per the external-constraints note). Email authentication records not yet configured — tracked in [docs/SUBDOMAIN_PLAN.md](docs/SUBDOMAIN_PLAN.md). Cloud-provider decision (which governs outbound-email provider) still in flight.
+
 Execution: 🤝 Mixed. The LLM can document the registrar choice and produce the DNS and email records, but a human must own the purchase and the payment method.
 
-### ⬜ 🚀 🤝 Allocate the subdomain plan
+### ✅ 🚀 🤝 Allocate the subdomain plan
 Order: 52
 
 Specification: Decide and document the subdomain layout for the launch surface. Froglet is a protocol, not a startup, so the apex is the open source project landing page rather than a company marketing site. Baseline plan:
@@ -150,6 +152,8 @@ Specification: Decide and document the subdomain layout for the launch surface. 
 All subdomains should be provisioned with valid TLS before launch day.
 
 Definition of done: The subdomain map is written down, DNS records exist for each planned subdomain, TLS is valid on each, and every subdomain either serves its intended content or returns an explicit placeholder page.
+
+Status (2026-04-17): plan written in [docs/SUBDOMAIN_PLAN.md](docs/SUBDOMAIN_PLAN.md) against the purchased `froglet.dev` domain. Single-deployment model adopted: `docs-site/` serves the apex landing page at `/` and the docs under `/learn/*`, with `docs.froglet.dev` mirroring via Cloudflare Workers hostname routing. `ai.froglet.dev`, `marketplace.froglet.dev`, and `status.froglet.dev` are defined but not yet provisioned. README + docs-site URL references consolidated to match the plan.
 
 Execution: 🤝 Mixed. The LLM can configure DNS and deploy scripts, but a human must own the registrar and cloud accounts.
 

@@ -124,7 +124,7 @@ convert that temporary identity into a long-term account by email verification.
 This public repo documents that contract, but it does **not** contain the
 hosted gateway implementation itself.
 
-Hosted trial docs: [ai.froglet.dev/learn/cloud-trial](https://ai.froglet.dev/learn/cloud-trial/)
+Hosted trial docs: [froglet.dev/learn/cloud-trial](https://froglet.dev/learn/cloud-trial/)
 
 ### Run Locally
 
@@ -170,7 +170,7 @@ Additional public launch surfaces in this repo:
 - checked-in MCP example configs under `integrations/mcp/froglet/examples/`
 - a supported GCP single-VM wrapper: `scripts/deploy_gcp_single_vm.sh create|deploy|status|destroy`
 
-Full walkthrough: [ai.froglet.dev/learn/quickstart](https://ai.froglet.dev/learn/quickstart/)
+Full walkthrough: [froglet.dev/learn/quickstart](https://froglet.dev/learn/quickstart/)
 
 <details>
 <summary><strong>Running binaries directly (without Compose)</strong></summary>
@@ -387,6 +387,6 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 <div align="center">
 
-**[Website](https://ai.froglet.dev)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
+**[Website](https://froglet.dev)** &middot; **[Docs](https://froglet.dev/learn/quickstart/)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
 
 </div>

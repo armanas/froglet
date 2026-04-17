@@ -4,7 +4,7 @@ import starlight from '@astrojs/starlight';
 import remarkMath from 'remark-math';
 import rehypeMathjax from 'rehype-mathjax';
 
-const site = process.env.SITE_URL ?? 'https://ai.froglet.dev';
+const site = process.env.SITE_URL ?? 'https://froglet.dev';
 
 export default defineConfig({
 	site,
