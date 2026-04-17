@@ -118,12 +118,14 @@ Execution: 🤖 Entirely LLM-doable, assuming the same local/cloud credentials a
 
 ## Domain And Naming
 
-### ⬜ 🚀 🧑 Basic name and registry coherence check for "Froglet"
+### 🟡 🚀 🧑 Basic name and registry coherence check for "Froglet"
 Order: 50
 
 Specification: Froglet is an open source protocol name, not a startup brand, so this is a lightweight check rather than a full trademark clearance. Do a basic web search plus a USPTO TESS search for obvious conflicts in the software or infrastructure space (the goal is only to avoid stepping on a clearly-conflicting existing name), and verify the Docker org, npm scope, PyPI name, and GitHub org are coherent so the protocol does not collide with itself across registries. If usage later picks up and a commercial entity is formed, that entity will use a different name, so brand clearance is explicitly out of scope here.
 
 Definition of done: There is a short written note confirming no obvious name conflicts in the relevant package registries and no flagrant trademark collision in the software space, and the relevant package and registry names are either owned or confirmed available.
+
+Status (2026-04-17): registry + software-space check complete in [docs/NAME_COHERENCE.md](docs/NAME_COHERENCE.md). crates.io / npm unscoped / RubyGems / Packagist / Snap are free and should be locked. PyPI `froglet` and npm `@froglet` scope are held by unrelated projects; use `froglet-protocol` on PyPI and stay unscoped on npm. GitHub user + Docker Hub user are squatter-held but we ship under `armanas/*` and `ghcr.io/armanas/*` so these do not block launch. The manual USPTO TESS software-class trademark check is still pending.
 
 Execution: 🧑 Manual-heavy. The LLM can run the public searches and draft the note, but the decision to proceed is manual.
 
