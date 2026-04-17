@@ -451,6 +451,127 @@ async function handleInstallGuide(args, _config, includeRaw) {
   return renderResult(lines, payload, includeRaw)
 }
 
+async function handleMarketplaceInvoke(args, config, includeRaw, { serviceId, input }) {
+  // Thin wrapper: invoke the named marketplace.* service with the provided
+  // input shape, letting the LLM caller optionally steer which marketplace
+  // to hit (provider_id / provider_url). When neither is set we fall back
+  // to the runtime's configured marketplace (FROGLET_MARKETPLACE_URL).
+  const response = await invokeService({
+    ...runtimeCtx(config),
+    searchLimit: args.limit ?? config.defaultSearchLimit,
+    request: {
+      provider_id: resolvedProviderId(args),
+      provider_url: resolvedProviderUrl(args),
+      service_id: serviceId,
+      input
+    }
+  })
+  const effectiveResult =
+    response.result !== undefined ? response.result : response.task?.result
+  const lines = response.task
+    ? [
+        ...summarizeTask(response.task),
+        `terminal: ${response.terminal === true}`,
+        `result: ${formatObject(effectiveResult)}`
+      ]
+    : [`status: ${response.status ?? "unknown"}`, `result: ${formatObject(effectiveResult)}`]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleMarketplaceSearch(args, config, includeRaw) {
+  return handleMarketplaceInvoke(args, config, includeRaw, {
+    serviceId: "marketplace.search",
+    input: {
+      ...(typeof args.offer_kind === "string" && args.offer_kind.length > 0
+        ? { offer_kind: args.offer_kind }
+        : {}),
+      ...(typeof args.runtime === "string" && args.runtime.length > 0
+        ? { runtime: args.runtime }
+        : {}),
+      ...(typeof args.max_price_sats === "number"
+        ? { max_price_sats: args.max_price_sats }
+        : {}),
+      ...(typeof args.cursor === "string" && args.cursor.length > 0
+        ? { cursor: args.cursor }
+        : {}),
+      ...(typeof args.limit === "number" ? { limit: args.limit } : {})
+    }
+  })
+}
+
+async function handleMarketplaceProvider(args, config, includeRaw) {
+  const providerId = typeof args.marketplace_provider_id === "string"
+    ? args.marketplace_provider_id.trim()
+    : ""
+  if (providerId.length === 0) {
+    throw new Error("marketplace_provider_id is required for marketplace_provider")
+  }
+  return handleMarketplaceInvoke(args, config, includeRaw, {
+    serviceId: "marketplace.provider",
+    input: { provider_id: providerId }
+  })
+}
+
+async function handleMarketplaceReceipts(args, config, includeRaw) {
+  const providerId = typeof args.marketplace_provider_id === "string"
+    ? args.marketplace_provider_id.trim()
+    : ""
+  if (providerId.length === 0) {
+    throw new Error("marketplace_provider_id is required for marketplace_receipts")
+  }
+  return handleMarketplaceInvoke(args, config, includeRaw, {
+    serviceId: "marketplace.receipts",
+    input: {
+      provider_id: providerId,
+      ...(typeof args.status === "string" && args.status.length > 0
+        ? { status: args.status }
+        : {}),
+      ...(typeof args.cursor === "string" && args.cursor.length > 0
+        ? { cursor: args.cursor }
+        : {}),
+      ...(typeof args.limit === "number" ? { limit: args.limit } : {})
+    }
+  })
+}
+
+async function handleMarketplaceStake(args, config, includeRaw) {
+  const providerId = typeof args.marketplace_provider_id === "string"
+    ? args.marketplace_provider_id.trim()
+    : ""
+  if (providerId.length === 0) {
+    throw new Error("marketplace_provider_id is required for marketplace_stake")
+  }
+  if (typeof args.amount_msat !== "number" || !Number.isFinite(args.amount_msat) || args.amount_msat <= 0) {
+    throw new Error("amount_msat must be a positive number for marketplace_stake")
+  }
+  return handleMarketplaceInvoke(args, config, includeRaw, {
+    serviceId: "marketplace.stake",
+    input: {
+      provider_id: providerId,
+      amount_msat: args.amount_msat
+    }
+  })
+}
+
+async function handleMarketplaceTopup(args, config, includeRaw) {
+  const providerId = typeof args.marketplace_provider_id === "string"
+    ? args.marketplace_provider_id.trim()
+    : ""
+  if (providerId.length === 0) {
+    throw new Error("marketplace_provider_id is required for marketplace_topup")
+  }
+  if (typeof args.amount_msat !== "number" || !Number.isFinite(args.amount_msat) || args.amount_msat <= 0) {
+    throw new Error("amount_msat must be a positive number for marketplace_topup")
+  }
+  return handleMarketplaceInvoke(args, config, includeRaw, {
+    serviceId: "marketplace.topup",
+    input: {
+      provider_id: providerId,
+      amount_msat: args.amount_msat
+    }
+  })
+}
+
 async function handleDealInvoiceBundle(args, config, includeRaw) {
   const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
   if (dealId.length === 0) {
@@ -500,6 +621,16 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleDealInvoiceBundle(args, config, includeRaw)
     case "get_install_guide":
       return handleInstallGuide(args, config, includeRaw)
+    case "marketplace_search":
+      return handleMarketplaceSearch(args, config, includeRaw)
+    case "marketplace_provider":
+      return handleMarketplaceProvider(args, config, includeRaw)
+    case "marketplace_receipts":
+      return handleMarketplaceReceipts(args, config, includeRaw)
+    case "marketplace_stake":
+      return handleMarketplaceStake(args, config, includeRaw)
+    case "marketplace_topup":
+      return handleMarketplaceTopup(args, config, includeRaw)
     // Removed actions — return clear error messages
     case "tail_logs":
       throw new Error("Log tailing removed; use systemd journal directly")

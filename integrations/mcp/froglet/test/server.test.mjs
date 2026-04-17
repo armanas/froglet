@@ -97,7 +97,12 @@ describe("tool definitions", () => {
       "list_settlement_activity",
       "get_payment_intent",
       "get_invoice_bundle",
-      "get_install_guide"
+      "get_install_guide",
+      "marketplace_search",
+      "marketplace_provider",
+      "marketplace_receipts",
+      "marketplace_stake",
+      "marketplace_topup"
     ])
     assert.match(tools[0].description, /provider_id/)
   })
@@ -263,6 +268,193 @@ describe("froglet MCP actions", () => {
         quickstart.includes(step),
         `docs-site quickstart is missing install-guide step: ${step}`
       )
+    }
+  })
+
+  it("marketplace_search routes through invoke_service with marketplace.search", async () => {
+    // Natural flow: no provider_url in args (that would trigger the
+    // LLM-controlled-URL validator + pinned fetch, which bypasses the
+    // global.fetch mock). Discovery resolves the marketplace provider
+    // through runtime search, matching how the operator-configured
+    // FROGLET_MARKETPLACE_URL is exposed in production.
+    let capturedBody
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr.endsWith("/v1/runtime/search")) {
+        return new Response(
+          JSON.stringify({
+            providers: [
+              {
+                provider_id: "prov-mkt",
+                descriptor_hash: "desc-mkt",
+                transport_endpoints: [
+                  { uri: "https://mkt.example", features: ["quote_http"], priority: 1 }
+                ],
+                offers: [
+                  {
+                    offer_hash: "marketplace-search-hash",
+                    offer_id: "marketplace.search",
+                    offer_kind: "builtin",
+                    runtime: "builtin"
+                  }
+                ],
+                last_seen_at: "2026-04-16T00:00:00Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr === "https://mkt.example/v1/provider/services/marketplace.search") {
+        return new Response(
+          JSON.stringify({
+            service: {
+              service_id: "marketplace.search",
+              offer_id: "marketplace.search",
+              provider_id: "prov-mkt",
+              runtime: "builtin",
+              package_kind: "builtin",
+              binding_hash: "marketplace-search-binding-hash"
+            }
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr.endsWith("/v1/runtime/deals")) {
+        capturedBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            provider_id: "prov-mkt",
+            provider_url: "https://mkt.example",
+            deal: { status: "succeeded", result: { providers: [{ provider_id: "prov-9" }] } },
+            result: { providers: [{ provider_id: "prov-9" }], has_more: false }
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_search",
+          offer_kind: "named.v1",
+          runtime: "python",
+          limit: 25
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.ok(capturedBody, "expected a runtime deal invocation")
+      const body = JSON.stringify(capturedBody)
+      assert.match(body, /marketplace\.search/)
+      assert.match(body, /named\.v1/)
+      assert.match(body, /python/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_stake requires marketplace_provider_id", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      { action: "marketplace_stake", amount_msat: 1000 },
+      config
+    )
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /marketplace_provider_id is required/)
+  })
+
+  it("marketplace_stake requires a positive amount_msat", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      {
+        action: "marketplace_stake",
+        marketplace_provider_id: "prov-1",
+        amount_msat: 0
+      },
+      config
+    )
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /amount_msat must be a positive number/)
+  })
+
+  it("marketplace_topup forwards provider_id and amount_msat", async () => {
+    let capturedInput
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr.endsWith("/v1/runtime/search")) {
+        return new Response(
+          JSON.stringify({
+            providers: [
+              {
+                provider_id: "prov-mkt",
+                descriptor_hash: "desc-mkt",
+                transport_endpoints: [
+                  { uri: "https://mkt.example", features: ["quote_http"], priority: 1 }
+                ],
+                offers: [
+                  {
+                    offer_hash: "marketplace-topup-hash",
+                    offer_id: "marketplace.topup",
+                    offer_kind: "builtin",
+                    runtime: "builtin"
+                  }
+                ],
+                last_seen_at: "2026-04-16T00:00:00Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr === "https://mkt.example/v1/provider/services/marketplace.topup") {
+        return new Response(
+          JSON.stringify({
+            service: {
+              service_id: "marketplace.topup",
+              offer_id: "marketplace.topup",
+              provider_id: "prov-mkt",
+              runtime: "builtin",
+              package_kind: "builtin",
+              binding_hash: "marketplace-topup-binding-hash"
+            }
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr.endsWith("/v1/runtime/deals")) {
+        capturedInput = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            provider_id: "prov-mkt",
+            provider_url: "https://mkt.example",
+            deal: { status: "succeeded", result: { total_staked_msat: 2000 } },
+            result: { total_staked_msat: 2000 }
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_topup",
+          marketplace_provider_id: "prov-7",
+          amount_msat: 1000
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      const body = JSON.stringify(capturedInput)
+      assert.match(body, /marketplace\.topup/)
+      assert.match(body, /prov-7/)
+      assert.match(body, /1000/)
+    } finally {
+      restore()
     }
   })
 

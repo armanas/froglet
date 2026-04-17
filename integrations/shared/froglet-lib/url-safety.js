@@ -275,20 +275,27 @@ export async function pinnedJsonRequest(url, {
     ...(bodyBuffer ? { "Content-Length": String(bodyBuffer.length) } : {}),
   }
 
+  // Node's TLS stack forbids setting `servername` (SNI) to an IP literal per
+  // RFC 6066. Only send SNI when the URL hostname is an actual name.
+  const hostnameIsIp = isIP(parsed.hostname) !== 0
+  const requestOptions = {
+    method,
+    host: pinnedAddress,
+    port,
+    path: `${parsed.pathname}${parsed.search}`,
+    headers: requestHeaders,
+    // Belt-and-suspenders: override DNS lookup too so any library-driven
+    // re-resolution inside the stack stays pinned to pinnedAddress.
+    lookup: (_hostname, _options, cb) =>
+      cb(null, pinnedAddress, family ?? (isIP(pinnedAddress) || 4)),
+  }
+  if (!hostnameIsIp) {
+    requestOptions.servername = parsed.hostname
+  }
+
   return new Promise((resolve, reject) => {
     let timer = null
-    const req = requestFn({
-      method,
-      host: pinnedAddress,
-      port,
-      path: `${parsed.pathname}${parsed.search}`,
-      headers: requestHeaders,
-      servername: parsed.hostname,
-      // Belt-and-suspenders: override DNS lookup too so any library-driven
-      // re-resolution inside the stack stays pinned to pinnedAddress.
-      lookup: (_hostname, _options, cb) =>
-        cb(null, pinnedAddress, family ?? (isIP(pinnedAddress) || 4)),
-    })
+    const req = requestFn(requestOptions)
 
     if (timeoutMs) {
       timer = setTimeout(() => {
