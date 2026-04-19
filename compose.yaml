@@ -11,6 +11,11 @@ services:
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
       FROGLET_PUBLIC_BASE_URL: http://provider:8080
+      # Opt-in: make control tokens readable from the host user. Required
+      # for host-side MCP / OpenClaw / CI smoke paths that read
+      # ./data/runtime/auth.token directly. Defaults to empty (container-
+      # only access) so regular `docker compose up` stays at 0o700.
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: ${FROGLET_HOST_READABLE_CONTROL_TOKEN:-}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -36,6 +41,7 @@ services:
       FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: ${FROGLET_HOST_READABLE_CONTROL_TOKEN:-}
     ports:
       - "127.0.0.1:8081:8081"
     volumes:

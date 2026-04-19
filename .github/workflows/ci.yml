@@ -226,6 +226,11 @@ jobs:
         run: docker compose build provider runtime
 
       - name: Start stack
+        env:
+          # Make /data/runtime/*.token readable from the host runner so the
+          # verification step below can `os.path.exists("./data/runtime/auth.token")`
+          # without UID 10001 dir-traversal denial.
+          FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
         run: docker compose up -d --wait provider runtime
 
       - name: Wait for provider health

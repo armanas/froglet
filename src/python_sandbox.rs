@@ -115,8 +115,7 @@ pub fn harden_command(
         let config_clone = config;
         unsafe {
             command.pre_exec(move || {
-                install_sandbox(&config_clone)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+                install_sandbox(&config_clone).map_err(std::io::Error::other)?;
                 Ok(())
             });
         }
