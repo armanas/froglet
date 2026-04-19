@@ -319,6 +319,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_cannot_read_etc_passwd_under_landlock() {
         let dir = tempdir();
         let config = SandboxConfig::for_python(dir.path());
@@ -332,6 +333,7 @@ try:\n  open('/etc/passwd').read()\n  print('LEAKED')\nexcept PermissionError:\n
     }
 
     #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_cannot_write_outside_tempdir_under_landlock() {
         let dir = tempdir();
         let config = SandboxConfig::for_python(dir.path());
@@ -344,6 +346,7 @@ try:\n  open('/tmp/froglet-sandbox-outside', 'w').write('x')\n  print('LEAKED')\
     }
 
     #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_can_write_inside_tempdir() {
         let dir = tempdir();
         let config = SandboxConfig::for_python(dir.path());
@@ -358,6 +361,7 @@ try:\n  open('/tmp/froglet-sandbox-outside', 'w').write('x')\n  print('LEAKED')\
     }
 
     #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_cannot_open_socket_under_seccomp() {
         let dir = tempdir();
         let config = SandboxConfig::for_python(dir.path());
@@ -370,6 +374,7 @@ try:\n  socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n  print('LEAKED')\nex
     }
 
     #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_can_open_socket_when_network_allowed() {
         let dir = tempdir();
         let mut config = SandboxConfig::for_python(dir.path());
@@ -385,6 +390,7 @@ print('OK')\n";
     }
 
     #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_cannot_exec_arbitrary_binary() {
         let dir = tempdir();
         let config = SandboxConfig::for_python(dir.path());

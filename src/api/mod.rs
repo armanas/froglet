@@ -11290,6 +11290,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     async fn service_addressed_python_execution_runs_from_redacted_service_record() {
         // Python runtime needs the Linux landlock+seccomp sandbox. On macOS /
         // other dev hosts the sandbox refuses to run without this explicit

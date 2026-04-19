@@ -112,6 +112,19 @@ if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then
   python3 -W error -m unittest -v python.tests.test_tor_integration
 fi
 
+if [[ "${FROGLET_RUN_LINUX_SANDBOX_TESTS:-0}" == "1" ]]; then
+  # The landlock+seccomp sandbox tests need Linux kernel capabilities the
+  # default GitHub Actions runner does not grant (CAP_SYS_ADMIN-equivalent
+  # privileges for seccomp/landlock syscalls). On a capable runner — a
+  # self-hosted runner, a bare Linux VM, or local Linux with the right
+  # priv set — export FROGLET_RUN_LINUX_SANDBOX_TESTS=1 to exercise them.
+  echo "[strict] linux sandbox tests (landlock + seccomp)"
+  CARGO_INCREMENTAL=0 RUSTFLAGS="${RUSTFLAGS:-} -D warnings" \
+    cargo test --all-targets -- --ignored \
+      python_sandbox::tests:: \
+      service_addressed_python_execution_runs_from_redacted_service_record
+fi
+
 if [[ "${FROGLET_RUN_LND_REGTEST:-0}" == "1" ]]; then
   echo "[strict] lnd regtest integration"
   python3 -W error -m unittest -v python.tests.test_lnd_regtest
