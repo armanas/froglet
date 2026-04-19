@@ -21,7 +21,13 @@ function getTextResult(result) {
 
 function assertContainsAll(text, needles, message = "missing expected text") {
   for (const needle of needles) {
-    assert.ok(String(text).includes(needle), `${message}: ${needle}`)
+    if (!String(text).includes(needle)) {
+      // Dump the full text on assertion failure so the CI log shows what we
+      // actually got. Silent "unexpected X: Y" failures are impossible to
+      // debug from logs otherwise.
+      console.error(`--- assertContainsAll failed ---\nneedle: ${needle}\nactual text:\n${text}\n--- end ---`)
+      assert.ok(false, `${message}: ${needle}`)
+    }
   }
 }
 
