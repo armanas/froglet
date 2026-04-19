@@ -213,7 +213,7 @@ fn install_landlock(config: &SandboxConfig) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
-    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
     use std::collections::BTreeMap;
 
     // Deny-list of dangerous syscalls. Everything else continues to work, so
