@@ -1,0 +1,22 @@
+{
+  "containers": {
+    "placeholder": {
+      "image": "nginx:alpine",
+      "ports": {
+        "80": "HTTP"
+      }
+    }
+  },
+  "publicEndpoint": {
+    "containerName": "placeholder",
+    "containerPort": 80,
+    "healthCheck": {
+      "path": "/",
+      "successCodes": "200-299",
+      "intervalSeconds": 30,
+      "timeoutSeconds": 5,
+      "healthyThreshold": 2,
+      "unhealthyThreshold": 3
+    }
+  }
+}

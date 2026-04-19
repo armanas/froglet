@@ -402,7 +402,9 @@ pub async fn runtime_settlement_activity(
 
     let records = match state
         .db
-        .with_read_conn(move |conn| crate::requester_deals::list_recent_requester_deals(conn, limit))
+        .with_read_conn(move |conn| {
+            crate::requester_deals::list_recent_requester_deals(conn, limit)
+        })
         .await
     {
         Ok(records) => records,
@@ -11902,10 +11904,8 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(
-            &execution,
-            &["mount.postgres.read.analytics".to_string()],
-        );
+        let plan =
+            collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()]);
         assert_eq!(plan.env.len(), 2);
         assert!(plan.needs_network, "postgres mount must enable network");
         assert!(plan.writable_paths.is_empty());
@@ -11938,10 +11938,8 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(
-            &execution,
-            &["mount.postgres.read.analytics".to_string()],
-        );
+        let plan =
+            collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()]);
         assert!(plan.env.is_empty());
         assert!(!plan.needs_network);
         unsafe {
@@ -11964,10 +11962,7 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(
-            &execution,
-            &["mount.postgres.write.unset".to_string()],
-        );
+        let plan = collect_data_mount_plan(&execution, &["mount.postgres.write.unset".to_string()]);
         assert!(plan.env.is_empty());
     }
 
@@ -11989,15 +11984,9 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(
-            &execution,
-            &["mount.sqlite.write.cache".to_string()],
-        );
+        let plan = collect_data_mount_plan(&execution, &["mount.sqlite.write.cache".to_string()]);
         assert_eq!(plan.env.len(), 2);
-        assert!(
-            !plan.needs_network,
-            "sqlite mount must NOT enable network"
-        );
+        assert!(!plan.needs_network, "sqlite mount must NOT enable network");
         assert_eq!(plan.writable_paths.len(), 1);
         assert_eq!(
             plan.writable_paths[0],
@@ -12034,10 +12023,7 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(
-            &execution,
-            &["mount.s3.read.backups".to_string()],
-        );
+        let plan = collect_data_mount_plan(&execution, &["mount.s3.read.backups".to_string()]);
         assert_eq!(plan.env.len(), 2);
         assert!(plan.needs_network);
         assert!(plan.writable_paths.is_empty());
@@ -12058,10 +12044,7 @@ mod tests {
                 "FROGLET_MOUNT_postgres_events",
                 "postgres://u:p@db.example/events",
             );
-            std::env::set_var(
-                "FROGLET_MOUNT_sqlite_local",
-                "/opt/froglet/local.sqlite",
-            );
+            std::env::set_var("FROGLET_MOUNT_sqlite_local", "/opt/froglet/local.sqlite");
         }
         let execution = ExecutionWorkload {
             mounts: vec![

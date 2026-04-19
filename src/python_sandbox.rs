@@ -115,9 +115,8 @@ pub fn harden_command(
         let config_clone = config;
         unsafe {
             command.pre_exec(move || {
-                install_sandbox(&config_clone).map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::Other, error)
-                })?;
+                install_sandbox(&config_clone)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
                 Ok(())
             });
         }
@@ -214,9 +213,7 @@ fn install_landlock(config: &SandboxConfig) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
-    use seccompiler::{
-        BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch,
-    };
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
     use std::collections::BTreeMap;
 
     // Deny-list of dangerous syscalls. Everything else continues to work, so
@@ -237,10 +234,8 @@ fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
         denied.insert(libc::SYS_bind);
     }
 
-    let rules: BTreeMap<i64, Vec<SeccompRule>> = denied
-        .into_iter()
-        .map(|sc| (sc, Vec::new()))
-        .collect();
+    let rules: BTreeMap<i64, Vec<SeccompRule>> =
+        denied.into_iter().map(|sc| (sc, Vec::new())).collect();
 
     let arch = detect_target_arch()?;
     let filter = SeccompFilter::new(
@@ -262,8 +257,7 @@ fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
         .try_into()
         .map_err(|error| format!("seccomp compile: {error}"))?;
 
-    seccompiler::apply_filter(&program)
-        .map_err(|error| format!("seccomp apply: {error}"))?;
+    seccompiler::apply_filter(&program).map_err(|error| format!("seccomp apply: {error}"))?;
 
     Ok(())
 }
@@ -315,7 +309,11 @@ mod tests {
         harden_command(&mut command, config).expect("harden");
         let output = command.output().expect("python3 output");
         (
-            output.status.code().or(output.status.signal()).unwrap_or(-1),
+            output
+                .status
+                .code()
+                .or(output.status.signal())
+                .unwrap_or(-1),
             String::from_utf8_lossy(&output.stdout).to_string(),
             String::from_utf8_lossy(&output.stderr).to_string(),
         )

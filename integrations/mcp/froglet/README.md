@@ -42,6 +42,7 @@ All configuration is through environment variables:
 | `FROGLET_REQUEST_TIMEOUT_MS` | No | HTTP timeout in ms (default: 10000) |
 | `FROGLET_DEFAULT_SEARCH_LIMIT` | No | Default search results (default: 10) |
 | `FROGLET_MAX_SEARCH_LIMIT` | No | Max search results (default: 50) |
+| `FROGLET_EGRESS_MODE` | No | `strict` applies the same DNS-pinning + SSRF validation used for LLM-controlled URLs to operator-configured `FROGLET_PROVIDER_URL` / `FROGLET_RUNTIME_URL`. Use when the operator host sits behind public DNS and you want uniform rebind-resistance. Lenient mode (the default) uses stock `fetch` for operator URLs so local/dev addresses (`127.0.0.1`, private IPs, `http://`) keep working. |
 
 Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.

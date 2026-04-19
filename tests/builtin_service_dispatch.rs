@@ -141,6 +141,7 @@ fn create_test_state_with_handler(
             session_ttl_secs: 300,
         },
         marketplace_url: None,
+        postgres_mounts: std::collections::BTreeMap::new(),
     };
 
     let pool = DbPool::open(&db_path).expect("init db");

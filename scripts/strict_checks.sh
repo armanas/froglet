@@ -42,6 +42,9 @@ bash -n scripts/deploy_gcp_single_vm.sh
 bash -n scripts/package_release_assets.sh
 bash -n scripts/verify_release_assets.sh
 bash -n scripts/smoke_install_from_assets.sh
+bash -n scripts/release_gate.sh
+bash -n scripts/cloudflare_dns.sh
+bash -n scripts/deploy_aws.sh
 
 if command -v node >/dev/null 2>&1; then
   node_major=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')
@@ -60,6 +63,12 @@ if command -v node >/dev/null 2>&1; then
     node --check integrations/mcp/froglet/server.js
     node --test integrations/mcp/froglet/test/server.test.mjs \
       integrations/mcp/froglet/test/example-configs.test.mjs
+
+    echo "[strict] shared froglet-lib checks"
+    node --check integrations/shared/froglet-lib/froglet-client.js
+    node --check integrations/shared/froglet-lib/url-safety.js
+    node --test integrations/shared/froglet-lib/test/url-safety.test.mjs \
+      integrations/shared/froglet-lib/test/egress-mode.test.mjs
 
     if [[ "${FROGLET_RUN_COMPOSE_SMOKE:-0}" == "1" ]]; then
       if ! command -v docker >/dev/null 2>&1; then

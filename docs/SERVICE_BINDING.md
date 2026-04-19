@@ -18,6 +18,10 @@ The following are intentionally outside this specification:
 - host-specific API shapes (OpenClaw/NemoClaw/MCP tool schemas)
 - project authoring workflows (create, scaffold, publish)
 - deployment topology (Docker Compose, Kubernetes, cloud-native)
+- **identity attestations** (DNS and OAuth/OIDC bindings of a Froglet key to
+  a real-world identifier) — these are an optional marketplace-layer
+  projection, never mandatory and never kernel-gating; see
+  [IDENTITY_ATTESTATION.md](IDENTITY_ATTESTATION.md) for the spec
 
 For the kernel contract (signed envelope, artifact types, settlement methods, state machines), see [KERNEL.md](KERNEL.md).
 

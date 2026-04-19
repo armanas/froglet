@@ -114,6 +114,7 @@ fn in_memory_state() -> AppState {
             session_ttl_secs: 300,
         },
         marketplace_url: None,
+        postgres_mounts: std::collections::BTreeMap::new(),
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");

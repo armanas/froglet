@@ -58,40 +58,75 @@ part of the release surface.
 
 ## Release Candidate Gate
 
-This is the current release gate for the public Froglet repo. The goal is to
-separate checks that are already implemented here from hosted checks that still
-need the first public environment and external credentials.
+This is the current release gate for the public Froglet repo. It has one
+entrypoint, [`scripts/release_gate.sh`](../scripts/release_gate.sh), which
+runs every line item in sequence, writes per-step evidence logs into
+`_tmp/release_gate/<UTC-timestamp>/`, and prints a pass/fail summary at the
+end. The same script is used both locally and in CI; a candidate is PASS when
+no step is FAIL (and, in `--strict` mode, no step is PENDING).
 
-### Implemented in this repo
+### Running the gate
 
-| Status | Validation | How to run | Notes |
-| --- | --- | --- | --- |
-| Ready | Repo validation matrix | `./scripts/strict_checks.sh` | Rust, Python, OpenClaw, MCP, release helper syntax |
-| Ready | Docs build | `npm --prefix docs-site run build` | Pre-publish docs-site build |
-| Ready | Release asset structure | `scripts/package_release_assets.sh` + `scripts/verify_release_assets.sh` | Confirms packaged `froglet-node` assets and checksums |
-| Ready | Installer-path smoke | `scripts/smoke_install_from_assets.sh --assets-dir <dir> --version <tag>` | Verifies install script plus launched node health |
-| Ready | Compose bot-surface smoke | `FROGLET_RUN_COMPOSE_SMOKE=1 ./scripts/strict_checks.sh` | Optional local Docker check for OpenClaw and MCP |
+```bash
+# Minimum gate (covered end-to-end from this repo, no external deps):
+./scripts/release_gate.sh
 
-### Pending hosted checks
+# Full local gate, including the compose-backed OpenClaw+MCP smoke:
+./scripts/release_gate.sh --compose
 
-| Status | Validation | Current entrypoint | Why still pending |
-| --- | --- | --- | --- |
-| Pending | Hosted docs URL smoke | `./scripts/hosted_smoke.sh` | Needs the published docs URL |
-| Pending | Hosted provider and runtime health smoke | `./scripts/hosted_smoke.sh` | Needs the first public Froglet environment |
-| Pending | Live MCP smoke with Claude auth | none yet in this repo | Blocked on hosted stack plus valid Claude auth; tracked by `Order: 11` |
+# Release-cut gate, including packaged-asset install smoke:
+./scripts/release_gate.sh \
+  --compose \
+  --install-smoke \
+  --version v0.1.0-alpha.1 \
+  --platform linux \
+  --arch x86_64
 
-### Cut Steps
+# Pre-launch gate, once the hosted URLs exist:
+FROGLET_DOCS_URL=https://froglet.dev \
+FROGLET_HOSTED_PROVIDER_URL=https://ai.froglet.dev \
+./scripts/release_gate.sh --hosted --strict
+```
+
+Every step writes to `_tmp/release_gate/<ts>/<step>.log`, and the summary is
+also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
+
+### Gate steps
+
+| Step id | Status today | Validation | Underlying command | Notes |
+| --- | --- | --- | --- | --- |
+| `strict` | Ready | Repo validation matrix | `./scripts/strict_checks.sh` | Rust, Python, OpenClaw, MCP, release helper syntax. Also gates compose/LND/Tor integrations via env flags set by the gate. |
+| `docs-build` | Ready | Docs build | `npm --prefix docs-site run build` | Pre-publish docs-site build |
+| `docs-test` | Ready | Docs-site unit tests | `npm --prefix docs-site test` | Vitest suite under `docs-site/src/**/__tests__/` |
+| `package` | Ready (opt-in) | Release asset packaging + verification | `scripts/package_release_assets.sh` + `scripts/verify_release_assets.sh` | Requires `--version`, `--platform`, `--arch` |
+| `install-smoke` | Ready (opt-in) | Installer-path smoke from packaged assets | `scripts/smoke_install_from_assets.sh` | Implies `--package-assets` |
+| `hosted` | Pending hosted URLs | Hosted docs + provider + runtime smoke | `./scripts/hosted_smoke.sh` | PENDING rows mean `FROGLET_DOCS_URL` / `FROGLET_HOSTED_PROVIDER_URL` / `FROGLET_HOSTED_RUNTIME_URL` are not set; `--strict` promotes PENDING to a nonzero exit. |
+
+### Still outside the gate
+
+- Live MCP smoke with Claude auth. Blocked on hosted stack plus valid Claude
+  auth; tracked by `Order: 11` in [../TODO.md](../TODO.md). The launch
+  fallback in that entry (2026-05-15) applies here too.
+
+### Cut steps
 
 1. Update `Cargo.toml` package version.
 2. Move the relevant `Unreleased` notes in [../CHANGELOG.md](../CHANGELOG.md)
    into a concrete version section.
-3. Run `./scripts/strict_checks.sh`.
-4. Run `npm --prefix docs-site run build`.
-5. Package and verify the release assets.
-6. Run the installer-path smoke against those assets.
-7. Run `./scripts/hosted_smoke.sh` once the public URLs exist.
-8. Commit the version/changelog update.
-9. Push the release tag, for example:
+3. Run the release gate with the release-cut flags:
+   ```bash
+   ./scripts/release_gate.sh \
+     --compose \
+     --install-smoke \
+     --version v0.1.0-alpha.1 \
+     --platform linux \
+     --arch x86_64
+   ```
+4. Once the public URLs exist, add `--hosted --strict` to the same invocation
+   and run it again.
+5. Commit the version/changelog update (attach the gate evidence directory path
+   in the PR description).
+6. Push the release tag, for example:
 
 ```bash
 git tag v0.1.0-alpha.1

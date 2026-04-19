@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# Release-candidate gate (TODO.md Order 28).
+#
+# One entrypoint that runs the current release-gate line items in sequence,
+# captures each step's stdout+stderr to a per-step log file under an evidence
+# directory, and prints a pass/fail summary. A candidate release is PASS if no
+# step is FAIL and (in --strict mode) no step is PENDING.
+#
+# See docs/RELEASE.md "Release Candidate Gate" for the mapping between these
+# steps and the release-gate rows.
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+run_compose=0
+run_lnd=0
+run_tor=0
+run_package=0
+run_install_smoke=0
+run_hosted=0
+strict_pending=0
+evidence_dir=""
+package_version=""
+package_platform=""
+package_arch=""
+declare -a skip_ids=()
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/release_gate.sh [options]
+
+Runs the current release-candidate gate for this repo. Each step writes its
+output to a log file under the evidence directory, and the summary table lists
+every step with status and log path.
+
+Options:
+  --compose                       Run the compose-backed OpenClaw+MCP smoke
+                                  (sets FROGLET_RUN_COMPOSE_SMOKE=1 inside
+                                  strict_checks.sh). Requires docker.
+  --lnd-regtest                   Run the LND regtest integration inside
+                                  strict_checks.sh.
+  --tor                           Run the Tor integration inside
+                                  strict_checks.sh.
+  --package-assets                Run release-asset packaging and verification.
+                                  Requires --version, --platform, --arch.
+  --install-smoke                 Run the installer-path smoke. Implies
+                                  --package-assets.
+  --hosted                        Run scripts/hosted_smoke.sh. Uses the
+                                  FROGLET_DOCS_URL / FROGLET_HOSTED_*_URL
+                                  environment variables; missing URLs are
+                                  reported as PENDING by that script.
+  --strict                        Fail the gate if any step is PENDING (not
+                                  only on FAIL). Passed through to
+                                  hosted_smoke.sh as FROGLET_HOSTED_SMOKE_STRICT=1.
+  --version <tag>                 Release version for packaging + install smoke
+                                  (e.g. v0.1.0-alpha.1).
+  --platform <linux|darwin>       Packaging target platform.
+  --arch <x86_64|arm64>           Packaging target architecture.
+  --evidence-dir <path>           Override the evidence directory. Default is
+                                  _tmp/release_gate/<UTC-timestamp>/.
+  --skip <id>                     Skip a step by id (repeatable). See the
+                                  STEPS section below for valid ids.
+  -h, --help                      Show this help and exit.
+
+STEPS
+  strict          Repo strict checks (scripts/strict_checks.sh).
+  docs-build      Docs-site build (npm --prefix docs-site run build).
+  docs-test       Docs-site unit tests (npm --prefix docs-site test).
+  package         Release asset packaging + verification (opt-in).
+  install-smoke   Installer-path smoke from packaged assets (opt-in).
+  hosted          Hosted URL smoke (opt-in; scripts/hosted_smoke.sh).
+
+EXIT CODES
+  0  All selected steps are PASS or SKIP.
+  1  At least one step FAILed.
+  2  --strict was set and at least one step is PENDING.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --compose)        run_compose=1; shift ;;
+    --lnd-regtest)    run_lnd=1; shift ;;
+    --tor)            run_tor=1; shift ;;
+    --package-assets) run_package=1; shift ;;
+    --install-smoke)  run_install_smoke=1; run_package=1; shift ;;
+    --hosted)         run_hosted=1; shift ;;
+    --strict)         strict_pending=1; shift ;;
+    --version)        package_version="$2"; shift 2 ;;
+    --platform)       package_platform="$2"; shift 2 ;;
+    --arch)           package_arch="$2"; shift 2 ;;
+    --evidence-dir)   evidence_dir="$2"; shift 2 ;;
+    --skip)           skip_ids+=("$2"); shift 2 ;;
+    -h|--help)        usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [[ $run_package == 1 && ( -z "$package_version" || -z "$package_platform" || -z "$package_arch" ) ]]; then
+  echo "release_gate: --package-assets requires --version, --platform, --arch" >&2
+  exit 1
+fi
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+evidence_dir="${evidence_dir:-_tmp/release_gate/${ts}}"
+mkdir -p "$evidence_dir"
+
+# status for each step: "id|label|status|detail"
+#   status: PASS | FAIL | SKIP | PENDING
+#   detail: log-file path for PASS/FAIL, human-readable reason for SKIP/PENDING
+declare -a results=()
+any_fail=0
+any_pending=0
+
+skipped() {
+  local id="$1"
+  for s in "${skip_ids[@]:-}"; do
+    [[ "$s" == "$id" ]] && return 0
+  done
+  return 1
+}
+
+record() {
+  # record <id> <status> <label> <detail>
+  results+=("$1|$3|$2|$4")
+  printf '[%s] %s — %s\n' "$2" "$1" "$3"
+}
+
+run_step() {
+  # run_step <id> <label> <cmd...>
+  local id="$1"
+  local label="$2"
+  shift 2
+  local log="$evidence_dir/${id}.log"
+
+  if skipped "$id"; then
+    record "$id" "SKIP" "$label" "skipped via --skip ${id}"
+    return 0
+  fi
+
+  printf '\n[run]  %s — %s\n' "$id" "$label"
+  printf '       log: %s\n' "$log"
+
+  local rc=0
+  ( "$@" ) >"$log" 2>&1 || rc=$?
+
+  if [[ $rc -eq 0 ]]; then
+    record "$id" "PASS" "$label" "$log"
+  else
+    any_fail=1
+    record "$id" "FAIL" "$label" "$log (rc=${rc})"
+  fi
+  return 0
+}
+
+# --- Step 1: strict checks ---------------------------------------------------
+run_step "strict" "Repo strict checks (cargo + python + node)" \
+  env \
+    FROGLET_RUN_COMPOSE_SMOKE="$run_compose" \
+    FROGLET_RUN_LND_REGTEST="$run_lnd" \
+    FROGLET_RUN_TOR_INTEGRATION="$run_tor" \
+  ./scripts/strict_checks.sh
+
+# --- Step 2: docs-site build -------------------------------------------------
+if command -v npm >/dev/null 2>&1; then
+  run_step "docs-build" "Docs-site build (astro)" \
+    npm --prefix docs-site run build
+
+  run_step "docs-test" "Docs-site tests (vitest)" \
+    npm --prefix docs-site test
+else
+  record "docs-build" "SKIP" "Docs-site build (astro)" "npm not installed"
+  record "docs-test"  "SKIP" "Docs-site tests (vitest)" "npm not installed"
+fi
+
+# --- Step 3: release-asset packaging + verification (opt-in) -----------------
+if [[ $run_package == 1 ]]; then
+  assets_dir="$evidence_dir/release-assets"
+  mkdir -p "$assets_dir"
+  run_step "package" "Release asset packaging + verification" \
+    bash -c "
+      set -euo pipefail
+      scripts/package_release_assets.sh \\
+        --version '$package_version' \\
+        --platform '$package_platform' \\
+        --arch '$package_arch' \\
+        --out-dir '$assets_dir'
+      scripts/verify_release_assets.sh \\
+        --dir '$assets_dir' \\
+        --version '$package_version'
+    "
+else
+  record "package" "SKIP" "Release asset packaging" \
+    "not requested (pass --package-assets)"
+fi
+
+# --- Step 4: installer-path smoke (opt-in, depends on package) ---------------
+if [[ $run_install_smoke == 1 ]]; then
+  run_step "install-smoke" "Installer-path smoke from packaged assets" \
+    scripts/smoke_install_from_assets.sh \
+      --assets-dir "$evidence_dir/release-assets" \
+      --version "$package_version"
+else
+  record "install-smoke" "SKIP" "Installer-path smoke" \
+    "not requested (pass --install-smoke)"
+fi
+
+# --- Step 5: hosted smoke (opt-in) -------------------------------------------
+# hosted_smoke.sh exits 0 when all configured checks pass, 1 on hard fail, 2
+# when a check is pending AND FROGLET_HOSTED_SMOKE_STRICT=1. We translate those
+# into FAIL / PENDING / PASS rows so the gate summary is meaningful without
+# strict mode.
+if [[ $run_hosted == 1 ]]; then
+  id="hosted"
+  label="Hosted URL smoke (scripts/hosted_smoke.sh)"
+  log="$evidence_dir/${id}.log"
+  if skipped "$id"; then
+    record "$id" "SKIP" "$label" "skipped via --skip ${id}"
+  else
+    printf '\n[run]  %s — %s\n' "$id" "$label"
+    printf '       log: %s\n' "$log"
+    rc=0
+    ( FROGLET_HOSTED_SMOKE_STRICT=1 ./scripts/hosted_smoke.sh ) >"$log" 2>&1 || rc=$?
+    case "$rc" in
+      0)
+        record "$id" "PASS" "$label" "$log" ;;
+      2)
+        any_pending=1
+        record "$id" "PENDING" "$label" "$log (pending hosted URLs)" ;;
+      *)
+        any_fail=1
+        record "$id" "FAIL" "$label" "$log (rc=${rc})" ;;
+    esac
+  fi
+else
+  record "hosted" "SKIP" "Hosted URL smoke" "not requested (pass --hosted)"
+fi
+
+# --- Summary -----------------------------------------------------------------
+summary_file="$evidence_dir/summary.tsv"
+printf 'id\tstatus\tlabel\tdetail\n' >"$summary_file"
+for row in "${results[@]}"; do
+  IFS='|' read -r id label status detail <<<"$row"
+  printf '%s\t%s\t%s\t%s\n' "$id" "$status" "$label" "$detail" >>"$summary_file"
+done
+
+printf '\n============================================================\n'
+printf 'Release gate summary (evidence: %s)\n' "$evidence_dir"
+printf '============================================================\n'
+printf '%-14s %-8s %s\n' "ID" "STATUS" "DETAIL"
+printf '%-14s %-8s %s\n' "--" "------" "------"
+for row in "${results[@]}"; do
+  IFS='|' read -r id label status detail <<<"$row"
+  printf '%-14s %-8s %s\n' "$id" "$status" "$detail"
+done
+printf '\nSummary file: %s\n' "$summary_file"
+
+# --- Exit --------------------------------------------------------------------
+if [[ $any_fail -ne 0 ]]; then
+  printf 'Result: FAIL\n' >&2
+  exit 1
+fi
+if [[ $any_pending -ne 0 && $strict_pending -eq 1 ]]; then
+  printf 'Result: PENDING (strict)\n' >&2
+  exit 2
+fi
+printf 'Result: PASS\n'
+exit 0

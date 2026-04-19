@@ -200,6 +200,7 @@ fn create_test_state_with_identity_seed(
             session_ttl_secs: 300,
         },
         marketplace_url,
+        postgres_mounts: std::collections::BTreeMap::new(),
     };
 
     if let Some(seed) = identity_seed {
@@ -1317,8 +1318,7 @@ async fn runtime_create_deal_rejects_descriptor_with_forged_signer() {
         .expect("error message")
         .to_string();
     assert!(
-        error.contains("descriptor")
-            && error.contains("signer does not match provider_id"),
+        error.contains("descriptor") && error.contains("signer does not match provider_id"),
         "expected descriptor signer-mismatch error, got: {error}"
     );
 }

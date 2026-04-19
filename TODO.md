@@ -208,12 +208,14 @@ Definition of done: There is one reproducible AWS deployment path with environme
 
 Execution: 🤝 Mixed. The LLM can build the automation, but a human must provide AWS account access, IAM approval, and cost ownership.
 
-### ⬜ 🚀 🤖 Add hosted verification scripts for docs and Froglet
+### 🟡 🚀 🤖 Add hosted verification scripts for docs and Froglet
 Order: 16
 
 Specification: Create repeatable post-deploy smoke checks that hit docs routes, health endpoints, one MCP flow, and one public runtime flow. The scripts should fail loudly, produce machine-readable output, and be runnable both locally and in CI.
 
 Definition of done: A single verification entrypoint can be run after deploy and clearly reports pass/fail for docs, health, runtime, and MCP coverage.
+
+Status (2026-04-19): [scripts/hosted_smoke.sh](scripts/hosted_smoke.sh) now performs content-shape assertions, not just HTTP-200 reachability. Checks: docs URL (text/html + body contains "Froglet" — catches parked-page regressions), `/health` (JSON with `status=="ok"` and `service=="froglet"`), `/v1/node/capabilities` (JSON with `api_version=="v1"` + non-empty `identity.node_id` + non-empty `version`), `/v1/node/identity` (`node_id` + `public_key` of min length 32), `/v1/openapi.yaml` (body starts with `openapi:` prefix). Network errors surface as explicit FAIL, not silent 000. Live-MCP cell stays PENDING until Order 11 and hosted project config land. Remaining 🟡: the `one MCP flow` piece of the spec stays as a pending row; closes fully when Order 11 lands.
 
 Execution: 🤖 Entirely LLM-doable.
 
@@ -441,12 +443,14 @@ Definition of done: PayPal sandbox flows pass end to end, the feature is documen
 
 Execution: 🤝 Mixed. The LLM can build it, but a human must provide PayPal developer access and sandbox accounts.
 
-### ⬜ 🚀 🤝 Expand the payment verification matrix
+### ✅ 🚀 🤝 Expand the payment verification matrix
 Order: 25
 
 Specification: Turn payments into an explicit matrix instead of scattered one-off tests. The matrix should cover local/regtest, hosted sandbox, failure injection, restart recovery, and observability expectations per supported rail.
 
 Definition of done: There is a documented table of supported payment rails and a repeatable test for each promised mode, with unsupported cells called out explicitly.
+
+Status (2026-04-19): matrix written in [docs/PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md). Four rails (`None`, `Lightning::Mock`, `Lightning::LndRest`, `X402`, `Stripe`) × seven verification columns (unit, local integration, hosted sandbox, hosted live, failure injection, restart recovery, observability). Every cell maps to either a `release_gate.sh` flag or an explicit TODO order blocker ([22](todo.md) Lightning hosted, [23](todo.md) Stripe hosted, [24](todo.md) x402 hosted, [54](todo.md) hosted LND, [57](todo.md) Stripe webhook). Known gaps — multi-rail fallback, chaos testing, load testing — called out explicitly in §5 so deferrals are visible.
 
 Execution: 🤝 Mixed. The LLM can define and automate the matrix, but real provider accounts are manual.
 
@@ -544,12 +548,14 @@ Definition of done: There is one release plan with owners, order, required input
 
 Execution: 🤝 Mixed. The LLM can draft the plan, but a human has to approve dates, owners, and public commitments.
 
-### ⬜ 🚀 🤖 Create the release-candidate gate
+### ✅ 🚀 🤖 Create the release-candidate gate
 Order: 28
 
 Specification: Turn the pre-launch bar into a named release gate that combines strict checks, docs-site build/tests, compose smoke, MCP smokes, and hosted smoke scripts into one checklist or automation entrypoint.
 
 Definition of done: A candidate release can be marked pass or fail from one place, and every line item has an evidence artifact or log.
+
+Status (2026-04-18): single entrypoint landed at [scripts/release_gate.sh](scripts/release_gate.sh). Steps: `strict`, `docs-build`, `docs-test`, optional `package`/`install-smoke`, optional `hosted`. Per-step logs under `_tmp/release_gate/<ts>/<step>.log` plus a `summary.tsv`. Exit codes: 0 PASS, 1 FAIL, 2 PENDING-under-`--strict`. Documented in [docs/RELEASE.md](docs/RELEASE.md#release-candidate-gate); the live-Claude smoke (Order 11) stays explicitly outside the gate until the hosted environment and Claude auth land.
 
 Execution: 🤖 Entirely LLM-doable.
 
@@ -566,12 +572,14 @@ Execution: 🤝 Mixed. The LLM can draft and assemble the release, but a human t
 
 These items are cheap individually, easy to forget, and highly visible when missing. They are not covered by the sections above.
 
-### ⬜ 🚀 🤖 Pre-launch security pass
+### ✅ 🚀 🤖 Pre-launch security pass
 Order: 65
 
 Specification: One-shot review that combines dependency audits, secret scanning across the whole git history of the public repo, and a short threat model sketch for the public hosted node. The point is not to stand up a security program; it is to catch the high-probability misses (committed tokens, vulnerable transitive dependencies, unauthenticated internal endpoints) before the launch post hits aggregators.
 
 Definition of done: A written security-pass note exists covering dep audit output, secret scan output across history, and a short threat model for the hosted surface. Any findings are either fixed or explicitly accepted with a documented reason.
+
+Status (2026-04-18): written up in [docs/SECURITY_PASS.md](docs/SECURITY_PASS.md). Fixes landed inline: `rustls-webpki` 0.103.10→0.103.12 (RUSTSEC-2026-0098/0099); `cryptography` 45→46.0.7 (3 GHSAs); `npm audit fix` in `integrations/mcp/froglet` (hono + path-to-regexp) and `docs-site` (vite). Post-fix status: 0 vulns across cargo/pip/npm; remaining cargo warnings (`rand` unsound-with-custom-logger, `gimli` yanked-transitive-via-wasmtime) accepted with documented reason. Secret scan across all 71 commits in full history → 7 findings, 100% verified false positives on test fixtures (cashu public test-mint token + literal `"sk_test_placeholder"` in Rust unit tests); zero real leaks. Threat model for `ai.froglet.dev` enumerates 10 top risks with existing mitigations and points at the Order 53–75 dependencies. Incidental fix: `postgres_mounts` field missing from 4 test NodeConfig literals on `main` (predates this pass; broke `cargo check --all-targets` and therefore the Order 28 release gate) — repaired in [tests/payments_and_discovery.rs](tests/payments_and_discovery.rs), [tests/builtin_service_dispatch.rs](tests/builtin_service_dispatch.rs), [tests/lnd_rest_settlement.rs](tests/lnd_rest_settlement.rs), [tests/runtime_routes.rs](tests/runtime_routes.rs).
 
 Execution: 🤖 Entirely LLM-doable. Remediation may require human approval if it changes public behavior.
 
@@ -615,12 +623,14 @@ Execution: 🤖 Entirely LLM-doable for implementation; the decision to skip ana
 
 These items are defense-in-depth extensions beyond the closed-out findings from the 2026-04-16 security review. None is a known exploitable vulnerability; each narrows a residual risk or restores a capability that was intentionally scoped out of the initial fix.
 
-### ⬜ 🔭 🤖 Extend IP pinning to operator-configured URL paths (FROGLET_EGRESS_MODE=strict)
+### ✅ 🔭 🤖 Extend IP pinning to operator-configured URL paths (FROGLET_EGRESS_MODE=strict)
 Order: 70
 
 Specification: The Node MCP / OpenClaw integration already IP-pins outbound requests on the LLM-controlled `request.provider_url` path via the `pinnedJsonRequest` helper added in `integrations/shared/froglet-lib/url-safety.js`. Operator-configured `runtimeUrl` and `providerUrl` still go through stock `fetch`, which re-resolves DNS per request. An operator whose DNS resolver is compromised could therefore be rebound. Extend pinning to those paths behind an explicit opt-in `FROGLET_EGRESS_MODE=strict` environment flag so enterprise and high-assurance deployments get uniform pinning without forcing the custom dispatcher on everyone. Thread the same `pin` option through `frogletRequest` and `frogletRequestWithStatus` in `integrations/shared/froglet-lib/froglet-client.js`, validate the operator-configured URLs at config-load time using the same `validateProviderUrl` helper, and document the flag in the integrations README.
 
 Definition of done: When `FROGLET_EGRESS_MODE=strict` is set, every outbound HTTP request issued by the Node integrations goes through a DNS-pinned dispatcher; when unset, behavior is unchanged. A test fixture confirms the pinned path is used in strict mode and stock `fetch` is used otherwise.
+
+Status (2026-04-19): `isStrictEgressMode()` + `resolveOperatorPin()` added to [integrations/shared/froglet-lib/froglet-client.js](integrations/shared/froglet-lib/froglet-client.js); `pin` now threads through `frogletRequest`, `frogletRequestWithStatus`, and `frogletPublicRequest` with caller-supplied pin taking precedence over opportunistic strict-mode resolution. Per-process pin cache keyed on normalized base URL keeps validation one-shot. 6 tests in [integrations/shared/froglet-lib/test/egress-mode.test.mjs](integrations/shared/froglet-lib/test/egress-mode.test.mjs) cover: env-var parsing, lenient-mode passthrough, strict-mode null-URL handling, loopback / non-https rejection under strict, failure-not-cached semantics. Flag documented in [integrations/mcp/froglet/README.md](integrations/mcp/froglet/README.md). Test file + source added to `scripts/strict_checks.sh` so regressions break the release gate.
 
 Execution: 🤖 Entirely LLM-doable.
 
@@ -704,6 +714,40 @@ Specification: Today `marketplace.register`, `marketplace.search`, `marketplace.
 Definition of done: 4+ new MCP actions land in `integrations/mcp/froglet/lib/tools.js` with corresponding handlers and tests; MCP tool description explains when to use each; the `invoke_service` escape hatch stays available.
 
 Execution: 🤖 Entirely LLM-doable.
+
+### ⬜ 🔭 🤖 Marketplace arbiter / claims-court service
+Order: 80
+
+Specification: Build a first-class enforcement service on the marketplace so cheating can be adjudicated and punished without baking policy into the kernel. The service lives alongside `marketplace-node` in `froglet-services/services/marketplace-arbiter` and introduces four handler groups:
+
+- **Complaint filing.** `marketplace.file_complaint` accepts a signed grievance referencing a `deal_id`, the signed `Receipt` (or absence thereof), optional evidence blobs (signed-artifact references, content hashes), and a **refundable filing deposit** in sats. Deposit is refunded in full if the complaint is upheld, forfeited to the respondent or the arbiter-pool if dismissed. Deposit sizing scales with the disputed value so grief-filing is not viable.
+- **Adjudicator registration.** `marketplace.register_adjudicator` lets any identity post an **adjudicator stake** and opt in to dispute panels. Stake is slashable for (a) liveness failures (no verdict within the adjudication TTL), (b) verdicts overturned on appeal, (c) adjudicating a case where a conflict-of-interest declaration is missing or false. Above a configurable value threshold, adjudicator eligibility requires at least one verified identity attestation (see Order 81), which is the sybil-resistance lever.
+- **Adjudication.** `marketplace.adjudicate` issues a signed verdict from the adjudicator's identity key. Above the de-minimis threshold, panels are drawn by random selection from the eligible-adjudicator pool, weighted by stake, with a majority decision. Below the threshold, a single adjudicator verdict is acceptable to keep small-dispute latency low.
+- **Appeal and slashing.** `marketplace.appeal` escalates a disputed verdict to a larger panel at a higher deposit tier. Upheld verdicts trigger slashing via the existing `marketplace.stake` primitive; slashed funds flow to the complainant (reimbursement) plus a portion to the arbiter pool.
+
+Kernel impact: none. Every new artifact is a signed payload indexed by the marketplace indexer; the `marketplace.stake` slashing primitive already exists. The kernel stays storage-free.
+
+Hard problem this does not fully solve: capture of the adjudicator pool by a well-capitalized sybil attacker below the attestation threshold. Documented explicitly — the deposit + stake + random-panel + appeal stack raises the cost but does not reduce it to zero. Cross-reference: Order 81 (identity attestation) is what lifts the ceiling for high-value disputes.
+
+Definition of done: the four handler groups ship with Postgres-backed projections in `marketplace-arbiter`, MCP wrappers for `file_complaint` / `register_adjudicator` / `adjudicate` / `appeal` land in this repo's `integrations/mcp/froglet/lib/tools.js`, a full dispute lifecycle test (happy path + dismissed complaint + overturned appeal + adjudicator liveness slash) runs in CI, and [docs/ARBITER.md](docs/ARBITER.md) documents the mechanism design, deposit-sizing table, and threat model.
+
+Execution: 🤖 Entirely LLM-doable. Economic parameters (deposit tiers, stake floors, fee split) are explicit inputs — a human picks them, the LLM implements against them.
+
+### 🟡 🔭 🤖 Identity attestation service handlers (DNS + OAuth/OIDC)
+Order: 81
+
+Specification: Add optional, opt-in identity attestation handlers so a provider (or requester or adjudicator) can bind their Froglet identity key to a real-world identifier. Two attestation kinds, both LLM-doable, both with concrete flows already specified in [docs/IDENTITY_ATTESTATION.md](docs/IDENTITY_ATTESTATION.md):
+
+- **DNS attestation.** The subject signs a bind statement with their Froglet key, publishes it in a `_froglet.<domain>` TXT record, and calls `marketplace.attest_dns`. The marketplace resolver fetches the record over DNS-over-HTTPS (to avoid operator-local resolver manipulation), verifies the signature and the key match, and issues a marketplace-signed `IdentityAttestation` credential valid for 180 days. Re-verification runs on expiry; transferred or dropped domains invalidate the credential automatically.
+- **OAuth / OIDC attestation.** The subject signs the same bind statement, posts it at a URL whose authorship OAuth can prove (a GitHub gist, a profile README, a repo file, a release), then calls `marketplace.attest_oauth` with the URL plus an OAuth authorization code for the matching provider. The marketplace exchanges the code, verifies the authenticated user owns the URL, verifies the posted signature matches the Froglet pubkey, and issues the attestation. GitHub is the first target; Google OIDC, GitLab, and Gitea follow the same pattern without protocol changes.
+
+The protocol stays identity-agnostic — attestations are a marketplace-layer projection, never mandatory, never gating deal execution at the kernel level. Consumers filter by attestation kind in `marketplace.search` results; the arbiter service (Order 80) requires attestations for adjudicator eligibility at high-value tiers.
+
+Definition of done: two handlers land in `marketplace-node` (or a new `marketplace-attestation` service if the DNS/OAuth surface grows too wide), the `IdentityAttestation` credential type is defined in `froglet-protocol` with roundtrip tests, MCP wrappers `marketplace_attest_dns` and `marketplace_attest_oauth` land in `integrations/mcp/froglet/lib/tools.js`, `marketplace.search` and `marketplace.provider` projections expose any attestations a provider holds, and the doc in this repo documents the full flow.
+
+Status (2026-04-19, partial): protocol-crate scaffolding landed in [froglet-protocol/src/protocol/identity_attestation.rs](froglet-protocol/src/protocol/identity_attestation.rs). Types: `IdentityAttestationPayload`, `IdentityAttestationKind { Dns, Oauth }`, `IdentityAttestationClaim` (tagged union), `IdentityAttestationEvidenceRef` (tagged union). Validator `validate_identity_attestation_artifact` enforces `signer == payload.issuer`, non-empty fields, and agreement between `attestation_kind` / `attestation_claim` / `evidence_ref` variants. 8 tests green: DNS + OAuth sign→verify→validate roundtrips, signer/issuer mismatch rejection, kind/claim mismatch rejection, empty-field rejection, wrong-artifact-type rejection, serde roundtrips for both variants. Remaining 🟡: marketplace service handlers (`marketplace.attest_dns`, `marketplace.attest_oauth`), MCP wrappers, and `marketplace.search` projection — those live in `froglet-services` and wait on that repo. GitHub OAuth app registration (human step, B6) is the external prerequisite for OAuth handler verification.
+
+Execution: 🤖 Entirely LLM-doable. OAuth flow needs a GitHub OAuth app to exist (human action: register one, share client id + secret with the marketplace service); everything else is pure code + DoH resolution.
 
 ## Zero-Cost Launch Channels
 

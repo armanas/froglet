@@ -1,0 +1,74 @@
+name: Bug report
+description: Something is broken or behaves contrary to the docs.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+        Before opening, please check existing issues and
+        [the docs](https://froglet.dev/learn/quickstart/) for known behavior.
+
+        **Security vulnerabilities do not belong here.** Please email
+        `security@armanas.dev` directly (see [SECURITY.md](../../SECURITY.md)).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what happened instead?
+      placeholder: |
+        I ran `X`, expecting `Y`. Instead I got `Z`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Exact commands, config, and inputs. Please strip secrets.
+        Ideally runnable by someone who has just cloned the repo.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Paste the output of:
+        ```
+        cargo --version && rustc --version
+        node --version && npm --version
+        python3 --version
+        uname -a
+        ```
+        Plus: which Froglet version (`git rev-parse --short HEAD` or release tag),
+        which MCP host (Claude / Codex / Cursor / raw CLI), which payment rail
+        (none / Lightning regtest / Lightning live / Stripe sandbox / x402).
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Trim to the failure; full logs at the top of this box are hard to read.
+        Redact tokens, API keys, and identity seeds before pasting.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: I have
+      options:
+        - label: searched existing issues and found no duplicate
+          required: true
+        - label: redacted all secrets from commands, config, and logs
+          required: true
+        - label: confirmed this reproduces against the latest `main` (or stated otherwise above)
+          required: false

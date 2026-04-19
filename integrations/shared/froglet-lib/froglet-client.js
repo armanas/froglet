@@ -23,6 +23,74 @@ const TERMINAL_TASK_STATES = new Set(["succeeded", "failed", "rejected", "cancel
 /** @type {Map<string, { token: string, mtimeMs: number }>} */
 const tokenCache = new Map()
 
+/**
+ * Per-process cache of DNS-pinned address + family for operator-configured
+ * URLs, populated lazily the first time an operator URL is used under
+ * FROGLET_EGRESS_MODE=strict. Cache key is the normalized base URL.
+ *
+ * @type {Map<string, Promise<{ pinnedAddress: string, family: number } | null>>}
+ */
+const operatorPinCache = new Map()
+
+/**
+ * True when the operator has opted into applying the SSRF/rebind-resistant
+ * pinned dispatcher to operator-configured URLs (runtimeUrl, providerUrl) in
+ * addition to LLM-controlled URLs. Re-read per call so tests can flip it
+ * without a module reload.
+ */
+export function isStrictEgressMode() {
+  return process.env.FROGLET_EGRESS_MODE === "strict"
+}
+
+/**
+ * Reset the operator-URL pin cache. Tests should call this between cases so
+ * a previous strict-mode invocation does not leak a pin into a lenient one.
+ */
+export function __resetOperatorPinCacheForTests() {
+  operatorPinCache.clear()
+}
+
+/**
+ * Resolve a pin for an operator-configured base URL. Returns `null` when
+ * strict mode is off, when the URL is missing, or when the URL does not
+ * pass the same SSRF validator the LLM-controlled path uses.
+ *
+ * Validation is cached per normalized base URL for the lifetime of the
+ * process, so a caller-facing `frogletRequest` does not re-resolve DNS on
+ * every call. That's the point: the pin is the snapshot of the address at
+ * first-use, and subsequent calls reuse it even if DNS is later rebound.
+ */
+export async function resolveOperatorPin(baseUrl, label = "operator_url") {
+  if (!isStrictEgressMode()) {
+    return null
+  }
+  if (typeof baseUrl !== "string" || baseUrl.trim().length === 0) {
+    return null
+  }
+  const key = baseUrl.trim().replace(/\/$/, "")
+  const cached = operatorPinCache.get(key)
+  if (cached) {
+    return cached
+  }
+  const resolve = (async () => {
+    const validated = await validateProviderUrl(baseUrl, label)
+    return {
+      pinnedAddress: validated.pinnedAddress,
+      family: validated.family,
+    }
+  })()
+  operatorPinCache.set(key, resolve)
+  try {
+    return await resolve
+  } catch (error) {
+    // Don't cache failures — the operator may correct their config and
+    // re-invoke. A persistent bad pin here is worse than an occasional
+    // re-resolution.
+    operatorPinCache.delete(key)
+    throw error
+  }
+}
+
 function ensureJsonValue(value, label) {
   if (value === null) {
     return value
@@ -218,8 +286,13 @@ async function jsonRequest(
  * @param {string} path
  * @param {{ jsonBody?: unknown, expectedStatuses?: number[] }} [opts]
  */
-async function frogletRequest(baseUrl, tokenPath, timeoutMs, method, path, { jsonBody, expectedStatuses } = {}) {
+async function frogletRequest(baseUrl, tokenPath, timeoutMs, method, path, { jsonBody, expectedStatuses, pin } = {}) {
   const token = await readAuthToken(tokenPath)
+  // When the caller supplies a pin (LLM-controlled URL path), honor it. When
+  // they don't, strict-egress mode opportunistically resolves one for the
+  // operator-configured base URL; lenient mode leaves pin null and uses stock
+  // fetch, preserving prior behavior.
+  const effectivePin = pin ?? (await resolveOperatorPin(baseUrl))
   const { payload } = await jsonRequest(`${baseUrl}${path}`, {
     method,
     timeoutMs,
@@ -228,6 +301,7 @@ async function frogletRequest(baseUrl, tokenPath, timeoutMs, method, path, { jso
     },
     jsonBody,
     expectedStatuses,
+    pin: effectivePin,
   })
   return payload
 }
@@ -238,9 +312,10 @@ async function frogletRequestWithStatus(
   timeoutMs,
   method,
   path,
-  { jsonBody, expectedStatuses } = {}
+  { jsonBody, expectedStatuses, pin } = {}
 ) {
   const token = await readAuthToken(tokenPath)
+  const effectivePin = pin ?? (await resolveOperatorPin(baseUrl))
   return jsonRequest(`${baseUrl}${path}`, {
     method,
     timeoutMs,
@@ -249,15 +324,17 @@ async function frogletRequestWithStatus(
     },
     jsonBody,
     expectedStatuses,
+    pin: effectivePin,
   })
 }
 
 async function frogletPublicRequest(baseUrl, timeoutMs, path, { expectedStatuses, pin } = {}) {
+  const effectivePin = pin ?? (await resolveOperatorPin(baseUrl))
   const { payload } = await jsonRequest(`${baseUrl}${path}`, {
     method: "GET",
     timeoutMs,
     expectedStatuses,
-    pin,
+    pin: effectivePin,
   })
   return payload
 }

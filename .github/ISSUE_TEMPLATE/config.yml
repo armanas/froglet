@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/armanas/froglet/discussions
+    about: |
+      Open-ended questions, design discussion, or "has anyone tried..." belong
+      in Discussions, not Issues. (Discussions is enabled in repo settings.)
+  - name: Security vulnerability
+    url: https://github.com/armanas/froglet/security/policy
+    about: |
+      Do not file security reports as public issues. Email the address in
+      SECURITY.md directly.
