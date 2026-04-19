@@ -11,12 +11,16 @@ pub struct LocalRuntimeAuth {
 }
 
 pub fn load_or_create_local_runtime_auth(config: &NodeConfig) -> Result<LocalRuntimeAuth, String> {
+    // When FROGLET_HOST_READABLE_CONTROL_TOKEN is set, the same flag that
+    // widens the runtime dir mode also needs to widen the token file mode
+    // so host-side agents and CI smokes can actually read it. Matches the
+    // pattern already in place for provider_control_token_mode().
     let token = load_or_create_token(
         &config.storage.runtime_dir,
         &config.storage.runtime_auth_token_path,
         "runtime auth token",
         config.storage.runtime_dir_mode(),
-        0o600,
+        config.storage.provider_control_token_mode(),
     )?;
 
     Ok(LocalRuntimeAuth { token })
