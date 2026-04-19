@@ -286,7 +286,6 @@ fn detect_target_arch() -> Result<seccompiler::TargetArch, String> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
 
