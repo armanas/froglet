@@ -242,18 +242,21 @@ jobs:
 
       - name: Verify provider descriptor and runtime token
         run: |
+          # Runtime auth token stays 0o600 even in host-readable mode (a
+          # deliberate invariant: leaking it to the host would let any host
+          # user authenticate as a runtime client). Read it via docker exec
+          # from inside the container to verify existence + non-emptiness
+          # without relaxing the invariant.
+          docker compose exec -T runtime test -s /data/runtime/auth.token \
+            || { echo "runtime auth token missing or empty"; exit 1; }
+
           python3 - <<'PY'
           import json
-          import os
           import urllib.request
 
           def get_json(url: str) -> dict:
               with urllib.request.urlopen(url) as response:
                   return json.load(response)
-
-          token_path = "./data/runtime/auth.token"
-          assert os.path.exists(token_path), token_path
-          assert open(token_path, "r", encoding="utf-8").read().strip(), "runtime auth token is empty"
 
           descriptor = get_json("http://127.0.0.1:8080/v1/provider/descriptor")
           endpoints = descriptor["payload"]["transport_endpoints"]

@@ -11,16 +11,20 @@ pub struct LocalRuntimeAuth {
 }
 
 pub fn load_or_create_local_runtime_auth(config: &NodeConfig) -> Result<LocalRuntimeAuth, String> {
-    // When FROGLET_HOST_READABLE_CONTROL_TOKEN is set, the same flag that
-    // widens the runtime dir mode also needs to widen the token file mode
-    // so host-side agents and CI smokes can actually read it. Matches the
-    // pattern already in place for provider_control_token_mode().
+    // The runtime auth token stays 0o600 even when
+    // FROGLET_HOST_READABLE_CONTROL_TOKEN is set: the host-readable flag
+    // exists so the operator can view provider-control state from the host,
+    // not so that other host users can steal the runtime bearer token
+    // (which would grant arbitrary authenticated calls). Keeping this tight
+    // is a deliberate security invariant; see
+    // `state::tests::build_app_state_keeps_provider_control_token_host_readable_when_enabled`
+    // and `docs/ROTATION.md`.
     let token = load_or_create_token(
         &config.storage.runtime_dir,
         &config.storage.runtime_auth_token_path,
         "runtime auth token",
         config.storage.runtime_dir_mode(),
-        config.storage.provider_control_token_mode(),
+        0o600,
     )?;
 
     Ok(LocalRuntimeAuth { token })
