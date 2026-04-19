@@ -1,0 +1,21 @@
+# CI-only compose overlay. Used by .github/workflows/ci.yml to make the
+# control-token files under /data/runtime/ host-readable so the workflow's
+# assertion step can `os.path.exists("./data/runtime/auth.token")` without
+# tripping on the default 0o700 dir mode owned by UID 10001.
+#
+# Intentionally NOT part of compose.yaml itself — the test at
+# src/config.rs::compose_defaults_do_not_make_control_tokens_host_readable
+# enforces that regular `docker compose up` does NOT grant host-readable
+# tokens. Operators who want the host-readable mode set
+# FROGLET_HOST_READABLE_CONTROL_TOKEN=true in their shell before bringing
+# the stack up, or stack this overlay on top of compose.yaml explicitly.
+#
+# Usage (CI / smoke paths only):
+#   docker compose -f compose.yaml -f compose.ci.yaml up -d --wait provider runtime
+services:
+  provider:
+    environment:
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
+  runtime:
+    environment:
+      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"

@@ -226,12 +226,13 @@ jobs:
         run: docker compose build provider runtime
 
       - name: Start stack
-        env:
-          # Make /data/runtime/*.token readable from the host runner so the
-          # verification step below can `os.path.exists("./data/runtime/auth.token")`
-          # without UID 10001 dir-traversal denial.
-          FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
-        run: docker compose up -d --wait provider runtime
+        # compose.ci.yaml overlays FROGLET_HOST_READABLE_CONTROL_TOKEN=true
+        # so /data/runtime/*.token files become host-readable. Needed for
+        # the verification step below to see the token file from the
+        # runner user. See compose.ci.yaml for rationale and the
+        # config::tests::compose_defaults_do_not_make_control_tokens_host_readable
+        # test that keeps compose.yaml itself free of this flag.
+        run: docker compose -f compose.yaml -f compose.ci.yaml up -d --wait provider runtime
 
       - name: Wait for provider health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8080/health
