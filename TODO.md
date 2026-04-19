@@ -454,7 +454,7 @@ Specification: Turn payments into an explicit matrix instead of scattered one-of
 
 Definition of done: There is a documented table of supported payment rails and a repeatable test for each promised mode, with unsupported cells called out explicitly.
 
-Status (2026-04-19): matrix written in [docs/PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md). Four rails (`None`, `Lightning::Mock`, `Lightning::LndRest`, `X402`, `Stripe`) × seven verification columns (unit, local integration, hosted sandbox, hosted live, failure injection, restart recovery, observability). Every cell maps to either a `release_gate.sh` flag or an explicit TODO order blocker ([22](todo.md) Lightning hosted, [23](todo.md) Stripe hosted, [24](todo.md) x402 hosted, [54](todo.md) hosted LND, [57](todo.md) Stripe webhook). Known gaps — multi-rail fallback, chaos testing, load testing — called out explicitly in §5 so deferrals are visible.
+Status (2026-04-19): matrix written in [docs/PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md). Four rails (`None`, `Lightning::Mock`, `Lightning::LndRest`, `X402`, `Stripe`) × seven verification columns (unit, local integration, hosted sandbox, hosted live, failure injection, restart recovery, observability). Every cell maps to either a `release_gate.sh` flag or an explicit TODO order blocker ([22](TODO.md) Lightning hosted, [23](TODO.md) Stripe hosted, [24](TODO.md) x402 hosted, [54](TODO.md) hosted LND, [57](TODO.md) Stripe webhook). Known gaps — multi-rail fallback, chaos testing, load testing — called out explicitly in §5 so deferrals are visible.
 
 Execution: 🤝 Mixed. The LLM can define and automate the matrix, but real provider accounts are manual.
 
