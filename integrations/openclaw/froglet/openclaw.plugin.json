@@ -1,7 +1,7 @@
 {
   "id": "froglet",
   "name": "Froglet",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "description": "Single-tool Froglet integration for generic execution services.",
   "configSchema": {
     "type": "object",

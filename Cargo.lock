@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "froglet"
-version = "0.1.0"
+version = "0.1.0-alpha.0"
 dependencies = [
  "aes-gcm-siv",
  "axum",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "froglet-protocol"
-version = "0.1.0"
+version = "0.1.0-alpha.0"
 dependencies = [
  "hex",
  "hmac",

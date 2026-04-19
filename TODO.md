@@ -219,12 +219,14 @@ Status (2026-04-19): [scripts/hosted_smoke.sh](scripts/hosted_smoke.sh) now perf
 
 Execution: 🤖 Entirely LLM-doable.
 
-### ⬜ 🚀 🤝 Add monitoring, alerting, and rollback runbooks
+### 🟡 🚀 🤝 Add monitoring, alerting, and rollback runbooks
 Order: 17
 
 Specification: Define the minimum hosted operations layer: logs, uptime checks, alert routing, deployment history, and rollback procedures. This should stay intentionally lightweight, but it has to exist before public launch.
 
 Definition of done: An operator can detect a broken deploy, identify the failing component, and roll back to the previous known-good state without improvising.
+
+Status (2026-04-19): runbook landed in [docs/MONITORING.md](docs/MONITORING.md) — inventories monitored surfaces, failure modes with recovery procedures, deployment-history API, and a simulated-failure exercise plan. Rollback steps cross-reference [docs/OPERATOR_DEPLOY.md §6](docs/OPERATOR_DEPLOY.md). Closure criteria explicitly flag two PENDING HUMAN ACTIONs that keep this at 🟡: (1) BetterStack (or equivalent) alert destination configured, (2) on-call path documented even if "solo operator" is the final answer. One simulated end-to-end failure exercise should be logged to fully close.
 
 Execution: 🤝 Mixed. The LLM can prepare runbooks and configs, but a human must connect real alert destinations and decide the on-call path.
 
@@ -313,12 +315,14 @@ Definition of done: The operator can see the state they need and take the action
 
 Execution: 🤝 Mixed. The LLM can build it; a human must decide the authn path and any exposure boundary.
 
-### ⬜ 🚀 🤖 Key and identity rotation runbook
+### 🟡 🚀 🤖 Key and identity rotation runbook
 Order: 62
 
 Specification: Document and rehearse the procedure for rotating the node's identity key, Stripe signing secret, Lightning macaroons, and any MCP tokens. A compromise response where the operator has no documented rotation procedure is a multi-hour outage.
 
 Definition of done: There is a single runbook covering each secret's rotation steps, the rehearsal has been performed on a non-production instance, and the runbook links to the monitoring expectations during rotation.
+
+Status (2026-04-19): runbook landed in [docs/ROTATION.md](docs/ROTATION.md) — inventories every secret (Cloudflare DNS token, AWS IAM, Voltage, Stripe, Froglet node identity, runtime + provider-control tokens, GitHub), with per-secret rotation procedures including expected downtime. Lightsail-specific caveat on identity-seed rotation (ephemeral filesystem → env-var driven). Rehearsal section identifies a rehearsal instance plan but explicitly flags this as PENDING HUMAN ACTION — the rehearsal itself cannot be performed autonomously. Stays 🟡 until rehearsal is performed and its log appended.
 
 Execution: 🤖 Entirely LLM-doable given access to the hosted environment and its secrets.
 
@@ -530,12 +534,14 @@ Definition of done: There is a public protocol landing page with working navigat
 
 Execution: 🤝 Mixed. The LLM can implement the fixes and deploy config, but a human should approve positioning and any claims about hosted availability or support.
 
-### ⬜ 🚀 🤖 Add an operator deployment and verification guide
+### ✅ 🚀 🤖 Add an operator deployment and verification guide
 Order: 26
 
 Specification: Write one operator-focused guide that covers image selection, tokens, compose or cloud deployment, hosted smoke checks, payment verification, and rollback. This should be the document followed during release week. The guide should be derived from the Order 15 deploy automation (quoting scripts and expected output) rather than written as an independent parallel document, so the two cannot drift.
 
 Definition of done: A new operator can deploy and verify the stack from the guide without relying on tribal knowledge or old chat logs, and the guide cites the deploy automation as its source of truth.
+
+Status (2026-04-19): written up in [docs/OPERATOR_DEPLOY.md](docs/OPERATOR_DEPLOY.md). Covers prerequisites (Keychain setup, IAM policy, AWS billing budget), first-deploy walkthrough (with ACM cert issuance + Cloudflare validation CNAME), routine update flow, rollback tree (image-tag revert primary, destroy+reprovision contingency), observability (`deploy_aws.sh logs`/`endpoint`), and explicit out-of-scope notes (cert re-issuance, DNS separately revertible, single-region intentional, static scale). Every step quotes the actual script in the repo rather than duplicating logic.
 
 Execution: 🤖 Entirely LLM-doable.
 

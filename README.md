@@ -383,6 +383,9 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [GCP_SINGLE_VM.md](docs/GCP_SINGLE_VM.md) | Single-VM self-host deployment wrapper |
 | [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the separate hosted trial |
 | [RELEASE.md](docs/RELEASE.md) | Release process |
+| [OPERATOR_DEPLOY.md](docs/OPERATOR_DEPLOY.md) | First deploy + routine update + rollback runbook |
+| [MONITORING.md](docs/MONITORING.md) | Hosted-environment monitoring, alerting, and incident response |
+| [ROTATION.md](docs/ROTATION.md) | Secret rotation procedures per credential |
 | [PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md) | Supported payment rails and verification coverage |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards (Contributor Covenant 2.1) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |

@@ -1,7 +1,7 @@
 {
   "name": "@froglet/mcp-server",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "type": "module",
   "description": "MCP server for Froglet services, projects, and compute.",
   "author": "Armanas Povilionis-Muradian",

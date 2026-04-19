@@ -1,7 +1,7 @@
 {
   "name": "@froglet/shared-lib",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "type": "module",
   "author": "Armanas Povilionis-Muradian",
   "homepage": "https://froglet.dev",

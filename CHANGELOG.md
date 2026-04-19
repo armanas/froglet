@@ -9,6 +9,20 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ### Added
 
+- `docs/OPERATOR_DEPLOY.md` — deploy and rollback runbook derived from the
+  real `cloudflare_dns.sh` + `deploy_aws.sh` + `release_gate.sh` automation
+  (TODO Order 26)
+- `docs/MONITORING.md` — hosted-environment monitoring + alerting +
+  deployment-history runbook with explicit PENDING-HUMAN-ACTION flags for
+  alert routing and on-call path (TODO Order 17, partial close)
+- `docs/ROTATION.md` — per-credential rotation procedures covering every
+  secret the hosted environment holds; rehearsal section PENDING HUMAN
+  ACTION (TODO Order 62, partial close)
+
+## [0.1.0-alpha.0] - 2026-04-19
+
+### Added
+
 - `scripts/release_gate.sh` — single release-candidate entrypoint combining
   strict checks, docs-site build, docs-site tests, and optional packaging /
   install-smoke / hosted cells, with per-step evidence logs and a

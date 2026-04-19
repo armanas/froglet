@@ -1,6 +1,6 @@
 [package]
 name = "froglet-protocol"
-version = "0.1.0"
+version = "0.1.0-alpha.0"
 edition = "2024"
 authors = ["Armanas Povilionis-Muradian"]
 homepage = "https://armanas.dev"
