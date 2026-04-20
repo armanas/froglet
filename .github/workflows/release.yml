@@ -96,12 +96,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          release_args=()
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes
+              --generate-notes \
+              "${release_args[@]}"
+          elif [[ ${#release_args[@]} -gt 0 ]]; then
+            current_prerelease="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease -q .isPrerelease)"
+            if [[ "$current_prerelease" != "true" ]]; then
+              gh release edit "$GITHUB_REF_NAME" \
+                --repo "$GITHUB_REPOSITORY" \
+                --prerelease
+            fi
           fi
 
   build-release-assets:
