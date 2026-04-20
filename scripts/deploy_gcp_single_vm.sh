@@ -151,6 +151,7 @@ sync_repo() {
     --exclude='docs-site/dist' \
     --exclude='data' \
     --exclude='_tmp' \
+    --exclude='private_work' \
     --exclude='.venv' \
     --exclude='coverage' \
     --exclude='*.db' \

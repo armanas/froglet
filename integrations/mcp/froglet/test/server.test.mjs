@@ -628,6 +628,48 @@ describe("froglet MCP actions", () => {
     }
   })
 
+  it("runs compute through runtime deals with the operator-configured provider fallback", async () => {
+    let runtimeDealBody = null
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
+        runtimeDealBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            provider_url: "http://127.0.0.1:8080",
+            quote: { hash: "quote-hash" },
+            deal: { deal_id: "deal-2b", status: "succeeded", result: { ok: true } }
+          })
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "run_compute",
+          provider_id: "prov-1",
+          runtime: "wasm",
+          package_kind: "inline_module",
+          wasm_module_hex: "0061736d01000000"
+        },
+        config
+      )
+      const text = result.content[0].text
+      assert.match(text, /status: succeeded/)
+      assert.match(text, /result: {"ok":true}/)
+      assert.deepEqual(runtimeDealBody.provider, {
+        provider_id: "prov-1",
+        provider_url: "http://127.0.0.1:8080"
+      })
+      assert.equal(runtimeDealBody.kind, "wasm")
+      assert.equal(runtimeDealBody.offer_id, "execute.compute")
+    } finally {
+      restore()
+    }
+  })
+
   it("reads runtime deals first and falls back to provider jobs on a shared API base", async () => {
     const sharedSurfaceConfig = { ...config, runtimeUrl: config.providerUrl }
     const restore = mockFetch(async (url) => {

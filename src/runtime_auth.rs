@@ -18,7 +18,7 @@ pub fn load_or_create_local_runtime_auth(config: &NodeConfig) -> Result<LocalRun
     // (which would grant arbitrary authenticated calls). Keeping this tight
     // is a deliberate security invariant; see
     // `state::tests::build_app_state_keeps_provider_control_token_host_readable_when_enabled`
-    // and `docs/ROTATION.md`.
+    // and the private hosted-rotation runbook.
     let token = load_or_create_token(
         &config.storage.runtime_dir,
         &config.storage.runtime_auth_token_path,

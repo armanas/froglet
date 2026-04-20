@@ -1,7 +1,7 @@
 # Identity Attestation
 
 Status: specification for the optional identity-attestation layer on the
-Froglet marketplace. Implementation tracked as [TODO.md Order 81](../TODO.md).
+Froglet marketplace. Implementation remains planned, not yet shipped.
 This document is **normative for the attestation credential shape and the two
 attestation flows** (DNS and OAuth/OIDC). It is **not** normative for the
 Froglet kernel, which remains identity-agnostic.
@@ -14,10 +14,10 @@ the protocol's purposes but insufficient for two adjacent concerns:
 1. **Counterparty discovery** — a requester who needs to buy compute from a
    known organization or person wants to filter for providers who have proven
    a real-world link (a domain, a GitHub org, etc.), not just "some pubkey."
-2. **Sybil resistance for the arbiter service** — the claims-court design in
-   [TODO.md Order 80](../TODO.md) needs an eligibility gate for high-value
-   adjudication, and a verified identity attestation is the lever that raises
-   the cost of running many adjudicator identities.
+2. **Sybil resistance for the arbiter service** — the claims-court design
+   needs an eligibility gate for high-value adjudication, and a verified
+   identity attestation is the lever that raises the cost of running many
+   adjudicator identities.
 
 Neither concern justifies making attestations mandatory. They are **always
 optional**, **always user-initiated**, and **never block a kernel-level deal
@@ -222,10 +222,10 @@ order:
   filter with query params (e.g. `attestation_kind=dns` or
   `attestation_dns_zone=example.com`).
 - `marketplace.provider` returns the same array for a single provider.
-- The arbiter service ([TODO.md Order 80](../TODO.md)) configures a
-  **value threshold** above which adjudicator eligibility requires at least
-  one `dns` or `oauth` attestation on the adjudicator's identity. Below the
-  threshold, any staked identity is eligible.
+- The arbiter service configures a **value threshold** above which
+  adjudicator eligibility requires at least one `dns` or `oauth`
+  attestation on the adjudicator's identity. Below the threshold, any
+  staked identity is eligible.
 
 ## What is deliberately not included
 
@@ -237,7 +237,8 @@ order:
   envelope is the format used everywhere else in the system and is used here
   for consistency. A VC wrapper is a possible later addition if interop with
   external VC ecosystems becomes a requirement.
-- No proof-of-personhood. Explicitly out of scope per the Order-81 design.
+- No proof-of-personhood. Explicitly out of scope for the first
+  identity-attestation design.
 - No attestation revocation by the subject without expiry. The re-verification
   loop plus the 180-day ceiling are the revocation mechanism. A subject who
   loses control of their DNS zone or OAuth account gets automatic invalidation

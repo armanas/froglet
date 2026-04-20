@@ -1,7 +1,7 @@
 # Marketplace Arbiter / Claims-Court Service
 
 Status: **design stub**. The authoritative design notes for the arbiter
-service live in [TODO.md Order 80](../TODO.md). This file exists so future
+service live in the private services roadmap. This file exists so future
 cross-references resolve and so there is a stable location for the full
 mechanism-design writeup to land when implementation begins.
 
@@ -15,8 +15,8 @@ artifacts they produce.
 
 For the full specification — handler surface, deposit model, panel
 selection, appeal mechanism, slashing hook, and the intentionally-unresolved
-sybil-resistance ceiling — see [TODO.md Order 80](../TODO.md). This
-document will replace that entry's content verbatim once the service
+sybil-resistance ceiling — see the private services roadmap. This
+document will replace that design note once the service
 implementation lands in `froglet-services/services/marketplace-arbiter`.
 
 ## Interaction with adjacent specs

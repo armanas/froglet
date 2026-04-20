@@ -781,6 +781,7 @@ async function resolveProviderReference({
   requestTimeoutMs,
   request,
   searchLimit = 100,
+  trustedProviderUrl = null,
 }) {
   // The operator-configured `runtimeUrl` goes through the strict
   // `normalizeBaseUrl` helper at config-load time and is trusted thereafter.
@@ -819,6 +820,13 @@ async function resolveProviderReference({
   }
 
   if (explicitProviderId) {
+    if (typeof trustedProviderUrl === "string" && trustedProviderUrl.trim().length > 0) {
+      return {
+        providerId: explicitProviderId,
+        providerUrl: trustedProviderUrl.trim(),
+        matchSource: "trusted_provider_url",
+      }
+    }
     const providerResponse = await runtimeProviderDetails({
       runtimeUrl,
       runtimeAuthTokenPath,
@@ -1198,9 +1206,16 @@ export async function invokeService({ runtimeUrl, runtimeAuthTokenPath, requestT
 /**
  * Run open-ended compute through the runtime deal flow.
  *
- * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, input?: unknown, runtime?: string, package_kind?: string, entrypoint_kind?: string, entrypoint?: string, contract_version?: string, mounts?: unknown, artifact_path?: string, wasm_module_hex?: string, inline_source?: string, oci_reference?: string, oci_digest?: string }, searchLimit?: number }} config
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, input?: unknown, runtime?: string, package_kind?: string, entrypoint_kind?: string, entrypoint?: string, contract_version?: string, mounts?: unknown, artifact_path?: string, wasm_module_hex?: string, inline_source?: string, oci_reference?: string, oci_digest?: string }, searchLimit?: number, trustedProviderUrl?: string | null }} config
  */
-export async function runCompute({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, request, searchLimit = 100 }) {
+export async function runCompute({
+  runtimeUrl,
+  runtimeAuthTokenPath,
+  requestTimeoutMs,
+  request,
+  searchLimit = 100,
+  trustedProviderUrl = null,
+}) {
   if (typeof request?.artifact_path === "string" && request.artifact_path.trim().length > 0) {
     throw new Error("run_compute via runtime deals does not support artifact_path; provide inline bytes/source or OCI coordinates")
   }
@@ -1210,6 +1225,7 @@ export async function runCompute({ runtimeUrl, runtimeAuthTokenPath, requestTime
     requestTimeoutMs,
     request,
     searchLimit,
+    trustedProviderUrl,
   })
   let spec
   if (typeof request?.wasm_module_hex === "string" && request.wasm_module_hex.trim().length > 0) {

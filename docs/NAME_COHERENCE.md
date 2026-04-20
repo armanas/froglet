@@ -1,9 +1,9 @@
 # Name and Registry Coherence Check
 
-Status: **completed** for TODO Order 50 as of 2026-04-17.
+Status: **completed** as of 2026-04-17.
 
-This is the lightweight name-coherence check called out in
-[TODO.md Order 50](../TODO.md). Froglet is an open-source protocol name,
+This is the lightweight name-coherence check for Froglet. Froglet is an
+open-source protocol name,
 not a commercial brand, so the goal is limited to: (a) avoid stepping on a
 clearly-conflicting existing software name, and (b) make sure the protocol
 does not collide with itself across package registries.
@@ -66,7 +66,7 @@ The name "Froglet" in that domain is effectively unused.
 
 The USPTO TESS search interface is not machine-queryable (it is
 session-based and requires a live browser). Run this manually to complete
-TODO Order 50's "basic USPTO TESS search" item:
+the basic software-class trademark check:
 
 1. Open [https://tmsearch.uspto.gov/search/search-information](https://tmsearch.uspto.gov/search/search-information).
 2. Enter `froglet` as the search term, keyword search.

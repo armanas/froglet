@@ -1,6 +1,6 @@
 # Payment Verification Matrix
 
-Status: living document. Closes [TODO.md Order 25](../TODO.md).
+Status: living document.
 Last refreshed: 2026-04-19.
 
 This is the single source of truth for **which payment rails Froglet
@@ -30,7 +30,7 @@ operators set `LightningMode::LndRest`.
 
 Columns are verification modes; rows are rails. Each cell states the current
 status and how to re-run it. `gate` columns map to
-[scripts/release_gate.sh](../scripts/release_gate.sh) flags from Order 28.
+[scripts/release_gate.sh](../scripts/release_gate.sh) flags.
 
 Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not applicable**.
 
@@ -38,13 +38,12 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests | 🟢 local compose smoke (`release_gate.sh --compose`) | — | — | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via MCP `get_settlement_state` |
 | `Lightning::Mock` | 🟢 lightning.rs in-file tests + stripe/x402 tests use Mock Lightning | 🟢 `payments_and_discovery.rs` | — | — | 🟢 mock can be forced to return failure in tests | 🟢 Mock state persists in sqlite between restarts | 🟢 settlement state via MCP |
-| `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs | 🟢 regtest E2E via `python/tests/test_lnd_regtest.py` and `tests/lnd_rest_settlement.rs` (gated by `FROGLET_RUN_LND_REGTEST=1` or `release_gate.sh --lnd-regtest`) | ⬜ blocked on hosted LND node ([Order 54](../TODO.md)) | ⬜ blocked on hosted deploy ([Order 22](../TODO.md)) | 🟡 timeout + cancellation tested in regtest; on-chain dispute path not exercised | 🟢 invoice bundle state + preimage persistence verified across process restart in the regtest test | 🟢 settlement state + invoice-bundle status via MCP |
-| `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering challenge issuance, verification, replay, nonce handling | 🟢 part of `payments_and_discovery.rs`; covered when `FROGLET_RUN_COMPOSE_SMOKE=1` | ⬜ no hosted x402 smoke yet ([Order 24](../TODO.md)) | ⬜ blocked on hosted deploy | 🟡 expired-challenge + replay rejected in unit tests; flaky-peer behavior not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
-| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping | 🟡 Stripe driver tested against a **local mock HTTP server** (see `StripeDriver::with_base_url`); no live Stripe sandbox hit from this repo today | ⬜ blocked on Stripe sandbox credentials + webhook receiver ([Orders 23, 57](../TODO.md)) | ⬜ blocked on hosted deploy | 🟡 API error mapping exercised; webhook-retry idempotency is planned in Order 57 not current | 🟡 intent status is pulled on demand; webhook-driven reconciliation arrives with Order 57 | 🟢 settlement state via MCP |
+| `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs | 🟢 regtest E2E via `python/tests/test_lnd_regtest.py` and `tests/lnd_rest_settlement.rs` (gated by `FROGLET_RUN_LND_REGTEST=1` or `release_gate.sh --lnd-regtest`) | ⬜ blocked on hosted LND node provisioning | ⬜ blocked on hosted deploy | 🟡 timeout + cancellation tested in regtest; on-chain dispute path not exercised | 🟢 invoice bundle state + preimage persistence verified across process restart in the regtest test | 🟢 settlement state + invoice-bundle status via MCP |
+| `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering challenge issuance, verification, replay, nonce handling | 🟢 part of `payments_and_discovery.rs`; covered when `FROGLET_RUN_COMPOSE_SMOKE=1` | ⬜ no hosted x402 smoke yet | ⬜ blocked on hosted deploy | 🟡 expired-challenge + replay rejected in unit tests; flaky-peer behavior not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
+| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping | 🟡 Stripe driver tested against a **local mock HTTP server** (see `StripeDriver::with_base_url`); no live Stripe sandbox hit from this repo today | ⬜ blocked on Stripe sandbox credentials + webhook receiver | ⬜ blocked on hosted deploy | 🟡 API error mapping exercised; webhook-retry idempotency is planned work, not current behavior | 🟡 intent status is pulled on demand; webhook-driven reconciliation remains planned | 🟢 settlement state via MCP |
 
 Rows that are **overall red at launch-bar level**: `Lightning::LndRest`
-hosted cells, all of `Stripe` hosted, all of `X402` hosted. Each is tied to a
-tracked TODO order.
+hosted cells, all of `Stripe` hosted, all of `X402` hosted.
 
 ## 3. How to re-run a cell
 
@@ -60,9 +59,8 @@ Every cell in the matrix has one canonical entrypoint.
 # Local compose smoke, including None + X402 flows end-to-end:
 ./scripts/release_gate.sh --compose
 
-# Hosted cells (once ai.froglet.dev is up):
-FROGLET_HOSTED_PROVIDER_URL=https://ai.froglet.dev \
-  ./scripts/release_gate.sh --hosted --strict
+# Hosted cells run from the private services/operator workspace once
+# `ai.froglet.dev` is up.
 ```
 
 For a single rail + single cell, invoke the underlying test directly:
@@ -86,7 +84,7 @@ Every rail exposes settlement state through the same MCP surface:
   `2ca1aa3` ("Expose settlement state to the MCP tool surface").
 - **Structured logs** — every settlement-driver call logs an event with the
   rail, deal id, operation, and outcome. Inspectable via `docker logs` on
-  local compose; Order 60 wires this to the hosted log aggregator.
+  local compose; hosted log aggregation is planned separately.
 - **Health endpoint** — `/health` reports which rails are configured as
   `payment_backends` in the running node, so operators can verify at a
   glance that the rail they configured is actually enabled.
@@ -104,12 +102,12 @@ a reviewer can see they are known and tracked, not forgotten.
   dropped Stripe webhook deliveries beyond signature validation, LND
   channel force-close mid-settlement).
 - **No cross-rail dispute resolution** — dispute handling comes from the
-  arbiter service ([Order 80](../TODO.md)) which operates at the marketplace
-  layer, not inside a single-rail settlement driver.
+  arbiter service, which operates at the marketplace layer, not inside a
+  single-rail settlement driver.
 - **No load testing** — throughput characteristics per rail are not
   measured. Should exist before any launch that claims "production ready";
   for a permissionless-alpha launch, deferring is OK if documented.
-- **PayPal** is out of scope and tracked as [Order 43](../TODO.md).
+- **PayPal** is out of scope for the current release scope.
 
 ## 6. What changes require an update to this matrix
 
@@ -117,7 +115,8 @@ a reviewer can see they are known and tracked, not forgotten.
 - Adding a new verification column (e.g. "Hosted live" when the first public
   instance is up).
 - Moving a cell from 🟡 / ⬜ to 🟢, or vice versa, in either direction.
-- Landing or closing any of Orders 22, 23, 24, 43, 54, 57.
+- Landing or closing any hosted-payment milestone that changes the matrix.
 
-The release gate runs the unit + local-integration cells on every PR; the
-hosted cells light up once `scripts/release_gate.sh --hosted` has real URLs.
+The release gate runs the unit + local-integration cells on every PR; hosted
+cells light up through the separate first-party operator smoke once real URLs
+exist.

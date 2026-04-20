@@ -53,8 +53,7 @@ release and `INSTALL_DIR=/path` to override the destination.
 
 The public release surface covers the tracked Froglet protocol docs, the public
 docs site, reference node binaries, supported integrations, and validation
-assets in this repo. Ignored local-only incubation under `private_work/` is not
-part of the release surface.
+assets in this repo.
 
 ## Release Candidate Gate
 
@@ -63,7 +62,7 @@ entrypoint, [`scripts/release_gate.sh`](../scripts/release_gate.sh), which
 runs every line item in sequence, writes per-step evidence logs into
 `_tmp/release_gate/<UTC-timestamp>/`, and prints a pass/fail summary at the
 end. The same script is used both locally and in CI; a candidate is PASS when
-no step is FAIL (and, in `--strict` mode, no step is PENDING).
+no step is FAIL.
 
 ### Running the gate
 
@@ -82,14 +81,13 @@ no step is FAIL (and, in `--strict` mode, no step is PENDING).
   --platform linux \
   --arch x86_64
 
-# Pre-launch gate, once the hosted URLs exist:
-FROGLET_DOCS_URL=https://froglet.dev \
-FROGLET_HOSTED_PROVIDER_URL=https://ai.froglet.dev \
-./scripts/release_gate.sh --hosted --strict
 ```
 
 Every step writes to `_tmp/release_gate/<ts>/<step>.log`, and the summary is
 also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
+
+First-party hosted smoke for `ai.froglet.dev` now lives in the private
+services/operator workspace and is intentionally outside this public gate.
 
 ### Gate steps
 
@@ -100,13 +98,14 @@ also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
 | `docs-test` | Ready | Docs-site unit tests | `npm --prefix docs-site test` | Vitest suite under `docs-site/src/**/__tests__/` |
 | `package` | Ready (opt-in) | Release asset packaging + verification | `scripts/package_release_assets.sh` + `scripts/verify_release_assets.sh` | Requires `--version`, `--platform`, `--arch` |
 | `install-smoke` | Ready (opt-in) | Installer-path smoke from packaged assets | `scripts/smoke_install_from_assets.sh` | Implies `--package-assets` |
-| `hosted` | Pending hosted URLs | Hosted docs + provider + runtime smoke | `./scripts/hosted_smoke.sh` | PENDING rows mean `FROGLET_DOCS_URL` / `FROGLET_HOSTED_PROVIDER_URL` / `FROGLET_HOSTED_RUNTIME_URL` are not set; `--strict` promotes PENDING to a nonzero exit. |
 
 ### Still outside the gate
 
 - Live MCP smoke with Claude auth. Blocked on hosted stack plus valid Claude
-  auth; tracked by `Order: 11` in [../TODO.md](../TODO.md). The launch
-  fallback in that entry (2026-05-15) applies here too.
+  auth. The launch fallback date remains 2026-05-15.
+- First-party hosted smoke for `froglet.dev` and `ai.froglet.dev`. That
+  operator-specific check now runs from the private services/operator
+  workspace.
 
 ### Cut steps
 
@@ -122,8 +121,8 @@ also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
      --platform linux \
      --arch x86_64
    ```
-4. Once the public URLs exist, add `--hosted --strict` to the same invocation
-   and run it again.
+4. Run the first-party hosted smoke separately from the private
+   services/operator workspace when the hosted stack is part of the cut.
 5. Commit the version/changelog update (attach the gate evidence directory path
    in the PR description).
 6. Push the release tag, for example:

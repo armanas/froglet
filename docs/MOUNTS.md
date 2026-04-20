@@ -274,7 +274,7 @@ Both are intentionally coarse-grained for v1:
   connection, not only to the configured DB host. Tightening egress to
   the exact `host:port` tuple (network namespace + iptables allow-list,
   or a per-handle BPF socket filter) is tracked as a security hardening
-  follow-up in `TODO.md`.
+  follow-up.
 - Filesystem: granting a SQLite mount grants the parent directory rather
   than only the `.db` file, so the `-journal` and `-wal` sidecars work.
   Operators who want stricter isolation should give each SQLite mount
@@ -305,9 +305,9 @@ Follow the existing shape in
    sqlite / s3 tests.
 5. Document the kind in the table + dedicated section above.
 
-Follow-ups tracked in TODO.md:
+Planned follow-ups:
 
-- [Order 77](../TODO.md) — kinds beyond the current postgres + sqlite +
-  s3 + redis set (DynamoDB, GCS, a KV snapshot service, etc.).
+- kinds beyond the current postgres + sqlite + s3 + redis set
+  (DynamoDB, GCS, a KV snapshot service, etc.)
 - Tightening the network allow-list from coarse-grained "any outbound TCP"
-  to per-handle `host:port` is a hardening follow-up.
+  to per-handle `host:port` remains a hardening follow-up.

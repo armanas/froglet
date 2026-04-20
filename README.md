@@ -342,8 +342,7 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - Reference settlement support for Lightning, Stripe, and x402
 - Clearnet, Tor, and Nostr-facing adapter support
 - Tests, validation scripts, and release docs for the public repo surface
-- Ignored local-only incubation work under `private_work/`, which is not part
-  of the public release surface
+- Public-facing self-host documentation and examples
 
 **Intentionally outside this repo or later:**
 
@@ -356,6 +355,8 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
   v1 runtime surface
 - Native deployment adapters for AWS, GCP, OVH, and similar cloud providers
 - Zip or archive packaging as a first-class execution submission format
+- First-party hosted control-plane operations, operator runbooks, and private
+  incubation material
 
 > [!WARNING]
 > Execution hardening is not uniform across all runtimes.
@@ -383,12 +384,12 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [GCP_SINGLE_VM.md](docs/GCP_SINGLE_VM.md) | Single-VM self-host deployment wrapper |
 | [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the separate hosted trial |
 | [RELEASE.md](docs/RELEASE.md) | Release process |
-| [OPERATOR_DEPLOY.md](docs/OPERATOR_DEPLOY.md) | First deploy + routine update + rollback runbook |
-| [MONITORING.md](docs/MONITORING.md) | Hosted-environment monitoring, alerting, and incident response |
-| [ROTATION.md](docs/ROTATION.md) | Secret rotation procedures per credential |
 | [PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md) | Supported payment rails and verification coverage |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards (Contributor Covenant 2.1) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
+
+First-party hosted deployment tooling and operator runbooks now live outside
+this public repo in the private services/operator workspace.
 
 ---
 

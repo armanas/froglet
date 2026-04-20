@@ -82,7 +82,6 @@ nested `unshare` without `--privileged` or a relaxed profile, and
 Froglet's primary deploy is Docker Compose. Landlock and seccomp both
 work unchanged nested inside Docker, and together close the same threat
 surface namespaces would — filesystem exfiltration, outbound network, and
-arbitrary exec. See
-[TODO.md Order 73](../TODO.md) for the planned container-wrap alternative
-sandbox mode and [Order 75](../TODO.md) for the microVM isolation tier
-intended for multi-tenant hosted deployments.
+arbitrary exec. Planned later work includes a container-wrap alternative
+sandbox mode and a microVM isolation tier intended for multi-tenant hosted
+deployments.

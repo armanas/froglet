@@ -1,7 +1,7 @@
 # Pre-Launch Security Pass
 
 **Date:** 2026-04-18
-**Scope:** [TODO.md](../TODO.md) Order 65 — one-shot pre-launch review covering
+**Scope:** One-shot pre-launch review covering
 dependency audits, full-history secret scanning, and a threat-model sketch for
 the public hosted node (`ai.froglet.dev`). This is not a standing security
 program; see [SECURITY.md](../SECURITY.md) for the vulnerability-report
@@ -109,12 +109,12 @@ at launch.
 Internet
    │
    ▼
-[TLS edge — Caddy or Cloudflare]        ◄── P: Order 53
+[TLS edge — Caddy or Cloudflare]        ◄── P: first-party HTTPS edge
    │
    ├─ /health, /v1/node/capabilities, /v1/node/identity, /v1/openapi.yaml
    │     → unauthenticated (intentional metadata)
    │
-   ├─ public_router (provider role)     ◄── rate-limited (P: Order 58)
+   ├─ public_router (provider role)     ◄── rate-limited (P: edge rate limiting)
    │     events query / provider / publish
    │
    ├─ runtime_router (runtime role)     ◄── require_runtime_auth bearer
@@ -122,7 +122,7 @@ Internet
    │
    ├─ provider-control endpoints        ◄── require_provider_control_auth bearer
    │
-   └─ webhook receivers                 ◄── Stripe signature verify (P: Order 57)
+   └─ webhook receivers                 ◄── Stripe signature verify (P: planned webhook receiver)
           │
           ▼
      [workload sandbox]
@@ -134,35 +134,34 @@ Internet
 The combined `router()` (everything merged, unauth) is `#[deprecated]` outside
 of tests (`src/api/mod.rs:256-260`). Production deploys must wire
 `public_router()` + `runtime_router()` separately; the deploy automation
-(Order 15) and operator guide (Order 26) need to enforce this.
+and operator guide need to enforce this.
 
 ### 3.3 Top risks and existing mitigations
 
 | # | Threat | Mitigation today | Gap / depends on |
 | --- | --- | --- | --- |
-| T1 | LLM-controlled `provider_url` → SSRF / DNS rebind | IP-pinned outbound via `pinnedJsonRequest` in `integrations/shared/froglet-lib/url-safety.js`; `.onion` hostnames rejected from this path (handled by the Rust runtime only) | Operator-configured URLs still use stock `fetch`. Extension gated behind `FROGLET_EGRESS_MODE=strict` is tracked as Order 70. |
-| T2 | Tenant code escapes the Python sandbox | Linux landlock + seccomp installed via `Command::pre_exec` in `src/python_sandbox.rs` | Landlock is kernel-version-gated. Multi-tenant hosted operation should add microVM isolation (Order 75) before scaling beyond single-operator. |
+| T1 | LLM-controlled `provider_url` → SSRF / DNS rebind | IP-pinned outbound via `pinnedJsonRequest` in `integrations/shared/froglet-lib/url-safety.js`; `.onion` hostnames rejected from this path (handled by the Rust runtime only) | Operator-configured URLs still use stock `fetch`. Extension gated behind `FROGLET_EGRESS_MODE=strict` remains planned work. |
+| T2 | Tenant code escapes the Python sandbox | Linux landlock + seccomp installed via `Command::pre_exec` in `src/python_sandbox.rs` | Landlock is kernel-version-gated. Multi-tenant hosted operation should add microVM isolation before scaling beyond single-operator. |
 | T3 | Container escape from `run_container` | `docker run --network none` + mounted tempdir only | Same microVM argument as T2 for genuine multi-tenancy. |
-| T4 | Forged offers claiming a descriptor they did not sign | `validate_offer_artifact` checks `offer.signer == offer.payload.provider_id` | Cross-binding `descriptor_hash → descriptor.signer` lookup is planned at the service layer (Order 71). Low impact; the fixture attacker would still fail at payment. |
-| T5 | Stolen node identity key | Identity key is on-disk, operator-protected. No HSM path today. | Documented key-rotation runbook (Order 62) is a launch prerequisite. HSM / KMS is deferred (post-MVP). |
-| T6 | Stolen Stripe or Lightning secrets | Secrets injected via env at deploy time; not checked into source (verified by gitleaks §2). | P: Orders 54 (hosted LND), 57 (webhook receiver), 62 (rotation runbook). |
-| T7 | Public endpoint abused as compute vector | `ConcurrencyLimitLayer(16)` on provider_routes; request body cap `MAX_BODY_BYTES` | Per-IP rate limiting at the edge (Order 58) is a launch prerequisite. The in-process limit caps concurrency, not calls/sec. |
-| T8 | Unauthenticated write via the deprecated combined `router()` | `#[deprecated]` attribute fires outside `cfg(test)`; comment in source warns explicitly | Deploy automation (Order 15) and operator guide (Order 26) must pick the split routers explicitly; add a smoke check that confirms `/execute_wasm` requires auth in prod. |
-| T9 | Channel-state loss on the hosted LND node | SCB plan documented (Order 55, open) | Hard launch prerequisite. Not optional. |
-| T10 | Forged Stripe webhook → double-settlement | Signature verify + idempotent event-id dedup planned (Order 57, open) | Hard launch prerequisite. |
+| T4 | Forged offers claiming a descriptor they did not sign | `validate_offer_artifact` checks `offer.signer == offer.payload.provider_id` | Cross-binding `descriptor_hash → descriptor.signer` lookup is planned at the service layer. Low impact; the fixture attacker would still fail at payment. |
+| T5 | Stolen node identity key | Identity key is on-disk, operator-protected. No HSM path today. | A documented key-rotation runbook is a launch prerequisite. HSM / KMS is deferred (post-MVP). |
+| T6 | Stolen Stripe or Lightning secrets | Secrets injected via env at deploy time; not checked into source (verified by gitleaks §2). | Hosted LND, webhook receiver, and rotation procedures are all launch prerequisites. |
+| T7 | Public endpoint abused as compute vector | `ConcurrencyLimitLayer(16)` on provider_routes; request body cap `MAX_BODY_BYTES` | Per-IP rate limiting at the edge is a launch prerequisite. The in-process limit caps concurrency, not calls/sec. |
+| T8 | Unauthenticated write via the deprecated combined `router()` | `#[deprecated]` attribute fires outside `cfg(test)`; comment in source warns explicitly | Deploy automation and the operator guide must pick the split routers explicitly; add a smoke check that confirms `/execute_wasm` requires auth in prod. |
+| T9 | Channel-state loss on the hosted LND node | SCB plan documented | Hard launch prerequisite. Not optional. |
+| T10 | Forged Stripe webhook → double-settlement | Signature verify + idempotent event-id dedup remain planned work | Hard launch prerequisite. |
 
 ### 3.4 Residual risks accepted for launch
 
 - **Tor onion endpoint** — currently promised but not provisioned. Resolution
-  is Order 59 (either ship the hidden service or soften the README). Must be
+  is either shipping the hidden service or softening the README. Must be
   closed before the launch post.
 - **Tenant isolation beyond landlock+seccomp** — adequate for a
   single-operator launch. The hosted service explicitly is not advertised as
-  multi-tenant-hardened until Order 75 lands.
+  multi-tenant-hardened until the microVM isolation tier lands.
 - **Attestation backend** — only `nvidia.mock.v1` ships today. Any marketing
   claim of "confidential execution" at launch would be misleading; docs must
-  keep confidential mode framed as experimental until Order 74 lands a real
-  backend.
+  keep confidential mode framed as experimental until a real backend lands.
 
 ## 4. Incidental Findings
 

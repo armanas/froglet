@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Release-candidate gate (TODO.md Order 28).
+# Release-candidate gate for the public Froglet repo.
 #
 # One entrypoint that runs the current release-gate line items in sequence,
 # captures each step's stdout+stderr to a per-step log file under an evidence
 # directory, and prints a pass/fail summary. A candidate release is PASS if no
-# step is FAIL and (in --strict mode) no step is PENDING.
+# step is FAIL.
 #
 # See docs/RELEASE.md "Release Candidate Gate" for the mapping between these
 # steps and the release-gate rows.
@@ -18,8 +18,6 @@ run_lnd=0
 run_tor=0
 run_package=0
 run_install_smoke=0
-run_hosted=0
-strict_pending=0
 evidence_dir=""
 package_version=""
 package_platform=""
@@ -46,13 +44,6 @@ Options:
                                   Requires --version, --platform, --arch.
   --install-smoke                 Run the installer-path smoke. Implies
                                   --package-assets.
-  --hosted                        Run scripts/hosted_smoke.sh. Uses the
-                                  FROGLET_DOCS_URL / FROGLET_HOSTED_*_URL
-                                  environment variables; missing URLs are
-                                  reported as PENDING by that script.
-  --strict                        Fail the gate if any step is PENDING (not
-                                  only on FAIL). Passed through to
-                                  hosted_smoke.sh as FROGLET_HOSTED_SMOKE_STRICT=1.
   --version <tag>                 Release version for packaging + install smoke
                                   (e.g. v0.1.0-alpha.1).
   --platform <linux|darwin>       Packaging target platform.
@@ -69,12 +60,9 @@ STEPS
   docs-test       Docs-site unit tests (npm --prefix docs-site test).
   package         Release asset packaging + verification (opt-in).
   install-smoke   Installer-path smoke from packaged assets (opt-in).
-  hosted          Hosted URL smoke (opt-in; scripts/hosted_smoke.sh).
-
 EXIT CODES
   0  All selected steps are PASS or SKIP.
   1  At least one step FAILed.
-  2  --strict was set and at least one step is PENDING.
 EOF
 }
 
@@ -85,8 +73,6 @@ while [[ $# -gt 0 ]]; do
     --tor)            run_tor=1; shift ;;
     --package-assets) run_package=1; shift ;;
     --install-smoke)  run_install_smoke=1; run_package=1; shift ;;
-    --hosted)         run_hosted=1; shift ;;
-    --strict)         strict_pending=1; shift ;;
     --version)        package_version="$2"; shift 2 ;;
     --platform)       package_platform="$2"; shift 2 ;;
     --arch)           package_arch="$2"; shift 2 ;;
@@ -111,7 +97,6 @@ mkdir -p "$evidence_dir"
 #   detail: log-file path for PASS/FAIL, human-readable reason for SKIP/PENDING
 declare -a results=()
 any_fail=0
-any_pending=0
 
 skipped() {
   local id="$1"
@@ -206,37 +191,6 @@ else
     "not requested (pass --install-smoke)"
 fi
 
-# --- Step 5: hosted smoke (opt-in) -------------------------------------------
-# hosted_smoke.sh exits 0 when all configured checks pass, 1 on hard fail, 2
-# when a check is pending AND FROGLET_HOSTED_SMOKE_STRICT=1. We translate those
-# into FAIL / PENDING / PASS rows so the gate summary is meaningful without
-# strict mode.
-if [[ $run_hosted == 1 ]]; then
-  id="hosted"
-  label="Hosted URL smoke (scripts/hosted_smoke.sh)"
-  log="$evidence_dir/${id}.log"
-  if skipped "$id"; then
-    record "$id" "SKIP" "$label" "skipped via --skip ${id}"
-  else
-    printf '\n[run]  %s — %s\n' "$id" "$label"
-    printf '       log: %s\n' "$log"
-    rc=0
-    ( FROGLET_HOSTED_SMOKE_STRICT=1 ./scripts/hosted_smoke.sh ) >"$log" 2>&1 || rc=$?
-    case "$rc" in
-      0)
-        record "$id" "PASS" "$label" "$log" ;;
-      2)
-        any_pending=1
-        record "$id" "PENDING" "$label" "$log (pending hosted URLs)" ;;
-      *)
-        any_fail=1
-        record "$id" "FAIL" "$label" "$log (rc=${rc})" ;;
-    esac
-  fi
-else
-  record "hosted" "SKIP" "Hosted URL smoke" "not requested (pass --hosted)"
-fi
-
 # --- Summary -----------------------------------------------------------------
 summary_file="$evidence_dir/summary.tsv"
 printf 'id\tstatus\tlabel\tdetail\n' >"$summary_file"
@@ -260,10 +214,6 @@ printf '\nSummary file: %s\n' "$summary_file"
 if [[ $any_fail -ne 0 ]]; then
   printf 'Result: FAIL\n' >&2
   exit 1
-fi
-if [[ $any_pending -ne 0 && $strict_pending -eq 1 ]]; then
-  printf 'Result: PENDING (strict)\n' >&2
-  exit 2
 fi
 printf 'Result: PASS\n'
 exit 0

@@ -508,6 +508,52 @@ test("runCompute uses execute.compute.generic for execution workloads", async ()
   })
 })
 
+test("runCompute falls back to the operator-configured provider URL for a local provider_id", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    let runtimeDealBody = null
+    global.fetch = async (url, options = {}) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
+        runtimeDealBody = JSON.parse(options.body)
+        return new Response(
+          JSON.stringify({
+            provider_url: "http://127.0.0.1:8080",
+            quote: { hash: "quote-hash" },
+            deal: { deal_id: "deal-4", status: "succeeded", result: 42 }
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    }
+    try {
+      const response = await runCompute({
+        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeAuthTokenPath: tokenPath,
+        requestTimeoutMs: 1000,
+        trustedProviderUrl: "http://127.0.0.1:8080",
+        request: {
+          provider_id: "prov-1",
+          runtime: "wasm",
+          package_kind: "inline_module",
+          wasm_module_hex: "0061736d01000000"
+        }
+      })
+      assert.equal(response.status, "succeeded")
+      assert.equal(response.result, 42)
+      assert.deepEqual(runtimeDealBody.provider, {
+        provider_id: "prov-1",
+        provider_url: "http://127.0.0.1:8080"
+      })
+      assert.equal(runtimeDealBody.offer_id, "execute.compute")
+      assert.equal(runtimeDealBody.kind, "wasm")
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
 test("getTask falls back to provider jobs when runtime and provider share one API base", async () => {
   await withTokenPath(async (tokenPath) => {
     const previousFetch = global.fetch

@@ -43,8 +43,6 @@ bash -n scripts/package_release_assets.sh
 bash -n scripts/verify_release_assets.sh
 bash -n scripts/smoke_install_from_assets.sh
 bash -n scripts/release_gate.sh
-bash -n scripts/cloudflare_dns.sh
-bash -n scripts/deploy_aws.sh
 
 if command -v node >/dev/null 2>&1; then
   node_major=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')

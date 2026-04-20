@@ -275,6 +275,8 @@ async function handleCompute(args, config, includeRaw) {
   const response = await runCompute({
     ...runtimeCtx(config),
     searchLimit: args.limit ?? config.defaultSearchLimit,
+    trustedProviderUrl:
+      resolvedProviderUrl(args) == null && resolvedProviderId(args) != null ? config.providerUrl : null,
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),

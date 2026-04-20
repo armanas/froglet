@@ -46,6 +46,7 @@ coverage/
 /node.db-*
 /marketplace.db
 /marketplace.db-*
+/dist/
 /_tmp/
 /test-results/
 /.astro/

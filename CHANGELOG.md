@@ -9,15 +9,15 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ### Added
 
-- `docs/OPERATOR_DEPLOY.md` — deploy and rollback runbook derived from the
-  real `cloudflare_dns.sh` + `deploy_aws.sh` + `release_gate.sh` automation
-  (TODO Order 26)
-- `docs/MONITORING.md` — hosted-environment monitoring + alerting +
-  deployment-history runbook with explicit PENDING-HUMAN-ACTION flags for
-  alert routing and on-call path (TODO Order 17, partial close)
-- `docs/ROTATION.md` — per-credential rotation procedures covering every
-  secret the hosted environment holds; rehearsal section PENDING HUMAN
-  ACTION (TODO Order 62, partial close)
+- Public boundary notes clarifying that first-party hosted deployment,
+  monitoring, and rotation runbooks now live in the private services/operator
+  workspace.
+
+### Changed
+
+- Moved first-party hosted deployment tooling, Lightsail specs, operator
+  runbooks, and the working launch backlog out of this public repo and into
+  the private `froglet-services` workspace.
 
 ## [0.1.0-alpha.0] - 2026-04-19
 
@@ -26,19 +26,18 @@ The format follows Keep a Changelog and the release line currently targets the
 - `scripts/release_gate.sh` — single release-candidate entrypoint combining
   strict checks, docs-site build, docs-site tests, and optional packaging /
   install-smoke / hosted cells, with per-step evidence logs and a
-  `summary.tsv` (TODO Order 28)
+  `summary.tsv`
 - `docs/SECURITY_PASS.md` — pre-launch security pass with cargo / pip / npm
   audit remediations, full-history gitleaks scan (0 real leaks), and threat
-  model for `ai.froglet.dev` (TODO Order 65)
+  model for `ai.froglet.dev`
 - `docs/PAYMENT_MATRIX.md` — supported payment rails × verification modes
-  matrix with per-cell status and re-run commands (TODO Order 25)
+  matrix with per-cell status and re-run commands
 - `docs/IDENTITY_ATTESTATION.md` — normative spec for DNS + OAuth/OIDC
-  identity bindings for Froglet keys (TODO Order 81)
+  identity bindings for Froglet keys
 - `docs/ARBITER.md` — design stub for the marketplace-layer claims-court
-  service (TODO Order 80)
+  service
 - `froglet-protocol::protocol::identity_attestation` — `IdentityAttestation`
-  credential type, validator, and 8 roundtrip tests (TODO Order 81,
-  protocol-crate half)
+  credential type, validator, and 8 roundtrip tests
 - `scripts/cloudflare_dns.sh` — Cloudflare v4 DNS helper (verify / zone /
   list / create / delete / upsert); reads token from macOS Keychain, never
   echoed
@@ -47,7 +46,7 @@ The format follows Keep a Changelog and the release line currently targets the
   logs / endpoint / destroy); AWS keys read from macOS Keychain per
   invocation, never environment-persisted. First deployment live at
   `ai.froglet.dev` (nginx placeholder pending the first Froglet image tag)
-- `FROGLET_EGRESS_MODE=strict` (TODO Order 70) — opt-in propagation of the
+- `FROGLET_EGRESS_MODE=strict` — opt-in propagation of the
   same DNS-pinning + SSRF validator used for LLM-controlled URLs to the
   operator-configured `FROGLET_PROVIDER_URL` / `FROGLET_RUNTIME_URL`
   surfaces in the Node MCP and OpenClaw integrations. Off by default;
@@ -55,11 +54,11 @@ The format follows Keep a Changelog and the release line currently targets the
 - Order-28-style content-shape assertions in `scripts/hosted_smoke.sh`:
   `/health` JSON envelope, `/v1/node/capabilities` key presence,
   `/v1/node/identity` minimum shape, `/v1/openapi.yaml` prefix, docs
-  `text/html` + body marker (TODO Order 16)
+  `text/html` + body marker
 - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `.github/ISSUE_TEMPLATE/`
   (bug + feature YAML forms + Discussions/security contact links),
   `.github/pull_request_template.md` mirroring the release gate (TODO
-  Order 66 scaffolding; Discussions toggle still pending)
+  scaffolding; Discussions toggle still pending)
 - OCI Wasm workload kind (`compute.wasm.oci.v1`) allowing Wasm modules to be
   referenced by OCI image (`oci_reference` + `oci_digest`) instead of inline hex
   bytes; supports `ghcr.io` and Docker Hub registries with anonymous pulls

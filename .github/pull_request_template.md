@@ -10,15 +10,16 @@ Email security@armanas.dev first (see SECURITY.md).
 ## Summary
 
 <!--
-1-3 sentences: what changed and why. Link the motivating issue or TODO.md
-order number (e.g. "Order 28") if one exists.
+1-3 sentences: what changed and why. Link the motivating issue or discussion,
+or cite the internal tracking item in plain text if the source task lives
+outside this public repo.
 -->
 
 ## Related
 
 <!--
-Issues / Discussions / TODO.md orders this closes or advances. Use "closes
-#123" or "advances Order 28" so cross-references work.
+Issues / Discussions this closes or advances. Use "closes #123" when a public
+issue exists; otherwise cite the internal tracking item in plain text.
 -->
 
 ## How this was verified
@@ -55,4 +56,4 @@ none
 
 - [ ] README or docs/ updated where user-visible behavior changed
 - [ ] CHANGELOG.md `Unreleased` section updated (if user-visible)
-- [ ] TODO.md updated (if this closes a tracked order)
+- [ ] Public issue/docs tracking updated (if this closes a tracked public task)

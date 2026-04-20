@@ -89,13 +89,15 @@ async function waitForHealthyStatus(client, timeoutMs = 15000) {
 }
 
 async function main() {
+  const providerUrl = process.env.FROGLET_PROVIDER_URL ?? "http://127.0.0.1:8080"
+  const runtimeUrl = process.env.FROGLET_RUNTIME_URL ?? "http://127.0.0.1:8081"
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
     cwd: packageDir,
     env: {
-      FROGLET_PROVIDER_URL: process.env.FROGLET_PROVIDER_URL ?? "http://127.0.0.1:8080",
-      FROGLET_RUNTIME_URL: process.env.FROGLET_RUNTIME_URL ?? "http://127.0.0.1:8081",
+      FROGLET_PROVIDER_URL: providerUrl,
+      FROGLET_RUNTIME_URL: runtimeUrl,
       FROGLET_PROVIDER_AUTH_TOKEN_PATH:
         process.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH ??
         path.join(repoRoot, "data/runtime/froglet-control.token"),
@@ -135,10 +137,11 @@ async function main() {
     })
     assert.ok(typeof localListText === "string", "list_local_services should return text")
 
-    // Verify run_compute works. The tool-argument `provider_url` override is
-    // locked down to https-only, non-loopback on the LLM-controlled surface;
-    // resolve via `provider_id` through the operator-configured runtime so
-    // the compose smoke can still point at a local stack.
+    // Verify run_compute works against the operator-configured local provider.
+    // This stack has no marketplace, so provider_id alone would force a
+    // runtime lookup that cannot succeed. The MCP server must pair the local
+    // provider_id with its trusted operator-configured provider URL instead of
+    // requiring an LLM-supplied provider_url override.
     const computeText = await callToolText(client, "froglet", {
       action: "run_compute",
       provider_id: providerId,
