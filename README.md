@@ -124,7 +124,8 @@ convert that temporary identity into a long-term account by email verification.
 This public repo documents that contract, but it does **not** contain the
 hosted gateway implementation itself.
 
-Hosted trial docs: [froglet.dev/learn/cloud-trial](https://froglet.dev/learn/cloud-trial/)
+Hosted trial contract: [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md)
+Hosted-trial docs source: [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx)
 
 ### Run Locally
 
@@ -166,11 +167,11 @@ That runs in four independent steps:
 Additional public launch surfaces in this repo:
 
 - one-line binary install for Linux x86_64/arm64 and macOS arm64
-- published provider, runtime, and MCP Docker images
+- tagged provider, runtime, and MCP Docker images in GHCR
 - checked-in MCP example configs under `integrations/mcp/froglet/examples/`
 - a supported GCP single-VM wrapper: `scripts/deploy_gcp_single_vm.sh create|deploy|status|destroy`
 
-Full walkthrough: [froglet.dev/learn/quickstart](https://froglet.dev/learn/quickstart/)
+Quickstart source: [docs-site/src/content/docs/learn/quickstart.mdx](docs-site/src/content/docs/learn/quickstart.mdx)
 
 <details>
 <summary><strong>Running binaries directly (without Compose)</strong></summary>
@@ -395,6 +396,6 @@ this public repo in the private services/operator workspace.
 
 <div align="center">
 
-**[Website](https://froglet.dev)** &middot; **[Docs](https://froglet.dev/learn/quickstart/)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
+**[Quickstart Source](docs-site/src/content/docs/learn/quickstart.mdx)** &middot; **[Releases](https://github.com/armanas/froglet/releases)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
 
 </div>

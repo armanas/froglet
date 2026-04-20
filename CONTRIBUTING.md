@@ -38,6 +38,12 @@ Or run the full matrix in one shot:
 ./scripts/strict_checks.sh
 ```
 
+## Contribution terms
+
+This repository does not currently require a separate CLA or DCO sign-off.
+If the contribution intake policy changes, it will be documented here before
+maintainers ask for broader external contributions.
+
 ## Conformance vectors
 
 `conformance/kernel_v1.json` contains fixed golden vectors for the v1 kernel. If you touch signing, hashing, or artifact structure, update the vectors and explain why in the PR description.

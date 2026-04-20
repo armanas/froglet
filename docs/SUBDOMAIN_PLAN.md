@@ -11,9 +11,9 @@ private services/operator workspace.
 
 | Host | Purpose | Canonical source | Status |
 |---|---|---|---|
-| `froglet.dev` | Protocol landing page at `/` plus documentation under `/learn/*`, `/architecture/*`, and related routes. | `docs-site/` in this repo | Planned |
-| `docs.froglet.dev` | Alias of the apex for readers who reach for the `docs.*` form directly. Same build and content as the apex deployment. | Same `docs-site/` deployment as apex | Planned |
-| `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | Private services/operator workspace | Live operator-managed service |
+| `froglet.dev` | Protocol landing page at `/` plus documentation under `/learn/*`, `/architecture/*`, and related routes. | `docs-site/` in this repo | Provisioning; public host not live yet |
+| `docs.froglet.dev` | Alias of the apex for readers who reach for the `docs.*` form directly. Same build and content as the apex deployment. | Same `docs-site/` deployment as apex | Not yet provisioned |
+| `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | Private services/operator workspace | Edge hostname exists; Froglet app not live yet |
 | `marketplace.froglet.dev` | Marketplace read API for providers, offers, and receipts. | `froglet-services` | Planned |
 | `status.froglet.dev` | Public status page for the first-party hosted services. | Private services/operator workspace | Planned |
 | `try.froglet.dev` | Hosted trial gateway with temporary identity and lifecycle controls. | Separate private repo (see [HOSTED_TRIAL.md](HOSTED_TRIAL.md)) | Out of scope for this repo |
@@ -22,11 +22,11 @@ private services/operator workspace.
 
 - The **apex** is the protocol landing. The `docs-site/` project already
   renders a hero + CTA view at `/` and docs under `/learn/*`; serving the
-  whole thing at apex keeps one deployment, one build, one URL the README
-  can link to without version skew. `docs.froglet.dev` is an alias of the
+  whole thing at apex keeps one deployment, one build, and one canonical URL
+  once the public host is provisioned. `docs.froglet.dev` is an alias of the
   same deployment rather than a separate site, so the canonical URL for a
-  docs page is `froglet.dev/learn/quickstart/` with
-  `docs.froglet.dev/learn/quickstart/` as a working mirror.
+  docs page is intended to be `froglet.dev/learn/quickstart/` with
+  `docs.froglet.dev/learn/quickstart/` as the mirror after provisioning.
 - The **hosted instance** is `ai.froglet.dev` (not the apex) so that running
   a first-party reference Froglet is obviously "a thing the protocol owns
   the URL for," not "the protocol itself."

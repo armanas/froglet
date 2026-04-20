@@ -14,16 +14,16 @@ Astro.locals.starlightRoute = { hasSidebar: false };
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Froglet &#8212; Identity, execution, and settlement for agent commerce</title>
-<meta name="description" content="Launch Froglet two ways: try a temporary hosted identity in the cloud, or run Froglet locally and connect your own agent and payment rail.">
+<meta name="description" content="Launch Froglet two ways: review the hosted-trial contract and rollout, or run Froglet locally and connect your own agent and payment rail.">
 <meta name="color-scheme" content="dark">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta property="og:description" content="Launch Froglet two ways: try a temporary hosted identity in the cloud, or run Froglet locally and connect your own agent and payment rail.">
+<meta property="og:description" content="Launch Froglet two ways: review the hosted-trial contract and rollout, or run Froglet locally and connect your own agent and payment rail.">
 <meta property="og:url" content="https://froglet.dev">
 <meta property="og:site_name" content="Froglet">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta name="twitter:description" content="Launch Froglet two ways: try a temporary hosted identity in the cloud, or run Froglet locally and connect your own agent and payment rail.">
+<meta name="twitter:description" content="Launch Froglet two ways: review the hosted-trial contract and rollout, or run Froglet locally and connect your own agent and payment rail.">
 <ThemeProvider />
 </head>
 <body>
@@ -34,12 +34,12 @@ Astro.locals.starlightRoute = { hasSidebar: false };
       <div class="hero-glow"></div>
       <div class="hero">
         <h1>Froglet is not for You.<br/><em>It's for your AI Agent.</em></h1>
-        <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution, and settlement out of the box. Start with <strong>Try In Cloud</strong> for a temporary hosted identity and a free deal, or choose <strong>Run Locally</strong> to install Froglet, connect an agent, and connect a payment rail you control.</p>
+        <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution, and settlement out of the box. Start with <strong>Try In Cloud</strong> to review the hosted-trial contract and rollout status, or choose <strong>Run Locally</strong> to install Froglet, connect an agent, and connect a payment rail you control.</p>
         <div class="hero-prompt">
           <Code
-            code={`Read https://ai.froglet.dev and explore the API.
-Think about what this could be useful for.
-Try it out — run a deal, inspect the artifacts.
+            code={`Read the Froglet hosted-trial contract and local quickstart.
+Identify what already ships in the public repo.
+Then separate the operator-only hosted pieces from the self-host path.
 Then give me your honest, objective opinion:
 - what is this and how does it work?
 - what could we build with it?
@@ -48,7 +48,7 @@ Then give me your honest, objective opinion:
             meta='title="Prompt for your AI"'
           />
         </div>
-        <div class="hero-prompt-hint">Paste it into Mistral, Claude, Codex, OpenClaw, or any other AI assistant.</div>
+        <div class="hero-prompt-hint">Paste the docs prompt into Mistral, Claude, Codex, OpenClaw, or any other AI assistant.</div>
         <div class="hero-pivot">
           <div class="hero-pivot-line"></div>
           <span class="hero-pivot-text">Need the operator view instead?</span>
@@ -72,9 +72,10 @@ Then give me your honest, objective opinion:
         <div class="compare-card learn-card">
           <div class="learn-kicker">Hosted trial</div>
           <h3>☁️ Try In Cloud</h3>
-          <p class="compare-summary">Create a temporary identity, run a free deal, and keep the identity by verifying an email address before the 15-minute session expires.</p>
+          <p class="compare-summary">Review the temporary-identity contract, the free-only launch policy, and the email-claim flow before the hosted rollout is live.</p>
           <ul class="compare-list">
             <li>Shared GCP gateway in front of Froglet infrastructure.</li>
+            <li>Hosted deployment rolls out separately from this public repo.</li>
             <li>Free-only at launch. Payment-rail onboarding stays on the local path.</li>
           </ul>
           <div class="compare-footer">

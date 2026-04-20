@@ -1,11 +1,11 @@
 # Docker
 
-Froglet ships these public image targets:
+Froglet builds and tags these image targets:
 
 - `provider` — provider-mode froglet-node (includes `python3`)
 - `runtime` — runtime-mode froglet-node
 - `dual` — both provider and runtime in one container
-- `froglet-mcp` — MCP server image published to GHCR
+- `froglet-mcp` — MCP server image built and tagged in GHCR
 
 ## Default Local Stack
 
@@ -63,9 +63,12 @@ docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp:local .
 
 The tagged release workflow publishes:
 
-- `ghcr.io/<owner>/froglet-provider:<version>`
-- `ghcr.io/<owner>/froglet-runtime:<version>`
-- `ghcr.io/<owner>/froglet-mcp:<version>`
+- `ghcr.io/armanas/froglet-provider:<version>`
+- `ghcr.io/armanas/froglet-runtime:<version>`
+- `ghcr.io/armanas/froglet-mcp:<version>`
+
+If the repository stays private, GitHub package visibility must still be set to
+public before anonymous pulls work.
 
 ## Role Defaults
 

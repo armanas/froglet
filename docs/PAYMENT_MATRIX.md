@@ -60,7 +60,7 @@ Every cell in the matrix has one canonical entrypoint.
 ./scripts/release_gate.sh --compose
 
 # Hosted cells run from the private services/operator workspace once
-# `ai.froglet.dev` is up.
+# `ai.froglet.dev` is serving the Froglet provider publicly.
 ```
 
 For a single rail + single cell, invoke the underlying test directly:

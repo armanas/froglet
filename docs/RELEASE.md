@@ -1,7 +1,8 @@
 # Release
 
-This repo now has a tagged release path for the public Froglet node, public
-Docker images, MCP image, and the checked-in docs deployment configuration.
+This repo now has a tagged release path for the public Froglet node, tagged
+Docker images in GHCR, the MCP image, and the checked-in docs deployment
+configuration.
 
 Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
@@ -23,13 +24,16 @@ Pushing a matching tag triggers
 [../.github/workflows/release.yml](../.github/workflows/release.yml), which
 publishes the role-specific images:
 
-- `ghcr.io/<owner>/froglet-provider:<version>`
-- `ghcr.io/<owner>/froglet-provider:<sha-tag>`
-- `ghcr.io/<owner>/froglet-runtime:<version>`
-- `ghcr.io/<owner>/froglet-runtime:<sha-tag>`
-- `ghcr.io/<owner>/froglet-mcp:<version>`
-- `ghcr.io/<owner>/froglet-mcp:<sha-tag>`
-- `ghcr.io/<owner>/froglet-mcp:latest`
+- `ghcr.io/armanas/froglet-provider:<version>`
+- `ghcr.io/armanas/froglet-provider:<sha-tag>`
+- `ghcr.io/armanas/froglet-runtime:<version>`
+- `ghcr.io/armanas/froglet-runtime:<sha-tag>`
+- `ghcr.io/armanas/froglet-mcp:<version>`
+- `ghcr.io/armanas/froglet-mcp:<sha-tag>`
+- `ghcr.io/armanas/froglet-mcp:latest`
+
+If the repository remains private, the package visibility still has to be
+changed to public in GitHub package settings before anonymous pulls work.
 
 ## Published Docs
 
@@ -42,8 +46,10 @@ credentials are present locally, or through Cloudflare Workers Builds with:
 - Deploy command: `npx wrangler deploy`
 
 The repo no longer uses GitHub Pages for docs deployment. The intended public
-shape remains apex `https://froglet.dev` with `https://docs.froglet.dev`
-mirroring the same deployment (see [SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
+shape is still apex `https://froglet.dev` with `https://docs.froglet.dev`
+mirroring the same deployment, but the public host should only be treated as
+live after the Cloudflare deployment and route checks pass (see
+[SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
 
 ## Published Binaries
 
@@ -59,9 +65,10 @@ downloads from those release assets. By default it installs the latest tagged
 `froglet-node` release into `~/.local/bin`. Use `VERSION=<tag>` to pin a
 release and `INSTALL_DIR=/path` to override the destination.
 
-The public release surface covers the tracked Froglet protocol docs, the public
-docs site, reference node binaries, supported integrations, and validation
-assets in this repo.
+The public release surface covered directly by the tag workflow is the tracked
+protocol docs in this repo, reference node binaries, tagged container images,
+supported integrations, and validation assets. The public docs host and the
+first-party hosted node are separate deploy steps outside the tag workflow.
 
 ## Release Candidate Gate
 
@@ -146,12 +153,13 @@ Use the matching changelog section as the release body. For the first alpha,
 the release notes should call out:
 
 - published `SHA256SUMS` for release asset verification
-- published provider, runtime, and MCP images
+- tagged provider, runtime, and MCP images in GHCR
 - downloadable `froglet-node` binaries
-- official site at `froglet.dev` (with `docs.froglet.dev` mirror)
+- official site at `froglet.dev` (with `docs.froglet.dev` mirror) if the docs
+  deployment is live at cut time
 - public OpenClaw integration
 - reference discovery
-- public operator image
+- reference operator image
 - launch payment rails: Lightning, Stripe, and x402
 - any intentionally deferred layers, especially external broker and closed higher-layer
   services

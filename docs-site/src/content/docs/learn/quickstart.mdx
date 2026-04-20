@@ -38,7 +38,7 @@ actually does.
 - **Linux x86_64 / arm64** or **macOS arm64**
 - **`curl`** to download the installer
 - **Node.js 18+** if you want the local MCP server for Claude Code or Codex
-- Optional: **Docker** if you want the local provider/runtime stack or the published images
+- Optional: **Docker** if you want the local provider/runtime stack or the tagged GHCR images
 - Optional: a configured **GCP project** if you want the single-VM self-host wrapper
 
 ## 1. Install Froglet
@@ -52,14 +52,14 @@ curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/instal
 Pin a version or change the install dir if needed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | VERSION=v0.1.0-alpha.1 sh
 ```
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
-By default the installer fetches `froglet-node`, verifies it against `SHA256SUMS`, and installs it locally. `froglet-node` is the public single-binary path. The release pipeline also publishes provider, runtime, and MCP Docker images.
+By default the installer fetches `froglet-node`, verifies it against `SHA256SUMS`, and installs it locally. `froglet-node` is the public single-binary path. The release pipeline also tags provider, runtime, and MCP Docker images in GHCR. Anonymous pulls work only after the package visibility is public.
 
 ## 2. Connect an agent
 
@@ -203,7 +203,7 @@ To make your provider discoverable:
 ```bash
 FROGLET_PAYMENT_BACKEND=none \
 FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
-FROGLET_MARKETPLACE_URL=https://mkt.froglet.dev \
+FROGLET_MARKETPLACE_URL=https://marketplace.froglet.dev \
 froglet-node
 ```
 
