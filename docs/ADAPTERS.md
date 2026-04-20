@@ -103,10 +103,8 @@ They are not canonical economic state.
 
 A marketplace is not a special protocol actor.
 It is just another Froglet node or service that consumes signed Froglet
-artifacts and republishes higher-layer discovery information.
-Marketplace implementations may live in separate repos, local ignored
-incubation outside the public release surface, or closed-source services. The
-protocol boundary stays the same either way.
+artifacts and republishes higher-layer discovery information. The protocol
+boundary stays the same either way.
 
 ## 6. Deployment Adapters
 

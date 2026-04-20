@@ -3,13 +3,9 @@
 Status: **completed** as of 2026-04-17.
 
 This is the lightweight name-coherence check for Froglet. Froglet is an
-open-source protocol name,
-not a commercial brand, so the goal is limited to: (a) avoid stepping on a
+open-source protocol name, so the goal is limited to: (a) avoid stepping on a
 clearly-conflicting existing software name, and (b) make sure the protocol
 does not collide with itself across package registries.
-
-If Froglet ever spins out a commercial entity, that entity will use a
-different name; full trademark clearance is explicitly out of scope here.
 
 ---
 
@@ -82,8 +78,8 @@ juvenile-frog biological meaning and the Pokémon character (game
 merchandise class 28, not software), neither of which conflict with our
 software use.
 
-If the manual TESS search turns up a genuine software-class conflict, we
-re-evaluate the name before launch. Otherwise we proceed.
+If the manual TESS search turns up a genuine software-class conflict,
+re-evaluate the name before launch. Otherwise proceed.
 
 ---
 

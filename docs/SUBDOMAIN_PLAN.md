@@ -4,8 +4,8 @@ Status: **approved** for `froglet.dev` as of 2026-04-17.
 
 This public document is the canonical domain-ownership map for the public
 Froglet surface. Detailed first-party DNS records, operator credentials,
-provider-specific deployment notes, and live zone inventory now live in the
-private services/operator workspace.
+provider-specific deployment notes, and live zone inventory are maintained
+separately from the public protocol docs.
 
 ## Apex and subdomains
 
@@ -13,10 +13,10 @@ private services/operator workspace.
 |---|---|---|---|
 | `froglet.dev` | Protocol landing page at `/` plus documentation under `/learn/*`, `/architecture/*`, and related routes. | `docs-site/` in this repo | Provisioning; public host not live yet |
 | `docs.froglet.dev` | Alias of the apex for readers who reach for the `docs.*` form directly. Same build and content as the apex deployment. | Same `docs-site/` deployment as apex | Not yet provisioned |
-| `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | Private services/operator workspace | Edge hostname exists; Froglet app not live yet |
-| `marketplace.froglet.dev` | Marketplace read API for providers, offers, and receipts. | `froglet-services` | Planned |
-| `status.froglet.dev` | Public status page for the first-party hosted services. | Private services/operator workspace | Planned |
-| `try.froglet.dev` | Hosted trial gateway with temporary identity and lifecycle controls. | Separate private repo (see [HOSTED_TRIAL.md](HOSTED_TRIAL.md)) | Out of scope for this repo |
+| `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | First-party hosted deployment | Edge hostname exists; Froglet app not live yet |
+| `marketplace.froglet.dev` | Default public marketplace for providers, offers, and receipts. | Default public marketplace deployment | Planned |
+| `status.froglet.dev` | Public status page for the first-party hosted services. | First-party hosted status deployment | Planned |
+| `try.froglet.dev` | Hosted trial gateway with temporary identity and lifecycle controls. | First-party hosted gateway | Out of scope for this repo |
 
 ## Why the split
 
@@ -31,11 +31,11 @@ private services/operator workspace.
   a first-party reference Froglet is obviously "a thing the protocol owns
   the URL for," not "the protocol itself."
 - The **marketplace** is `marketplace.froglet.dev` so it is clearly
-  addressable as a distinct service — anyone forking `froglet-services`
-  and running their own marketplace can point at their own host without
+  addressable as a distinct service — anyone running their own marketplace can
+  point at their own host without
   any assumption that the marketplace is "the" marketplace.
-- `try.froglet.dev` stays in its own subdomain and its own private repo
-  because the hosted-trial lifecycle (rate limiting, TTL cleanup, audit
+- `try.froglet.dev` stays in its own subdomain because the hosted-trial
+  lifecycle (rate limiting, TTL cleanup, audit
   logging, email verification, human-account conversion) has a different
   operational boundary than the protocol core and does not belong in the
   public repo.
@@ -73,8 +73,7 @@ intentionally no longer documented here:
 - first-party deploy order and cutover steps
 - operator credential storage and alert routing
 
-Those details are part of the private services/operator workspace, not the
-public kernel/runtime repo.
+Those details are maintained separately from the public kernel/runtime repo.
 
 ## Deployment-order dependencies
 
@@ -89,10 +88,8 @@ public kernel/runtime repo.
 
 ## What is not in scope here
 
-- **Brand clearance / trademark** — Froglet is an open-source protocol, not
-  a company. The lightweight registry-coherence check is documented
-  separately; a full trademark clearance only matters if a commercial
-  entity is formed, and that entity would use a different name.
+- **Brand clearance / trademark** — Froglet is an open-source protocol. The
+  lightweight registry-coherence check is documented separately.
 - **Vanity redirects** (`froglet.io`, `froglet.app`, etc.) — not purchased.
   If someone else registers them, we live with it.
 - **Country-specific TLDs** — not in scope.
@@ -101,8 +98,7 @@ public kernel/runtime repo.
 
 - 2026-04-17: Document created. `froglet.dev` purchased; DNS and hosting
   decisions pending.
-- 2026-04-19: First-party DNS and operator details moved into the private
-  services/operator workspace so this public copy only keeps the stable
-  public-domain map.
+- 2026-04-19: First-party DNS and operator details moved out of this public
+  copy so it only keeps the stable public-domain map.
 - 2026-04-20: Public docs deploy path standardized on Cloudflare Workers via
   `docs-site/wrangler.jsonc`; the stale GitHub Pages workflow was removed.

@@ -94,10 +94,10 @@ The reference implementation exposes these binaries:
 | `froglet-node` | Provider and/or runtime node (role configured via env) | `8080` / `8081` |
 
 > [!TIP]
-> Marketplace integration remains public. Providers and runtimes can point at
-> an external marketplace with `FROGLET_MARKETPLACE_URL`, and a default
-> marketplace exists outside this repo. The approved boundary is recorded in
-> [docs/MARKETPLACE_SPLIT.md](docs/MARKETPLACE_SPLIT.md).
+> Marketplace integration is part of the public Froglet surface. Providers and
+> runtimes can point at any compatible marketplace with
+> `FROGLET_MARKETPLACE_URL`, and a default public marketplace is available at
+> `https://marketplace.froglet.dev`. See [docs/MARKETPLACE.md](docs/MARKETPLACE.md).
 
 ---
 
@@ -117,12 +117,11 @@ The public launch story has exactly two entry points:
 
 ### Try In Cloud
 
-The hosted trial lives behind a separate GCP-hosted gateway. It creates a
+The hosted trial lives behind a first-party GCP-hosted gateway. It creates a
 temporary 15-minute identity, lets the user run a free-only deal flow, and can
 convert that temporary identity into a long-term account by email verification.
 
-This public repo documents that contract, but it does **not** contain the
-hosted gateway implementation itself.
+This public repo documents the hosted-trial contract and the self-host path.
 
 Hosted trial contract: [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md)
 Hosted-trial docs source: [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx)
@@ -345,19 +344,15 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - Tests, validation scripts, and release docs for the public repo surface
 - Public-facing self-host documentation and examples
 
-**Intentionally outside this repo or later:**
+**Later or separately deployed:**
 
-- The hosted `try.froglet.dev` gateway, temporary-identity operator controls,
-  and human-account lifecycle, which belong in a separate private repo
-- Marketplace, catalog, broker, ranking, reputation, and policy products,
-  which may live in separate repos, local ignored incubation, or private
-  deployments
+- The hosted `try.froglet.dev` gateway and its operational lifecycle
+- Higher-layer marketplace ranking, reputation, and policy services
 - Long-running batch orchestration, which remains out of scope for the current
   v1 runtime surface
 - Native deployment adapters for AWS, GCP, OVH, and similar cloud providers
 - Zip or archive packaging as a first-class execution submission format
-- First-party hosted control-plane operations, operator runbooks, and private
-  incubation material
+- First-party hosted control-plane operations and runbooks
 
 > [!WARNING]
 > Execution hardening is not uniform across all runtimes.
@@ -383,14 +378,15 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [NOSTR.md](docs/NOSTR.md) | Nostr publication adapter |
 | [STORAGE_PROFILE.md](docs/STORAGE_PROFILE.md) | Storage profiles |
 | [GCP_SINGLE_VM.md](docs/GCP_SINGLE_VM.md) | Single-VM self-host deployment wrapper |
-| [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the separate hosted trial |
+| [MARKETPLACE.md](docs/MARKETPLACE.md) | Marketplace integration and the default public marketplace |
+| [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the hosted trial |
 | [RELEASE.md](docs/RELEASE.md) | Release process |
 | [PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md) | Supported payment rails and verification coverage |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards (Contributor Covenant 2.1) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 
-First-party hosted deployment tooling and operator runbooks now live outside
-this public repo in the private services/operator workspace.
+First-party hosted deployment tooling and operator runbooks are maintained
+separately from the public protocol and self-host docs in this repo.
 
 ---
 

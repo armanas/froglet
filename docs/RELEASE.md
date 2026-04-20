@@ -101,8 +101,8 @@ no step is FAIL.
 Every step writes to `_tmp/release_gate/<ts>/<step>.log`, and the summary is
 also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
 
-First-party hosted smoke for `ai.froglet.dev` now lives in the private
-services/operator workspace and is intentionally outside this public gate.
+First-party hosted smoke for `ai.froglet.dev` is intentionally outside this
+public gate and is maintained separately from the public repo checks.
 
 ### Gate steps
 
@@ -119,8 +119,7 @@ services/operator workspace and is intentionally outside this public gate.
 - Live MCP smoke with Claude auth. Blocked on hosted stack plus valid Claude
   auth. The launch fallback date remains 2026-05-15.
 - First-party hosted smoke for `froglet.dev` and `ai.froglet.dev`. That
-  operator-specific check now runs from the private services/operator
-  workspace.
+  operator-specific check is maintained separately from this public repo.
 
 ### Cut steps
 
@@ -136,8 +135,8 @@ services/operator workspace and is intentionally outside this public gate.
      --platform linux \
      --arch x86_64
    ```
-4. Run the first-party hosted smoke separately from the private
-   services/operator workspace when the hosted stack is part of the cut.
+4. Run the first-party hosted smoke separately when the hosted stack is part
+   of the cut.
 5. Commit the version/changelog update (attach the gate evidence directory path
    in the PR description).
 6. Push the release tag, for example:

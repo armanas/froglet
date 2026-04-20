@@ -5,4 +5,4 @@ repository.
 
 Public Froglet still documents protocol behavior and self-host flows here. The
 single-operator secret inventory and rehearsal procedures for the hosted
-services now live in the private services/operator workspace.
+services are maintained separately from the public protocol docs.

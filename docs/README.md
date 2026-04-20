@@ -10,7 +10,7 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 ## Architecture
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): system layering — kernel, adapters, runtime, services
-- [MARKETPLACE_SPLIT.md](MARKETPLACE_SPLIT.md): approved public/private marketplace boundary
+- [MARKETPLACE.md](MARKETPLACE.md): marketplace integration and the default public marketplace
 
 ## Companion Docs
 
@@ -24,7 +24,7 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 - [DOCKER.md](DOCKER.md): local compose and container deployment
 - [GCP_SINGLE_VM.md](GCP_SINGLE_VM.md): single-VM self-host deployment wrapper
-- [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the separate hosted trial
+- [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the hosted trial
 - [RELEASE.md](RELEASE.md): release process and published image contract
 
 ## Integrations

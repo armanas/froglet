@@ -83,6 +83,42 @@ jobs:
         env:
           TAG_VERSION: ${{ steps.meta.outputs.version }}
 
+      - name: Verify MCP versions match tag
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          tag_version = os.environ["TAG_VERSION"]
+          package_version = json.loads(
+              Path("integrations/mcp/froglet/package.json").read_text()
+          )["version"]
+          manifest_version = json.loads(
+              Path("integrations/mcp/froglet/mcp-manifest.json").read_text()
+          )["version"]
+          lockfile = json.loads(
+              Path("integrations/mcp/froglet/package-lock.json").read_text()
+          )
+          lockfile_version = lockfile["version"]
+          lockfile_root_version = lockfile["packages"][""]["version"]
+
+          mismatches = []
+          for label, value in (
+              ("package.json", package_version),
+              ("mcp-manifest.json", manifest_version),
+              ("package-lock.json", lockfile_version),
+              ("package-lock.json packages[\"\"]", lockfile_root_version),
+          ):
+              if value != tag_version:
+                  mismatches.append(f"{label} version {value!r} does not match tag {tag_version!r}")
+
+          if mismatches:
+              raise SystemExit("\n".join(mismatches))
+          PY
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+
   ensure-release:
     name: Ensure GitHub Release Exists
     runs-on: ubuntu-latest

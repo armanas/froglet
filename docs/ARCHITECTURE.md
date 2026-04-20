@@ -203,9 +203,9 @@ froglet/                 open source node framework
   lnd                     Lightning driver
   tls, tor                transport adapters
 
-default marketplace      first-party implementation lives outside this repo
+default public marketplace
   public contract        registration + runtime discovery stay in froglet
-  implementation         see ../froglet-services and MARKETPLACE_SPLIT.md
+  endpoint               https://marketplace.froglet.dev
 ```
 
 `froglet-protocol` is the single source of truth for kernel types. `froglet`

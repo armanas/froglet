@@ -1,9 +1,8 @@
 # Marketplace Arbiter / Claims-Court Service
 
-Status: **design stub**. The authoritative design notes for the arbiter
-service live in the private services roadmap. This file exists so future
-cross-references resolve and so there is a stable location for the full
-mechanism-design writeup to land when implementation begins.
+Status: **design stub**. This file reserves the public design surface for a
+marketplace-layer arbitration service and gives future docs a stable
+cross-reference target.
 
 ## Scope
 
@@ -13,11 +12,9 @@ not a kernel change. Kernel artifacts (offers, descriptors, receipts) and
 settlement drivers remain unchanged; the arbiter operates on the signed
 artifacts they produce.
 
-For the full specification — handler surface, deposit model, panel
-selection, appeal mechanism, slashing hook, and the intentionally-unresolved
-sybil-resistance ceiling — see the private services roadmap. This
-document will replace that design note once the service
-implementation lands in `froglet-services/services/marketplace-arbiter`.
+The full mechanism design is intentionally still open. This page keeps the
+public interface expectations visible without freezing deposit tiers, panel
+selection rules, or appeal economics before there is operational data.
 
 ## Interaction with adjacent specs
 
@@ -31,9 +28,9 @@ implementation lands in `froglet-services/services/marketplace-arbiter`.
 - **[KERNEL.md](KERNEL.md)** — the arbiter does not modify the kernel. Its
   handlers only accept, index, and produce signed artifacts that conform to
   the existing envelope shape.
-- **[MARKETPLACE_SPLIT.md](MARKETPLACE_SPLIT.md)** — the arbiter lives in
-  `froglet-services`, not in the public `froglet` repo. The public repo
-  reserves the spec and the interface expectations only.
+- **[MARKETPLACE.md](MARKETPLACE.md)** — the arbiter is a marketplace-layer
+  service. It uses the same public marketplace integration surface as other
+  marketplace services.
 
 ## Why this is a stub, not the full spec
 

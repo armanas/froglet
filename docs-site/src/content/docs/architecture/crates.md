@@ -36,5 +36,5 @@ The node framework. Re-exports kernel types from `froglet-protocol`.
 | **Transport** | `tls`, `tor`, `nostr` |
 | **Runtime** | `api/*`, `server`, `config`, `state`, `db`, `deals`, `jobs` |
 
-The default marketplace implementation now lives outside this public repo while
-continuing to use Froglet's public marketplace integration contract.
+The default public marketplace uses Froglet's public marketplace integration
+contract.

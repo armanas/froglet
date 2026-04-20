@@ -104,7 +104,7 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_MARKETPLACE_URL` | *(none)* | External marketplace URL for provider auto-registration and runtime discovery. The default marketplace implementation exists outside this public repo. |
+| `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for provider auto-registration and runtime discovery. Use the default public marketplace or any compatible marketplace endpoint. |
 
 ## MCP Server (integrations/mcp/froglet)
 

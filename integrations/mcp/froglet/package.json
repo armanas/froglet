@@ -5,7 +5,7 @@
   "type": "module",
   "description": "MCP server for Froglet services, projects, and compute.",
   "author": "Armanas Povilionis-Muradian",
-  "homepage": "https://froglet.dev",
+  "homepage": "https://github.com/armanas/froglet",
   "repository": "https://github.com/armanas/froglet",
   "engines": {
     "node": ">=18"

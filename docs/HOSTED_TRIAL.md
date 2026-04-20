@@ -1,24 +1,14 @@
 # Hosted Trial Contract
 
-Public contract for the separate hosted `try.froglet.dev` product.
+Public contract for the hosted `try.froglet.dev` entry point.
 
-## Boundary
+## Public role
 
-The hosted trial is **not** implemented in this repo. This repo documents the
-contract and keeps the public launch story strict:
+This repo documents the public hosted-trial contract and keeps the launch story
+simple:
 
 - `Try In Cloud`
 - `Run Locally`
-
-The hosted implementation belongs in a separate private repo because it needs:
-
-- rate limiting and abuse controls
-- TTL cleanup
-- audit logging
-- uptime and error monitoring
-- email delivery
-- operator runbooks
-- human-account lifecycle and identity recovery flows
 
 ## Hosted launch promise
 
@@ -39,9 +29,8 @@ POST /api/sessions/resume
 Session-scoped discovery, quote, deal, and execute routes wrap Froglet flows
 without exposing raw private-key management to the user.
 
-## Why this stays separate
+## Reader expectation
 
-The local public repo should remain focused on self-host install, agent
-integration, payment-rail onboarding, and release integrity. The hosted trial
-has a different operational and security boundary, so it should ship from its
-own private codebase.
+The hosted trial is a first-party convenience entry point built on Froglet. The
+public docs here define the user flow and API contract; the self-host path
+remains the default way to understand and run Froglet locally.

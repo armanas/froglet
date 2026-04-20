@@ -84,6 +84,6 @@ Runtime image:
 - no public provider listener
 
 Use `FROGLET_MARKETPLACE_URL` on provider and runtime nodes to point them at an
-external marketplace for discovery and registration. The default marketplace
-implementation is split out from this public repo; see
-[MARKETPLACE_SPLIT.md](MARKETPLACE_SPLIT.md).
+external marketplace for discovery and registration. A default public
+marketplace is available at `https://marketplace.froglet.dev`; any compatible
+marketplace endpoint works.

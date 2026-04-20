@@ -14,16 +14,16 @@ Astro.locals.starlightRoute = { hasSidebar: false };
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Froglet &#8212; Identity, execution, and settlement for agent commerce</title>
-<meta name="description" content="Launch Froglet two ways: review the hosted-trial contract and rollout, or run Froglet locally and connect your own agent and payment rail.">
+<meta name="description" content="Launch Froglet two ways: try the hosted entry point or run Froglet locally and connect your own agent, marketplace, and payment rail.">
 <meta name="color-scheme" content="dark">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta property="og:description" content="Launch Froglet two ways: review the hosted-trial contract and rollout, or run Froglet locally and connect your own agent and payment rail.">
+<meta property="og:description" content="Launch Froglet two ways: try the hosted entry point or run Froglet locally and connect your own agent, marketplace, and payment rail.">
 <meta property="og:url" content="https://froglet.dev">
 <meta property="og:site_name" content="Froglet">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta name="twitter:description" content="Launch Froglet two ways: review the hosted-trial contract and rollout, or run Froglet locally and connect your own agent and payment rail.">
+<meta name="twitter:description" content="Launch Froglet two ways: try the hosted entry point or run Froglet locally and connect your own agent, marketplace, and payment rail.">
 <ThemeProvider />
 </head>
 <body>
@@ -34,12 +34,11 @@ Astro.locals.starlightRoute = { hasSidebar: false };
       <div class="hero-glow"></div>
       <div class="hero">
         <h1>Froglet is not for You.<br/><em>It's for your AI Agent.</em></h1>
-        <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution, and settlement out of the box. Start with <strong>Try In Cloud</strong> to review the hosted-trial contract and rollout status, or choose <strong>Run Locally</strong> to install Froglet, connect an agent, and connect a payment rail you control.</p>
+        <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution, and settlement out of the box. Start with <strong>Try In Cloud</strong> for the first-party hosted entry point, or choose <strong>Run Locally</strong> to install Froglet, connect an agent, a marketplace, and a payment rail you control.</p>
         <div class="hero-prompt">
           <Code
-            code={`Read the Froglet hosted-trial contract and local quickstart.
-Identify what already ships in the public repo.
-Then separate the operator-only hosted pieces from the self-host path.
+            code={`Read the Froglet quickstart, marketplace overview, and hosted-trial contract.
+Explain what Froglet is, how discovery works, and how an agent uses it.
 Then give me your honest, objective opinion:
 - what is this and how does it work?
 - what could we build with it?
@@ -67,7 +66,7 @@ Then give me your honest, objective opinion:
     <section>
       <div class="section-label">🚀 Launch</div>
       <div class="section-title">Exactly two public entry points.</div>
-      <div class="section-desc">The cloud path is a separate hosted gateway with temporary identities. The local path is the public repo: install Froglet, connect an agent, connect a payment rail.</div>
+      <div class="section-desc">The cloud path is the first-party hosted entry point with temporary identities. The local path is the public repo: install Froglet, connect an agent, a marketplace, and a payment rail.</div>
       <div class="compare learn-grid two">
         <div class="compare-card learn-card">
           <div class="learn-kicker">Hosted trial</div>
@@ -75,7 +74,7 @@ Then give me your honest, objective opinion:
           <p class="compare-summary">Review the temporary-identity contract, the free-only launch policy, and the email-claim flow before the hosted rollout is live.</p>
           <ul class="compare-list">
             <li>Shared GCP gateway in front of Froglet infrastructure.</li>
-            <li>Hosted deployment rolls out separately from this public repo.</li>
+            <li>Hosted rollout is first-party and follows the same protocol surface.</li>
             <li>Free-only at launch. Payment-rail onboarding stays on the local path.</li>
           </ul>
           <div class="compare-footer">
@@ -86,7 +85,7 @@ Then give me your honest, objective opinion:
                 meta='title="Public contract"'
               />
             </div>
-            <div class="compare-note">This hosted product ships from a separate private repo. The public docs describe the contract and the user promise.</div>
+            <div class="compare-note">The public docs describe the hosted contract, the user flow, and the launch policy.</div>
             <div class="compare-actions learn-button-row">
               <a href="/learn/cloud-trial/" class="learn-button">Hosted trial docs</a>
             </div>

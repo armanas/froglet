@@ -7,7 +7,7 @@ description: The hosted Froglet trial uses temporary identities, a shared gatewa
   <div>
     <div class="learn-pill">Hosted trial</div>
     <p class="learn-lead">Temporary identity, free-only deal flow, optional email claim.</p>
-    <p class="learn-sublead">This path is a separate hosted product on GCP. It is not implemented in this public repo. The public docs define the user promise and the external API contract.</p>
+    <p class="learn-sublead">This path is the first-party hosted entry point on GCP. The public docs define the user promise and the external API contract.</p>
     <div class="learn-chip-row">
       <span class="learn-chip">15-minute TTL</span>
       <span class="learn-chip">Shared gateway</span>
@@ -47,9 +47,10 @@ Session-scoped discovery, quote, deal, and execute endpoints sit behind the sess
 
 ## Boundary
 
-This public repo does **not** contain the hosted gateway implementation, its operator controls, or its email and abuse-control stack. Those pieces belong in the separate private repo that serves `try.froglet.dev`.
-
-The public side of that split is documented here so the launch story stays strict and the local repo does not pretend to ship the hosted backend.
+This page documents the public hosted-trial contract: temporary identities,
+free-only launch policy, email claim, and the session-scoped API shape. The
+local path remains the default way to install Froglet, connect a payment rail,
+and self-host the full node surface.
 
 ## Local path
 
