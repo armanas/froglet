@@ -171,9 +171,19 @@ if [[ $run_package == 1 ]]; then
         --platform '$package_platform' \\
         --arch '$package_arch' \\
         --out-dir '$assets_dir'
+      asset_name='froglet-node-${package_version}-${package_platform}-${package_arch}.tar.gz'
+      if command -v sha256sum >/dev/null 2>&1; then
+        (cd '$assets_dir' && sha256sum \"\$asset_name\" > SHA256SUMS)
+      elif command -v shasum >/dev/null 2>&1; then
+        (cd '$assets_dir' && shasum -a 256 \"\$asset_name\" > SHA256SUMS)
+      else
+        echo 'missing required checksum tool: sha256sum or shasum' >&2
+        exit 1
+      fi
       scripts/verify_release_assets.sh \\
         --dir '$assets_dir' \\
-        --version '$package_version'
+        --version '$package_version' \\
+        --target '$package_platform:$package_arch'
     "
 else
   record "package" "SKIP" "Release asset packaging" \

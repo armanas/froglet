@@ -264,7 +264,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
-          gh release download "$GITHUB_REF_NAME" --pattern "*.tar.gz" --dir dist --clobber
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern "*.tar.gz" --dir dist --clobber
 
       - name: Verify expected release tarballs
         env:
@@ -302,7 +302,7 @@ jobs:
       - name: Upload SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber
+        run: gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Write binary asset summary
         run: |

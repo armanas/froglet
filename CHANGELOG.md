@@ -7,17 +7,30 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1] - 2026-04-20
+
 ### Added
 
 - Public boundary notes clarifying that first-party hosted deployment,
   monitoring, and rotation runbooks now live in the private services/operator
   workspace.
+- `docs-site/wrangler.jsonc` plus `docs-site` Wrangler scripts for the public
+  Cloudflare Workers docs deployment path
 
 ### Changed
 
 - Moved first-party hosted deployment tooling, Lightsail specs, operator
   runbooks, and the working launch backlog out of this public repo and into
   the private `froglet-services` workspace.
+- standardized the public docs deployment path on Cloudflare Workers and
+  removed the stale GitHub Pages workflow
+- enabled GitHub Discussions and linked it from the public README
+
+### Fixed
+
+- release workflow `gh release view/create/download/upload` calls now pass
+  `--repo "$GITHUB_REPOSITORY"` so GitHub Actions does not depend on local
+  `.git` context when generating notes or publishing release assets
 
 ## [0.1.0-alpha.0] - 2026-04-19
 
