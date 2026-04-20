@@ -7,6 +7,8 @@
     "start": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "preview:workers": "astro build && wrangler dev",
+    "deploy": "astro build && wrangler deploy",
     "astro": "astro",
     "test": "vitest --run"
   },
@@ -20,6 +22,7 @@
   "devDependencies": {
     "jsdom": "^29.0.2",
     "lightningcss": "^1.32.0",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "wrangler": "^4.83.0"
   }
 }

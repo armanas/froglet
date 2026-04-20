@@ -395,6 +395,6 @@ this public repo in the private services/operator workspace.
 
 <div align="center">
 
-**[Website](https://froglet.dev)** &middot; **[Docs](https://froglet.dev/learn/quickstart/)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
+**[Website](https://froglet.dev)** &middot; **[Docs](https://froglet.dev/learn/quickstart/)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
 
 </div>

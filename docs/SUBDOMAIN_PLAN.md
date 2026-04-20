@@ -79,9 +79,10 @@ public kernel/runtime repo.
 ## Deployment-order dependencies
 
 1. DNS authority goes live on the chosen provider.
-2. `docs.froglet.dev` — earliest to stand up; depends only on Astro build
-   + DNS. Cloudflare Workers build from this repo.
-3. Apex `froglet.dev` — a minimal landing page (static HTML is fine).
+2. Cloudflare Worker preview deploy from this repo using
+   `docs-site/wrangler.jsonc`.
+3. Attach both `froglet.dev` and `docs.froglet.dev` to that same deployment
+   so the apex remains canonical and `docs.*` is only a mirror.
 4. `ai.froglet.dev` — first-party hosted provider deployment.
 5. `marketplace.froglet.dev` — marketplace read API deployment.
 6. `status.froglet.dev` — public status page deployment.
@@ -103,3 +104,5 @@ public kernel/runtime repo.
 - 2026-04-19: First-party DNS and operator details moved into the private
   services/operator workspace so this public copy only keeps the stable
   public-domain map.
+- 2026-04-20: Public docs deploy path standardized on Cloudflare Workers via
+  `docs-site/wrangler.jsonc`; the stale GitHub Pages workflow was removed.

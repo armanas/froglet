@@ -1,7 +1,7 @@
 # Release
 
 This repo now has a tagged release path for the public Froglet node, public
-Docker images, MCP image, and public docs site.
+Docker images, MCP image, and the checked-in docs deployment configuration.
 
 Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
@@ -33,9 +33,17 @@ publishes the role-specific images:
 
 ## Published Docs
 
-The docs site deploy workflow builds `docs-site/` and publishes it to
-apex `https://froglet.dev` with `https://docs.froglet.dev` mirroring the
-same deployment (see [SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
+`docs-site/` is configured for Cloudflare Workers via
+[`docs-site/wrangler.jsonc`](../docs-site/wrangler.jsonc). Production deploys
+run either through `npm --prefix docs-site run deploy` when Cloudflare
+credentials are present locally, or through Cloudflare Workers Builds with:
+
+- Build command: `npx astro build`
+- Deploy command: `npx wrangler deploy`
+
+The repo no longer uses GitHub Pages for docs deployment. The intended public
+shape remains apex `https://froglet.dev` with `https://docs.froglet.dev`
+mirroring the same deployment (see [SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
 
 ## Published Binaries
 
