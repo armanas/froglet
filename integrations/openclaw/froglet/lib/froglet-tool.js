@@ -2,7 +2,7 @@ import { dispatchFrogletAction } from "../../../shared/froglet-lib/tool-dispatch
 import { toolTextResult } from "./shared.js"
 
 const frogletToolDescription =
-  "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow, and publish_artifact to publish a built artifact to the local provider."
+  "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_stake (stake into a provider), marketplace_topup (add to existing stake). When the user asks to install Froglet locally, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime."
 
 function frogletToolParameters(config) {
   return {
@@ -13,7 +13,7 @@ function frogletToolParameters(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, and run_compute for open-ended compute.",
+          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_search, marketplace_provider, marketplace_receipts, marketplace_stake, marketplace_topup — prefer these over invoke_service when targeting the marketplace. get_install_guide returns the canonical shell commands for installing Froglet on the user's host — execute those through your own shell, not the Froglet runtime.",
         enum: [
           "discover_services",
           "get_service",
@@ -24,7 +24,17 @@ function frogletToolParameters(config) {
           "status",
           "get_task",
           "wait_task",
-          "run_compute"
+          "run_compute",
+          "get_wallet_balance",
+          "list_settlement_activity",
+          "get_payment_intent",
+          "get_invoice_bundle",
+          "get_install_guide",
+          "marketplace_search",
+          "marketplace_provider",
+          "marketplace_receipts",
+          "marketplace_stake",
+          "marketplace_topup"
         ]
       },
       service_id: {
@@ -72,6 +82,10 @@ function frogletToolParameters(config) {
           "Optional inline source for a compute request. Use this when you want to run explicit source text, typically for runtime=python package_kind=inline_source."
       },
       input: {},
+      result_json: {
+        description:
+          "Optional static JSON result. Used with publish_artifact for constant-return services."
+      },
       output_schema: {},
       input_schema: {},
       price_sats: { type: "integer", minimum: 0 },
@@ -98,6 +112,50 @@ function frogletToolParameters(config) {
       include_inactive: { type: "boolean" },
       query: { type: "string" },
       task_id: { type: "string" },
+      deal_id: {
+        type: "string",
+        description: "Target deal id. Required for get_payment_intent and get_invoice_bundle."
+      },
+      target_agent: {
+        type: "string",
+        enum: ["claude-code", "codex", "openclaw"],
+        description:
+          "Agent target for get_install_guide. Defaults to claude-code; pick whichever agent will run on the user's machine after install."
+      },
+      payment_rail: {
+        type: "string",
+        enum: ["lightning", "stripe", "x402"],
+        description:
+          "Payment rail for get_install_guide. Defaults to lightning (mock mode; no wallet credentials required)."
+      },
+      marketplace_provider_id: {
+        type: "string",
+        description:
+          "Provider id the marketplace_* actions target. Distinct from `provider_id`, which routes the invoke_service call itself."
+      },
+      amount_msat: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "Amount in millisatoshis for marketplace_stake / marketplace_topup. Must be positive."
+      },
+      offer_kind: {
+        type: "string",
+        description: "Offer-kind filter for marketplace_search (e.g. \"named.v1\")."
+      },
+      max_price_sats: {
+        type: "integer",
+        minimum: 0,
+        description: "Upper price bound in sats for marketplace_search results."
+      },
+      status: {
+        type: "string",
+        description: "Status filter for marketplace_receipts (e.g. \"succeeded\")."
+      },
+      cursor: {
+        type: "string",
+        description: "Opaque pagination cursor for marketplace_search / marketplace_receipts."
+      },
       timeout_secs: { type: "integer", minimum: 1, maximum: 600 },
       poll_interval_secs: { type: "number", minimum: 0.1, maximum: 10 },
       artifact_path: { type: "string" },

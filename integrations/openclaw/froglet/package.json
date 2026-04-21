@@ -1,7 +1,7 @@
 {
   "name": "froglet",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "description": "Single-tool OpenClaw/NemoClaw plugin for Froglet services and generic compute.",
   "author": "Armanas Povilionis-Muradian",

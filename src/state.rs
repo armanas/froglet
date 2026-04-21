@@ -97,6 +97,10 @@ pub struct AppState {
     pub event_batch_writer: Option<db::EventBatchWriter>,
     pub builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>>,
     pub settlement_registry: SettlementRegistry,
+    /// Short-lived session-token pool. `Some` only when
+    /// `FROGLET_SESSION_POOL_ENABLED=1`. See `src/session_pool.rs` and
+    /// `docs/SYSTEM_DESIGN.md §8`.
+    pub session_pool: Option<crate::session_pool::SessionPool>,
 }
 
 pub fn ensure_storage_dirs(config: &NodeConfig) -> Result<(), String> {
@@ -158,6 +162,15 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
 
     let settlement_registry = SettlementRegistry::new(&config);
 
+    let session_pool = if config.session_pool.enabled {
+        Some(crate::session_pool::SessionPool::new(
+            config.session_pool.size,
+            std::time::Duration::from_secs(config.session_pool.ttl_secs),
+        ))
+    } else {
+        None
+    };
+
     Ok(Arc::new(AppState {
         db: db_pool,
         transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&config))),
@@ -180,6 +193,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         event_batch_writer: None,
         builtin_services: HashMap::new(),
         settlement_registry,
+        session_pool,
     }))
 }
 
@@ -253,6 +267,7 @@ mod tests {
             },
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
+            session_pool: Default::default(),
         }
     }
 

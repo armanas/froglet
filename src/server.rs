@@ -124,14 +124,25 @@ async fn run(
         };
         // Initialize the write-coalescing event batch writer now that we have a
         // tokio runtime.  `Arc::get_mut` is safe here because no clones exist yet.
-        let state = {
-            let mut state = state;
-            let db_clone = state.db.clone();
+        let mut state = state;
+        let db_clone = state.db.clone();
+        Arc::get_mut(&mut state)
+            .ok_or("unexpected Arc clone before event batch writer init")?
+            .event_batch_writer = Some(db::EventBatchWriter::spawn(db_clone));
+
+        // Demo services (opt-in via FROGLET_PUBLISH_DEMO_SERVICES=1). These
+        // are published by the hosted reference node at `ai.froglet.dev` but
+        // NOT by a normal self-host install — so a self-host doesn't
+        // fingerprint as a public demo node.
+        if crate::builtins::demo_enabled() {
             Arc::get_mut(&mut state)
-                .ok_or("unexpected Arc clone before event batch writer init")?
-                .event_batch_writer = Some(db::EventBatchWriter::spawn(db_clone));
-            state
-        };
+                .ok_or("unexpected Arc clone before demo builtin registration")?
+                .builtin_services
+                .extend(crate::builtins::demo_handlers());
+            crate::builtins::register_demo_offers(state.as_ref()).await?;
+            info!("Published demo services: demo.echo, demo.add");
+        }
+
         (node_config, state)
     };
     info!("Node identity: {}", state.identity.node_id());

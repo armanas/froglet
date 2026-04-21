@@ -1,6 +1,6 @@
 {
   "name": "froglet",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Discover, invoke, and publish services on the Froglet protocol. Search the marketplace, run compute, manage async tasks.",
   "author": "Armanas Povilionis-Muradian",
   "homepage": "https://github.com/armanas/froglet",

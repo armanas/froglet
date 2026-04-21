@@ -475,6 +475,7 @@ mod tests {
             },
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
+            session_pool: Default::default(),
         };
 
         let pool = DbPool::open(&db_path).expect("init test db");
@@ -506,6 +507,7 @@ mod tests {
             event_batch_writer: None,
             builtin_services: HashMap::new(),
             settlement_registry,
+            session_pool: None,
         }
     }
 

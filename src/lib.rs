@@ -17,6 +17,7 @@ pub fn init_logging() {
 pub use froglet_protocol::canonical_json;
 pub use froglet_protocol::crypto;
 
+pub mod builtins;
 pub mod confidential;
 pub mod config;
 pub mod db;
@@ -30,6 +31,7 @@ pub mod requester_deals;
 pub mod runtime_auth;
 pub mod sandbox;
 pub mod server;
+pub mod session_pool;
 pub mod settlement;
 pub mod state;
 pub mod tls;

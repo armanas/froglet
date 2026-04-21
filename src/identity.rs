@@ -2,6 +2,12 @@ use crate::{config::NodeConfig, crypto};
 use std::{fs, path::Path, time::UNIX_EPOCH};
 use zeroize::Zeroize;
 
+/// Env var that, when set on first boot, seeds the node identity from a hex
+/// string instead of auto-generating a fresh one. Ignored if the identity
+/// seed file already exists — file wins. Expected format: 64 hex chars
+/// (32 bytes).
+pub const NODE_IDENTITY_SEED_ENV: &str = "FROGLET_IDENTITY_SEED_HEX";
+
 #[derive(Clone)]
 pub struct NodeIdentity {
     signing_key: crypto::NodeSigningKey,
@@ -21,11 +27,13 @@ impl NodeIdentity {
             &config.storage.identity_seed_path,
             config.identity.auto_generate,
             "node identity",
+            Some(NODE_IDENTITY_SEED_ENV),
         )?;
         let nostr_publication_signing_key = load_or_create_signing_key(
             &config.storage.nostr_publication_seed_path,
             config.identity.auto_generate,
             "Nostr publication identity",
+            None,
         )?;
 
         let public_key_hex = crypto::public_key_hex(&signing_key);
@@ -146,10 +154,33 @@ fn load_or_create_signing_key(
     path: &Path,
     auto_generate: bool,
     label: &str,
+    env_seed_var: Option<&str>,
 ) -> Result<crypto::NodeSigningKey, String> {
+    // File wins if present. This matches ephemeral-FS deployments (Lightsail
+    // Container Service and similar) where every redeploy starts with a fresh
+    // FS, so the env-var seed re-creates the file each deploy without drift.
     if path.exists() {
-        load_signing_key(path)
-    } else if auto_generate {
+        return load_signing_key(path);
+    }
+
+    if let Some(var_name) = env_seed_var {
+        if let Ok(hex_str) = std::env::var(var_name) {
+            let mut seed = seed_from_hex_str(&hex_str)
+                .map_err(|e| format!("Invalid {var_name}: {e}"))?;
+            let signing_key = crypto::signing_key_from_seed_bytes(&seed)?;
+            seed.zeroize();
+            persist_signing_key(path, &signing_key)?;
+            tracing::info!(
+                identity = %label,
+                path = %path.display(),
+                env = %var_name,
+                "seeded identity from environment",
+            );
+            return Ok(signing_key);
+        }
+    }
+
+    if auto_generate {
         let signing_key = crypto::generate_signing_key();
         persist_signing_key(path, &signing_key)?;
         Ok(signing_key)
@@ -159,6 +190,23 @@ fn load_or_create_signing_key(
             path.display()
         ))
     }
+}
+
+/// Parse a hex-encoded secp256k1 seed (32 bytes / 64 hex chars). Whitespace
+/// around the value is trimmed. Zeroized-decode is not needed here: the hex
+/// crate does not hold the decoded bytes after return.
+fn seed_from_hex_str(hex_str: &str) -> Result<[u8; 32], String> {
+    let trimmed = hex_str.trim();
+    let bytes = hex::decode(trimmed).map_err(|e| format!("invalid hex: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "expected 32 bytes (64 hex chars), got {} bytes",
+            bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
+    Ok(seed)
 }
 
 fn file_modified_timestamp_secs(path: &Path) -> Result<i64, String> {
@@ -201,10 +249,24 @@ mod tests {
         IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
         PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
-    #[test]
-    fn test_identity_sign_and_load() {
-        let temp_dir = std::env::temp_dir().join(format!("froglet-test-{}", std::process::id()));
-        let config = NodeConfig {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Serializes env-var mutations across identity tests. Matches the pattern
+    /// used in `src/tls.rs::PROXY_ENV_LOCK`. Required because `cargo test`
+    /// runs tests in parallel and `std::env::{set_var,remove_var}` mutate
+    /// process-global state.
+    static IDENTITY_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "froglet-identity-test-{}-{tag}",
+            std::process::id(),
+        ))
+    }
+
+    fn test_config(temp_dir: &Path, auto_generate: bool) -> NodeConfig {
+        NodeConfig {
             network_mode: NetworkMode::Clearnet,
             listen_addr: "127.0.0.1:8080".into(),
             public_base_url: None,
@@ -216,9 +278,7 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:8082".into(),
                 startup_timeout_secs: 90,
             },
-            identity: IdentityConfig {
-                auto_generate: true,
-            },
+            identity: IdentityConfig { auto_generate },
             pricing: PricingConfig {
                 events_query: 0,
                 execute_wasm: 0,
@@ -237,7 +297,7 @@ mod tests {
             x402: None,
             stripe: None,
             storage: StorageConfig {
-                data_dir: temp_dir.clone(),
+                data_dir: temp_dir.to_path_buf(),
                 db_path: temp_dir.join("node.db"),
                 identity_dir: temp_dir.join("identity"),
                 identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
@@ -261,7 +321,20 @@ mod tests {
             },
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
-        };
+            session_pool: Default::default(),
+        }
+    }
+
+    #[test]
+    fn test_identity_sign_and_load() {
+        let _guard = IDENTITY_ENV_LOCK.lock().unwrap();
+        // Defensively clear any leaked env var from an earlier test.
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+        let temp_dir = test_temp_dir("sign-and-load");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let config = test_config(&temp_dir, true);
 
         let identity = NodeIdentity::load_or_create(&config).unwrap();
         let reloaded = NodeIdentity::load_or_create(&config).unwrap();
@@ -271,6 +344,162 @@ mod tests {
             reloaded.nostr_publication_key_hex()
         );
         assert_ne!(identity.node_id(), identity.nostr_publication_key_hex());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn identity_seed_env_var_creates_key_on_first_boot() {
+        let _guard = IDENTITY_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+        let temp_dir = test_temp_dir("env-first-boot");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        // auto_generate=true so the Nostr publication seed (which is NOT
+        // env-driven in this feature) can auto-generate. The node identity
+        // is still driven by the env var; we verify that by comparing
+        // node_id against the deterministic pubkey derived from the seed.
+        let config = test_config(&temp_dir, true);
+
+        // Deterministic test seed: 32 bytes, all 0x42.
+        let mut expected_seed = [0x42u8; 32];
+        let expected_key = crypto::signing_key_from_seed_bytes(&expected_seed)
+            .expect("fixed seed must be a valid secp256k1 seed");
+        let expected_node_id = crypto::public_key_hex(&expected_key);
+        expected_seed.zeroize();
+
+        let seed_hex = "42".repeat(32);
+        unsafe {
+            std::env::set_var(NODE_IDENTITY_SEED_ENV, &seed_hex);
+        }
+        let identity_result = NodeIdentity::load_or_create(&config);
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+
+        let identity = identity_result.expect("env-seeded identity should load");
+
+        assert_eq!(
+            identity.node_id(),
+            expected_node_id,
+            "env-seeded node_id must match deterministic pubkey from the fixed seed \
+             (proves the env var drove key creation, not auto-generate)"
+        );
+
+        assert!(
+            config.storage.identity_seed_path.exists(),
+            "identity seed file must be written on first boot"
+        );
+
+        // Reloading without the env var: the persisted file must reproduce
+        // the same identity. This is the "file wins on subsequent boots"
+        // guarantee.
+        let reloaded = NodeIdentity::load_or_create(&config)
+            .expect("reload via persisted file should succeed");
+        assert_eq!(
+            identity.node_id(),
+            reloaded.node_id(),
+            "reload must produce the same identity via the seed file"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn identity_seed_env_var_rejects_invalid_hex() {
+        let _guard = IDENTITY_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+        let temp_dir = test_temp_dir("env-invalid-hex");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let config = test_config(&temp_dir, false);
+
+        unsafe {
+            std::env::set_var(NODE_IDENTITY_SEED_ENV, "not-hex-at-all");
+        }
+        let result = NodeIdentity::load_or_create(&config);
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+
+        // `NodeIdentity` does not implement Debug, so we can't use
+        // `expect_err` here — pattern-match instead.
+        let err = match result {
+            Ok(_) => panic!("invalid hex must fail, got Ok"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains(NODE_IDENTITY_SEED_ENV),
+            "error must name the env var, got: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn identity_seed_env_var_rejects_wrong_length() {
+        let _guard = IDENTITY_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+        let temp_dir = test_temp_dir("env-wrong-length");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let config = test_config(&temp_dir, false);
+
+        // 30 bytes — wrong length.
+        let seed_hex = "42".repeat(30);
+        unsafe {
+            std::env::set_var(NODE_IDENTITY_SEED_ENV, &seed_hex);
+        }
+        let result = NodeIdentity::load_or_create(&config);
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+
+        let err = match result {
+            Ok(_) => panic!("wrong length must fail, got Ok"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("32 bytes") || err.contains("expected 32"),
+            "error must mention expected length, got: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn identity_file_wins_over_env_var() {
+        let _guard = IDENTITY_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+        let temp_dir = test_temp_dir("file-wins");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let config = test_config(&temp_dir, true);
+
+        // First boot without env var: auto-generate and persist.
+        let original = NodeIdentity::load_or_create(&config).expect("initial auto-generate");
+        let original_node_id = original.node_id().to_string();
+
+        // Second boot with a DIFFERENT env-var seed set: file must win.
+        let different_seed_hex = "aa".repeat(32);
+        unsafe {
+            std::env::set_var(NODE_IDENTITY_SEED_ENV, &different_seed_hex);
+        }
+        let reloaded_result = NodeIdentity::load_or_create(&config);
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+        }
+
+        let reloaded = reloaded_result.expect("reload should succeed");
+        assert_eq!(
+            reloaded.node_id(),
+            original_node_id,
+            "file-persisted identity must win over env var",
+        );
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

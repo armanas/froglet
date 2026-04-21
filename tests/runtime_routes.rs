@@ -201,6 +201,7 @@ fn create_test_state_with_identity_seed(
         },
         marketplace_url,
         postgres_mounts: std::collections::BTreeMap::new(),
+        session_pool: Default::default(),
     };
 
     if let Some(seed) = identity_seed {
@@ -243,6 +244,7 @@ fn create_test_state_with_identity_seed(
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
         settlement_registry,
+        session_pool: None,
     }
 }
 

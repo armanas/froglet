@@ -505,6 +505,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         },
         marketplace_url: None,
         postgres_mounts: std::collections::BTreeMap::new(),
+        session_pool: Default::default(),
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -543,6 +544,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
         settlement_registry,
+        session_pool: None,
     }
 }
 

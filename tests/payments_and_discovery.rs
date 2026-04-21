@@ -115,6 +115,7 @@ fn in_memory_state() -> AppState {
         },
         marketplace_url: None,
         postgres_mounts: std::collections::BTreeMap::new(),
+        session_pool: Default::default(),
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -148,6 +149,7 @@ fn in_memory_state() -> AppState {
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
         settlement_registry,
+        session_pool: None,
     }
 }
 

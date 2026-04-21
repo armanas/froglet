@@ -144,7 +144,11 @@ That runs in four independent steps:
    `~/.local/bin`.
 2. **Connect an agent** — generates `.mcp.json` (or the target's equivalent)
    pointed at the local provider + runtime. Swap `claude-code` for `codex`
-   or `openclaw` if that is your agent.
+   or `openclaw` if that is your agent. `claude-code` and `codex` work both
+   in a cloned repo (node-based MCP) and when piped via `curl … | sh -s -- …`
+   outside a repo (Docker-based MCP using
+   `ghcr.io/armanas/froglet-mcp:latest`). `openclaw` always requires the
+   repo cloned because the OpenClaw plugin is a local folder.
 3. **Connect a payment rail** — writes a `./.froglet/payment/lightning.env`
    snippet. Swap `lightning` for `stripe` (requires `FROGLET_STRIPE_SECRET_KEY=sk_test_…`)
    or `x402` (requires `FROGLET_X402_WALLET_ADDRESS=0x…`). The Stripe and

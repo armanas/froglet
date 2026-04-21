@@ -311,6 +311,23 @@ pub struct WasmSqliteHandleConfig {
     pub path: PathBuf,
 }
 
+/// Short-lived session-pool config for the public `try.froglet.dev` surface.
+/// Disabled by default. When enabled, the node mounts `POST /api/sessions`
+/// on the public listener and hands out ephemeral session tokens. See
+/// `src/session_pool.rs` for the data structure and `docs/SYSTEM_DESIGN.md
+/// §8` for the product rationale.
+#[derive(Debug, Clone, Default)]
+pub struct SessionPoolConfig {
+    /// Set via `FROGLET_SESSION_POOL_ENABLED=1`. False means no pool, no
+    /// `POST /api/sessions` route, no session auth on any endpoint.
+    pub enabled: bool,
+    /// Number of concurrent session slots. Clamped 1..=1000. Default 50.
+    pub size: usize,
+    /// TTL per session slot in seconds. Clamped 60..=3600. Default 900 (15
+    /// min).
+    pub ttl_secs: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub network_mode: NetworkMode,
@@ -337,6 +354,7 @@ pub struct NodeConfig {
     /// granted. Currently populated from `FROGLET_MOUNT_postgres_<handle>`
     /// env vars. See docs/MOUNTS.md.
     pub postgres_mounts: std::collections::BTreeMap<String, String>,
+    pub session_pool: SessionPoolConfig,
 }
 
 impl NodeConfig {
@@ -577,6 +595,11 @@ impl NodeConfig {
             },
             marketplace_url: env::var("FROGLET_MARKETPLACE_URL").ok(),
             postgres_mounts: load_postgres_mounts_from_env(),
+            session_pool: SessionPoolConfig {
+                enabled: env_bool("FROGLET_SESSION_POOL_ENABLED", false)?,
+                size: env_u64("FROGLET_SESSION_POOL_SIZE", 50)?.clamp(1, 1000) as usize,
+                ttl_secs: env_u64("FROGLET_SESSION_TTL_SECS", 900)?.clamp(60, 3600),
+            },
         })
     }
 }

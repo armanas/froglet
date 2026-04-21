@@ -68,6 +68,7 @@ mod http_discovery;
 mod http_events;
 mod http_execution;
 mod http_settlement;
+mod sessions;
 pub(crate) mod types;
 pub use types::*;
 #[cfg(test)]
@@ -236,11 +237,26 @@ pub fn public_router(state: Arc<AppState>) -> Router {
     // The provider_routes already enforce ConcurrencyLimitLayer(16) which
     // limits total in-flight requests. When upgrading to axum 0.8, add
     // tower_governor::GovernorLayer for per-caller throttling.
-    common_routes()
+    let base = common_routes()
         .merge(events_query_routes(&state))
         .merge(provider_routes())
         .merge(publish_routes())
-        .with_state(state)
+        .merge(sessions::sessions_routes());
+
+    // When the session pool is enabled, the public listener also serves
+    // runtime endpoints so session-authed requests (arriving on port
+    // 8080 via Cloudflare) can hit the full deal flow. Path-level
+    // restriction for session tokens is delegated to the Cloudflare
+    // worker; the node-side check in require_runtime_auth covers
+    // authentication but not authorization scoping.
+    let router = if state.session_pool.is_some() {
+        base.merge(runtime_routes())
+            .merge(execute_wasm_routes(&state))
+            .merge(jobs_routes())
+    } else {
+        base
+    };
+    router.with_state(state)
 }
 
 pub fn runtime_router(state: Arc<AppState>) -> Router {
@@ -3780,7 +3796,35 @@ pub(crate) fn require_bearer_token(
 }
 
 fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
+    // Accept three auth kinds on runtime endpoints, in order:
+    //   1. The long-lived runtime control token — normal operator path.
+    //   2. A live session token from the session pool, when the pool is
+    //      enabled. This is how `try.froglet.dev` users reach runtime
+    //      endpoints (their Cloudflare worker adds `Authorization:
+    //      Bearer <session-token>`). Session tokens auth only: all
+    //      signing still happens under the node's own identity.
+    //   3. Fallback to (1) to surface the familiar runtime-auth failure
+    //      message when nothing matches.
+    if require_bearer_token(headers, &state.runtime_auth_token, "runtime").is_ok() {
+        return Ok(());
+    }
+    if let Some(pool) = state.session_pool.as_ref()
+        && let Some(token) = extract_bearer_token(headers)
+        && pool.validate(&token).is_some()
+    {
+        return Ok(());
+    }
     require_bearer_token(headers, &state.runtime_auth_token, "runtime")
+}
+
+/// Extract a raw Bearer token value from an Authorization header without
+/// any constant-time comparison. Used by `require_runtime_auth` before it
+/// knows which acceptable token to match against.
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?;
+    let s = value.to_str().ok()?;
+    let rest = s.strip_prefix("Bearer ")?;
+    Some(rest.to_string())
 }
 
 fn require_provider_control_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
@@ -10249,6 +10293,7 @@ mod tests {
             },
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
+            session_pool: Default::default(),
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
@@ -10286,6 +10331,7 @@ mod tests {
             event_batch_writer: None,
             builtin_services: std::collections::HashMap::new(),
             settlement_registry,
+            session_pool: None,
         })
     }
 
