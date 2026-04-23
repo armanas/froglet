@@ -44,8 +44,14 @@ pub const DEMO_SERVICES_ENV: &str = "FROGLET_PUBLISH_DEMO_SERVICES";
 /// Demo services published when `FROGLET_PUBLISH_DEMO_SERVICES=1`. Tuple is
 /// `(service_id, human-readable summary)`.
 const DEMO_SERVICES: &[(&str, &str)] = &[
-    ("demo.echo", "Echo — returns your input unchanged. Proves the discover → deal → execute round-trip works."),
-    ("demo.add",  "Add — returns {sum: a + b} for signed 64-bit integer operands."),
+    (
+        "demo.echo",
+        "Echo — returns your input unchanged. Proves the discover → deal → execute round-trip works.",
+    ),
+    (
+        "demo.add",
+        "Add — returns {sum: a + b} for signed 64-bit integer operands.",
+    ),
 ];
 
 /// Returns true if the operator asked for demo services to be published via

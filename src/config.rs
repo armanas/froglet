@@ -312,14 +312,15 @@ pub struct WasmSqliteHandleConfig {
 }
 
 /// Short-lived session-pool config for the public `try.froglet.dev` surface.
-/// Disabled by default. When enabled, the node mounts `POST /api/sessions`
-/// on the public listener and hands out ephemeral session tokens. See
-/// `src/session_pool.rs` for the data structure and `docs/SYSTEM_DESIGN.md
-/// §8` for the product rationale.
+/// Disabled by default. When enabled, the node mounts the hosted-trial
+/// session endpoints behind the worker/origin shared-secret gate and hands
+/// out ephemeral session tokens. See `src/session_pool.rs` for the data
+/// structure and `docs/SYSTEM_DESIGN.md §8` for the product rationale.
 #[derive(Debug, Clone, Default)]
 pub struct SessionPoolConfig {
-    /// Set via `FROGLET_SESSION_POOL_ENABLED=1`. False means no pool, no
-    /// `POST /api/sessions` route, no session auth on any endpoint.
+    /// Set via `FROGLET_SESSION_POOL_ENABLED=1`. False means no pool and no
+    /// hosted-trial session auth; `FROGLET_HOSTED_TRIAL_ORIGIN_SECRET` must
+    /// also be set before the gated public trial routes are exposed.
     pub enabled: bool,
     /// Number of concurrent session slots. Clamped 1..=1000. Default 50.
     pub size: usize,
@@ -355,6 +356,11 @@ pub struct NodeConfig {
     /// env vars. See docs/MOUNTS.md.
     pub postgres_mounts: std::collections::BTreeMap<String, String>,
     pub session_pool: SessionPoolConfig,
+    /// Shared secret presented by the hosted-trial worker on internal-only
+    /// origin routes (`/api/sessions`, `/api/sessions/validate`, and the
+    /// hosted demo deal routes). Required whenever the session pool is
+    /// enabled so `ai.froglet.dev` does not expose the trial surface directly.
+    pub hosted_trial_origin_secret: Option<String>,
 }
 
 impl NodeConfig {
@@ -552,6 +558,24 @@ impl NodeConfig {
             Some(path) => Some(load_confidential_policy(path, &db_path)?),
             None => None,
         };
+        let hosted_trial_origin_secret = match env::var("FROGLET_HOSTED_TRIAL_ORIGIN_SECRET") {
+            Ok(value) if value.trim().is_empty() => {
+                return Err("FROGLET_HOSTED_TRIAL_ORIGIN_SECRET must not be empty when set".into());
+            }
+            Ok(value) => Some(value),
+            Err(_) => None,
+        };
+        let session_pool = SessionPoolConfig {
+            enabled: env_bool("FROGLET_SESSION_POOL_ENABLED", false)?,
+            size: env_u64("FROGLET_SESSION_POOL_SIZE", 50)?.clamp(1, 1000) as usize,
+            ttl_secs: env_u64("FROGLET_SESSION_TTL_SECS", 900)?.clamp(60, 3600),
+        };
+        if session_pool.enabled && hosted_trial_origin_secret.is_none() {
+            return Err(
+                "FROGLET_HOSTED_TRIAL_ORIGIN_SECRET is required when FROGLET_SESSION_POOL_ENABLED=1"
+                    .into(),
+            );
+        }
 
         Ok(Self {
             network_mode,
@@ -595,11 +619,8 @@ impl NodeConfig {
             },
             marketplace_url: env::var("FROGLET_MARKETPLACE_URL").ok(),
             postgres_mounts: load_postgres_mounts_from_env(),
-            session_pool: SessionPoolConfig {
-                enabled: env_bool("FROGLET_SESSION_POOL_ENABLED", false)?,
-                size: env_u64("FROGLET_SESSION_POOL_SIZE", 50)?.clamp(1, 1000) as usize,
-                ttl_secs: env_u64("FROGLET_SESSION_TTL_SECS", 900)?.clamp(60, 3600),
-            },
+            session_pool,
+            hosted_trial_origin_secret,
         })
     }
 }

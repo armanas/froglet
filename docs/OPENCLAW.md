@@ -19,10 +19,9 @@ Use the checked-in example config:
 `froglet` covers the full node workflow:
 
 - discover and invoke remote named/data services
-- inspect local services
-- create/edit/build/test/publish local projects
-- inspect status and logs
-- restart managed node processes
+- inspect and publish local services
+- inspect status, tasks, and settlement state
+- use marketplace-native wrappers for search/provider/receipt/stake flows
 - run expert raw compute through the direct compute offer
 
 The default path is named services. `run_compute` is the low-level fallback and
@@ -45,26 +44,14 @@ services through Froglet discovery rather than by direct peer guessing.
 2. `froglet` with `action=get_service`
 3. `froglet` with `action=invoke_service`
 
-Publishing from the same node:
+Publishing from the same node currently goes through `publish_artifact`.
+That action is the public local publication path for prebuilt Wasm modules,
+inline-source services, and OCI-backed/container profiles.
 
-1. `create_project`
-2. `write_file`
-3. `build_project`
-4. `test_project`
-5. `publish_project`
+Current API note:
 
-Useful defaults:
-
-- `create_project` may use `name` instead of explicit ids
-- `create_project` may use `result_json` for a simple fixed-response service
-- `create_project` may use `inline_source` when you want to provide explicit
-  authored source up front
-- `create_project` auto-publishes only when `publication_state=active` and you
-  provided `starter`, `result_json`, or `inline_source`
-- blank projects are scaffolds only; use `publication_state=hidden` until you
-  have written real source
-- `publish_artifact` is the direct publication path for prebuilt Wasm modules
-  and OCI-backed/container profiles
+- the public OpenClaw surface does not currently expose project authoring,
+  log tailing, or node restart actions
 - local and remote service detail views expose `offer_kind` and `resource_kind`
   so models can distinguish a listed service binding from direct compute
 - `invoke_service` can resolve a unique `service_id` automatically

@@ -83,7 +83,7 @@ Runtime image:
 - runtime API on `:8081`
 - no public provider listener
 
-Use `FROGLET_MARKETPLACE_URL` on provider and runtime nodes to point them at an
-external marketplace for discovery and registration. A default public
-marketplace is available at `https://marketplace.froglet.dev`; any compatible
-marketplace endpoint works.
+Use `FROGLET_MARKETPLACE_URL` on runtime nodes to point them at an external
+marketplace for discovery. A default public read marketplace is available at
+`https://marketplace.froglet.dev`. Set the same variable on providers only when
+the target marketplace supports write-capable provider registration.

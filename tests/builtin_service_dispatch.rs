@@ -143,6 +143,7 @@ fn create_test_state_with_handler(
         marketplace_url: None,
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
+        hosted_trial_origin_secret: None,
     };
 
     let pool = DbPool::open(&db_path).expect("init db");

@@ -1,18 +1,24 @@
 # Pre-Launch Security Pass
 
 **Date:** 2026-04-18
+**Updated:** 2026-04-22
 **Scope:** One-shot pre-launch review covering
 dependency audits, full-history secret scanning, and a threat-model sketch for
-the public hosted node (`ai.froglet.dev`). This is not a standing security
-program; see [SECURITY.md](../SECURITY.md) for the vulnerability-report
-channel.
-**Result:** PASS — all three buckets clean after the remediations listed below.
-All identified findings either fixed inline or explicitly accepted with a
-recorded reason.
+the public hosted node (`ai.froglet.dev`). The 2026-04-22 update adds the
+publication scrub for the current tracked tree and GitHub-visible refs only
+(`origin/main` plus `v0.1.0-alpha.{0,1,2}`); local-only refs such as
+`fleet-local-history` are intentionally out of scope for the GitHub scrub.
+This is not a standing security program; see [SECURITY.md](../SECURITY.md)
+for the vulnerability-report channel.
+**Result:** PASS — dependency audits remain clean, and the publication secret
+scan reports 0 unallowlisted findings on both the current tracked tree and the
+GitHub-visible history after the remediations and narrow commit-scoped
+allowlists recorded below.
 
 Evidence artifacts under `_tmp/security_pass/20260418T212849Z/` (local; not
-committed): raw `cargo audit`, `pip-audit`, `npm audit` JSON+text, `gitleaks`
-JSON report, and the per-fix logs.
+committed): raw `cargo audit`, `pip-audit`, `npm audit` JSON+text, and the
+per-fix logs. Publication-scrub evidence for the fresh gitleaks pass lives
+under `_tmp/gitleaks_gate/20260422T105843Z/` (local; not committed).
 
 ## 1. Dependency Audits
 
@@ -67,24 +73,34 @@ resolve their own transitive trees. Their runtime dependency surfaces are
 narrow (stdlib plus `@modelcontextprotocol/sdk` on the MCP side) and are
 covered transitively when the top-level `integrations/mcp/froglet` audit runs.
 
-## 2. Secret Scan (Full Git History)
+## 2. Secret Scan (Publication Scrub)
 
-Tool: `gitleaks detect --source . --log-opts="--all" --redact`. Scans all refs,
-not only `HEAD`. 71 commits / ~10.4 MB scanned across `main` and
-`fleet-local-history`.
+Tool: [`scripts/gitleaks_gate.sh`](../scripts/gitleaks_gate.sh). The gate now
+runs two distinct scans:
 
-| # | Rule | Location | Commits | Verdict |
-| --- | --- | --- | --- | --- |
-| 1–3 | `stripe-access-token` | `src/settlement/stripe.rs:402, 698, 763` | c2de89d5, 26050948, 970655fe | **False positive** — literal string `"sk_test_placeholder"` used in Rust `#[cfg(test)]` modules. The gitleaks regex matches any string with the `sk_test_` prefix; this is a placeholder, not a real Stripe test key. |
-| 7 | `generic-api-key` | `python/tests/test_support.py:21` | d3ee6404 | **False positive** — `VALID_CASHU_TOKEN` test fixture. The value is a base64-encoded cashu token pointing at the well-known public test mint `https://8333.space:3338`. Used to exercise the cashu parser; it cannot be redeemed against any real wallet. |
+1. **Current tracked tree** — a tracked-files-only snapshot of the working
+   tree, so untracked local-only files do not become publication blockers.
+2. **GitHub-visible history** — `origin/main` plus the currently published
+   tags `v0.1.0-alpha.0`, `v0.1.0-alpha.1`, and `v0.1.0-alpha.2`.
 
-**Result: 0 real secrets leaked.** No rotation required. All seven findings
-are intentional test fixtures authored in public commits.
+Fresh result on 2026-04-22:
 
-**Optional follow-up (not required for launch):** add a `.gitleaks.toml`
-allowlist so future scans do not re-flag these fixtures, and wire gitleaks
-into the release gate as an optional step. Deliberately deferred — a zero-real-
-leaks one-shot result does not justify standing maintenance.
+| Scan | Scope | Result |
+| --- | --- | --- |
+| Current tracked tree | Current working tree, excluding untracked local-only files | **0 findings** |
+| GitHub-visible history | `origin/main` + `v0.1.0-alpha.{0,1,2}` | **0 unallowlisted findings** |
+
+The only historical matches on GitHub-visible refs were verified false
+positives:
+
+| Rule | Historical location | Commits | Verdict |
+| --- | --- | --- | --- |
+| `stripe-access-token` | `src/settlement/stripe.rs`, historical `TODO.md`, historical `docs/SECURITY_PASS.md` | `26050948`, `970655fe`, `b8986f70` | Test/documentation placeholders, not real Stripe credentials |
+| `generic-api-key` | `test_support.py` | `d3ee6404` | Cashu parser test fixture against a public test mint, not a redeemable secret |
+
+These are now suppressed via narrow commit-scoped allowlists in
+[.gitleaks.toml](../.gitleaks.toml). No history rewrite is justified because
+no verified real secret was found on a GitHub-visible ref.
 
 ## 3. Threat Model Sketch — Hosted `ai.froglet.dev`
 
@@ -193,11 +209,10 @@ release-gate break.
 
 None are gating for launch. Recorded here so they are not lost:
 
-- Add a `.gitleaks.toml` allowlist for the seven known-false-positive test
-  fixtures, and optionally wire `gitleaks detect --log-opts="--all"` into the
-  release gate.
 - Consider `cargo deny` in addition to `cargo audit` for advisory-level
   license and source-of-origin checks. Not required today; keeps drift
   visible if the crate tree expands.
+- Keep `scripts/gitleaks_gate.sh` aligned with the public-tag set whenever a
+  new GitHub-visible release tag is cut.
 - Periodic re-run: this doc is dated. Re-run the whole pass quarterly or
   before any subsequent `v0.*` release.

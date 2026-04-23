@@ -1,0 +1,18 @@
+title = "Froglet gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+targetRules = ["stripe-access-token"]
+description = "Historical placeholder strings on GitHub-visible refs"
+commits = [
+  "26050948d18fe4d374caf202ee829a31d2ea1496",
+  "970655fe11481df285fa357a02322ee03d49012b",
+  "b8986f7031b21a8d2a06b632e394e0e31a5f84c9",
+]
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "Historical Cashu test fixture on GitHub-visible refs"
+commits = ["d3ee6404b1c695737e01bfad6e6fdcef2e22c3ad"]

@@ -1,13 +1,18 @@
 /* ============================================================
-   Demo Page Styles — dark-only, brutalist
+   Demo Page Styles — dark-only protocol lab
    ============================================================ */
 
 :root {
-  --demo-scene: #0a0f11;
-  --demo-scene-border: rgba(154, 217, 192, 0.15);
-  --demo-term: #0c1215;
-  --demo-term-bar: hsl(var(--froglet-surface));
-  --demo-term-text: #cdd6d1;
+  --demo-scene: #071910;
+  --demo-scene-2: #0a2117;
+  --demo-scene-border: rgba(207, 231, 215, 0.28);
+  --demo-chalk: #f2f4e8;
+  --demo-chalk-muted: rgba(232, 238, 225, 0.72);
+  --demo-chalk-green: #a8efb6;
+  --demo-term: #07110d;
+  --demo-term-bar: #101914;
+  --demo-term-text: #d6dfd4;
+  --demo-font-chalk: 'Patrick Hand', 'Comic Sans MS', cursive;
 }
 
 * {
@@ -18,7 +23,11 @@
 
 body {
   margin: 0;
-  background: hsl(var(--froglet-background));
+  background:
+    linear-gradient(rgba(242, 244, 232, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(242, 244, 232, 0.012) 1px, transparent 1px),
+    #080d0b;
+  background-size: 7px 9px, 11px 13px, auto;
   color: hsl(var(--froglet-foreground));
   font-family: var(--froglet-font-sans);
   min-height: 100svh;
@@ -42,7 +51,7 @@ body {
   grid-template-areas: 'lesson scene' 'term scene';
   gap: 14px;
   padding: 16px;
-  min-height: 640px;
+  min-height: 680px;
   align-items: stretch;
 }
 
@@ -53,9 +62,19 @@ body {
   position: relative;
   inset: auto;
   border: 1px solid var(--demo-scene-border);
+  border-radius: var(--froglet-card-radius);
   overflow: hidden;
-  background: var(--demo-scene);
+  background:
+    linear-gradient(160deg, rgba(255,255,255,0.035), transparent 34%),
+    linear-gradient(rgba(232,238,225,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232,238,225,0.025) 1px, transparent 1px),
+    var(--demo-scene);
+  background-size: auto, 62px 62px, 84px 84px, auto;
   min-height: 0;
+  box-shadow:
+    var(--froglet-shadow),
+    inset 0 0 0 1px rgba(232, 238, 225, 0.04),
+    inset 0 0 80px rgba(0, 0, 0, 0.34);
 }
 
 canvas {
@@ -85,34 +104,47 @@ canvas {
 }
 
 #lesson-card {
-  padding: 20px 22px;
-  background: hsl(var(--froglet-card));
-  border: 1px solid hsl(var(--froglet-border));
+  padding: 22px 24px;
+  background:
+    linear-gradient(rgba(232, 238, 225, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 238, 225, 0.018) 1px, transparent 1px),
+    var(--demo-scene-2);
+  background-size: 38px 38px, 46px 46px, auto;
+  border: 1px solid var(--demo-scene-border);
+  border-radius: var(--froglet-card-radius);
+  box-shadow:
+    var(--froglet-shadow),
+    inset 0 0 36px rgba(0, 0, 0, 0.22);
 }
 
 .step-n {
+  font-family: var(--froglet-font-code);
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: hsl(var(--froglet-accent));
+  color: var(--demo-chalk-green);
   margin-bottom: 6px;
+  text-shadow: 0 0 4px rgba(168, 239, 182, 0.16);
 }
 
 .step-t {
-  font-family: var(--froglet-font-serif);
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: hsl(var(--froglet-foreground));
-  line-height: 1.12;
+  font-family: var(--demo-font-chalk);
+  font-size: 1.95rem;
+  font-weight: 400;
+  color: var(--demo-chalk);
+  line-height: 1;
   margin-bottom: 8px;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
+  text-shadow:
+    0.5px 0 rgba(255, 255, 255, 0.18),
+    -0.5px 0.4px rgba(255, 255, 255, 0.1);
 }
 
 .step-desc {
-  font-size: 0.92rem;
-  line-height: 1.65;
-  color: hsl(var(--froglet-muted));
+  font-size: 0.98rem;
+  line-height: 1.62;
+  color: var(--demo-chalk-muted);
 }
 
 .step-desc a {
@@ -127,6 +159,7 @@ canvas {
 
 .step-desc code {
   background: hsl(var(--froglet-surface));
+  border-radius: calc(var(--froglet-card-radius) - 3px);
   padding: 2px 6px;
   font-family: var(--froglet-font-code);
   font-size: 0.8rem;
@@ -136,24 +169,29 @@ canvas {
 /* ---- Annotation ---- */
 
 #annotation {
-  padding: 12px 14px;
-  background: hsl(var(--froglet-surface));
-  border: 1px solid hsl(var(--froglet-border));
-  font-size: 0.82rem;
+  padding: 14px 16px;
+  background:
+    linear-gradient(rgba(232, 238, 225, 0.022) 1px, transparent 1px),
+    var(--demo-scene-2);
+  background-size: 32px 32px, auto;
+  border: 1px solid var(--demo-scene-border);
+  border-radius: var(--froglet-card-radius);
+  font-size: 0.86rem;
   line-height: 1.6;
-  color: hsl(var(--froglet-muted));
+  color: var(--demo-chalk-muted);
   display: none;
   max-height: 120px;
   overflow-y: auto;
+  box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.2);
 }
 
 #annotation strong {
-  color: hsl(var(--froglet-foreground));
+  color: var(--demo-chalk);
   font-weight: 600;
 }
 
 #annotation .hl {
-  color: hsl(var(--froglet-accent));
+  color: var(--demo-chalk-green);
   font-weight: 600;
 }
 
@@ -164,15 +202,17 @@ canvas {
   position: relative;
   width: auto;
   height: 100%;
-  min-height: 220px;
-  max-height: 320px;
+  min-height: 240px;
+  max-height: 340px;
   z-index: 3;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--demo-term);
   border: 1px solid var(--demo-scene-border);
+  border-radius: var(--froglet-card-radius);
   align-self: end;
+  box-shadow: inset 0 0 34px rgba(0, 0, 0, 0.22);
 }
 
 #term-bar {
@@ -195,6 +235,7 @@ canvas {
 .tl {
   width: 10px;
   height: 10px;
+  border-radius: 50%;
   position: relative;
 }
 
@@ -216,9 +257,12 @@ canvas {
   padding: 8px 12px;
   overflow-y: auto;
   font-family: var(--froglet-font-code);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.6;
-  background: var(--demo-term);
+  background:
+    linear-gradient(rgba(232, 238, 225, 0.016) 1px, transparent 1px),
+    var(--demo-term);
+  background-size: 34px 34px, auto;
   color: var(--demo-term-text);
 }
 
@@ -257,13 +301,16 @@ canvas {
 /* ---- Navigation bar ---- */
 
 #nav {
-  height: 56px;
-  background: hsl(var(--froglet-background));
+  min-height: 64px;
+  background:
+    linear-gradient(rgba(232, 238, 225, 0.018) 1px, transparent 1px),
+    hsl(var(--froglet-background));
+  background-size: 9px 9px, auto;
   border-top: 1px solid hsl(var(--froglet-border));
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  gap: 10px;
+  padding: 10px 16px;
+  gap: 12px;
   flex-shrink: 0;
 }
 
@@ -276,6 +323,7 @@ canvas {
 .pip {
   width: 20px;
   height: 3px;
+  border-radius: 999px;
   background: hsl(var(--froglet-border));
   transition: background 0.2s ease;
   cursor: pointer;
@@ -287,13 +335,15 @@ canvas {
 
 #prevBtn,
 #nextBtn {
-  padding: 8px 16px;
-  font-size: 0.85rem;
+  min-width: 108px;
+  padding: 10px 18px;
+  border-radius: var(--froglet-card-radius);
+  font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
   border: 1px solid hsl(var(--froglet-border));
-  transition: all 0.12s ease;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
 }
 
 #prevBtn {
@@ -303,6 +353,7 @@ canvas {
 
 #prevBtn:hover {
   background: hsl(var(--froglet-surface));
+  border-color: hsl(var(--froglet-border-strong));
 }
 
 #prevBtn:disabled {
@@ -342,7 +393,7 @@ canvas {
     position: relative;
     inset: auto;
     grid-area: scene;
-    min-height: 380px;
+    min-height: 390px;
   }
 
   #lesson-wrap {
@@ -354,7 +405,7 @@ canvas {
   }
 
   #lesson-card { padding: 16px; }
-  .step-t { font-size: 1.2rem; }
+  .step-t { font-size: 1.62rem; }
   .step-desc { font-size: 0.88rem; line-height: 1.55; }
   #annotation { font-size: 0.78rem; line-height: 1.5; }
 
@@ -371,11 +422,24 @@ canvas {
   }
 
   #nav {
-    padding: 10px 12px 14px;
-    background: transparent;
-    border-top: none;
-    justify-content: flex-end;
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    padding: 10px 12px;
+    background: hsl(var(--froglet-background));
+    border-top: 1px solid hsl(var(--froglet-border));
+    justify-content: space-between;
   }
 
-  .pips { display: none; }
+  .pips {
+    display: flex;
+    max-width: 150px;
+    overflow: hidden;
+  }
+
+  #prevBtn,
+  #nextBtn {
+    min-width: 86px;
+    padding-inline: 12px;
+  }
 }

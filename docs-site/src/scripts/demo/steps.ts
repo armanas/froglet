@@ -66,8 +66,8 @@ export const STEPS: Step[] = [
       {from:'fr',to:'m',label:'discover'},
     ],
     notes:[
-      {text:'Let, Provider Froglet -> F^P,',x:.06,y:.92,size:12},
-      {text:'     Requester Froglet -> F^R,  Marketplace -> M.',x:.06,y:.96,size:12},
+      {text:'Provider Froglet -> F^P',x:.07,y:.90,size:16},
+      {text:'Requester -> F^R,  Marketplace -> M',x:.07,y:.95,size:16},
     ],
   },
   term:[
@@ -229,14 +229,16 @@ export const STEPS: Step[] = [
       {id:'fp',label:'F^P',sub:'provider',x:.80,y:.30},
     ],
     arrows:[
-      {from:'fr',to:'fp',label:'base fee (locks on acceptance)'},
-      {from:'fr',to:'fp',label:'success fee (on success)',y:.52},
+      {from:'fr',to:'fp',label:'base fee'},
+      {from:'fr',to:'fp',label:'success fee',y:.54},
     ],
     notes:[
-      {text:'Outcome     Requester   Provider',x:.15,y:.70,size:13,color:'muted'},
-      {text:'success     -8 sat      +8 sat',x:.15,y:.77,size:13,color:'accent'},
-      {text:'failure     -3 sat      +3 sat',x:.15,y:.84,size:13,color:'warn'},
-      {text:'no deal      0           0',x:.15,y:.91,size:13,color:'muted'},
+      {text:'accept locks',x:.39,y:.40,size:17,color:'accent'},
+      {text:'success pays',x:.39,y:.62,size:17,color:'accent'},
+      {text:'Outcome      Requester      Provider',x:.18,y:.76,size:16,color:'muted'},
+      {text:'success      -8 sat         +8 sat',x:.18,y:.82,size:16,color:'accent'},
+      {text:'failure      -3 sat         +3 sat',x:.18,y:.88,size:16,color:'warn'},
+      {text:'no deal       0              0',x:.18,y:.94,size:16,color:'muted'},
     ],
   },
   term:[

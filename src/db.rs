@@ -234,6 +234,7 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             idempotency_key TEXT UNIQUE,
             provider_id TEXT NOT NULL,
             provider_url TEXT NOT NULL,
+            provider_sync_url TEXT,
             spec_json TEXT NOT NULL,
             quote_json TEXT NOT NULL,
             deal_artifact_json TEXT NOT NULL,
@@ -267,6 +268,7 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
     ensure_column(conn, "deals", "failure_evidence_hash", "TEXT")?;
     ensure_column(conn, "deals", "receipt_artifact_hash", "TEXT")?;
     ensure_column(conn, "deals", "payment_method", "TEXT")?;
+    ensure_column(conn, "requester_deals", "provider_sync_url", "TEXT")?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_execution_evidence_content_hash
             ON execution_evidence (content_hash);

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
@@ -174,6 +175,221 @@ async fn marketplace_deal(
     }
 }
 
+fn marketplace_read_url(marketplace_url: &str, path: &str, params: &[(&str, String)]) -> String {
+    let mut url = format!("{}{}", marketplace_url.trim_end_matches('/'), path);
+    for (index, (key, value)) in params.iter().enumerate() {
+        url.push(if index == 0 { '?' } else { '&' });
+        url.push_str(key);
+        url.push('=');
+        url.push_str(&urlencoding::encode(value));
+    }
+    url
+}
+
+fn read_api_route_missing(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    )
+}
+
+fn normalize_read_api_offer(offer: Value) -> Value {
+    let mut normalized = offer;
+    let Some(map) = normalized.as_object_mut() else {
+        return normalized;
+    };
+
+    if !map.contains_key("offer_hash")
+        && let Some(hash) = map.get("artifact_hash").cloned()
+    {
+        map.insert("offer_hash".to_string(), hash);
+    }
+
+    let mut execution_profile = map
+        .get("execution_profile")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for key in [
+        "runtime",
+        "package_kind",
+        "contract_version",
+        "abi_version",
+        "access_handles",
+        "capabilities",
+        "max_input_bytes",
+        "max_runtime_ms",
+        "max_memory_bytes",
+        "max_output_bytes",
+        "fuel_limit",
+    ] {
+        if !execution_profile.contains_key(key)
+            && let Some(value) = map.get(key).cloned()
+        {
+            execution_profile.insert(key.to_string(), value);
+        }
+    }
+    map.insert(
+        "execution_profile".to_string(),
+        Value::Object(execution_profile),
+    );
+    normalized
+}
+
+fn normalize_read_api_provider(provider: &Value, offers: Vec<Value>) -> Value {
+    let descriptor = provider.get("descriptor").unwrap_or(&Value::Null);
+    let descriptor_hash = provider
+        .get("current_descriptor_hash")
+        .or_else(|| descriptor.get("artifact_hash"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    json!({
+        "provider_id": provider.get("provider_id").cloned().unwrap_or(Value::Null),
+        "descriptor_hash": descriptor_hash,
+        "descriptor_seq": descriptor.get("descriptor_seq").cloned().unwrap_or(Value::Null),
+        "protocol_version": descriptor.get("protocol_version").cloned().unwrap_or(Value::Null),
+        "transport_endpoints": descriptor.get("transport_endpoints").cloned().unwrap_or_else(|| json!([])),
+        "linked_identities": descriptor.get("linked_identities").cloned().unwrap_or_else(|| json!([])),
+        "capabilities": descriptor.get("capabilities").cloned().unwrap_or_else(|| json!({})),
+        "trust": provider.get("trust").cloned().unwrap_or(Value::Null),
+        "offers": offers,
+    })
+}
+
+async fn try_marketplace_read_api_search(
+    state: &AppState,
+    marketplace_url: &str,
+    payload: &Value,
+) -> Result<Option<Value>, ApiFailure> {
+    let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20);
+    let mut params = vec![("limit", limit.to_string())];
+    if let Some(runtime) = payload.get("runtime").and_then(|v| v.as_str()) {
+        params.push(("runtime", runtime.to_string()));
+    }
+    if let Some(offer_kind) = payload.get("offer_kind").and_then(|v| v.as_str()) {
+        params.push(("offer_kind", offer_kind.to_string()));
+    }
+
+    let offers_response: Value = match remote_json_request_with_client_error_passthrough(
+        state,
+        reqwest::Method::GET,
+        marketplace_read_url(marketplace_url, "/v1/offers", &params),
+        Option::<&()>::None,
+        true,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err((status, _)) if read_api_route_missing(status) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    let offers = offers_response
+        .get("items")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut offers_by_provider: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for offer in offers {
+        let Some(provider_id) = offer.get("provider_id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        offers_by_provider
+            .entry(provider_id.to_string())
+            .or_default()
+            .push(normalize_read_api_offer(offer));
+    }
+
+    let mut providers = Vec::new();
+    for (provider_id, offers) in offers_by_provider {
+        let provider: Value = remote_json_request_with_client_error_passthrough(
+            state,
+            reqwest::Method::GET,
+            marketplace_read_url(
+                marketplace_url,
+                &format!("/v1/providers/{}", urlencoding::encode(&provider_id)),
+                &[],
+            ),
+            Option::<&()>::None,
+            true,
+        )
+        .await
+        .map_err(|(status, body)| {
+            if read_api_route_missing(status) {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    json!({
+                        "error": "marketplace read api offer referenced missing provider",
+                        "provider_id": provider_id,
+                        "detail": body,
+                    }),
+                )
+            } else {
+                (status, body)
+            }
+        })?;
+        providers.push(normalize_read_api_provider(&provider, offers));
+    }
+
+    Ok(Some(json!({
+        "providers": providers,
+        "pagination": offers_response.get("pagination").cloned().unwrap_or(Value::Null),
+    })))
+}
+
+async fn try_marketplace_read_api_provider(
+    state: &AppState,
+    marketplace_url: &str,
+    provider_id: &str,
+) -> Result<Option<Value>, ApiFailure> {
+    let provider: Value = match remote_json_request_with_client_error_passthrough(
+        state,
+        reqwest::Method::GET,
+        marketplace_read_url(
+            marketplace_url,
+            &format!("/v1/providers/{}", urlencoding::encode(provider_id)),
+            &[],
+        ),
+        Option::<&()>::None,
+        true,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err((status, _)) if read_api_route_missing(status) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    let offers_response: Value = remote_json_request_with_client_error_passthrough(
+        state,
+        reqwest::Method::GET,
+        marketplace_read_url(
+            marketplace_url,
+            "/v1/offers",
+            &[
+                ("provider_id", provider_id.to_string()),
+                ("limit", "100".to_string()),
+            ],
+        ),
+        Option::<&()>::None,
+        true,
+    )
+    .await?;
+    let offers = offers_response
+        .get("items")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(normalize_read_api_offer)
+        .collect();
+
+    Ok(Some(json!({
+        "provider": normalize_read_api_provider(&provider, offers),
+    })))
+}
+
 async fn runtime_search(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -189,6 +405,12 @@ async fn runtime_search(
             json!({"error":"no marketplace configured — set FROGLET_MARKETPLACE_URL"}),
         );
     };
+
+    match try_marketplace_read_api_search(state.as_ref(), marketplace_url, &payload).await {
+        Ok(Some(result)) => return (StatusCode::OK, Json(result)),
+        Ok(None) => {}
+        Err((status, body)) => return error_json(status, body),
+    }
 
     let search_input = json!({
         "offer_kind": payload.get("offer_kind").and_then(|v| v.as_str()),
@@ -233,6 +455,12 @@ async fn runtime_provider_details(
             json!({"error":"no marketplace configured — set FROGLET_MARKETPLACE_URL"}),
         );
     };
+
+    match try_marketplace_read_api_provider(state.as_ref(), marketplace_url, &provider_id).await {
+        Ok(Some(result)) => return (StatusCode::OK, Json(result)),
+        Ok(None) => {}
+        Err((status, body)) => return error_json(status, body),
+    }
 
     let execution = match crate::execution::ExecutionWorkload::builtin_service(
         "marketplace.provider".to_string(),

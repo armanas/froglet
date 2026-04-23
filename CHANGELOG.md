@@ -7,6 +7,27 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ## [Unreleased]
 
+### Changed
+
+- `docs/SUBDOMAIN_PLAN.md` flipped `ai.froglet.dev` and
+  `marketplace.froglet.dev` status to **Live** and updated the
+  `try.froglet.dev` row to reflect the Cloudflare Worker scaffold plus the
+  session endpoint being live on the upstream node.
+- `README.md` hosted-trial paragraph rewritten to match the MVP scope: a
+  Cloudflare Worker in front of the Lightsail reference node, a shared
+  session-token pool (authentication only, not per-session identity), and
+  explicit removal of the email-claim / account-conversion path.
+- Docs site `Try In Cloud` page (`docs-site/src/content/docs/learn/cloud-trial.mdx`)
+  rewritten to describe the shared session-pool model and remove the stale
+  `POST /api/sessions/claim` / `verify` / `resume` endpoints and the
+  "hosted on GCP" reference; the first-party hosted deployment runs on
+  AWS Lightsail fronted by Cloudflare.
+- Docs site landing (`docs-site/src/pages/index.astro`) hosted-trial card
+  updated to match the session-pool model and drop the GCP wording.
+- Docs site learning index (`docs-site/src/content/docs/learn/index.mdx`)
+  updates its roadmap copy and stat strip to reference the shared session
+  pool and 15-minute session TTL instead of "temporary identity".
+
 ## [0.1.0-alpha.1] - 2026-04-20
 
 ### Added

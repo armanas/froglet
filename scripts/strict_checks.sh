@@ -36,6 +36,7 @@ fi
 
 echo "[strict] installer and release helper shell syntax"
 sh -n scripts/install.sh
+bash -n scripts/gitleaks_gate.sh
 bash -n scripts/setup-agent.sh
 bash -n scripts/setup-payment.sh
 bash -n scripts/deploy_gcp_single_vm.sh
@@ -43,6 +44,11 @@ bash -n scripts/package_release_assets.sh
 bash -n scripts/verify_release_assets.sh
 bash -n scripts/smoke_install_from_assets.sh
 bash -n scripts/release_gate.sh
+
+if [[ "${FROGLET_SKIP_GITLEAKS:-0}" != "1" ]]; then
+  echo "[strict] gitleaks publication gate"
+  ./scripts/gitleaks_gate.sh
+fi
 
 if command -v node >/dev/null 2>&1; then
   node_major=$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')

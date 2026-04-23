@@ -8,7 +8,7 @@ description: Operator setup and verification for the Lightning launch rail.
 The fastest launch-safe local setup is Lightning mock mode:
 
 ```bash
-./scripts/setup-payment.sh lightning
+cd froglet && ./scripts/setup-payment.sh lightning
 ```
 
 That writes `.froglet/payment/lightning.env` with:
@@ -29,7 +29,7 @@ FROGLET_LIGHTNING_MODE=lnd_rest \
 FROGLET_LIGHTNING_REST_URL=https://your-lnd.example:8080 \
 FROGLET_LIGHTNING_MACAROON_PATH=/path/to/admin.macaroon \
 FROGLET_LIGHTNING_TLS_CERT_PATH=/path/to/tls.cert \
-./scripts/setup-payment.sh lightning --mode lnd_rest
+cd froglet && ./scripts/setup-payment.sh lightning --mode lnd_rest
 ```
 
 Required inputs:

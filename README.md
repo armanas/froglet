@@ -94,10 +94,10 @@ The reference implementation exposes these binaries:
 | `froglet-node` | Provider and/or runtime node (role configured via env) | `8080` / `8081` |
 
 > [!TIP]
-> Marketplace integration is part of the public Froglet surface. Providers and
-> runtimes can point at any compatible marketplace with
-> `FROGLET_MARKETPLACE_URL`, and a default public marketplace is available at
-> `https://marketplace.froglet.dev`. See [docs/MARKETPLACE.md](docs/MARKETPLACE.md).
+> Marketplace integration is part of the public Froglet surface. Runtimes can
+> point at the default public read marketplace with `FROGLET_MARKETPLACE_URL`;
+> provider auto-registration requires a write-capable marketplace endpoint. See
+> [docs/MARKETPLACE.md](docs/MARKETPLACE.md).
 
 ---
 
@@ -113,68 +113,58 @@ Supported: Linux x86_64/arm64, macOS arm64.
 
 ## Quick Start
 
-The public launch story has exactly two entry points:
+Canonical onboarding lives in
+[docs-site/src/content/docs/learn/index.mdx](docs-site/src/content/docs/learn/index.mdx).
+Use the repo README for the product and codebase overview, the `learn/` docs
+for the public launch path, and `docs/` for specs, operator notes, and
+integration reference.
 
-### Try In Cloud
+The public launch story still has exactly two entry points:
 
-The hosted trial lives behind a first-party GCP-hosted gateway. It creates a
-temporary 15-minute identity, lets the user run a free-only deal flow, and can
-convert that temporary identity into a long-term account by email verification.
+### 1. Try In Cloud
 
-This public repo documents the hosted-trial contract and the self-host path.
+- Start with
+  [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx)
+- Contract reference: [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md)
+- Session tokens on `try.froglet.dev` authorize only
+  `POST /v1/runtime/deals` and `GET /v1/runtime/deals/{deal_id}`
+- `try.froglet.dev` is the only public hosted-trial ingress; `ai.froglet.dev`
+  does not expose session minting or hosted demo deal routes directly
+- The hosted demo proves one free discover → deal → result → receipt round-trip,
+  not paid rails, persistent identity, or general runtime access
 
-Hosted trial contract: [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md)
-Hosted-trial docs source: [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx)
+### 2. Run Locally
 
-### Run Locally
+- Start with
+  [docs-site/src/content/docs/learn/quickstart.mdx](docs-site/src/content/docs/learn/quickstart.mdx)
+- Then use
+  [docs-site/src/content/docs/learn/agents.mdx](docs-site/src/content/docs/learn/agents.mdx)
+  and
+  [docs-site/src/content/docs/learn/payment-rails.mdx](docs-site/src/content/docs/learn/payment-rails.mdx)
+- Self-host and operator follow-ons live in [docs/DOCKER.md](docs/DOCKER.md),
+  [docs/GCP_SINGLE_VM.md](docs/GCP_SINGLE_VM.md), and
+  [docs/MARKETPLACE.md](docs/MARKETPLACE.md)
 
-Copy-paste the block below to go from zero to a running local stack with
-Lightning mock settlement and a ready-to-use Claude Code MCP config:
+Minimal full local stack from zero:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
-./scripts/setup-agent.sh --target claude-code
-./scripts/setup-payment.sh lightning
-set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
+git clone https://github.com/armanas/froglet.git
+cd froglet && ./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-payment.sh lightning
+cd froglet && set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
 ```
 
-That runs in four independent steps:
+If you only want the signed binary:
 
-1. **Install** — downloads the latest signed `froglet-node` binary into
-   `~/.local/bin`.
-2. **Connect an agent** — generates `.mcp.json` (or the target's equivalent)
-   pointed at the local provider + runtime. Swap `claude-code` for `codex`
-   or `openclaw` if that is your agent. `claude-code` and `codex` work both
-   in a cloned repo (node-based MCP) and when piped via `curl … | sh -s -- …`
-   outside a repo (Docker-based MCP using
-   `ghcr.io/armanas/froglet-mcp:latest`). `openclaw` always requires the
-   repo cloned because the OpenClaw plugin is a local folder.
-3. **Connect a payment rail** — writes a `./.froglet/payment/lightning.env`
-   snippet. Swap `lightning` for `stripe` (requires `FROGLET_STRIPE_SECRET_KEY=sk_test_…`)
-   or `x402` (requires `FROGLET_X402_WALLET_ADDRESS=0x…`). The Stripe and
-   x402 adapters currently reuse the configured numeric service price
-   directly — no FX conversion from sats.
-4. **Bring up the stack** — loads the payment env, sets
-   `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so agent tooling can read the
-   control token from the host-mounted `./data/runtime/`, and runs Compose
-   in the background.
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+```
 
-**Bot-facing local control token:** `./data/runtime/froglet-control.token`
-
-> [!NOTE]
-> `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` is required for the Compose
-> path any time you plan to use the MCP / OpenClaw agent from the host;
-> the container emits a clear warning on start if it's unset. The
-> single-binary path does not need this opt-in.
-
-Additional public launch surfaces in this repo:
-
-- one-line binary install for Linux x86_64/arm64 and macOS arm64
-- tagged provider, runtime, and MCP Docker images in GHCR
-- checked-in MCP example configs under `integrations/mcp/froglet/examples/`
-- a supported GCP single-VM wrapper: `scripts/deploy_gcp_single_vm.sh create|deploy|status|destroy`
-
-Quickstart source: [docs-site/src/content/docs/learn/quickstart.mdx](docs-site/src/content/docs/learn/quickstart.mdx)
+The Compose path and generated host-side agent configs depend on
+`FROGLET_HOST_READABLE_CONTROL_TOKEN=true`; the quickstart page carries the
+full step-by-step explanation, payment-rail variants, and direct
+`froglet-node` examples.
 
 <details>
 <summary><strong>Running binaries directly (without Compose)</strong></summary>
@@ -200,8 +190,9 @@ The normal model is one node running both provider and runtime roles
 (`FROGLET_NODE_ROLE=dual`), so it can publish local resources and invoke
 remote ones.
 
-Set `FROGLET_MARKETPLACE_URL` on provider and runtime nodes when you want to
-register with or search through an external marketplace.
+Set `FROGLET_MARKETPLACE_URL` on runtime nodes to search through an external
+marketplace. Set it on providers only when the target marketplace supports
+write-capable provider registration.
 
 </details>
 
@@ -242,24 +233,21 @@ configs such as the checked-in NemoClaw examples.
 The one `froglet` tool covers:
 
 - Service discovery and invocation
-- Local resource inspection and publication
-- Source-first project authoring for scriptable services
-- Local build, validation, test, and publish flows
-- Status, logs, and restart
-- Task polling
+- Local resource inspection and publication via `publish_artifact`
+- Settlement visibility and marketplace-native wrappers
+- Status and task polling
+- Install guidance via `get_install_guide`
 - Raw compute
 
 <details>
 <summary><strong>Important behavior notes</strong></summary>
 
 - `summary` is metadata only; it does not generate code
-- `starter` and `result_json` are built-in scaffolding inputs
-- `inline_source` is the explicit direct-code input for authored inline-source
-  services
-- Blank projects are scaffolds only and should stay hidden until edited,
-  tested, and published
+- `publish_artifact` is the current local publication path
 - `run_compute` is the low-level path for open-ended compute and should include
   `provider_id` or `provider_url`
+- Project authoring, log tailing, and node restart are not part of the current
+  public tool API
 
 </details>
 
@@ -275,11 +263,11 @@ node integrations/mcp/froglet/server.js
 It exposes the same Froglet control surface over MCP stdio.
 
 For supported local agent targets, generate the exact config file instead of
-editing JSON or TOML by hand:
+editing JSON or TOML by hand from the cloned repo:
 
 ```bash
-./scripts/setup-agent.sh --target claude-code
-./scripts/setup-agent.sh --target codex
+cd froglet && ./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-agent.sh --target codex
 ```
 
 ---
@@ -370,6 +358,10 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 | Document | Topic |
 |---|---|
+| [docs-site/src/content/docs/learn/index.mdx](docs-site/src/content/docs/learn/index.mdx) | Canonical onboarding index for the public launch story |
+| [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx) | Hosted trial walkthrough and contract |
+| [docs-site/src/content/docs/learn/quickstart.mdx](docs-site/src/content/docs/learn/quickstart.mdx) | Local self-host quickstart |
+| [docs/README.md](docs/README.md) | Reference-doc map for specs, operations, and integrations |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture overview |
 | [ADAPTERS.md](docs/ADAPTERS.md) | Payment and network adapters |
 | [RUNTIME.md](docs/RUNTIME.md) | Runtime internals |
@@ -396,6 +388,6 @@ separately from the public protocol and self-host docs in this repo.
 
 <div align="center">
 
-**[Quickstart Source](docs-site/src/content/docs/learn/quickstart.mdx)** &middot; **[Releases](https://github.com/armanas/froglet/releases)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
+**[Learn Index Source](docs-site/src/content/docs/learn/index.mdx)** &middot; **[Releases](https://github.com/armanas/froglet/releases)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
 
 </div>

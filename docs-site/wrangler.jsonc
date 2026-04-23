@@ -1,8 +1,19 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "froglet-docs",
-  "compatibility_date": "2026-04-20",
+  "compatibility_date": "2026-04-23",
   "assets": {
-    "directory": "./dist"
-  }
+    "directory": "./dist",
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    {
+      "pattern": "froglet.dev",
+      "custom_domain": true
+    },
+    {
+      "pattern": "docs.froglet.dev",
+      "custom_domain": true
+    }
+  ]
 }

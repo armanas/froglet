@@ -11,12 +11,12 @@ separately from the public protocol docs.
 
 | Host | Purpose | Canonical source | Status |
 |---|---|---|---|
-| `froglet.dev` | Protocol landing page at `/` plus documentation under `/learn/*`, `/architecture/*`, and related routes. | `docs-site/` in this repo | Provisioning; public host not live yet |
-| `docs.froglet.dev` | Alias of the apex for readers who reach for the `docs.*` form directly. Same build and content as the apex deployment. | Same `docs-site/` deployment as apex | Not yet provisioned |
-| `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | First-party hosted deployment | Edge hostname exists; Froglet app not live yet |
-| `marketplace.froglet.dev` | Default public marketplace for providers, offers, and receipts. | Default public marketplace deployment | Planned |
+| `froglet.dev` | Protocol landing page at `/` plus documentation under `/learn/*`, `/architecture/*`, and related routes. | `docs-site/` in this repo | **Live** — served by Cloudflare Worker `froglet-docs`; `/`, `/learn/quickstart/`, and `/sitemap-index.xml` verified on 2026-04-23 |
+| `docs.froglet.dev` | Alias of the apex for readers who reach for the `docs.*` form directly. Same build and content as the apex deployment. | Same `docs-site/` deployment as apex | **Live** — same Worker as apex; ordinary curl verified `/`, `/learn/quickstart/`, and `/sitemap-index.xml` after disconnecting ProtonVPN on 2026-04-23 |
+| `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | First-party hosted deployment | **Live** — first-party Lightsail container service fronted by Cloudflare; `/health`, `/v1/feed`, and `/v1/openapi.yaml` serving signed content |
+| `marketplace.froglet.dev` | Default public read marketplace for providers, offers, and receipts. | Default public marketplace deployment | **Live** — served by the `marketplace-api` + `indexer` stack in `froglet-services`; surfaces the hosted node's descriptors and offers at `/v1/providers` and `/v1/offers` |
 | `status.froglet.dev` | Public status page for the first-party hosted services. | First-party hosted status deployment | Planned |
-| `try.froglet.dev` | Hosted trial gateway with temporary identity and lifecycle controls. | First-party hosted gateway | Out of scope for this repo |
+| `try.froglet.dev` | Hosted trial gateway with a shared session-token pool and 15-minute TTL. | Cloudflare Worker in `froglet-services/ops/cloudflare-workers/try-gate/` fronting the same Lightsail node as `ai.` | Worker-backed ingress. The public contract is `try.` only; the upstream session/demo routes on `ai.` are worker-gated, not public fallback endpoints. |
 
 ## Why the split
 
@@ -35,10 +35,13 @@ separately from the public protocol docs.
   point at their own host without
   any assumption that the marketplace is "the" marketplace.
 - `try.froglet.dev` stays in its own subdomain because the hosted-trial
-  lifecycle (rate limiting, TTL cleanup, audit
-  logging, email verification, human-account conversion) has a different
-  operational boundary than the protocol core and does not belong in the
-  public repo.
+  lifecycle (rate limiting, 15-minute TTL cleanup, shared-pool slot
+  recycling) has a different operational boundary than the protocol core.
+  The worker source lives in `froglet-services/ops/cloudflare-workers/try-gate/`
+  rather than this public repo. The trial is authentication-only: there is
+  no per-session cryptographic identity, no email verification, and no
+  human-account conversion path (self-hosting is the only route to
+  persistent identity and paid deals).
 
 ## Email-authentication baseline
 
@@ -78,8 +81,7 @@ Those details are maintained separately from the public kernel/runtime repo.
 ## Deployment-order dependencies
 
 1. DNS authority goes live on the chosen provider.
-2. Cloudflare Worker preview deploy from this repo using
-   `docs-site/wrangler.jsonc`.
+2. Cloudflare Worker deploy from this repo using `docs-site/wrangler.jsonc`.
 3. Attach both `froglet.dev` and `docs.froglet.dev` to that same deployment
    so the apex remains canonical and `docs.*` is only a mirror.
 4. `ai.froglet.dev` — first-party hosted provider deployment.
@@ -102,3 +104,14 @@ Those details are maintained separately from the public kernel/runtime repo.
   copy so it only keeps the stable public-domain map.
 - 2026-04-20: Public docs deploy path standardized on Cloudflare Workers via
   `docs-site/wrangler.jsonc`; the stale GitHub Pages workflow was removed.
+- 2026-04-22: `ai.froglet.dev` and `marketplace.froglet.dev` flipped to
+  **Live**; the `try.froglet.dev` contract was tightened so `try.` is the
+  only public session/demo ingress and the upstream origin routes are
+  worker-gated rather than public fallback endpoints. Email-claim mention
+  removed from the `try.` justification to match the MVP scope
+  (authentication-only pool, no account conversion).
+- 2026-04-23: `docs-site/` deployed to Cloudflare Worker `froglet-docs`,
+  with `froglet.dev` live through the default resolver. The initial
+  `docs.froglet.dev` failure was pinned to ProtonVPN DNS returning only AAAA
+  for the alias; after disconnecting ProtonVPN, ordinary curl verified `/`,
+  `/learn/quickstart/`, and `/sitemap-index.xml`.

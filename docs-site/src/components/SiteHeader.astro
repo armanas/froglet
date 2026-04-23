@@ -27,11 +27,16 @@ const isActive = (item: (typeof navLinks)[number]) => {
 	if (item.activePrefixes?.some(matchesPrefix)) return true;
 	return matchesPrefix(item.href);
 };
+
+const isExternal = (item: (typeof navLinks)[number]) => item.href.startsWith('http') || item.external;
 ---
 
 <div class:list={['froglet-site-chrome', embedded && 'froglet-site-chrome--embedded']}>
 	<div class="froglet-site-chrome__inner">
-		<a href="/" class="froglet-brand">🐸 froglet</a>
+		<a href="/" class="froglet-brand" aria-label="Froglet home">
+			<span class="froglet-brand__mark" aria-hidden="true">🐸</span>
+			<span class="froglet-brand__word">froglet</span>
+		</a>
 		<nav class="froglet-site-nav" aria-label="Primary">
 			{
 				navLinks.map((item) => (
@@ -39,12 +44,13 @@ const isActive = (item: (typeof navLinks)[number]) => {
 						href={item.href}
 						class:list={[
 							'froglet-site-nav__link',
+							isExternal(item) && 'froglet-site-nav__link--external',
 							isActive(item) && 'is-active',
 						]}
-						target={item.external ? '_blank' : undefined}
-						rel={item.external ? 'noreferrer' : undefined}
+						target={isExternal(item) ? '_blank' : undefined}
+						rel={isExternal(item) ? 'noreferrer' : undefined}
 					>
-						{item.label.toLowerCase()}
+						{item.label}
 					</a>
 				))
 			}
@@ -61,7 +67,9 @@ const isActive = (item: (typeof navLinks)[number]) => {
 		top: 0;
 		z-index: 40;
 		border-bottom: 1px solid hsl(var(--froglet-border));
-		background: hsl(var(--froglet-background));
+		background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, hsl(var(--froglet-surface)) 12%);
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
 	}
 
 	.froglet-site-chrome--embedded {
@@ -82,13 +90,36 @@ const isActive = (item: (typeof navLinks)[number]) => {
 	}
 
 	.froglet-brand {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.38rem;
 		color: hsl(var(--froglet-foreground));
 		text-decoration: none;
-		font-family: var(--froglet-font-serif);
-		font-size: 1.18rem;
+		font-family: var(--froglet-font-sans);
+		font-size: 1rem;
 		font-weight: 700;
-		letter-spacing: -0.025em;
+		letter-spacing: 0;
 		white-space: nowrap;
+	}
+
+	.froglet-brand__mark {
+		display: inline-grid;
+		width: 1.65rem;
+		height: 1.65rem;
+		place-items: center;
+		border: 1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 24%, transparent);
+		border-radius: 50%;
+		background: color-mix(in srgb, hsl(var(--froglet-accent-soft)) 72%, transparent);
+		font-size: 1.02rem;
+		line-height: 1;
+	}
+
+	.froglet-brand__word {
+		font-family: var(--froglet-font-serif);
+		font-size: 1.34rem;
+		font-weight: 700;
+		line-height: 1;
+		letter-spacing: 0;
 	}
 
 	.froglet-site-nav {
@@ -100,11 +131,12 @@ const isActive = (item: (typeof navLinks)[number]) => {
 
 	.froglet-site-nav__link {
 		padding: 0.48rem 0.72rem;
-		border-radius: 0;
+		border-radius: var(--froglet-card-radius);
 		color: hsl(var(--froglet-muted));
 		text-decoration: none;
 		font-size: 0.88rem;
 		font-weight: 600;
+		letter-spacing: 0.01em;
 		transition:
 			background-color 140ms ease,
 			color 140ms ease;
@@ -120,6 +152,10 @@ const isActive = (item: (typeof navLinks)[number]) => {
 		color: hsl(var(--froglet-accent-strong));
 	}
 
+	.froglet-site-nav__link--external {
+		color: color-mix(in srgb, hsl(var(--froglet-muted)) 78%, transparent);
+	}
+
 	.froglet-site-tools {
 		display: flex;
 		align-items: center;
@@ -128,8 +164,7 @@ const isActive = (item: (typeof navLinks)[number]) => {
 	}
 
 	/* Hide Starlight's built-in mobile menu toggle on desktop where the sidebar
-	   is always visible. Restore it on mobile so /learn/* pages remain navigable.
-	   On mobile, position it fixed in the top-left so it doesn't overlap our nav. */
+	   is always visible. Restore it on mobile so /learn/* pages remain navigable. */
 	@media (min-width: 901px) {
 		starlight-menu-button,
 		[data-open-sidebar] {
@@ -137,27 +172,26 @@ const isActive = (item: (typeof navLinks)[number]) => {
 		}
 	}
 
-	/* On mobile docs pages, show Starlight's menu button as a fixed icon in the
-	   bottom-right corner so it never conflicts with the custom header layout.
-	   Give the sidebar pane an opaque background so it covers page content. */
+	/* On mobile docs pages, keep Starlight's menu button in the header flow and
+	   give the sidebar pane an opaque background so it covers page content. */
 	@media (max-width: 900px) {
 		starlight-menu-button {
-			position: fixed;
-			bottom: 1rem;
-			right: 1rem;
-			z-index: 50;
-			width: 48px;
-			height: 48px;
-			display: flex !important;
-			align-items: center;
-			justify-content: center;
-			border-radius: 0;
-			background: hsl(var(--froglet-accent));
+			position: static;
+			width: auto;
+			height: auto;
+			display: contents !important;
+			border-radius: var(--froglet-card-radius);
 			box-shadow: none;
 		}
 
 		starlight-menu-button button {
-			color: hsl(var(--froglet-accent-foreground));
+			z-index: 60;
+			width: 40px;
+			height: 40px;
+			border: 1px solid hsl(var(--froglet-border));
+			border-radius: var(--froglet-card-radius);
+			background: hsl(var(--froglet-surface));
+			color: hsl(var(--froglet-foreground));
 		}
 
 		nav.sidebar .sidebar-pane {
@@ -176,7 +210,7 @@ const isActive = (item: (typeof navLinks)[number]) => {
 
 		.froglet-site-nav__link {
 			padding-inline: 0.54rem;
-			font-size: 0.82rem;
+			font-size: 0.8rem;
 		}
 
 		.froglet-site-nav__link--desktop {
@@ -184,9 +218,26 @@ const isActive = (item: (typeof navLinks)[number]) => {
 		}
 	}
 
+	@media (max-width: 720px) {
+		.froglet-site-chrome__inner {
+			box-sizing: border-box;
+			padding-right: 48px;
+		}
+
+		.froglet-site-nav__link--external {
+			display: none;
+		}
+	}
+
 	@media (max-width: 560px) {
-		.froglet-brand {
-			font-size: 1.08rem;
+		.froglet-brand__mark {
+			width: 1.48rem;
+			height: 1.48rem;
+			font-size: 0.92rem;
+		}
+
+		.froglet-brand__word {
+			font-size: 1.18rem;
 		}
 
 		.froglet-site-chrome__inner {
@@ -194,7 +245,7 @@ const isActive = (item: (typeof navLinks)[number]) => {
 		}
 
 		.froglet-site-nav__link {
-			padding-inline: 0.46rem;
+			padding-inline: 0.36rem;
 		}
 	}
 </style>

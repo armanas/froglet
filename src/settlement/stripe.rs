@@ -399,7 +399,7 @@ mod tests {
             StripeConfig {
                 api_version: "2024-06-20".to_string(),
             },
-            "sk_test_placeholder".to_string(),
+            "stripe_test_secret_placeholder".to_string(),
         )
     }
 
@@ -572,6 +572,7 @@ mod tests {
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
+            hosted_trial_origin_secret: None,
         };
 
         let pool = DbPool::open(&db_path).expect("init test db");
@@ -698,7 +699,7 @@ mod tests {
             StripeConfig {
                 api_version: "2024-06-20".to_string(),
             },
-            "sk_test_placeholder".to_string(),
+            "stripe_test_secret_placeholder".to_string(),
             &base_url,
         );
         let state = make_state();
@@ -763,7 +764,7 @@ mod tests {
             StripeConfig {
                 api_version: "2024-06-20".to_string(),
             },
-            "sk_test_placeholder".to_string(),
+            "stripe_test_secret_placeholder".to_string(),
             &base_url,
         );
         let state = make_state();

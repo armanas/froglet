@@ -21,7 +21,7 @@ on my machine," "run Froglet here," or "deploy Froglet for me":
 2. Execute the commands one at a time through your host agent's shell
    (Claude Code's Bash tool, Codex's shell, or an equivalent). Pause for
    user approval on each step per your host agent's normal policy.
-3. After step 4 the local stack is up on `127.0.0.1:8080` (provider) and
+3. After step 5 the local stack is up on `127.0.0.1:8080` (provider) and
    `127.0.0.1:8081` (runtime), and the user's agent MCP config now
    includes the local instance.
 
@@ -58,7 +58,9 @@ OpenClaw plugin, whatever terminal the user has exposed.
 Before step 1, the user's host needs:
 
 - **`curl`** — for fetching the install script (usually already present)
-- **Docker with Compose v2** — for step 4 (`docker compose up`)
+- **`git`** — the public helper-script path clones the repo before it runs
+  `setup-agent.sh`, `setup-payment.sh`, or Compose
+- **Docker with Compose v2** — for step 5 (`docker compose up`)
 - **Linux x86_64 / arm64**, **macOS arm64**, or **macOS Intel with Rosetta**
   — the signed binary covers these targets
 
@@ -69,7 +71,7 @@ change and should not be silent.
 
 ## Post-install verification
 
-After the four install steps, call the Froglet `status` action against
+After the five install steps, call the Froglet `status` action against
 the local instance at `127.0.0.1:8081`. A healthy install returns:
 
 - `healthy: true`
@@ -78,13 +80,14 @@ the local instance at `127.0.0.1:8081`. A healthy install returns:
 
 If `healthy: false`, check:
 
-1. Did the user set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` (step 4
+1. Did the user set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` (step 5
    already exports it, but a re-run under different env can miss it)?
    The container logs a clear warning if this is missing.
 2. Is the user's Docker daemon reachable?
 3. For the Lightning rail, the mock mode needs no external state. For
    Stripe or x402, the user needs valid credentials in the env snippet
-   the `setup-payment.sh` script wrote.
+   the `setup-payment.sh` script wrote inside the cloned `froglet/`
+   directory.
 
 ## Residual constraints
 
@@ -105,10 +108,10 @@ shell access:
 
 ## If the user asks about uninstall
 
-There is no first-class uninstall action. Run `docker compose down -v`
-in the directory where the user ran the install block, then `rm -rf
-~/.local/bin/froglet-node` and `rm -rf ./.froglet ./data`. Confirm each
-destructive step with the user before running it.
+There is no first-class uninstall action. Run `cd froglet && docker compose down -v`,
+then remove `~/.local/bin/froglet-node`, and if the user wants a full cleanup
+remove the cloned `froglet/` directory. Confirm each destructive step with the
+user before running it.
 
 ## Related
 

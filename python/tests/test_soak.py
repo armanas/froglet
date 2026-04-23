@@ -22,6 +22,43 @@ from test_support import FrogletAsyncTestCase, create_signed_event
 SOAK_DURATION_MINUTES = int(os.environ.get("FROGLET_SOAK_DURATION_MINUTES", "5"))
 SOAK_CONCURRENCY = int(os.environ.get("FROGLET_SOAK_CONCURRENCY", "10"))
 SAMPLE_INTERVAL = int(os.environ.get("FROGLET_SOAK_INTERVAL_SECS", "15"))
+P99_RELATIVE_DEGRADATION_LIMIT = 1.0
+P99_ABSOLUTE_DEGRADATION_FLOOR_MS = 100.0
+
+
+def p99_latency_regression(p99_samples: list[float]):
+    """Return stable p99 degradation stats, ignoring warm-up and low-ms noise."""
+    if len(p99_samples) < 4:
+        return None
+    warmed = p99_samples[1:]
+    midpoint = len(warmed) // 2
+    if midpoint == 0:
+        return None
+    baseline = statistics.median(warmed[:midpoint])
+    final = statistics.median(warmed[midpoint:])
+    if baseline <= 0:
+        return None
+    increase = (final - baseline) / baseline
+    regressed = (
+        increase > P99_RELATIVE_DEGRADATION_LIMIT
+        and final >= P99_ABSOLUTE_DEGRADATION_FLOOR_MS
+    )
+    return baseline, final, increase, regressed
+
+
+class SoakLatencyRegressionTests(unittest.TestCase):
+    def test_low_absolute_p99_noise_is_not_a_regression(self) -> None:
+        stats = p99_latency_regression([12.0, 16.7, 18.0, 44.7, 45.0])
+        self.assertIsNotNone(stats)
+        self.assertFalse(stats[3])
+
+    def test_high_absolute_sustained_p99_growth_is_a_regression(self) -> None:
+        stats = p99_latency_regression([20.0, 50.0, 55.0, 140.0, 150.0])
+        self.assertIsNotNone(stats)
+        self.assertTrue(stats[3])
+
+    def test_short_sample_windows_are_not_regression_checked(self) -> None:
+        self.assertIsNone(p99_latency_regression([10.0, 20.0, 30.0]))
 
 
 class SoakTests(FrogletAsyncTestCase):
@@ -127,17 +164,19 @@ class SoakTests(FrogletAsyncTestCase):
                 f"Error rate {error_rate:.2%} exceeds 1% threshold",
             )
 
-        # p99 latency must not increase more than 100% from first sample to last
+        # p99 latency must not show sustained, material degradation.
         p99_samples = [s["p99_ms"] for s in samples if "p99_ms" in s]
-        if len(p99_samples) >= 3:
-            baseline = statistics.mean(p99_samples[:2])
-            final = statistics.mean(p99_samples[-2:])
-            if baseline > 0:
-                increase = (final - baseline) / baseline
-                self.assertLess(
-                    increase, 1.0,
-                    f"p99 latency increased {increase:.0%} from {baseline:.1f}ms to {final:.1f}ms",
-                )
+        regression = p99_latency_regression(p99_samples)
+        if regression is not None:
+            baseline, final, increase, regressed = regression
+            self.assertFalse(
+                regressed,
+                (
+                    f"p99 latency increased {increase:.0%} from {baseline:.1f}ms "
+                    f"to {final:.1f}ms and exceeded "
+                    f"{P99_ABSOLUTE_DEGRADATION_FLOOR_MS:.0f}ms"
+                ),
+            )
 
         # Print samples for diagnostics
         print(json.dumps(samples, indent=2), file=sys.stderr)

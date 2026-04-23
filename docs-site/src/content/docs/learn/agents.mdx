@@ -11,18 +11,26 @@ description: Generate ready-to-use local config for Claude Code, Codex, and Open
   </div>
 </div>
 
+These helper commands are repo-local. `install.sh` only installs the signed
+`froglet-node` binary; if you want generated MCP/OpenClaw configs and the
+Compose stack, clone the repo first:
+
+```bash
+git clone https://github.com/armanas/froglet.git
+```
+
 ## Generate a config
 
 ```bash
-./scripts/setup-agent.sh --target claude-code
-./scripts/setup-agent.sh --target codex
-./scripts/setup-agent.sh --target openclaw
+cd froglet && ./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-agent.sh --target codex
+cd froglet && ./scripts/setup-agent.sh --target openclaw
 ```
 
 Optional override:
 
 ```bash
-./scripts/setup-agent.sh --target codex --out /tmp/froglet-codex.toml
+cd froglet && ./scripts/setup-agent.sh --target codex --out /tmp/froglet-codex.toml
 ```
 
 ## Default outputs

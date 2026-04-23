@@ -73,7 +73,7 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe test secret API key for the public local helper (must start with `sk_test_`) |
+| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe test secret API key for the public local helper (must use a Stripe test key, not a live key) |
 | `FROGLET_STRIPE_API_VERSION` | `2026-03-04.preview` | Stripe API version (required for MPP features) |
 
 ## Execution
@@ -104,7 +104,7 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for provider auto-registration and runtime discovery. Use the default public marketplace or any compatible marketplace endpoint. |
+| `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for runtime discovery and, when the target supports it, provider auto-registration. Use `https://marketplace.froglet.dev` for the default public read marketplace; provider registration requires a write-capable marketplace endpoint. |
 
 ## MCP Server (integrations/mcp/froglet)
 

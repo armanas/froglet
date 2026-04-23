@@ -30,7 +30,7 @@ body {
   max-width: 760px;
   padding: 36px;
   border: 1px solid hsl(var(--froglet-border));
-  border-radius: 0;
+  border-radius: var(--froglet-card-radius);
   background: hsl(var(--froglet-card));
   box-shadow: var(--froglet-shadow);
 }
@@ -38,7 +38,7 @@ body {
 .pill {
   display: inline-flex;
   padding: 6px 12px;
-  border-radius: 0;
+  border-radius: calc(var(--froglet-card-radius) - 2px);
   background: hsl(var(--froglet-accent-soft));
   border: 1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 16%, transparent);
   color: hsl(var(--froglet-accent-strong));
@@ -53,7 +53,7 @@ h1 {
   font-family: var(--froglet-font-serif);
   font-size: clamp(42px, 7vw, 72px);
   line-height: 0.94;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 p {
@@ -76,7 +76,7 @@ p {
   align-items: center;
   justify-content: center;
   padding: 12px 18px;
-  border-radius: 0;
+  border-radius: var(--froglet-card-radius);
   border: 1px solid hsl(var(--froglet-border));
   color: hsl(var(--froglet-foreground));
   text-decoration: none;

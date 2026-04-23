@@ -5,11 +5,11 @@ import type { Step, BoardNode, BoardArrow, BoardNote } from './steps';
 
 /** Named constants replacing all magic numbers in the whiteboard renderer */
 export const WHITEBOARD = {
-  NODE_RADIUS: 48,
-  NODE_RADIUS_SMALL: 28,
-  ARROW_HEAD_SIZE: 8,
-  ARROW_PAD: 52,
-  GRID_SPACING_Y: 44,
+  NODE_RADIUS: 56,
+  NODE_RADIUS_SMALL: 34,
+  ARROW_HEAD_SIZE: 11,
+  ARROW_PAD: 64,
+  GRID_SPACING_Y: 58,
   GRID_MIN_SPACING_X: 120,
   FRAME_MARGIN: 16,
   ANIMATION_DURATION_MS: 1200,
@@ -17,48 +17,51 @@ export const WHITEBOARD = {
   GRID_INSET: 30,
   GRID_LINE_WIDTH: 0.5,
   FRAME_LINE_WIDTH: 1,
-  ARROW_LINE_WIDTH: 1.4,
-  ARROW_HEAD_LINE_WIDTH: 1.3,
+  ARROW_LINE_WIDTH: 2.2,
+  ARROW_HEAD_LINE_WIDTH: 2,
   ARROW_HEAD_ANGLE: 0.4,
-  ARROW_LABEL_FONT_SIZE: 12,
-  ARROW_LABEL_OFFSET_Y: 8,
-  NODE_LABEL_FONT_SIZE: 22,
-  NODE_LABEL_FONT_SIZE_SMALL: 13,
-  NODE_SUB_FONT_SIZE: 12,
-  NODE_SUB_FONT_SIZE_SMALL: 10,
-  NODE_SUB_OFFSET_Y: 14,
-  NODE_SUB_OFFSET_Y_SMALL: 10,
+  ARROW_LABEL_FONT_SIZE: 17,
+  ARROW_LABEL_OFFSET_Y: 14,
+  NODE_LABEL_FONT_SIZE: 30,
+  NODE_LABEL_FONT_SIZE_SMALL: 16,
+  NODE_SUB_FONT_SIZE: 16,
+  NODE_SUB_FONT_SIZE_SMALL: 12,
+  NODE_SUB_OFFSET_Y: 19,
+  NODE_SUB_OFFSET_Y_SMALL: 13,
   NODE_LABEL_OFFSET_Y: 6,
   NODE_HIGHLIGHT_LINE_WIDTH: 1.8,
   NODE_DEFAULT_LINE_WIDTH: 1.3,
-  NOTE_DEFAULT_SIZE: 13,
+  NOTE_DEFAULT_SIZE: 16,
   CHALK_OFFSETS: [
     { dx: 0, dy: 0, alpha: 0.85 },
-    { dx: -0.4, dy: 0.3, alpha: 0.18 },
-    { dx: 0.35, dy: -0.25, alpha: 0.12 },
+    { dx: -0.8, dy: 0.45, alpha: 0.2 },
+    { dx: 0.65, dy: -0.45, alpha: 0.16 },
+    { dx: 0.2, dy: 0.95, alpha: 0.09 },
   ] as const,
   CHALK_LINE_OFFSETS: [
     { dx: 0, dy: 0, alphaScale: 1, widthAdd: 0 },
-    { dx: -0.5, dy: 0.4, alphaScale: 0.2, widthAdd: 0.6 },
-    { dx: 0.4, dy: -0.3, alphaScale: 0.15, widthAdd: 0.9 },
+    { dx: -0.7, dy: 0.5, alphaScale: 0.24, widthAdd: 0.75 },
+    { dx: 0.55, dy: -0.45, alphaScale: 0.18, widthAdd: 1 },
+    { dx: 0.15, dy: 0.9, alphaScale: 0.08, widthAdd: 1.4 },
   ] as const,
   DASH_PATTERN: [6, 8] as readonly number[],
   COLORS: {
-    bg: '#101712',
-    grid: 'rgba(231,238,222,0.035)',
-    text: '#edf1e7',
-    muted: 'rgba(213,223,204,0.52)',
-    accent: '#b8ff9a',
-    accentDim: 'rgba(184,255,154,0.25)',
+    bg: '#0b1d17',
+    grid: 'rgba(231,238,222,0.065)',
+    text: '#f4f7ec',
+    muted: 'rgba(224,232,216,0.64)',
+    accent: '#a8f7b0',
+    accentDim: 'rgba(168,247,176,0.18)',
     warn: '#efe39a',
-    frame: 'rgba(205,223,198,0.10)',
-    highlightFill: 'rgba(184,255,154,0.08)',
-    defaultFill: 'rgba(15,22,17,0.12)',
-    highlightStroke: '#b8ff9a',
-    defaultStroke: 'rgba(233,240,226,0.6)',
+    frame: 'rgba(226,239,218,0.14)',
+    labelBackplate: 'rgba(11,29,23,0.78)',
+    highlightFill: 'rgba(168,247,176,0.10)',
+    defaultFill: 'rgba(11,29,23,0.24)',
+    highlightStroke: '#a8f7b0',
+    defaultStroke: 'rgba(241,247,234,0.76)',
   },
   FONTS: {
-    hand: "'Source Sans 3', system-ui, sans-serif",
+    hand: "'Patrick Hand', 'Comic Sans MS', cursive",
     mono: "'JetBrains Mono', monospace",
   },
 } as const;
@@ -136,8 +139,43 @@ export function initWhiteboard(
       ctx.strokeStyle = color;
       ctx.lineWidth = width + o.widthAdd;
       ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 2.5;
       ctx.stroke();
       if (isDashed) ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+
+  function chalkRect(x: number, y: number, w: number, h: number, color: string, width: number): void {
+    for (const o of WB.CHALK_OFFSETS) {
+      ctx.save();
+      ctx.globalAlpha = o.alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width + o.alpha * 0.7;
+      ctx.lineJoin = 'round';
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + o.dx, y + o.dy);
+      ctx.lineTo(x + w + o.dx + 0.8, y + o.dy - 0.35);
+      ctx.lineTo(x + w + o.dx - 0.4, y + h + o.dy + 0.75);
+      ctx.lineTo(x + o.dx + 0.35, y + h + o.dy - 0.25);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function chalkText(text: string, x: number, y: number, color: string, alpha = 1): void {
+    for (const o of WB.CHALK_OFFSETS) {
+      ctx.save();
+      ctx.globalAlpha = alpha * o.alpha;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 1.8;
+      ctx.fillText(text, x + o.dx, y + o.dy);
       ctx.restore();
     }
   }
@@ -148,8 +186,28 @@ export function initWhiteboard(
     const ww = logicalW();
     const hh = logicalH();
     ctx.clearRect(0, 0, ww, hh);
-    ctx.fillStyle = WB.COLORS.bg;
+    const gradient = ctx.createLinearGradient(0, 0, ww, hh);
+    gradient.addColorStop(0, '#07150f');
+    gradient.addColorStop(0.56, WB.COLORS.bg);
+    gradient.addColorStop(1, '#092316');
+    ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, ww, hh);
+
+    // static chalk dust and erased smudges
+    ctx.save();
+    ctx.strokeStyle = 'rgba(232,238,225,0.026)';
+    ctx.lineWidth = 0.8;
+    for (let i = 0; i < 82; i++) {
+      const x = ((i * 97) % Math.max(1, Math.floor(ww))) + 0.5;
+      const y = ((i * 53) % Math.max(1, Math.floor(hh))) + 0.5;
+      const len = 9 + ((i * 17) % 22);
+      ctx.globalAlpha = 0.08 + ((i * 13) % 9) / 100;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y + ((i % 3) - 1) * 1.4);
+      ctx.stroke();
+    }
+    ctx.restore();
 
     // subtle chalk grid
     ctx.strokeStyle = WB.COLORS.grid;
@@ -169,11 +227,11 @@ export function initWhiteboard(
 
     // frame with subtle pulse
     const pulse = 0.5 + 0.15 * Math.sin(time / 1000);
-    ctx.strokeStyle = `rgba(229,239,223,${0.06 + pulse * 0.04})`;
-    ctx.lineWidth = WB.FRAME_LINE_WIDTH;
-    ctx.strokeRect(
+    chalkRect(
       WB.FRAME_MARGIN, WB.FRAME_MARGIN,
       ww - WB.FRAME_MARGIN * 2, hh - WB.FRAME_MARGIN * 2,
+      `rgba(229,239,223,${0.14 + pulse * 0.04})`,
+      WB.FRAME_LINE_WIDTH,
     );
   }
 
@@ -193,14 +251,7 @@ export function initWhiteboard(
     // chalk square: multi-pass offset rendering
     const col = nd.highlight ? WB.COLORS.highlightStroke : WB.COLORS.defaultStroke;
     const lw = nd.highlight ? WB.NODE_HIGHLIGHT_LINE_WIDTH : WB.NODE_DEFAULT_LINE_WIDTH;
-    for (const o of WB.CHALK_OFFSETS) {
-      ctx.save();
-      ctx.globalAlpha = o.alpha;
-      ctx.strokeStyle = col;
-      ctx.lineWidth = lw + o.alpha * 0.6;
-      ctx.strokeRect(cx - r + o.dx, cy - r + o.dy, r * 2, r * 2);
-      ctx.restore();
-    }
+    chalkRect(cx - r, cy - r, r * 2, r * 2, col, lw);
 
     // Sequence diagram lifeline (dashed vertical line below node)
     if (nd.lifeline !== undefined) {
@@ -214,7 +265,7 @@ export function initWhiteboard(
     ctx.fillStyle = nd.highlight ? WB.COLORS.accent : WB.COLORS.text;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(nd.label, cx, cy - (nd.sub ? WB.NODE_LABEL_OFFSET_Y : 0));
+    chalkText(nd.label, cx, cy - (nd.sub ? WB.NODE_LABEL_OFFSET_Y : 0), nd.highlight ? WB.COLORS.accent : WB.COLORS.text);
 
     // Sub-label below the main label
     if (nd.sub) {
@@ -222,7 +273,7 @@ export function initWhiteboard(
       const subOffset = nd.small ? WB.NODE_SUB_OFFSET_Y_SMALL : WB.NODE_SUB_OFFSET_Y;
       ctx.font = `400 ${subSize}px ${WB.FONTS.hand}`;
       ctx.fillStyle = WB.COLORS.muted;
-      ctx.fillText(nd.sub, cx, cy + subOffset);
+      chalkText(nd.sub, cx, cy + subOffset, WB.COLORS.muted, 0.9);
     }
 
     ctx.textAlign = 'left';
@@ -286,7 +337,16 @@ export function initWhiteboard(
       ctx.fillStyle = WB.COLORS.accent;
       ctx.globalAlpha = Math.min(1, (progress - 0.5) * 4);
       ctx.textAlign = 'center';
-      ctx.fillText(label, mx, my - WB.ARROW_LABEL_OFFSET_Y);
+      const metrics = ctx.measureText(label);
+      ctx.fillStyle = WB.COLORS.labelBackplate;
+      ctx.fillRect(
+        mx - metrics.width / 2 - 10,
+        my - WB.ARROW_LABEL_OFFSET_Y - WB.ARROW_LABEL_FONT_SIZE - 5,
+        metrics.width + 20,
+        WB.ARROW_LABEL_FONT_SIZE + 10,
+      );
+      ctx.fillStyle = WB.COLORS.accent;
+      chalkText(label, mx, my - WB.ARROW_LABEL_OFFSET_Y, WB.COLORS.accent);
       ctx.textAlign = 'left';
       ctx.restore();
     }
@@ -309,7 +369,7 @@ export function initWhiteboard(
     ctx.font = `${weight} ${sz}px ${WB.FONTS.hand}`;
     ctx.fillStyle = col;
     ctx.textAlign = 'left';
-    ctx.fillText(note.text, x, y);
+    chalkText(note.text, x, y, col, 0.95);
   }
 
   // ── scene composition ──

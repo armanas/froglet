@@ -40,21 +40,21 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `invoke_service`
 - `list_local_services`
 - `get_local_service`
-- `create_project`
-- `list_projects`
-- `get_project`
-- `read_file`
-- `write_file`
-- `build_project`
-- `test_project`
-- `publish_project`
 - `publish_artifact`
 - `status`
-- `tail_logs`
-- `restart`
 - `get_task`
 - `wait_task`
 - `run_compute`
+- `get_wallet_balance`
+- `list_settlement_activity`
+- `get_payment_intent`
+- `get_invoice_bundle`
+- `get_install_guide`
+- `marketplace_search`
+- `marketplace_provider`
+- `marketplace_receipts`
+- `marketplace_stake`
+- `marketplace_topup`
 
 Named services are the default UX. Raw compute is the expert path.
 
@@ -73,47 +73,26 @@ be used for registry-backed remote listings. If discovery is misconfigured or
 unhealthy, Froglet returns a structured error instead of pretending there are no
 services.
 
-## Authoring Model
+## Current API Surface
 
-The current checked-in authoring implementation is project-first:
+The current checked-in API is service- and artifact-oriented:
 
-- create a project
-- edit source
-- build a real artifact for the current project-backed profiles
-- test locally
-- publish a named service or compute binding
+- discover remote services with `discover_services` / `get_service`
+- invoke named/data services with `invoke_service`
+- inspect and publish local services with `list_local_services`,
+  `get_local_service`, and `publish_artifact`
+- poll async work with `get_task` / `wait_task`
+- inspect settlement state with `get_wallet_balance`,
+  `list_settlement_activity`, `get_payment_intent`, and `get_invoice_bundle`
+- use the marketplace wrappers when you want marketplace-native search,
+  provider detail, receipts, stake, or top-up operations
+- use `get_install_guide` when the user asks to install Froglet on the host
 
-Current implementation note:
+The current public tool surface does not include project authoring, log tailing,
+or node restarts.
 
-- project authoring currently covers inline-source Python and project-backed
-  WAT->Wasm
-- OCI-backed Wasm and OCI/container profiles are published directly through
-  `publish_artifact`
-
-Starter templates are only scaffolding. They are not first-class tool actions.
-
-Practical shortcuts:
-
-- `create_project` can derive `project_id`, `service_id`, and `offer_id` from
-  `name` when explicit ids are omitted.
-- `create_project` accepts optional `result_json` to scaffold a simple static
-  JSON response service.
-- `create_project` accepts optional `inline_source` when you want to provide
-  explicit source at creation time.
-- `create_project` and `publish_artifact` accept explicit execution metadata
-  such as `runtime`, `package_kind`, `entrypoint_kind`, `entrypoint`,
-  `contract_version`, and `mounts`.
-- `create_project` auto-publishes only when `publication_state=active` and an
-  explicit runnable scaffold is provided via `starter`, `result_json`, or
-  `inline_source`.
-- blank projects are scaffolds only; create them with `publication_state=hidden`
-  and then `write_file`, `build_project`, `test_project`, and `publish_project`.
-- service detail output includes `offer_kind` and `resource_kind` so bot hosts
-  can distinguish listed service bindings from direct compute.
-- `invoke_service` waits briefly by default for sync services and can resolve a
-  unique `service_id` without an explicit provider reference.
-
-`summary` is descriptive metadata only. It never generates code implicitly.
+`summary` remains descriptive metadata only. It never generates code
+implicitly.
 
 ## Managed Host Launcher
 

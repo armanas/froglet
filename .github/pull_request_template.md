@@ -29,6 +29,7 @@ knows whether to run them or whether they don't apply.
 
 - [ ] `./scripts/release_gate.sh` — default gate passes
 - [ ] `./scripts/release_gate.sh --compose` — compose-backed smoke passes (if this PR touches the provider/runtime/MCP surface)
+- [ ] `./scripts/gitleaks_gate.sh` — current tracked tree + GitHub-visible history are clean
 - [ ] `cargo fmt --all --check` + `cargo clippy --all-targets -- -D warnings`
 - [ ] Docs site still builds (`npm --prefix docs-site run build`) — if this PR touches `docs/` or `docs-site/`
 - [ ] Relevant new tests added — at least one that fails against the pre-change behavior

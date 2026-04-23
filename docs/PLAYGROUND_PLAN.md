@@ -1,19 +1,19 @@
 # Froglet Interactive Playground — Implementation Plan
 
-Status: **partially superseded by MVP scope.** The shared
-authentication-only pool model (Tier 1 below) is the MVP shape. The
-email-claim upgrade flow (Tier 2, §§4.2, 6.2, 10, and related API routes)
-was **dropped** during MVP scoping — see
-[`froglet-services/docs/SYSTEM_DESIGN.md` §8](../../froglet-services/docs/SYSTEM_DESIGN.md)
-for the current model (pool of shared ephemeral session tokens, no
-identity promotion, no email). Tier 3 (self-hosted) is unchanged.
+Status: **historical / partially superseded. Do not use this file as the
+current hosted-trial contract.** The shared authentication-only pool model
+(Tier 1 below) is the MVP shape. The email-claim upgrade flow (Tier 2,
+§§4.2, 6.2, 10, and related API routes) was **dropped** during MVP scoping — see
+[`HOSTED_TRIAL.md`](HOSTED_TRIAL.md) for the current public model (pool of
+shared ephemeral session tokens, no identity promotion, no email). Tier 3
+(self-hosted) is unchanged.
 
 The rest of this document is kept for historical context and for the
 pieces that DO match MVP: LLM-readable `/llms.txt`, MCP manifest,
 session lifecycle mechanics, anti-abuse posture, infrastructure
-envelope. New deploy recipe: the Cloudflare worker at
-[`froglet-services/ops/cloudflare-workers/try-gate/`](../../froglet-services/ops/cloudflare-workers/try-gate/)
-implements the Tier 1 path today.
+envelope. The Cloudflare worker that implements the Tier 1 path is maintained
+outside this public repo; [`HOSTED_TRIAL.md`](HOSTED_TRIAL.md) is the public
+contract for that hosted surface.
 
 ## 1. Vision
 

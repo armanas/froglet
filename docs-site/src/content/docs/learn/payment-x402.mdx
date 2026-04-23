@@ -8,14 +8,14 @@ description: Operator setup and verification for the x402 launch rail.
 Provide the Base wallet address that will back the authorization flow:
 
 ```bash
-FROGLET_X402_WALLET_ADDRESS=0x... \
+cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> \
 ./scripts/setup-payment.sh x402
 ```
 
 Optional overrides:
 
 ```bash
-FROGLET_X402_WALLET_ADDRESS=0x... \
+cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> \
 FROGLET_X402_NETWORK=base \
 FROGLET_X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402 \
 ./scripts/setup-payment.sh x402

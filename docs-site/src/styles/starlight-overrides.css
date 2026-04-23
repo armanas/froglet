@@ -27,22 +27,17 @@ mjx-container {
 	overflow-x: auto;
 }
 
-/* Brutalist: kill all remaining border-radius globally */
-*,
-*::before,
-*::after {
-	border-radius: 0 !important;
-}
-
 /* ── Header ──────────────────────────────────────────────────────────── */
 
 body > .page > header {
 	padding: 0;
 	border-bottom: 1px solid hsl(var(--froglet-border));
-	background: hsl(var(--froglet-background));
+	background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, hsl(var(--froglet-surface)) 12%);
 	position: sticky;
 	top: 0;
 	z-index: 40;
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
 }
 
 body > .page > header .site-title,
@@ -61,6 +56,14 @@ body > .page > header select:hover {
 	color: hsl(var(--froglet-foreground));
 }
 
+body > .page > .main-frame {
+	padding-top: 0;
+}
+
+starlight-theme-select {
+	display: none;
+}
+
 /* ── Sidebar ─────────────────────────────────────────────────────────── */
 
 nav.sidebar .sidebar-pane {
@@ -74,7 +77,7 @@ nav.sidebar .sidebar-content {
 
 nav.sidebar summary,
 nav.sidebar a {
-	border-radius: 0;
+	border-radius: calc(var(--froglet-card-radius) - 2px);
 	transition:
 		background-color 140ms ease,
 		color 140ms ease,
@@ -92,7 +95,7 @@ nav.sidebar .group-label .large {
 	font-family: var(--froglet-font-serif);
 	font-size: 0.97rem;
 	font-weight: 700;
-	letter-spacing: -0.01em;
+	letter-spacing: 0;
 }
 
 nav.sidebar a[aria-current='page'] {
@@ -143,7 +146,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	font-family: var(--froglet-font-serif);
 	font-size: clamp(2.25rem, 5vw, 3.6rem);
 	font-weight: 700;
-	letter-spacing: -0.04em;
+	letter-spacing: 0;
 	line-height: 1.04;
 }
 
@@ -160,7 +163,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	color: hsl(var(--froglet-foreground));
 	font-family: var(--froglet-font-serif);
 	font-weight: 700;
-	letter-spacing: -0.03em;
+	letter-spacing: 0;
 	line-height: 1.12;
 }
 
@@ -196,7 +199,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	margin: 1.6rem 0;
 	padding: 1rem 1.1rem;
 	border-inline-start: 3px solid hsl(var(--froglet-accent));
-	border-radius: 0;
+	border-radius: var(--froglet-card-radius);
 	background: hsl(var(--froglet-surface));
 }
 
@@ -206,7 +209,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 
 .sl-markdown-content :not(pre) > code {
 	padding: 0.14rem 0.36rem;
-	border-radius: 0;
+	border-radius: calc(var(--froglet-card-radius) - 2px);
 	background: hsl(var(--froglet-surface-2));
 	color: hsl(var(--froglet-foreground));
 	font-family: var(--froglet-font-code);
@@ -216,14 +219,91 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 .sl-markdown-content pre,
 .sl-markdown-content .expressive-code {
 	border: 1px solid hsl(var(--froglet-border));
-	border-radius: 0;
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-code));
 	box-shadow: none;
+	overflow: hidden;
 }
 
 .sl-markdown-content pre {
 	background: hsl(var(--froglet-code));
 	color: hsl(var(--froglet-foreground));
 	font-family: var(--froglet-font-code);
+}
+
+.sl-markdown-content .expressive-code {
+	margin-block: 1.25rem;
+}
+
+.sl-markdown-content .expressive-code figure,
+.sl-markdown-content .expressive-code figure.frame {
+	margin: 0;
+	border: 0;
+	border-radius: var(--froglet-card-radius);
+	background: hsl(var(--froglet-code));
+	box-shadow: none;
+}
+
+.sl-markdown-content .expressive-code .header,
+.sl-markdown-content .expressive-code figcaption {
+	border-bottom: 1px solid hsl(var(--froglet-border));
+	background: color-mix(in srgb, hsl(var(--froglet-surface)) 76%, transparent);
+	color: hsl(var(--froglet-muted));
+	font-family: var(--froglet-font-sans);
+	font-weight: 700;
+}
+
+.sl-markdown-content .expressive-code pre {
+	margin: 0;
+	border: 0;
+	border-radius: 0;
+	background: hsl(var(--froglet-code));
+	padding-right: 64px;
+}
+
+.sl-markdown-content .expressive-code .copy button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: auto;
+	min-width: 52px;
+	height: 30px;
+	padding: 0 9px;
+	opacity: 1;
+	border: 1px solid hsl(var(--froglet-border));
+	border-radius: calc(var(--froglet-card-radius) - 2px);
+	background: hsl(var(--froglet-surface));
+	color: hsl(var(--froglet-muted));
+	font-family: var(--froglet-font-sans);
+	font-size: 0;
+	font-weight: 700;
+}
+
+.sl-markdown-content .expressive-code .copy button::after {
+	content: 'COPY';
+	font-size: 0.72rem;
+	letter-spacing: 0.02em;
+	line-height: 1;
+	position: static;
+}
+
+.expressive-code .copy button[data-froglet-copy-label='true'] {
+	font-size: 0.72rem !important;
+	line-height: 1;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+}
+
+.expressive-code .copy button[data-froglet-copy-label='true']::after {
+	content: none;
+}
+
+.sl-markdown-content .expressive-code .copy button svg {
+	display: none;
+}
+
+.sl-markdown-content .expressive-code .copy button > div {
+	display: none;
 }
 
 .sl-markdown-content table {
@@ -234,7 +314,7 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	border-collapse: separate;
 	border-spacing: 0;
 	border: 1px solid hsl(var(--froglet-border));
-	border-radius: 0;
+	border-radius: var(--froglet-card-radius);
 	background: hsl(var(--froglet-card));
 	box-shadow: var(--froglet-shadow);
 }
@@ -259,14 +339,14 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 }
 
 .sl-markdown-content img {
-	border-radius: 0;
+	border-radius: var(--froglet-card-radius);
 }
 
 /* ── Pagination ──────────────────────────────────────────────────────── */
 
 .pagination-links a {
 	border: 1px solid hsl(var(--froglet-border));
-	border-radius: 0;
+	border-radius: var(--froglet-card-radius);
 	background: hsl(var(--froglet-card));
 }
 

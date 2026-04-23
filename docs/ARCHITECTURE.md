@@ -204,7 +204,8 @@ froglet/                 open source node framework
   tls, tor                transport adapters
 
 default public marketplace
-  public contract        registration + runtime discovery stay in froglet
+  public contract        runtime discovery through the read API stays in froglet;
+                         provider registration requires a write-capable marketplace
   endpoint               https://marketplace.froglet.dev
 ```
 

@@ -1,13 +1,13 @@
 ---
 title: Quickstart
-description: "Run Froglet locally in three steps: install, connect an agent, connect a payment rail."
+description: "Run Froglet locally with either the signed binary or the cloned-repo helper path."
 ---
 
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">10 minutes</div>
-    <p class="learn-lead">Run Froglet locally in three steps.</p>
-    <p class="learn-sublead">The public self-host path is strict: install Froglet, connect an agent, connect a payment rail. This page uses the launch-ready local defaults and keeps the hosted trial separate.</p>
+    <p class="learn-lead">Run Froglet locally without guessing which files exist where.</p>
+    <p class="learn-sublead">The public self-host path is split intentionally: `install.sh` gives you the signed binary, while the helper scripts and Compose stack live in a cloned repo. This page keeps those paths separate and keeps the hosted trial separate.</p>
     <div class="learn-chip-row">
       <span class="learn-chip">Linux and macOS</span>
       <span class="learn-chip">Claude Code / Codex / OpenClaw</span>
@@ -16,27 +16,26 @@ description: "Run Froglet locally in three steps: install, connect an agent, con
   </div>
 </div>
 
-## TL;DR — one copy-paste block
-
-If you already have Docker installed and just want the local stack up, this
-single block goes from zero to running Froglet with a Claude Code MCP config
-and Lightning mock settlement:
+## TL;DR — full local stack from zero
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
-./scripts/setup-agent.sh --target claude-code
-./scripts/setup-payment.sh lightning
-set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
+git clone https://github.com/armanas/froglet.git
+cd froglet && ./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-payment.sh lightning
+cd froglet && set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
 ```
 
-The rest of this page walks the four steps individually if you want to swap
-the agent target, change the payment rail, or understand what each step
-actually does.
+If you only want the signed `froglet-node` binary, stop after the first
+command. The rest of this page walks the five-step helper-script path
+individually if you want the local Compose stack, generated agent configs,
+and payment env snippets.
 
 ## Prerequisites
 
 - **Linux x86_64 / arm64** or **macOS arm64**
 - **`curl`** to download the installer
+- **`git`** for the helper-script + Compose path
 - **Node.js 18+** if you want the local MCP server for Claude Code or Codex
 - Optional: **Docker** if you want the local provider/runtime stack or the tagged GHCR images
 - Optional: a configured **GCP project** if you want the single-VM self-host wrapper
@@ -61,20 +60,34 @@ curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/instal
 
 By default the installer fetches `froglet-node`, verifies it against `SHA256SUMS`, and installs it locally. `froglet-node` is the public single-binary path. The release pipeline also tags provider, runtime, and MCP Docker images in GHCR. Anonymous pulls work only after the package visibility is public.
 
-## 2. Connect an agent
+If all you want is the signed binary, you can stop here and use the direct
+`froglet-node` examples later on this page. The remaining steps assume you
+want the repo-local helper scripts and the default Compose stack.
+
+## 2. Clone the repo for helper scripts and Compose
+
+```bash
+git clone https://github.com/armanas/froglet.git
+```
+
+The public installer does not fetch `./scripts/setup-agent.sh`,
+`./scripts/setup-payment.sh`, `compose.yaml`, or the checked-in OpenClaw
+plugin. Those live in the repo and are used below.
+
+## 3. Connect an agent
 
 Generate the exact local config file for the agent you plan to use:
 
 ```bash
-./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-agent.sh --target claude-code
 ```
 
 ```bash
-./scripts/setup-agent.sh --target codex
+cd froglet && ./scripts/setup-agent.sh --target codex
 ```
 
 ```bash
-./scripts/setup-agent.sh --target openclaw
+cd froglet && ./scripts/setup-agent.sh --target openclaw
 ```
 
 The helper writes a ready-to-use file instead of asking you to hand-edit JSON or TOML:
@@ -98,12 +111,12 @@ is readable on the host. The single-binary path does not need this opt-in.
 
 More detail: [Connect Agents](/learn/agents/)
 
-## 3. Connect a payment rail
+## 4. Connect a payment rail
 
 Generate a validated env snippet for the rail you want to launch with:
 
 ```bash
-./scripts/setup-payment.sh lightning
+cd froglet && ./scripts/setup-payment.sh lightning
 ```
 
 That path uses Lightning mock mode by default, which is enough to exercise the paid-deal flow locally without a wallet.
@@ -111,27 +124,23 @@ That path uses Lightning mock mode by default, which is enough to exercise the p
 For the other launch rails:
 
 ```bash
-FROGLET_STRIPE_SECRET_KEY=sk_test_... ./scripts/setup-payment.sh stripe
+cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> ./scripts/setup-payment.sh stripe
 ```
 
 ```bash
-FROGLET_X402_WALLET_ADDRESS=0x... ./scripts/setup-payment.sh x402
+cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> ./scripts/setup-payment.sh x402
 ```
 
 Each run writes an env snippet, prints the exact inputs still required, and runs a verification probe for that rail.
 
 More detail: [Payment Rails](/learn/payment-rails/)
 
-## 4. Start the local stack
+## 5. Start the local stack
 
 Load the payment snippet you generated and start the default local topology:
 
 ```bash
-set -a
-. ./.froglet/payment/lightning.env
-set +a
-export FROGLET_HOST_READABLE_CONTROL_TOKEN=true
-docker compose up --build -d
+cd froglet && set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
 ```
 
 Replace `lightning.env` with `stripe.env` or `x402.env` when that is the rail
@@ -140,7 +149,7 @@ you configured.
 That starts provider on `127.0.0.1:8080` and runtime on `127.0.0.1:8081`.
 
 That opt-in is required only when host-side agents read the provider control
-token from `./data/runtime/froglet-control.token`. If you want the single-binary
+token from `froglet/data/runtime/froglet-control.token`. If you want the single-binary
 path instead of Docker Compose, start `froglet-node` directly after loading the
 same env snippet.
 
@@ -152,7 +161,7 @@ FROGLET_GCP_PROJECT=your-project ./scripts/deploy_gcp_single_vm.sh deploy
 FROGLET_GCP_PROJECT=your-project ./scripts/deploy_gcp_single_vm.sh status
 ```
 
-## 5. Check the local control plane
+## 6. Check the local control plane
 
 Confirm the provider and runtime are healthy:
 
@@ -167,7 +176,7 @@ Inspect the provider identity:
 curl http://127.0.0.1:8080/v1/node/identity
 ```
 
-## 6. Execute a WASM workload
+## 7. Execute a WASM workload
 
 Submit a WASM binary for execution:
 
@@ -183,7 +192,7 @@ This local runtime helper executes the workload and returns the result plus a
 local payment receipt when one is used. The signed quote/deal flow is separate
 and uses `/v1/provider/quotes` plus `/v1/provider/deals`.
 
-## 7. Requester side
+## 8. Requester side
 
 If you started in dual mode (the default), the requester API is already running on port 8081. If you started as provider-only, start a second node for the requester:
 
@@ -196,7 +205,7 @@ froglet-node
 
 The requester handles deal negotiation, payment settlement, and receipt verification.
 
-## 8. Register with a marketplace (optional)
+## 9. Register with a marketplace (optional)
 
 To make your provider discoverable:
 
@@ -211,17 +220,18 @@ The provider automatically registers its signed descriptor and offers with the
 configured external marketplace on startup. A default public marketplace is
 available at `https://marketplace.froglet.dev`.
 
-## 9. Install from source instead (optional)
+## 10. Build from source instead (optional)
 
-If you are developing on Froglet itself or want to build locally:
+If you already cloned the repo in step 2 and want to build locally instead of
+using the signed binary:
 
 ```bash
-git clone https://github.com/armanas/froglet.git
 cd froglet
-cargo build --release
+cargo build --release --bin froglet-node -p froglet
+./target/release/froglet-node --help
 ```
 
-## 10. Stake your identity
+## 11. Stake your identity
 
 After registering, stake non-refundable value into your identity to build trust. Requesters use your stake to decide if dealing with you is safe.
 
@@ -256,7 +266,6 @@ Each artifact references the previous by SHA-256 hash. Tamper with any link and 
   <a class="chapter-card" href="/learn/deal-flow/"><strong>The Deal Flow</strong><small>See the full artifact chain with an interactive diagram.</small></a>
   <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>Add Lightning payments with base fee + success fee.</small></a>
   <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>How staked reputation makes cheating economically irrational.</small></a>
-  <a class="chapter-card" href="/learn/economics/"><strong>Economics</strong><small>Why honest execution is the dominant strategy.</small></a>
 </div>
 
 ## Environment variable reference
