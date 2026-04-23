@@ -40,9 +40,17 @@ Or run the full matrix in one shot:
 
 ## Contribution terms
 
-This repository does not currently require a separate CLA or DCO sign-off.
-If the contribution intake policy changes, it will be documented here before
-maintainers ask for broader external contributions.
+This repository does not currently require a separate CLA. Contributions must
+use Developer Certificate of Origin (DCO) sign-off:
+
+```text
+Signed-off-by: Your Name <you@example.com>
+```
+
+Use `git commit -s` or add the trailer manually to each commit. For v0.1.0,
+maintainers enforce DCO manually during review unless or until a DCO bot is
+installed for the repository. PRs missing sign-off will be asked to amend their
+commits before merge.
 
 ## Conformance vectors
 

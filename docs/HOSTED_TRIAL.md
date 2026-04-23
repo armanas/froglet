@@ -14,9 +14,10 @@ simple:
 
 - shared Cloudflare-fronted gateway in front of a Lightsail container service
 - temporary session token with a 15-minute TTL drawn from a fixed-size pool
-- free-only scope (demo seed services publish at 0 sats)
+- free-only scope: the public proof is the zero-sat `demo.add` round-trip
 - anonymous — no email, no persistence, no account claim
 - `try.froglet.dev` is the only public hosted-trial ingress
+- first-party hosted Lightning, Stripe, and x402 paid rails are deferred to v0.2
 
 ## Prompt for an LLM
 
@@ -99,7 +100,7 @@ not uniquely identify a session; they identify the hosted node.
 
 - the hosted node can mint a shared 15-minute session token
 - the live service catalog is reachable
-- one free discover → deal → sync-result → receipt round-trip works end to end
+- one free `demo.add` discover -> deal -> sync-result -> receipt round-trip works end to end
 
 ## What this does not prove
 
@@ -107,6 +108,13 @@ not uniquely identify a session; they identify the hosted node.
 - persistent identity or account recovery
 - service publication or marketplace depth
 - long-running, batch, or GPU workloads
+
+## Privacy posture
+
+The v0.1.0 hosted trial has a zero-product-analytics posture: no account,
+email, analytics cookie, or conversion tracking is part of the public trial
+contract. The service still may emit minimal edge/origin operational logs
+needed to run and abuse-protect the gateway.
 
 `POST /v1/runtime/deals/{deal_id}/accept` is reserved for Lightning settlement
 flows. The free hosted `demo.add` proof completes through
@@ -118,3 +126,4 @@ The hosted trial is a first-party convenience entry point built on Froglet. The
 public docs here define the user flow and API contract; the self-host path
 remains the default way to understand and run Froglet locally — and the only
 path for non-trial, persistent identity, paid deals, and service publication.
+First-party hosted paid rails are deferred to v0.2.

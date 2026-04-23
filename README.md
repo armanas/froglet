@@ -66,10 +66,12 @@ OCI containers remain a supported packaging and deployment path.
 
 > [!NOTE]
 > Marketplace, ranking, incentive, and broker policy live above the protocol.
-> Payment rails are adapter-level surfaces. The launch rails in this repo are
-> Lightning, Stripe, and x402. Only Lightning currently extends into the
-> standardized signed quote/deal/invoice-bundle flow; Stripe and x402 are local
-> runtime settlement adapters.
+> Payment rails are adapter-level surfaces for local or self-hosted nodes.
+> Lightning, Stripe, and x402 are the launch adapters in this repo. Only
+> Lightning currently extends into the standardized signed
+> quote/deal/invoice-bundle flow; Stripe and x402 are local runtime settlement
+> adapters. The first-party hosted `try.froglet.dev` trial proves only the
+> free `demo.add` round-trip in v0.1.0; hosted paid rails are deferred to v0.2.
 
 <details>
 <summary><strong>Discovery & Compute model</strong></summary>
@@ -130,8 +132,9 @@ The public launch story still has exactly two entry points:
   `POST /v1/runtime/deals` and `GET /v1/runtime/deals/{deal_id}`
 - `try.froglet.dev` is the only public hosted-trial ingress; `ai.froglet.dev`
   does not expose session minting or hosted demo deal routes directly
-- The hosted demo proves one free discover → deal → result → receipt round-trip,
-  not paid rails, persistent identity, or general runtime access
+- The hosted demo proves one free `demo.add` discover → deal → result →
+  receipt round-trip, not paid rails, persistent identity, or general runtime
+  access
 
 ### 2. Run Locally
 
@@ -331,14 +334,17 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - Direct artifact publication for prebuilt Wasm and OCI-backed profiles
 - Reference execution profiles for Wasm, Python, container, and confidential
   execution paths
-- Reference settlement support for Lightning, Stripe, and x402
+- Local/self-hosted reference settlement support for Lightning, Stripe, and
+  x402
 - Clearnet, Tor, and Nostr-facing adapter support
 - Tests, validation scripts, and release docs for the public repo surface
 - Public-facing self-host documentation and examples
 
 **Later or separately deployed:**
 
-- The hosted `try.froglet.dev` gateway and its operational lifecycle
+- First-party hosted paid rails for Lightning, Stripe, and x402, deferred to
+  v0.2
+- The hosted `try.froglet.dev` gateway's private operational lifecycle
 - Higher-layer marketplace ranking, reputation, and policy services
 - Long-running batch orchestration, which remains out of scope for the current
   v1 runtime surface

@@ -21,8 +21,9 @@ description: The hosted Froglet trial uses a shared session-token pool fronted b
 - mint a session token from a shared, fixed-size pool
 - run the hosted demo flow behind a Cloudflare Worker gateway
 - every session expires after 15 minutes; pool slots recycle for the next user
-- stay free-only (zero-sat demo services) at launch
-- keep payment rails, persistent identity, and service publication on the local path
+- stay free-only: the public proof is the zero-sat `demo.add` round-trip
+- keep Lightning, Stripe, x402, persistent identity, and service publication on the local/self-hosted path
+- defer first-party hosted paid rails to v0.2
 
 ## Prompt to paste into your LLM
 
@@ -82,8 +83,8 @@ should return `404`.
 2. The session carries that token as `Authorization: Bearer <token>` on the
    hosted demo runtime routes `POST /v1/runtime/deals` and
    `GET /v1/runtime/deals/{deal_id}`.
-3. `GET /v1/provider/services` shows `demo.add` and `demo.echo`.
-4. Create a free runtime deal for `demo.add` with input `{ "a": 7, "b": 5 }`.
+3. `GET /v1/provider/services` includes `demo.add`.
+4. Create the free runtime proof deal for `demo.add` with input `{ "a": 7, "b": 5 }`.
 5. Read `GET /v1/runtime/deals/{deal_id}` until the deal returns `status = succeeded`.
 6. Expect `create` to return `200` with a deal record; the initial `deal.status` may already be `accepted`, `running`, or `succeeded`. The follow-up `GET` is the authoritative completion check and should return `deal.status = succeeded`, `result.sum = 12`, plus a `receipt`.
 7. `GET /v1/feed` shows the signed artifacts written by the hosted node.
@@ -115,7 +116,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/feed
 
 - shared-session authentication works on the public hosted gateway
 - the live service catalog is reachable
-- one free discover → deal → sync-result → receipt round-trip works end to end
+- one free `demo.add` discover -> deal -> sync-result -> receipt round-trip works end to end
 
 ## What this does not prove
 
@@ -123,6 +124,13 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/feed
 - persistent identity or account recovery
 - service publication or marketplace depth
 - long-running, batch, or GPU workloads
+
+## Privacy posture
+
+The v0.1.0 hosted trial has a zero-product-analytics posture: no account,
+email, analytics cookie, or conversion tracking is part of the public trial
+contract. The service still may emit minimal edge/origin operational logs
+needed to run and abuse-protect the gateway.
 
 `POST /v1/runtime/deals/{deal_id}/accept` is reserved for Lightning settlement
 flows. The free hosted `demo.add` proof completes through
@@ -134,6 +142,7 @@ This page documents the public hosted-trial contract: shared session-token
 pool, free-only demo scope, 15-minute TTL, and the demo-only runtime
 surface. The local path remains the default way to install Froglet, connect
 a payment rail, self-host the full node surface, and publish services.
+First-party hosted paid rails are deferred to v0.2.
 
 ## Local path
 

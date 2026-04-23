@@ -226,9 +226,9 @@ Release evidence:
 
 ## Hosted trial scope
 
-The hosted trial proves one free discover -> deal -> result -> receipt flow
-through `try.froglet.dev`. It does not prove paid rails, persistent identity,
-hosted account recovery, or general hosted runtime access.
+The hosted trial proves one free `demo.add` discover -> deal -> result ->
+receipt flow through `try.froglet.dev`. It does not prove paid rails,
+persistent identity, hosted account recovery, or general hosted runtime access.
 
 ## Payment rails
 
@@ -267,7 +267,7 @@ the release notes should call out:
 - public OpenClaw integration
 - reference discovery
 - reference operator image
-- launch payment rails for local/self-hosted use: Lightning, Stripe, and x402
+- local/self-hosted payment adapters: Lightning, Stripe, and x402
 - hosted paid rails deferred to v0.2
 - Claude MCP smoke evidence, because it is a hard launch blocker
 - confidential/TEE scope as experimental unless a real backend is proven and
