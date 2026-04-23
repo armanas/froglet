@@ -601,6 +601,7 @@ fn collect_md_files(dir: &PathBuf) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let skip_dirs: HashSet<&str> = [
         ".git",
+        "_tmp",
         "target",
         "node_modules",
         "data",

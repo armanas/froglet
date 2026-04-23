@@ -184,11 +184,26 @@ pub async fn runtime_accessible_provider_url(
     let local_provider_base_url = configured_runtime_provider_base_url()?;
     let is_local_provider =
         provider_id.is_some_and(|provider_id| provider_id == state.identity.node_id());
-    if is_local_provider
-        && let Some(base_url) = local_provider_base_url.as_deref()
-        && raw_url.trim_end_matches('/') == base_url
-    {
-        return Ok(base_url.to_string());
+    if is_local_provider && let Some(base_url) = local_provider_base_url.as_deref() {
+        let normalized_raw_url = raw_url.trim_end_matches('/');
+        if normalized_raw_url == base_url {
+            return Ok(base_url.to_string());
+        }
+        if state
+            .config
+            .public_base_url
+            .as_deref()
+            .is_some_and(|public_url| normalized_raw_url == public_url)
+        {
+            return Ok(base_url.to_string());
+        }
+        let advertised_clearnet_url = state.transport_status.lock().await.clearnet_url.clone();
+        if advertised_clearnet_url
+            .as_deref()
+            .is_some_and(|clearnet_url| normalized_raw_url == clearnet_url)
+        {
+            return Ok(base_url.to_string());
+        }
     }
 
     let validated = classify_remote_endpoint_url(raw_url, "provider URL")

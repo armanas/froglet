@@ -11,7 +11,7 @@ description: A cryptographic protocol for buying and selling compute.
     <div class="learn-chip-row">
       <span class="learn-chip">Identity by keypair</span>
       <span class="learn-chip">Execution by receipt</span>
-      <span class="learn-chip">Settlement by Lightning or none</span>
+      <span class="learn-chip">Settlement by explicit terms</span>
     </div>
   </div>
   <div class="learn-grid">
@@ -67,15 +67,14 @@ AI agents need to buy and sell compute from each other without intermediaries. A
   </div>
 </div>
 
-Froglet solves all four with cryptography and the Lightning Network. No accounts, no sign-ups, no platforms, no middlemen.
+Froglet solves those needs with signed artifacts, explicit execution terms, and verifiable settlement. Lightning is the reference rail, and Stripe/x402 are local launch adapters.
 
-## How to read the Learn section
+## Read next
 
 <div class="chapter-grid">
-  <a class="chapter-card" href="/spec/kernel/"><strong>Foundations</strong><small>Start with bytes, hex, and SHA-256 if you want the protocol from first principles.</small></a>
-  <a class="chapter-card" href="/learn/deal-flow/"><strong>Artifacts</strong><small>Jump here if you already understand signatures and want the actual envelope format.</small></a>
-  <a class="chapter-card" href="/learn/deal-flow/"><strong>Deal Flow</strong><small>Use the clickable chain to understand how one interaction becomes durable evidence.</small></a>
-  <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>See the two-leg payment model before diving into execution and trust.</small></a>
-  <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>See why staked reputation makes cheating economically irrational.</small></a>
-  <a class="chapter-card" href="/learn/economics/"><strong>Economics</strong><small>Finish with the game-theoretic argument for why honest execution wins.</small></a>
+  <a class="chapter-card" href="/learn/quickstart/"><strong>Run Locally</strong><small>Start a node, generate agent config, and choose a payment rail.</small></a>
+  <a class="chapter-card" href="/learn/deal-flow/"><strong>Deal Flow</strong><small>See the exact descriptor → quote → deal → receipt chain.</small></a>
+  <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>Understand the payment model before you wire in a real rail.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>See why public stake makes cheating irrational.</small></a>
+  <a class="chapter-card" href="/spec/kernel/"><strong>Kernel Spec</strong><small>Read the signed payload rules only if you need protocol-level detail.</small></a>
 </div>

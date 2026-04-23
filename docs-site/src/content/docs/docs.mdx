@@ -1,0 +1,76 @@
+---
+title: Docs
+description: Operator and protocol manual for evaluating, running, and integrating Froglet.
+---
+
+<div class="learn-hero docs-console">
+  <div>
+    <div class="learn-pill">Operator manual</div>
+    <p class="learn-lead">Start with the public path you actually need.</p>
+    <p class="learn-sublead">Use the hosted path if you want proof from the live service. Use the local path if you need your own node, agent config, and payment rail. The protocol and reference pages exist to explain those two paths, not to replace them.</p>
+    <div class="learn-chip-row">
+      <span class="learn-chip">Hosted proof</span>
+      <span class="learn-chip">Self-host install</span>
+      <span class="learn-chip">Protocol reference</span>
+    </div>
+  </div>
+  <div class="docs-manual-board" aria-label="Froglet public surfaces and protocol artifacts">
+    <div class="docs-board-title">use this order</div>
+    <div class="docs-surface-list">
+      <a href="/learn/cloud-trial/"><strong>Try In Cloud</strong><span>live hosted proof</span></a>
+      <a href="/learn/quickstart/"><strong>Run Locally</strong><span>your node + rails</span></a>
+      <a href="/demo/"><strong>Watch Demo</strong><span>11-step protocol path</span></a>
+    </div>
+    <div class="docs-artifact-chain">
+      <span>keypair</span>
+      <span>quote</span>
+      <span>deal</span>
+      <span>receipt</span>
+    </div>
+  </div>
+</div>
+
+## Start here
+
+<div class="chapter-grid docs-entry-grid">
+  <a class="chapter-card" href="/learn/cloud-trial/"><strong>Try In Cloud</strong><small>Run the first-party hosted demo flow and verify the live service before installing anything.</small></a>
+  <a class="chapter-card" href="/learn/quickstart/"><strong>Run Locally</strong><small>Install Froglet, connect an agent, choose a payment rail, and start a node you control.</small></a>
+  <a class="chapter-card" href="/demo/"><strong>Watch Demo</strong><small>See how discovery, quote, deal, settlement, receipt, and trust fit together.</small></a>
+</div>
+
+## Core concepts
+
+<div class="protocol-chain">
+  <div class="protocol-step"><strong>Keypair</strong><span>Local identity. No account authority grants it.</span></div>
+  <div class="protocol-step"><strong>Descriptor</strong><span>A provider declares its identity and service surface.</span></div>
+  <div class="protocol-step"><strong>Quote</strong><span>The provider prices a concrete workload.</span></div>
+  <div class="protocol-step"><strong>Deal</strong><span>The requester signs commitment to the quote.</span></div>
+  <div class="protocol-step"><strong>Execute</strong><span>The provider runs the workload under declared limits.</span></div>
+  <div class="protocol-step"><strong>Receipt</strong><span>The provider signs result, settlement state, and hashes.</span></div>
+</div>
+
+<div class="chapter-grid">
+  <a class="chapter-card" href="/learn/introduction/"><strong>Protocol overview</strong><small>The shortest explanation of what Froglet is and why the flow exists.</small></a>
+  <a class="chapter-card" href="/learn/identity/"><strong>Identity</strong><small>How secp256k1 public keys become durable node identities.</small></a>
+  <a class="chapter-card" href="/learn/deal-flow/"><strong>Deal flow</strong><small>The signed artifact chain behind one interaction.</small></a>
+  <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>How payment proofs bind to deals and receipts.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Trust economics</strong><small>Why stake makes cheating economically irrational.</small></a>
+</div>
+
+## Payment rails
+
+<div class="chapter-grid">
+  <a class="chapter-card" href="/learn/payment-rails/"><strong>Payment rail guide</strong><small>Choose between the local launch rails and understand their tradeoffs.</small></a>
+  <a class="chapter-card" href="/learn/payment-lightning/"><strong>Lightning</strong><small>The artifact-bound settlement path standardized today.</small></a>
+  <a class="chapter-card" href="/learn/payment-stripe/"><strong>Stripe</strong><small>Local operator integration for card-backed payments.</small></a>
+  <a class="chapter-card" href="/learn/payment-x402/"><strong>x402</strong><small>HTTP-native payment integration for request flows.</small></a>
+</div>
+
+## Reference
+
+<div class="chapter-grid">
+  <a class="chapter-card" href="/marketplace/overview/"><strong>Marketplace</strong><small>Discovery as a Froglet service, not a protocol root of truth.</small></a>
+  <a class="chapter-card" href="/spec/kernel/"><strong>Kernel spec</strong><small>Signed payloads, artifact structure, and canonical protocol rules.</small></a>
+  <a class="chapter-card" href="/spec/service-binding/"><strong>Service binding</strong><small>How service interfaces attach to the runtime surface.</small></a>
+  <a class="chapter-card" href="/architecture/overview/"><strong>Architecture</strong><small>Crates, runtime paths, storage, and execution boundaries.</small></a>
+</div>

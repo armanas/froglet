@@ -2791,9 +2791,11 @@ paths:
       operationId: runtimeSearch
       summary: Search the marketplace for providers and offers
       description: >
-        Proxies a search query through the configured marketplace node.
-        Requires `FROGLET_MARKETPLACE_URL` to be set. The runtime node creates
-        a marketplace deal internally and returns the search results.
+        Searches the configured marketplace. Requires
+        `FROGLET_MARKETPLACE_URL` to be set. Read-API marketplaces are queried
+        through `/v1/offers` and `/v1/providers`; older write-capable
+        marketplace service deployments may still be reached through the
+        `marketplace.search` deal flow.
       tags: [Discovery (Runtime)]
       security:
         - BearerAuth: []
@@ -2846,7 +2848,10 @@ paths:
       summary: Get provider details via marketplace
       description: >
         Fetches descriptor and offer details for a specific provider through
-        the configured marketplace node. Requires `FROGLET_MARKETPLACE_URL`.
+        the configured marketplace. Requires `FROGLET_MARKETPLACE_URL`.
+        Read-API marketplaces are queried through `/v1/providers/{provider_id}`
+        and `/v1/offers`; older write-capable marketplace service deployments
+        may still be reached through the `marketplace.provider` deal flow.
       tags: [Discovery (Runtime)]
       security:
         - BearerAuth: []

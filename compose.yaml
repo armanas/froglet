@@ -34,6 +34,7 @@ services:
       FROGLET_DATA_ROOT: /data
       FROGLET_DB_PATH: /data/runtime.node.db
       FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
+      FROGLET_MARKETPLACE_URL: ${FROGLET_MARKETPLACE_URL:-https://marketplace.froglet.dev}
       FROGLET_PAYMENT_BACKEND: lightning
       FROGLET_LIGHTNING_MODE: mock
     ports:

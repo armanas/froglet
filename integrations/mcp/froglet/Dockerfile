@@ -31,8 +31,10 @@ LABEL org.opencontainers.image.url="https://github.com/armanas/froglet"
 RUN groupadd --gid 10001 froglet && \
     useradd --uid 10001 --gid 10001 --no-create-home froglet
 
-WORKDIR /app
+WORKDIR /
+# Runtime imports resolve ../../../shared/... from /app/mcp/lib/*.js, which lands at /shared.
 COPY --from=build --chown=froglet:froglet /build/shared/ ./shared/
+WORKDIR /app
 COPY --from=build --chown=froglet:froglet /build/mcp/ ./mcp/
 
 USER froglet

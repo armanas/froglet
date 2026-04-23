@@ -1,9 +1,9 @@
 # Froglet Interactive Playground — Implementation Plan
 
-Status: **partially superseded by MVP scope.** The shared
-authentication-only pool model (Tier 1 below) is the MVP shape. The
-email-claim upgrade flow (Tier 2, §§4.2, 6.2, 10, and related API routes)
-was **dropped** during MVP scoping — see
+Status: **historical / partially superseded. Do not use this file as the
+current hosted-trial contract.** The shared authentication-only pool model
+(Tier 1 below) is the MVP shape. The email-claim upgrade flow (Tier 2,
+§§4.2, 6.2, 10, and related API routes) was **dropped** during MVP scoping — see
 [`froglet-services/docs/SYSTEM_DESIGN.md` §8](../../froglet-services/docs/SYSTEM_DESIGN.md)
 for the current model (pool of shared ephemeral session tokens, no
 identity promotion, no email). Tier 3 (self-hosted) is unchanged.

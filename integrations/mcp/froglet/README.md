@@ -25,8 +25,8 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token \
 For project-local launch files, use the public helper:
 
 ```bash
-./scripts/setup-agent.sh --target claude-code
-./scripts/setup-agent.sh --target codex
+cd froglet && ./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-agent.sh --target codex
 ```
 
 ## Configuration
@@ -42,7 +42,7 @@ All configuration is through environment variables:
 | `FROGLET_REQUEST_TIMEOUT_MS` | No | HTTP timeout in ms (default: 10000) |
 | `FROGLET_DEFAULT_SEARCH_LIMIT` | No | Default search results (default: 10) |
 | `FROGLET_MAX_SEARCH_LIMIT` | No | Max search results (default: 50) |
-| `FROGLET_EGRESS_MODE` | No | `strict` applies the same DNS-pinning + SSRF validation used for LLM-controlled URLs to operator-configured `FROGLET_PROVIDER_URL` / `FROGLET_RUNTIME_URL`. Use when the operator host sits behind public DNS and you want uniform rebind-resistance. Lenient mode (the default) uses stock `fetch` for operator URLs so local/dev addresses (`127.0.0.1`, private IPs, `http://`) keep working. |
+| `FROGLET_EGRESS_MODE` | No | `strict` applies the same DNS-pinning + SSRF validation used for LLM-controlled URLs to operator-configured `FROGLET_PROVIDER_URL` / `FROGLET_RUNTIME_URL`. Use when the operator host sits behind public DNS and you want uniform rebind-resistance. Lenient mode (the default) keeps operator-configured local/dev HTTP topologies working, including loopback and Docker host bridges such as `http://host.docker.internal:8080`. |
 
 Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.
@@ -98,7 +98,7 @@ Drop `.mcp.json` in the project root (already included in this repo):
 Or generate it directly:
 
 ```bash
-./scripts/setup-agent.sh --target claude-code
+cd froglet && ./scripts/setup-agent.sh --target claude-code
 ```
 
 Or add via CLI: `claude mcp add froglet -- node integrations/mcp/froglet/server.js`
@@ -139,7 +139,7 @@ env = { "FROGLET_PROVIDER_URL" = "http://127.0.0.1:8080", "FROGLET_RUNTIME_URL" 
 Or generate the project-local file:
 
 ```bash
-./scripts/setup-agent.sh --target codex
+cd froglet && ./scripts/setup-agent.sh --target codex
 ```
 
 ### Docker
@@ -150,7 +150,7 @@ The MCP server is published as `ghcr.io/armanas/froglet-mcp`. No Node.js require
 # Pull the public image
 docker pull ghcr.io/armanas/froglet-mcp:latest
 
-# Run (connects to host Froglet node)
+# Run (connects to a Froglet node reachable from inside the container)
 docker run --rm -i \
   -v /absolute/path/to/froglet/data/runtime:/tokens:ro \
   -e FROGLET_PROVIDER_URL=http://host.docker.internal:8080 \
@@ -216,6 +216,8 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token \
 If you want to use the generated host-side agent configs against Docker Compose,
 start Compose with `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so
 `./data/runtime/froglet-control.token` is readable on the host.
+The checked-in Compose stack also points the runtime at the default public read
+marketplace, so `discover_services` works without running a local marketplace.
 
 ## Tests
 
@@ -244,3 +246,5 @@ or large responses.
 
 **Docker: connection refused to host** — Use `host.docker.internal` instead
 of `127.0.0.1` for URLs when the Froglet node runs on the host machine.
+Those operator-configured Docker bridge URLs are accepted in the MCP server's
+default lenient mode.

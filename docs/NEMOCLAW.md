@@ -77,14 +77,13 @@ curl -H "Authorization: Bearer $TOKEN" \
 The bot-facing tool contract is identical to OpenClaw: one tool named
 `froglet`.
 
-The same project rules apply as OpenClaw:
+The live tool contract is the same as OpenClaw:
 
 - `summary` is metadata only
-- `starter` and `result_json` are the explicit built-in scaffolding inputs
-- `inline_source` is the explicit direct-code input for authored inline-source
-  services
-- blank projects stay hidden until you write/build/test/publish real code
+- local publication currently goes through `publish_artifact`
 - service metadata exposes `offer_kind` and `resource_kind`; direct compute
   still goes through `run_compute` rather than service listing
 - `run_compute` should include `provider_id` or `provider_url` because direct
   compute is provider-targeted rather than service-discovered
+- project authoring, log tailing, and node restart actions are not part of the
+  current public API surface

@@ -163,21 +163,21 @@ fn load_or_create_signing_key(
         return load_signing_key(path);
     }
 
-    if let Some(var_name) = env_seed_var {
-        if let Ok(hex_str) = std::env::var(var_name) {
-            let mut seed = seed_from_hex_str(&hex_str)
-                .map_err(|e| format!("Invalid {var_name}: {e}"))?;
-            let signing_key = crypto::signing_key_from_seed_bytes(&seed)?;
-            seed.zeroize();
-            persist_signing_key(path, &signing_key)?;
-            tracing::info!(
-                identity = %label,
-                path = %path.display(),
-                env = %var_name,
-                "seeded identity from environment",
-            );
-            return Ok(signing_key);
-        }
+    if let Some(var_name) = env_seed_var
+        && let Ok(hex_str) = std::env::var(var_name)
+    {
+        let mut seed =
+            seed_from_hex_str(&hex_str).map_err(|e| format!("Invalid {var_name}: {e}"))?;
+        let signing_key = crypto::signing_key_from_seed_bytes(&seed)?;
+        seed.zeroize();
+        persist_signing_key(path, &signing_key)?;
+        tracing::info!(
+            identity = %label,
+            path = %path.display(),
+            env = %var_name,
+            "seeded identity from environment",
+        );
+        return Ok(signing_key);
     }
 
     if auto_generate {
@@ -322,6 +322,7 @@ mod tests {
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
+            hosted_trial_origin_secret: None,
         }
     }
 

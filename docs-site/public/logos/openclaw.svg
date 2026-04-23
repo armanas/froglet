@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="OpenClaw">
+  <defs>
+    <mask id="openclaw-eye-cuts" maskUnits="userSpaceOnUse">
+      <rect width="120" height="120" fill="#fff"/>
+      <circle cx="45" cy="35" r="6" fill="#000"/>
+      <circle cx="75" cy="35" r="6" fill="#000"/>
+    </mask>
+  </defs>
+  <g mask="url(#openclaw-eye-cuts)">
+    <path fill="#000" d="M60 10C30 10 15 35 15 55c0 20 15 40 30 45v10h10v-10s5 2 10 0v10h10v-10c15-5 30-25 30-45 0-20-15-45-45-45Z"/>
+    <path fill="#000" d="M20 45C5 40 0 50 5 60c5 10 15 5 20-5 3-7 0-10-5-10Z"/>
+    <path fill="#000" d="M100 45c15-5 20 5 15 15s-15 5-20-5c-3-7 0-10 5-10Z"/>
+  </g>
+  <path fill="none" stroke="#000" stroke-width="4" stroke-linecap="round" d="M45 15Q35 5 30 8M75 15Q85 5 90 8"/>
+</svg>

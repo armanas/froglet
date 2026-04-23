@@ -32,6 +32,7 @@ pub struct StoredRequesterDeal {
     pub idempotency_key: Option<String>,
     pub provider_id: String,
     pub provider_url: String,
+    pub provider_sync_url: Option<String>,
     pub spec: WorkloadSpec,
     pub quote: SignedArtifact<QuotePayload>,
     pub deal: SignedArtifact<DealPayload>,
@@ -46,6 +47,12 @@ pub struct StoredRequesterDeal {
 }
 
 impl StoredRequesterDeal {
+    pub fn sync_provider_url(&self) -> &str {
+        self.provider_sync_url
+            .as_deref()
+            .unwrap_or(self.provider_url.as_str())
+    }
+
     pub fn public_record(&self) -> RequesterDealRecord {
         RequesterDealRecord {
             deal_id: self.deal_id.clone(),
@@ -72,6 +79,7 @@ pub struct NewRequesterDeal {
     pub idempotency_key: Option<String>,
     pub provider_id: String,
     pub provider_url: String,
+    pub provider_sync_url: Option<String>,
     pub spec: WorkloadSpec,
     pub quote: SignedArtifact<QuotePayload>,
     pub deal: SignedArtifact<DealPayload>,
@@ -99,23 +107,24 @@ fn map_requester_deal_row(row: &rusqlite::Row<'_>) -> Result<StoredRequesterDeal
         idempotency_key: row.get(1)?,
         provider_id: row.get(2)?,
         provider_url: row.get(3)?,
-        spec: decode_json(4, row.get(4)?)?,
-        quote: decode_json(5, row.get(5)?)?,
-        deal: decode_json(6, row.get(6)?)?,
-        status: row.get(7)?,
+        provider_sync_url: row.get(4)?,
+        spec: decode_json(5, row.get(5)?)?,
+        quote: decode_json(6, row.get(6)?)?,
+        deal: decode_json(7, row.get(7)?)?,
+        status: row.get(8)?,
         result: row
-            .get::<_, Option<String>>(8)?
-            .map(|value| decode_json(8, value))
+            .get::<_, Option<String>>(9)?
+            .map(|value| decode_json(9, value))
             .transpose()?,
-        result_hash: row.get(9)?,
-        error: row.get(10)?,
+        result_hash: row.get(10)?,
+        error: row.get(11)?,
         receipt: row
-            .get::<_, Option<String>>(11)?
-            .map(|value| decode_json(11, value))
+            .get::<_, Option<String>>(12)?
+            .map(|value| decode_json(12, value))
             .transpose()?,
-        success_preimage: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
+        success_preimage: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
     })
 }
 
@@ -129,6 +138,7 @@ pub fn get_requester_deal(
             idempotency_key,
             provider_id,
             provider_url,
+            provider_sync_url,
             spec_json,
             quote_json,
             deal_artifact_json,
@@ -160,6 +170,7 @@ pub fn list_recent_requester_deals(
                 idempotency_key,
                 provider_id,
                 provider_url,
+                provider_sync_url,
                 spec_json,
                 quote_json,
                 deal_artifact_json,
@@ -196,6 +207,7 @@ pub fn find_requester_deal_by_idempotency_key(
             idempotency_key,
             provider_id,
             provider_url,
+            provider_sync_url,
             spec_json,
             quote_json,
             deal_artifact_json,
@@ -242,6 +254,7 @@ pub fn insert_or_get_requester_deal(
             idempotency_key,
             provider_id,
             provider_url,
+            provider_sync_url,
             spec_json,
             quote_json,
             deal_artifact_json,
@@ -253,12 +266,13 @@ pub fn insert_or_get_requester_deal(
             success_preimage,
             created_at,
             updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, NULL, ?9, ?10, ?10)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, NULL, NULL, ?10, ?11, ?11)",
         params![
             new_deal.deal_id,
             new_deal.idempotency_key,
             new_deal.provider_id,
             new_deal.provider_url,
+            new_deal.provider_sync_url,
             spec_json,
             quote_json,
             deal_json,

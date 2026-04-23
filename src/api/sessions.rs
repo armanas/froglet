@@ -1,16 +1,22 @@
-//! `POST /api/sessions` — mint a new short-lived session token.
+//! Hosted-trial session endpoints.
 //!
-//! Mounted on the public router only when `FROGLET_SESSION_POOL_ENABLED=1`.
-//! When disabled, the route still exists (to give LLM callers a consistent
-//! error shape) and returns 404 `session pool not enabled`.
+//! These routes are mounted only behind the hosted-trial origin-secret gate.
+//! When the session pool is disabled, the routes still exist behind that gate
+//! so the worker sees a consistent 404 `session pool not enabled` shape.
 //!
-//! The actual authentication of session tokens on other endpoints is NOT
-//! done here — that lands in Week 4 (split per user decision). For now,
-//! this handler just hands out tokens; they are stored in
-//! `AppState.session_pool` and validated by that module.
+//! This handler only mints hosted-trial session tokens. The node validates
+//! those tokens on the two hosted demo runtime endpoints
+//! (`POST /v1/runtime/deals` and `GET /v1/runtime/deals/:deal_id`) via
+//! `AppState.session_pool`.
 
 use crate::state::AppState;
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -31,28 +37,27 @@ struct ErrorResponse {
 }
 
 pub fn sessions_routes() -> axum::Router<Arc<AppState>> {
-    axum::Router::new().route("/api/sessions", post(create_session))
+    axum::Router::new()
+        .route("/api/sessions", post(create_session))
+        .route("/api/sessions/validate", get(validate_session))
 }
 
-async fn create_session(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn create_session(State(state): State<Arc<AppState>>) -> Response {
     let Some(pool) = state.session_pool.as_ref() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::to_value(ErrorResponse {
-                error: "session pool not enabled on this node",
-            })
-            .expect("ErrorResponse always serializes")),
-        );
+        return session_pool_not_enabled_response();
     };
 
     let Some(info) = pool.assign() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::to_value(ErrorResponse {
-                error: "session pool exhausted — try again shortly",
-            })
-            .expect("ErrorResponse always serializes")),
-        );
+            Json(
+                serde_json::to_value(ErrorResponse {
+                    error: "session pool exhausted — try again shortly",
+                })
+                .expect("ErrorResponse always serializes"),
+            ),
+        )
+            .into_response();
     };
 
     let ttl_secs = info.ttl.as_secs();
@@ -77,4 +82,58 @@ async fn create_session(State(state): State<Arc<AppState>>) -> impl IntoResponse
         StatusCode::OK,
         Json(serde_json::to_value(body).expect("SessionResponse always serializes")),
     )
+        .into_response()
+}
+
+async fn validate_session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let Some(pool) = state.session_pool.as_ref() else {
+        return session_pool_not_enabled_response();
+    };
+
+    let Some(token) = super::extract_bearer_token(&headers) else {
+        return invalid_session_response();
+    };
+    if pool.validate(&token).is_none() {
+        return invalid_session_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(
+            serde_json::to_value(SessionValidationResponse { valid: true })
+                .expect("SessionValidationResponse always serializes"),
+        ),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct SessionValidationResponse {
+    valid: bool,
+}
+
+fn invalid_session_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(
+            serde_json::to_value(ErrorResponse {
+                error: "invalid or expired session token",
+            })
+            .expect("ErrorResponse always serializes"),
+        ),
+    )
+        .into_response()
+}
+
+fn session_pool_not_enabled_response() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(
+            serde_json::to_value(ErrorResponse {
+                error: "session pool not enabled on this node",
+            })
+            .expect("ErrorResponse always serializes"),
+        ),
+    )
+        .into_response()
 }

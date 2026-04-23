@@ -13,6 +13,26 @@ Usage: scripts/smoke_install_from_assets.sh --assets-dir <dir> --version <tag>
 EOF
 }
 
+detect_host_target() {
+  local os_name arch_name platform arch
+  os_name="$(uname -s 2>/dev/null || true)"
+  arch_name="$(uname -m 2>/dev/null || true)"
+
+  case "$os_name" in
+    Linux) platform="linux" ;;
+    Darwin) platform="darwin" ;;
+    *) echo "unsupported operating system for install smoke: $os_name" >&2; exit 1 ;;
+  esac
+
+  case "$arch_name" in
+    x86_64|amd64) arch="x86_64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) echo "unsupported architecture for install smoke: $arch_name" >&2; exit 1 ;;
+  esac
+
+  printf '%s %s\n' "$platform" "$arch"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --assets-dir)
@@ -42,6 +62,22 @@ done
 
 if [[ "$version" != v* ]]; then
   version="v$version"
+fi
+
+set -- $(detect_host_target)
+host_platform="$1"
+host_arch="$2"
+expected_asset="froglet-node-${version}-${host_platform}-${host_arch}.tar.gz"
+if [[ ! -f "$assets_dir/$expected_asset" ]]; then
+  echo "install smoke requires a host-compatible asset; missing $expected_asset in $assets_dir" >&2
+  available_assets="$(
+    find "$assets_dir" -maxdepth 1 -type f -name "froglet-node-${version}-*.tar.gz" \
+      -exec basename {} \; | LC_ALL=C sort | tr '\n' ' '
+  )"
+  if [[ -n "$available_assets" ]]; then
+    echo "available froglet-node archives: $available_assets" >&2
+  fi
+  exit 1
 fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/froglet-install-smoke.XXXXXX")"

@@ -16,3 +16,15 @@ pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
             get(super::runtime_archive_subject),
         )
 }
+
+pub(crate) fn hosted_trial_runtime_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/v1/runtime/deals",
+            post(super::hosted_trial_runtime_create_deal),
+        )
+        .route(
+            "/v1/runtime/deals/:deal_id",
+            get(super::hosted_trial_runtime_get_deal),
+        )
+}

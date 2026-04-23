@@ -88,13 +88,19 @@ no step is FAIL.
 # Full local gate, including the compose-backed OpenClaw+MCP smoke:
 ./scripts/release_gate.sh --compose
 
-# Release-cut gate, including packaged-asset install smoke:
+# Cross-target package verification only (example: Linux x86_64):
 ./scripts/release_gate.sh \
-  --compose \
-  --install-smoke \
+  --package-assets \
   --version v0.1.0-alpha.1 \
   --platform linux \
   --arch x86_64
+
+# Host-compatible package + installer smoke (example: Apple Silicon macOS):
+./scripts/release_gate.sh \
+  --install-smoke \
+  --version v0.1.0-alpha.1 \
+  --platform darwin \
+  --arch arm64
 
 ```
 
@@ -108,11 +114,12 @@ public gate and is maintained separately from the public repo checks.
 
 | Step id | Status today | Validation | Underlying command | Notes |
 | --- | --- | --- | --- | --- |
+| `secrets` | Ready | Publication secret scan | `./scripts/gitleaks_gate.sh` | Current tracked tree + GitHub-visible history (`origin/main` + current public alpha tags). |
 | `strict` | Ready | Repo validation matrix | `./scripts/strict_checks.sh` | Rust, Python, OpenClaw, MCP, release helper syntax. Also gates compose/LND/Tor integrations via env flags set by the gate. |
 | `docs-build` | Ready | Docs build | `npm --prefix docs-site run build` | Pre-publish docs-site build |
 | `docs-test` | Ready | Docs-site unit tests | `npm --prefix docs-site test` | Vitest suite under `docs-site/src/**/__tests__/` |
 | `package` | Ready (opt-in) | Release asset packaging + verification | `scripts/package_release_assets.sh` + `scripts/verify_release_assets.sh` | Requires `--version`, `--platform`, `--arch` |
-| `install-smoke` | Ready (opt-in) | Installer-path smoke from packaged assets | `scripts/smoke_install_from_assets.sh` | Implies `--package-assets` |
+| `install-smoke` | Ready (opt-in) | Installer-path smoke from packaged assets | `scripts/smoke_install_from_assets.sh` | Implies `--package-assets`; packaged target must match the current host |
 
 ### Still outside the gate
 
@@ -126,14 +133,15 @@ public gate and is maintained separately from the public repo checks.
 1. Update `Cargo.toml` package version.
 2. Move the relevant `Unreleased` notes in [../CHANGELOG.md](../CHANGELOG.md)
    into a concrete version section.
-3. Run the release gate with the release-cut flags:
+3. Run the release gate with the release-cut flags. If you include
+   `--install-smoke`, use the current host target so the packaged binary can
+   execute locally:
    ```bash
    ./scripts/release_gate.sh \
-     --compose \
      --install-smoke \
      --version v0.1.0-alpha.1 \
-     --platform linux \
-     --arch x86_64
+     --platform darwin \
+     --arch arm64
    ```
 4. Run the first-party hosted smoke separately when the hosted stack is part
    of the cut.

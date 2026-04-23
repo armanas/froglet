@@ -43,7 +43,9 @@ Options:
   --package-assets                Run release-asset packaging and verification.
                                   Requires --version, --platform, --arch.
   --install-smoke                 Run the installer-path smoke. Implies
-                                  --package-assets.
+                                  --package-assets and requires the packaged
+                                  target to match the current host platform
+                                  and architecture.
   --version <tag>                 Release version for packaging + install smoke
                                   (e.g. v0.1.0-alpha.1).
   --platform <linux|darwin>       Packaging target platform.
@@ -55,6 +57,7 @@ Options:
   -h, --help                      Show this help and exit.
 
 STEPS
+  secrets         Publication secret scan (scripts/gitleaks_gate.sh).
   strict          Repo strict checks (scripts/strict_checks.sh).
   docs-build      Docs-site build (npm --prefix docs-site run build).
   docs-test       Docs-site unit tests (npm --prefix docs-site test).
@@ -139,15 +142,20 @@ run_step() {
   return 0
 }
 
-# --- Step 1: strict checks ---------------------------------------------------
+# --- Step 1: publication secret scan -----------------------------------------
+run_step "secrets" "Publication secret scan (tracked tree + visible history)" \
+  ./scripts/gitleaks_gate.sh --evidence-dir "$evidence_dir/gitleaks"
+
+# --- Step 2: strict checks ---------------------------------------------------
 run_step "strict" "Repo strict checks (cargo + python + node)" \
   env \
+    FROGLET_SKIP_GITLEAKS=1 \
     FROGLET_RUN_COMPOSE_SMOKE="$run_compose" \
     FROGLET_RUN_LND_REGTEST="$run_lnd" \
     FROGLET_RUN_TOR_INTEGRATION="$run_tor" \
   ./scripts/strict_checks.sh
 
-# --- Step 2: docs-site build -------------------------------------------------
+# --- Step 3: docs-site build -------------------------------------------------
 if command -v npm >/dev/null 2>&1; then
   run_step "docs-build" "Docs-site build (astro)" \
     npm --prefix docs-site run build
@@ -159,7 +167,7 @@ else
   record "docs-test"  "SKIP" "Docs-site tests (vitest)" "npm not installed"
 fi
 
-# --- Step 3: release-asset packaging + verification (opt-in) -----------------
+# --- Step 4: release-asset packaging + verification (opt-in) -----------------
 if [[ $run_package == 1 ]]; then
   assets_dir="$evidence_dir/release-assets"
   mkdir -p "$assets_dir"
@@ -190,7 +198,7 @@ else
     "not requested (pass --package-assets)"
 fi
 
-# --- Step 4: installer-path smoke (opt-in, depends on package) ---------------
+# --- Step 5: installer-path smoke (opt-in, depends on package) ---------------
 if [[ $run_install_smoke == 1 ]]; then
   run_step "install-smoke" "Installer-path smoke from packaged assets" \
     scripts/smoke_install_from_assets.sh \

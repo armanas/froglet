@@ -374,21 +374,22 @@ const SUPPORTED_INSTALL_AGENTS = new Set(["claude-code", "codex", "openclaw"])
 const SUPPORTED_INSTALL_RAILS = new Set(["lightning", "stripe", "x402"])
 
 function renderInstallBlock({ targetAgent, paymentRail }) {
-  // The copy-paste install block is identical across targets and rails.
-  // Only the setup-agent / setup-payment args differ. Keep this in sync
-  // with README.md and docs-site/src/content/docs/learn/quickstart.mdx.
-  const paymentExtra =
+  // The public helper-script path is repo-local by design. Keep this in sync
+  // with README.md, docs-site/src/content/docs/learn/quickstart.mdx, and the
+  // landing-page configurator in docs-site/src/pages/index.astro.
+  const paymentStep =
     paymentRail === "stripe"
-      ? "FROGLET_STRIPE_SECRET_KEY=sk_test_... "
+      ? "cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> ./scripts/setup-payment.sh stripe"
       : paymentRail === "x402"
-        ? "FROGLET_X402_WALLET_ADDRESS=0x... "
-        : ""
+        ? "cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> ./scripts/setup-payment.sh x402"
+        : "cd froglet && ./scripts/setup-payment.sh lightning"
   const stepOne =
     "curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh"
-  const stepTwo = `./scripts/setup-agent.sh --target ${targetAgent}`
-  const stepThree = `${paymentExtra}./scripts/setup-payment.sh ${paymentRail}`
-  const stepFour = `set -a && . ./.froglet/payment/${paymentRail}.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d`
-  return [stepOne, stepTwo, stepThree, stepFour]
+  const stepTwo = "git clone https://github.com/armanas/froglet.git"
+  const stepThree = `cd froglet && ./scripts/setup-agent.sh --target ${targetAgent}`
+  const stepFour = paymentStep
+  const stepFive = `cd froglet && set -a && . ./.froglet/payment/${paymentRail}.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d`
+  return [stepOne, stepTwo, stepThree, stepFour, stepFive]
 }
 
 async function handleInstallGuide(args, _config, includeRaw) {
@@ -425,16 +426,18 @@ async function handleInstallGuide(args, _config, includeRaw) {
     notes: [
       "Run these commands on the user's machine, via your host agent's shell execution (e.g. Claude Code's Bash tool). Do NOT route them through the Froglet runtime — Froglet cannot install itself on the user's host.",
       "Step 1 downloads and installs the signed froglet-node binary to ~/.local/bin.",
-      `Step 2 writes the ${rawTarget} MCP config so the agent can talk to the local Froglet.`,
-      `Step 3 generates the ${rawRail} payment-rail env snippet under ./.froglet/payment/.`,
-      "Step 4 loads that snippet, enables host-readable control tokens, and brings up the provider+runtime via docker compose.",
-      "After step 4, the local stack listens on 127.0.0.1:8080 (provider) and 127.0.0.1:8081 (runtime); the agent MCP config points there.",
+      "Step 2 clones the public froglet repo because the helper scripts, Compose file, and OpenClaw plugin live there.",
+      `Step 3 writes the ${rawTarget} config so the agent can talk to the local Froglet.`,
+      `Step 4 generates the ${rawRail} payment-rail env snippet under froglet/.froglet/payment/.`,
+      "Step 5 loads that snippet, enables host-readable control tokens, and brings up the provider+runtime via docker compose.",
+      "The repo-local steps intentionally start with `cd froglet &&` so they still work when your host shell asks for separate approvals per command.",
+      "After step 5, the local stack listens on 127.0.0.1:8080 (provider) and 127.0.0.1:8081 (runtime); the agent config points there.",
       `${
         rawRail === "stripe"
-          ? "Stripe: set FROGLET_STRIPE_SECRET_KEY=sk_test_... before running step 3."
+          ? "Stripe: replace <stripe-test-secret-key> with your own Stripe test secret key before running step 4."
           : rawRail === "x402"
-            ? "x402: set FROGLET_X402_WALLET_ADDRESS=0x... before running step 3."
-            : "Lightning: step 3 ships in mock mode by default; no wallet credentials required."
+            ? "x402: replace <base-wallet-address> with your own Base wallet address before running step 4."
+            : "Lightning: step 4 ships in mock mode by default; no wallet credentials required."
       }`
     ]
   }

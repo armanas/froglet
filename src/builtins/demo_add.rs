@@ -39,8 +39,7 @@ impl BuiltinServiceHandler for AddHandler {
                 .a
                 .checked_add(req.b)
                 .ok_or_else(|| "demo.add overflow: a + b exceeds i64 range".to_string())?;
-            serde_json::to_value(AddOutput { sum })
-                .map_err(|e| format!("demo.add serialize: {e}"))
+            serde_json::to_value(AddOutput { sum }).map_err(|e| format!("demo.add serialize: {e}"))
         })
     }
 }

@@ -4,6 +4,8 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
+import { readConfig } from "../lib/config.js"
+
 const packageRoot = fileURLToPath(new URL("..", import.meta.url))
 const examplesDir = path.join(packageRoot, "examples")
 
@@ -49,6 +51,45 @@ test("Docker example includes token mount and MCP image", async () => {
   assert.ok(
     server.args.includes("FROGLET_PROVIDER_AUTH_TOKEN_PATH=/tokens/froglet-control.token")
   )
+})
+
+test("Docker example env is accepted by the MCP config loader", async () => {
+  const config = await readJson("docker-mcp-config.json")
+  const server = config.mcpServers.froglet
+  const previous = {
+    FROGLET_PROVIDER_URL: process.env.FROGLET_PROVIDER_URL,
+    FROGLET_RUNTIME_URL: process.env.FROGLET_RUNTIME_URL,
+    FROGLET_PROVIDER_AUTH_TOKEN_PATH: process.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH,
+    FROGLET_RUNTIME_AUTH_TOKEN_PATH: process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH,
+    FROGLET_BASE_URL: process.env.FROGLET_BASE_URL,
+    FROGLET_AUTH_TOKEN_PATH: process.env.FROGLET_AUTH_TOKEN_PATH,
+  }
+
+  try {
+    delete process.env.FROGLET_BASE_URL
+    delete process.env.FROGLET_AUTH_TOKEN_PATH
+    for (let index = 0; index < server.args.length; index += 1) {
+      if (server.args[index] !== "-e") {
+        continue
+      }
+      const [key, ...valueParts] = String(server.args[index + 1] ?? "").split("=")
+      process.env[key] = valueParts.join("=")
+    }
+
+    const loaded = readConfig()
+    assert.equal(loaded.providerUrl, "http://host.docker.internal:8080")
+    assert.equal(loaded.runtimeUrl, "http://host.docker.internal:8081")
+    assert.equal(loaded.providerAuthTokenPath, "/tokens/froglet-control.token")
+    assert.equal(loaded.runtimeAuthTokenPath, "/tokens/auth.token")
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = value
+      }
+    }
+  }
 })
 
 test("Codex TOML example keeps the expected MCP stanza", async () => {

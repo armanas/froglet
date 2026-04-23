@@ -1,8 +1,33 @@
 ---
 ---
 
-{/* Dark mode only — set once, no toggle needed. */}
+{/* Dark mode only, while preserving the Starlight theme-select runtime contract. */}
 <script is:inline>
-	document.documentElement.dataset.theme = 'dark';
-	document.documentElement.style.colorScheme = 'dark';
+	const applyFrogletTheme = () => {
+		document.documentElement.dataset.theme = 'dark';
+		document.documentElement.style.colorScheme = 'dark';
+		try {
+			localStorage.setItem('starlight-theme', 'dark');
+		} catch {}
+	};
+
+	applyFrogletTheme();
+
+	window.StarlightThemeProvider = {
+		updatePickers() {
+			applyFrogletTheme();
+			document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+				const select = picker.querySelector('select');
+				if (select instanceof HTMLSelectElement) select.value = 'dark';
+			});
+		},
+	};
+
+	document.addEventListener('DOMContentLoaded', () => {
+		document.querySelectorAll('.expressive-code .copy button').forEach((button) => {
+			if (!(button instanceof HTMLButtonElement)) return;
+			button.dataset.frogletCopyLabel = 'true';
+			button.textContent = 'Copy';
+		});
+	});
 </script>

@@ -1,15 +1,18 @@
 import { after, before, describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { execFile as execFileCb } from "node:child_process"
 import { join, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
+import { promisify } from "node:util"
 
 import { buildToolDefinitions, handleToolCall } from "../lib/tools.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const REPO_ROOT = resolve(__dirname, "../../../../")
+const execFile = promisify(execFileCb)
 
 let tmpDir
 let tokenPath
@@ -195,9 +198,10 @@ describe("froglet MCP actions", () => {
     assert.match(text, /payment_rail: lightning/)
     assert.match(text, /run_as: user-host-shell/)
     assert.match(text, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/armanas\/froglet\/main\/scripts\/install\.sh \| sh/)
-    assert.match(text, /\.\/scripts\/setup-agent\.sh --target claude-code/)
-    assert.match(text, /\.\/scripts\/setup-payment\.sh lightning/)
-    assert.match(text, /docker compose up --build -d/)
+    assert.match(text, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
+    assert.match(text, /cd froglet && \.\/scripts\/setup-agent\.sh --target claude-code/)
+    assert.match(text, /cd froglet && \.\/scripts\/setup-payment\.sh lightning/)
+    assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/lightning\.env/)
     assert.match(text, /FROGLET_HOST_READABLE_CONTROL_TOKEN=true/)
   })
 
@@ -211,9 +215,9 @@ describe("froglet MCP actions", () => {
     const text = result.content[0].text
     assert.match(text, /target_agent: codex/)
     assert.match(text, /payment_rail: stripe/)
-    assert.match(text, /\.\/scripts\/setup-agent\.sh --target codex/)
-    assert.match(text, /FROGLET_STRIPE_SECRET_KEY=sk_test_\.\.\. \.\/scripts\/setup-payment\.sh stripe/)
-    assert.match(text, /set -a && \. \.\/\.froglet\/payment\/stripe\.env/)
+    assert.match(text, /cd froglet && \.\/scripts\/setup-agent\.sh --target codex/)
+    assert.match(text, /cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> \.\/scripts\/setup-payment\.sh stripe/)
+    assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/stripe\.env/)
   })
 
   it("rejects unknown target_agent or payment_rail with a clear error", async () => {
@@ -234,11 +238,11 @@ describe("froglet MCP actions", () => {
     assert.match(badRail.content[0].text, /payment_rail must be one of/)
   })
 
-  it("keeps the install guide synchronized with README and docs-site quickstart", async () => {
-    // The canonical copy-paste block lives in three places today: the MCP
-    // action response, README.md, and docs-site/.../quickstart.mdx. If any
-    // one drifts, humans and LLMs will disagree about what to run. This
-    // test fails if the MCP output no longer matches the README block.
+  it("keeps the install guide synchronized with README, quickstart, and the landing-page configurator", async () => {
+    // The canonical copy-paste block lives in four places today: the MCP
+    // action response, README.md, docs-site/.../quickstart.mdx, and the
+    // landing-page configurator. If any one drifts, humans and LLMs will
+    // disagree about what to run.
     const result = await handleToolCall(
       "froglet",
       { action: "get_install_guide" },
@@ -249,7 +253,7 @@ describe("froglet MCP actions", () => {
       .split("\n")
       .filter((line) => /^\s*\d+\.\s+/.test(line))
       .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
-    assert.equal(steps.length, 4, `expected 4 commands, got ${steps.length}`)
+    assert.equal(steps.length, 5, `expected 5 commands, got ${steps.length}`)
 
     const readme = await readFile(join(REPO_ROOT, "README.md"), "utf8")
     for (const step of steps) {
@@ -268,6 +272,112 @@ describe("froglet MCP actions", () => {
         quickstart.includes(step),
         `docs-site quickstart is missing install-guide step: ${step}`
       )
+    }
+
+    const landingPage = await readFile(
+      join(REPO_ROOT, "docs-site/src/pages/index.astro"),
+      "utf8"
+    )
+    assert.match(landingPage, /initSelfHostConfigurator/)
+    assert.match(landingPage, /self-host-card/)
+
+    const configurator = await readFile(
+      join(REPO_ROOT, "docs-site/src/scripts/self-host-configurator.ts"),
+      "utf8"
+    )
+    assert.match(configurator, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
+    assert.match(configurator, /`\.\/scripts\/setup-agent\.sh --target \$\{config\.agent\}`/)
+    assert.match(configurator, /lightning: '\.\/scripts\/setup-payment\.sh lightning'/)
+    assert.match(
+      configurator,
+      /stripe: 'FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> \.\/scripts\/setup-payment\.sh stripe'/
+    )
+    assert.match(
+      configurator,
+      /x402: 'FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> \.\/scripts\/setup-payment\.sh x402'/
+    )
+    assert.match(configurator, /docker compose up --build -d/)
+    assert.doesNotMatch(configurator, /FROGLET_SETTLEMENT_METHOD/)
+  })
+
+  it("keeps repo-local install steps safe to run from a clean directory", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide" },
+      config
+    )
+    const text = result.content[0].text
+    const steps = text
+      .split("\n")
+      .filter((line) => /^\s*\d+\.\s+/.test(line))
+      .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
+
+    const cloneIndex = steps.findIndex((step) =>
+      step.startsWith("git clone https://github.com/armanas/froglet.git")
+    )
+    assert.notEqual(cloneIndex, -1, "install guide must clone the repo before repo-local helpers")
+
+    for (const step of steps.slice(cloneIndex + 1)) {
+      if (step.includes("./scripts/") || step.includes("docker compose")) {
+        assert.match(
+          step,
+          /^cd froglet && /,
+          `repo-local step must re-enter the cloned repo: ${step}`
+        )
+      }
+    }
+  })
+
+  it("repo-local onboarding helpers work from a clean temp checkout", async () => {
+    const checkoutDir = join(tmpDir, "clean-checkout")
+    const { stdout } = await execFile("git", ["ls-files", "-z"], {
+      cwd: REPO_ROOT,
+      encoding: "buffer"
+    })
+    const paths = stdout
+      .toString("utf8")
+      .split("\u0000")
+      .filter(Boolean)
+
+    for (const relPath of paths) {
+      const sourcePath = join(REPO_ROOT, relPath)
+      const destPath = join(checkoutDir, relPath)
+      await mkdir(dirname(destPath), { recursive: true })
+      await copyFile(sourcePath, destPath)
+    }
+
+    await execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code"], {
+      cwd: checkoutDir
+    })
+    await execFile("bash", ["scripts/setup-payment.sh", "lightning"], {
+      cwd: checkoutDir
+    })
+
+    const mcpConfig = JSON.parse(await readFile(join(checkoutDir, ".mcp.json"), "utf8"))
+    assert.equal(mcpConfig.mcpServers.froglet.command, "node")
+
+    const paymentEnv = await readFile(
+      join(checkoutDir, ".froglet/payment/lightning.env"),
+      "utf8"
+    )
+    assert.match(paymentEnv, /FROGLET_PAYMENT_BACKEND=lightning/)
+    assert.match(paymentEnv, /FROGLET_LIGHTNING_MODE=mock/)
+
+    try {
+      await execFile(
+        "bash",
+        [
+          "-lc",
+          "set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose config >/dev/null"
+        ],
+        { cwd: checkoutDir }
+      )
+    } catch (error) {
+      const message = `${error?.stderr ?? ""}${error?.stdout ?? ""}${error}`
+      if (/docker: command not found|Cannot connect to the Docker daemon|docker compose/i.test(message)) {
+        return
+      }
+      throw error
     }
   })
 

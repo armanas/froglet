@@ -97,12 +97,7 @@ impl SessionPool {
             if entry.expires_at < now {
                 continue;
             }
-            if token
-                .as_bytes()
-                .ct_eq(entry.token.as_bytes())
-                .unwrap_u8()
-                == 1
-            {
+            if token.as_bytes().ct_eq(entry.token.as_bytes()).unwrap_u8() == 1 {
                 return Some(slot_id);
             }
         }
@@ -164,7 +159,7 @@ mod tests {
         let t3 = pool.assign().expect("third");
         assert_eq!(
             [t1.slot_id, t2.slot_id, t3.slot_id].iter().sum::<usize>(),
-            0 + 1 + 2,
+            3,
             "three distinct slot ids must be handed out"
         );
         assert_ne!(t1.token, t2.token);

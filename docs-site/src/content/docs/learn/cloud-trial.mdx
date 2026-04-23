@@ -1,57 +1,141 @@
 ---
 title: Try In Cloud
-description: The hosted Froglet trial uses temporary identities, a shared gateway, and free-only deal flow at launch.
+description: The hosted Froglet trial uses a shared session-token pool fronted by a Cloudflare Worker, with a 15-minute TTL and a free-only demo surface.
 ---
 
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">Hosted trial</div>
-    <p class="learn-lead">Temporary identity, free-only deal flow, optional email claim.</p>
-    <p class="learn-sublead">This path is the first-party hosted entry point on GCP. The public docs define the user promise and the external API contract.</p>
+    <p class="learn-lead">Anonymous 15-minute session against the first-party hosted node. Free-only demo surface.</p>
+    <p class="learn-sublead">This path is the first-party hosted entry point at <code>try.froglet.dev</code>. A Cloudflare Worker fronts the same Lightsail-hosted reference node that serves <code>ai.froglet.dev</code>. The public docs describe the user promise and the external API contract.</p>
     <div class="learn-chip-row">
       <span class="learn-chip">15-minute TTL</span>
-      <span class="learn-chip">Shared gateway</span>
-      <span class="learn-chip">Keep by email</span>
+      <span class="learn-chip">Shared session pool</span>
+      <span class="learn-chip">No email, no account</span>
     </div>
   </div>
 </div>
 
 ## Launch promise
 
-- create a temporary identity with a 15-minute TTL
-- run the hosted flow through a shared Froglet gateway
-- keep the temporary identity by binding an email address
-- stay free-only at launch
-- keep payment-rail onboarding on the local path
+- mint a session token from a shared, fixed-size pool
+- run the hosted demo flow behind a Cloudflare Worker gateway
+- every session expires after 15 minutes; pool slots recycle for the next user
+- stay free-only (zero-sat demo services) at launch
+- keep payment rails, persistent identity, and service publication on the local path
+
+## Prompt to paste into your LLM
+
+Use this when you want your model to inspect the hosted trial and decide
+whether Froglet is useful for your actual setup after it runs the hosted
+demo instead of giving a generic summary.
+
+```md
+Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not, then give me an honest, objective assessment that reports the observed HTTP statuses, observed result, and any mismatches between the docs and the live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.
+```
+
+Expected behavior:
+
+- the model should use your existing context, not invent a generic buyer persona
+- the model should run the live hosted demo flow if it has URL/request access
+- the model should draw a hard boundary between the hosted trial and the local path
+- the model should say what the hosted demo proved and what it still did not prove
+- if the model cannot access the live URLs, it should stop there instead of guessing
 
 ## Public API contract
 
 The hosted gateway exposes these endpoints:
 
 ```text
-POST /api/sessions
-POST /api/sessions/claim
-POST /api/sessions/verify
-POST /api/sessions/resume
+POST /api/sessions              mint a session token from the pool
+GET  /v1/provider/services      list the hosted demo services
+GET  /v1/provider/services/:id  inspect a hosted demo service
+GET  /v1/feed                   inspect the signed artifacts emitted by the hosted node
+POST /v1/runtime/deals          create a hosted demo deal;
+                                requires Authorization: Bearer <session-token>
+GET  /v1/runtime/deals/:deal_id poll a hosted demo deal;
+                                requires Authorization: Bearer <session-token>
+GET  /llms.txt                  machine-readable bootstrap for LLM clients
+GET  /.well-known/mcp.json      MCP manifest for native MCP hosts
 ```
 
-Session-scoped discovery, quote, deal, and execute endpoints sit behind the session created by `POST /api/sessions`.
+The session token is authentication only. Every signed artifact the hosted
+node produces in response to session-driven requests is signed by the
+node's own identity, not a per-session key. The trial is a shared demo
+surface, not a per-user cryptographic isolation boundary — this is why
+the scope is free-only.
 
-## User flow
+Session tokens are not general runtime credentials. They do not authorize
+runtime search, provider-detail lookup, wallet or settlement routes,
+Lightning accept/payment-intent endpoints, or legacy `/v1/node/*`
+compute/job endpoints.
 
-1. `POST /api/sessions` creates a temporary identity.
-2. The session can discover services, request a quote, create a deal, and execute a free-only flow.
-3. `POST /api/sessions/claim` sends a 6-digit code to the supplied email address.
-4. `POST /api/sessions/verify` binds the email to the session and converts it to long-term ownership.
-5. `POST /api/sessions/resume` reopens a saved identity with email plus verification code.
+`try.froglet.dev` is the only public trial ingress. The upstream node at
+`ai.froglet.dev` still serves the worker, but direct public calls to
+`/api/sessions`, `/api/sessions/validate`, `POST /v1/runtime/deals`, and
+`GET /v1/runtime/deals/{deal_id}` on `ai.` are outside the trial contract and
+should return `404`.
+
+## Canonical hosted demo
+
+1. `POST /api/sessions` returns a session token, a slot id, and a TTL in seconds.
+2. The session carries that token as `Authorization: Bearer <token>` on the
+   hosted demo runtime routes `POST /v1/runtime/deals` and
+   `GET /v1/runtime/deals/{deal_id}`.
+3. `GET /v1/provider/services` shows `demo.add` and `demo.echo`.
+4. Create a free runtime deal for `demo.add` with input `{ "a": 7, "b": 5 }`.
+5. Read `GET /v1/runtime/deals/{deal_id}` until the deal returns `status = succeeded`.
+6. Expect `create` to return `200` with a deal record; the initial `deal.status` may already be `accepted`, `running`, or `succeeded`. The follow-up `GET` is the authoritative completion check and should return `deal.status = succeeded`, `result.sum = 12`, plus a `receipt`.
+7. `GET /v1/feed` shows the signed artifacts written by the hosted node.
+8. When the TTL expires the token returns 401; the slot recycles for the next user.
+9. There is no email-claim, no account conversion, and no way to promote a session to a long-term identity. Persistent identity is a local-path concern by design.
+
+```bash
+TOKEN=$(curl -sS -X POST https://try.froglet.dev/api/sessions | jq -r .session_token)
+PROVIDER_ID=$(curl -sS -H "Authorization: Bearer $TOKEN" \
+  https://try.froglet.dev/v1/provider/services \
+  | jq -r '.services[] | select(.service_id=="demo.add") | .provider_id')
+CREATE=$(curl -sS -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -X POST https://try.froglet.dev/v1/runtime/deals \
+  --data "{\"provider\":{\"provider_id\":\"$PROVIDER_ID\",\"provider_url\":\"https://ai.froglet.dev\"},\"offer_id\":\"demo.add\",\"kind\":\"execution\",\"execution\":{\"schema_version\":\"froglet/v1\",\"workload_kind\":\"demo.add\",\"runtime\":\"builtin\",\"package_kind\":\"builtin\",\"entrypoint\":{\"kind\":\"builtin\",\"value\":\"demo.add\"},\"contract_version\":\"froglet.builtin.demo.add.v1\",\"input_format\":\"application/json+jcs\",\"input_hash\":\"728a671a0a05e573bb0c3e37688fc3302d913187cb274f2e0b2940e1c2e4b719\",\"requested_access\":[],\"security\":{\"mode\":\"standard\"},\"mounts\":[],\"input\":{\"a\":7,\"b\":5},\"builtin_name\":\"demo.add\"}}")
+DEAL_ID=$(printf '%s' "$CREATE" | jq -r '.deal.deal_id')
+for _ in 1 2 3; do
+  RESULT=$(curl -sS -H "Authorization: Bearer $TOKEN" \
+    "https://try.froglet.dev/v1/runtime/deals/$DEAL_ID")
+  STATUS=$(printf '%s' "$RESULT" | jq -r '.deal.status')
+  [ "$STATUS" = "succeeded" ] && break
+  sleep 1
+done
+printf '%s\n' "$RESULT"
+curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/feed
+```
+
+## What this proves
+
+- shared-session authentication works on the public hosted gateway
+- the live service catalog is reachable
+- one free discover → deal → sync-result → receipt round-trip works end to end
+
+## What this does not prove
+
+- paid Lightning, Stripe, or x402 flows
+- persistent identity or account recovery
+- service publication or marketplace depth
+- long-running, batch, or GPU workloads
+
+`POST /v1/runtime/deals/{deal_id}/accept` is reserved for Lightning settlement
+flows. The free hosted `demo.add` proof completes through
+`GET /v1/runtime/deals/{deal_id}`.
 
 ## Boundary
 
-This page documents the public hosted-trial contract: temporary identities,
-free-only launch policy, email claim, and the session-scoped API shape. The
-local path remains the default way to install Froglet, connect a payment rail,
-and self-host the full node surface.
+This page documents the public hosted-trial contract: shared session-token
+pool, free-only demo scope, 15-minute TTL, and the demo-only runtime
+surface. The local path remains the default way to install Froglet, connect
+a payment rail, self-host the full node surface, and publish services.
 
 ## Local path
 
-When you need payment-rail onboarding or full self-host control, use [Run Locally](/learn/quickstart/).
+When you need payment-rail onboarding, persistent identity, or full
+self-host control, use [Run Locally](/learn/quickstart/).

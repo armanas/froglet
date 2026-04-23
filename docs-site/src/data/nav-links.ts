@@ -1,9 +1,10 @@
 export const navLinks = [
 	{ href: '/', label: 'Home' },
 	{
-		href: '/learn/',
+		href: '/docs/',
 		label: 'Docs',
-		activePrefixes: ['/learn/', '/architecture/', '/spec/', '/marketplace/'],
+		activePrefixes: ['/docs/', '/learn/', '/architecture/', '/spec/', '/marketplace/'],
 	},
+	{ href: '/demo/', label: 'Demo' },
 	{ href: 'https://github.com/armanas/froglet', label: 'GitHub', external: true },
 ] as const;

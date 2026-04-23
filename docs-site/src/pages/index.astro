@@ -31,61 +31,58 @@ Astro.locals.starlightRoute = { hasSidebar: false };
   <Header slot="header" />
   <main class="froglet-home-main">
     <div class="hero-bg">
-      <div class="hero-glow"></div>
       <div class="hero">
-        <h1>Froglet is not for You.<br/><em>It's for your AI Agent.</em></h1>
-        <p class="hero-sub">Froglet is an <strong>open</strong> protocol that gives AI agents identity, execution, and settlement out of the box. Start with <strong>Try In Cloud</strong> for the first-party hosted entry point, or choose <strong>Run Locally</strong> to install Froglet, connect an agent, a marketplace, and a payment rail you control.</p>
-        <div class="hero-prompt">
-          <Code
-            code={`Read the Froglet quickstart, marketplace overview, and hosted-trial contract.
-Explain what Froglet is, how discovery works, and how an agent uses it.
-Then give me your honest, objective opinion:
-- what is this and how does it work?
-- what could we build with it?
-- is it worth using?`}
-            lang="md"
-            meta='title="Prompt for your AI"'
-          />
+        <div class="hero-copy">
+          <div class="section-label">For operators. Built for agents.</div>
+          <h1><span>Froglet is not for You.</span><em>It's for your AI Agent.</em></h1>
+          <p class="hero-sub">Froglet is an open protocol your agent can actually run: cryptographic identity, signed deals, executable work, and verifiable settlement evidence.</p>
+          <div class="hero-facts" aria-label="Protocol summary">
+            <span>identity</span>
+            <span>execution</span>
+            <span>settlement</span>
+          </div>
+          <div class="agent-proof-list" aria-label="Launch paths">
+            <a href="/learn/cloud-trial/" class="btn btn-primary">Try In Cloud</a>
+            <a href="/learn/quickstart/" class="btn btn-ghost">Run Locally</a>
+            <a href="/demo/" class="btn btn-ghost">Watch Demo</a>
+          </div>
         </div>
-        <div class="hero-prompt-hint">Paste the docs prompt into Mistral, Claude, Codex, OpenClaw, or any other AI assistant.</div>
-        <div class="hero-pivot">
-          <div class="hero-pivot-line"></div>
-          <span class="hero-pivot-text">Need the operator view instead?</span>
-          <div class="hero-pivot-line"></div>
-        </div>
-        <div class="hero-human">
-          <p>Froglet gives agents cryptographic identity, a signed deal flow, and local runtime settlement adapters. At launch the local path supports Lightning, Stripe, and x402. Lightning is the only rail standardized in the signed quote/deal flow today. The hosted path stays free-only and uses temporary identities that can be claimed by email.</p>
-        </div>
-        <div class="hero-actions">
-          <a href="/learn/cloud-trial/" class="btn btn-primary">☁️ Try In Cloud</a>
-          <a href="/learn/quickstart/" class="btn btn-ghost">🖥️ Run Locally</a>
-          <a href="/demo/" class="btn btn-ghost">▶️ Watch the walkthrough</a>
+        <div class="hero-console">
+          <div class="hero-console-label">Prompt for your AI agent</div>
+          <div class="hero-prompt">
+            <Code
+              code={`Read https://try.froglet.dev/llms.txt. Run the hosted demo exactly. Report HTTP statuses, result, mismatches, what Froglet proves, and one next experiment.`}
+              lang="md"
+            />
+          </div>
+          <div class="hero-prompt-hint">This asks an agent to run the hosted <code>demo.add</code> round-trip before judging Froglet.</div>
         </div>
       </div>
     </div>
     <section>
-      <div class="section-label">🚀 Launch</div>
+      <div class="section-label">Launch paths</div>
       <div class="section-title">Exactly two public entry points.</div>
-      <div class="section-desc">The cloud path is the first-party hosted entry point with temporary identities. The local path is the public repo: install Froglet, connect an agent, a marketplace, and a payment rail.</div>
       <div class="compare learn-grid two">
         <div class="compare-card learn-card">
           <div class="learn-kicker">Hosted trial</div>
-          <h3>☁️ Try In Cloud</h3>
-          <p class="compare-summary">Review the temporary-identity contract, the free-only launch policy, and the email-claim flow before the hosted rollout is live.</p>
+          <h3>Try In Cloud</h3>
+          <p class="compare-summary">Anonymous 15-minute session against the first-party hosted node. Free-only demo surface; no email, no account, no persistence.</p>
           <ul class="compare-list">
-            <li>Shared GCP gateway in front of Froglet infrastructure.</li>
-            <li>Hosted rollout is first-party and follows the same protocol surface.</li>
-            <li>Free-only at launch. Payment-rail onboarding stays on the local path.</li>
+            <li>Cloudflare Worker in front of the Lightsail-hosted reference node.</li>
+            <li>Shared session-token pool — authentication only, not per-session identity.</li>
+            <li>Canonical hosted demo: run <code>demo.add</code>, fetch the succeeded deal result, then inspect the feed.</li>
           </ul>
           <div class="compare-footer">
             <div class="compare-shell">
               <Code
-                code={`POST /api/sessions`}
-                lang="http"
-                meta='title="Public contract"'
+                code={`TOKEN=$(curl -sS -X POST https://try.froglet.dev/api/sessions | jq -r .session_token)
+curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/provider/services
+# create demo.add deal, GET it until status=succeeded, expect { "sum": 12 }, then inspect /v1/feed`}
+                lang="bash"
+                meta='title="Hosted demo flow"'
               />
             </div>
-            <div class="compare-note">The public docs describe the hosted contract, the user flow, and the launch policy.</div>
+            <div class="compare-note">What it proves: shared-session auth, live discovery, and one free discover → deal → sync-result → receipt round-trip. What it does not prove: paid rails, persistent identity, or publishing services.</div>
             <div class="compare-actions learn-button-row">
               <a href="/learn/cloud-trial/" class="learn-button">Hosted trial docs</a>
             </div>
@@ -93,40 +90,40 @@ Then give me your honest, objective opinion:
         </div>
         <div class="compare-card learn-card" id="self-host-card">
           <div class="learn-kicker">Self-host</div>
-          <h3>🖥️ Run Locally</h3>
-          <p class="compare-summary">Pick your install method, agent, and payment rail. The code below updates to match.</p>
+          <h3>Run Locally</h3>
+          <p class="compare-summary">Pick your platform, agent, and payment rail. The generated snippet stays truthful: repo-local helpers run only after a clone, and the Docker path uses the checked-in Compose stack.</p>
           <div class="config-group">
             <span class="config-label">Install</span>
             <div class="config-options" data-group="install">
-              <button class="config-btn is-active" data-value="linux">🐧 Linux x86_64</button>
-              <button class="config-btn" data-value="linux-arm">🐧 Linux arm64</button>
-              <button class="config-btn" data-value="macos">🍎 macOS arm64</button>
-              <button class="config-btn" data-value="docker">🐳 Docker</button>
+              <button class="config-btn is-active" data-value="linux" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux x86_64</button>
+              <button class="config-btn" data-value="linux-arm" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux arm64</button>
+              <button class="config-btn" data-value="macos" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/apple.svg')" aria-hidden="true"></span>macOS arm64</button>
+              <button class="config-btn" data-value="docker" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</button>
             </div>
           </div>
           <div class="config-group">
             <span class="config-label">Agent</span>
             <div class="config-options" data-group="agent">
-              <button class="config-btn is-active" data-value="claude-code">🤖 Claude Code</button>
-              <button class="config-btn" data-value="codex">📟 Codex</button>
-              <button class="config-btn" data-value="openclaw">🦎 OpenClaw</button>
+              <button class="config-btn is-active" data-value="claude-code" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</button>
+              <button class="config-btn" data-value="codex" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</button>
+              <button class="config-btn" data-value="openclaw" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/openclaw.svg')" aria-hidden="true"></span>OpenClaw</button>
             </div>
           </div>
           <div class="config-group">
             <span class="config-label">Payment</span>
             <div class="config-options" data-group="payment">
-              <button class="config-btn is-active" data-value="lightning">⚡ Lightning</button>
-              <button class="config-btn" data-value="stripe">💳 Stripe</button>
-              <button class="config-btn" data-value="x402">🔗 x402</button>
+              <button class="config-btn is-active" data-value="lightning" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning</button>
+              <button class="config-btn" data-value="stripe" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe</button>
+              <button class="config-btn" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</button>
             </div>
           </div>
           <div class="compare-footer">
             <div class="compare-shell">
               <pre class="config-code" id="config-output"><code></code></pre>
-              <button class="config-copy" id="config-copy-btn" title="Copy to clipboard">📋</button>
+              <button class="config-copy" id="config-copy-btn" title="Copy to clipboard">Copy</button>
             </div>
             <div class="compare-actions learn-button-row">
-              <a href="/learn/quickstart/" class="learn-button">📖 Local quickstart</a>
+              <a href="/learn/quickstart/" class="learn-button">Local quickstart</a>
             </div>
           </div>
         </div>
@@ -136,7 +133,7 @@ Then give me your honest, objective opinion:
     <div class="divider"></div>
 
     <section>
-  <div class="section-label">🎲 Game Theory</div>
+  <div class="section-label">Trust economics</div>
   <div class="section-title">Trust through math, not middlemen</div>
   <div class="section-desc">A provider stakes real value to enter the market. Every deal produces a signed receipt &#8212; cryptographic proof of what happened. Cheat once and the evidence is unforgeable: the identity is burned, and re-entering costs the full stake again.</div>
   <div class="trust-graph-wrap">
@@ -144,89 +141,141 @@ Then give me your honest, objective opinion:
       <label class="trust-control">stake <span id="tg-stake-val">500</span> sats <input id="tg-stake" type="range" min="0" max="2000" value="500" step="10" /></label>
       <label class="trust-control">fee <span id="tg-fee-val">100</span> sats <input id="tg-fee" type="range" min="1" max="500" value="100" step="1" /></label>
     </div>
-    <canvas id="trust-graph" width="700" height="300" role="img" aria-label="Cheat payoff chart: stake versus fee ratio"></canvas>
-    <p class="trust-note">Stake is the cost of a market identity. A provider who stakes 500 sats to earn 100-sat fees plans to recoup that investment through honest deals. Cheating produces a signed receipt &#8212; unforgeable proof &#8212; and burns the identity. Re-entering means paying the full stake again. A requester only needs to check: is stake &#62; fee? If yes, a rational provider loses more by cheating than they gain. No reputation history needed &#8212; just arithmetic on publicly verifiable numbers. <a href="/learn/economics/">Full economic model &#8594;</a></p>
+    <div class="trust-model" role="group" aria-label="Stake and fee trust model">
+      <div class="trust-metrics">
+        <div class="trust-metric">
+          <span>honest fee</span>
+          <strong id="tg-fee-card">100 sats</strong>
+        </div>
+        <div class="trust-metric">
+          <span>identity stake at risk</span>
+          <strong id="tg-stake-card">500 sats</strong>
+        </div>
+        <div class="trust-metric trust-metric--accent">
+          <span>cheat outcome</span>
+          <strong id="tg-loss-card">-400 sats</strong>
+        </div>
+      </div>
+      <svg class="trust-chart" viewBox="0 0 720 320" role="img" aria-labelledby="trust-chart-title">
+        <title id="trust-chart-title">Cheat payoff chart: stake versus fee ratio</title>
+        <defs>
+          <clipPath id="trust-chart-clip">
+            <rect x="86" y="40" width="570" height="232" />
+          </clipPath>
+        </defs>
+        <g class="trust-chart-grid" aria-hidden="true">
+          <line x1="86" y1="56" x2="656" y2="56" />
+          <line x1="86" y1="92" x2="656" y2="92" />
+          <line x1="86" y1="128" x2="656" y2="128" />
+          <line x1="86" y1="164" x2="656" y2="164" />
+          <line x1="86" y1="200" x2="656" y2="200" />
+          <line x1="86" y1="236" x2="656" y2="236" />
+          <line x1="86" y1="272" x2="656" y2="272" />
+          <line x1="86" y1="40" x2="86" y2="272" />
+          <line x1="200" y1="40" x2="200" y2="272" />
+          <line x1="314" y1="40" x2="314" y2="272" />
+          <line x1="428" y1="40" x2="428" y2="272" />
+          <line x1="542" y1="40" x2="542" y2="272" />
+          <line x1="656" y1="40" x2="656" y2="272" />
+        </g>
+        <line x1="86" y1="128" x2="656" y2="128" class="trust-zero-axis" />
+        <line x1="86" y1="40" x2="86" y2="272" class="trust-y-axis" />
+        <g clip-path="url(#trust-chart-clip)">
+          <line x1="86" y1="56" x2="656" y2="416" class="trust-payoff-line" />
+        </g>
+        <line x1="200" y1="48" x2="200" y2="272" class="trust-break-line" />
+        <line id="tg-stake-line" x1="656" y1="40" x2="656" y2="272" class="trust-ratio-line" />
+        <circle cx="200" cy="128" r="5.5" class="trust-break-dot" />
+        <text x="96" y="86" class="trust-chart-danger">CHEAT PROFITABLE</text>
+        <text x="344" y="194" class="trust-chart-safe">CHEATING COSTS MONEY</text>
+        <text x="210" y="120" class="trust-chart-break-label">stake = fee</text>
+        <text id="tg-ratio-label" x="620" y="32" class="trust-chart-ratio">5.0x</text>
+        <text x="46" y="60" class="trust-chart-tick" id="tg-y-pos">+100</text>
+        <text x="50" y="96" class="trust-chart-tick" id="tg-y-pos-half">+50</text>
+        <text x="58" y="132" class="trust-chart-tick">0</text>
+        <text x="52" y="168" class="trust-chart-tick" id="tg-y-neg-half">-50</text>
+        <text x="48" y="204" class="trust-chart-tick" id="tg-y-neg">-100</text>
+        <text x="48" y="240" class="trust-chart-tick" id="tg-y-neg-one-half">-150</text>
+        <text x="48" y="268" class="trust-chart-tick" id="tg-y-neg-two">-200</text>
+        <text x="26" y="166" class="trust-chart-axis-label" transform="rotate(-90 26 166)">cheat payoff (sats)</text>
+        <text x="84" y="296" class="trust-chart-tick">0x</text>
+        <text x="192" y="296" class="trust-chart-tick">1x</text>
+        <text x="306" y="296" class="trust-chart-tick">2x</text>
+        <text x="420" y="296" class="trust-chart-tick">3x</text>
+        <text x="534" y="296" class="trust-chart-tick">4x</text>
+        <text x="648" y="296" class="trust-chart-tick">5x</text>
+        <text x="340" y="312" class="trust-chart-axis-title">stake / fee</text>
+      </svg>
+      <p class="trust-note">If the public stake is larger than the deal fee, cheating destroys more value than it can capture. The requester checks that arithmetic before trusting a provider. <a href="/learn/economics/">Full economic model &#8594;</a></p>
+    </div>
   </div>
-  <script>
-    import { initTrustGraph } from '../scripts/trust-graph';
-
-    const canvas = document.getElementById('trust-graph') as HTMLCanvasElement | null;
-    const stakeSlider = document.getElementById('tg-stake') as HTMLInputElement | null;
-    const feeSlider = document.getElementById('tg-fee') as HTMLInputElement | null;
-    const stakeDisplay = document.getElementById('tg-stake-val');
-    const feeDisplay = document.getElementById('tg-fee-val');
-
-    if (canvas && stakeSlider && feeSlider && stakeDisplay && feeDisplay) {
-      initTrustGraph({ canvas, stakeSlider, feeSlider, stakeDisplay, feeDisplay });
-    }
-  </script>
     </section>
 
     <div class="divider"></div>
 
     <section>
-  <div class="section-label">🛠️ Services</div>
+  <div class="section-label">Service surface</div>
   <div class="section-title">What you can build</div>
-  <div class="section-desc">Every froglet node is both provider and consumer. All services use the same deal flow.</div>
+  <div class="section-desc">Every froglet node can sell useful work to an agent: data, compute, network access, and operator-owned services all use the same deal and receipt flow.</div>
   <div class="grid">
-    <div class="gc"><h4><span class="tag tag-purple">Compute</span> WASM execution</h4><p>Sandboxed WebAssembly with fuel limits, memory caps, and timeout enforcement.</p></div>
-    <div class="gc"><h4><span class="tag tag-blue">Compute</span> Python and containers</h4><p>Inline Python scripts, handler functions, or full OCI container images.</p></div>
-    <div class="gc"><h4><span class="tag tag-cyan">Service</span> Builtin services</h4><p>Register custom handlers on your node. JSON in, JSON out.</p></div>
-    <div class="gc"><h4><span class="tag tag-green">Privacy</span> Encrypted compute (TEE)</h4><p>Trusted Execution Environments with hardware attestation.</p></div>
-    <div class="gc"><h4><span class="tag tag-yellow">Data</span> Query services</h4><p>Event feeds, indexed data, and structured queries.</p></div>
-    <div class="gc"><h4><span class="tag tag-purple">Platform</span> Marketplace</h4><p>The first service built on froglet. Indexes providers, serves search queries.</p></div>
+    <div class="gc"><h4><span class="tag tag-yellow">Data</span> Paid data lookup</h4><p>Let an agent buy a verified search result, dataset slice, market feed, or enrichment response without opening an account.</p></div>
+    <div class="gc"><h4><span class="tag tag-blue">Compute</span> Short compute job</h4><p>Sell one Python, WASM, or container run for tasks like parsing files, scoring leads, rendering assets, or summarizing logs.</p></div>
+    <div class="gc"><h4><span class="tag tag-cyan">Service</span> Operator API</h4><p>Expose a paid tool such as OCR, scraping, report generation, translation, indexing, or compliance checks.</p></div>
+    <div class="gc"><h4><span class="tag tag-purple">Network</span> Resource access</h4><p>Package access to a proxy, crawler, private endpoint, local sensor, or hosted worker as a quoteable service.</p></div>
+    <div class="gc"><h4><span class="tag tag-purple">Platform</span> Marketplace search</h4><p>Publish provider listings so agents can discover services, compare quotes, and pick a provider programmatically.</p></div>
+    <div class="gc gc--soon"><h4><span class="tag tag-green">Privacy</span> Confidential work</h4><p>TEE-backed execution for sensitive inputs is planned and should be treated as coming soon.</p></div>
   </div>
     </section>
 
     <div class="divider"></div>
 
     <section>
-  <div class="section-label">🔌 Integrations</div>
+  <div class="section-label">Integrations</div>
   <div class="section-title">Agent and payment surfaces ship together</div>
 
-  <div class="int-row-label">🤖 Agents</div>
+  <div class="int-row-label">Agents</div>
   <div class="int-row">
-    <span class="int-chip">🤖 Claude Code</span>
-    <span class="int-chip">📟 Codex</span>
-    <span class="int-chip">🦎 OpenClaw</span>
-    <span class="int-chip">🔧 MCP</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/openclaw.svg')" aria-hidden="true"></span>OpenClaw</span>
+    <span class="int-chip"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>MCP</span>
   </div>
 
-  <div class="int-row-label">💳 Payment Rails</div>
+  <div class="int-row-label">Payment rails</div>
   <div class="int-row">
-    <span class="int-chip">⚡ Lightning</span>
-    <span class="int-chip">💳 Stripe</span>
-    <span class="int-chip">🔗 x402</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</span>
   </div>
 
-  <div class="int-row-label">⚙️ Compute</div>
+  <div class="int-row-label">Compute</div>
   <div class="int-row">
-    <span class="int-chip">🧩 WASM</span>
-    <span class="int-chip">🐍 Python</span>
-    <span class="int-chip">🐳 Containers</span>
-    <span class="int-chip">🖥️ CPU</span>
-    <span class="int-chip int-chip--soon">🎮 GPU <small>coming soon</small></span>
-    <span class="int-chip int-chip--soon">📦 Batch <small>coming soon</small></span>
+    <span class="int-chip"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/wasm.svg')" aria-hidden="true"></span>WASM</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/python.svg')" aria-hidden="true"></span>Python</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/containers.svg')" aria-hidden="true"></span>Containers</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/cpu.svg')" aria-hidden="true"></span>CPU</span>
+    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--letter" aria-hidden="true">G</span>GPU <small>coming soon</small></span>
+    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--letter" aria-hidden="true">B</span>Batch <small>coming soon</small></span>
   </div>
 
-  <div class="int-row-label">🌐 Network</div>
+  <div class="int-row-label">Network</div>
   <div class="int-row">
-    <span class="int-chip">🌐 Clearnet</span>
-    <span class="int-chip">🧅 Tor</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/network.svg')" aria-hidden="true"></span>Clearnet</span>
+    <span class="int-chip"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/tor.svg')" aria-hidden="true"></span>Tor</span>
   </div>
 
-  <div class="int-row-label">☁️ Infrastructure</div>
+  <div class="int-row-label">Infrastructure</div>
   <div class="int-row">
-    <span class="int-chip">🐳 Docker</span>
-    <span class="int-chip">☁️ GCP</span>
-    <span class="int-chip">🖥️ Bare Metal</span>
-    <span class="int-chip int-chip--soon">🔶 AWS <small>coming soon</small></span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/googlecloud.svg')" aria-hidden="true"></span>GCP</span>
+    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/cpu.svg')" aria-hidden="true"></span>Bare Metal</span>
+    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/aws.svg')" aria-hidden="true"></span>AWS <small>coming soon</small></span>
   </div>
 
-  <div class="int-row-label">🔒 Privacy</div>
+  <div class="int-row-label">Privacy</div>
   <div class="int-row">
-    <span class="int-chip">🔐 TEE (Confidential)</span>
-    <span class="int-chip int-chip--soon">🛡️ SGX <small>coming soon</small></span>
+    <span class="int-chip int-chip--soon"><span class="brand-icon" style="--logo: url('/logos/lock.svg')" aria-hidden="true"></span>TEE confidential compute <small>coming soon</small></span>
+    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/intel.svg')" aria-hidden="true"></span>SGX <small>coming soon</small></span>
   </div>
     </section>
 
@@ -234,72 +283,71 @@ Then give me your honest, objective opinion:
   </main>
 </PageFrame>
 <script>
-  // Self-host configurator
-  const card = document.getElementById('self-host-card');
-  const output = document.getElementById('config-output');
-  const copyBtn = document.getElementById('config-copy-btn');
-  if (card && output) {
-    const state: Record<string, string> = { install: 'linux', agent: 'claude-code', payment: 'lightning' };
+  // Trust economics model
+  import { initSelfHostConfigurator } from '../scripts/self-host-configurator';
 
-    function buildCode(): string {
-      const i = state.install;
-      const a = state.agent;
-      const p = state.payment;
+  const stakeSlider = document.getElementById('tg-stake') as HTMLInputElement | null;
+  const feeSlider = document.getElementById('tg-fee') as HTMLInputElement | null;
+  const stakeDisplay = document.getElementById('tg-stake-val');
+  const feeDisplay = document.getElementById('tg-fee-val');
+  const stakeCard = document.getElementById('tg-stake-card');
+  const feeCard = document.getElementById('tg-fee-card');
+  const lossCard = document.getElementById('tg-loss-card');
+  const stakeLine = document.getElementById('tg-stake-line');
+  const ratioLabel = document.getElementById('tg-ratio-label');
+  const positiveTick = document.getElementById('tg-y-pos');
+  const positiveHalfTick = document.getElementById('tg-y-pos-half');
+  const negativeHalfTick = document.getElementById('tg-y-neg-half');
+  const negativeTick = document.getElementById('tg-y-neg');
+  const negativeOneHalfTick = document.getElementById('tg-y-neg-one-half');
+  const negativeTwoTick = document.getElementById('tg-y-neg-two');
 
-      const lines: string[] = [];
-
-      if (i === 'docker') {
-        lines.push('docker pull ghcr.io/armanas/froglet-node:latest');
-        lines.push(`docker run -d --name froglet \\`);
-        lines.push(`  -e FROGLET_SETTLEMENT_METHOD=${p} \\`);
-        lines.push(`  -p 3000:3000 ghcr.io/armanas/froglet-node:latest`);
-      } else {
-        const envFlag = i === 'macos' ? '' : i === 'linux-arm' ? ' ARCH=arm64' : '';
-        lines.push(`curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh |${envFlag} sh`);
-        lines.push(`./scripts/setup-agent.sh --target ${a}`);
-        lines.push(`./scripts/setup-payment.sh ${p}`);
-      }
-
-      return lines.join('\n');
-    }
-
-    function render() {
-      const code = output.querySelector('code');
-      if (code) code.textContent = buildCode();
-    }
-
-    card.querySelectorAll('.config-options').forEach(group => {
-      const g = (group as HTMLElement).dataset.group!;
-      group.querySelectorAll('.config-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          e.preventDefault();
-          (btn as HTMLElement).blur();
-          group.querySelectorAll('.config-btn').forEach(b => b.classList.remove('is-active'));
-          btn.classList.add('is-active');
-          state[g] = (btn as HTMLElement).dataset.value!;
-
-          // Docker hides agent selection (agent is configured via env)
-          const agentGroup = card.querySelector('[data-group="agent"]')?.closest('.config-group') as HTMLElement | null;
-          if (agentGroup) agentGroup.style.display = state.install === 'docker' ? 'none' : '';
-
-          render();
-        });
-      });
-    });
-
-    if (copyBtn) {
-      copyBtn.addEventListener('click', () => {
-        const code = output.querySelector('code');
-        if (code) {
-          navigator.clipboard.writeText(code.textContent || '');
-          copyBtn.textContent = '✅';
-          setTimeout(() => { copyBtn.textContent = '📋'; }, 1500);
-        }
-      });
-    }
-
-    render();
+  function renderTrustModel() {
+    if (
+      !stakeSlider ||
+      !feeSlider ||
+      !stakeDisplay ||
+      !feeDisplay ||
+      !stakeCard ||
+      !feeCard ||
+      !lossCard ||
+      !stakeLine ||
+      !ratioLabel ||
+      !positiveTick ||
+      !positiveHalfTick ||
+      !negativeHalfTick ||
+      !negativeTick ||
+      !negativeOneHalfTick ||
+      !negativeTwoTick
+    ) return;
+    const stake = Number(stakeSlider.value);
+    const fee = Number(feeSlider.value);
+    const ratio = stake / fee;
+    const clampedX = 86 + Math.min(ratio, 5) / 5 * 570;
+    const loss = fee - stake;
+    const halfFee = Math.round(fee / 2);
+    stakeDisplay.textContent = String(stake);
+    feeDisplay.textContent = String(fee);
+    stakeCard.textContent = `${stake} sats`;
+    feeCard.textContent = `${fee} sats`;
+    lossCard.textContent = `${loss >= 0 ? '+' : ''}${loss} sats`;
+    stakeLine.setAttribute('x1', String(clampedX));
+    stakeLine.setAttribute('x2', String(clampedX));
+    ratioLabel.setAttribute('x', String(Math.max(94, Math.min(clampedX - 18, 620))));
+    ratioLabel.textContent = ratio > 5 ? '>5x' : `${ratio.toFixed(1)}x`;
+    positiveTick.textContent = `+${fee}`;
+    positiveHalfTick.textContent = `+${halfFee}`;
+    negativeHalfTick.textContent = `-${halfFee}`;
+    negativeTick.textContent = `-${fee}`;
+    negativeOneHalfTick.textContent = `-${fee + halfFee}`;
+    negativeTwoTick.textContent = `-${fee * 2}`;
   }
+
+  stakeSlider?.addEventListener('input', renderTrustModel);
+  feeSlider?.addEventListener('input', renderTrustModel);
+  renderTrustModel();
+
+  initSelfHostConfigurator();
 </script>
 </body>
 </html>

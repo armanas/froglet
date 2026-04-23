@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, Request, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
@@ -139,16 +139,17 @@ fn build_runtime_request(provider: RuntimeProviderRef) -> RuntimeCreateDealReque
     }
 }
 
-fn create_test_state_with_identity_seed(
+fn create_test_state_with_identity_seed_and_public_base_url(
     marketplace_url: Option<String>,
     identity_seed: Option<[u8; 32]>,
+    public_base_url: Option<&str>,
 ) -> AppState {
     let temp_dir = unique_temp_dir("runtime-routes");
     let db_path = temp_dir.join("node.db");
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
         listen_addr: "127.0.0.1:0".to_string(),
-        public_base_url: None,
+        public_base_url: public_base_url.map(str::to_string),
         runtime_listen_addr: "127.0.0.1:0".to_string(),
         runtime_allow_non_loopback: false,
         http_ca_cert_path: None,
@@ -202,6 +203,7 @@ fn create_test_state_with_identity_seed(
         marketplace_url,
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
+        hosted_trial_origin_secret: None,
     };
 
     if let Some(seed) = identity_seed {
@@ -246,6 +248,13 @@ fn create_test_state_with_identity_seed(
         settlement_registry,
         session_pool: None,
     }
+}
+
+fn create_test_state_with_identity_seed(
+    marketplace_url: Option<String>,
+    identity_seed: Option<[u8; 32]>,
+) -> AppState {
+    create_test_state_with_identity_seed_and_public_base_url(marketplace_url, identity_seed, None)
 }
 
 fn create_test_state(marketplace_url: Option<String>) -> AppState {
@@ -1041,6 +1050,161 @@ async fn build_marketplace_fixture() -> (TestServer, Arc<MarketplaceFixtureState
     (server, state)
 }
 
+#[derive(Clone)]
+struct MarketplaceReadApiFixtureState {
+    provider_id: String,
+    provider_url: String,
+}
+
+#[derive(Deserialize)]
+struct ReadApiOfferQuery {
+    provider_id: Option<String>,
+    runtime: Option<String>,
+    offer_kind: Option<String>,
+    limit: Option<usize>,
+}
+
+fn read_api_provider_body(state: &MarketplaceReadApiFixtureState) -> Value {
+    json!({
+        "provider_id": state.provider_id,
+        "current_descriptor_hash": "read-api-descriptor-hash",
+        "descriptor": {
+            "artifact_hash": "read-api-descriptor-hash",
+            "descriptor_seq": 2,
+            "protocol_version": "froglet/v1",
+            "capabilities": {
+                "execution_runtimes": ["wasm", "builtin"],
+                "service_kinds": ["compute.wasm.v1", "demo.add"],
+            },
+            "linked_identities": [],
+            "transport_endpoints": [
+                {
+                    "transport": "https",
+                    "uri": state.provider_url,
+                    "priority": 10,
+                    "features": ["quote_http", "receipt_poll"],
+                }
+            ],
+        },
+        "trust": {
+            "success_count": 1,
+            "failure_count": 0,
+        }
+    })
+}
+
+fn read_api_offer_bodies(provider_id: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "artifact_hash": "read-api-compute-offer",
+            "provider_id": provider_id,
+            "offer_id": "execute.compute",
+            "descriptor_hash": "read-api-descriptor-hash",
+            "offer_kind": "compute.wasm.v1",
+            "settlement_method": "none",
+            "runtime": "wasm",
+            "package_kind": "inline_module",
+            "contract_version": "froglet.wasm.run-json.v1",
+            "abi_version": "froglet.wasm.run-json.v1",
+            "access_handles": [],
+            "capabilities": [],
+            "base_fee_msat": 0,
+            "success_fee_msat": 0,
+        }),
+        json!({
+            "artifact_hash": "read-api-demo-add-offer",
+            "provider_id": provider_id,
+            "offer_id": "demo.add",
+            "descriptor_hash": "read-api-descriptor-hash",
+            "offer_kind": "demo.add",
+            "settlement_method": "none",
+            "runtime": "builtin",
+            "package_kind": "builtin",
+            "contract_version": "froglet.builtin.demo.add.v1",
+            "abi_version": "froglet.builtin.demo.add.v1",
+            "access_handles": [],
+            "capabilities": [],
+            "base_fee_msat": 0,
+            "success_fee_msat": 0,
+        }),
+    ]
+}
+
+async fn read_api_get_provider(
+    State(state): State<Arc<MarketplaceReadApiFixtureState>>,
+    Path(provider_id): Path<String>,
+) -> impl IntoResponse {
+    if provider_id != state.provider_id {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "provider not found" })),
+        );
+    }
+    (StatusCode::OK, Json(read_api_provider_body(&state)))
+}
+
+async fn read_api_list_offers(
+    State(state): State<Arc<MarketplaceReadApiFixtureState>>,
+    Query(query): Query<ReadApiOfferQuery>,
+) -> impl IntoResponse {
+    let mut offers = read_api_offer_bodies(&state.provider_id);
+    if let Some(provider_id) = query.provider_id.as_deref() {
+        offers.retain(|offer| {
+            offer
+                .get("provider_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == provider_id)
+        });
+    }
+    if let Some(runtime) = query.runtime.as_deref() {
+        offers.retain(|offer| {
+            offer
+                .get("runtime")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == runtime)
+        });
+    }
+    if let Some(offer_kind) = query.offer_kind.as_deref() {
+        offers.retain(|offer| {
+            offer
+                .get("offer_kind")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == offer_kind)
+        });
+    }
+    if let Some(limit) = query.limit {
+        offers.truncate(limit);
+    }
+    let total = offers.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "items": offers,
+            "pagination": {
+                "limit": query.limit.unwrap_or(20),
+                "offset": 0,
+                "total": total,
+            }
+        })),
+    )
+}
+
+fn marketplace_read_api_router(state: Arc<MarketplaceReadApiFixtureState>) -> Router {
+    Router::new()
+        .route("/v1/providers/:provider_id", get(read_api_get_provider))
+        .route("/v1/offers", get(read_api_list_offers))
+        .with_state(state)
+}
+
+async fn build_marketplace_read_api_fixture() -> (TestServer, Arc<MarketplaceReadApiFixtureState>) {
+    let state = Arc::new(MarketplaceReadApiFixtureState {
+        provider_id: "read-api-provider".to_string(),
+        provider_url: "https://provider.example".to_string(),
+    });
+    let server = spawn_server(marketplace_read_api_router(state.clone())).await;
+    (server, state)
+}
+
 #[tokio::test]
 async fn runtime_auth_rejection_blocks_unauthenticated_requests() {
     let state = Arc::new(create_test_state(None));
@@ -1096,6 +1260,41 @@ async fn runtime_search_requires_marketplace_url() {
 }
 
 #[tokio::test]
+async fn runtime_search_reads_marketplace_read_api() {
+    let (marketplace_server, marketplace_state) = build_marketplace_read_api_fixture().await;
+    let state = Arc::new(create_test_state(Some(marketplace_server.base_url.clone())));
+    let app = runtime_router(state);
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/search",
+        Some("Bearer test-runtime-token"),
+        Some(json!({ "limit": 7, "runtime": "wasm" })),
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response["providers"][0]["provider_id"],
+        marketplace_state.provider_id
+    );
+    assert_eq!(
+        response["providers"][0]["descriptor_hash"],
+        "read-api-descriptor-hash"
+    );
+    assert_eq!(
+        response["providers"][0]["transport_endpoints"][0]["uri"],
+        marketplace_state.provider_url
+    );
+    assert_eq!(
+        response["providers"][0]["offers"][0]["offer_id"],
+        "execute.compute"
+    );
+    assert_eq!(
+        response["providers"][0]["offers"][0]["execution_profile"]["package_kind"],
+        "inline_module"
+    );
+}
+
+#[tokio::test]
 async fn runtime_search_proxies_through_marketplace_builtin_service() {
     let (marketplace_server, marketplace_state) = build_marketplace_fixture().await;
     let state = Arc::new(create_test_state(Some(marketplace_server.base_url.clone())));
@@ -1123,6 +1322,30 @@ async fn runtime_search_proxies_through_marketplace_builtin_service() {
     assert_eq!(
         deal_requests[0]["quote"]["payload"]["offer_id"],
         "marketplace.search"
+    );
+}
+
+#[tokio::test]
+async fn runtime_provider_details_reads_marketplace_read_api() {
+    let (marketplace_server, marketplace_state) = build_marketplace_read_api_fixture().await;
+    let state = Arc::new(create_test_state(Some(marketplace_server.base_url.clone())));
+    let app = runtime_router(state);
+    let request = runtime_request(
+        axum::http::Method::GET,
+        &format!("/v1/runtime/providers/{}", marketplace_state.provider_id),
+        Some("Bearer test-runtime-token"),
+        None,
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response["provider"]["provider_id"],
+        marketplace_state.provider_id
+    );
+    assert_eq!(response["provider"]["offers"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        response["provider"]["offers"][1]["execution_profile"]["runtime"],
+        "builtin"
     );
 }
 
@@ -1242,6 +1465,76 @@ async fn direct_provider_runtime_roundtrip_succeeds() {
     assert_eq!(final_status, StatusCode::OK);
     assert_eq!(final_response.deal.status, "succeeded");
     assert!(final_response.deal.receipt.is_some());
+}
+
+#[tokio::test]
+async fn direct_provider_runtime_roundtrip_rewrites_local_public_url() {
+    let (provider_server, provider_state) = build_provider_fixture(false, false, false).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
+    let state = Arc::new(create_test_state_with_identity_seed_and_public_base_url(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+        Some("https://ai.froglet.dev"),
+    ));
+    let app = runtime_router(state.clone());
+
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/deals",
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
+                provider_id: Some(provider_state.provider_id.clone()),
+                provider_url: Some("https://ai.froglet.dev".to_string()),
+            }))
+            .expect("serialize request"),
+        ),
+    );
+    let (status, response): (StatusCode, RuntimeCreateDealResponseView) =
+        call_json(app.clone(), request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response.provider_id, provider_state.provider_id);
+    assert_eq!(response.provider_url, "https://ai.froglet.dev");
+    assert_eq!(response.deal.provider_url, "https://ai.froglet.dev");
+    assert!(matches!(
+        response.deal.status.as_str(),
+        "accepted" | "running"
+    ));
+    assert!(response.payment_intent_path.is_none());
+    assert!(response.payment_intent.is_none());
+
+    let get_request = runtime_request(
+        axum::http::Method::GET,
+        &format!("/v1/runtime/deals/{}", response.deal.deal_id),
+        Some("Bearer test-runtime-token"),
+        None,
+    );
+    let (get_status, get_response): (StatusCode, RuntimeDealResponseView) =
+        call_json(app.clone(), get_request).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(get_response.deal.provider_url, "https://ai.froglet.dev");
+
+    let accept_request = runtime_request(
+        axum::http::Method::POST,
+        &format!("/v1/runtime/deals/{}/accept", response.deal.deal_id),
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(RuntimeAcceptDealRequest {
+                expected_result_hash: None,
+            })
+            .expect("serialize request"),
+        ),
+    );
+    let (accept_status, accept_response): (StatusCode, RuntimeAcceptDealResponseView) =
+        call_json(app, accept_request).await;
+    assert_eq!(accept_status, StatusCode::OK);
+    assert_eq!(accept_response.deal.provider_url, "https://ai.froglet.dev");
+    assert_eq!(accept_response.deal.status, "succeeded");
+    assert!(accept_response.deal.receipt.is_some());
 }
 
 #[tokio::test]

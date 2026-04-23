@@ -1,9 +1,10 @@
 use axum::{
     Json, Router,
     error_handling::HandleErrorLayer,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures::{StreamExt, stream};
@@ -20,6 +21,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use subtle::ConstantTimeEq;
 use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
 use crate::{
@@ -104,6 +106,7 @@ const BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS: u64 = 1;
 const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
+const HOSTED_TRIAL_ORIGIN_SECRET_HEADER: &str = "x-froglet-hosted-trial-secret";
 
 /// Offer ID for the generic compute offer that accepts any supported runtime
 /// (Python, Container, Wasm) with `offer_kind = "compute.execution.v1"`.
@@ -219,6 +222,29 @@ fn runtime_routes() -> Router<Arc<AppState>> {
         )
 }
 
+fn hosted_trial_runtime_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .merge(http_deals::hosted_trial_runtime_routes())
+        .route_layer(ConcurrencyLimitLayer::new(16))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_timeout_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(
+                    RUNTIME_WAIT_ROUTE_TIMEOUT_SECS,
+                ))),
+        )
+}
+
+fn hosted_trial_origin_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .merge(sessions::sessions_routes())
+        .merge(hosted_trial_runtime_routes())
+        .route_layer(middleware::from_fn_with_state(
+            state,
+            require_hosted_trial_origin_secret,
+        ))
+}
+
 fn common_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/health", get(health_check))
@@ -240,19 +266,14 @@ pub fn public_router(state: Arc<AppState>) -> Router {
     let base = common_routes()
         .merge(events_query_routes(&state))
         .merge(provider_routes())
-        .merge(publish_routes())
-        .merge(sessions::sessions_routes());
+        .merge(publish_routes());
 
-    // When the session pool is enabled, the public listener also serves
-    // runtime endpoints so session-authed requests (arriving on port
-    // 8080 via Cloudflare) can hit the full deal flow. Path-level
-    // restriction for session tokens is delegated to the Cloudflare
-    // worker; the node-side check in require_runtime_auth covers
-    // authentication but not authorization scoping.
-    let router = if state.session_pool.is_some() {
-        base.merge(runtime_routes())
-            .merge(execute_wasm_routes(&state))
-            .merge(jobs_routes())
+    // Hosted-trial routes are present on the public listener only when the
+    // worker/origin shared secret is configured. Missing or incorrect secrets
+    // return a generic 404 so `ai.froglet.dev` no longer exposes the trial
+    // ingress directly.
+    let router = if state.config.hosted_trial_origin_secret.is_some() {
+        base.merge(hosted_trial_origin_routes(state.clone()))
     } else {
         base
     };
@@ -649,7 +670,14 @@ fn verify_provider_receipt_artifact(
 
 struct ResolvedProvider {
     provider_id: String,
-    provider_url: String,
+    provider_public_url: String,
+    provider_sync_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeCreateDealScope {
+    Full,
+    HostedTrial,
 }
 
 async fn resolve_runtime_provider(
@@ -658,10 +686,10 @@ async fn resolve_runtime_provider(
 ) -> Result<ResolvedProvider, ApiFailure> {
     let explicit_provider_id = provider.provider_id.clone();
     if let Some(provider_url) = provider.provider_url.clone() {
-        let provider_url =
+        let provider_sync_url =
             runtime_accessible_provider_url(state, &provider_url, explicit_provider_id.as_deref())
                 .await?;
-        let descriptor = fetch_provider_descriptor(state, &provider_url).await?;
+        let descriptor = fetch_provider_descriptor(state, &provider_sync_url).await?;
         verify_provider_descriptor_artifact(&descriptor)?;
         if let Some(expected_provider_id) = explicit_provider_id.as_deref()
             && descriptor.payload.provider_id != expected_provider_id
@@ -677,7 +705,8 @@ async fn resolve_runtime_provider(
         }
         return Ok(ResolvedProvider {
             provider_id: descriptor.payload.provider_id.clone(),
-            provider_url,
+            provider_public_url: provider_url,
+            provider_sync_url,
         });
     }
 
@@ -694,6 +723,207 @@ async fn resolve_runtime_provider(
         json!({
             "error": "provider.provider_url is required — discovery server removed; use marketplace or direct URL",
             "provider_id": provider_id,
+        }),
+    ))
+}
+
+fn hosted_trial_policy_error(message: &str) -> ApiFailure {
+    (StatusCode::FORBIDDEN, json!({ "error": message }))
+}
+
+async fn validate_hosted_trial_raw_create_deal_request(
+    state: &AppState,
+    payload: &RuntimeCreateDealRequest,
+) -> Result<(), ApiFailure> {
+    if payload.payment.is_some() {
+        return Err(hosted_trial_policy_error(
+            "hosted trial deals do not accept payment payloads",
+        ));
+    }
+    if payload.max_price_sats.is_some_and(|value| value != 0) {
+        return Err(hosted_trial_policy_error(
+            "hosted trial deals must be free and use max_price_sats=0",
+        ));
+    }
+    let local_node_id = state.identity.node_id();
+    if payload.provider.provider_id.as_deref() != Some(local_node_id) {
+        return Err(hosted_trial_policy_error(
+            "hosted trial deals can only target the local hosted provider",
+        ));
+    }
+    let Some(provider_url) = payload.provider.provider_url.as_deref() else {
+        return Err(hosted_trial_policy_error(
+            "hosted trial deals require the local hosted provider_url",
+        ));
+    };
+    let Some(local_provider_base_url) =
+        provider_resolution::configured_runtime_provider_base_url()?
+    else {
+        return Err(hosted_trial_policy_error(
+            "hosted trial local provider base URL is not configured",
+        ));
+    };
+
+    let normalized_provider_url = provider_url.trim_end_matches('/');
+    let local_provider_base_url = local_provider_base_url.trim_end_matches('/');
+    if normalized_provider_url == local_provider_base_url {
+        return Ok(());
+    }
+    if state
+        .config
+        .public_base_url
+        .as_deref()
+        .is_some_and(|public_url| normalized_provider_url == public_url.trim_end_matches('/'))
+    {
+        return Ok(());
+    }
+    let advertised_clearnet_url = state.transport_status.lock().await.clearnet_url.clone();
+    if advertised_clearnet_url
+        .as_deref()
+        .is_some_and(|clearnet_url| normalized_provider_url == clearnet_url.trim_end_matches('/'))
+    {
+        return Ok(());
+    }
+
+    Err(hosted_trial_policy_error(
+        "hosted trial provider_url must target the local hosted provider",
+    ))
+}
+
+fn validate_hosted_trial_workload_matches_service(
+    spec: &WorkloadSpec,
+    service: &ProviderServiceRecord,
+) -> Result<(), String> {
+    let WorkloadSpec::Execution { execution } = spec else {
+        return Err(
+            "hosted trial deal requests must use an execution workload for a free local service"
+                .to_string(),
+        );
+    };
+    let (runtime, package_kind, entrypoint_kind, entrypoint, contract_version) =
+        normalized_service_execution_profile(service)?;
+    if runtime == ExecutionRuntime::Builtin && package_kind == ExecutionPackageKind::Builtin {
+        if execution.runtime != runtime {
+            return Err("hosted trial builtin runtime does not match local service".to_string());
+        }
+        if execution.package_kind != package_kind {
+            return Err(
+                "hosted trial builtin package_kind does not match local service".to_string(),
+            );
+        }
+        if execution.entrypoint.kind != entrypoint_kind {
+            return Err(
+                "hosted trial builtin entrypoint_kind does not match local service".to_string(),
+            );
+        }
+        if execution.entrypoint.value != entrypoint {
+            return Err("hosted trial builtin entrypoint does not match local service".to_string());
+        }
+        if execution.contract_version != contract_version {
+            return Err(
+                "hosted trial builtin contract_version does not match local service".to_string(),
+            );
+        }
+        if execution.workload_kind != service.offer_kind {
+            return Err(
+                "hosted trial builtin workload_kind does not match local service".to_string(),
+            );
+        }
+        if execution.builtin_name.as_deref() != Some(entrypoint.as_str()) {
+            return Err("hosted trial builtin name does not match local service".to_string());
+        }
+        if !execution.mounts.is_empty() {
+            return Err("hosted trial builtin requests cannot include mounts".to_string());
+        }
+        return Ok(());
+    }
+
+    validate_service_addressed_execution_against_service(execution, service)
+}
+
+async fn validate_hosted_trial_free_local_offer(
+    state: &AppState,
+    payload: &RuntimeCreateDealRequest,
+    provider: &ResolvedProvider,
+) -> Result<(), ApiFailure> {
+    if provider.provider_id != state.identity.node_id() {
+        return Err(hosted_trial_policy_error(
+            "hosted trial deals can only target the local hosted provider",
+        ));
+    }
+
+    let Some(offer_record) = provider_control_offer_record(state, &payload.offer_id, false)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load local provider offer", "details": error }),
+            )
+        })?
+    else {
+        return Err(hosted_trial_policy_error(
+            "hosted trial offer is not an active local free service",
+        ));
+    };
+
+    let Some(service_id) = offer_record.service_id.as_deref() else {
+        return Err(hosted_trial_policy_error(
+            "hosted trial offers must be provider-managed services",
+        ));
+    };
+    if offer_record.publication_state != "active"
+        || offer_record.offer.payload.settlement_method != "none"
+        || offer_record.offer.payload.price_schedule.base_fee_msat != 0
+        || offer_record.offer.payload.price_schedule.success_fee_msat != 0
+    {
+        return Err(hosted_trial_policy_error(
+            "hosted trial offer is not an active local free service",
+        ));
+    }
+
+    let Some(service) = provider_service_record(state, service_id, false, true)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load local provider service", "details": error }),
+            )
+        })?
+    else {
+        return Err(hosted_trial_policy_error(
+            "hosted trial offer is missing its local service binding",
+        ));
+    };
+    if service.publication_state != "active"
+        || service.price_sats != 0
+        || service.provider_id != state.identity.node_id()
+    {
+        return Err(hosted_trial_policy_error(
+            "hosted trial service is not active and free on the local provider",
+        ));
+    }
+    validate_hosted_trial_workload_matches_service(&payload.spec, &service).map_err(|error| {
+        (
+            StatusCode::FORBIDDEN,
+            json!({ "error": "hosted trial workload is outside the free demo scope", "details": error }),
+        )
+    })
+}
+
+fn validate_hosted_trial_quote_terms(
+    quote: &SignedArtifact<QuotePayload>,
+) -> Result<(), ApiFailure> {
+    let terms = &quote.payload.settlement_terms;
+    if terms.method == "none" && terms.base_fee_msat == 0 && terms.success_fee_msat == 0 {
+        return Ok(());
+    }
+    Err((
+        StatusCode::BAD_GATEWAY,
+        json!({
+            "error": "hosted trial provider returned non-free quote terms",
+            "settlement_method": terms.method,
+            "base_fee_msat": terms.base_fee_msat,
+            "success_fee_msat": terms.success_fee_msat,
         }),
     ))
 }
@@ -883,7 +1113,7 @@ async fn sync_requester_deal_from_provider(
         reqwest::Method::GET,
         format!(
             "{}/v1/provider/deals/{}",
-            stored.provider_url,
+            stored.sync_provider_url(),
             urlencoding::encode(deal_id)
         ),
         Option::<&()>::None,
@@ -959,22 +1189,53 @@ async fn sync_requester_deal_from_provider(
         })
 }
 
+pub async fn hosted_trial_runtime_create_deal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RuntimeCreateDealRequest>,
+) -> Response {
+    if let Err(error) = require_hosted_trial_session_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1).into_response();
+    }
+    runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::HostedTrial).await
+}
+
 pub async fn runtime_create_deal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<RuntimeCreateDealRequest>,
-) -> impl IntoResponse {
+) -> Response {
     if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1);
+        return error_json(error.0, error.1).into_response();
     }
+    runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::Full).await
+}
+
+async fn runtime_create_deal_inner(
+    state: Arc<AppState>,
+    payload: RuntimeCreateDealRequest,
+    scope: RuntimeCreateDealScope,
+) -> Response {
     if let Err(response) = validate_workload_spec(&payload.spec) {
-        return response;
+        return response.into_response();
+    }
+    if scope == RuntimeCreateDealScope::HostedTrial
+        && let Err(error) =
+            validate_hosted_trial_raw_create_deal_request(state.as_ref(), &payload).await
+    {
+        return error_json(error.0, error.1).into_response();
     }
 
     let provider = match resolve_runtime_provider(state.as_ref(), &payload.provider).await {
         Ok(provider) => provider,
-        Err(error) => return error_json(error.0, error.1),
+        Err(error) => return error_json(error.0, error.1).into_response(),
     };
+    if scope == RuntimeCreateDealScope::HostedTrial
+        && let Err(error) =
+            validate_hosted_trial_free_local_offer(state.as_ref(), &payload, &provider).await
+    {
+        return error_json(error.0, error.1).into_response();
+    }
     let expected_workload_kind = payload.spec.workload_kind().to_string();
     let expected_workload_hash = match payload.spec.request_hash() {
         Ok(hash) => hash,
@@ -982,7 +1243,8 @@ pub async fn runtime_create_deal(
             return error_json(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": format!("failed to hash requested workload: {error}") }),
-            );
+            )
+            .into_response();
         }
     };
     let expected_confidential_session_hash =
@@ -991,37 +1253,44 @@ pub async fn runtime_create_deal(
     let quote = match remote_json_request::<SignedArtifact<QuotePayload>, _>(
         state.as_ref(),
         reqwest::Method::POST,
-        format!("{}/v1/provider/quotes", provider.provider_url),
+        format!("{}/v1/provider/quotes", provider.provider_sync_url),
         Some(&CreateQuoteRequest {
             offer_id: payload.offer_id.clone(),
             requester_id: state.identity.node_id().to_string(),
             spec: payload.spec.clone(),
-            max_price_sats: payload.max_price_sats,
+            max_price_sats: if scope == RuntimeCreateDealScope::HostedTrial {
+                Some(0)
+            } else {
+                payload.max_price_sats
+            },
         }),
     )
     .await
     {
         Ok(quote) => quote,
-        Err(error) => return error_json(error.0, error.1),
+        Err(error) => return error_json(error.0, error.1).into_response(),
     };
 
     if !protocol::verify_artifact(&quote) {
         return error_json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "provider quote signature verification failed" }),
-        );
+        )
+        .into_response();
     }
     if quote.payload.provider_id != provider.provider_id {
         return error_json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "provider quote provider_id does not match selected provider" }),
-        );
+        )
+        .into_response();
     }
     if quote.payload.requester_id != state.identity.node_id() {
         return error_json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "provider quote requester_id does not match local runtime identity" }),
-        );
+        )
+        .into_response();
     }
     if quote.payload.workload_kind != expected_workload_kind {
         return error_json(
@@ -1031,7 +1300,8 @@ pub async fn runtime_create_deal(
                 "quote_workload_kind": quote.payload.workload_kind,
                 "requested_workload_kind": expected_workload_kind,
             }),
-        );
+        )
+        .into_response();
     }
     if quote.payload.workload_hash != expected_workload_hash {
         return error_json(
@@ -1041,7 +1311,8 @@ pub async fn runtime_create_deal(
                 "quote_workload_hash": quote.payload.workload_hash,
                 "requested_workload_hash": expected_workload_hash,
             }),
-        );
+        )
+        .into_response();
     }
     if quote.payload.confidential_session_hash != expected_confidential_session_hash {
         return error_json(
@@ -1051,7 +1322,13 @@ pub async fn runtime_create_deal(
                 "quote_confidential_session_hash": quote.payload.confidential_session_hash,
                 "requested_confidential_session_hash": expected_confidential_session_hash,
             }),
-        );
+        )
+        .into_response();
+    }
+    if scope == RuntimeCreateDealScope::HostedTrial
+        && let Err(error) = validate_hosted_trial_quote_terms(&quote)
+    {
+        return error_json(error.0, error.1).into_response();
     }
 
     let success_preimage = generate_success_preimage_hex();
@@ -1068,14 +1345,14 @@ pub async fn runtime_create_deal(
     ) {
         Ok(deal) => deal,
         Err(error) => {
-            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error }));
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
         }
     };
 
     let remote_deal = match remote_json_request::<deals::DealRecord, _>(
         state.as_ref(),
         reqwest::Method::POST,
-        format!("{}/v1/provider/deals", provider.provider_url),
+        format!("{}/v1/provider/deals", provider.provider_sync_url),
         Some(&CreateDealRequest {
             quote: quote.clone(),
             deal: deal_artifact.clone(),
@@ -1087,14 +1364,15 @@ pub async fn runtime_create_deal(
     .await
     {
         Ok(deal) => deal,
-        Err(error) => return error_json(error.0, error.1),
+        Err(error) => return error_json(error.0, error.1).into_response(),
     };
 
     if remote_deal.quote.hash != quote.hash || remote_deal.deal.hash != deal_artifact.hash {
         return error_json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "provider deal response does not match submitted artifacts" }),
-        );
+        )
+        .into_response();
     }
     if let Some(receipt) = remote_deal.receipt.as_ref()
         && let Err(error) = verify_provider_receipt_artifact(
@@ -1107,7 +1385,7 @@ pub async fn runtime_create_deal(
             remote_deal.result_hash.as_deref(),
         )
     {
-        return error_json(error.0, error.1);
+        return error_json(error.0, error.1).into_response();
     }
 
     if let Err(error) = persist_requester_artifacts(
@@ -1121,13 +1399,15 @@ pub async fn runtime_create_deal(
         return error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": "failed to persist requester artifacts", "details": error }),
-        );
+        )
+        .into_response();
     }
 
     let created_at = settlement::current_unix_timestamp();
     let insert_deal_id = remote_deal.deal_id.clone();
     let provider_id = provider.provider_id.clone();
-    let provider_url = provider.provider_url.clone();
+    let provider_public_url = provider.provider_public_url.clone();
+    let provider_sync_url = provider.provider_sync_url.clone();
     let stored = match state
         .db
         .with_write_conn(move |conn| {
@@ -1137,7 +1417,8 @@ pub async fn runtime_create_deal(
                     deal_id: insert_deal_id,
                     idempotency_key: payload.idempotency_key.clone(),
                     provider_id,
-                    provider_url,
+                    provider_url: provider_public_url,
+                    provider_sync_url: Some(provider_sync_url),
                     spec: payload.spec.clone(),
                     quote: quote.clone(),
                     deal: deal_artifact.clone(),
@@ -1155,7 +1436,8 @@ pub async fn runtime_create_deal(
             return error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": "internal error" }),
-            );
+            )
+            .into_response();
         }
     };
 
@@ -1167,7 +1449,7 @@ pub async fn runtime_create_deal(
     if quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
         match load_runtime_requester_deal_and_payment_intent(state.clone(), &stored.deal_id).await {
             Ok((_deal, intent)) => payment_intent = intent,
-            Err(error) => return error_json(error.0, error.1),
+            Err(error) => return error_json(error.0, error.1).into_response(),
         }
     }
 
@@ -1184,25 +1466,41 @@ pub async fn runtime_create_deal(
             payment_intent,
         })),
     )
+        .into_response()
+}
+
+pub async fn hosted_trial_runtime_get_deal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(deal_id): Path<String>,
+) -> Response {
+    if let Err(error) = require_hosted_trial_session_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1).into_response();
+    }
+    runtime_get_deal_inner(state, deal_id).await
 }
 
 pub async fn runtime_get_deal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(deal_id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
     if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1);
+        return error_json(error.0, error.1).into_response();
     }
+    runtime_get_deal_inner(state, deal_id).await
+}
 
+async fn runtime_get_deal_inner(state: Arc<AppState>, deal_id: String) -> Response {
     match sync_requester_deal_from_provider(state, &deal_id).await {
         Ok(deal) => (
             StatusCode::OK,
             Json(json!(RuntimeDealResponse {
                 deal: deal.public_record()
             })),
-        ),
-        Err(error) => error_json(error.0, error.1),
+        )
+            .into_response(),
+        Err(error) => error_json(error.0, error.1).into_response(),
     }
 }
 
@@ -1250,7 +1548,7 @@ pub async fn runtime_mock_pay_deal(
         reqwest::Method::POST,
         format!(
             "{}/v1/provider/deals/{}/mock-pay",
-            stored.provider_url,
+            stored.sync_provider_url(),
             urlencoding::encode(&deal_id)
         ),
         Some(&MockPayDealRequest {
@@ -1321,7 +1619,7 @@ pub async fn runtime_accept_deal(
         reqwest::Method::POST,
         format!(
             "{}/v1/provider/deals/{}/accept",
-            stored.provider_url,
+            stored.sync_provider_url(),
             urlencoding::encode(&deal_id)
         ),
         Some(&ReleaseDealPreimageRequest {
@@ -3796,25 +4094,26 @@ pub(crate) fn require_bearer_token(
 }
 
 fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
-    // Accept three auth kinds on runtime endpoints, in order:
-    //   1. The long-lived runtime control token — normal operator path.
-    //   2. A live session token from the session pool, when the pool is
-    //      enabled. This is how `try.froglet.dev` users reach runtime
-    //      endpoints (their Cloudflare worker adds `Authorization:
-    //      Bearer <session-token>`). Session tokens auth only: all
-    //      signing still happens under the node's own identity.
-    //   3. Fallback to (1) to surface the familiar runtime-auth failure
-    //      message when nothing matches.
-    if require_bearer_token(headers, &state.runtime_auth_token, "runtime").is_ok() {
-        return Ok(());
-    }
+    // The full runtime surface is reserved for the long-lived runtime control
+    // token. Hosted-trial session tokens are accepted only on the worker-gated
+    // public demo routes via `require_hosted_trial_session_auth`.
+    require_bearer_token(headers, &state.runtime_auth_token, "runtime")
+}
+
+fn require_hosted_trial_session_auth(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), ApiFailure> {
     if let Some(pool) = state.session_pool.as_ref()
         && let Some(token) = extract_bearer_token(headers)
         && pool.validate(&token).is_some()
     {
         return Ok(());
     }
-    require_bearer_token(headers, &state.runtime_auth_token, "runtime")
+    Err((
+        StatusCode::UNAUTHORIZED,
+        json!({ "error": "invalid or expired session token" }),
+    ))
 }
 
 /// Extract a raw Bearer token value from an Authorization header without
@@ -3825,6 +4124,30 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     let s = value.to_str().ok()?;
     let rest = s.strip_prefix("Bearer ")?;
     Some(rest.to_string())
+}
+
+async fn require_hosted_trial_origin_secret(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !request_matches_hosted_trial_origin_secret(request.headers(), state.as_ref()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    next.run(request).await
+}
+
+fn request_matches_hosted_trial_origin_secret(headers: &HeaderMap, state: &AppState) -> bool {
+    let Some(expected) = state.config.hosted_trial_origin_secret.as_deref() else {
+        return false;
+    };
+    let Some(value) = headers
+        .get(HOSTED_TRIAL_ORIGIN_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    value.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 fn require_provider_control_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiFailure> {
@@ -7018,7 +7341,7 @@ async fn load_runtime_requester_deal_and_payment_intent(
         reqwest::Method::GET,
         format!(
             "{}/v1/provider/deals/{}/invoice-bundle",
-            stored.provider_url,
+            stored.sync_provider_url(),
             urlencoding::encode(deal_id)
         ),
         Option::<&()>::None,
@@ -10227,9 +10550,12 @@ mod tests {
         }
     }
 
-    fn test_app_state_with_lightning_mode(
+    const TEST_HOSTED_TRIAL_ORIGIN_SECRET: &str = "test-hosted-trial-origin-secret";
+
+    fn test_app_state_with_lightning_mode_and_public_base_url(
         payment_backend: PaymentBackend,
         lightning_mode: LightningMode,
+        public_base_url: Option<&str>,
     ) -> Arc<AppState> {
         let temp_dir = unique_temp_dir("runtime-recovery");
         let db_path = temp_dir.join("node.db");
@@ -10238,7 +10564,7 @@ mod tests {
         let node_config = NodeConfig {
             network_mode: NetworkMode::Clearnet,
             listen_addr: "127.0.0.1:0".to_string(),
-            public_base_url: None,
+            public_base_url: public_base_url.map(str::to_string),
             runtime_listen_addr: "127.0.0.1:0".to_string(),
             runtime_allow_non_loopback: false,
             http_ca_cert_path: None,
@@ -10294,6 +10620,7 @@ mod tests {
             marketplace_url: None,
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
+            hosted_trial_origin_secret: None,
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
@@ -10335,6 +10662,28 @@ mod tests {
         })
     }
 
+    fn test_app_state_with_lightning_mode(
+        payment_backend: PaymentBackend,
+        lightning_mode: LightningMode,
+    ) -> Arc<AppState> {
+        test_app_state_with_lightning_mode_and_public_base_url(
+            payment_backend,
+            lightning_mode,
+            None,
+        )
+    }
+
+    fn test_app_state_with_public_base_url(
+        payment_backend: PaymentBackend,
+        public_base_url: &str,
+    ) -> Arc<AppState> {
+        test_app_state_with_lightning_mode_and_public_base_url(
+            payment_backend,
+            LightningMode::Mock,
+            Some(public_base_url),
+        )
+    }
+
     fn test_app_state(payment_backend: PaymentBackend) -> Arc<AppState> {
         test_app_state_with_lightning_mode(payment_backend, LightningMode::Mock)
     }
@@ -10346,6 +10695,34 @@ mod tests {
         state_mut.config.pricing.execute_wasm = 0;
         state_mut.pricing = PricingTable::from_config(state_mut.config.pricing);
         state
+    }
+
+    fn test_app_state_with_session_pool(payment_backend: PaymentBackend) -> Arc<AppState> {
+        let mut state = test_app_state(payment_backend);
+        let state_mut = Arc::get_mut(&mut state).expect("unique app state");
+        state_mut.config.session_pool.enabled = true;
+        state_mut.config.session_pool.size = 4;
+        state_mut.config.session_pool.ttl_secs = 300;
+        state_mut.config.hosted_trial_origin_secret =
+            Some(TEST_HOSTED_TRIAL_ORIGIN_SECRET.to_string());
+        state_mut
+            .builtin_services
+            .extend(crate::builtins::demo_handlers());
+        state_mut.session_pool = Some(crate::session_pool::SessionPool::new(
+            4,
+            Duration::from_secs(300),
+        ));
+        state
+    }
+
+    fn issue_test_session_token(state: &Arc<AppState>) -> String {
+        state
+            .session_pool
+            .as_ref()
+            .expect("session pool enabled")
+            .assign()
+            .expect("assign session token")
+            .token
     }
 
     #[tokio::test]
@@ -10387,6 +10764,41 @@ mod tests {
         )
         .await
         .expect("persist published service");
+    }
+
+    async fn publish_test_python_service(
+        state: &Arc<AppState>,
+        service_id: &str,
+        price_sats: u64,
+        publication_state: &str,
+    ) {
+        publish_test_service(
+            state,
+            ProviderControlPublishArtifactRequest {
+                service_id: service_id.to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
+                ),
+                summary: Some(format!("test service {service_id}")),
+                mode: Some("sync".to_string()),
+                price_sats,
+                publication_state: Some(publication_state.to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
     }
 
     fn service_addressed_execution_from_record(
@@ -10481,6 +10893,51 @@ mod tests {
 
     fn test_wasm_submission() -> crate::wasm::WasmSubmission {
         test_wasm_submission_with_input(Value::Null)
+    }
+
+    fn test_runtime_create_deal_request(
+        provider_id: &str,
+        provider_url: &str,
+        idempotency_key: &str,
+    ) -> Value {
+        serde_json::to_value(RuntimeCreateDealRequest {
+            provider: RuntimeProviderRef {
+                provider_id: Some(provider_id.to_string()),
+                provider_url: Some(provider_url.to_string()),
+            },
+            offer_id: "execute.compute".to_string(),
+            spec: WorkloadSpec::Wasm {
+                submission: Box::new(test_wasm_submission()),
+            },
+            max_price_sats: None,
+            idempotency_key: Some(idempotency_key.to_string()),
+            payment: None,
+        })
+        .expect("serialize runtime create deal request")
+    }
+
+    fn test_runtime_demo_add_create_deal_request(
+        provider_id: &str,
+        provider_url: &str,
+        idempotency_key: &str,
+    ) -> Value {
+        let execution =
+            ExecutionWorkload::builtin_service("demo.add".to_string(), json!({ "a": 2, "b": 3 }))
+                .expect("demo.add execution workload");
+        serde_json::to_value(RuntimeCreateDealRequest {
+            provider: RuntimeProviderRef {
+                provider_id: Some(provider_id.to_string()),
+                provider_url: Some(provider_url.to_string()),
+            },
+            offer_id: "demo.add".to_string(),
+            spec: WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            max_price_sats: Some(0),
+            idempotency_key: Some(idempotency_key.to_string()),
+            payment: None,
+        })
+        .expect("serialize hosted trial demo.add create deal request")
     }
 
     fn test_wasm_submission_with_input(input: Value) -> crate::wasm::WasmSubmission {
@@ -10833,6 +11290,36 @@ mod tests {
         builder.body(body).expect("build runtime request")
     }
 
+    fn hosted_trial_runtime_request(
+        method: Method,
+        uri: &str,
+        session_token: Option<&str>,
+        body: Option<Value>,
+    ) -> Request<Body> {
+        hosted_trial_runtime_request_with_secret(
+            method,
+            uri,
+            session_token,
+            body,
+            TEST_HOSTED_TRIAL_ORIGIN_SECRET,
+        )
+    }
+
+    fn hosted_trial_runtime_request_with_secret(
+        method: Method,
+        uri: &str,
+        session_token: Option<&str>,
+        body: Option<Value>,
+        origin_secret: &str,
+    ) -> Request<Body> {
+        let mut request = runtime_request(method, uri, session_token, body);
+        request.headers_mut().insert(
+            header::HeaderName::from_static(HOSTED_TRIAL_ORIGIN_SECRET_HEADER),
+            HeaderValue::from_str(origin_secret).expect("origin secret header"),
+        );
+        request
+    }
+
     async fn response_json<T: serde::de::DeserializeOwned>(
         response: axum::response::Response,
     ) -> (StatusCode, T) {
@@ -10920,6 +11407,7 @@ mod tests {
                             idempotency_key: Some(format!("requester-{}", deal_id_for_requester)),
                             provider_id,
                             provider_url,
+                            provider_sync_url: None,
                             spec,
                             quote,
                             deal: deal.clone(),
@@ -10989,6 +11477,25 @@ mod tests {
         let provider_url = runtime_accessible_provider_url(
             state.as_ref(),
             "http://provider:8080",
+            Some(&local_node_id),
+        )
+        .await
+        .expect("runtime-accessible provider url");
+
+        assert_eq!(provider_url, "http://provider:8080");
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_rewrites_local_public_url_to_configured_base_url() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", "http://provider:8080");
+        let state =
+            test_app_state_with_public_base_url(PaymentBackend::None, "https://ai.froglet.dev");
+        let local_node_id = state.identity.node_id().to_string();
+
+        let provider_url = runtime_accessible_provider_url(
+            state.as_ref(),
+            "https://ai.froglet.dev",
             Some(&local_node_id),
         )
         .await
@@ -12914,7 +13421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_and_public_routers_are_separated() {
+    async fn runtime_and_public_routers_are_separated_without_session_pool() {
         let state = test_app_state(PaymentBackend::None);
         let public = public_router(state.clone());
         let runtime = runtime_router(state);
@@ -12922,7 +13429,8 @@ mod tests {
         let public_runtime = public
             .oneshot(
                 Request::builder()
-                    .uri("/v1/runtime/provider/start")
+                    .method(Method::POST)
+                    .uri("/v1/runtime/deals")
                     .body(Body::empty())
                     .expect("runtime request"),
             )
@@ -12940,6 +13448,542 @@ mod tests {
             .await
             .expect("runtime response");
         assert_eq!(runtime_public.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_public_router_exposes_only_demo_runtime_routes() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let public = public_router(state.clone());
+
+        let create_deal = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                None,
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-public-router",
+                )),
+            ))
+            .await
+            .expect("public create-deal response");
+        assert_eq!(create_deal.status(), StatusCode::UNAUTHORIZED);
+
+        let get_deal = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::GET,
+                "/v1/runtime/deals/deal-1",
+                None,
+                None,
+            ))
+            .await
+            .expect("public get-deal response");
+        assert_eq!(get_deal.status(), StatusCode::UNAUTHORIZED);
+
+        for (method, path, body) in [
+            (Method::POST, "/v1/node/execute/wasm", None),
+            (Method::POST, "/v1/node/jobs", None),
+            (Method::GET, "/v1/node/jobs/job-1", None),
+            (Method::POST, "/v1/runtime/search", Some(json!({}))),
+            (Method::GET, "/v1/runtime/providers/provider-1", None),
+            (Method::GET, "/v1/runtime/wallet/balance", None),
+            (Method::GET, "/v1/runtime/settlement/activity", None),
+            (Method::GET, "/v1/runtime/deals/deal-1/payment-intent", None),
+            (Method::POST, "/v1/runtime/deals/deal-1/mock-pay", None),
+            (
+                Method::POST,
+                "/v1/runtime/deals/deal-1/accept",
+                Some(json!({ "expected_result_hash": null })),
+            ),
+        ] {
+            let response = public
+                .clone()
+                .oneshot(hosted_trial_runtime_request(
+                    method.clone(),
+                    path,
+                    None,
+                    body,
+                ))
+                .await
+                .unwrap_or_else(|error| panic!("public {method} {path} failed: {error}"));
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "expected {method} {path} to stay off the public listener",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_demo_runtime_routes_require_valid_auth() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let public = public_router(state);
+
+        for (method, path, token, body) in [
+            (
+                Method::POST,
+                "/v1/runtime/deals",
+                None,
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-missing-auth",
+                )),
+            ),
+            (
+                Method::POST,
+                "/v1/runtime/deals",
+                Some("wrong-token"),
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-invalid-auth",
+                )),
+            ),
+            (
+                Method::POST,
+                "/v1/runtime/deals",
+                Some("test-runtime-token"),
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-runtime-token",
+                )),
+            ),
+            (Method::GET, "/v1/runtime/deals/deal-1", None, None),
+            (
+                Method::GET,
+                "/v1/runtime/deals/deal-1",
+                Some("wrong-token"),
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/runtime/deals/deal-1",
+                Some("test-runtime-token"),
+                None,
+            ),
+        ] {
+            let response = public
+                .clone()
+                .oneshot(hosted_trial_runtime_request(
+                    method.clone(),
+                    path,
+                    token,
+                    body,
+                ))
+                .await
+                .unwrap_or_else(|error| panic!("public {method} {path} failed: {error}"));
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "expected {method} {path} to require a valid hosted-trial session token",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_public_router_accepts_session_token_for_demo_runtime_flow() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        crate::builtins::register_demo_offers(state.as_ref())
+            .await
+            .expect("register demo offers");
+        let provider = spawn_public_test_server(state.clone()).await;
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+        let session_token = issue_test_session_token(&state);
+        let public = public_router(state.clone());
+
+        let create_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(test_runtime_demo_add_create_deal_request(
+                    state.identity.node_id(),
+                    &provider.base_url,
+                    "hosted-trial-session-token",
+                )),
+            ))
+            .await
+            .expect("hosted-trial create deal response");
+        let (create_status, create_payload): (StatusCode, RuntimeCreateDealResponse) =
+            response_json(create_response).await;
+        assert_eq!(create_status, StatusCode::OK);
+
+        let get_response = public
+            .oneshot(hosted_trial_runtime_request(
+                Method::GET,
+                &format!("/v1/runtime/deals/{}", create_payload.deal.deal_id),
+                Some(&session_token),
+                None,
+            ))
+            .await
+            .expect("hosted-trial get deal response");
+        let (get_status, get_payload): (StatusCode, RuntimeDealResponse) =
+            response_json(get_response).await;
+        assert_eq!(get_status, StatusCode::OK);
+        assert_eq!(get_payload.deal.deal_id, create_payload.deal.deal_id);
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_create_deal_rejects_remote_provider_scope() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let session_token = issue_test_session_token(&state);
+        let public = public_router(state);
+
+        let response = public
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-remote-provider",
+                )),
+            ))
+            .await
+            .expect("hosted-trial remote-provider response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_create_deal_rejects_paid_hidden_and_payment_requests() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        publish_test_python_service(&state, "paid-demo", 1, "active").await;
+        publish_test_python_service(&state, "hidden-demo", 0, "hidden").await;
+        crate::builtins::register_demo_offers(state.as_ref())
+            .await
+            .expect("register demo offers");
+        let provider = spawn_public_test_server(state.clone()).await;
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+        let session_token = issue_test_session_token(&state);
+        let public = public_router(state.clone());
+
+        let mut paid_request = test_runtime_demo_add_create_deal_request(
+            state.identity.node_id(),
+            &provider.base_url,
+            "hosted-trial-paid-offer",
+        );
+        paid_request["offer_id"] = json!("paid-demo");
+        let paid_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(paid_request),
+            ))
+            .await
+            .expect("hosted-trial paid-offer response");
+        assert_eq!(paid_response.status(), StatusCode::FORBIDDEN);
+
+        let mut hidden_request = test_runtime_demo_add_create_deal_request(
+            state.identity.node_id(),
+            &provider.base_url,
+            "hosted-trial-hidden-offer",
+        );
+        hidden_request["offer_id"] = json!("hidden-demo");
+        let hidden_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(hidden_request),
+            ))
+            .await
+            .expect("hosted-trial hidden-offer response");
+        assert_eq!(hidden_response.status(), StatusCode::FORBIDDEN);
+
+        let mut payment_request = test_runtime_demo_add_create_deal_request(
+            state.identity.node_id(),
+            &provider.base_url,
+            "hosted-trial-payment-payload",
+        );
+        payment_request["payment"] = json!({ "kind": "test", "token": "secret" });
+        let payment_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(payment_request),
+            ))
+            .await
+            .expect("hosted-trial payment response");
+        assert_eq!(payment_response.status(), StatusCode::FORBIDDEN);
+
+        let mut max_price_request = test_runtime_demo_add_create_deal_request(
+            state.identity.node_id(),
+            &provider.base_url,
+            "hosted-trial-max-price",
+        );
+        max_price_request["max_price_sats"] = json!(1);
+        let max_price_response = public
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(max_price_request),
+            ))
+            .await
+            .expect("hosted-trial max-price response");
+        assert_eq!(max_price_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_quote_terms_must_be_free() {
+        let state = test_app_state_with_session_pool(PaymentBackend::Lightning);
+        let now = settlement::current_unix_timestamp();
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            state.identity.node_id().to_string(),
+            now,
+            now + 600,
+            1_000,
+            300,
+            300,
+        );
+
+        let error = validate_hosted_trial_quote_terms(&quote)
+            .expect_err("paid quote terms must be rejected for hosted trial");
+        assert_eq!(error.0, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_public_routes_require_origin_secret() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let public = public_router(state.clone());
+        let session_token = issue_test_session_token(&state);
+
+        for request in [
+            runtime_request(Method::POST, "/api/sessions", None, None),
+            runtime_request(
+                Method::GET,
+                "/api/sessions/validate",
+                Some(&session_token),
+                None,
+            ),
+            runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-missing-origin-secret",
+                )),
+            ),
+            runtime_request(
+                Method::GET,
+                "/v1/runtime/deals/deal-1",
+                Some(&session_token),
+                None,
+            ),
+        ] {
+            let response = public
+                .clone()
+                .oneshot(request)
+                .await
+                .expect("public response without origin secret");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+
+        for request in [
+            hosted_trial_runtime_request_with_secret(
+                Method::POST,
+                "/api/sessions",
+                None,
+                None,
+                "wrong-secret",
+            ),
+            hosted_trial_runtime_request_with_secret(
+                Method::GET,
+                "/api/sessions/validate",
+                Some(&session_token),
+                None,
+                "wrong-secret",
+            ),
+            hosted_trial_runtime_request_with_secret(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "hosted-trial-wrong-origin-secret",
+                )),
+                "wrong-secret",
+            ),
+            hosted_trial_runtime_request_with_secret(
+                Method::GET,
+                "/v1/runtime/deals/deal-1",
+                Some(&session_token),
+                None,
+                "wrong-secret",
+            ),
+        ] {
+            let response = public
+                .clone()
+                .oneshot(request)
+                .await
+                .expect("public response with wrong origin secret");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_session_endpoints_issue_and_validate_tokens() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let public = public_router(state);
+
+        let create_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/api/sessions",
+                None,
+                None,
+            ))
+            .await
+            .expect("session create response");
+        let (create_status, create_payload): (StatusCode, Value) =
+            response_json(create_response).await;
+        assert_eq!(create_status, StatusCode::OK);
+        let session_token = create_payload["session_token"]
+            .as_str()
+            .expect("session token")
+            .to_string();
+
+        let validate_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::GET,
+                "/api/sessions/validate",
+                Some(&session_token),
+                None,
+            ))
+            .await
+            .expect("session validate response");
+        let (validate_status, validate_payload): (StatusCode, Value) =
+            response_json(validate_response).await;
+        assert_eq!(validate_status, StatusCode::OK);
+        assert_eq!(validate_payload, json!({ "valid": true }));
+
+        for token in [None, Some("wrong-token"), Some("test-runtime-token")] {
+            let response = public
+                .clone()
+                .oneshot(hosted_trial_runtime_request(
+                    Method::GET,
+                    "/api/sessions/validate",
+                    token,
+                    None,
+                ))
+                .await
+                .expect("invalid session validate response");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_runtime_listener_rejects_session_token_on_runtime_routes() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let session_token = issue_test_session_token(&state);
+        let runtime = runtime_router(state);
+
+        for (method, path, body) in [
+            (Method::GET, "/v1/runtime/wallet/balance", None),
+            (Method::POST, "/v1/runtime/search", Some(json!({}))),
+            (
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(test_runtime_create_deal_request(
+                    "provider-1",
+                    "https://provider.example",
+                    "runtime-listener-session-token",
+                )),
+            ),
+            (Method::GET, "/v1/runtime/deals/deal-1", None),
+        ] {
+            let response = runtime
+                .clone()
+                .oneshot(runtime_request(
+                    method.clone(),
+                    path,
+                    Some(&session_token),
+                    body,
+                ))
+                .await
+                .unwrap_or_else(|error| panic!("runtime {method} {path} failed: {error}"));
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "expected {method} {path} to reject hosted-trial session tokens",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_legacy_compute_and_jobs_are_not_exposed_on_public_listener() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let public = public_router(state.clone());
+        let runtime = runtime_router(state);
+
+        let public_execute = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/execute/wasm",
+                None,
+                None,
+            ))
+            .await
+            .expect("public execute-wasm response");
+        assert_eq!(public_execute.status(), StatusCode::NOT_FOUND);
+
+        let runtime_execute = runtime
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/execute/wasm",
+                None,
+                None,
+            ))
+            .await
+            .expect("runtime execute-wasm response");
+        assert_ne!(runtime_execute.status(), StatusCode::NOT_FOUND);
+
+        let public_jobs = public
+            .clone()
+            .oneshot(runtime_request(Method::POST, "/v1/node/jobs", None, None))
+            .await
+            .expect("public create-job response");
+        assert_eq!(public_jobs.status(), StatusCode::NOT_FOUND);
+
+        let public_job_status = public
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/node/jobs/job-1",
+                None,
+                None,
+            ))
+            .await
+            .expect("public job-status response");
+        assert_eq!(public_job_status.status(), StatusCode::NOT_FOUND);
+
+        let runtime_jobs = runtime
+            .oneshot(runtime_request(Method::POST, "/v1/node/jobs", None, None))
+            .await
+            .expect("runtime create-job response");
+        assert_ne!(runtime_jobs.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

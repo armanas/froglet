@@ -1,57 +1,19 @@
 ---
-title: Learn Froglet
-description: From launch paths to protocol internals, everything you need to evaluate and self-host Froglet.
+title: Learn
+description: Legacy landing page kept for compatibility. Use /docs as the canonical Froglet manual.
 ---
 
-<div class="learn-hero">
+<div class="learn-hero compact">
   <div>
-    <div class="learn-pill">Start here</div>
-    <p class="learn-lead">Start with the public launch story, then go deeper into the protocol.</p>
-    <p class="learn-sublead">The launch surface is intentionally narrow: Try In Cloud or Run Locally. The local path then becomes install, connect an agent, connect a payment rail. After that, the rest of the docs explain identity, deals, settlement, and the trust model.</p>
-    <div class="learn-chip-row">
-      <span class="learn-chip">Two public entry points</span>
-      <span class="learn-chip">Three launch payment rails</span>
-      <span class="learn-chip">Interactive protocol diagrams</span>
-    </div>
-  </div>
-  <div class="learn-roadmap">
-    <a class="learn-roadmap-step" href="/learn/cloud-trial/"><span><strong>☁️ 0. Try In Cloud</strong><small>temporary identity and hosted trial contract</small></span><span>4 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/quickstart/"><span><strong>🖥️ 1. Run Locally</strong><small>install, connect agent, connect payment</small></span><span>10 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/agents/"><span><strong>🤖 2. Agents</strong><small>Claude Code, Codex, and OpenClaw setup</small></span><span>5 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/payment-rails/"><span><strong>💳 3. Payments</strong><small>choose Lightning, Stripe, or x402</small></span><span>6 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/deal-flow/"><span><strong>🔄 4. Deal flow</strong><small>the full evidence chain</small></span><span>8 min</span></a>
-    <a class="learn-roadmap-step" href="/learn/economics/"><span><strong>🎯 5. Trust & economics</strong><small>how the market stays honest</small></span><span>9 min</span></a>
+    <div class="learn-pill">Legacy route</div>
+    <p class="learn-lead">Use <code>/docs/</code> as the canonical Froglet manual.</p>
+    <p class="learn-sublead">This page stays only so older links keep working. New readers should start at <a href="/docs/">Docs Home</a>, then choose the hosted trial, the local quickstart, or the walkthrough.</p>
   </div>
 </div>
-
-<div class="learn-stat-strip">
-  <div class="learn-stat"><strong>2</strong><span>public entry points at launch</span></div>
-  <div class="learn-stat"><strong>6</strong><span>artifact types in the protocol chain</span></div>
-  <div class="learn-stat"><strong>3</strong><span>launch payment rails in the local path</span></div>
-  <div class="learn-stat"><strong>15 min</strong><span>temporary hosted identity lifetime</span></div>
-</div>
-
-## Froglet in one picture
-
-<div class="protocol-chain">
-  <div class="protocol-step"><strong>🔑 Keypair</strong><span>You generate identity locally. Nobody grants it.</span></div>
-  <div class="protocol-step"><strong>📋 Descriptor</strong><span>The provider declares who it is and what it can do.</span></div>
-  <div class="protocol-step"><strong>💰 Quote</strong><span>The provider prices a specific workload for a requester.</span></div>
-  <div class="protocol-step"><strong>🤝 Deal</strong><span>The requester cryptographically commits to that quote.</span></div>
-  <div class="protocol-step"><strong>⚙️ Execute</strong><span>The provider runs the workload under declared limits.</span></div>
-  <div class="protocol-step"><strong>🧾 Receipt</strong><span>The provider signs the outcome, settlement state, and result hash.</span></div>
-</div>
-
-## Chapter guide
 
 <div class="chapter-grid">
-  <a class="chapter-card" href="/learn/cloud-trial/"><strong>☁️ Try In Cloud</strong><small>Temporary identity, free-only deal flow, and the hosted trial contract.</small></a>
-  <a class="chapter-card" href="/learn/quickstart/"><strong>🖥️ Run Locally</strong><small>Install Froglet, generate agent config, and generate a payment env snippet.</small></a>
-  <a class="chapter-card" href="/learn/agents/"><strong>🤖 Connect Agents</strong><small>Generate ready-to-use config for Claude Code, Codex, or OpenClaw.</small></a>
-  <a class="chapter-card" href="/learn/payment-rails/"><strong>💳 Payment Rails</strong><small>Choose between Lightning, Stripe, and x402 with setup and verification steps.</small></a>
-  <a class="chapter-card" href="/learn/introduction/"><strong>❓ What is Froglet?</strong><small>The mental model for the whole protocol and why it exists.</small></a>
-  <a class="chapter-card" href="/learn/identity/"><strong>🔑 Cryptographic Identity</strong><small>Why secp256k1 identities are self-sovereign and hard to forge.</small></a>
-  <a class="chapter-card" href="/learn/deal-flow/"><strong>🔄 The Deal Flow</strong><small>A clickable artifact chain that shows how one interaction becomes evidence.</small></a>
-  <a class="chapter-card" href="/learn/settlement/"><strong>🤝 Settlement</strong><small>How payment proofs bind to deals and receipts.</small></a>
-  <a class="chapter-card" href="/learn/economics/"><strong>🎯 Trust & Economics</strong><small>How staked reputation and game theory make honesty the dominant strategy.</small></a>
+  <a class="chapter-card" href="/docs/"><strong>Docs Home</strong><small>The canonical entry point for onboarding, protocol concepts, payment rails, and reference pages.</small></a>
+  <a class="chapter-card" href="/learn/cloud-trial/"><strong>Try In Cloud</strong><small>Run the hosted demo flow against the public service.</small></a>
+  <a class="chapter-card" href="/learn/quickstart/"><strong>Run Locally</strong><small>Install Froglet and start a node you control.</small></a>
+  <a class="chapter-card" href="/demo/"><strong>Watch Demo</strong><small>See the full discovery, deal, execution, and receipt loop before going deeper.</small></a>
 </div>

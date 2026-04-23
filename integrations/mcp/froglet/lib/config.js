@@ -21,10 +21,12 @@ import {
 function resolveProviderUrl() {
   const explicit = process.env.FROGLET_PROVIDER_URL
   if (typeof explicit === "string" && explicit.trim().length > 0) {
-    return normalizeBaseUrl(explicit, "FROGLET_PROVIDER_URL")
+    return normalizeBaseUrl(explicit, "FROGLET_PROVIDER_URL", { allowInsecure: true })
   }
   const fallback = process.env.FROGLET_BASE_URL
-  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_PROVIDER_URL")
+  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_PROVIDER_URL", {
+    allowInsecure: true
+  })
 }
 
 /**
@@ -37,10 +39,12 @@ function resolveProviderUrl() {
 function resolveRuntimeUrl() {
   const explicit = process.env.FROGLET_RUNTIME_URL
   if (typeof explicit === "string" && explicit.trim().length > 0) {
-    return normalizeBaseUrl(explicit, "FROGLET_RUNTIME_URL")
+    return normalizeBaseUrl(explicit, "FROGLET_RUNTIME_URL", { allowInsecure: true })
   }
   const fallback = process.env.FROGLET_BASE_URL
-  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_RUNTIME_URL")
+  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_RUNTIME_URL", {
+    allowInsecure: true
+  })
 }
 
 /**

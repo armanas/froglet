@@ -5,38 +5,38 @@
 
 :root {
 	/* Typography */
-	--froglet-font-sans: 'Source Sans 3', system-ui, sans-serif;
-	--froglet-font-serif: 'Source Serif 4', Georgia, serif;
+	--froglet-font-sans: 'Instrument Sans', system-ui, sans-serif;
+	--froglet-font-serif: 'Newsreader', Georgia, serif;
 	--froglet-font-code: 'JetBrains Mono', monospace;
 
 	/* Dark-only palette (HSL channels — wrap with hsl() when used) */
-	--froglet-background: 220 10% 8%;
-	--froglet-foreground: 220 10% 90%;
-	--froglet-surface: 220 10% 12%;
-	--froglet-surface-2: 220 10% 18%;
-	--froglet-card: 220 10% 11%;
-	--froglet-muted: 220 8% 65%;
-	--froglet-border: 220 10% 25%;
-	--froglet-border-strong: 141 24% 32%;
-	--froglet-accent: 141 40% 54%;
-	--froglet-accent-foreground: 220 10% 10%;
-	--froglet-accent-soft: 141 24% 18%;
-	--froglet-accent-strong: 141 35% 72%;
-	--froglet-code: 220 12% 10%;
-	--froglet-code-surface: 220 10% 15%;
+	--froglet-background: 216 19% 7%;
+	--froglet-foreground: 46 18% 92%;
+	--froglet-surface: 216 16% 12%;
+	--froglet-surface-2: 215 14% 17%;
+	--froglet-card: 216 18% 10%;
+	--froglet-muted: 218 9% 68%;
+	--froglet-border: 215 13% 25%;
+	--froglet-border-strong: 151 22% 44%;
+	--froglet-accent: 151 44% 58%;
+	--froglet-accent-foreground: 216 20% 8%;
+	--froglet-accent-soft: 151 25% 17%;
+	--froglet-accent-strong: 148 55% 73%;
+	--froglet-code: 216 22% 8%;
+	--froglet-code-surface: 216 15% 16%;
 
-	/* Brutalist: no elevation */
-	--froglet-shadow: none;
+	/* Subtle depth for framed protocol surfaces */
+	--froglet-shadow: 0 18px 60px hsl(216 35% 3% / 0.28);
 
 	/* Layout */
 	--froglet-shell-max-width: 1120px;
 	--froglet-shell-gutter: 1rem;
-	--froglet-section-space: 4.75rem;
+	--froglet-section-space: 4.5rem;
 
-	/* Card — square, no radius */
-	--froglet-card-radius: 0;
-	--froglet-card-padding: 1rem;
-	--froglet-card-padding-roomy: 1.6rem;
+	/* Card */
+	--froglet-card-radius: 6px;
+	--froglet-card-padding: 1.05rem;
+	--froglet-card-padding-roomy: 1.75rem;
 	--froglet-card-hover-shift: -1px;
 
 	/* Grid */
@@ -47,11 +47,11 @@
 	--froglet-transition-fast: 140ms ease;
 
 	/* Tag colors (HSL channels) */
-	--froglet-tag-purple: 270 60% 62%;
-	--froglet-tag-blue: 220 70% 62%;
-	--froglet-tag-cyan: 185 60% 55%;
-	--froglet-tag-green: 141 43% 36%;
-	--froglet-tag-yellow: 45 80% 55%;
+	--froglet-tag-purple: 264 45% 68%;
+	--froglet-tag-blue: 210 62% 66%;
+	--froglet-tag-cyan: 184 46% 61%;
+	--froglet-tag-green: 151 44% 58%;
+	--froglet-tag-yellow: 44 72% 64%;
 
 	/* Starlight integration */
 	--sl-font: var(--froglet-font-sans);
