@@ -108,7 +108,9 @@ Every step writes to `_tmp/release_gate/<ts>/<step>.log`, and the summary is
 also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
 
 First-party hosted smoke for `ai.froglet.dev` is intentionally outside this
-public gate and is maintained separately from the public repo checks.
+scripted public-repo gate and is maintained separately from the public repo
+checks. Launch still requires separate hosted evidence in the manual gates
+below.
 
 ### Gate steps
 
@@ -121,12 +123,29 @@ public gate and is maintained separately from the public repo checks.
 | `package` | Ready (opt-in) | Release asset packaging + verification | `scripts/package_release_assets.sh` + `scripts/verify_release_assets.sh` | Requires `--version`, `--platform`, `--arch` |
 | `install-smoke` | Ready (opt-in) | Installer-path smoke from packaged assets | `scripts/smoke_install_from_assets.sh` | Implies `--package-assets`; packaged target must match the current host |
 
-### Still outside the gate
+### Hard launch gates outside the script
 
-- Live MCP smoke with Claude auth. Blocked on hosted stack plus valid Claude
-  auth. The launch fallback date remains 2026-05-15.
-- First-party hosted smoke for `froglet.dev` and `ai.froglet.dev`. That
-  operator-specific check is maintained separately from this public repo.
+The script above is necessary, but it is not sufficient for a public launch.
+These checks must be green before a `v0.1.0` launch claim:
+
+- Live Claude MCP smoke. Claude Code or Claude Desktop must load the generated
+  Froglet MCP config and complete the expected tool smoke. This is a hard
+  blocker, not a nice-to-have.
+- First-party hosted trial smoke. `try.froglet.dev` must mint a session and
+  complete the documented free `demo.add` flow with a receipt.
+- Hosted upstream guard smoke. Direct public session/demo writes to
+  `ai.froglet.dev` must remain outside contract and reject as documented in
+  [HOSTED_TRIAL.md](HOSTED_TRIAL.md).
+- Distribution smoke for every launch channel named in the release notes. See
+  [DISTRIBUTION_MATRIX.md](DISTRIBUTION_MATRIX.md).
+
+Hosted paid rails are not part of the v0.1.0 launch gate. Hosted Lightning,
+Stripe, and x402 belong to v0.2 unless a later release plan explicitly changes
+that scope.
+
+Confidential/TEE execution must remain framed as experimental for v0.1.0
+unless a real attestation backend is proven and documented. The current launch
+copy must not imply production TEE guarantees from a mock or limited backend.
 
 ### Cut steps
 
@@ -154,6 +173,87 @@ git tag v0.1.0-alpha.1
 git push origin v0.1.0-alpha.1
 ```
 
+## GitHub Release Body Draft
+
+Use this as the release body for `v0.1.0` after replacing evidence
+placeholders with links to the final release gate, workflow, and hosted smoke
+results.
+
+````md
+# Froglet v0.1.0
+
+Froglet v0.1.0 is the first public release of the reference Froglet node and
+bot-facing integration surface. It ships the signed kernel artifacts, the
+`froglet-node` binary, container images, local agent setup, and a constrained
+hosted trial for one free end-to-end deal.
+
+## What ships
+
+- `froglet-node` binaries for Linux x86_64, Linux arm64, and macOS arm64
+- `SHA256SUMS` for release asset verification
+- GHCR images:
+  - `ghcr.io/armanas/froglet-provider:0.1.0`
+  - `ghcr.io/armanas/froglet-runtime:0.1.0`
+  - `ghcr.io/armanas/froglet-mcp:0.1.0`
+- Docker Compose starter configuration
+- OpenClaw/NemoClaw plugin under `integrations/openclaw/froglet/`
+- MCP server under `integrations/mcp/froglet/`
+- public docs at `froglet.dev` and `docs.froglet.dev`
+- free hosted trial at `try.froglet.dev`
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+```
+
+To pin this release:
+
+```bash
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
+```
+
+## Verification
+
+Release evidence:
+
+- default release gate: `<link-to-release-gate-summary>`
+- compose OpenClaw/MCP smoke: `<link-to-compose-smoke-evidence>`
+- Claude MCP smoke: `<link-to-claude-smoke-evidence>`
+- hosted trial smoke: `<link-to-hosted-trial-curl-transcript>`
+- release workflow: `<link-to-github-actions-run>`
+- checksums: `<link-to-SHA256SUMS>`
+
+## Hosted trial scope
+
+The hosted trial proves one free discover -> deal -> result -> receipt flow
+through `try.froglet.dev`. It does not prove paid rails, persistent identity,
+hosted account recovery, or general hosted runtime access.
+
+## Payment rails
+
+Local and self-hosted payment setup is documented for Lightning, Stripe, and
+x402. Hosted paid rails are v0.2 scope:
+
+- hosted Lightning: v0.2
+- hosted Stripe: v0.2
+- hosted x402: v0.2
+
+## Confidential and TEE scope
+
+Confidential routes and artifacts are experimental in v0.1.0. The launch does
+not claim production TEE guarantees unless a real backend has been separately
+proven and documented; mock or limited attestation remains explicitly limited.
+
+## Known limits
+
+- no hosted paid settlement
+- no persistent hosted user identity
+- no PyPI, npm registry, Homebrew, or OS package-manager distribution
+- marketplace and hosted-provider claims depend on the linked live smoke
+  evidence above
+````
+
 ## Release Notes Template
 
 Use the matching changelog section as the release body. For the first alpha,
@@ -167,6 +267,10 @@ the release notes should call out:
 - public OpenClaw integration
 - reference discovery
 - reference operator image
-- launch payment rails: Lightning, Stripe, and x402
+- launch payment rails for local/self-hosted use: Lightning, Stripe, and x402
+- hosted paid rails deferred to v0.2
+- Claude MCP smoke evidence, because it is a hard launch blocker
+- confidential/TEE scope as experimental unless a real backend is proven and
+  documented
 - any intentionally deferred layers, especially external broker and closed higher-layer
   services
