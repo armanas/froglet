@@ -113,7 +113,7 @@ More detail: [Connect Agents](/learn/agents/)
 
 ## 4. Connect a payment rail
 
-Generate a validated env snippet for the rail you want to launch with:
+Generate a validated env snippet for the rail you want to run locally or self-host:
 
 ```bash
 cd froglet && ./scripts/setup-payment.sh lightning
@@ -121,7 +121,7 @@ cd froglet && ./scripts/setup-payment.sh lightning
 
 That path uses Lightning mock mode by default, which is enough to exercise the paid-deal flow locally without a wallet.
 
-For the other launch rails:
+For the other local/self-hosted adapters:
 
 ```bash
 cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> ./scripts/setup-payment.sh stripe

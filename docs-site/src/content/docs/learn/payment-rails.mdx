@@ -1,13 +1,13 @@
 ---
 title: Payment Rails
-description: Choose between Lightning, Stripe, and x402 for the local Froglet launch path.
+description: Choose between Lightning, Stripe, and x402 for local or self-hosted Froglet nodes.
 ---
 
 <div class="learn-hero compact">
   <div>
-    <div class="learn-pill">Launch rails</div>
-    <p class="learn-lead">Lightning, Stripe, and x402 are the launch-blocking rails.</p>
-    <p class="learn-sublead">Each rail has a setup helper, operator docs, and a verification probe. PayPal is out of scope for launch. GPU stays docs-only and does not change the payment surface.</p>
+    <div class="learn-pill">Local adapters</div>
+    <p class="learn-lead">Lightning, Stripe, and x402 are local/self-hosted launch adapters.</p>
+    <p class="learn-sublead">Each adapter has a setup helper, operator docs, and a verification probe. The hosted trial at <code>try.froglet.dev</code> proves only the free <code>demo.add</code> path; first-party hosted paid rails are deferred to v0.2.</p>
   </div>
 </div>
 
@@ -32,7 +32,7 @@ Each command:
 | Rail | Best first use | Verification path |
 |------|----------------|-------------------|
 | Lightning | local paid-flow development and Bitcoin-native settlement | mock mode locally, optional `lnd_rest` probe |
-| Stripe | card-backed test-mode and hosted merchant flows | `GET /v1/account` with a test secret key and `livemode=false` |
+| Stripe | card-backed test-mode on a local or self-hosted node | `GET /v1/account` with a test secret key and `livemode=false` |
 | x402 | USDC-style machine-to-machine flow | local Base-address/network validation plus facilitator `/verify` reachability |
 
 The current public Stripe and x402 adapters reuse the configured numeric
@@ -47,7 +47,7 @@ conversion from sats into backend-native fiat or token units.
 
 ## Verification lifecycle
 
-Across all three launch rails, the local `/v1/node/*` runtime helpers use the
+Across all three local/self-hosted adapters, the local `/v1/node/*` runtime helpers use the
 same stages:
 
 1. descriptor exposure

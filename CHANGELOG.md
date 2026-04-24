@@ -7,8 +7,28 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ## [Unreleased]
 
+### Added
+
+- `docs/RELEASE_PLAN.md` with the v0.1.0 launch plan, hard release
+  blockers, evidence placeholders, and explicit v0.2 deferrals for hosted
+  paid rails.
+- `docs/DISTRIBUTION_MATRIX.md` mapping release artifacts, publication
+  channels, verification commands, and launch blockers.
+- Docs-site and hosted-trial privacy posture note: v0.1.0 has no account,
+  email, analytics cookie, or conversion tracking in the public hosted trial
+  contract.
+- DCO contribution policy, with manual maintainer enforcement for v0.1.0
+  unless a DCO bot is installed.
+
 ### Changed
 
+- Public claim language now states that `try.froglet.dev` proves only the free
+  `demo.add` round-trip in v0.1.0, while Lightning, Stripe, and x402 remain
+  local/self-hosted launch adapters and first-party hosted paid rails are
+  deferred to v0.2.
+- `docs/RELEASE.md` now includes a v0.1.0 GitHub release body draft and
+  separates scripted release gates from hard manual launch gates such as
+  Claude MCP smoke and hosted-trial verification.
 - `docs/SUBDOMAIN_PLAN.md` flipped `ai.froglet.dev` and
   `marketplace.froglet.dev` status to **Live** and updated the
   `try.froglet.dev` row to reflect the Cloudflare Worker scaffold plus the

@@ -161,11 +161,11 @@ and operator guide need to enforce this.
 | T3 | Container escape from `run_container` | `docker run --network none` + mounted tempdir only | Same microVM argument as T2 for genuine multi-tenancy. |
 | T4 | Forged offers claiming a descriptor they did not sign | `validate_offer_artifact` checks `offer.signer == offer.payload.provider_id` | Cross-binding `descriptor_hash → descriptor.signer` lookup is planned at the service layer. Low impact; the fixture attacker would still fail at payment. |
 | T5 | Stolen node identity key | Identity key is on-disk, operator-protected. No HSM path today. | A documented key-rotation runbook is a launch prerequisite. HSM / KMS is deferred (post-MVP). |
-| T6 | Stolen Stripe or Lightning secrets | Secrets injected via env at deploy time; not checked into source (verified by gitleaks §2). | Hosted LND, webhook receiver, and rotation procedures are all launch prerequisites. |
+| T6 | Stolen Stripe or Lightning secrets | Secrets injected via env at deploy time; not checked into source (verified by gitleaks §2). | Hosted paid-rail secrets are not part of the v0.1.0 `try.froglet.dev` demo.add trial. Hosted LND, webhook receiver, and rotation procedures are v0.2 hosted paid-rail prerequisites. |
 | T7 | Public endpoint abused as compute vector | `ConcurrencyLimitLayer(16)` on provider_routes; request body cap `MAX_BODY_BYTES` | Per-IP rate limiting at the edge is a launch prerequisite. The in-process limit caps concurrency, not calls/sec. |
 | T8 | Unauthenticated write via the deprecated combined `router()` | `#[deprecated]` attribute fires outside `cfg(test)`; comment in source warns explicitly | Deploy automation and the operator guide must pick the split routers explicitly; add a smoke check that confirms `/execute_wasm` requires auth in prod. |
-| T9 | Channel-state loss on the hosted LND node | SCB plan documented | Hard launch prerequisite. Not optional. |
-| T10 | Forged Stripe webhook → double-settlement | Signature verify + idempotent event-id dedup remain planned work | Hard launch prerequisite. |
+| T9 | Channel-state loss on the hosted LND node | SCB plan documented | v0.2 hosted Lightning prerequisite; not applicable to the v0.1.0 free hosted trial. |
+| T10 | Forged Stripe webhook → double-settlement | Signature verify + idempotent event-id dedup remain planned work | v0.2 hosted Stripe prerequisite; not applicable to the v0.1.0 free hosted trial. |
 
 ### 3.4 Residual risks accepted for launch
 

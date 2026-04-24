@@ -17,7 +17,7 @@ Public launch entry points:
 - [../docs-site/src/content/docs/learn/cloud-trial.mdx](../docs-site/src/content/docs/learn/cloud-trial.mdx): hosted trial walkthrough
 - [../docs-site/src/content/docs/learn/quickstart.mdx](../docs-site/src/content/docs/learn/quickstart.mdx): local self-host quickstart
 - [../docs-site/src/content/docs/learn/agents.mdx](../docs-site/src/content/docs/learn/agents.mdx): agent setup
-- [../docs-site/src/content/docs/learn/payment-rails.mdx](../docs-site/src/content/docs/learn/payment-rails.mdx): Lightning, Stripe, and x402 setup
+- [../docs-site/src/content/docs/learn/payment-rails.mdx](../docs-site/src/content/docs/learn/payment-rails.mdx): Lightning, Stripe, and x402 local/self-hosted setup
 
 ## Specifications
 
