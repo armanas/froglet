@@ -350,16 +350,46 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Check GCP test rig configuration
+        id: gcp_config
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          missing=()
+          [[ -n "$GCP_WORKLOAD_IDENTITY_PROVIDER" ]] || missing+=("GCP_WORKLOAD_IDENTITY_PROVIDER")
+          [[ -n "$GCP_SERVICE_ACCOUNT" ]] || missing+=("GCP_SERVICE_ACCOUNT")
+          [[ -n "$FROGLET_GCP_PROJECT" ]] || missing+=("GCP_PROJECT_ID")
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            printf 'Missing required GCP secret(s): %s\n' "${missing[*]}"
+
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+              echo "::error title=GCP Test Rig not configured::Missing required GCP secret(s): ${missing[*]}"
+              exit 1
+            fi
+
+            echo "::notice title=GCP Test Rig skipped::Missing required GCP secret(s): ${missing[*]}"
+            exit 0
+          fi
+
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
       - name: Authenticate to GCP
+        if: steps.gcp_config.outputs.configured == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
+        if: steps.gcp_config.outputs.configured == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Run GCP test rig
+        if: steps.gcp_config.outputs.configured == 'true'
         env:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           OPENCLAW_API_KEY: ${{ secrets.OPENCLAW_API_KEY }}
@@ -371,6 +401,7 @@ jobs:
         run: ./scripts/test_suite.sh gcp_rig
 
       - name: Run GCP acceptance free lane
+        if: steps.gcp_config.outputs.configured == 'true'
         env:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_RIG_CATEGORIES: acceptance
@@ -382,6 +413,7 @@ jobs:
         run: ./scripts/test_suite.sh gcp_rig
 
       - name: Run GCP acceptance priced lane
+        if: steps.gcp_config.outputs.configured == 'true'
         env:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_RIG_CATEGORIES: acceptance
@@ -391,13 +423,14 @@ jobs:
         run: ./scripts/test_suite.sh gcp_rig
 
       - name: Run GCP compose resilience lane
+        if: steps.gcp_config.outputs.configured == 'true'
         env:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_RIG_CATEGORIES: canary chaos
         run: ./scripts/test_suite.sh gcp_rig
 
       - name: Cleanup GCP resources
-        if: always()
+        if: always() && steps.gcp_config.outputs.configured == 'true'
         env:
           FROGLET_GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
