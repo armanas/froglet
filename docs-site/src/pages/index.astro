@@ -14,16 +14,16 @@ Astro.locals.starlightRoute = { hasSidebar: false };
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Froglet &#8212; Identity, execution, and settlement for agent commerce</title>
-<meta name="description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally and connect your own agent, marketplace, and payment rail.">
+<meta name="description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally with your own agent and payment rail. An open marketplace is future potential.">
 <meta name="color-scheme" content="dark">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta property="og:description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally and connect your own agent, marketplace, and payment rail.">
+<meta property="og:description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally with your own agent and payment rail. An open marketplace is future potential.">
 <meta property="og:url" content="https://froglet.dev">
 <meta property="og:site_name" content="Froglet">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta name="twitter:description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally and connect your own agent, marketplace, and payment rail.">
+<meta name="twitter:description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally with your own agent and payment rail. An open marketplace is future potential.">
 <ThemeProvider />
 </head>
 <body>
@@ -51,7 +51,7 @@ Astro.locals.starlightRoute = { hasSidebar: false };
           <div class="hero-console-label">Prompt for your AI agent</div>
           <div class="hero-prompt">
             <Code
-              code={`Read https://try.froglet.dev/llms.txt. Run the hosted demo exactly. Report HTTP statuses, result, mismatches, what Froglet proves, and one next experiment.`}
+              code={`Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not, then give me an honest, objective assessment that reports the observed HTTP statuses, observed result, and any mismatches between the docs and the live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.`}
               lang="md"
             />
           </div>
@@ -71,7 +71,7 @@ Astro.locals.starlightRoute = { hasSidebar: false };
             <li>Cloudflare Worker in front of the Lightsail-hosted reference node.</li>
             <li>Shared session-token pool — authentication only, not per-session identity.</li>
             <li>Canonical hosted demo: run <code>demo.add</code>, fetch the succeeded deal result, then inspect the feed.</li>
-            <li>Zero product analytics: no account, email, analytics cookie, or conversion tracking in the v0.1.0 trial contract.</li>
+            <li>Zero product analytics: no account, email, analytics cookie, or conversion tracking in the public trial contract.</li>
           </ul>
           <div class="compare-footer">
             <div class="compare-shell">
@@ -83,7 +83,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/provider/s
                 meta='title="Hosted demo flow"'
               />
             </div>
-            <div class="compare-note">What it proves: shared-session auth, live discovery, and one free demo.add discover → deal → sync-result → receipt round-trip. What it does not prove: paid rails, persistent identity, or publishing services.</div>
+            <div class="compare-note">What it proves: shared-session auth, live discovery, and one free demo.add discover → deal → sync-result → receipt round-trip. What it does not prove: paid rails, persistent identity, publishing services, or current marketplace depth. An open marketplace of independently operated services is future potential, not part of the hosted proof.</div>
             <div class="compare-actions learn-button-row">
               <a href="/learn/cloud-trial/" class="learn-button">Hosted trial docs</a>
             </div>

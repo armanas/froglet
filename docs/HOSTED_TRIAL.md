@@ -106,15 +106,15 @@ not uniquely identify a session; they identify the hosted node.
 
 - paid settlement rails
 - persistent identity or account recovery
-- service publication or marketplace depth
+- service publication or current marketplace depth; an open marketplace of independently operated services is future potential, not part of the hosted proof
 - long-running, batch, or GPU workloads
 
 ## Privacy posture
 
-The v0.1.0 hosted trial has a zero-product-analytics posture: no account,
-email, analytics cookie, or conversion tracking is part of the public trial
-contract. The service still may emit minimal edge/origin operational logs
-needed to run and abuse-protect the gateway.
+The hosted trial has a zero-product-analytics posture: no account, email,
+analytics cookie, or conversion tracking is part of the public trial contract.
+The service still may emit minimal edge/origin operational logs needed to run
+and abuse-protect the gateway.
 
 `POST /v1/runtime/deals/{deal_id}/accept` is reserved for Lightning settlement
 flows. The free hosted `demo.add` proof completes through
@@ -126,4 +126,6 @@ The hosted trial is a first-party convenience entry point built on Froglet. The
 public docs here define the user flow and API contract; the self-host path
 remains the default way to understand and run Froglet locally — and the only
 path for non-trial, persistent identity, paid deals, and service publication.
-First-party hosted paid rails are deferred to v0.2.
+An open marketplace of independently operated services is future potential, not
+current hosted-trial marketplace depth. First-party hosted paid rails are
+deferred to v0.2.
