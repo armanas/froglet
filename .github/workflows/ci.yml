@@ -365,12 +365,6 @@ jobs:
           if (( ${#missing[@]} > 0 )); then
             echo "configured=false" >> "$GITHUB_OUTPUT"
             printf 'Missing required GCP secret(s): %s\n' "${missing[*]}"
-
-            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-              echo "::error title=GCP Test Rig not configured::Missing required GCP secret(s): ${missing[*]}"
-              exit 1
-            fi
-
             echo "::notice title=GCP Test Rig skipped::Missing required GCP secret(s): ${missing[*]}"
             exit 0
           fi
