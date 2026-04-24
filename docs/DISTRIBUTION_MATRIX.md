@@ -13,19 +13,18 @@ Evidence referenced here:
 - Release gate summary:
   `/Users/armanas/Projects/github.com/armanas/froglet/_tmp/release_gate/20260424T000837Z/summary.tsv`
 - Hosted verifier summary:
-  `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260423T233450Z/summary.tsv`
+  `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260424T073839Z/summary.tsv`
 - Hosted verifier smoke log:
-  `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260423T233450Z/hosted_smoke.log`
+  `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260424T073839Z/hosted_smoke.log`
 - 2026-04-24 live endpoint spot-check:
-  `froglet.dev/`, `docs.froglet.dev/learn/quickstart/`,
+  `froglet.dev/`, `froglet.dev/learn/quickstart/`,
   `ai.froglet.dev/health`, `try.froglet.dev/llms.txt`, and
   `marketplace.froglet.dev/healthz` returned 200.
 - 2026-04-24 hosted demo spot-check:
   `try.froglet.dev` returned a succeeded `demo.add` deal with `sum=12` and a
   receipt.
-- 2026-04-24 hosted version spot-check:
-  `https://ai.froglet.dev/v1/node/capabilities` returned
-  `version=0.1.0-alpha.2`.
+- 2026-04-24 hosted version spot-check after Lightsail deployment 9:
+  `https://ai.froglet.dev/v1/node/capabilities` returned `version=0.1.0`.
 - 2026-04-24 release-asset checksum spot-check:
   `gh release download v0.1.0 --repo armanas/froglet` followed by
   `shasum -a 256 -c SHA256SUMS` returned OK for all three binary archives.
@@ -46,9 +45,10 @@ Evidence referenced here:
 | Runtime image | `ghcr.io/armanas/froglet-runtime:0.1.0` | Release workflow | `docker buildx imagetools inspect` returned `sha256:8eba43dcbac6b2e8cb2a4aa1793e3a26ea99aa5e2b49d351878e5816f9bbbff2` | Published runtime image. |
 | MCP image | `ghcr.io/armanas/froglet-mcp:0.1.0` and `latest` | Release workflow | `docker buildx imagetools inspect ghcr.io/armanas/froglet-mcp:0.1.0` returned `sha256:36ca8101af5c2085b769d9b567681f939ce1baca0e7378e469e491361e0788ce` | Published MCP image at `:0.1.0`; do not cite `latest` without separately inspecting it. |
 | Docker Compose | `compose.yaml`, `compose.provider.yaml`, `compose.runtime.yaml` | Repo | Scheduled CI Docker Compose job passed: <https://github.com/armanas/froglet/actions/runs/24872056345/job/72820478876> | Compose config/build/start plus OpenClaw and MCP compose smoke passed in CI. |
-| Docs site | `https://froglet.dev` and `https://docs.froglet.dev` | Cloudflare Workers deployment | `docs.froglet.dev` passed hosted smoke; 2026-04-24 live route spot-check returned 200 for `froglet.dev/` and `docs.froglet.dev/learn/quickstart/` | Public docs surfaces are live for launch copy. |
-| Hosted trial | `https://try.froglet.dev` | First-party Cloudflare Worker and hosted node | Session mint and `demo.add` round trip passed hosted smoke; 2026-04-24 spot-check returned `sum=12` and a receipt; missing Bearer on `/v1/feed` returned 401; hosted node currently reports `version=0.1.0-alpha.2` | Free-only hosted trial for `demo.add`. No hosted paid rail claim. Do not publish broad v0.1.0 launch posts until hosted version drift is resolved or disclosed. |
-| Hosted provider | `https://ai.froglet.dev` | First-party hosted node | Health, capabilities, identity, and OpenAPI passed hosted smoke; public trial routes were hidden; `/v1/node/capabilities` currently reports `version=0.1.0-alpha.2` | Metadata/provider read surface only for publication copy. Hosted version drift blocks broad v0.1.0 publication claims. |
+| Docs site | `https://froglet.dev` | Cloudflare Workers deployment | 2026-04-24 live route spot-check returned 200 for `froglet.dev/` and `froglet.dev/learn/quickstart/`; `docs.froglet.dev` was byte-identical and is no longer advertised as a separate surface | Public docs surface is live for launch copy. |
+| Public status page | `https://froglet.dev/status/` | Cloudflare Workers deployment | PENDING DEPLOY on launch-prep branch | Public deploy-time status snapshot for the launch surfaces. Verify after deploy before citing. |
+| Hosted trial | `https://try.froglet.dev` | First-party Cloudflare Worker and hosted node | Session mint and `demo.add` round trip passed hosted smoke; 2026-04-24 spot-check returned `sum=12` and a receipt; missing Bearer on `/v1/feed` returned 401; hosted node reports `version=0.1.0` after Lightsail deployment 9 | Free-only hosted trial for `demo.add`. No hosted paid rail claim. |
+| Hosted provider | `https://ai.froglet.dev` | First-party hosted node | Health, capabilities, identity, and OpenAPI passed hosted smoke; public trial routes were hidden; `/v1/node/capabilities` reports `version=0.1.0` after Lightsail deployment 9 | Metadata/provider read surface only for publication copy. |
 | Marketplace read API | `https://marketplace.froglet.dev` | First-party marketplace deployment | Health, `/v1/providers`, and `/v1/offers` passed hosted smoke | Public marketplace read surface is covered by hosted smoke. |
 
 ## Integration channels

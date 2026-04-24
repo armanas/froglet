@@ -6,8 +6,10 @@ import PageFrame from '@astrojs/starlight/components/PageFrame.astro';
 import Header from 'virtual:starlight/components/Header';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
+import { compactId, formatSnapshotTime, getMarketplaceSnapshot } from '../data/live-snapshot';
 
 Astro.locals.starlightRoute = { hasSidebar: false };
+const marketplace = await getMarketplaceSnapshot();
 ---
 <html lang="en">
 <head>
@@ -129,6 +131,78 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/provider/s
           </div>
         </div>
       </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <section>
+  <div class="section-label">Marketplace snapshot</div>
+  <div class="section-title">The public read marketplace is visible today</div>
+  <div class="section-desc">This is a build-time snapshot from <a href="https://marketplace.froglet.dev">marketplace.froglet.dev</a>. It showcases the read API and the hosted demo supply indexed there; it is not a claim of marketplace depth, liquidity, or paid hosted rails.</div>
+  <div class="marketplace-panel" data-status={marketplace.status}>
+    <div class="marketplace-summary">
+      <div>
+        <span>status</span>
+        <strong>{marketplace.status === 'pass' ? 'read API reachable' : 'read API unavailable'}</strong>
+      </div>
+      <div>
+        <span>providers</span>
+        <strong>{marketplace.providerCount}</strong>
+      </div>
+      <div>
+        <span>offers</span>
+        <strong>{marketplace.offerCount}</strong>
+      </div>
+      <div>
+        <span>snapshot</span>
+        <strong>{formatSnapshotTime(marketplace.checkedAt)} UTC</strong>
+      </div>
+    </div>
+    <p class="marketplace-detail">{marketplace.detail}</p>
+    {marketplace.providers.length > 0 && (
+      <div class="marketplace-provider">
+        {marketplace.providers.map((provider) => (
+          <div class="marketplace-provider-row">
+            <div>
+              <span>provider</span>
+              <strong>{compactId(provider.providerId)}</strong>
+            </div>
+            <div>
+              <span>endpoint</span>
+              <strong>{provider.endpoint || 'not advertised'}</strong>
+            </div>
+            <div>
+              <span>descriptor</span>
+              <strong>{provider.descriptorHash}</strong>
+            </div>
+            <div>
+              <span>receipts</span>
+              <strong>{provider.successCount} ok / {provider.failureCount} failed</strong>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+    <div class="marketplace-offers">
+      {marketplace.offers.map((offer) => (
+        <div class="marketplace-offer">
+          <h4>{offer.offerId}</h4>
+          <dl>
+            <div><dt>kind</dt><dd>{offer.offerKind || 'unspecified'}</dd></div>
+            <div><dt>runtime</dt><dd>{offer.runtime || 'unspecified'}</dd></div>
+            <div><dt>settlement</dt><dd>{offer.settlementMethod || 'unspecified'}</dd></div>
+            <div><dt>fee</dt><dd>{offer.baseFeeMsat + offer.successFeeMsat} msat</dd></div>
+            <div><dt>artifact</dt><dd>{offer.artifactHash}</dd></div>
+          </dl>
+        </div>
+      ))}
+    </div>
+    <div class="marketplace-actions learn-button-row">
+      <a href="https://marketplace.froglet.dev/v1/providers?limit=5" class="learn-button">Providers JSON</a>
+      <a href="https://marketplace.froglet.dev/v1/offers?limit=10" class="learn-button">Offers JSON</a>
+      <a href="/marketplace/overview/" class="learn-button">Marketplace docs</a>
+    </div>
+  </div>
     </section>
 
     <div class="divider"></div>

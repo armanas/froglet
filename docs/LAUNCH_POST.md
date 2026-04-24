@@ -136,10 +136,11 @@ run the node locally if you want to publish or invoke your own services.
 
 - Repo: `https://github.com/armanas/froglet`
 - Docs: `https://froglet.dev`
+- Status: `https://froglet.dev/status/`
 - Hosted trial: `https://try.froglet.dev`
 - Release: `https://github.com/armanas/froglet/releases/tag/v0.1.0`
 - Demo evidence:
-  `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260423T233450Z/hosted_smoke.log`
+  `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260424T073839Z/hosted_smoke.log`
   and a 2026-04-24 spot-check returning a succeeded `demo.add` deal with
   `sum=12` plus a receipt.
 
@@ -151,16 +152,14 @@ Do not publish this post externally until all of the following are true:
   observed red scheduled run failed only because the cloud-backed GCP rig had no
   GCP secrets; the workflow now needs to skip that job cleanly when secrets are
   absent.
-- The hosted node reports the public release version. Current blocker:
-  `https://ai.froglet.dev/v1/node/capabilities` reported
-  `version=0.1.0-alpha.2` on 2026-04-24, while the public release is `v0.1.0`.
-  Redeploy the hosted node to `v0.1.0` before publication, or change the copy to
-  disclose that the hosted trial is still running `0.1.0-alpha.2`.
-- The public status page or equivalent monitoring URL is live and added to the
-  launch copy.
+- The hosted node reports the public release version. Verified on 2026-04-24
+  after Lightsail deployment 9:
+  `https://ai.froglet.dev/v1/node/capabilities` reported `version=0.1.0`.
+- The public status page at `https://froglet.dev/status/` is live after the
+  docs deploy and returns 200.
 - The final hosted-demo prompt has been run through at least one LLM host.
   Claude Code `2.1.119` passed this on 2026-04-24 and found the hosted version
-  drift above.
+  drift before deployment 9; that drift has since been cleared.
 - Any subreddit marked `modmail pending` in [LAUNCH_COPY.md](LAUNCH_COPY.md)
   has moderator approval before posting there.
 

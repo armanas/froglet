@@ -46,10 +46,10 @@ credentials are present locally, or through Cloudflare Workers Builds with:
 - Deploy command: `npx wrangler deploy`
 
 The repo no longer uses GitHub Pages for docs deployment. The intended public
-shape is still apex `https://froglet.dev` with `https://docs.froglet.dev`
-mirroring the same deployment, but the public host should only be treated as
-live after the Cloudflare deployment and route checks pass (see
-[SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
+shape is the apex `https://froglet.dev`; `docs.froglet.dev` previously mirrored
+the same deployment and is no longer advertised as a separate launch surface.
+The public host should only be treated as live after the Cloudflare deployment
+and route checks pass (see [SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
 
 ## Published Binaries
 
@@ -198,7 +198,8 @@ hosted trial for one free end-to-end deal.
 - Docker Compose starter configuration
 - OpenClaw/NemoClaw plugin under `integrations/openclaw/froglet/`
 - MCP server under `integrations/mcp/froglet/`
-- public docs at `froglet.dev` and `docs.froglet.dev`
+- public docs at `froglet.dev`
+- public status snapshot at `froglet.dev/status/`
 - free hosted trial at `try.froglet.dev`
 
 ## Install
@@ -262,8 +263,7 @@ the release notes should call out:
 - published `SHA256SUMS` for release asset verification
 - tagged provider, runtime, and MCP images in GHCR
 - downloadable `froglet-node` binaries
-- official site at `froglet.dev` (with `docs.froglet.dev` mirror) if the docs
-  deployment is live at cut time
+- official site at `froglet.dev` if the docs deployment is live at cut time
 - public OpenClaw integration
 - reference discovery
 - reference operator image

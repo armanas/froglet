@@ -1,0 +1,97 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import PageFrame from '@astrojs/starlight/components/PageFrame.astro';
+import Header from 'virtual:starlight/components/Header';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+import { formatSnapshotTime, getStatusSnapshot } from '../data/live-snapshot';
+
+Astro.locals.starlightRoute = { hasSidebar: false };
+const snapshot = await getStatusSnapshot();
+const allPass = snapshot.endpoints.every((endpoint) => endpoint.status === 'pass');
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Froglet Status</title>
+<meta name="description" content="Public Froglet hosted-surface status snapshot for froglet.dev, ai.froglet.dev, try.froglet.dev, and marketplace.froglet.dev.">
+<meta name="color-scheme" content="dark">
+<ThemeProvider />
+</head>
+<body>
+<PageFrame>
+  <Header slot="header" />
+  <main class="froglet-home-main">
+    <section class="status-hero">
+      <div class="section-label">Public status</div>
+      <div class="section-title">Froglet hosted surfaces</div>
+      <p class="section-desc">This page is generated from live checks at deploy time. It is a public launch-readiness snapshot, not a third-party uptime SLA.</p>
+      <div class="status-banner" data-status={allPass ? 'pass' : 'fail'}>
+        <span>{allPass ? 'All launch probes passed' : 'One or more probes need attention'}</span>
+        <strong>{formatSnapshotTime(snapshot.checkedAt)} UTC</strong>
+      </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <section>
+      <div class="section-label">Endpoint checks</div>
+      <div class="status-table-wrap">
+        <table class="status-table">
+          <thead>
+            <tr>
+              <th>Surface</th>
+              <th>Expectation</th>
+              <th>Status</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {snapshot.endpoints.map((endpoint) => (
+              <tr>
+                <td><a href={endpoint.url}>{endpoint.label}</a></td>
+                <td>{endpoint.expect}</td>
+                <td><span class:list={['status-pill', endpoint.status === 'pass' ? 'status-pill--pass' : 'status-pill--fail']}>{endpoint.status}</span></td>
+                <td>{endpoint.httpStatus ? `HTTP ${endpoint.httpStatus}. ` : ''}{endpoint.detail}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <section>
+      <div class="section-label">Marketplace snapshot</div>
+      <div class="section-title">Read API contents</div>
+      <div class="marketplace-panel" data-status={snapshot.marketplace.status}>
+        <div class="marketplace-summary">
+          <div>
+            <span>status</span>
+            <strong>{snapshot.marketplace.status}</strong>
+          </div>
+          <div>
+            <span>providers</span>
+            <strong>{snapshot.marketplace.providerCount}</strong>
+          </div>
+          <div>
+            <span>offers</span>
+            <strong>{snapshot.marketplace.offerCount}</strong>
+          </div>
+          <div>
+            <span>source</span>
+            <strong>marketplace.froglet.dev</strong>
+          </div>
+        </div>
+        <p class="marketplace-detail">{snapshot.marketplace.detail}</p>
+      </div>
+    </section>
+
+    <SiteFooter />
+  </main>
+</PageFrame>
+</body>
+</html>

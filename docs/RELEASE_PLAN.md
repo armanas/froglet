@@ -30,14 +30,15 @@ in [PAYMENT_MATRIX.md](PAYMENT_MATRIX.md).
 | --- | --- | --- | --- |
 | Release gate | `/Users/armanas/Projects/github.com/armanas/froglet/_tmp/release_gate/20260424T000837Z/summary.tsv` | PASS for `secrets`, `strict`, `docs-build`, and `docs-test`; `package` and `install-smoke` are SKIP | Repo checks, secret scan, docs build, and docs tests passed for the release gate evidence run. |
 | GitHub release assets | `gh release view v0.1.0 --repo armanas/froglet --json tagName,url,assets,isDraft,isPrerelease,publishedAt,name` | Present on the published release | The v0.1.0 release page includes Linux x86_64, Linux arm64, macOS arm64, and `SHA256SUMS` assets. |
-| Hosted verifier | `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260423T233450Z/summary.tsv` | PASS | Deployed node and marketplace services were running active revisions, with rollback refs present. |
-| Hosted trial smoke | `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260423T233450Z/hosted_smoke.log` | PASS | `try.froglet.dev` minted a session and completed the free `demo.add` round trip. This proves only the free hosted trial flow. |
+| Hosted verifier | `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260424T073839Z/summary.tsv` | PASS | Deployed node and marketplace services were running active revisions, with rollback refs present. |
+| Hosted trial smoke | `/Users/armanas/Projects/github.com/armanas/froglet-services/_tmp/post_deploy_verify/20260424T073839Z/hosted_smoke.log` | PASS | `try.froglet.dev` minted a session and completed the free `demo.add` round trip. This proves only the free hosted trial flow. |
 | Hosted upstream guard | Same hosted smoke log | PASS | Public trial routes were hidden on `ai.froglet.dev`; unauthenticated `try.froglet.dev/v1/feed` returned 401. |
-| Hosted read surfaces | Same hosted smoke log | PASS | `docs.froglet.dev`, `ai.froglet.dev` health/capabilities/identity/OpenAPI, and `marketplace.froglet.dev` health/providers/offers responded in the smoke. |
+| Hosted read surfaces | Same hosted smoke log | PASS | `froglet.dev`, `ai.froglet.dev` health/capabilities/identity/OpenAPI, and `marketplace.froglet.dev` health/providers/offers responded in the smoke. |
 | Claude MCP smoke | Same hosted smoke log | PASS | Claude MCP smoke was recorded against `/Users/armanas/Projects/github.com/armanas/froglet/.mcp.json`. |
-| Live route spot-check | `curl -fsS -o /dev/null -w ...` from 2026-04-24 | PASS | `froglet.dev/`, `docs.froglet.dev/learn/quickstart/`, `ai.froglet.dev/health`, `try.froglet.dev/llms.txt`, and `marketplace.froglet.dev/healthz` returned 200. |
+| Live route spot-check | `curl -fsS -o /dev/null -w ...` from 2026-04-24 | PASS | `froglet.dev/`, `froglet.dev/learn/quickstart/`, `ai.froglet.dev/health`, `try.froglet.dev/llms.txt`, and `marketplace.froglet.dev/healthz` returned 200. |
+| Public status page | `https://froglet.dev/status/` | PENDING DEPLOY | Launch-prep adds a public deploy-time status snapshot at the canonical apex host. Verify after docs deploy before publication. |
 | Hosted demo spot-check | Manual curl run from 2026-04-24 | PASS | `try.froglet.dev` returned a succeeded `demo.add` deal with `sum=12` and a receipt. |
-| Hosted version spot-check | `curl https://ai.froglet.dev/v1/node/capabilities` from 2026-04-24 | BLOCKER | The live hosted node reports `version=0.1.0-alpha.2`, while the public release is `v0.1.0`. Do not publish broad launch posts until the hosted node is redeployed to `v0.1.0` or all public copy explicitly states the hosted trial version. |
+| Hosted version spot-check | `curl https://ai.froglet.dev/v1/node/capabilities` from 2026-04-24 after Lightsail deployment 9 | PASS | The live hosted node reports `version=0.1.0`, matching the public release. Lightsail `froglet-node` deployment 9 is ACTIVE on `ghcr.io/armanas/froglet-provider:0.1.0`. |
 | Release asset checksum spot-check | `gh release download v0.1.0 --repo armanas/froglet` followed by `shasum -a 256 -c SHA256SUMS` from 2026-04-24 | PASS | All three published binary archives matched the published `SHA256SUMS`. |
 | GHCR image manifest spot-check | `docker buildx imagetools inspect` from 2026-04-24 | PASS | Provider, runtime, and MCP images exist at `:0.1.0`; digests are recorded in [DISTRIBUTION_MATRIX.md](DISTRIBUTION_MATRIX.md). |
 | Docker Compose CI job | <https://github.com/armanas/froglet/actions/runs/24872056345/job/72820478876> | PASS | The scheduled CI Docker Compose job validated config, built images, started provider/runtime, and completed OpenClaw plus MCP compose smoke. |
@@ -55,6 +56,8 @@ The v0.1.0 public release can claim:
 - public hosted trial on `try.froglet.dev` for the free `demo.add` flow only
 - public hosted read surfaces for provider metadata/OpenAPI and marketplace
   providers/offers, as covered by the hosted smoke
+- public status snapshot at <https://froglet.dev/status/> after the docs deploy
+  carrying that page is live
 - 200 responses from the primary live endpoints listed in the evidence table
 - a hosted `demo.add` spot-check returning `sum=12` and a receipt
 - OpenClaw/NemoClaw and MCP integration paths as checked by the repo strict
@@ -81,11 +84,10 @@ These are not v0.1.0 publication claims:
 
 ## Evidence gaps before broader publication copy
 
-- Hosted deployment version drift is a hard publication blocker:
-  `ai.froglet.dev/v1/node/capabilities` currently reports `0.1.0-alpha.2`,
-  not `0.1.0`. Either redeploy the hosted node to the public release version
-  before publication, or change all launch copy to say the hosted trial is still
-  running `0.1.0-alpha.2`.
+- Hosted deployment version drift was cleared on 2026-04-24: Lightsail
+  `froglet-node` deployment 9 is ACTIVE on
+  `ghcr.io/armanas/froglet-provider:0.1.0`, and
+  `ai.froglet.dev/v1/node/capabilities` reports `0.1.0`.
 - Package and installer smoke were not run in the recorded release gate:
   `package=SKIP`, `install-smoke=SKIP`.
 - The latest scheduled CI run failed only in the cloud-backed GCP Test Rig
@@ -93,9 +95,9 @@ These are not v0.1.0 publication claims:
   Source and docs jobs passed. The launch-prep branch must make that job skip
   cleanly when GCP secrets are absent, and publication should wait for the
   follow-up CI run to be green.
-- A public status page URL is not recorded here yet. Do not publish to HN,
-  Reddit, X, or LinkedIn until the status page or equivalent public monitoring
-  URL exists and is added to [LAUNCH_COPY.md](LAUNCH_COPY.md).
+- The public status page URL is <https://froglet.dev/status/>, but publication
+  should still wait until the docs deploy carrying that page is live and the
+  page itself returns 200.
 - The final LLM prompt must be tested through at least one LLM host after the
   docs/site prompt changes land. Record the host, date, and result before
   publication.
@@ -106,5 +108,6 @@ Claude Code `2.1.119` ran the final hosted-demo prompt on 2026-04-24 with
 shell access limited to `curl`, `jq`, `sleep`, and `printf`. It successfully
 fetched `/llms.txt`, minted a session, discovered `demo.add`, created a deal,
 observed `sum=12`, found a receipt, and produced a useful proved/not-proved
-assessment. It also identified the hosted version drift above, so the prompt is
-useful but publication remains blocked until that drift is resolved or disclosed.
+assessment. It identified the hosted version drift before deployment 9; that
+drift has since been cleared, so rerun the prompt once after the docs deploy if
+the publication copy changes materially.

@@ -10,10 +10,6 @@
     {
       "pattern": "froglet.dev",
       "custom_domain": true
-    },
-    {
-      "pattern": "docs.froglet.dev",
-      "custom_domain": true
     }
   ]
 }

@@ -26,10 +26,10 @@ Current limits to keep in every discussion:
 Do not publish any external post until this list is complete:
 
 - Latest GitHub Actions run for the launch-prep branch is green.
-- Hosted node reports the public release version. Current blocker:
-  `https://ai.froglet.dev/v1/node/capabilities` reported
-  `version=0.1.0-alpha.2` on 2026-04-24, while the public release is `v0.1.0`.
-- `https://froglet.dev/`, `https://docs.froglet.dev/learn/quickstart/`,
+- Hosted node reports the public release version. Verified on 2026-04-24 after
+  Lightsail deployment 9:
+  `https://ai.froglet.dev/v1/node/capabilities` reported `version=0.1.0`.
+- `https://froglet.dev/`, `https://froglet.dev/learn/quickstart/`,
   `https://ai.froglet.dev/health`, `https://try.froglet.dev/llms.txt`, and
   `https://marketplace.froglet.dev/healthz` return 200.
 - A fresh hosted demo returns `status=succeeded`, `sum=12`, and a receipt.
@@ -43,7 +43,10 @@ Do not publish any external post until this list is complete:
 Status page URL:
 
 ```text
-BLOCKED: add the public UptimeRobot/status-page URL before posting.
+https://froglet.dev/status/
+
+This is a public deploy-time status snapshot. Confirm it returns 200 after the
+docs deploy before posting.
 ```
 
 LLM prompt test:
@@ -52,7 +55,7 @@ LLM prompt test:
 Claude Code 2.1.119, 2026-04-24: passed the final hosted-demo prompt, fetched
 /llms.txt, minted a session, ran demo.add, observed sum=12 plus a receipt, and
 produced a useful proved/not-proved assessment. It also found the hosted
-version drift blocker above.
+version drift before deployment 9; that drift has since been cleared.
 ```
 
 ## Show HN
