@@ -26,8 +26,9 @@ For a Cloudflare dashboard-backed build:
 - Build command: `npx astro build`
 - Deploy command: `npx wrangler deploy`
 
-Attach both `froglet.dev` and `docs.froglet.dev` to the same Worker deployment
-so the apex remains canonical and `docs.froglet.dev` stays a mirror.
+Attach `froglet.dev` to the Worker deployment. `docs.froglet.dev` previously
+mirrored the same build, but the apex is now the only advertised public docs
+host to keep launch copy and monitoring simple.
 
 ## Content
 

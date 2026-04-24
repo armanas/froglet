@@ -12,21 +12,19 @@ separately from the public protocol docs.
 | Host | Purpose | Canonical source | Status |
 |---|---|---|---|
 | `froglet.dev` | Protocol landing page at `/` plus documentation under `/learn/*`, `/architecture/*`, and related routes. | `docs-site/` in this repo | **Live** — served by Cloudflare Worker `froglet-docs`; `/`, `/learn/quickstart/`, and `/sitemap-index.xml` verified on 2026-04-23 |
-| `docs.froglet.dev` | Alias of the apex for readers who reach for the `docs.*` form directly. Same build and content as the apex deployment. | Same `docs-site/` deployment as apex | **Live** — same Worker as apex; ordinary curl verified `/`, `/learn/quickstart/`, and `/sitemap-index.xml` after disconnecting ProtonVPN on 2026-04-23 |
+| `docs.froglet.dev` | Former alias of the apex. | Same `docs-site/` deployment as apex before launch cleanup | **Retired from advertised launch surface** — `froglet.dev` and `docs.froglet.dev` returned byte-identical HTML on 2026-04-24, so launch copy and monitoring now use only the apex. |
 | `ai.froglet.dev` | Hosted Froglet provider environment: the first-party reference protocol instance that clients can point at. | First-party hosted deployment | **Live** — first-party Lightsail container service fronted by Cloudflare; `/health`, `/v1/feed`, and `/v1/openapi.yaml` serving signed content |
 | `marketplace.froglet.dev` | Default public read marketplace for providers, offers, and receipts. | Default public marketplace deployment | **Live** — served by the `marketplace-api` + `indexer` stack in `froglet-services`; surfaces the hosted node's descriptors and offers at `/v1/providers` and `/v1/offers` |
-| `status.froglet.dev` | Public status page for the first-party hosted services. | First-party hosted status deployment | Planned |
+| `froglet.dev/status/` | Public status snapshot for the first-party hosted services. | `docs-site/` status page | Planned in the launch-prep branch; verify after deploy. |
 | `try.froglet.dev` | Hosted trial gateway with a shared session-token pool and 15-minute TTL. | Cloudflare Worker in `froglet-services/ops/cloudflare-workers/try-gate/` fronting the same Lightsail node as `ai.` | Worker-backed ingress. The public contract is `try.` only; the upstream session/demo routes on `ai.` are worker-gated, not public fallback endpoints. |
 
 ## Why the split
 
 - The **apex** is the protocol landing. The `docs-site/` project already
   renders a hero + CTA view at `/` and docs under `/learn/*`; serving the
-  whole thing at apex keeps one deployment, one build, and one canonical URL
-  once the public host is provisioned. `docs.froglet.dev` is an alias of the
-  same deployment rather than a separate site, so the canonical URL for a
-  docs page is intended to be `froglet.dev/learn/quickstart/` with
-  `docs.froglet.dev/learn/quickstart/` as the mirror after provisioning.
+  whole thing at apex keeps one deployment, one build, one canonical URL, and
+  one monitoring target. `docs.froglet.dev` was byte-identical to the apex and
+  is no longer advertised as a separate public surface.
 - The **hosted instance** is `ai.froglet.dev` (not the apex) so that running
   a first-party reference Froglet is obviously "a thing the protocol owns
   the URL for," not "the protocol itself."
@@ -82,11 +80,10 @@ Those details are maintained separately from the public kernel/runtime repo.
 
 1. DNS authority goes live on the chosen provider.
 2. Cloudflare Worker deploy from this repo using `docs-site/wrangler.jsonc`.
-3. Attach both `froglet.dev` and `docs.froglet.dev` to that same deployment
-   so the apex remains canonical and `docs.*` is only a mirror.
+3. Attach `froglet.dev` to that deployment.
 4. `ai.froglet.dev` — first-party hosted provider deployment.
 5. `marketplace.froglet.dev` — marketplace read API deployment.
-6. `status.froglet.dev` — public status page deployment.
+6. `froglet.dev/status/` — public status snapshot deployment.
 
 ## What is not in scope here
 
@@ -115,3 +112,6 @@ Those details are maintained separately from the public kernel/runtime repo.
   `docs.froglet.dev` failure was pinned to ProtonVPN DNS returning only AAAA
   for the alias; after disconnecting ProtonVPN, ordinary curl verified `/`,
   `/learn/quickstart/`, and `/sitemap-index.xml`.
+- 2026-04-24: `froglet.dev/` and `docs.froglet.dev/` returned byte-identical
+  homepage HTML. Launch copy, monitoring, and Worker routing were narrowed to
+  the apex canonical host.
