@@ -1,33 +1,110 @@
 ---
 ---
 
-{/* Dark mode only, while preserving the Starlight theme-select runtime contract. */}
+{/* Theme: system (default) | light | dark.
+   Persists user override in localStorage 'froglet.theme' (value 'light'|'dark');
+   absence of key = follow prefers-color-scheme.
+   Inline is:inline script runs before <body> to avoid FOUC. */}
 <script is:inline>
-	const applyFrogletTheme = () => {
-		document.documentElement.dataset.theme = 'dark';
-		document.documentElement.style.colorScheme = 'dark';
-		try {
-			localStorage.setItem('starlight-theme', 'dark');
-		} catch {}
-	};
+	(function () {
+		const KEY = 'froglet.theme';
+		const mq = window.matchMedia('(prefers-color-scheme: dark)');
 
-	applyFrogletTheme();
+		function getMode() {
+			let stored = null;
+			try {
+				stored = localStorage.getItem(KEY);
+			} catch (e) {}
+			return stored === 'light' || stored === 'dark' ? stored : 'system';
+		}
 
-	window.StarlightThemeProvider = {
-		updatePickers() {
-			applyFrogletTheme();
-			document.querySelectorAll('starlight-theme-select').forEach((picker) => {
-				const select = picker.querySelector('select');
-				if (select instanceof HTMLSelectElement) select.value = 'dark';
+		function effective(mode) {
+			if (mode === 'system') return mq.matches ? 'dark' : 'light';
+			return mode;
+		}
+
+		function apply() {
+			const mode = getMode();
+			const eff = effective(mode);
+			document.documentElement.setAttribute('data-theme', eff);
+			document.documentElement.setAttribute('data-theme-mode', mode);
+			document.documentElement.style.colorScheme = eff;
+			try {
+				localStorage.setItem('starlight-theme', eff);
+			} catch (e) {}
+			syncToggle(mode);
+		}
+
+		function syncToggle(mode) {
+			const btns = document.querySelectorAll('[data-theme-switch]');
+			btns.forEach((b) => {
+				const target = b.getAttribute('data-theme-switch');
+				if (target === mode) {
+					b.setAttribute('aria-pressed', 'true');
+					b.classList.add('is-active');
+				} else {
+					b.setAttribute('aria-pressed', 'false');
+					b.classList.remove('is-active');
+				}
 			});
-		},
-	};
+		}
 
-	document.addEventListener('DOMContentLoaded', () => {
-		document.querySelectorAll('.expressive-code .copy button').forEach((button) => {
-			if (!(button instanceof HTMLButtonElement)) return;
-			button.dataset.frogletCopyLabel = 'true';
-			button.textContent = 'Copy';
+		window.__frogletSetTheme = function (mode) {
+			if (mode === 'light' || mode === 'dark') {
+				try {
+					localStorage.setItem(KEY, mode);
+				} catch (e) {}
+			} else {
+				try {
+					localStorage.removeItem(KEY);
+				} catch (e) {}
+			}
+			apply();
+		};
+
+		// Starlight compat: it expects this to exist for theme-select element
+		window.StarlightThemeProvider = {
+			updatePickers() {
+				apply();
+			},
+		};
+
+		// Live-update when system preference changes (only if mode === system)
+		mq.addEventListener('change', () => {
+			if (getMode() === 'system') apply();
 		});
-	});
+
+		// Wire up the toggle buttons once the DOM is ready
+		function attach() {
+			document.querySelectorAll('[data-theme-switch]').forEach((b) => {
+				if (b.dataset.themeBound) return;
+				b.dataset.themeBound = 'true';
+				b.addEventListener('click', () => {
+					const mode = b.getAttribute('data-theme-switch');
+					window.__frogletSetTheme(mode);
+				});
+			});
+			syncToggle(getMode());
+		}
+
+		if (document.readyState === 'loading') {
+			document.addEventListener('DOMContentLoaded', attach);
+		} else {
+			attach();
+		}
+
+		// Expressive Code "COPY" label cleanup (unchanged from prior version)
+		document.addEventListener('DOMContentLoaded', () => {
+			document
+				.querySelectorAll('.expressive-code .copy button')
+				.forEach((button) => {
+					if (!(button instanceof HTMLButtonElement)) return;
+					button.dataset.frogletCopyLabel = 'true';
+					button.textContent = 'Copy';
+				});
+		});
+
+		// Apply immediately (before DOMContentLoaded so <body> renders themed).
+		apply();
+	})();
 </script>

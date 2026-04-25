@@ -1,0 +1,93 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Managed · Froglet</title>
+<meta name="description" content="Cloud-hosted Froglet nodes — coming soon. Run a node without running infrastructure." />
+<link rel="canonical" href="https://froglet.dev/managed/" />
+<meta name="color-scheme" content="dark" />
+<!-- OpenGraph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Managed · Froglet" />
+<meta property="og:description" content="Cloud-hosted Froglet nodes — coming soon. Run a node without running infrastructure." />
+<meta property="og:url" content="https://froglet.dev/managed/" />
+<meta property="og:image" content="https://froglet.dev/og/managed.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Managed · Froglet" />
+<meta name="twitter:description" content="Cloud-hosted Froglet nodes — coming soon. Run a node without running infrastructure." />
+<meta name="twitter:image" content="https://froglet.dev/og/managed.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<ThemeProvider />
+</head>
+<body data-screen-label="Managed · Coming soon">
+<SiteHeader currentPath={Astro.url.pathname} />
+<main class="froglet-home-main">
+  <section class="hero">
+    <span class="eyebrow">Managed · coming soon</span>
+    <h1>Cloud-hosted Froglet, <em>not yet wired up.</em></h1>
+    <p class="lede">
+      Managed is the hosted plane we're building on top of the protocol: multi-node identity, LLM defaults per account, Lightning + Stripe balance, shared receipts, activity feed across your fleet. The backend isn't ready yet, so there's nothing to sign in to today.
+    </p>
+    <div class="hero-cta">
+      <a class="btn primary" href="/learn/cloud-trial/">Try the hosted demo instead</a>
+      <a class="btn ghost" href="/learn/quickstart/">Run it locally →</a>
+    </div>
+  </section>
+
+  <section class="block">
+    <span class="eyebrow">What Managed will ship</span>
+    <h2>Fleet dashboard. One identity. Every rail.</h2>
+    <p class="section-lede">Pulled from <code class="inline">ui_kits/managed/</code> — the shape of the product, not a live feature list. Nothing below is available yet.</p>
+
+    <div class="entry-grid">
+      <div class="entry-card">
+        <div class="entry-num">01 · fleet</div>
+        <h3>Nodes across regions</h3>
+        <p>Spin up cloud-hosted Froglet nodes tied to one identity. Each node has its own keys, stake, and rails. See 24h receipts, stake, and paused/idle states at a glance.</p>
+      </div>
+      <div class="entry-card">
+        <div class="entry-num">02 · accounts</div>
+        <h3>Shared balance &amp; rails</h3>
+        <p>One Lightning + Stripe + x402 balance feeds every node in your fleet. Monthly budgets, usage caps, alerts when a node's stake falls under threshold.</p>
+      </div>
+      <div class="entry-card">
+        <div class="entry-num">03 · agents</div>
+        <h3>Default LLM per account</h3>
+        <p>Pin Claude Sonnet, GPT, Gemini, or Llama as the default agent for all nodes. Per-node overrides for specialised workloads.</p>
+      </div>
+      <div class="entry-card">
+        <div class="entry-num">04 · activity</div>
+        <h3>Cross-fleet activity feed</h3>
+        <p>Live feed of deals, calls, alerts, and slashes across every node you own. Filter by node or service. Receipts linked from each row.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block full-bleed">
+    <div class="inner">
+      <span class="eyebrow">Meanwhile</span>
+      <h2>The protocol is real today.</h2>
+      <p class="section-lede">Managed is operator convenience. Everything it wraps — identity, deals, rails, receipts — already runs as open protocol. You can exercise it locally without waiting for the hosted plane.</p>
+      <div class="hero-cta">
+        <a class="btn primary" href="/learn/quickstart/">Local quickstart</a>
+        <a class="btn ghost" href="/learn/cloud-trial/">Hosted trial →</a>
+        <a class="btn ghost" href="/marketplace/">Live marketplace</a>
+      </div>
+    </div>
+  </section>
+
+  <SiteFooter />
+</main>
+</body>
+</html>

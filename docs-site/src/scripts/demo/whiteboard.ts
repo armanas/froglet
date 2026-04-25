@@ -45,24 +45,27 @@ export const WHITEBOARD = {
     { dx: 0.15, dy: 0.9, alphaScale: 0.08, widthAdd: 1.4 },
   ] as const,
   DASH_PATTERN: [6, 8] as readonly number[],
+  // Colors mirror design-system tokens from tokens.css. Canvas can't
+  // read CSS vars directly, so these are hex/rgba equivalents of
+  // --bg-elevated, --fg1/--fg2, --frog-400/--frog-200, --bolt, --border.
   COLORS: {
-    bg: '#0b1d17',
-    grid: 'rgba(231,238,222,0.065)',
-    text: '#f4f7ec',
-    muted: 'rgba(224,232,216,0.64)',
-    accent: '#a8f7b0',
-    accentDim: 'rgba(168,247,176,0.18)',
-    warn: '#efe39a',
-    frame: 'rgba(226,239,218,0.14)',
-    labelBackplate: 'rgba(11,29,23,0.78)',
-    highlightFill: 'rgba(168,247,176,0.10)',
-    defaultFill: 'rgba(11,29,23,0.24)',
-    highlightStroke: '#a8f7b0',
-    defaultStroke: 'rgba(241,247,234,0.76)',
+    bg: '#171b18',
+    grid: 'rgba(43,48,40,0.65)',
+    text: '#e8ede6',
+    muted: 'rgba(154,164,151,0.78)',
+    accent: '#52c72a',
+    accentDim: 'rgba(82,199,42,0.15)',
+    warn: '#f5c518',
+    frame: 'rgba(43,48,40,0.6)',
+    labelBackplate: 'rgba(23,27,24,0.88)',
+    highlightFill: 'rgba(82,199,42,0.10)',
+    defaultFill: 'rgba(23,27,24,0.4)',
+    highlightStroke: '#a8e88a',
+    defaultStroke: 'rgba(232,237,230,0.7)',
   },
   FONTS: {
-    hand: "'Patrick Hand', 'Comic Sans MS', cursive",
-    mono: "'JetBrains Mono', monospace",
+    hand: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
+    mono: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
   },
 } as const;
 

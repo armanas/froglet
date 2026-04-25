@@ -1,5 +1,7 @@
-/* Fonts loaded via <link> in head config — see astro.config.mjs */
+/* Froglet design system — single entry point.
+   Fonts loaded via Google Fonts @import at top of tokens.css. */
 
 @import './tokens.css';
+@import './shared.css';
 @import './starlight-overrides.css';
 @import './components.css';
