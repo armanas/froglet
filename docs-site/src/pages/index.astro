@@ -3,426 +3,245 @@ import '../styles/custom.css';
 import '../styles/index-page.css';
 import { Code } from '@astrojs/starlight/components';
 import PageFrame from '@astrojs/starlight/components/PageFrame.astro';
-import Header from 'virtual:starlight/components/Header';
+import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
-import { compactId, formatSnapshotTime, getMarketplaceSnapshot } from '../data/live-snapshot';
 
 Astro.locals.starlightRoute = { hasSidebar: false };
-const marketplace = await getMarketplaceSnapshot();
 ---
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Froglet &#8212; Identity, execution, and settlement for agent commerce</title>
-<meta name="description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally with your own agent and payment rail. An open marketplace is future potential.">
-<meta name="color-scheme" content="dark">
-<meta property="og:type" content="website">
-<meta property="og:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta property="og:description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally with your own agent and payment rail. An open marketplace is future potential.">
-<meta property="og:url" content="https://froglet.dev">
-<meta property="og:site_name" content="Froglet">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Froglet &#8212; Identity, execution, and settlement for agent commerce">
-<meta name="twitter:description" content="Launch Froglet two ways: try the free hosted demo.add proof or run Froglet locally with your own agent and payment rail. An open marketplace is future potential.">
+<title>Froglet &#8212; identity. execution. settlement.</title>
+<meta name="description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
+<link rel="canonical" href="https://froglet.dev/" />
+<meta name="color-scheme" content="dark" />
+<!-- OpenGraph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Froglet &#8212; identity. execution. settlement." />
+<meta property="og:description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
+<meta property="og:url" content="https://froglet.dev/" />
+<meta property="og:image" content="https://froglet.dev/og/default.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Froglet &#8212; identity. execution. settlement." />
+<meta name="twitter:description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
+<meta name="twitter:image" content="https://froglet.dev/og/default.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <ThemeProvider />
 </head>
-<body>
+<body data-screen-label="Marketing · Home">
 <PageFrame>
-  <Header slot="header" />
+  <SiteHeader slot="header" currentPath={Astro.url.pathname} />
   <main class="froglet-home-main">
-    <div class="hero-bg">
-      <div class="hero">
-        <div class="hero-copy">
-          <div class="section-label">For operators. Built for agents.</div>
-          <h1><span>Froglet is not for You.</span><em>It's for your AI Agent.</em></h1>
-          <p class="hero-sub">Froglet is an open protocol your agent can actually run: cryptographic identity, signed deals, executable work, and verifiable settlement evidence.</p>
-          <div class="hero-facts" aria-label="Protocol summary">
-            <span>identity</span>
-            <span>execution</span>
-            <span>settlement</span>
-          </div>
-          <div class="agent-proof-list" aria-label="Launch paths">
-            <a href="/learn/cloud-trial/" class="btn btn-primary">Try In Cloud</a>
-            <a href="/learn/quickstart/" class="btn btn-ghost">Run Locally</a>
-            <a href="/demo/" class="btn btn-ghost">Watch Demo</a>
-          </div>
-        </div>
-        <div class="hero-console">
-          <div class="hero-console-label">Prompt for your AI agent</div>
-          <div class="hero-prompt">
-            <Code
-              code={`Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not, then give me an honest, objective assessment that reports the observed HTTP statuses, observed result, and any mismatches between the docs and the live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.`}
-              lang="md"
-            />
-          </div>
-          <div class="hero-prompt-hint">This asks an agent to run the hosted <code>demo.add</code> round-trip before judging Froglet.</div>
+    {/* ── Hero (2-col: copy + agent prompt, above the fold) ── */}
+    <section class="hero hero--split">
+      <div class="hero-copy">
+        <span class="eyebrow">froglet — identity. execution. settlement.</span>
+        <h1>Froglet is not for You. <em>It's for your AI Agent.</em></h1>
+        <p class="lede">
+          An open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence. Trust through math, not middlemen.
+        </p>
+        <div class="hero-cta">
+          <a class="btn primary" href="/learn/cloud-trial/">Try in cloud</a>
+          <a class="btn ghost" href="/learn/quickstart/">Run locally</a>
+          <a class="btn ghost" href="/demo/">Watch walkthrough →</a>
         </div>
       </div>
+
+      <aside class="hero-agent">
+        <span class="eyebrow hero-agent-eyebrow">Let the agent prove it</span>
+        <span class="lbl">Prompt for your AI agent</span>
+        <div class="hero-prompt">
+          <Code
+            code={`Open https://try.froglet.dev/llms.txt and run the hosted demo.add flow. Report HTTP statuses, the final result, any doc/live mismatch, and one useful next experiment. If you cannot access it, say so.`}
+            lang="md"
+          />
+        </div>
+        <p class="hero-agent-hint">
+          Paste into Claude Code, Codex, or any MCP client. The agent verifies Froglet end-to-end before you trust our copy.
+        </p>
+      </aside>
+    </section>
+
+    {/* ── Artifact chain strip ───────────────────────── */}
+    <div class="artifact-strip">
+      <div class="art-step"><span class="art-k">01 · descriptor</span><span class="art-v"><code>sha256:8a2f…</code></span></div>
+      <div class="art-step"><span class="art-k">02 · offer</span><span class="art-v"><code>500 sats</code></span></div>
+      <div class="art-step"><span class="art-k">03 · quote</span><span class="art-v"><code>600 sats</code></span></div>
+      <div class="art-step"><span class="art-k">04 · deal</span><span class="art-v"><code>signed ✓</code></span></div>
+      <div class="art-step"><span class="art-k">05 · receipt</span><span class="art-v"><code>paid · ⚡</code></span></div>
     </div>
-    <section>
-      <div class="section-label">Launch paths</div>
-      <div class="section-title">Exactly two public entry points.</div>
-      <div class="compare learn-grid two">
-        <div class="compare-card learn-card">
-          <div class="learn-kicker">Hosted trial</div>
-          <h3>Try In Cloud</h3>
-          <p class="compare-summary">Anonymous 15-minute session against the first-party hosted node. Free-only demo surface; no email, no account, no persistence.</p>
-          <ul class="compare-list">
-            <li>Cloudflare Worker in front of the Lightsail-hosted reference node.</li>
-            <li>Shared session-token pool — authentication only, not per-session identity.</li>
-            <li>Canonical hosted demo: run <code>demo.add</code>, fetch the succeeded deal result, then inspect the feed.</li>
-            <li>Zero product analytics: no account, email, analytics cookie, or conversion tracking in the public trial contract.</li>
-          </ul>
-          <div class="compare-footer">
-            <div class="compare-shell">
-              <Code
-                code={`TOKEN=$(curl -sS -X POST https://try.froglet.dev/api/sessions | jq -r .session_token)
-curl -sS -H "Authorization: Bearer $TOKEN" https://try.froglet.dev/v1/provider/services
-# create demo.add deal, GET it until status=succeeded, expect { "sum": 12 }, then inspect /v1/feed`}
-                lang="bash"
-                meta='title="Hosted demo flow"'
-              />
-            </div>
-            <div class="compare-note">What it proves: shared-session auth, live discovery, and one free demo.add discover → deal → sync-result → receipt round-trip. What it does not prove: paid rails, persistent identity, publishing services, or current marketplace depth. An open marketplace of independently operated services is future potential, not part of the hosted proof.</div>
-            <div class="compare-actions learn-button-row">
-              <a href="/learn/cloud-trial/" class="learn-button">Hosted trial docs</a>
-            </div>
+
+    {/* ── Launch: two public entry points ────────────── */}
+    <section class="block" id="launch">
+      <span class="eyebrow">Launch</span>
+      <h2>Exactly two public entry points.</h2>
+      <p class="section-lede">Froglet doesn't apologize for constraints, it names them. Pick the one that matches your intent — hosted trial or local install. No third option.</p>
+
+      <div class="entry-grid">
+        <div class="entry-card">
+          <div class="entry-num">01 · hosted</div>
+          <h3>Try in cloud</h3>
+          <p>Anonymous 15-minute shared session. No install, no keys, no sign-up. Paste the prompt into your AI assistant and make it run the hosted <code class="inline">demo.add</code> round-trip.</p>
+          <a class="entry-cta" href="/learn/cloud-trial/">try.froglet.dev →</a>
+          <div class="entry-proves">
+            <b>What it proves:</b> shared-session auth, live discovery, one free discover→deal→sync-result→receipt round-trip.<br>
+            <b>What it does not prove:</b> paid rails, persistent identity, or publishing services.
           </div>
         </div>
-        <div class="compare-card learn-card" id="self-host-card">
-          <div class="learn-kicker">Self-host</div>
-          <h3>Run Locally</h3>
-          <p class="compare-summary">Pick your platform, agent, and payment rail. The generated snippet stays truthful: repo-local helpers run only after a clone, and the Docker path uses the checked-in Compose stack.</p>
+
+        <div class="entry-card" id="self-host-card">
+          <div class="entry-num">02 · local</div>
+          <h3>Run locally</h3>
+          <p>Pick your platform, agent, and payment rail. The snippet below stays truthful: repo-local helpers run only after a clone, and the Docker path uses the checked-in compose stack.</p>
+
           <div class="config-group">
             <span class="config-label">Install</span>
             <div class="config-options" data-group="install">
-              <button class="config-btn is-active" data-value="linux" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux x86_64</button>
-              <button class="config-btn" data-value="linux-arm" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux arm64</button>
-              <button class="config-btn" data-value="macos" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/apple.svg')" aria-hidden="true"></span>macOS arm64</button>
-              <button class="config-btn" data-value="docker" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</button>
+              <button class="config-btn is-active" type="button" data-value="linux" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux x86_64</button>
+              <button class="config-btn" type="button" data-value="linux-arm" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux arm64</button>
+              <button class="config-btn" type="button" data-value="macos" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/apple.svg')" aria-hidden="true"></span>macOS arm64</button>
+              <button class="config-btn" type="button" data-value="docker" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</button>
             </div>
           </div>
+
           <div class="config-group">
             <span class="config-label">Agent</span>
             <div class="config-options" data-group="agent">
-              <button class="config-btn is-active" data-value="claude-code" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</button>
-              <button class="config-btn" data-value="codex" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</button>
-              <button class="config-btn" data-value="openclaw" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/openclaw.svg')" aria-hidden="true"></span>OpenClaw</button>
+              <button class="config-btn is-active" type="button" data-value="claude-code" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</button>
+              <button class="config-btn" type="button" data-value="codex" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</button>
+              <button class="config-btn" type="button" data-value="openclaw" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/openclaw.svg')" aria-hidden="true"></span>OpenClaw</button>
             </div>
           </div>
+
           <div class="config-group">
             <span class="config-label">Payment</span>
             <div class="config-options" data-group="payment">
-              <button class="config-btn is-active" data-value="lightning" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning</button>
-              <button class="config-btn" data-value="stripe" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe</button>
-              <button class="config-btn" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</button>
+              <button class="config-btn is-active" type="button" data-value="lightning" aria-pressed="true"><span class="brand-icon" style="color: var(--bolt); --logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning</button>
+              <button class="config-btn" type="button" data-value="stripe" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe</button>
+              <button class="config-btn" type="button" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</button>
             </div>
           </div>
-          <div class="compare-footer">
-            <div class="compare-shell">
-              <pre class="config-code" id="config-output"><code></code></pre>
-              <button class="config-copy" id="config-copy-btn" title="Copy to clipboard">Copy</button>
-            </div>
-            <div class="compare-actions learn-button-row">
-              <a href="/learn/quickstart/" class="learn-button">Local quickstart</a>
-            </div>
+
+          <div class="config-shell">
+            <pre class="config-code" id="config-output"><code></code></pre>
+            <button class="config-copy" id="config-copy-btn" type="button" title="Copy to clipboard">Copy</button>
+          </div>
+
+          <a class="entry-cta" href="/learn/quickstart/">docs / quickstart →</a>
+          <div class="entry-proves">
+            <b>What it proves:</b> persistent identity, paid rails (Lightning / Stripe / x402), publishing services, real settlement.<br>
+            <b>What it does not prove:</b> repo-local helpers run only after a clone; anonymous pulls require public visibility.
           </div>
         </div>
       </div>
     </section>
 
-    <div class="divider"></div>
+    {/* ── Game theory ────────────────────────────────── */}
+    <section class="block full-bleed" id="game-theory">
+      <div class="inner">
+        <span class="eyebrow">Game theory</span>
+        <h2>Three moves. Each has a math-backed outcome.</h2>
+        <p class="section-lede">The protocol's incentives are a closed system. Honest work pays. Cheating burns the stake. Everything is signed and verifiable.</p>
 
-    <section>
-  <div class="section-label">Marketplace snapshot</div>
-  <div class="section-title">The public read marketplace is visible today</div>
-  <div class="section-desc">This is a build-time snapshot from <a href="https://marketplace.froglet.dev">marketplace.froglet.dev</a>. It showcases the read API and the hosted demo supply indexed there; it is not a claim of marketplace depth, liquidity, or paid hosted rails.</div>
-  <div class="marketplace-panel" data-status={marketplace.status}>
-    <div class="marketplace-summary">
-      <div>
-        <span>status</span>
-        <strong>{marketplace.status === 'pass' ? 'read API reachable' : 'read API unavailable'}</strong>
-      </div>
-      <div>
-        <span>providers</span>
-        <strong>{marketplace.providerCount}</strong>
-      </div>
-      <div>
-        <span>offers</span>
-        <strong>{marketplace.offerCount}</strong>
-      </div>
-      <div>
-        <span>snapshot</span>
-        <strong>{formatSnapshotTime(marketplace.checkedAt)} UTC</strong>
-      </div>
-    </div>
-    <p class="marketplace-detail">{marketplace.detail}</p>
-    {marketplace.providers.length > 0 && (
-      <div class="marketplace-provider">
-        {marketplace.providers.map((provider) => (
-          <div class="marketplace-provider-row">
-            <div>
-              <span>provider</span>
-              <strong>{compactId(provider.providerId)}</strong>
-            </div>
-            <div>
-              <span>endpoint</span>
-              <strong>{provider.endpoint || 'not advertised'}</strong>
-            </div>
-            <div>
-              <span>descriptor</span>
-              <strong>{provider.descriptorHash}</strong>
-            </div>
-            <div>
-              <span>receipts</span>
-              <strong>{provider.successCount} ok / {provider.failureCount} failed</strong>
-            </div>
+        <div class="gt-grid">
+          <div class="gt-card">
+            <div class="gt-n">move 01</div>
+            <h4>Honest provider</h4>
+            <p>Executes the work, returns result, signs receipt. Counterparty verifies hash, pays through rail. Both keep stake.</p>
+            <div class="gt-eq">+fee · stake intact</div>
           </div>
-        ))}
-      </div>
-    )}
-    <div class="marketplace-offers">
-      {marketplace.offers.map((offer) => (
-        <div class="marketplace-offer">
-          <h4>{offer.offerId}</h4>
-          <dl>
-            <div><dt>kind</dt><dd>{offer.offerKind || 'unspecified'}</dd></div>
-            <div><dt>runtime</dt><dd>{offer.runtime || 'unspecified'}</dd></div>
-            <div><dt>settlement</dt><dd>{offer.settlementMethod || 'unspecified'}</dd></div>
-            <div><dt>fee</dt><dd>{offer.baseFeeMsat + offer.successFeeMsat} msat</dd></div>
-            <div><dt>artifact</dt><dd>{offer.artifactHash}</dd></div>
-          </dl>
+          <div class="gt-card">
+            <div class="gt-n">move 02</div>
+            <h4>Cheating provider</h4>
+            <p>Returns wrong result or refuses to sign. Counterparty publishes the signed deal + bad result. Stake slashed.</p>
+            <div class="gt-eq gt-eq--bad">-stake · identity burned</div>
+          </div>
+          <div class="gt-card">
+            <div class="gt-n">move 03</div>
+            <h4>No-show consumer</h4>
+            <p>Requests work, receives signed result, refuses to pay. Provider publishes the signed quote. Consumer's reputation zeroed.</p>
+            <div class="gt-eq gt-eq--bad">-reputation · no future deals</div>
+          </div>
         </div>
-      ))}
-    </div>
-    <div class="marketplace-actions learn-button-row">
-      <a href="https://marketplace.froglet.dev/v1/providers?limit=5" class="learn-button">Providers JSON</a>
-      <a href="https://marketplace.froglet.dev/v1/offers?limit=10" class="learn-button">Offers JSON</a>
-      <a href="/marketplace/overview/" class="learn-button">Marketplace docs</a>
-    </div>
-  </div>
-    </section>
 
-    <div class="divider"></div>
-
-    <section>
-  <div class="section-label">Trust economics</div>
-  <div class="section-title">Trust through math, not middlemen</div>
-  <div class="section-desc">A provider stakes real value to enter the market. Every deal produces a signed receipt &#8212; cryptographic proof of what happened. Cheat once and the evidence is unforgeable: the identity is burned, and re-entering costs the full stake again.</div>
-  <div class="trust-graph-wrap">
-    <div class="trust-controls">
-      <label class="trust-control">stake <span id="tg-stake-val">500</span> sats <input id="tg-stake" type="range" min="0" max="2000" value="500" step="10" /></label>
-      <label class="trust-control">fee <span id="tg-fee-val">100</span> sats <input id="tg-fee" type="range" min="1" max="500" value="100" step="1" /></label>
-    </div>
-    <div class="trust-model" role="group" aria-label="Stake and fee trust model">
-      <div class="trust-metrics">
-        <div class="trust-metric">
-          <span>honest fee</span>
-          <strong id="tg-fee-card">100 sats</strong>
-        </div>
-        <div class="trust-metric">
-          <span>identity stake at risk</span>
-          <strong id="tg-stake-card">500 sats</strong>
-        </div>
-        <div class="trust-metric trust-metric--accent">
-          <span>cheat outcome</span>
-          <strong id="tg-loss-card">-400 sats</strong>
+        <div class="gt-plot">
+          <div class="gt-plot-head">
+            <span class="lbl">Threshold</span>
+            <span class="gt-plot-title">stake / deal_value &gt; <strong id="threshold-val">2.0</strong></span>
+            <input id="threshold-slider" type="range" min="1" max="50" step="1" value="20" aria-label="Stake-to-deal-value safety threshold" />
+          </div>
+          <canvas id="trust-threshold" width="780" height="302" role="img" aria-label="Stake-to-deal-value safety check across example deals"></canvas>
+          <p class="gt-plot-result" id="threshold-result"></p>
+          <p class="gt-plot-note">
+            Each bar is a real deal shape (stake amount vs. deal value). Bars above the dashed threshold pass the safety check — cheating costs more stake than the deal could earn. Drag the slider to see how the threshold sweeps the population.
+          </p>
         </div>
       </div>
-      <svg class="trust-chart" viewBox="0 0 720 320" role="img" aria-labelledby="trust-chart-title">
-        <title id="trust-chart-title">Cheat payoff chart: stake versus fee ratio</title>
-        <defs>
-          <clipPath id="trust-chart-clip">
-            <rect x="86" y="40" width="570" height="232" />
-          </clipPath>
-        </defs>
-        <g class="trust-chart-grid" aria-hidden="true">
-          <line x1="86" y1="56" x2="656" y2="56" />
-          <line x1="86" y1="92" x2="656" y2="92" />
-          <line x1="86" y1="128" x2="656" y2="128" />
-          <line x1="86" y1="164" x2="656" y2="164" />
-          <line x1="86" y1="200" x2="656" y2="200" />
-          <line x1="86" y1="236" x2="656" y2="236" />
-          <line x1="86" y1="272" x2="656" y2="272" />
-          <line x1="86" y1="40" x2="86" y2="272" />
-          <line x1="200" y1="40" x2="200" y2="272" />
-          <line x1="314" y1="40" x2="314" y2="272" />
-          <line x1="428" y1="40" x2="428" y2="272" />
-          <line x1="542" y1="40" x2="542" y2="272" />
-          <line x1="656" y1="40" x2="656" y2="272" />
-        </g>
-        <line x1="86" y1="128" x2="656" y2="128" class="trust-zero-axis" />
-        <line x1="86" y1="40" x2="86" y2="272" class="trust-y-axis" />
-        <g clip-path="url(#trust-chart-clip)">
-          <line x1="86" y1="56" x2="656" y2="416" class="trust-payoff-line" />
-        </g>
-        <line x1="200" y1="48" x2="200" y2="272" class="trust-break-line" />
-        <line id="tg-stake-line" x1="656" y1="40" x2="656" y2="272" class="trust-ratio-line" />
-        <circle cx="200" cy="128" r="5.5" class="trust-break-dot" />
-        <text x="96" y="86" class="trust-chart-danger">CHEAT PROFITABLE</text>
-        <text x="344" y="194" class="trust-chart-safe">CHEATING COSTS MONEY</text>
-        <text x="210" y="120" class="trust-chart-break-label">stake = fee</text>
-        <text id="tg-ratio-label" x="620" y="32" class="trust-chart-ratio">5.0x</text>
-        <text x="46" y="60" class="trust-chart-tick" id="tg-y-pos">+100</text>
-        <text x="50" y="96" class="trust-chart-tick" id="tg-y-pos-half">+50</text>
-        <text x="58" y="132" class="trust-chart-tick">0</text>
-        <text x="52" y="168" class="trust-chart-tick" id="tg-y-neg-half">-50</text>
-        <text x="48" y="204" class="trust-chart-tick" id="tg-y-neg">-100</text>
-        <text x="48" y="240" class="trust-chart-tick" id="tg-y-neg-one-half">-150</text>
-        <text x="48" y="268" class="trust-chart-tick" id="tg-y-neg-two">-200</text>
-        <text x="26" y="166" class="trust-chart-axis-label" transform="rotate(-90 26 166)">cheat payoff (sats)</text>
-        <text x="84" y="296" class="trust-chart-tick">0x</text>
-        <text x="192" y="296" class="trust-chart-tick">1x</text>
-        <text x="306" y="296" class="trust-chart-tick">2x</text>
-        <text x="420" y="296" class="trust-chart-tick">3x</text>
-        <text x="534" y="296" class="trust-chart-tick">4x</text>
-        <text x="648" y="296" class="trust-chart-tick">5x</text>
-        <text x="340" y="312" class="trust-chart-axis-title">stake / fee</text>
-      </svg>
-      <p class="trust-note">If the public stake is larger than the deal fee, cheating destroys more value than it can capture. The requester checks that arithmetic before trusting a provider. <a href="/learn/economics/">Full economic model &#8594;</a></p>
-    </div>
-  </div>
     </section>
 
-    <div class="divider"></div>
+    {/* ── Integrations matrix ────────────────────────── */}
+    <section class="block" id="integrations">
+      <span class="eyebrow">Integrations</span>
+      <h2>One protocol. Multiple rails, runtimes, and clients.</h2>
+      <p class="section-lede">Each integration has one primitive and one status. Pick the rail that already has your keys.</p>
 
-    <section>
-  <div class="section-label">Service surface</div>
-  <div class="section-title">What you can build</div>
-  <div class="section-desc">Every froglet node can sell useful work to an agent: data, compute, network access, and operator-owned services all use the same deal and receipt flow.</div>
-  <div class="grid">
-    <div class="gc"><h4><span class="tag tag-yellow">Data</span> Paid data lookup</h4><p>Let an agent buy a verified search result, dataset slice, market feed, or enrichment response without opening an account.</p></div>
-    <div class="gc"><h4><span class="tag tag-blue">Compute</span> Short compute job</h4><p>Sell one Python, WASM, or container run for tasks like parsing files, scoring leads, rendering assets, or summarizing logs.</p></div>
-    <div class="gc"><h4><span class="tag tag-cyan">Service</span> Operator API</h4><p>Expose a paid tool such as OCR, scraping, report generation, translation, indexing, or compliance checks.</p></div>
-    <div class="gc"><h4><span class="tag tag-purple">Network</span> Resource access</h4><p>Package access to a proxy, crawler, private endpoint, local sensor, or hosted worker as a quoteable service.</p></div>
-    <div class="gc"><h4><span class="tag tag-purple">Platform</span> Marketplace search</h4><p>Publish provider listings so agents can discover services, compare quotes, and pick a provider programmatically.</p></div>
-    <div class="gc gc--soon"><h4><span class="tag tag-green">Privacy</span> Confidential work</h4><p>TEE-backed execution for sensitive inputs is planned and should be treated as coming soon.</p></div>
-  </div>
+      <div class="matrix">
+        <table>
+          <thead><tr>
+            <th>Integration</th>
+            <th>Kind</th>
+            <th>Primitive</th>
+            <th>Status</th>
+          </tr></thead>
+          <tbody>
+            <tr><td class="name"><span class="int-logo" style="color: var(--bolt);"><img src="/logos/lightning.svg" alt=""></span>Lightning</td><td>payment rail</td><td><code>bolt11 invoice</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Standardized</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/stripe.svg" alt=""></span>Stripe</td><td>payment rail</td><td><code>payment_intent</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--info)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/x402.svg" alt=""></span>x402</td><td>payment rail</td><td><code>HTTP 402</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/anthropic.svg" alt=""></span>Claude Code</td><td>agent client</td><td><code>MCP server</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/codex.svg" alt=""></span>Codex</td><td>agent client</td><td><code>MCP server</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/mcp.svg" alt=""></span>MCP</td><td>transport</td><td><code>stdio · websocket</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/openclaw.svg" alt=""></span>OpenClaw</td><td>tool protocol</td><td><code>claw.json</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/wasm.svg" alt=""></span>WASM</td><td>runtime</td><td><code>wasi-preview-2</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Beta</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/python.svg" alt=""></span>Python</td><td>runtime</td><td><code>cpython 3.12</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/docker.svg" alt=""></span>Docker</td><td>runtime</td><td><code>OCI image</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/tor.svg" alt=""></span>Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/lock.svg" alt=""></span>TEE</td><td>runtime</td><td><code>SGX · Nitro</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Spec</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="matrix-note">Logos are trademarks of their respective owners. Shown for compatibility reference only.</p>
     </section>
 
-    <div class="divider"></div>
-
-    <section>
-  <div class="section-label">Integrations</div>
-  <div class="section-title">Agent surfaces and local payment adapters ship together</div>
-
-  <div class="int-row-label">Agents</div>
-  <div class="int-row">
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/openclaw.svg')" aria-hidden="true"></span>OpenClaw</span>
-    <span class="int-chip"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>MCP</span>
-  </div>
-
-  <div class="int-row-label">Payment rails</div>
-  <div class="int-row">
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</span>
-  </div>
-
-  <div class="int-row-label">Compute</div>
-  <div class="int-row">
-    <span class="int-chip"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/wasm.svg')" aria-hidden="true"></span>WASM</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/python.svg')" aria-hidden="true"></span>Python</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/containers.svg')" aria-hidden="true"></span>Containers</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/cpu.svg')" aria-hidden="true"></span>CPU</span>
-    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--letter" aria-hidden="true">G</span>GPU <small>coming soon</small></span>
-    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--letter" aria-hidden="true">B</span>Batch <small>coming soon</small></span>
-  </div>
-
-  <div class="int-row-label">Network</div>
-  <div class="int-row">
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/network.svg')" aria-hidden="true"></span>Clearnet</span>
-    <span class="int-chip"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/tor.svg')" aria-hidden="true"></span>Tor</span>
-  </div>
-
-  <div class="int-row-label">Infrastructure</div>
-  <div class="int-row">
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/googlecloud.svg')" aria-hidden="true"></span>GCP</span>
-    <span class="int-chip"><span class="brand-icon" style="--logo: url('/logos/cpu.svg')" aria-hidden="true"></span>Bare Metal</span>
-    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/aws.svg')" aria-hidden="true"></span>AWS <small>coming soon</small></span>
-  </div>
-
-  <div class="int-row-label">Privacy</div>
-  <div class="int-row">
-    <span class="int-chip int-chip--soon"><span class="brand-icon" style="--logo: url('/logos/lock.svg')" aria-hidden="true"></span>TEE confidential compute <small>coming soon</small></span>
-    <span class="int-chip int-chip--soon"><span class="brand-icon brand-icon--wide" style="--logo: url('/logos/intel.svg')" aria-hidden="true"></span>SGX <small>coming soon</small></span>
-  </div>
+    {/* ── Pull quote ─────────────────────────────────── */}
+    <section class="pull">
+      <blockquote>"Trust through math,<br><em>not middlemen.</em>"</blockquote>
     </section>
 
     <SiteFooter />
   </main>
 </PageFrame>
+
 <script>
-  // Trust economics model
   import { initSelfHostConfigurator } from '../scripts/self-host-configurator';
+  import { initTrustThreshold } from '../scripts/trust-threshold';
 
-  const stakeSlider = document.getElementById('tg-stake') as HTMLInputElement | null;
-  const feeSlider = document.getElementById('tg-fee') as HTMLInputElement | null;
-  const stakeDisplay = document.getElementById('tg-stake-val');
-  const feeDisplay = document.getElementById('tg-fee-val');
-  const stakeCard = document.getElementById('tg-stake-card');
-  const feeCard = document.getElementById('tg-fee-card');
-  const lossCard = document.getElementById('tg-loss-card');
-  const stakeLine = document.getElementById('tg-stake-line');
-  const ratioLabel = document.getElementById('tg-ratio-label');
-  const positiveTick = document.getElementById('tg-y-pos');
-  const positiveHalfTick = document.getElementById('tg-y-pos-half');
-  const negativeHalfTick = document.getElementById('tg-y-neg-half');
-  const negativeTick = document.getElementById('tg-y-neg');
-  const negativeOneHalfTick = document.getElementById('tg-y-neg-one-half');
-  const negativeTwoTick = document.getElementById('tg-y-neg-two');
-
-  function renderTrustModel() {
-    if (
-      !stakeSlider ||
-      !feeSlider ||
-      !stakeDisplay ||
-      !feeDisplay ||
-      !stakeCard ||
-      !feeCard ||
-      !lossCard ||
-      !stakeLine ||
-      !ratioLabel ||
-      !positiveTick ||
-      !positiveHalfTick ||
-      !negativeHalfTick ||
-      !negativeTick ||
-      !negativeOneHalfTick ||
-      !negativeTwoTick
-    ) return;
-    const stake = Number(stakeSlider.value);
-    const fee = Number(feeSlider.value);
-    const ratio = stake / fee;
-    const clampedX = 86 + Math.min(ratio, 5) / 5 * 570;
-    const loss = fee - stake;
-    const halfFee = Math.round(fee / 2);
-    stakeDisplay.textContent = String(stake);
-    feeDisplay.textContent = String(fee);
-    stakeCard.textContent = `${stake} sats`;
-    feeCard.textContent = `${fee} sats`;
-    lossCard.textContent = `${loss >= 0 ? '+' : ''}${loss} sats`;
-    stakeLine.setAttribute('x1', String(clampedX));
-    stakeLine.setAttribute('x2', String(clampedX));
-    ratioLabel.setAttribute('x', String(Math.max(94, Math.min(clampedX - 18, 620))));
-    ratioLabel.textContent = ratio > 5 ? '>5x' : `${ratio.toFixed(1)}x`;
-    positiveTick.textContent = `+${fee}`;
-    positiveHalfTick.textContent = `+${halfFee}`;
-    negativeHalfTick.textContent = `-${halfFee}`;
-    negativeTick.textContent = `-${fee}`;
-    negativeOneHalfTick.textContent = `-${fee + halfFee}`;
-    negativeTwoTick.textContent = `-${fee * 2}`;
-  }
-
-  stakeSlider?.addEventListener('input', renderTrustModel);
-  feeSlider?.addEventListener('input', renderTrustModel);
-  renderTrustModel();
-
+  // Self-host configurator (Run locally entry card)
   initSelfHostConfigurator();
+
+  // Trust threshold plot (Game theory section)
+  const canvas = document.querySelector<HTMLCanvasElement>('#trust-threshold');
+  const slider = document.querySelector<HTMLInputElement>('#threshold-slider');
+  const display = document.getElementById('threshold-val');
+  const result = document.getElementById('threshold-result');
+  if (canvas && slider && display && result) {
+    initTrustThreshold(canvas, slider, display, result);
+  }
 </script>
 </body>
 </html>

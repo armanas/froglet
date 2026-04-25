@@ -1,6 +1,4 @@
 ---
-import { navLinks } from '../data/nav-links';
-
 interface Props {
 	compact?: boolean;
 }
@@ -8,87 +6,62 @@ interface Props {
 const { compact = false } = Astro.props;
 ---
 
-<footer class:list={['froglet-site-footer', compact && 'froglet-site-footer--compact']}>
-	<div class="froglet-site-footer__inner">
-		<div>
-			<p class="froglet-site-footer__tagline">🐸 froglet — identity. execution. settlement.</p>
-			<p class="froglet-site-footer__credit">Built by <a href="https://armanas.dev" target="_blank" rel="noreferrer">Armanas Povilionis-Muradian</a></p>
+<footer class:list={['site-ftr', compact && 'site-ftr--compact']}>
+	<div class="inner">
+		<div class="col brand-col">
+			<div class="brand" style="align-items: baseline;">
+				<span class="mark" style="font-size: 1.2rem;">_o..o_</span>
+				froglet
+			</div>
+			<p>Open protocol for AI agents. MIT licensed.</p>
 		</div>
-		<nav class="froglet-site-footer__links" aria-label="Footer">
-			{navLinks.map((item) => (
-				<a
-					href={item.href}
-					target={item.external ? '_blank' : undefined}
-					rel={item.external ? 'noreferrer' : undefined}
-				>
-					{item.label}
-				</a>
-			))}
-		</nav>
+		<div class="col">
+			<h5>Product</h5>
+			<a href="/docs/">Docs</a>
+			<a href="/marketplace/">Marketplace</a>
+			<a href="/learn/cloud-trial/">Try in cloud</a>
+			<a href="/demo/">Demo</a>
+		</div>
+		<div class="col">
+			<h5>Protocol</h5>
+			<a href="/spec/kernel/">Kernel spec</a>
+			<a href="/spec/service-binding/">Service binding</a>
+			<a href="/learn/economics/">Game theory</a>
+			<a href="/architecture/overview/">Architecture</a>
+		</div>
+		<div class="col">
+			<h5>Community</h5>
+			<a href="https://github.com/armanas/froglet" target="_blank" rel="noreferrer">GitHub ↗</a>
+			<a href="https://github.com/armanas/froglet/discussions" target="_blank" rel="noopener">Discussions</a>
+			<a href="/learn/quickstart/">Quickstart</a>
+			<a href="/marketplace/overview/">Marketplace docs</a>
+		</div>
+		<div class="end">
+			<span>froglet.dev</span>
+		</div>
 	</div>
 </footer>
 
 <style is:global>
-	.froglet-site-footer {
-		border-top: 1px solid hsl(var(--froglet-border));
-		margin-top: auto;
-	}
-
-	.froglet-site-footer__inner {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		width: min(var(--froglet-shell-max-width), calc(100% - (var(--froglet-shell-gutter) * 2)));
-		margin: 0 auto;
-		padding: 1.1rem 0 1.3rem;
-		color: hsl(var(--froglet-muted));
-		font-size: 0.88rem;
-	}
-
-	.froglet-site-footer--compact .froglet-site-footer__inner {
-		width: 100%;
-		padding-top: 0.85rem;
-	}
-
-	.froglet-site-footer__tagline {
-		margin: 0;
-	}
-
-	.froglet-site-footer__credit {
-		margin: 0.3rem 0 0;
+	.site-ftr .brand-col p {
 		font-size: 0.8rem;
+		color: var(--fg3);
+		margin: 12px 0 0;
+		max-width: 22ch;
+		line-height: 1.5;
 	}
 
-	.froglet-site-footer__credit a {
-		color: hsl(var(--froglet-muted));
-		text-decoration: none;
-	}
-
-	.froglet-site-footer__credit a:hover {
-		color: hsl(var(--froglet-foreground));
-	}
-
-	.froglet-site-footer__links {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.85rem;
-	}
-
-	.froglet-site-footer__links a {
-		color: hsl(var(--froglet-muted));
-		text-decoration: none;
-	}
-
-	.froglet-site-footer__links a:hover {
-		color: hsl(var(--froglet-foreground));
+	.site-ftr--compact {
+		margin-top: 32px;
 	}
 
 	@media (max-width: 720px) {
-		.froglet-site-footer__inner {
-			flex-direction: column;
-			align-items: flex-start;
-			padding-block: 1rem 1.1rem;
+		.site-ftr .inner {
+			gap: 24px;
+		}
+		.site-ftr .end {
+			margin-left: 0;
+			text-align: left;
 		}
 	}
 </style>

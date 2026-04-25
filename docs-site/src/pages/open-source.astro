@@ -1,0 +1,162 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+
+const SECTIONS = [
+	{
+		num: '01',
+		title: 'Protocol kernel',
+		desc: 'Signed artifact envelope, canonical JSON (RFC 8785), secp256k1 Schnorr signatures (BIP340), SHA-256 content hashing.',
+		items: [
+			'Signed artifact envelope with typed payloads',
+			'Canonical JSON serialization (JCS / RFC 8785)',
+			'secp256k1 Schnorr signatures (BIP340)',
+			'SHA-256 content-addressable hashing',
+			'Bolt11 Lightning invoice integration',
+		],
+	},
+	{
+		num: '02',
+		title: 'Reference implementation',
+		desc: 'Separable Rust crates forming a complete node. Each component is independently deployable.',
+		items: [
+			'froglet-runtime — requester-side deal engine',
+			'froglet-provider — provider-side public API',
+			'froglet-discovery — indexing + search',
+			'froglet-operator — host-side control API',
+		],
+	},
+	{
+		num: '03',
+		title: 'Integration surfaces',
+		desc: 'Ready-made adapters to connect any agent framework to the network.',
+		items: [
+			'OpenClaw plugin (JavaScript) — loopback to runtime',
+			'NemoClaw plugin (JavaScript) — HTTPS from sandbox to host',
+			'MCP server (stdio) — for Claude Code, Cursor, Codex',
+		],
+	},
+	{
+		num: '04',
+		title: 'Execution runtimes',
+		desc: 'Multiple execution profiles under one primitive — from Wasm to confidential TEE.',
+		items: [
+			'Inline Wasm modules (Wasmtime sandbox)',
+			'OCI-referenced Wasm',
+			'Inline Python (handler and script modes)',
+			'OCI container execution',
+			'Confidential / TEE execution (attested Wasm)',
+		],
+	},
+	{
+		num: '05',
+		title: 'Conformance tests',
+		desc: 'A suite ensuring third-party implementations stay compatible with the spec.',
+		items: [
+			'Artifact serialization round-trip tests',
+			'Signature verification vectors',
+			'Canonical hash computation tests',
+			'End-to-end deal flow validation',
+		],
+	},
+];
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open source · Froglet</title>
+<meta name="description" content="The Froglet protocol kernel, reference implementation, and integrations are open source." />
+<link rel="canonical" href="https://froglet.dev/open-source/" />
+<meta name="color-scheme" content="dark" />
+<!-- OpenGraph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Open source · Froglet" />
+<meta property="og:description" content="The Froglet protocol kernel, reference implementation, and integrations are open source." />
+<meta property="og:url" content="https://froglet.dev/open-source/" />
+<meta property="og:image" content="https://froglet.dev/og/open-source.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Open source · Froglet" />
+<meta name="twitter:description" content="The Froglet protocol kernel, reference implementation, and integrations are open source." />
+<meta name="twitter:image" content="https://froglet.dev/og/open-source.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<ThemeProvider />
+</head>
+<body data-screen-label="Open source">
+<SiteHeader currentPath={Astro.url.pathname} />
+<main class="froglet-home-main">
+  <section class="hero">
+    <span class="eyebrow">Open source</span>
+    <h1>Built in the open.</h1>
+    <p class="lede">
+      The protocol kernel is open source forever. Anyone can build on it, verify it, run it. The kernel is the public contract — product layers sit above it.
+    </p>
+    <div class="hero-cta">
+      <a class="btn primary" href="https://github.com/armanas/froglet" target="_blank" rel="noreferrer">
+        View on GitHub
+      </a>
+      <a class="btn ghost" href="/docs/">Read the spec →</a>
+    </div>
+  </section>
+
+  <section class="block">
+    <span class="eyebrow">What's in the repo</span>
+    <h2>Kernel + reference implementation + conformance.</h2>
+    <div class="entry-grid os-grid">
+      {SECTIONS.map((s) => (
+        <div class="entry-card">
+          <div class="entry-num">{s.num} · module</div>
+          <h3>{s.title}</h3>
+          <p>{s.desc}</p>
+          <ul class="os-list">
+            {s.items.map((it) => (
+              <li><span class="os-tick">✓</span>{it}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <section class="pull">
+    <blockquote>
+      "Open at the kernel,<br><em>commercial at the edges."</em>
+    </blockquote>
+  </section>
+
+  <SiteFooter />
+</main>
+</body>
+</html>
+
+<style is:global>
+	.os-grid {
+		grid-template-columns: repeat(2, 1fr);
+	}
+	.os-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: grid;
+		gap: 6px;
+		font-size: 0.86rem;
+		color: var(--fg2);
+	}
+	.os-tick {
+		color: var(--frog-400);
+		margin-right: 6px;
+		font-weight: 700;
+	}
+	@media (max-width: 720px) {
+		.os-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>

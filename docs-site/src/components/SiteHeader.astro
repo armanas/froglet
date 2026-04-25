@@ -24,28 +24,28 @@ const matchesPrefix = (prefix: string) => {
 
 const isActive = (item: (typeof navLinks)[number]) => {
 	if (item.href.startsWith('http')) return false;
-	if (item.activePrefixes?.some(matchesPrefix)) return true;
+	if ('activePrefixes' in item && item.activePrefixes?.some(matchesPrefix)) return true;
 	return matchesPrefix(item.href);
 };
 
-const isExternal = (item: (typeof navLinks)[number]) => item.href.startsWith('http') || item.external;
+const isExternal = (item: (typeof navLinks)[number]) =>
+	item.href.startsWith('http') || ('external' in item && item.external);
 ---
 
-<div class:list={['froglet-site-chrome', embedded && 'froglet-site-chrome--embedded']}>
-	<div class="froglet-site-chrome__inner">
-		<a href="/" class="froglet-brand" aria-label="Froglet home">
-			<span class="froglet-brand__mark" aria-hidden="true">🐸</span>
-			<span class="froglet-brand__word">froglet</span>
+<header class:list={['site-hdr', embedded && 'site-hdr--embedded']}>
+	<div class="inner">
+		<a href="/" class="brand" aria-label="Froglet home">
+			<span class="mark" aria-hidden="true">_o..o_</span>
+			froglet
 		</a>
-		<nav class="froglet-site-nav" aria-label="Primary">
+		<nav aria-label="Primary">
 			{
 				navLinks.map((item) => (
 					<a
 						href={item.href}
 						class:list={[
-							'froglet-site-nav__link',
-							isExternal(item) && 'froglet-site-nav__link--external',
-							isActive(item) && 'is-active',
+							isActive(item) && 'active',
+							'hideOnMobile' in item && item.hideOnMobile && 'mobile-hidden',
 						]}
 						target={isExternal(item) ? '_blank' : undefined}
 						rel={isExternal(item) ? 'noreferrer' : undefined}
@@ -55,24 +55,45 @@ const isExternal = (item: (typeof navLinks)[number]) => item.href.startsWith('ht
 				))
 			}
 		</nav>
-		<div class="froglet-site-tools">
+		<div class="right">
+			<div class="theme-switch" role="group" aria-label="Theme">
+				<button type="button" class="theme-switch__btn" data-theme-switch="system" title="System preference" aria-label="Use system theme">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<rect x="2" y="3" width="12" height="8.5" rx="1"></rect>
+						<path d="M6 13.5h4M8 11.5v2"></path>
+					</svg>
+				</button>
+				<button type="button" class="theme-switch__btn" data-theme-switch="light" title="Light theme" aria-label="Use light theme">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<circle cx="8" cy="8" r="3"></circle>
+						<path d="M8 1.5v1.5M8 13v1.5M1.5 8h1.5M13 8h1.5M3.2 3.2l1 1M11.8 11.8l1 1M3.2 12.8l1-1M11.8 4.2l1-1"></path>
+					</svg>
+				</button>
+				<button type="button" class="theme-switch__btn" data-theme-switch="dark" title="Dark theme" aria-label="Use dark theme">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M13 9.5A5 5 0 0 1 6.5 3a5 5 0 1 0 6.5 6.5z"></path>
+					</svg>
+				</button>
+			</div>
+			<a
+				class="ghv"
+				href="https://github.com/armanas/froglet"
+				target="_blank"
+				rel="noreferrer"
+				aria-label="GitHub"
+			>
+				<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+					<path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+				</svg>
+				GitHub
+			</a>
 			<slot name="tools" />
 		</div>
 	</div>
-</div>
+</header>
 
 <style is:global>
-	.froglet-site-chrome {
-		position: sticky;
-		top: 0;
-		z-index: 40;
-		border-bottom: 1px solid hsl(var(--froglet-border));
-		background: color-mix(in srgb, hsl(var(--froglet-background)) 88%, hsl(var(--froglet-surface)) 12%);
-		backdrop-filter: blur(12px);
-		-webkit-backdrop-filter: blur(12px);
-	}
-
-	.froglet-site-chrome--embedded {
+	.site-hdr--embedded {
 		position: static;
 		border-bottom: 0;
 		background: transparent;
@@ -80,91 +101,15 @@ const isExternal = (item: (typeof navLinks)[number]) => item.href.startsWith('ht
 		-webkit-backdrop-filter: none;
 	}
 
-	.froglet-site-chrome__inner {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		width: min(var(--froglet-shell-max-width), calc(100% - (var(--froglet-shell-gutter) * 2)));
-		margin: 0 auto;
-		min-height: 3.65rem;
+	.site-hdr .brand .mark {
+		font-size: 14px;
+		letter-spacing: 0;
 	}
 
-	.froglet-brand {
+	.site-hdr nav a.mobile-hidden {
 		display: inline-flex;
-		align-items: center;
-		gap: 0.38rem;
-		color: hsl(var(--froglet-foreground));
-		text-decoration: none;
-		font-family: var(--froglet-font-sans);
-		font-size: 1rem;
-		font-weight: 700;
-		letter-spacing: 0;
-		white-space: nowrap;
 	}
 
-	.froglet-brand__mark {
-		display: inline-grid;
-		width: 1.65rem;
-		height: 1.65rem;
-		place-items: center;
-		border: 1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 24%, transparent);
-		border-radius: 50%;
-		background: color-mix(in srgb, hsl(var(--froglet-accent-soft)) 72%, transparent);
-		font-size: 1.02rem;
-		line-height: 1;
-	}
-
-	.froglet-brand__word {
-		font-family: var(--froglet-font-serif);
-		font-size: 1.34rem;
-		font-weight: 700;
-		line-height: 1;
-		letter-spacing: 0;
-	}
-
-	.froglet-site-nav {
-		display: flex;
-		align-items: center;
-		gap: 0.3rem;
-		margin-left: auto;
-	}
-
-	.froglet-site-nav__link {
-		padding: 0.48rem 0.72rem;
-		border-radius: var(--froglet-card-radius);
-		color: hsl(var(--froglet-muted));
-		text-decoration: none;
-		font-size: 0.88rem;
-		font-weight: 600;
-		letter-spacing: 0.01em;
-		transition:
-			background-color 140ms ease,
-			color 140ms ease;
-	}
-
-	.froglet-site-nav__link:hover {
-		background: hsl(var(--froglet-surface));
-		color: hsl(var(--froglet-foreground));
-	}
-
-	.froglet-site-nav__link.is-active {
-		background: hsl(var(--froglet-accent-soft));
-		color: hsl(var(--froglet-accent-strong));
-	}
-
-	.froglet-site-nav__link--external {
-		color: color-mix(in srgb, hsl(var(--froglet-muted)) 78%, transparent);
-	}
-
-	.froglet-site-tools {
-		display: flex;
-		align-items: center;
-		gap: 0.65rem;
-		margin-left: 0.35rem;
-	}
-
-	/* Hide Starlight's built-in mobile menu toggle on desktop where the sidebar
-	   is always visible. Restore it on mobile so /learn/* pages remain navigable. */
 	@media (min-width: 901px) {
 		starlight-menu-button,
 		[data-open-sidebar] {
@@ -172,80 +117,53 @@ const isExternal = (item: (typeof navLinks)[number]) => item.href.startsWith('ht
 		}
 	}
 
-	/* On mobile docs pages, keep Starlight's menu button in the header flow and
-	   give the sidebar pane an opaque background so it covers page content. */
 	@media (max-width: 900px) {
 		starlight-menu-button {
 			position: static;
 			width: auto;
 			height: auto;
 			display: contents !important;
-			border-radius: var(--froglet-card-radius);
-			box-shadow: none;
 		}
 
 		starlight-menu-button button {
 			z-index: 60;
 			width: 40px;
 			height: 40px;
-			border: 1px solid hsl(var(--froglet-border));
-			border-radius: var(--froglet-card-radius);
-			background: hsl(var(--froglet-surface));
-			color: hsl(var(--froglet-foreground));
+			border: 1px solid var(--border);
+			border-radius: var(--r-2);
+			background: var(--bg-elevated);
+			color: var(--fg1);
 		}
 
 		nav.sidebar .sidebar-pane {
-			background: hsl(var(--froglet-background));
+			background: var(--bg);
+		}
+
+		.site-hdr .inner {
+			gap: 14px;
+		}
+
+		.site-hdr nav {
+			gap: 14px;
 		}
 	}
 
-	@media (max-width: 900px) {
-		.froglet-site-chrome__inner {
-			gap: 0.7rem;
-		}
-
-		.froglet-site-nav {
-			gap: 0.12rem;
-		}
-
-		.froglet-site-nav__link {
-			padding-inline: 0.54rem;
-			font-size: 0.8rem;
-		}
-
-		.froglet-site-nav__link--desktop {
+	@media (max-width: 760px) {
+		.site-hdr nav a.mobile-hidden {
 			display: none;
 		}
-	}
 
-	@media (max-width: 720px) {
-		.froglet-site-chrome__inner {
-			box-sizing: border-box;
-			padding-right: 48px;
-		}
-
-		.froglet-site-nav__link--external {
+		.site-hdr .right .ghv {
 			display: none;
 		}
 	}
 
 	@media (max-width: 560px) {
-		.froglet-brand__mark {
-			width: 1.48rem;
-			height: 1.48rem;
-			font-size: 0.92rem;
+		.site-hdr .brand .mark {
+			font-size: 12px;
 		}
-
-		.froglet-brand__word {
-			font-size: 1.18rem;
-		}
-
-		.froglet-site-chrome__inner {
-			gap: 0.5rem;
-		}
-
-		.froglet-site-nav__link {
-			padding-inline: 0.36rem;
+		.site-hdr .brand {
+			font-size: 13px;
 		}
 	}
 </style>

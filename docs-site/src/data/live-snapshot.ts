@@ -1,15 +1,4 @@
-type FetchKind = 'json' | 'text';
-
 export type ProbeState = 'pass' | 'fail';
-
-export interface EndpointProbe {
-	label: string;
-	url: string;
-	expect: string;
-	status: ProbeState;
-	httpStatus?: number;
-	detail: string;
-}
 
 export interface MarketplaceProviderSummary {
 	providerId: string;
@@ -20,9 +9,11 @@ export interface MarketplaceProviderSummary {
 	successCount: number;
 	failureCount: number;
 	totalSettledMsat: number;
+	lastReceiptFinishedAt: number;
 }
 
 export interface MarketplaceOfferSummary {
+	providerId: string;
 	offerId: string;
 	offerKind: string;
 	runtime: string;
@@ -33,6 +24,26 @@ export interface MarketplaceOfferSummary {
 	artifactHash: string;
 }
 
+export type DealFeedState = 'pass' | 'pending' | 'fail';
+
+export interface MarketplaceDealSummary {
+	dealId: string;
+	providerId: string;
+	offerId: string;
+	status: string;
+	settlementMethod: string;
+	baseFeeMsat: number;
+	successFeeMsat: number;
+	hasReceipt: boolean;
+	updatedAt: number;
+}
+
+export interface MarketplaceDealFeedSnapshot {
+	status: DealFeedState;
+	detail: string;
+	deals: MarketplaceDealSummary[];
+}
+
 export interface MarketplaceSnapshot {
 	checkedAt: string;
 	status: ProbeState;
@@ -41,18 +52,10 @@ export interface MarketplaceSnapshot {
 	offerCount: number;
 	providers: MarketplaceProviderSummary[];
 	offers: MarketplaceOfferSummary[];
-}
-
-export interface StatusSnapshot {
-	checkedAt: string;
-	endpoints: EndpointProbe[];
-	marketplace: MarketplaceSnapshot;
+	dealFeed: MarketplaceDealFeedSnapshot;
 }
 
 const MARKETPLACE_URL = 'https://marketplace.froglet.dev';
-const PROVIDER_URL = 'https://ai.froglet.dev';
-const TRY_URL = 'https://try.froglet.dev';
-const SITE_URL = 'https://froglet.dev';
 
 const timeoutMs = 4_000;
 
@@ -92,44 +95,6 @@ async function fetchWithTimeout(url: string): Promise<Response> {
 	}
 }
 
-async function readBody(response: Response, kind: FetchKind): Promise<unknown> {
-	if (kind === 'json') return response.json();
-	return response.text();
-}
-
-async function probe(
-	label: string,
-	url: string,
-	expect: string,
-	kind: FetchKind,
-	check: (body: unknown) => { ok: boolean; detail: string },
-): Promise<EndpointProbe> {
-	try {
-		const response = await fetchWithTimeout(url);
-		const body = await readBody(response, kind);
-		const result = check(body);
-		if (response.ok && result.ok) {
-			return { label, url, expect, status: 'pass', httpStatus: response.status, detail: result.detail };
-		}
-		return {
-			label,
-			url,
-			expect,
-			status: 'fail',
-			httpStatus: response.status,
-			detail: result.detail || `Unexpected response from ${url}`,
-		};
-	} catch (error) {
-		return {
-			label,
-			url,
-			expect,
-			status: 'fail',
-			detail: error instanceof Error ? error.message : String(error),
-		};
-	}
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
@@ -146,6 +111,58 @@ function asNumber(value: unknown): number {
 	return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+function emptyDealFeed(detail = 'Public deal feed activates when the marketplace API exposes /v1/deals.'): MarketplaceDealFeedSnapshot {
+	return {
+		status: 'pending',
+		detail,
+		deals: [],
+	};
+}
+
+async function getMarketplaceDealFeed(): Promise<MarketplaceDealFeedSnapshot> {
+	try {
+		const response = await fetchWithTimeout(`${MARKETPLACE_URL}/v1/deals?limit=10`);
+		if (response.status === 404 || response.status === 405) {
+			return emptyDealFeed();
+		}
+		const body = asRecord(await response.json());
+		if (!response.ok) {
+			return {
+				status: 'fail',
+				detail: `Public deal feed returned HTTP ${response.status}.`,
+				deals: [],
+			};
+		}
+
+		const deals = asArray(body.items).map((item): MarketplaceDealSummary => {
+			const row = asRecord(item);
+			return {
+				dealId: String(row.deal_id ?? row.deal_hash ?? ''),
+				providerId: String(row.provider_id ?? ''),
+				offerId: String(row.offer_id ?? ''),
+				status: String(row.status ?? ''),
+				settlementMethod: String(row.settlement_method ?? ''),
+				baseFeeMsat: asNumber(row.base_fee_msat),
+				successFeeMsat: asNumber(row.success_fee_msat),
+				hasReceipt: row.has_receipt === true,
+				updatedAt: asNumber(row.updated_at),
+			};
+		});
+
+		return {
+			status: 'pass',
+			detail: `Public deal feed returned ${deals.length} redacted deal(s).`,
+			deals,
+		};
+	} catch (error) {
+		return {
+			status: 'fail',
+			detail: error instanceof Error ? error.message : String(error),
+			deals: [],
+		};
+	}
+}
+
 export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 	const checkedAt = nowIso();
 	try {
@@ -160,12 +177,14 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 				offerCount: 0,
 				providers: [],
 				offers: [],
+				dealFeed: emptyDealFeed(),
 			};
 		}
 
-		const [providersResponse, offersResponse] = await Promise.all([
-			fetchWithTimeout(`${MARKETPLACE_URL}/v1/providers?limit=3`),
-			fetchWithTimeout(`${MARKETPLACE_URL}/v1/offers?limit=8`),
+		const [providersResponse, offersResponse, dealFeed] = await Promise.all([
+			fetchWithTimeout(`${MARKETPLACE_URL}/v1/providers?limit=12`),
+			fetchWithTimeout(`${MARKETPLACE_URL}/v1/offers?limit=24`),
+			getMarketplaceDealFeed(),
 		]);
 		const providersBody = asRecord(await providersResponse.json());
 		const offersBody = asRecord(await offersResponse.json());
@@ -189,12 +208,14 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 				successCount: asNumber(trust.success_count),
 				failureCount: asNumber(trust.failure_count),
 				totalSettledMsat: asNumber(trust.total_settled_msat),
+				lastReceiptFinishedAt: asNumber(trust.last_receipt_finished_at),
 			};
 		});
 
 		const offers = offerItems.map((item): MarketplaceOfferSummary => {
 			const row = asRecord(item);
 			return {
+				providerId: String(row.provider_id ?? ''),
 				offerId: String(row.offer_id ?? ''),
 				offerKind: String(row.offer_kind ?? ''),
 				runtime: String(row.runtime ?? ''),
@@ -214,6 +235,7 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 			offerCount,
 			providers,
 			offers,
+			dealFeed,
 		};
 	} catch (error) {
 		return {
@@ -224,52 +246,7 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 			offerCount: 0,
 			providers: [],
 			offers: [],
+			dealFeed: emptyDealFeed(error instanceof Error ? error.message : String(error)),
 		};
 	}
-}
-
-export async function getStatusSnapshot(): Promise<StatusSnapshot> {
-	const checkedAt = nowIso();
-	const [site, providerHealth, providerVersion, tryPrompt, marketplace] = await Promise.all([
-		probe('Site', `${SITE_URL}/`, 'HTTP 200 HTML containing Froglet', 'text', (body) => {
-			const text = String(body);
-			return text.includes('Froglet')
-				? { ok: true, detail: 'Homepage returned Froglet HTML.' }
-				: { ok: false, detail: 'Homepage did not contain the Froglet marker.' };
-		}),
-		probe('Hosted node health', `${PROVIDER_URL}/health`, 'JSON status ok', 'json', (body) => {
-			const json = asRecord(body);
-			return json.status === 'ok' && json.service === 'froglet'
-				? { ok: true, detail: 'Node health is ok.' }
-				: { ok: false, detail: 'Node health shape did not match.' };
-		}),
-		probe('Hosted node version', `${PROVIDER_URL}/v1/node/capabilities`, 'Version matches public release', 'json', (body) => {
-			const json = asRecord(body);
-			return json.version === '0.1.0'
-				? { ok: true, detail: 'Hosted node reports version 0.1.0.' }
-				: { ok: false, detail: `Hosted node reports version ${String(json.version ?? 'unknown')}.` };
-		}),
-		probe('Hosted trial prompt', `${TRY_URL}/llms.txt`, 'HTTP 200 LLM instructions', 'text', (body) => {
-			const text = String(body);
-			return text.includes('Froglet') && text.includes('demo.add')
-				? { ok: true, detail: 'LLM trial prompt is reachable.' }
-				: { ok: false, detail: 'LLM trial prompt markers were missing.' };
-		}),
-		getMarketplaceSnapshot(),
-	]);
-
-	const marketplaceProbe: EndpointProbe = {
-		label: 'Marketplace read API',
-		url: `${MARKETPLACE_URL}/healthz`,
-		expect: 'JSON status ok plus providers/offers read API',
-		status: marketplace.status,
-		httpStatus: marketplace.status === 'pass' ? 200 : undefined,
-		detail: marketplace.detail,
-	};
-
-	return {
-		checkedAt,
-		endpoints: [site, providerHealth, providerVersion, tryPrompt, marketplaceProbe],
-		marketplace,
-	};
 }

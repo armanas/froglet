@@ -1011,3 +1011,131 @@
 		grid-template-columns: repeat(2, 1fr);
 	}
 }
+
+/* ============================================================
+   Docs kit additions (from Froglet Design System
+   ui_kits/docs/index.html): callouts, env tables.
+   Use in MDX via <div class="callout"> and <div class="envtable">.
+   ============================================================ */
+
+.callout {
+	border-left: 2px solid var(--frog-400);
+	background: rgba(82, 199, 42, 0.15);
+	padding: 14px 18px;
+	border-radius: 0 6px 6px 0;
+	margin: 24px 0;
+	font-size: 0.92rem;
+	line-height: 1.55;
+	color: var(--fg1);
+}
+.callout .callout-t {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-family: var(--font-mono);
+	font-size: 0.72rem;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--frog-400);
+	margin-bottom: 6px;
+	font-weight: 700;
+}
+.callout p {
+	margin: 0;
+	color: var(--fg2);
+}
+.callout.warn {
+	border-color: var(--bolt);
+	background: rgba(245, 197, 24, 0.10);
+}
+.callout.warn .callout-t {
+	color: var(--bolt);
+}
+.callout.danger {
+	border-color: var(--danger);
+	background: rgba(229, 72, 72, 0.10);
+}
+.callout.danger .callout-t {
+	color: var(--danger);
+}
+
+.envtable {
+	border: 1px solid var(--border);
+	border-radius: var(--r-3);
+	overflow: hidden;
+	margin: 20px 0;
+}
+.envtable table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.envtable th,
+.envtable td {
+	padding: 12px 16px;
+	text-align: left;
+	border-bottom: 1px solid var(--border);
+	font-size: 0.88rem;
+	vertical-align: top;
+}
+.envtable th {
+	font-family: var(--font-mono);
+	font-size: 0.7rem;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--fg3);
+	font-weight: 600;
+	background: var(--bg-elevated);
+}
+.envtable tr:last-child td {
+	border-bottom: none;
+}
+.envtable td.key {
+	font-family: var(--font-mono);
+	color: var(--accent-code);
+	font-size: 0.82rem;
+	white-space: nowrap;
+}
+.envtable td.desc {
+	color: var(--fg2);
+	line-height: 1.5;
+}
+.envtable td.def {
+	font-family: var(--font-mono);
+	font-size: 0.82rem;
+	color: var(--fg3);
+}
+
+.docs-nextprev {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 14px;
+	margin-top: 56px;
+}
+.docs-nextprev a {
+	padding: 16px 20px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-3);
+	background: var(--bg-elevated);
+	text-decoration: none;
+	color: var(--fg1);
+	transition: border-color var(--dur-fast) var(--ease-out);
+}
+.docs-nextprev a:hover {
+	border-color: var(--border-strong);
+}
+.docs-nextprev .dir {
+	font-family: var(--font-mono);
+	font-size: 0.7rem;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--fg3);
+	display: block;
+	margin-bottom: 4px;
+}
+.docs-nextprev .ttl {
+	font-size: 0.95rem;
+	font-weight: 500;
+}
+.docs-nextprev a.next {
+	text-align: right;
+}

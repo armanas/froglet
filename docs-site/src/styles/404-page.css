@@ -1,101 +1,106 @@
 /* ============================================================
-   404 Page Styles
-   Extracted from 404.astro inline <style is:inline> block.
-   References Design Tokens from tokens.css instead of
-   re-declaring shorthand aliases.
+   404 Page — uses new design tokens.
    ============================================================ */
 
 * {
-  box-sizing: border-box;
+	box-sizing: border-box;
 }
 
 body {
-  margin: 0;
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  background: hsl(var(--froglet-background));
-  color: hsl(var(--froglet-foreground));
-  font-family: var(--froglet-font-sans);
+	margin: 0;
+	min-height: 100svh;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg);
+	color: var(--fg1);
+	font-family: var(--font-sans);
 }
 
 .not-found-main {
-  flex: 1;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+	flex: 1;
+	display: grid;
+	place-items: center;
+	padding: 24px var(--shell-gut);
 }
 
-.shell {
-  max-width: 760px;
-  padding: 36px;
-  border: 1px solid hsl(var(--froglet-border));
-  border-radius: var(--froglet-card-radius);
-  background: hsl(var(--froglet-card));
-  box-shadow: var(--froglet-shadow);
+.not-found-main .shell {
+	max-width: 760px;
+	padding: 36px 40px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-3);
+	background: var(--bg-elevated);
 }
 
 .pill {
-  display: inline-flex;
-  padding: 6px 12px;
-  border-radius: calc(var(--froglet-card-radius) - 2px);
-  background: hsl(var(--froglet-accent-soft));
-  border: 1px solid color-mix(in srgb, hsl(var(--froglet-accent)) 16%, transparent);
-  color: hsl(var(--froglet-accent-strong));
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+	display: inline-flex;
+	padding: 4px 12px;
+	border-radius: var(--r-pill);
+	background: rgba(82, 199, 42, 0.15);
+	color: var(--frog-300);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
 }
 
-h1 {
-  margin: 18px 0 12px;
-  font-family: var(--froglet-font-serif);
-  font-size: clamp(42px, 7vw, 72px);
-  line-height: 0.94;
-  letter-spacing: 0;
+.not-found-main h1 {
+	margin: 18px 0 12px;
+	font-family: var(--font-mono);
+	font-size: clamp(2.5rem, 6vw, 3.5rem);
+	line-height: 1.05;
+	letter-spacing: -0.02em;
+	font-weight: 600;
+	color: var(--fg1);
 }
 
-p {
-  margin: 0;
-  color: hsl(var(--froglet-muted));
-  font-size: 1.08rem;
-  line-height: 1.72;
-  max-width: 40rem;
+.not-found-main p {
+	margin: 0;
+	color: var(--fg2);
+	font-size: 1rem;
+	line-height: 1.6;
+	max-width: 40rem;
 }
 
 .actions {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 26px;
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-top: 26px;
 }
 
 .actions a {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 18px;
-  border-radius: var(--froglet-card-radius);
-  border: 1px solid hsl(var(--froglet-border));
-  color: hsl(var(--froglet-foreground));
-  text-decoration: none;
-  font-weight: 600;
-  background: hsl(var(--froglet-card));
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 10px 16px;
+	border-radius: var(--r-3);
+	border: 1px solid transparent;
+	color: var(--fg1);
+	text-decoration: none;
+	font-family: var(--font-sans);
+	font-weight: 600;
+	font-size: 14px;
+	transition: all var(--dur-fast) var(--ease-out);
 }
 
 .actions .primary {
-  background: hsl(var(--froglet-accent));
-  border-color: hsl(var(--froglet-accent));
-  color: #f8f6f1;
+	background: var(--frog-400);
+	color: #000;
+	border-color: var(--frog-500);
 }
 
 .actions .primary:hover {
-  background: hsl(var(--froglet-accent-strong));
-  border-color: hsl(var(--froglet-accent-strong));
+	background: var(--frog-500);
+	border-color: var(--frog-500);
+}
+
+.actions .ghost {
+	background: transparent;
+	border-color: var(--border-strong);
 }
 
 .actions .ghost:hover {
-  border-color: hsl(var(--froglet-border-strong));
-  background: hsl(var(--froglet-card));
+	border-color: var(--fg3);
+	background: var(--ink-50);
 }

@@ -1,0 +1,276 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+import { compactId, formatSnapshotTime, getMarketplaceSnapshot } from '../data/live-snapshot';
+import type { MarketplaceSnapshot } from '../data/live-snapshot';
+
+const marketplace = await getMarketplaceSnapshot();
+
+function compactEndpoint(value: string | undefined | null): string {
+  if (!value) return 'n/a';
+  try {
+    return new URL(value).host;
+  } catch {
+    return value;
+  }
+}
+
+function topServiceKind(kinds: string[] | undefined): string {
+  if (!kinds || kinds.length === 0) return 'n/a';
+  return kinds[0];
+}
+
+function avatarInitials(id: string): string {
+  const compact = compactId(id);
+  return compact.slice(0, 2);
+}
+
+function dashboardStats(snapshot: MarketplaceSnapshot) {
+  const successCount = snapshot.providers.reduce((sum, p) => sum + p.successCount, 0);
+  const failureCount = snapshot.providers.reduce((sum, p) => sum + p.failureCount, 0);
+  const totalReceipts = successCount + failureCount;
+  const totalSettledSats = Math.round(
+    snapshot.providers.reduce((sum, p) => sum + p.totalSettledMsat, 0) / 1000,
+  );
+  const freeOffers = snapshot.offers.filter(
+    (o) => o.settlementMethod === 'none' && o.baseFeeMsat === 0 && o.successFeeMsat === 0,
+  ).length;
+  const paidOffers = Math.max(0, snapshot.offerCount - freeOffers);
+  const successRate =
+    totalReceipts === 0 ? '—' : `${Math.round((successCount / totalReceipts) * 100)}%`;
+  return {
+    successCount,
+    failureCount,
+    totalReceipts,
+    totalSettledSats,
+    freeOffers,
+    paidOffers,
+    successRate,
+  };
+}
+
+const stats = dashboardStats(marketplace);
+
+// Top providers by deal count — we approximate using success + failure.
+const topProviders = [...marketplace.providers]
+  .sort((a, b) => b.successCount + b.failureCount - (a.successCount + a.failureCount))
+  .slice(0, 8);
+
+// Services breakdown — aggregate offers by runtime (or kind fallback).
+const serviceBreakdownMap = new Map<string, number>();
+for (const offer of marketplace.offers) {
+  const key = offer.runtime || offer.offerKind || 'other';
+  serviceBreakdownMap.set(key, (serviceBreakdownMap.get(key) ?? 0) + 1);
+}
+const serviceBreakdown = Array.from(serviceBreakdownMap.entries())
+  .map(([name, count]) => ({ name, count }))
+  .sort((a, b) => b.count - a.count)
+  .slice(0, 6);
+const maxServiceCount = serviceBreakdown[0]?.count ?? 1;
+
+// Live feed rows from deal feed.
+const feedRows = marketplace.dealFeed.deals.slice(0, 14);
+
+function formatAmount(sats: number): string {
+  if (sats === 0) return '+0';
+  return sats > 0 ? `+${sats.toLocaleString()}` : sats.toLocaleString();
+}
+
+function formatFeedTime(iso: string | undefined): string {
+  if (!iso) return '--:--:--';
+  try {
+    const d = new Date(iso);
+    const hh = d.getUTCHours().toString().padStart(2, '0');
+    const mm = d.getUTCMinutes().toString().padStart(2, '0');
+    const ss = d.getUTCSeconds().toString().padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  } catch {
+    return '--:--:--';
+  }
+}
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marketplace · Froglet</title>
+<meta name="description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
+<link rel="canonical" href="https://froglet.dev/marketplace/" />
+<meta name="color-scheme" content="dark" />
+<!-- OpenGraph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Marketplace · Froglet" />
+<meta property="og:description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
+<meta property="og:url" content="https://froglet.dev/marketplace/" />
+<meta property="og:image" content="https://froglet.dev/og/marketplace.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Marketplace · Froglet" />
+<meta name="twitter:description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
+<meta name="twitter:image" content="https://froglet.dev/og/marketplace.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<ThemeProvider />
+</head>
+<body data-screen-label="Marketplace · Index">
+<SiteHeader currentPath={Astro.url.pathname}>
+  <span slot="tools" class="live">
+    <span class="pulse" aria-hidden="true"></span>
+    LIVE · marketplace.froglet.dev
+  </span>
+</SiteHeader>
+
+<main class="mkt-shell" data-marketplace-live data-status={marketplace.status}>
+  <div class="mkt-title">
+    <h1>Marketplace</h1>
+    <div class="search" role="search" aria-label="Marketplace search">
+      🔍 Search providers, services, or descriptors…
+    </div>
+  </div>
+  <p class="mkt-sub">
+    Live counts of registered froglets, offers, and receipts on
+    <code class="inline">marketplace.froglet.dev</code> — snapshot
+    <strong data-marketplace-field="checkedAt">{formatSnapshotTime(marketplace.checkedAt)} UTC</strong>.
+  </p>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="k">Registered froglets</div>
+      <div class="v" data-marketplace-field="froglets">{marketplace.providerCount.toLocaleString()}</div>
+      <div class="d">indexed providers</div>
+    </div>
+    <div class="metric">
+      <div class="k">Offers</div>
+      <div class="v" data-marketplace-field="offers">{marketplace.offerCount.toLocaleString()}</div>
+      <div class="d">{stats.freeOffers} free · {stats.paidOffers} paid</div>
+    </div>
+    <div class="metric">
+      <div class="k">Receipts</div>
+      <div class="v" data-marketplace-field="receipts">{stats.totalReceipts.toLocaleString()}</div>
+      <div class="d">{stats.successRate} success rate</div>
+    </div>
+    <div class="metric">
+      <div class="k">Volume settled</div>
+      <div class="v" data-marketplace-field="settledSats">{stats.totalSettledSats.toLocaleString()}<span class="u">sats</span></div>
+      <div class="d">lightning + stripe + x402</div>
+    </div>
+  </div>
+
+  <div class="mkt-grid">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Top froglets</h3>
+        <div class="filt" aria-hidden="true">
+          <span class="on">All</span>
+          <span>24h</span>
+          <span>7d</span>
+          <span>30d</span>
+        </div>
+      </div>
+      {topProviders.length > 0 ? (
+        <table class="providers">
+          <thead><tr>
+            <th>Identity</th>
+            <th>Endpoint</th>
+            <th>Services</th>
+            <th>OK</th>
+            <th>Fail</th>
+            <th>Receipts</th>
+          </tr></thead>
+          <tbody>
+            {topProviders.map((p) => (
+              <tr class="row">
+                <td class="name">
+                  <span class="av">{avatarInitials(p.providerId)}</span>
+                  {compactId(p.providerId)}
+                </td>
+                <td class="endp">{compactEndpoint(p.endpoint)}</td>
+                <td class="svc">{topServiceKind(p.serviceKinds)}</td>
+                <td class="ok">{p.successCount}</td>
+                <td class="fail">{p.failureCount}</td>
+                <td class="vol">{p.successCount + p.failureCount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div class="panel-empty">No providers indexed yet.</div>
+      )}
+    </div>
+
+    <div class="mkt-side">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Live feed</h3>
+          <div class="filt" aria-hidden="true">
+            <span class="on">All</span>
+            <span>Deals</span>
+          </div>
+        </div>
+        {feedRows.length > 0 ? (
+          <div class="feed">
+            {feedRows.map((deal) => {
+              const totalSats = Math.round((deal.baseFeeMsat + deal.successFeeMsat) / 1000);
+              const statusOk = deal.status === 'succeeded' || deal.status === 'running';
+              return (
+                <div class="row">
+                  <span class="ts">{formatFeedTime(deal.updatedAt)}</span>
+                  <span class="msg">
+                    <b>deal</b> {compactId(deal.providerId)} · <span class="svc">{deal.offerId}</span>
+                  </span>
+                  <span class:list={['amt', statusOk ? 'ok' : 'warn']}>
+                    {formatAmount(totalSats)}<span class="u">sats</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div class="panel-empty">
+            {marketplace.dealFeed.detail || 'No public deals surfaced.'}
+          </div>
+        )}
+      </div>
+
+      <div class="panel section-gap">
+        <div class="panel-head">
+          <h3>Services breakdown</h3>
+        </div>
+        {serviceBreakdown.length > 0 ? (
+          <div class="svc-break">
+            {serviceBreakdown.map((s) => (
+              <div class="svc-row">
+                <span class="nm">{s.name}</span>
+                <span class="bar">
+                  <span class="fill" style={`width: ${Math.round((s.count / maxServiceCount) * 100)}%`}></span>
+                </span>
+                <span class="ct">{s.count}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div class="panel-empty">No indexed offers yet.</div>
+        )}
+      </div>
+    </div>
+  </div>
+
+  <div class="mkt-footer">
+    <span>{marketplace.detail}</span>
+    <nav aria-label="Marketplace data">
+      <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
+      <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>
+      <a href="/marketplace/overview/">Marketplace docs</a>
+    </nav>
+  </div>
+</main>
+<script>
+  import { initMarketplaceLive } from '../scripts/marketplace-live';
+  initMarketplaceLive();
+</script>
+</body>
+</html>

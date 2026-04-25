@@ -1,445 +1,410 @@
 /* ============================================================
-   Demo Page Styles — dark-only protocol lab
+   Demo page — aligned to Froglet Design System.
+   Protocol lab: canvas scene + lesson card + terminal block.
+   Flat 1px borders, mono typography, design-system tokens.
    ============================================================ */
 
-:root {
-  --demo-scene: #071910;
-  --demo-scene-2: #0a2117;
-  --demo-scene-border: rgba(207, 231, 215, 0.28);
-  --demo-chalk: #f2f4e8;
-  --demo-chalk-muted: rgba(232, 238, 225, 0.72);
-  --demo-chalk-green: #a8efb6;
-  --demo-term: #07110d;
-  --demo-term-bar: #101914;
-  --demo-term-text: #d6dfd4;
-  --demo-font-chalk: 'Patrick Hand', 'Comic Sans MS', cursive;
-}
-
 * {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+	box-sizing: border-box;
 }
 
 body {
-  margin: 0;
-  background:
-    linear-gradient(rgba(242, 244, 232, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(242, 244, 232, 0.012) 1px, transparent 1px),
-    #080d0b;
-  background-size: 7px 9px, 11px 13px, auto;
-  color: hsl(var(--froglet-foreground));
-  font-family: var(--froglet-font-sans);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  -webkit-font-smoothing: antialiased;
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg1);
+	font-family: var(--font-sans);
+	min-height: 100svh;
+	display: flex;
+	flex-direction: column;
+	-webkit-font-smoothing: antialiased;
 }
 
 .demo-shell {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
 }
 
-.main {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas: 'lesson scene' 'term scene';
-  gap: 14px;
-  padding: 16px;
-  min-height: 680px;
-  align-items: stretch;
+.demo-shell .main {
+	flex: 1;
+	display: grid;
+	grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+	grid-template-rows: auto minmax(0, 1fr);
+	grid-template-areas: 'lesson scene' 'term scene';
+	gap: 14px;
+	padding: 16px var(--shell-gut);
+	min-height: 680px;
+	max-width: var(--shell-max);
+	width: 100%;
+	margin: 0 auto;
+	align-items: stretch;
 }
 
-/* ---- Scene / canvas ---- */
+/* ── Scene / canvas (protocol whiteboard) ──────────────── */
 
 #scene {
-  grid-area: scene;
-  position: relative;
-  inset: auto;
-  border: 1px solid var(--demo-scene-border);
-  border-radius: var(--froglet-card-radius);
-  overflow: hidden;
-  background:
-    linear-gradient(160deg, rgba(255,255,255,0.035), transparent 34%),
-    linear-gradient(rgba(232,238,225,0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(232,238,225,0.025) 1px, transparent 1px),
-    var(--demo-scene);
-  background-size: auto, 62px 62px, 84px 84px, auto;
-  min-height: 0;
-  box-shadow:
-    var(--froglet-shadow),
-    inset 0 0 0 1px rgba(232, 238, 225, 0.04),
-    inset 0 0 80px rgba(0, 0, 0, 0.34);
+	grid-area: scene;
+	position: relative;
+	border: 1px solid var(--border);
+	border-radius: var(--r-3);
+	overflow: hidden;
+	background: var(--bg-elevated);
+	min-height: 0;
 }
 
-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  position: absolute;
-  inset: 0;
+/* Subtle whiteboard grid — built from the same border token
+   so it reads as a protocol panel, not a chalkboard. */
+#scene::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background-image:
+		linear-gradient(to right, var(--border) 1px, transparent 1px),
+		linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+	background-size: 64px 64px;
+	opacity: 0.5;
+	pointer-events: none;
 }
 
-/* ---- Lesson panel ---- */
+#scene canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+	position: absolute;
+	inset: 0;
+}
+
+/* ── Lesson card ───────────────────────────────────────── */
 
 #lesson-wrap {
-  grid-area: lesson;
-  position: relative;
-  width: auto;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-  align-self: start;
-}
-
-#lesson-wrap > * {
-  pointer-events: auto;
+	grid-area: lesson;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	align-self: start;
+	z-index: 3;
 }
 
 #lesson-card {
-  padding: 22px 24px;
-  background:
-    linear-gradient(rgba(232, 238, 225, 0.028) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(232, 238, 225, 0.018) 1px, transparent 1px),
-    var(--demo-scene-2);
-  background-size: 38px 38px, 46px 46px, auto;
-  border: 1px solid var(--demo-scene-border);
-  border-radius: var(--froglet-card-radius);
-  box-shadow:
-    var(--froglet-shadow),
-    inset 0 0 36px rgba(0, 0, 0, 0.22);
+	padding: 22px 24px;
+	background: var(--bg-elevated);
+	border: 1px solid var(--border);
+	border-radius: var(--r-3);
 }
 
 .step-n {
-  font-family: var(--froglet-font-code);
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--demo-chalk-green);
-  margin-bottom: 6px;
-  text-shadow: 0 0 4px rgba(168, 239, 182, 0.16);
+	font-family: var(--font-mono);
+	font-size: 0.7rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.12em;
+	color: var(--frog-400);
+	margin-bottom: 10px;
 }
 
 .step-t {
-  font-family: var(--demo-font-chalk);
-  font-size: 1.95rem;
-  font-weight: 400;
-  color: var(--demo-chalk);
-  line-height: 1;
-  margin-bottom: 8px;
-  letter-spacing: 0;
-  text-shadow:
-    0.5px 0 rgba(255, 255, 255, 0.18),
-    -0.5px 0.4px rgba(255, 255, 255, 0.1);
+	font-family: var(--font-mono);
+	font-size: 1.5rem;
+	font-weight: 600;
+	color: var(--fg1);
+	line-height: 1.15;
+	letter-spacing: -0.02em;
+	margin-bottom: 10px;
 }
 
 .step-desc {
-  font-size: 0.98rem;
-  line-height: 1.62;
-  color: var(--demo-chalk-muted);
+	font-size: 0.95rem;
+	line-height: 1.6;
+	color: var(--fg2);
 }
 
 .step-desc a {
-  color: hsl(var(--froglet-accent));
-  text-decoration: none;
-  border-bottom: 1px solid hsl(var(--froglet-accent-soft));
+	color: var(--frog-400);
+	text-decoration: none;
+	border-bottom: 1px solid rgba(82, 199, 42, 0.3);
+	transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 
 .step-desc a:hover {
-  color: hsl(var(--froglet-accent-strong));
+	color: var(--frog-300);
+	border-bottom-color: var(--frog-400);
 }
 
 .step-desc code {
-  background: hsl(var(--froglet-surface));
-  border-radius: calc(var(--froglet-card-radius) - 3px);
-  padding: 2px 6px;
-  font-family: var(--froglet-font-code);
-  font-size: 0.8rem;
-  color: hsl(var(--froglet-accent-strong));
+	background: var(--bg-elevated-2);
+	border-radius: var(--r-2);
+	padding: 1px 6px;
+	font-family: var(--font-mono);
+	font-size: 0.88em;
+	color: var(--accent-code);
 }
 
-/* ---- Annotation ---- */
+/* ── Annotation ───────────────────────────────────────── */
 
 #annotation {
-  padding: 14px 16px;
-  background:
-    linear-gradient(rgba(232, 238, 225, 0.022) 1px, transparent 1px),
-    var(--demo-scene-2);
-  background-size: 32px 32px, auto;
-  border: 1px solid var(--demo-scene-border);
-  border-radius: var(--froglet-card-radius);
-  font-size: 0.86rem;
-  line-height: 1.6;
-  color: var(--demo-chalk-muted);
-  display: none;
-  max-height: 120px;
-  overflow-y: auto;
-  box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.2);
+	padding: 14px 18px;
+	background: var(--bg-elevated);
+	border: 1px solid var(--border);
+	border-left: 2px solid var(--frog-400);
+	border-radius: 0 var(--r-3) var(--r-3) 0;
+	font-size: 0.88rem;
+	line-height: 1.6;
+	color: var(--fg2);
+	display: none;
+	max-height: 160px;
+	overflow-y: auto;
 }
 
 #annotation strong {
-  color: var(--demo-chalk);
-  font-weight: 600;
+	color: var(--fg1);
+	font-weight: 600;
 }
 
 #annotation .hl {
-  color: var(--demo-chalk-green);
-  font-weight: 600;
+	color: var(--frog-400);
+	font-weight: 600;
 }
 
-/* ---- Terminal ---- */
+/* ── Terminal ──────────────────────────────────────────── */
 
 #term {
-  grid-area: term;
-  position: relative;
-  width: auto;
-  height: 100%;
-  min-height: 240px;
-  max-height: 340px;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--demo-term);
-  border: 1px solid var(--demo-scene-border);
-  border-radius: var(--froglet-card-radius);
-  align-self: end;
-  box-shadow: inset 0 0 34px rgba(0, 0, 0, 0.22);
+	grid-area: term;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background: var(--term-bg);
+	border: 1px solid var(--term-border);
+	border-radius: var(--r-3);
+	min-height: 240px;
+	max-height: 340px;
+	align-self: end;
+	z-index: 3;
 }
 
 #term-bar {
-  height: 32px;
-  background: var(--demo-term-bar);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  gap: 8px;
-  flex-shrink: 0;
-  border-bottom: 1px solid hsl(var(--froglet-border));
+	height: 34px;
+	background: var(--term-head-bg);
+	display: flex;
+	align-items: center;
+	padding: 0 14px;
+	gap: 8px;
+	flex-shrink: 0;
+	border-bottom: 1px solid var(--term-border);
 }
 
+/* Design-system traffic-light dots — matches .term .term-head
+   in shared.css (danger / bolt / frog-400), not macOS colours. */
 .traffic {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+	display: flex;
+	gap: 6px;
+	align-items: center;
 }
 
 .tl {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  position: relative;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
 }
 
-.tl-close { background: #ff5f57; }
-.tl-min   { background: #febc2e; }
-.tl-max   { background: #28c840; }
+.tl-close { background: var(--danger); }
+.tl-min   { background: var(--bolt); }
+.tl-max   { background: var(--frog-400); }
 
 #term-title {
-  flex: 1;
-  text-align: center;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: hsl(var(--froglet-muted));
-  font-family: var(--froglet-font-sans);
+	flex: 1;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: 0.72rem;
+	font-weight: 500;
+	color: var(--fg3);
+	letter-spacing: 0.02em;
 }
 
 #term-body {
-  flex: 1;
-  padding: 8px 12px;
-  overflow-y: auto;
-  font-family: var(--froglet-font-code);
-  font-size: 0.75rem;
-  line-height: 1.6;
-  background:
-    linear-gradient(rgba(232, 238, 225, 0.016) 1px, transparent 1px),
-    var(--demo-term);
-  background-size: 34px 34px, auto;
-  color: var(--demo-term-text);
+	flex: 1;
+	padding: 12px 14px;
+	overflow-y: auto;
+	font-family: var(--font-mono);
+	font-size: 0.78rem;
+	line-height: 1.65;
+	background: var(--term-bg);
+	color: var(--term-text);
 }
 
 #term-body::-webkit-scrollbar       { width: 4px; }
 #term-body::-webkit-scrollbar-track  { background: transparent; }
-#term-body::-webkit-scrollbar-thumb  { background: hsl(var(--froglet-border)); }
+#term-body::-webkit-scrollbar-thumb  { background: var(--border-strong); border-radius: 2px; }
 
-/* ---- Terminal syntax colors ---- */
-
-.tp { color: #7ad78f; }
-.tc { color: #89c5ae; }
-.to { color: #b7c0bd; }
-.th { color: #d7c779; }
-.ts { color: #7ad78f; }
-.tm { color: #5a6663; }
-.te { color: #ff786f; }
-.tv { color: #96b9a2; }
+/* Terminal syntax colours — aligned to shared.css .term spans */
+.tp { color: var(--frog-400); }    /* prompt */
+.tc { color: var(--term-text); }    /* command */
+.to { color: var(--fg3); }          /* output */
+.th { color: var(--bolt); }         /* highlight / number */
+.ts { color: var(--accent-code); }  /* success */
+.tm { color: var(--fg3); }          /* muted */
+.te { color: var(--danger); }       /* error */
+.tv { color: #74c3c6; }             /* variable / string */
 
 .cursor-line {
-  display: flex;
-  align-items: center;
+	display: flex;
+	align-items: center;
 }
 
 .cursor {
-  width: 7px;
-  height: 14px;
-  background: hsl(var(--froglet-accent));
-  display: inline-block;
-  animation: blink 1s step-end infinite;
+	width: 7px;
+	height: 14px;
+	background: var(--frog-400);
+	display: inline-block;
+	animation: demo-blink 1s step-end infinite;
 }
 
-@keyframes blink {
-  50% { opacity: 0; }
+@keyframes demo-blink {
+	50% {
+		opacity: 0;
+	}
 }
 
-/* ---- Navigation bar ---- */
+/* ── Navigation bar ───────────────────────────────────── */
 
 #nav {
-  min-height: 64px;
-  background:
-    linear-gradient(rgba(232, 238, 225, 0.018) 1px, transparent 1px),
-    hsl(var(--froglet-background));
-  background-size: 9px 9px, auto;
-  border-top: 1px solid hsl(var(--froglet-border));
-  display: flex;
-  align-items: center;
-  padding: 10px 16px;
-  gap: 12px;
-  flex-shrink: 0;
+	min-height: 64px;
+	background: var(--bg);
+	border-top: 1px solid var(--border);
+	display: flex;
+	align-items: center;
+	padding: 12px var(--shell-gut);
+	gap: 14px;
+	flex-shrink: 0;
+	max-width: var(--shell-max);
+	width: 100%;
+	margin: 0 auto;
+	box-sizing: border-box;
 }
 
 .pips {
-  display: flex;
-  gap: 4px;
-  flex: 1;
+	display: flex;
+	gap: 5px;
+	flex: 1;
+	align-items: center;
 }
 
 .pip {
-  width: 20px;
-  height: 3px;
-  border-radius: 999px;
-  background: hsl(var(--froglet-border));
-  transition: background 0.2s ease;
-  cursor: pointer;
+	width: 20px;
+	height: 3px;
+	border-radius: var(--r-pill);
+	background: var(--border-strong);
+	transition: background var(--dur-fast) var(--ease-out);
+	cursor: pointer;
+	border: none;
+	padding: 0;
 }
 
-.pip:hover { background: hsl(var(--froglet-muted)); }
-.pip.done  { background: hsl(var(--froglet-accent-soft)); }
-.pip.on    { background: hsl(var(--froglet-accent)); }
+.pip:hover { background: var(--fg3); }
+.pip.done  { background: var(--frog-600); }
+.pip.on    { background: var(--frog-400); }
 
+/* Nav buttons use design-system .btn primary/secondary shapes. */
 #prevBtn,
 #nextBtn {
-  min-width: 108px;
-  padding: 10px 18px;
-  border-radius: var(--froglet-card-radius);
-  font-size: 0.88rem;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-  border: 1px solid hsl(var(--froglet-border));
-  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+	min-width: 108px;
+	padding: 10px 18px;
+	border-radius: var(--r-3);
+	font-family: var(--font-sans);
+	font-size: 14px;
+	font-weight: 600;
+	line-height: 1;
+	cursor: pointer;
+	border: 1px solid transparent;
+	transition: all var(--dur-fast) var(--ease-out);
 }
 
 #prevBtn {
-  background: hsl(var(--froglet-card));
-  color: hsl(var(--froglet-foreground));
+	background: var(--bg-elevated);
+	color: var(--fg1);
+	border-color: var(--border-strong);
 }
 
 #prevBtn:hover {
-  background: hsl(var(--froglet-surface));
-  border-color: hsl(var(--froglet-border-strong));
+	border-color: var(--fg3);
 }
 
 #prevBtn:disabled {
-  opacity: 0.35;
-  cursor: default;
+	opacity: 0.35;
+	cursor: default;
 }
 
 #nextBtn {
-  background: hsl(var(--froglet-accent));
-  border-color: hsl(var(--froglet-accent));
-  color: hsl(var(--froglet-accent-foreground));
+	background: var(--frog-400);
+	color: #000;
+	border-color: var(--frog-500);
 }
 
 #nextBtn:hover {
-  background: hsl(var(--froglet-accent-strong));
-  border-color: hsl(var(--froglet-accent-strong));
+	background: var(--frog-500);
+	border-color: var(--frog-500);
 }
 
-/* ---- Responsive ---- */
+/* ── Responsive ───────────────────────────────────────── */
 
 @media (max-width: 900px) {
-  body { overflow: auto; }
-  .demo-shell { min-height: auto; }
+	body {
+		overflow: auto;
+	}
+	.demo-shell {
+		min-height: auto;
+	}
 
-  .main {
-    display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-    grid-template-areas: 'lesson' 'scene' 'term';
-    gap: 12px;
-    padding: 12px;
-    overflow: visible;
-    min-height: auto;
-  }
+	.demo-shell .main {
+		grid-template-columns: 1fr;
+		grid-template-rows: auto;
+		grid-template-areas: 'lesson' 'scene' 'term';
+		gap: 12px;
+		padding: 12px;
+		min-height: auto;
+	}
 
-  #scene {
-    position: relative;
-    inset: auto;
-    grid-area: scene;
-    min-height: 390px;
-  }
+	#scene {
+		min-height: 360px;
+	}
 
-  #lesson-wrap {
-    position: relative;
-    grid-area: lesson;
-    width: auto;
-    top: auto;
-    left: auto;
-  }
+	#lesson-card {
+		padding: 18px 20px;
+	}
+	.step-t {
+		font-size: 1.3rem;
+	}
+	.step-desc {
+		font-size: 0.9rem;
+	}
+	#annotation {
+		font-size: 0.82rem;
+	}
 
-  #lesson-card { padding: 16px; }
-  .step-t { font-size: 1.62rem; }
-  .step-desc { font-size: 0.88rem; line-height: 1.55; }
-  #annotation { font-size: 0.78rem; line-height: 1.5; }
+	#term {
+		height: 220px;
+		min-height: 220px;
+		max-height: none;
+	}
 
-  #term {
-    position: relative;
-    grid-area: term;
-    width: auto;
-    height: 220px;
-    min-height: 220px;
-    max-height: none;
-    bottom: auto;
-    right: auto;
-    left: auto;
-  }
+	#nav {
+		position: sticky;
+		bottom: 0;
+		z-index: 20;
+		background: var(--hdr-bg);
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+		justify-content: space-between;
+	}
 
-  #nav {
-    position: sticky;
-    bottom: 0;
-    z-index: 20;
-    padding: 10px 12px;
-    background: hsl(var(--froglet-background));
-    border-top: 1px solid hsl(var(--froglet-border));
-    justify-content: space-between;
-  }
+	.pips {
+		max-width: 140px;
+		overflow: hidden;
+	}
 
-  .pips {
-    display: flex;
-    max-width: 150px;
-    overflow: hidden;
-  }
-
-  #prevBtn,
-  #nextBtn {
-    min-width: 86px;
-    padding-inline: 12px;
-  }
+	#prevBtn,
+	#nextBtn {
+		min-width: 86px;
+		padding-inline: 12px;
+	}
 }
