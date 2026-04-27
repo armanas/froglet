@@ -5,13 +5,22 @@
 //! does NOT publish them, so a plain `froglet-node` doesn't fingerprint as a
 //! public demo.
 //!
-//! Two services are exposed:
+//! Five services are exposed:
 //!
 //! - `demo.echo` — returns input unchanged. Proves the discovery → deal →
 //!   execute round-trip works against a live provider.
 //! - `demo.add`  — `{a, b} → {sum: a + b}` over `i64`. Proves typed JSON I/O.
+//! - `demo.fetch-witness` — fetch a URL and return signed metadata + body
+//!   hash. **Out-of-reach × Trust** cell: agent gets a signed attestation of
+//!   what the URL served without making the request itself.
+//! - `demo.hash-verify` — bonded reproducibility check: agent supplies a URL
+//!   and expected SHA-256, provider returns whether the live content
+//!   matches. **Out-of-trust × Math** cell: deterministic, slashable.
+//! - `demo.notarize` — bind a content hash to a Unix-millisecond timestamp;
+//!   the kernel receipt's signature is the notarization. **Out-of-trust ×
+//!   Credential** cell: provider's persistent staked identity is the proof.
 //!
-//! A third demo (`demo.wasm-compute`) is a published WASM artifact, not a
+//! A sixth demo (`demo.wasm-compute`) is a published WASM artifact, not a
 //! builtin — it ships separately under `examples/initial-services/wasm-compute/`.
 //!
 //! Registration is a two-step process mirroring the marketplace-node pattern:
@@ -34,9 +43,16 @@ use std::sync::Arc;
 
 pub mod demo_add;
 pub mod demo_echo;
+pub mod demo_fetch_witness;
+pub mod demo_hash_verify;
+pub mod demo_notarize;
+pub(crate) mod safe_fetch;
 
 pub use demo_add::AddHandler;
 pub use demo_echo::EchoHandler;
+pub use demo_fetch_witness::FetchWitnessHandler;
+pub use demo_hash_verify::HashVerifyHandler;
+pub use demo_notarize::NotarizeHandler;
 
 /// Env var that enables demo-service publication on startup.
 pub const DEMO_SERVICES_ENV: &str = "FROGLET_PUBLISH_DEMO_SERVICES";
@@ -51,6 +67,18 @@ const DEMO_SERVICES: &[(&str, &str)] = &[
     (
         "demo.add",
         "Add — returns {sum: a + b} for signed 64-bit integer operands.",
+    ),
+    (
+        "demo.fetch-witness",
+        "Fetch witness — provider fetches a URL and returns the body's SHA-256, status, content-type, length, and timestamp. The signed receipt is a third-party-verifiable attestation of what the URL served.",
+    ),
+    (
+        "demo.hash-verify",
+        "Hash verify — provider fetches a URL and reports whether the live SHA-256 matches the buyer's expected hash. Bonded reproducibility check: a wrong answer is detectable by anyone with the URL.",
+    ),
+    (
+        "demo.notarize",
+        "Notarize — provider binds a caller-supplied content hash to a Unix-millisecond timestamp. The kernel receipt's BIP340 signature on the output is the notarization itself.",
     ),
 ];
 
@@ -67,6 +95,12 @@ pub fn demo_handlers() -> HashMap<String, Arc<dyn BuiltinServiceHandler>> {
     let mut map: HashMap<String, Arc<dyn BuiltinServiceHandler>> = HashMap::new();
     map.insert("demo.echo".to_string(), Arc::new(EchoHandler));
     map.insert("demo.add".to_string(), Arc::new(AddHandler));
+    map.insert(
+        "demo.fetch-witness".to_string(),
+        Arc::new(FetchWitnessHandler),
+    );
+    map.insert("demo.hash-verify".to_string(), Arc::new(HashVerifyHandler));
+    map.insert("demo.notarize".to_string(), Arc::new(NotarizeHandler));
     map
 }
 
