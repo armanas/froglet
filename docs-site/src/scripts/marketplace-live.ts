@@ -64,6 +64,46 @@ function renderOfferRow(offer: MarketplaceOfferSummary): HTMLTableRowElement {
 	return row;
 }
 
+function renderServicesBreakdown(root: ParentNode, offers: MarketplaceOfferSummary[]): void {
+	const container = root.querySelector<HTMLElement>('[data-marketplace-services-breakdown]');
+	if (!container) return;
+	const counts = new Map<string, number>();
+	for (const offer of offers) {
+		const key = offer.runtime || offer.offerKind || 'other';
+		counts.set(key, (counts.get(key) ?? 0) + 1);
+	}
+	const rows = Array.from(counts.entries())
+		.map(([name, count]) => ({ name, count }))
+		.sort((a, b) => b.count - a.count);
+	container.textContent = '';
+	if (rows.length === 0) {
+		const empty = document.createElement('div');
+		empty.className = 'panel-empty';
+		empty.textContent = 'No indexed offers yet.';
+		container.append(empty);
+		return;
+	}
+	const max = rows.reduce((m, r) => Math.max(m, r.count), 0);
+	for (const row of rows) {
+		const wrap = document.createElement('div');
+		wrap.className = 'svc-row';
+		const nm = document.createElement('span');
+		nm.className = 'nm';
+		nm.textContent = row.name;
+		const bar = document.createElement('span');
+		bar.className = 'bar';
+		const fill = document.createElement('span');
+		fill.className = 'fill';
+		fill.style.width = `${max > 0 ? Math.round((row.count / max) * 100) : 0}%`;
+		bar.append(fill);
+		const ct = document.createElement('span');
+		ct.className = 'ct';
+		ct.textContent = String(row.count);
+		wrap.append(nm, bar, ct);
+		container.append(wrap);
+	}
+}
+
 function renderOfferBook(root: ParentNode, offers: MarketplaceOfferSummary[]): void {
 	const body = root.querySelector('[data-marketplace-offer-book]');
 	if (!body) return;
@@ -125,6 +165,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 	setText(root, '[data-marketplace-field="ticker"]', offerNames);
 	setBar(root, '.terminal-meter', freeShare);
 	renderOfferBook(root, snapshot.offers);
+	renderServicesBreakdown(root, snapshot.offers);
 }
 
 export function initMarketplaceLive(): void {

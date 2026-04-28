@@ -146,12 +146,12 @@ function formatFeedTime(iso: string | undefined): string {
     <div class="metric">
       <div class="k">Offers</div>
       <div class="v" data-marketplace-field="offers">{marketplace.offerCount.toLocaleString()}</div>
-      <div class="d">{stats.freeOffers} free · {stats.paidOffers} paid</div>
+      <div class="d"><span data-marketplace-field="freeOffers">{stats.freeOffers}</span> free · <span data-marketplace-field="paidOffers">{stats.paidOffers}</span> paid</div>
     </div>
     <div class="metric">
       <div class="k">Receipts</div>
       <div class="v" data-marketplace-field="receipts">{stats.totalReceipts.toLocaleString()}</div>
-      <div class="d">{stats.successRate} success rate</div>
+      <div class="d"><span data-marketplace-field="successRate">{stats.successRate}</span> success rate</div>
     </div>
     <div class="metric">
       <div class="k">Volume settled</div>
@@ -240,9 +240,9 @@ function formatFeedTime(iso: string | undefined): string {
         <div class="panel-head">
           <h3>Services breakdown</h3>
         </div>
-        {serviceBreakdown.length > 0 ? (
-          <div class="svc-break">
-            {serviceBreakdown.map((s) => (
+        <div class="svc-break" data-marketplace-services-breakdown>
+          {serviceBreakdown.length > 0 ? (
+            serviceBreakdown.map((s) => (
               <div class="svc-row">
                 <span class="nm">{s.name}</span>
                 <span class="bar">
@@ -250,17 +250,17 @@ function formatFeedTime(iso: string | undefined): string {
                 </span>
                 <span class="ct">{s.count}</span>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div class="panel-empty">No indexed offers yet.</div>
-        )}
+            ))
+          ) : (
+            <div class="panel-empty">No indexed offers yet.</div>
+          )}
+        </div>
       </div>
     </div>
   </div>
 
   <div class="mkt-footer">
-    <span>{marketplace.detail}</span>
+    <span data-marketplace-field="detail">{marketplace.detail}</span>
     <nav aria-label="Marketplace data">
       <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
       <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>
