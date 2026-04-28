@@ -44,9 +44,13 @@ Froglet gives one signed economic primitive for three product shapes:
 
 The primary bot-facing integration surfaces are intentionally simple:
 
-- One OpenClaw/NemoClaw plugin id: `froglet`
-- One bot tool: `froglet`
+- One OpenClaw/NemoClaw plugin id: `froglet` (at `integrations/openclaw/froglet/`)
 - One MCP server under `integrations/mcp/froglet/`
+- Both surfaces register a single agent-facing tool named `froglet` to
+  the host (Claude Code, Codex, Cursor, Windsurf, etc.). This is the
+  "tool" exposed to the agent, not a standalone CLI binary — the only
+  shipped binary is `froglet-node`. A standalone `froglet-cli` wrapper
+  is on the v0.2 backlog.
 
 Bots should be able to create small scriptable services directly, validate them
 locally, and publish them without starting from OCI images.
