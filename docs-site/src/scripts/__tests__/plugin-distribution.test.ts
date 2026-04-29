@@ -66,12 +66,14 @@ describe('plugin and registry distribution metadata', () => {
     ]) {
       const text = readRepoFile(path);
       expect(text).toContain('Official MCP Registry');
+      expect(text).toContain('ChatGPT App Directory');
+      expect(text).toContain('hosted public MCP');
+      expect(text).toContain('Developer Mode');
       expect(text).toContain('Codex plugin');
       expect(text).toContain('Claude Code');
       expect(text).toContain('OpenClaw');
       expect(text).toContain('NemoClaw');
       expect(text).toContain('Third-party MCP directories');
-      expect(text).toContain('ChatGPT App Directory is intentionally');
       expect(text).toContain('public free `demo.*` services');
       expect(text).toContain('mcp-publisher publish');
       expect(text).toContain('Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof');

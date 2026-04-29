@@ -2,9 +2,12 @@
 
 Status date: 2026-04-29.
 
-This page tracks how Froglet reaches agent hosts. The invariant is that
-`froglet-mcp` is the execution artifact. Host-specific plugins should wrap that
-package instead of reimplementing Froglet behavior.
+This page tracks how Froglet reaches agent hosts and ChatGPT app distribution.
+The invariant for coding-agent hosts is that `froglet-mcp` is the execution
+artifact. Host-specific plugins should wrap that package instead of
+reimplementing Froglet behavior. ChatGPT App Directory distribution is a
+separate Apps SDK surface: it needs a hosted public MCP app server and reviewable
+UI, not the local stdio package alone.
 
 ## Distribution Order
 
@@ -12,23 +15,25 @@ package instead of reimplementing Froglet behavior.
    npm package version exists. This is the highest-leverage listing because MCP
    clients and downstream catalogs can consume it without host-specific plugin
    logic.
-2. **Codex plugin bundle** — ship the repo-local Codex plugin under
+2. **ChatGPT App Directory** — build an Apps SDK app backed by a public hosted
+   MCP server, test it in Developer Mode, then submit through the OpenAI
+   dashboard review flow. An approved and published app is also the current
+   public path into the Codex Plugin Directory.
+3. **Codex plugin bundle** — ship the repo-local Codex plugin under
    `plugins/froglet/` and list it in `.agents/plugins/marketplace.json`. The
-   official Codex public Plugin Directory is not self-serve yet, so this is the
-   testable path until submission opens.
-3. **Claude Code plugin marketplace** — ship `.claude-plugin/marketplace.json`
+   repo-local path stays useful while ChatGPT Apps SDK review is pending or for
+   users who want local coding-agent install.
+4. **Claude Code plugin marketplace** — ship `.claude-plugin/marketplace.json`
    plus the same `plugins/froglet/` bundle. Claude Code users can add the repo as
    a marketplace and install the plugin.
-4. **OpenClaw package** — keep the current `integrations/openclaw/froglet/`
+5. **OpenClaw package** — keep the current `integrations/openclaw/froglet/`
    plugin as the source package, with hosted-proof-first onboarding and local
    install planning.
-5. **NemoClaw package** — publish only after verifying NemoClaw-specific config,
+6. **NemoClaw package** — publish only after verifying NemoClaw-specific config,
    network, and sandbox staging deltas in a real NemoClaw environment.
-6. **Third-party MCP directories** — submit metadata only after the official MCP
+7. **Third-party MCP directories** — submit metadata only after the official MCP
    Registry listing is live, so every directory points at the same npm package,
    license, docs, and hosted-proof boundary.
-
-ChatGPT App Directory is intentionally excluded from this slice.
 
 ## Current Artifacts
 
@@ -36,6 +41,7 @@ ChatGPT App Directory is intentionally excluded from this slice.
 | --- | --- | --- |
 | npm package | `package.json` | `froglet-mcp`, Apache-2.0, stdio binary, `mcpName` set |
 | MCP Registry | `server.json` | Ready for `mcp-publisher` after npm `0.1.2` publish |
+| ChatGPT App Directory | not created yet | Needs hosted Apps SDK MCP app, UI, CSP, privacy/review assets, and OpenAI dashboard submission |
 | Codex plugin | `plugins/froglet/.codex-plugin/plugin.json` | Repo-local marketplace/test bundle |
 | Codex marketplace | `.agents/plugins/marketplace.json` | Local Codex marketplace entry |
 | Claude plugin | `plugins/froglet/.claude-plugin/plugin.json` | Claude Code plugin metadata |
@@ -89,6 +95,39 @@ node -e 'fetch("https://froglet.dev/learn/plugin-distribution/").then(r=>console
 Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof
 command. That URL is a rendered documentation page, so raw `curl` output is
 HTML by design.
+
+## ChatGPT App Directory
+
+This is now in scope, but it is not the same artifact as `froglet-mcp`.
+OpenAI's current public distribution path is Apps SDK submission through the
+Platform dashboard after Developer Mode testing. If approved and published, the
+app can appear in the ChatGPT Apps Directory and OpenAI creates a Codex plugin
+for Codex distribution.
+
+Required before submission:
+
+- a hosted public MCP server endpoint, not a localhost or testing URL
+- a CSP that names the exact domains the app fetches from
+- OpenAI organization verification for the publishing name
+- `api.apps.write` and `api.apps.read` permissions in the OpenAI project
+- app name, logo, description, company and privacy-policy URLs, MCP/tool
+  details, screenshots, test prompts and expected responses, and localization
+  details
+- a complete app that behaves reliably; a trial-only or demo-only submission is
+  not enough
+
+Froglet app shape:
+
+- consumer-first UI: run hosted proof, show `demo.add`, witness/hash evidence,
+  receipt presence, and feed artifact shape
+- install planner: guide Docker/local/Tor/clearnet/Lightning/Stripe choices only
+  after the user asks to install locally
+- provider path: explain service publication and paid rails as local/self-hosted
+  work until those hosted flows are separately verified
+
+Do not mark this complete until a real ChatGPT Developer Mode test passes on web
+and mobile, the dashboard review is submitted, and the published directory URL is
+captured.
 
 ## Codex Plugin
 

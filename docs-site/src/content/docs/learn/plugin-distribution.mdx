@@ -1,13 +1,13 @@
 ---
 title: Plugin Distribution
-description: How Froglet reaches MCP registries, Codex, Claude Code, OpenClaw, and NemoClaw.
+description: How Froglet reaches MCP registries, ChatGPT Apps, Codex, Claude Code, OpenClaw, and NemoClaw.
 ---
 
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">Distribution</div>
     <p class="learn-lead">One execution package, thin host wrappers.</p>
-    <p class="learn-sublead">Froglet distribution starts with `froglet-mcp`. Codex, Claude Code, OpenClaw, and NemoClaw should wrap the same MCP behavior instead of drifting into separate tool contracts.</p>
+    <p class="learn-sublead">Froglet distribution starts with `froglet-mcp` for coding-agent hosts. ChatGPT App Directory distribution is a separate Apps SDK surface with a hosted MCP app and reviewable UI.</p>
   </div>
 </div>
 
@@ -15,19 +15,18 @@ description: How Froglet reaches MCP registries, Codex, Claude Code, OpenClaw, a
 
 1. **Official MCP Registry**: publish `server.json` after the matching npm
    package version exists.
-2. **Codex plugin bundle**: use `plugins/froglet/` plus
-   `.agents/plugins/marketplace.json` while the official public Codex Plugin
-   Directory is not self-serve.
-3. **Claude Code marketplace**: use `.claude-plugin/marketplace.json` plus the
+2. **ChatGPT App Directory**: build a hosted Apps SDK app, test it in Developer
+   Mode, and submit through the OpenAI dashboard review flow.
+3. **Codex plugin bundle**: use `plugins/froglet/` plus
+   `.agents/plugins/marketplace.json` for repo-local coding-agent distribution.
+4. **Claude Code marketplace**: use `.claude-plugin/marketplace.json` plus the
    same `plugins/froglet/` bundle.
-4. **OpenClaw package**: ship the checked-in source plugin after host install
+5. **OpenClaw package**: ship the checked-in source plugin after host install
    verification.
-5. **NemoClaw package**: verify NemoClaw-specific sandbox and HTTPS deltas before
+6. **NemoClaw package**: verify NemoClaw-specific sandbox and HTTPS deltas before
    claiming support.
-6. **Third-party MCP directories**: submit only after the official registry entry
+7. **Third-party MCP directories**: submit only after the official registry entry
    is live.
-
-ChatGPT App Directory is intentionally out of this slice.
 
 ## MCP Registry
 
@@ -69,6 +68,26 @@ node -e 'fetch("https://froglet.dev/learn/plugin-distribution/").then(r=>console
 Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof
 command. That URL is a rendered documentation page, so raw `curl` output is
 HTML by design.
+
+## ChatGPT App Directory
+
+This is in scope as a separate Apps SDK milestone, not as a repackaging of the
+stdio `froglet-mcp` package.
+
+Required shape:
+
+- hosted public MCP server, not localhost or a testing endpoint
+- CSP for the exact domains the app fetches from
+- OpenAI organization verification and app-management permissions
+- app name, logo, description, company and privacy-policy URLs
+- MCP/tool details, screenshots, test prompts, expected responses, and
+  localization details
+- Developer Mode test on ChatGPT web and mobile before dashboard submission
+
+Froglet should submit a complete consumer-facing app: run the hosted proof,
+explain receipt/feed evidence, and then guide local install only after the user
+asks. Paid rails, persistent identity, custom service publication, batch, and GPU
+must stay labeled as local/self-hosted until separately verified in the app.
 
 ## Codex
 
