@@ -1,0 +1,191 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+
+const UPDATED = 'April 29, 2026';
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy · Froglet</title>
+<meta name="description" content="Froglet privacy posture for the public website, hosted proof trial, and ChatGPT app surface." />
+<link rel="canonical" href="https://froglet.dev/privacy/" />
+<meta name="color-scheme" content="dark" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Privacy · Froglet" />
+<meta property="og:description" content="Froglet privacy posture for the public website, hosted proof trial, and ChatGPT app surface." />
+<meta property="og:url" content="https://froglet.dev/privacy/" />
+<meta property="og:image" content="https://froglet.dev/og/home.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Privacy · Froglet" />
+<meta name="twitter:description" content="Froglet privacy posture for the public website, hosted proof trial, and ChatGPT app surface." />
+<meta name="twitter:image" content="https://froglet.dev/og/home.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<ThemeProvider />
+</head>
+<body data-screen-label="Privacy">
+<SiteHeader currentPath={Astro.url.pathname} />
+<main class="froglet-home-main">
+  <section class="hero">
+    <span class="eyebrow">Privacy</span>
+    <h1>Public proof, <em>local secrets.</em></h1>
+    <p class="lede">
+      Froglet is an Apache-2.0 open source protocol. This page explains the
+      privacy boundary for the public website, hosted proof trial, and ChatGPT
+      app surface. Last updated: {UPDATED}.
+    </p>
+  </section>
+
+  <section class="block privacy-block">
+    <span class="eyebrow">Short version</span>
+    <h2>Do not paste secrets into hosted demos or ChatGPT.</h2>
+    <p class="section-lede">
+      The hosted proof is designed for public demo inputs. Local private keys,
+      Lightning macaroons, Stripe keys, x402 credentials, card data, production
+      API tokens, and private datasets should be configured only in your own
+      local or self-hosted environment.
+    </p>
+
+    <div class="entry-grid privacy-grid">
+      <article class="entry-card">
+        <div class="entry-num">01 · website</div>
+        <h3>Public docs and pages</h3>
+        <p>
+          <code class="inline">froglet.dev</code> serves public documentation
+          and marketing pages. The hosting layer may keep standard request logs
+          needed for security, abuse prevention, debugging, and reliability.
+          The site does not ask for account signup or payment details.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">02 · hosted proof</div>
+        <h3>Anonymous demo sessions</h3>
+        <p>
+          <code class="inline">try.froglet.dev</code> can mint short-lived
+          anonymous sessions and write demo descriptor, offer, deal, and
+          receipt artifacts for public free <code class="inline">demo.*</code>
+          services. Those artifacts are proof material, not private storage.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">03 · ChatGPT app</div>
+        <h3>Evidence-first tools</h3>
+        <p>
+          The Froglet ChatGPT app can call
+          <code class="inline">run_hosted_proof</code>,
+          <code class="inline">plan_local_install</code>, and
+          <code class="inline">explain_use_case</code>. It should use fixed
+          public demo inputs by default, explain boundaries, and never request
+          private credentials inside ChatGPT.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">04 · local mode</div>
+        <h3>User-controlled configuration</h3>
+        <p>
+          Local install plans tell you which secrets or wallets a rail requires,
+          but those values belong in your shell, config files, keychain, or
+          self-hosted node. They should not be pasted into the hosted app.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="block">
+    <span class="eyebrow">Data by tool</span>
+    <h2>What the app tools process.</h2>
+    <div class="privacy-list">
+      <div>
+        <h3><code class="inline">run_hosted_proof</code></h3>
+        <p>
+          Creates an anonymous hosted trial session, discovers public demo
+          services, runs <code class="inline">demo.add</code>, optionally runs
+          a fixed public witness/hash follow-up against
+          <code class="inline">https://example.com/</code>, and reads the public
+          artifact feed. It should not use private user files unless a future
+          local/self-hosted flow is explicitly configured.
+        </p>
+      </div>
+      <div>
+        <h3><code class="inline">plan_local_install</code></h3>
+        <p>
+          Uses install preferences such as target agent, Docker/source/binary
+          footprint, Tor or clearnet, and payment rail choice. It returns a
+          plan; it does not run shell commands and does not need your secrets.
+        </p>
+      </div>
+      <div>
+        <h3><code class="inline">explain_use_case</code></h3>
+        <p>
+          Uses only the project summary you provide in the current conversation.
+          It does not inspect private repositories, local files, browser tabs,
+          credentials, or production systems.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <span class="eyebrow">Retention and sharing</span>
+    <h2>Public artifacts are intentionally auditable.</h2>
+    <p class="section-lede">
+      Froglet receipts and feed artifacts are designed to be verifiable later.
+      Hosted demo artifacts may remain visible as part of the public proof feed.
+      Froglet does not sell personal data. If you need deletion, correction, or
+      privacy support, open a GitHub issue or contact the maintainer through
+      <a href="https://armanas.dev" target="_blank" rel="noopener">armanas.dev</a>.
+    </p>
+  </section>
+
+  <SiteFooter />
+</main>
+</body>
+</html>
+
+<style is:global>
+  .privacy-block {
+    padding-top: 24px;
+  }
+
+  .privacy-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .privacy-list {
+    display: grid;
+    gap: 18px;
+    max-width: 900px;
+  }
+
+  .privacy-list > div {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    padding: 24px;
+  }
+
+  .privacy-list h3 {
+    margin: 0 0 8px;
+    color: var(--fg1);
+    font-family: var(--font-mono);
+  }
+
+  .privacy-list p {
+    margin: 0;
+    color: var(--fg2);
+    line-height: 1.6;
+  }
+
+  @media (max-width: 720px) {
+    .privacy-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

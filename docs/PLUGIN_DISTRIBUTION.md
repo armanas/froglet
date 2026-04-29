@@ -41,7 +41,7 @@ UI, not the local stdio package alone.
 | --- | --- | --- |
 | npm package | `package.json` | `froglet-mcp`, Apache-2.0, stdio binary, `mcpName` set |
 | MCP Registry | `server.json` | Ready for `mcp-publisher` after npm `0.1.2` publish |
-| ChatGPT App Directory | not created yet | Needs hosted Apps SDK MCP app, UI, CSP, privacy/review assets, and OpenAI dashboard submission |
+| ChatGPT App Directory | `https://apps.froglet.dev/mcp` | Hosted Apps SDK MCP app deployed; needs MCP Inspector, ChatGPT Developer Mode, and OpenAI dashboard submission |
 | Codex plugin | `plugins/froglet/.codex-plugin/plugin.json` | Repo-local marketplace/test bundle |
 | Codex marketplace | `.agents/plugins/marketplace.json` | Local Codex marketplace entry |
 | Claude plugin | `plugins/froglet/.claude-plugin/plugin.json` | Claude Code plugin metadata |
@@ -114,8 +114,12 @@ Current status:
 - live smoke through the deployed MCP endpoint returned the expected three tools
   and a successful `demo.add` result `{ "sum": 12 }` with receipt present and a
   feed artifact envelope
-- not yet done: MCP Inspector, ChatGPT Developer Mode on web and mobile, review
-  assets, dashboard submission, approval, or publication
+- Streamable HTTP MCP SDK smoke against the deployed endpoint passed, including
+  `demo.add`, the fixed `demo.fetch-witness` follow-up, receipt presence, and
+  feed artifact envelope verification
+- privacy policy URL is `https://froglet.dev/privacy/`
+- not yet done: MCP Inspector, ChatGPT Developer Mode on web and mobile,
+  dashboard submission, approval, or publication
 
 Required before submission:
 
@@ -123,7 +127,8 @@ Required before submission:
 - a CSP that names the exact domains the app fetches from
 - OpenAI organization verification for the publishing name
 - `api.apps.write` and `api.apps.read` permissions in the OpenAI project
-- app name, logo, description, company and privacy-policy URLs, MCP/tool
+- app name, logo, description, company URL `https://froglet.dev`,
+  privacy-policy URL `https://froglet.dev/privacy/`, MCP/tool
   details, screenshots, test prompts and expected responses, and localization
   details
 - a complete app that behaves reliably; a trial-only or demo-only submission is

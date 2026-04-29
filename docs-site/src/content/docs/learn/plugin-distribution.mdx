@@ -84,15 +84,20 @@ Current status:
 - live smoke through the deployed MCP endpoint returned the expected three tools
   and a successful `demo.add` result `{ "sum": 12 }` with receipt present and a
   feed artifact envelope
-- not yet done: MCP Inspector, ChatGPT Developer Mode on web and mobile, review
-  assets, dashboard submission, approval, or publication
+- Streamable HTTP MCP SDK smoke against the deployed endpoint passed, including
+  `demo.add`, the fixed `demo.fetch-witness` follow-up, receipt presence, and
+  feed artifact envelope verification
+- privacy policy URL is `https://froglet.dev/privacy/`
+- not yet done: MCP Inspector, ChatGPT Developer Mode on web and mobile,
+  dashboard submission, approval, or publication
 
 Required shape:
 
 - hosted public MCP server, not localhost or a testing endpoint
 - CSP for the exact domains the app fetches from
 - OpenAI organization verification and app-management permissions
-- app name, logo, description, company and privacy-policy URLs
+- app name, logo, description, company URL `https://froglet.dev`, and
+  privacy-policy URL `https://froglet.dev/privacy/`
 - MCP/tool details, screenshots, test prompts, expected responses, and
   localization details
 - Developer Mode test on ChatGPT web and mobile before dashboard submission
