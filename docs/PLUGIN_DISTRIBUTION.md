@@ -41,7 +41,7 @@ UI, not the local stdio package alone.
 | --- | --- | --- |
 | npm package | `package.json` | `froglet-mcp`, Apache-2.0, stdio binary, `mcpName` set |
 | MCP Registry | `server.json` | Ready for `mcp-publisher` after npm `0.1.2` publish |
-| ChatGPT App Directory | `https://apps.froglet.dev/mcp` | Hosted Apps SDK MCP app deployed; needs MCP Inspector, ChatGPT Developer Mode, and OpenAI dashboard submission |
+| ChatGPT App Directory | `https://apps.froglet.dev/mcp` | Hosted Apps SDK MCP app deployed; needs ChatGPT Developer Mode and OpenAI dashboard submission |
 | Codex plugin | `plugins/froglet/.codex-plugin/plugin.json` | Repo-local marketplace/test bundle |
 | Codex marketplace | `.agents/plugins/marketplace.json` | Local Codex marketplace entry |
 | Claude plugin | `plugins/froglet/.claude-plugin/plugin.json` | Claude Code plugin metadata |
@@ -117,9 +117,12 @@ Current status:
 - Streamable HTTP MCP SDK smoke against the deployed endpoint passed, including
   `demo.add`, the fixed `demo.fetch-witness` follow-up, receipt presence, and
   feed artifact envelope verification
+- MCP Inspector CLI smoke against the deployed endpoint passed for `tools/list`,
+  `resources/list`, `resources/read`, and `tools/call run_hosted_proof` with the
+  fixed `demo.fetch-witness` follow-up
 - privacy policy URL is `https://froglet.dev/privacy/`
-- not yet done: MCP Inspector, ChatGPT Developer Mode on web and mobile,
-  dashboard submission, approval, or publication
+- not yet done: ChatGPT Developer Mode on web and mobile, dashboard submission,
+  approval, or publication
 
 Required before submission:
 

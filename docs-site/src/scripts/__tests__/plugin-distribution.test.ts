@@ -73,9 +73,10 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('public endpoint is deployed');
       expect(text).toContain('demo.add` result `{ "sum": 12 }`');
       expect(text).toContain('Streamable HTTP MCP SDK smoke');
+      expect(text).toContain('MCP Inspector CLI smoke');
       expect(text).toContain('demo.fetch-witness');
       expect(text).toContain('https://froglet.dev/privacy/');
-      expect(text).toContain('not yet done: MCP Inspector');
+      expect(text).not.toContain('not yet done: MCP Inspector');
       expect(text).toContain('Developer Mode');
       expect(text).toContain('Codex plugin');
       expect(text).toContain('Claude Code');
