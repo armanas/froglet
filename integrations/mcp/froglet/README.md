@@ -272,6 +272,22 @@ repo-local development package and cannot include the shared library by itself.
 Local manual publishes must disable provenance. Use CI/OIDC for a later
 provenance-enabled publish flow.
 
+### MCP Registry
+
+The official MCP Registry entry is driven by the repo-root `server.json`.
+Publish the matching npm version first because the registry validates the
+package `mcpName` against `server.json`.
+
+```bash
+npm publish --provenance=false --otp <npm-otp>
+mcp-publisher login github
+mcp-publisher publish
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet"
+```
+
+Expected proof: the registry search returns `io.github.armanas/froglet` with
+package identifier `froglet-mcp`.
+
 If you want to use the generated host-side agent configs against Docker Compose,
 start Compose with `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so
 `./data/runtime/froglet-control.token` is readable on the host.

@@ -12,9 +12,14 @@ async function readRootPackage() {
   return JSON.parse(await readFile(join(REPO_ROOT, "package.json"), "utf8"))
 }
 
+async function readRegistryServer() {
+  return JSON.parse(await readFile(join(REPO_ROOT, "server.json"), "utf8"))
+}
+
 test("root npm package publishes froglet-mcp, not the private repo-local package", async () => {
   const manifest = await readRootPackage()
   assert.equal(manifest.name, "froglet-mcp")
+  assert.equal(manifest.mcpName, "io.github.armanas/froglet")
   assert.equal(manifest.private, undefined)
   assert.equal(manifest.license, "Apache-2.0")
   assert.equal(manifest.bin?.["froglet-mcp"], "integrations/mcp/froglet/server.js")
@@ -29,9 +34,23 @@ test("root npm package includes MCP server and shared client without broad repo 
   assert.ok(files.includes("integrations/mcp/froglet/package.json"))
   assert.ok(files.includes("integrations/mcp/froglet/lib/**/*.js"))
   assert.ok(files.includes("integrations/shared/froglet-lib/**/*.js"))
+  assert.ok(files.includes("server.json"))
   assert.ok(files.includes("LICENSE"))
   assert.ok(files.includes("README.md"))
   assert.equal(files.some((entry) => entry.includes("docs-site")), false)
   assert.equal(files.some((entry) => entry.includes("private_work")), false)
   assert.equal(files.some((entry) => entry === "target" || entry.startsWith("target/")), false)
+})
+
+test("MCP Registry server.json matches npm package metadata", async () => {
+  const manifest = await readRootPackage()
+  const server = await readRegistryServer()
+  assert.equal(server.name, manifest.mcpName)
+  assert.equal(server.version, manifest.version)
+  assert.equal(server.repository?.url, "https://github.com/armanas/froglet")
+  assert.equal(server.repository?.source, "github")
+  assert.equal(server.packages?.[0]?.registryType, "npm")
+  assert.equal(server.packages?.[0]?.identifier, manifest.name)
+  assert.equal(server.packages?.[0]?.version, manifest.version)
+  assert.equal(server.packages?.[0]?.transport?.type, "stdio")
 })

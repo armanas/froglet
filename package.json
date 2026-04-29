@@ -1,6 +1,6 @@
 {
   "name": "froglet-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "MCP server for Froglet verifiable compute, hosted proof, signed receipts, and local install planning.",
   "license": "Apache-2.0",
@@ -38,6 +38,7 @@
     "integrations/mcp/froglet/mcp-manifest.json",
     "integrations/shared/froglet-lib/**/*.js",
     "README.md",
+    "server.json",
     "LICENSE"
   ],
   "dependencies": {
@@ -50,5 +51,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "mcpName": "io.github.armanas/froglet"
 }

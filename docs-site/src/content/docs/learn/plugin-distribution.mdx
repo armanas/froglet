@@ -1,0 +1,128 @@
+---
+title: Plugin Distribution
+description: How Froglet reaches MCP registries, Codex, Claude Code, OpenClaw, and NemoClaw.
+---
+
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">Distribution</div>
+    <p class="learn-lead">One execution package, thin host wrappers.</p>
+    <p class="learn-sublead">Froglet distribution starts with `froglet-mcp`. Codex, Claude Code, OpenClaw, and NemoClaw should wrap the same MCP behavior instead of drifting into separate tool contracts.</p>
+  </div>
+</div>
+
+## Order
+
+1. **Official MCP Registry**: publish `server.json` after the matching npm
+   package version exists.
+2. **Codex plugin bundle**: use `plugins/froglet/` plus
+   `.agents/plugins/marketplace.json` while the official public Codex Plugin
+   Directory is not self-serve.
+3. **Claude Code marketplace**: use `.claude-plugin/marketplace.json` plus the
+   same `plugins/froglet/` bundle.
+4. **OpenClaw package**: ship the checked-in source plugin after host install
+   verification.
+5. **NemoClaw package**: verify NemoClaw-specific sandbox and HTTPS deltas before
+   claiming support.
+6. **Third-party MCP directories**: submit only after the official registry entry
+   is live.
+
+ChatGPT App Directory is intentionally out of this slice.
+
+## MCP Registry
+
+The repository now carries the MCP Registry metadata:
+
+```bash
+cat server.json
+```
+
+The npm package also declares the registry name:
+
+```json
+"mcpName": "io.github.armanas/froglet"
+```
+
+Publish order:
+
+```bash
+npm run check:mcp
+npm run test:mcp
+npm pack --dry-run
+npm publish --provenance=false --otp <npm-otp>
+mcp-publisher login github
+mcp-publisher publish
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet"
+```
+
+Expected live result: the registry search returns
+`io.github.armanas/froglet` and package identifier `froglet-mcp`.
+
+## Codex
+
+Repo-local artifacts:
+
+- `plugins/froglet/.codex-plugin/plugin.json`
+- `plugins/froglet/.mcp.json`
+- `plugins/froglet/skills/froglet/SKILL.md`
+- `.agents/plugins/marketplace.json`
+
+The plugin starts the published MCP package:
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "froglet-mcp"],
+      "env": { "FROGLET_PROFILE": "hosted-proof" }
+    }
+  }
+}
+```
+
+## Claude Code
+
+GitHub-hosted install path:
+
+```bash
+claude plugin marketplace add armanas/froglet --sparse .claude-plugin plugins
+claude plugin install froglet@froglet
+```
+
+Local validation path:
+
+```bash
+claude plugin validate .
+claude plugin marketplace add . --scope local
+claude plugin install froglet@froglet --scope local
+```
+
+## OpenClaw And NemoClaw
+
+OpenClaw/NemoClaw use the checked-in source plugin until their package/registry
+surface is verified:
+
+```bash
+node --check integrations/openclaw/froglet/index.js
+node --check integrations/openclaw/froglet/scripts/doctor.mjs
+node --test integrations/openclaw/froglet/test/plugin.test.js \
+  integrations/openclaw/froglet/test/config-profiles.test.mjs \
+  integrations/openclaw/froglet/test/doctor.test.mjs \
+  integrations/openclaw/froglet/test/froglet-client.test.mjs
+```
+
+OpenClaw usually talks to loopback. NemoClaw usually runs inside a sandbox and
+must reach the host over HTTPS, so do not claim NemoClaw marketplace/package
+completion until that path is run in a real NemoClaw environment.
+
+## Boundary
+
+Every host must keep the same product boundary:
+
+- `run_hosted_proof` proves public free `demo.*` services, signed receipt
+  presence, and `/v1/feed` artifact shape.
+- Paid rails, persistent identity, custom service publication, marketplace write
+  flows, long-running jobs, batch, GPU, and production workloads are local or
+  self-hosted concerns until separately verified.

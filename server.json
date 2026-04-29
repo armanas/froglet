@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.armanas/froglet",
+  "title": "Froglet",
+  "description": "Run hosted proofs, signed receipts, service discovery, and local install planning.",
+  "version": "0.1.2",
+  "websiteUrl": "https://froglet.dev",
+  "repository": {
+    "url": "https://github.com/armanas/froglet",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "froglet-mcp",
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -17,6 +17,7 @@ Public launch entry points:
 - [../docs-site/src/content/docs/learn/cloud-trial.mdx](../docs-site/src/content/docs/learn/cloud-trial.mdx): hosted trial walkthrough
 - [../docs-site/src/content/docs/learn/quickstart.mdx](../docs-site/src/content/docs/learn/quickstart.mdx): local self-host quickstart
 - [../docs-site/src/content/docs/learn/agents.mdx](../docs-site/src/content/docs/learn/agents.mdx): agent setup
+- [../docs-site/src/content/docs/learn/plugin-distribution.mdx](../docs-site/src/content/docs/learn/plugin-distribution.mdx): plugin and registry distribution
 - [../docs-site/src/content/docs/learn/payment-rails.mdx](../docs-site/src/content/docs/learn/payment-rails.mdx): Lightning, Stripe, and x402 local/self-hosted setup
 
 ## Specifications
@@ -46,6 +47,7 @@ Public launch entry points:
 
 ## Integrations
 
+- [PLUGIN_DISTRIBUTION.md](PLUGIN_DISTRIBUTION.md): MCP registry and agent-plugin distribution order
 - [OPENCLAW.md](OPENCLAW.md): OpenClaw (Claude) integration
 - [NEMOCLAW.md](NEMOCLAW.md): NemoClaw (local agent) integration
 - [ROLE_TOOL_ARCHITECTURE.md](ROLE_TOOL_ARCHITECTURE.md): role and tool architecture

@@ -200,7 +200,7 @@ test("buildServiceAddressedExecution builds builtin service workload without bin
   assert.equal(execution.input_hash, sha256Hex(canonicalJsonBytes({ a: 7, b: 5 })))
   assert.equal(execution.module_hash, undefined)
   assert.equal(execution.source_hash, undefined)
-  assert.equal(execution.security.service_id, "demo.add")
+  assert.deepEqual(execution.security, { mode: "standard" })
 })
 
 test("buildServiceAddressedExecution falls back to service_id for builtin name", () => {

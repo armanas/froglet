@@ -1,0 +1,15 @@
+{
+  "name": "froglet",
+  "version": "0.1.2",
+  "description": "Connect Claude Code to Froglet hosted proofs, signed receipts, and local install planning.",
+  "author": {
+    "name": "Armanas Povilionis-Muradian",
+    "url": "https://armanas.dev"
+  },
+  "homepage": "https://froglet.dev/learn/agents/",
+  "repository": "https://github.com/armanas/froglet",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "froglet", "verifiable-compute", "receipts", "agents"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

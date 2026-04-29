@@ -1,0 +1,23 @@
+{
+  "name": "froglet",
+  "owner": {
+    "name": "Armanas Povilionis-Muradian"
+  },
+  "description": "Froglet plugin marketplace for hosted proof and local install planning.",
+  "version": "0.1.2",
+  "plugins": [
+    {
+      "name": "froglet",
+      "source": "./plugins/froglet",
+      "description": "Connect Claude Code to Froglet hosted proofs, signed receipts, and local install planning.",
+      "version": "0.1.2",
+      "author": {
+        "name": "Armanas Povilionis-Muradian"
+      },
+      "homepage": "https://froglet.dev/learn/agents/",
+      "repository": "https://github.com/armanas/froglet",
+      "category": "Developer Tools",
+      "tags": ["mcp", "verifiable-compute", "receipts", "agents"]
+    }
+  ]
+}

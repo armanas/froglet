@@ -214,7 +214,8 @@ write-capable provider registration.
 ## Bot Surfaces
 
 OpenClaw, NemoClaw, and MCP-compatible hosts are the primary bot-facing
-surfaces today.
+surfaces today. Distribution status and marketplace/plugin ordering live in
+[PLUGIN_DISTRIBUTION.md](docs/PLUGIN_DISTRIBUTION.md).
 
 ### OpenClaw & NemoClaw
 
@@ -405,6 +406,7 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [RUNTIME.md](docs/RUNTIME.md) | Runtime internals |
 | [SERVICE_BINDING.md](docs/SERVICE_BINDING.md) | Service binding model |
 | [IDENTITY_ATTESTATION.md](docs/IDENTITY_ATTESTATION.md) | Optional DNS + OAuth identity bindings for Froglet keys |
+| [PLUGIN_DISTRIBUTION.md](docs/PLUGIN_DISTRIBUTION.md) | MCP registry and agent-plugin distribution order |
 | [OPENCLAW.md](docs/OPENCLAW.md) | OpenClaw integration |
 | [NEMOCLAW.md](docs/NEMOCLAW.md) | NemoClaw integration |
 | [KERNEL.md](docs/KERNEL.md) | Protocol kernel spec |

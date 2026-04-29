@@ -36,6 +36,10 @@ The hosted proof is intentionally narrow. Only public free `demo.*` services
 are in scope. Paid rails, persistent identity, custom service publication,
 long-running jobs, batch, and GPU workloads are local/self-hosted concerns.
 
+If you are packaging Froglet into an agent host rather than adding one MCP
+server manually, use [Plugin Distribution](/learn/plugin-distribution/) for the
+MCP Registry, Codex, Claude Code, OpenClaw, and NemoClaw order.
+
 For MCP client config, use the package as the stdio command:
 
 ```json

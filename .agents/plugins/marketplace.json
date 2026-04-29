@@ -1,0 +1,20 @@
+{
+  "name": "froglet",
+  "interface": {
+    "displayName": "Froglet"
+  },
+  "plugins": [
+    {
+      "name": "froglet",
+      "source": {
+        "source": "local",
+        "path": "./plugins/froglet"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

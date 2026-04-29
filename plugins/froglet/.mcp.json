@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "froglet-mcp"],
+      "env": {
+        "FROGLET_PROFILE": "hosted-proof"
+      }
+    }
+  }
+}

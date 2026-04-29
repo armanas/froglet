@@ -38,6 +38,8 @@ export default defineConfig({
 							{ label: 'Docs Home', slug: 'docs' },
 							{ label: 'Try In Cloud', slug: 'learn/cloud-trial' },
 							{ label: 'Run Locally', slug: 'learn/quickstart' },
+							{ label: 'Connect Agents', slug: 'learn/agents' },
+							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
 							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
 						],
 					},
