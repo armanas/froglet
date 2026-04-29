@@ -44,6 +44,7 @@ not as a repackaging of the local stdio MCP tool.
 | Claude marketplace | `.claude-plugin/marketplace.json` | GitHub-hosted marketplace entry |
 | Shared plugin MCP | `plugins/froglet/.mcp.json` | Starts `npx -y froglet-mcp` with local provider/runtime env |
 | Shared plugin skill | `plugins/froglet/skills/froglet/SKILL.md` | Tells agents to check local status, plan install, then execute real actions |
+| Claude slash command | `plugins/froglet/commands/froglet.md` | `/froglet` entrypoint for the same local status/install/use-case flow |
 | OpenClaw/NemoClaw | `integrations/openclaw/froglet/` | Source plugin and examples; registry package still pending |
 
 ## MCP Registry Publish
@@ -118,6 +119,7 @@ local mode:
 Operational rule: the first task should call `status`. If the local node is not
 running or tokens are missing, call `plan_install`; only after the profile is
 confirmed should the agent call `get_install_guide` and run host-shell commands.
+Claude Code also exposes `/froglet`, which follows the same local-first flow.
 
 ## Claude Code Plugin Marketplace
 

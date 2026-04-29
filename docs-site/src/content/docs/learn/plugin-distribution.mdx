@@ -78,6 +78,7 @@ Repo-local artifacts:
 - `plugins/froglet/.codex-plugin/plugin.json`
 - `plugins/froglet/.mcp.json`
 - `plugins/froglet/skills/froglet/SKILL.md`
+- `plugins/froglet/commands/froglet.md`
 - `.agents/plugins/marketplace.json`
 
 The plugin starts the published MCP package in local mode:
@@ -124,6 +125,9 @@ claude plugin install froglet@froglet --scope local
 Expected proof: the plugin installs, starts the bundled MCP server, reports local
 `status`, then performs one real local action once the provider/runtime and token
 paths are available.
+
+Claude Code also exposes `/froglet`, a command that follows the same local
+status, install-planning, and real-use-case flow through the MCP tool.
 
 ## OpenClaw And NemoClaw
 

@@ -10,6 +10,7 @@ It intentionally does not duplicate the MCP implementation. The plugin starts
 - Claude Code manifest: `.claude-plugin/plugin.json`
 - Shared MCP config: `.mcp.json`
 - Shared agent guidance skill: `skills/froglet/SKILL.md`
+- Claude slash command: `commands/froglet.md`
 
 ## Default behavior
 
@@ -26,3 +27,6 @@ The first action should be `status`. If the local node is not running, use
 binary, or source setup. The public no-install demo remains the HTTP
 `llms.txt` flow at `https://froglet.dev/llms.txt`; it is not exposed as an
 installed plugin action.
+
+In Claude Code, `/froglet` follows the same rule: status first, install planning
+second, and real local actions only after the provider/runtime are reachable.
