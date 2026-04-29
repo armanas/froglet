@@ -3,13 +3,13 @@
   "owner": {
     "name": "Armanas Povilionis-Muradian"
   },
-  "description": "Froglet plugin marketplace for hosted proof and local install planning.",
+  "description": "Froglet plugin marketplace for local verifiable compute, signed receipts, settlement, and service publication.",
   "version": "0.1.2",
   "plugins": [
     {
       "name": "froglet",
       "source": "./plugins/froglet",
-      "description": "Connect Claude Code to Froglet hosted proofs, signed receipts, and local install planning.",
+      "description": "Connect Claude Code to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
       "version": "0.1.2",
       "author": {
         "name": "Armanas Povilionis-Muradian"

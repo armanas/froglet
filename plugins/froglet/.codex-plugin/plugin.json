@@ -1,7 +1,7 @@
 {
   "name": "froglet",
   "version": "0.1.2",
-  "description": "Connect agents to Froglet hosted proofs, signed receipts, and local install planning.",
+  "description": "Connect agents to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
   "author": {
     "name": "Armanas Povilionis-Muradian",
     "url": "https://armanas.dev"
@@ -14,14 +14,14 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Froglet",
-    "shortDescription": "Hosted proof, signed receipts, and local install planning.",
-    "longDescription": "Runs the Froglet MCP server through the published npm package. Start with the hosted demo proof, then plan a local provider/runtime install only after the user asks.",
+    "shortDescription": "Local Froglet actions, signed receipts, and settlement.",
+    "longDescription": "Runs the Froglet MCP server through the published npm package against a local or self-hosted Froglet provider/runtime. Use the public llms.txt flow for no-install demo proof; use this plugin for real local actions.",
     "developerName": "Armanas Povilionis-Muradian",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "External Tools"],
     "websiteURL": "https://froglet.dev",
     "defaultPrompt": [
-      "Run the Froglet hosted proof.",
+      "Check my local Froglet status.",
       "Plan a local Froglet install.",
       "Find a Froglet use case in this repo."
     ],

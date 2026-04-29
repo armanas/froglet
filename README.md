@@ -274,11 +274,12 @@ the OpenClaw or NemoClaw plugin:
 npx froglet-mcp
 ```
 
-The npm package defaults to `FROGLET_PROFILE=hosted-proof`, so no local node or
-token file is required for the first hosted proof. In that mode agents should
-call `run_hosted_proof` first. It runs the public free hosted demo flow and
-reports HTTP statuses, `demo.add` result, receipt presence, and feed artifact
-shape. Only `demo.*` services are in scope for that hosted proof.
+The npm package defaults to `FROGLET_PROFILE=local`, with provider/runtime URLs
+pointing at `http://127.0.0.1:8080` and `http://127.0.0.1:8081`. Agents should
+call `status` first. If the local node or token files are missing, use
+`plan_install` and `get_install_guide` before running setup commands through
+the host shell. The public no-install proof remains the HTTP flow at
+`https://froglet.dev/llms.txt`; it is not an installed MCP action.
 
 For a local node, use the local profile:
 

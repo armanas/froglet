@@ -13,7 +13,16 @@ It intentionally does not duplicate the MCP implementation. The plugin starts
 
 ## Default behavior
 
-The MCP server starts with `FROGLET_PROFILE=hosted-proof`, so the first action
-should be `run_hosted_proof`. Local install and payment-rail setup are staged
-through `plan_install` and `get_install_guide` after the user confirms the
-profile.
+The plugin starts `npx -y froglet-mcp` in `FROGLET_PROFILE=local` against the
+default local provider/runtime ports:
+
+- provider: `http://127.0.0.1:8080`
+- runtime: `http://127.0.0.1:8081`
+- provider token: `data/runtime/froglet-control.token`
+- runtime token: `data/runtime/auth.token`
+
+The first action should be `status`. If the local node is not running, use
+`plan_install` and `get_install_guide` to guide the user through Docker,
+binary, or source setup. The public no-install demo remains the HTTP
+`llms.txt` flow at `https://froglet.dev/llms.txt`; it is not exposed as an
+installed plugin action.

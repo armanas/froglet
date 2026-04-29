@@ -12,20 +12,20 @@ const UPDATED = 'April 29, 2026';
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Privacy · Froglet</title>
-<meta name="description" content="Froglet privacy posture for the public website, hosted proof trial, and ChatGPT app surface." />
+<meta name="description" content="Froglet privacy posture for the public website, hosted proof trial, and local/self-hosted usage." />
 <link rel="canonical" href="https://froglet.dev/privacy/" />
 <meta name="color-scheme" content="dark" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Froglet" />
 <meta property="og:title" content="Privacy · Froglet" />
-<meta property="og:description" content="Froglet privacy posture for the public website, hosted proof trial, and ChatGPT app surface." />
+<meta property="og:description" content="Froglet privacy posture for the public website, hosted proof trial, and local/self-hosted usage." />
 <meta property="og:url" content="https://froglet.dev/privacy/" />
 <meta property="og:image" content="https://froglet.dev/og/home.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Privacy · Froglet" />
-<meta name="twitter:description" content="Froglet privacy posture for the public website, hosted proof trial, and ChatGPT app surface." />
+<meta name="twitter:description" content="Froglet privacy posture for the public website, hosted proof trial, and local/self-hosted usage." />
 <meta name="twitter:image" content="https://froglet.dev/og/home.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <ThemeProvider />
@@ -38,14 +38,14 @@ const UPDATED = 'April 29, 2026';
     <h1>Public proof, <em>local secrets.</em></h1>
     <p class="lede">
       Froglet is an Apache-2.0 open source protocol. This page explains the
-      privacy boundary for the public website, hosted proof trial, and ChatGPT
-      app surface. Last updated: {UPDATED}.
+      privacy boundary for the public website, hosted proof trial, and
+      local/self-hosted usage. Last updated: {UPDATED}.
     </p>
   </section>
 
   <section class="block privacy-block">
     <span class="eyebrow">Short version</span>
-    <h2>Do not paste secrets into hosted demos or ChatGPT.</h2>
+    <h2>Do not paste secrets into hosted demos.</h2>
     <p class="section-lede">
       The hosted proof is designed for public demo inputs. Local private keys,
       Lightning macaroons, Stripe keys, x402 credentials, card data, production
@@ -75,24 +75,12 @@ const UPDATED = 'April 29, 2026';
         </p>
       </article>
       <article class="entry-card">
-        <div class="entry-num">03 · ChatGPT app</div>
-        <h3>Evidence-first tools</h3>
-        <p>
-          The Froglet ChatGPT app can call
-          <code class="inline">run_hosted_proof</code>,
-          <code class="inline">plan_local_install</code>, and
-          <code class="inline">explain_use_case</code>. It should use fixed
-          public demo inputs by default, explain boundaries, and never request
-          private credentials inside ChatGPT.
-        </p>
-      </article>
-      <article class="entry-card">
-        <div class="entry-num">04 · local mode</div>
+        <div class="entry-num">03 · local mode</div>
         <h3>User-controlled configuration</h3>
         <p>
           Local install plans tell you which secrets or wallets a rail requires,
           but those values belong in your shell, config files, keychain, or
-          self-hosted node. They should not be pasted into the hosted app.
+          self-hosted node. They should not be pasted into the hosted demo.
         </p>
       </article>
     </div>
@@ -100,21 +88,18 @@ const UPDATED = 'April 29, 2026';
 
   <section class="block">
     <span class="eyebrow">Data by tool</span>
-    <h2>What the app tools process.</h2>
+    <h2>What local MCP tools process.</h2>
     <div class="privacy-list">
       <div>
-        <h3><code class="inline">run_hosted_proof</code></h3>
+        <h3><code class="inline">status</code>, <code class="inline">invoke_service</code>, and service actions</h3>
         <p>
-          Creates an anonymous hosted trial session, discovers public demo
-          services, runs <code class="inline">demo.add</code>, optionally runs
-          a fixed public witness/hash follow-up against
-          <code class="inline">https://example.com/</code>, and reads the public
-          artifact feed. It should not use private user files unless a future
-          local/self-hosted flow is explicitly configured.
+          Connect to the provider/runtime URLs you configured, read local token
+          files from your machine, and send the inputs you explicitly provide
+          to your selected local or remote provider.
         </p>
       </div>
       <div>
-        <h3><code class="inline">plan_local_install</code></h3>
+        <h3><code class="inline">plan_install</code></h3>
         <p>
           Uses install preferences such as target agent, Docker/source/binary
           footprint, Tor or clearnet, and payment rail choice. It returns a
@@ -122,11 +107,11 @@ const UPDATED = 'April 29, 2026';
         </p>
       </div>
       <div>
-        <h3><code class="inline">explain_use_case</code></h3>
+        <h3><code class="inline">publish_artifact</code> and settlement actions</h3>
         <p>
-          Uses only the project summary you provide in the current conversation.
-          It does not inspect private repositories, local files, browser tabs,
-          credentials, or production systems.
+          Use local artifact paths, payment configuration, wallet state, and
+          receipt metadata from your configured node. They are production-capable
+          surfaces, so do not send secrets to untrusted providers.
         </p>
       </div>
     </div>

@@ -5,7 +5,11 @@
       "command": "npx",
       "args": ["-y", "froglet-mcp"],
       "env": {
-        "FROGLET_PROFILE": "hosted-proof"
+        "FROGLET_PROFILE": "local",
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "data/runtime/auth.token"
       }
     }
   }

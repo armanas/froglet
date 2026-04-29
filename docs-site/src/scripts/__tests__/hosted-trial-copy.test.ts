@@ -228,14 +228,11 @@ describe('hosted trial docs copy', () => {
     }
   });
 
-  it('documents the published MCP package on the website and repo docs', () => {
+  it('documents the published MCP package as local/actionable, not a demo wrapper', () => {
     const paths = [
       'docs-site/src/content/docs/learn/agents.mdx',
-      'docs-site/src/content/docs/learn/cloud-trial.mdx',
       'docs-site/src/content/docs/learn/llm-self-install.mdx',
       'docs-site/src/content/docs/learn/quickstart.mdx',
-      'docs/HOSTED_TRIAL.md',
-      'docs/llms/try.froglet.dev.txt',
       'README.md',
       'docs/CONFIGURATION.md',
     ];
@@ -243,20 +240,20 @@ describe('hosted trial docs copy', () => {
     for (const path of paths) {
       const text = readRepoFile(path);
       expect(text, `${path} should mention the npm package`).toContain('npx froglet-mcp');
-      expect(text, `${path} should mention hosted proof action`).toContain('run_hosted_proof');
+      expect(text, `${path} should point no-install proof to llms.txt`).toContain('froglet.dev/llms.txt');
     }
   });
 
-  it('keeps MCP hosted-proof and local-profile boundaries explicit', () => {
+  it('keeps MCP local-profile boundaries explicit', () => {
     const agents = readRepoFile('docs-site/src/content/docs/learn/agents.mdx');
     const config = readRepoFile('docs/CONFIGURATION.md');
     const readme = readRepoFile('README.md');
 
     for (const text of [agents, config, readme]) {
-      expect(text).toContain('FROGLET_PROFILE=hosted-proof');
       expect(text).toContain('FROGLET_PROFILE=local');
       expect(text).toContain('FROGLET_PROVIDER_AUTH_TOKEN_PATH');
       expect(text).toContain('FROGLET_RUNTIME_AUTH_TOKEN_PATH');
+      expect(text).not.toContain('FROGLET_PROFILE=hosted-proof');
     }
 
     expect(config).toContain('do not require local token files');

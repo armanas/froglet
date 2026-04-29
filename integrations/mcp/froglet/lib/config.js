@@ -11,10 +11,10 @@ import {
   normalizeFilesystemPath
 } from "../../../shared/froglet-lib/shared.js"
 
-const HOSTED_TRIAL_URL = "https://try.froglet.dev"
-const HOSTED_PROOF_PROFILE = "hosted-proof"
 const LOCAL_PROFILE = "local"
-const SUPPORTED_PROFILES = new Set([HOSTED_PROOF_PROFILE, LOCAL_PROFILE])
+const DEFAULT_LOCAL_PROVIDER_URL = "http://127.0.0.1:8080"
+const DEFAULT_LOCAL_RUNTIME_URL = "http://127.0.0.1:8081"
+const SUPPORTED_PROFILES = new Set([LOCAL_PROFILE])
 
 function nonEmptyEnv(name) {
   const value = process.env[name]
@@ -22,7 +22,7 @@ function nonEmptyEnv(name) {
 }
 
 function resolveProfile() {
-  const profile = nonEmptyEnv("FROGLET_PROFILE") ?? HOSTED_PROOF_PROFILE
+  const profile = nonEmptyEnv("FROGLET_PROFILE") ?? LOCAL_PROFILE
   if (!SUPPORTED_PROFILES.has(profile)) {
     throw new Error(
       `FROGLET_PROFILE must be one of: ${[...SUPPORTED_PROFILES].join(", ")}`
@@ -37,9 +37,9 @@ function resolveProfile() {
  * Priority order:
  *   1. FROGLET_PROVIDER_URL
  *   2. FROGLET_BASE_URL  (legacy fallback — sets both provider and runtime URLs)
- *   3. hosted proof profile default
+ *   3. local loopback default
  */
-function resolveProviderUrl(profile) {
+function resolveProviderUrl() {
   const explicit = nonEmptyEnv("FROGLET_PROVIDER_URL")
   if (explicit) {
     return normalizeBaseUrl(explicit, "FROGLET_PROVIDER_URL", { allowInsecure: true })
@@ -50,10 +50,7 @@ function resolveProviderUrl(profile) {
       allowInsecure: true
     })
   }
-  if (profile === HOSTED_PROOF_PROFILE) {
-    return HOSTED_TRIAL_URL
-  }
-  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_PROVIDER_URL", {
+  return normalizeBaseUrl(DEFAULT_LOCAL_PROVIDER_URL, "FROGLET_PROVIDER_URL default", {
     allowInsecure: true
   })
 }
@@ -64,9 +61,9 @@ function resolveProviderUrl(profile) {
  * Priority order:
  *   1. FROGLET_RUNTIME_URL
  *   2. FROGLET_BASE_URL  (legacy fallback — sets both provider and runtime URLs)
- *   3. hosted proof profile default
+ *   3. local loopback default
  */
-function resolveRuntimeUrl(profile) {
+function resolveRuntimeUrl() {
   const explicit = nonEmptyEnv("FROGLET_RUNTIME_URL")
   if (explicit) {
     return normalizeBaseUrl(explicit, "FROGLET_RUNTIME_URL", { allowInsecure: true })
@@ -77,17 +74,8 @@ function resolveRuntimeUrl(profile) {
       allowInsecure: true
     })
   }
-  if (profile === HOSTED_PROOF_PROFILE) {
-    return HOSTED_TRIAL_URL
-  }
-  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_RUNTIME_URL", {
+  return normalizeBaseUrl(DEFAULT_LOCAL_RUNTIME_URL, "FROGLET_RUNTIME_URL default", {
     allowInsecure: true
-  })
-}
-
-function resolveHostedTrialUrl() {
-  return normalizeBaseUrl(nonEmptyEnv("FROGLET_HOSTED_TRIAL_URL") ?? HOSTED_TRIAL_URL, "FROGLET_HOSTED_TRIAL_URL", {
-    allowInsecure: false
   })
 }
 
@@ -135,8 +123,8 @@ function resolveRuntimeAuthTokenPath() {
 
 export function readConfig() {
   const profile = resolveProfile()
-  const providerUrl = resolveProviderUrl(profile)
-  const runtimeUrl = resolveRuntimeUrl(profile)
+  const providerUrl = resolveProviderUrl()
+  const runtimeUrl = resolveRuntimeUrl()
   const providerAuthTokenPath = resolveProviderAuthTokenPath()
   const runtimeAuthTokenPath = resolveRuntimeAuthTokenPath()
 
@@ -149,7 +137,6 @@ export function readConfig() {
 
   return {
     profile,
-    hostedTrialUrl: resolveHostedTrialUrl(),
     providerUrl,
     runtimeUrl,
     providerAuthTokenPath,

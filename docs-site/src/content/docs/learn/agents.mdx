@@ -6,35 +6,38 @@ description: Connect Froglet to Claude Code, Codex, OpenClaw, and other MCP host
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">Agent setup</div>
-    <p class="learn-lead">Start with the hosted proof package, then generate local configs when you run a node.</p>
-    <p class="learn-sublead">The npm MCP package gives agents a zero-config hosted proof. The repo helper remains the right path when the agent needs a local provider, runtime, token files, payment rails, or service publication.</p>
+    <p class="learn-lead">Connect agents to a real local or self-hosted Froglet node.</p>
+    <p class="learn-sublead">The npm MCP package is local/actionable-first. Use `llms.txt` for the no-install hosted proof; use MCP when the agent needs provider/runtime access, token files, payment rails, or service publication.</p>
   </div>
 </div>
 
-## Hosted proof from npm
+## Local MCP from npm
 
-Use the published MCP package when the agent only needs to prove the hosted
-trial before recommending a local install:
+Use the published MCP package when the agent should operate an existing local
+or self-hosted Froglet node:
 
 ```bash
 npx froglet-mcp
 ```
 
-That command starts an MCP stdio server. It defaults to
-`FROGLET_PROFILE=hosted-proof`, points at `https://try.froglet.dev`, and does
-not require a local Froglet node or local token files. In that profile the
-agent should call:
+That command starts an MCP stdio server. It defaults to `FROGLET_PROFILE=local`,
+`FROGLET_PROVIDER_URL=http://127.0.0.1:8080`, and
+`FROGLET_RUNTIME_URL=http://127.0.0.1:8081`. In that profile the agent should
+call:
 
-- `run_hosted_proof` first, to run `demo.add` plus one witness/hash follow-up
-  and report statuses, result, receipt presence, and `/v1/feed` artifact shape
-- `plan_install` next, only if the user wants a local install and the target
-  agent, footprint, role, payment rail, network, marketplace, or first use case
-  is still ambiguous
+- `status` first, to verify provider/runtime reachability and report missing
+  token files or local services plainly
+- `plan_install` if the local node is missing and the target agent, footprint,
+  role, payment rail, network, marketplace, or first use case is still
+  ambiguous
 - `get_install_guide` only after the install profile is confirmed
+- service, settlement, marketplace, and publication actions only after the
+  local node is reachable
 
-The hosted proof is intentionally narrow. Only public free `demo.*` services
-are in scope. Paid rails, persistent identity, custom service publication,
-long-running jobs, batch, and GPU workloads are local/self-hosted concerns.
+The hosted proof is intentionally separate. It lives at
+`https://froglet.dev/llms.txt` and covers only public free `demo.*` services.
+Paid rails, persistent identity, custom service publication, long-running jobs,
+batch, and GPU workloads are local/self-hosted concerns.
 
 If you are packaging Froglet into an agent host rather than adding one MCP
 server manually, use [Plugin Distribution](/learn/plugin-distribution/) for the
@@ -48,7 +51,14 @@ For MCP client config, use the package as the stdio command:
     "froglet": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "froglet-mcp"]
+      "args": ["-y", "froglet-mcp"],
+      "env": {
+        "FROGLET_PROFILE": "local",
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "data/runtime/auth.token"
+      }
     }
   }
 }
@@ -60,6 +70,12 @@ For Codex-style TOML:
 [mcp_servers.froglet]
 command = "npx"
 args = ["-y", "froglet-mcp"]
+[mcp_servers.froglet.env]
+FROGLET_PROFILE = "local"
+FROGLET_PROVIDER_URL = "http://127.0.0.1:8080"
+FROGLET_RUNTIME_URL = "http://127.0.0.1:8081"
+FROGLET_PROVIDER_AUTH_TOKEN_PATH = "data/runtime/froglet-control.token"
+FROGLET_RUNTIME_AUTH_TOKEN_PATH = "data/runtime/auth.token"
 ```
 
 ## Local config from the repo

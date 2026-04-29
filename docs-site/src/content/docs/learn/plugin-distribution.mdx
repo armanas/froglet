@@ -1,13 +1,13 @@
 ---
 title: Plugin Distribution
-description: How Froglet reaches MCP registries, ChatGPT Apps, Codex, Claude Code, OpenClaw, and NemoClaw.
+description: How Froglet reaches MCP registries, Codex, Claude Code, OpenClaw, and NemoClaw.
 ---
 
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">Distribution</div>
-    <p class="learn-lead">One execution package, thin host wrappers.</p>
-    <p class="learn-sublead">Froglet distribution starts with `froglet-mcp` for coding-agent hosts. ChatGPT App Directory distribution is a separate Apps SDK surface with a hosted MCP app and reviewable UI.</p>
+    <p class="learn-lead">One local MCP package, thin host wrappers.</p>
+    <p class="learn-sublead">Use `llms.txt` for the no-install hosted proof. Use `froglet-mcp` and plugins for real local/self-hosted Froglet actions.</p>
   </div>
 </div>
 
@@ -15,22 +15,24 @@ description: How Froglet reaches MCP registries, ChatGPT Apps, Codex, Claude Cod
 
 1. **Official MCP Registry**: publish `server.json` after the matching npm
    package version exists.
-2. **ChatGPT App Directory**: build a hosted Apps SDK app, test it in Developer
-   Mode, and submit through the OpenAI dashboard review flow.
-3. **Codex plugin bundle**: use `plugins/froglet/` plus
+2. **Codex plugin bundle**: use `plugins/froglet/` plus
    `.agents/plugins/marketplace.json` for repo-local coding-agent distribution.
-4. **Claude Code marketplace**: use `.claude-plugin/marketplace.json` plus the
+3. **Claude Code marketplace**: use `.claude-plugin/marketplace.json` plus the
    same `plugins/froglet/` bundle.
-5. **OpenClaw package**: ship the checked-in source plugin after host install
+4. **OpenClaw package**: ship the checked-in source plugin after host install
    verification.
-6. **NemoClaw package**: verify NemoClaw-specific sandbox and HTTPS deltas before
+5. **NemoClaw package**: verify NemoClaw-specific sandbox and HTTPS deltas before
    claiming support.
-7. **Third-party MCP directories**: submit only after the official registry entry
+6. **Third-party MCP directories**: submit only after the official registry entry
    is live.
+
+A hosted consumer app directory path is intentionally out of scope for this repo
+slice. If that path returns later, it should be a separate consumer app, not the
+local stdio MCP package.
 
 ## MCP Registry
 
-The repository now carries the MCP Registry metadata:
+The repository carries the MCP Registry metadata:
 
 ```bash
 cat server.json
@@ -69,47 +71,6 @@ Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof
 command. That URL is a rendered documentation page, so raw `curl` output is
 HTML by design.
 
-## ChatGPT App Directory
-
-This is in scope as a separate Apps SDK milestone, not as a repackaging of the
-stdio `froglet-mcp` package.
-
-Current status:
-
-- first hosted Apps/MCP Worker scaffold exists in the sibling services repo at
-  `../froglet-services/ops/cloudflare-workers/chatgpt-app/`
-- public endpoint is deployed at `https://apps.froglet.dev/mcp`
-- local tests cover MCP JSON-RPC routes, widget metadata, install planning,
-  use-case explanation, and mocked hosted proof execution
-- live smoke through the deployed MCP endpoint returned the expected three tools
-  and a successful `demo.add` result `{ "sum": 12 }` with receipt present and a
-  feed artifact envelope
-- Streamable HTTP MCP SDK smoke against the deployed endpoint passed, including
-  `demo.add`, the fixed `demo.fetch-witness` follow-up, receipt presence, and
-  feed artifact envelope verification
-- MCP Inspector CLI smoke against the deployed endpoint passed for `tools/list`,
-  `resources/list`, `resources/read`, and `tools/call run_hosted_proof` with the
-  fixed `demo.fetch-witness` follow-up
-- privacy policy URL is `https://froglet.dev/privacy/`
-- not yet done: ChatGPT Developer Mode on web and mobile, dashboard submission,
-  approval, or publication
-
-Required shape:
-
-- hosted public MCP server, not localhost or a testing endpoint
-- CSP for the exact domains the app fetches from
-- OpenAI organization verification and app-management permissions
-- app name, logo, description, company URL `https://froglet.dev`, and
-  privacy-policy URL `https://froglet.dev/privacy/`
-- MCP/tool details, screenshots, test prompts, expected responses, and
-  localization details
-- Developer Mode test on ChatGPT web and mobile before dashboard submission
-
-Froglet should submit a complete consumer-facing app: run the hosted proof,
-explain receipt/feed evidence, and then guide local install only after the user
-asks. Paid rails, persistent identity, custom service publication, batch, and GPU
-must stay labeled as local/self-hosted until separately verified in the app.
-
 ## Codex
 
 Repo-local artifacts:
@@ -119,7 +80,7 @@ Repo-local artifacts:
 - `plugins/froglet/skills/froglet/SKILL.md`
 - `.agents/plugins/marketplace.json`
 
-The plugin starts the published MCP package:
+The plugin starts the published MCP package in local mode:
 
 ```json
 {
@@ -128,11 +89,20 @@ The plugin starts the published MCP package:
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "froglet-mcp"],
-      "env": { "FROGLET_PROFILE": "hosted-proof" }
+      "env": {
+        "FROGLET_PROFILE": "local",
+        "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
+        "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "data/runtime/auth.token"
+      }
     }
   }
 }
 ```
+
+First call `status`. If the local node is not ready, use `plan_install` and
+`get_install_guide` before shell commands.
 
 ## Claude Code
 
@@ -150,6 +120,10 @@ claude plugin validate .
 claude plugin marketplace add . --scope local
 claude plugin install froglet@froglet --scope local
 ```
+
+Expected proof: the plugin installs, starts the bundled MCP server, reports local
+`status`, then performs one real local action once the provider/runtime and token
+paths are available.
 
 ## OpenClaw And NemoClaw
 
@@ -173,8 +147,8 @@ completion until that path is run in a real NemoClaw environment.
 
 Every host must keep the same product boundary:
 
-- `run_hosted_proof` proves public free `demo.*` services, signed receipt
-  presence, and `/v1/feed` artifact shape.
-- Paid rails, persistent identity, custom service publication, marketplace write
-  flows, long-running jobs, batch, GPU, and production workloads are local or
-  self-hosted concerns until separately verified.
+- no-install hosted proof: `https://froglet.dev/llms.txt`, public free `demo.*` services,
+  receipt/feed evidence, and no local secrets
+- installed MCP/plugins: local/self-hosted provider/runtime actions, paid rails,
+  persistent identity, service publication, marketplace write flows, long jobs,
+  batch, GPU, and production use cases

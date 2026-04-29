@@ -64,6 +64,11 @@ docs-site/.wrangler/
 .codex/
 .cursor/
 .froglet/
+.kiro
+AGENTS.md
+CLAUDE.md
+.claude-plugin
+.agents
 
 # OS files
 .DS_Store

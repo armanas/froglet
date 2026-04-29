@@ -66,7 +66,6 @@ before(async () => {
   await writeFile(tokenPath, "test-token-abc")
   config = {
     profile: "local",
-    hostedTrialUrl: "https://try.froglet.dev",
     providerUrl: "http://127.0.0.1:8080",
     runtimeUrl: "http://127.0.0.1:8081",
     providerAuthTokenPath: tokenPath,
@@ -88,7 +87,6 @@ describe("tool definitions", () => {
     assert.equal(tools[0].name, "froglet")
     const actionEnum = tools[0].inputSchema.properties.action.enum
     assert.deepEqual(actionEnum, [
-      "run_hosted_proof",
       "discover_services",
       "get_service",
       "invoke_service",
@@ -112,12 +110,7 @@ describe("tool definitions", () => {
       "marketplace_topup"
     ])
     assert.match(tools[0].description, /provider_id/)
-    assert.match(tools[0].description, /run_hosted_proof/)
-    assert.deepEqual(tools[0].inputSchema.properties.followup.enum, [
-      "none",
-      "demo.fetch-witness",
-      "demo.hash-verify"
-    ])
+    assert.match(tools[0].description, /status/)
     assert.equal(tools[0].inputSchema.properties.starter.type, "string")
     assert.deepEqual(tools[0].inputSchema.properties.footprint.enum, [
       "docker",
@@ -137,151 +130,15 @@ describe("tool definitions", () => {
 })
 
 describe("froglet MCP actions", () => {
-  it("runs the zero-config hosted proof with demo.add and a witness follow-up", async () => {
-    const calls = []
-    const services = [
-      {
-        service_id: "demo.add",
-        offer_id: "demo.add",
-        provider_id: "prov-hosted",
-        provider_url: "https://ai.froglet.dev",
-        runtime: "builtin",
-        package_kind: "builtin",
-        entrypoint_kind: "builtin",
-        entrypoint: "demo.add",
-        contract_version: "froglet.builtin.demo.add.v1"
-      },
-      {
-        service_id: "demo.fetch-witness",
-        offer_id: "demo.fetch-witness",
-        provider_id: "prov-hosted",
-        provider_url: "https://ai.froglet.dev",
-        runtime: "builtin",
-        package_kind: "builtin",
-        entrypoint_kind: "builtin",
-        entrypoint: "demo.fetch-witness",
-        contract_version: "froglet.builtin.demo.fetch-witness.v1"
-      }
-    ]
-    const restore = mockFetch(async (url, opts = {}) => {
-      const urlStr = String(url)
-      calls.push({ url: urlStr, opts })
-      if (urlStr === "https://try.froglet.dev/api/preflight") {
-        return new Response(JSON.stringify({ ok: true }), { status: 200 })
-      }
-      if (urlStr === "https://try.froglet.dev/api/sessions") {
-        assert.equal(opts.method, "POST")
-        return new Response(
-          JSON.stringify({ session_token: "session-abc", slot_id: 2, ttl_secs: 900 }),
-          { status: 200 }
-        )
-      }
-      if (urlStr === "https://try.froglet.dev/v1/provider/services") {
-        assert.equal(opts.headers.Authorization, "Bearer session-abc")
-        return new Response(JSON.stringify({ services }), { status: 200 })
-      }
-      if (urlStr === "https://try.froglet.dev/v1/runtime/deals") {
-        assert.equal(opts.method, "POST")
-        assert.equal(opts.headers.Authorization, "Bearer session-abc")
-        const body = JSON.parse(opts.body)
-        assert.equal(body.provider.provider_id, "prov-hosted")
-        assert.equal(body.provider.provider_url, "https://ai.froglet.dev")
-        assert.equal(body.kind, "execution")
-        assert.equal(body.execution.package_kind, "builtin")
-        assert.equal(body.execution.entrypoint.kind, "builtin")
-        assert.deepEqual(body.execution.security, { mode: "standard" })
-        assert.equal(body.execution.module_hash, undefined)
-        assert.equal(body.execution.source_hash, undefined)
-        if (body.offer_id === "demo.add") {
-          assert.equal(body.execution.builtin_name, "demo.add")
-          assert.equal(body.execution.input_hash, "728a671a0a05e573bb0c3e37688fc3302d913187cb274f2e0b2940e1c2e4b719")
-          return new Response(
-            JSON.stringify({ deal: { deal_id: "deal-add", status: "accepted" } }),
-            { status: 200 }
-          )
-        }
-        if (body.offer_id === "demo.fetch-witness") {
-          assert.equal(body.execution.builtin_name, "demo.fetch-witness")
-          assert.deepEqual(body.execution.input, {
-            url: "https://example.com/",
-            max_bytes: 1048576
-          })
-          return new Response(
-            JSON.stringify({ deal: { deal_id: "deal-witness", status: "accepted" } }),
-            { status: 200 }
-          )
-        }
-        throw new Error(`unexpected offer id: ${body.offer_id}`)
-      }
-      if (urlStr === "https://try.froglet.dev/v1/runtime/deals/deal-add") {
-        return new Response(
-          JSON.stringify({
-            deal: {
-              deal_id: "deal-add",
-              status: "succeeded",
-              result: { sum: 12 },
-              receipt: { kind: "receipt" }
-            }
-          }),
-          { status: 200 }
-        )
-      }
-      if (urlStr === "https://try.froglet.dev/v1/runtime/deals/deal-witness") {
-        return new Response(
-          JSON.stringify({
-            deal: {
-              deal_id: "deal-witness",
-              status: "succeeded",
-              result: {
-                status_code: 200,
-                content_sha256: "fb91d75a6bb430787a61b0aec5e374f580030f2878e1613eab5ca6310f7bbb9a"
-              },
-              receipt: { kind: "receipt" }
-            }
-          }),
-          { status: 200 }
-        )
-      }
-      if (urlStr === "https://try.froglet.dev/v1/feed") {
-        assert.equal(opts.headers.Authorization, "Bearer session-abc")
-        return new Response(
-          JSON.stringify({
-            artifacts: [
-              { kind: "descriptor" },
-              { kind: "offer" },
-              { kind: "receipt" }
-            ],
-            cursor: "3",
-            next_cursor: null
-          }),
-          { status: 200 }
-        )
-      }
-      throw new Error(`unexpected URL: ${urlStr}`)
-    })
-    try {
-      const result = await handleToolCall(
-        "froglet",
-        { action: "run_hosted_proof" },
-        config
-      )
-      assert.equal(result.isError, undefined, result.content?.[0]?.text)
-      const text = result.content[0].text
-      assert.match(text, /preflight_status: 200/)
-      assert.match(text, /session_status: 200/)
-      assert.match(text, /demo_service_ids: demo.add, demo.fetch-witness/)
-      assert.match(text, /demo\.add:/)
-      assert.match(text, /result: {"sum":12}/)
-      assert.match(text, /receipt_present: true/)
-      assert.match(text, /demo\.fetch-witness:/)
-      assert.match(text, /content_sha256/)
-      assert.match(text, /artifact_envelope: true/)
-      assert.match(text, /has_events: false/)
-      assert.match(text, /has_items: false/)
-      assert.equal(calls.filter((call) => call.url.endsWith("/v1/runtime/deals")).length, 2)
-    } finally {
-      restore()
-    }
+  it("rejects the removed hosted proof action with a pointer to llms.txt", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      { action: "run_hosted_proof" },
+      config
+    )
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /not part of the installed MCP surface/)
+    assert.match(result.content[0].text, /froglet.dev\/llms.txt/)
   })
 
   it("exposes wallet balance through the settlement MCP action", async () => {

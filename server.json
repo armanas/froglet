@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.armanas/froglet",
   "title": "Froglet",
-  "description": "Run hosted proofs, signed receipts, service discovery, and local install planning.",
+  "description": "Run local Froglet verifiable compute, signed receipts, service discovery, settlement, and service publication.",
   "version": "0.1.2",
   "websiteUrl": "https://froglet.dev",
   "repository": {

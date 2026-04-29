@@ -15,12 +15,12 @@
   },
   "configuration": {
     "FROGLET_PROVIDER_URL": {
-      "required": true,
-      "description": "Provider base URL (e.g. http://127.0.0.1:8080). Fallback: FROGLET_BASE_URL"
+      "required": false,
+      "description": "Provider base URL (default: http://127.0.0.1:8080). Fallback: FROGLET_BASE_URL"
     },
     "FROGLET_RUNTIME_URL": {
-      "required": true,
-      "description": "Runtime base URL (e.g. http://127.0.0.1:8081). Fallback: FROGLET_BASE_URL"
+      "required": false,
+      "description": "Runtime base URL (default: http://127.0.0.1:8081). Fallback: FROGLET_BASE_URL"
     },
     "FROGLET_PROVIDER_AUTH_TOKEN_PATH": {
       "required": false,

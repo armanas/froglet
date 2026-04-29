@@ -1,7 +1,7 @@
 {
   "name": "froglet",
   "version": "0.1.2",
-  "description": "Connect Claude Code to Froglet hosted proofs, signed receipts, and local install planning.",
+  "description": "Connect Claude Code to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
   "author": {
     "name": "Armanas Povilionis-Muradian",
     "url": "https://armanas.dev"

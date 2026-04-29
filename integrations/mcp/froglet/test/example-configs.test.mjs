@@ -10,7 +10,6 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url))
 const examplesDir = path.join(packageRoot, "examples")
 const CONFIG_ENV_KEYS = [
   "FROGLET_PROFILE",
-  "FROGLET_HOSTED_TRIAL_URL",
   "FROGLET_PROVIDER_URL",
   "FROGLET_RUNTIME_URL",
   "FROGLET_PROVIDER_AUTH_TOKEN_PATH",
@@ -53,17 +52,16 @@ function restoreEnv(snapshot) {
   }
 }
 
-test("MCP config defaults to hosted proof without local token files", () => {
+test("MCP config defaults to local loopback without token files", () => {
   const previous = snapshotEnv(CONFIG_ENV_KEYS)
   try {
     for (const key of CONFIG_ENV_KEYS) {
       delete process.env[key]
     }
     const loaded = readConfig()
-    assert.equal(loaded.profile, "hosted-proof")
-    assert.equal(loaded.hostedTrialUrl, "https://try.froglet.dev")
-    assert.equal(loaded.providerUrl, "https://try.froglet.dev")
-    assert.equal(loaded.runtimeUrl, "https://try.froglet.dev")
+    assert.equal(loaded.profile, "local")
+    assert.equal(loaded.providerUrl, "http://127.0.0.1:8080")
+    assert.equal(loaded.runtimeUrl, "http://127.0.0.1:8081")
     assert.equal(loaded.providerAuthTokenPath, null)
     assert.equal(loaded.runtimeAuthTokenPath, null)
   } finally {
@@ -71,14 +69,14 @@ test("MCP config defaults to hosted proof without local token files", () => {
   }
 })
 
-test("Local MCP profile still requires explicit provider and runtime URLs", () => {
+test("Hosted-proof profile is no longer accepted by the installed MCP server", () => {
   const previous = snapshotEnv(CONFIG_ENV_KEYS)
   try {
     for (const key of CONFIG_ENV_KEYS) {
       delete process.env[key]
     }
-    process.env.FROGLET_PROFILE = "local"
-    assert.throws(() => readConfig(), /FROGLET_BASE_URL \/ FROGLET_PROVIDER_URL/)
+    process.env.FROGLET_PROFILE = "hosted-proof"
+    assert.throws(() => readConfig(), /FROGLET_PROFILE must be one of: local/)
   } finally {
     restoreEnv(previous)
   }

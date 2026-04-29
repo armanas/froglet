@@ -6,27 +6,24 @@ and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
 ## Requirements
 
 - Node.js 18+ (or Docker)
-- No local Froglet node is required for the zero-config hosted proof
-- A running Froglet provider/runtime is required for local provider, runtime,
+- A running Froglet provider/runtime is required for provider, runtime,
   marketplace, payment, and publication actions
+- Use the public `llms.txt` HTTP flow when you only want the no-install hosted
+  proof
 
 ## Quick Start
 
-### Zero-config hosted proof
+### Local npm profile
 
 ```bash
 npx froglet-mcp
 ```
 
-The npm package defaults to `FROGLET_PROFILE=hosted-proof`. In that mode,
-agents should call `run_hosted_proof` first. It mints an anonymous hosted
-session, runs `demo.add`, runs one `demo.fetch-witness` or `demo.hash-verify`
-follow-up, and reports HTTP statuses, result, receipt presence, and `/v1/feed`
-artifact-envelope evidence.
-
-Hosted proof is intentionally narrow: only public free `demo.*` services are
-part of that proof. Paid rails, persistent identity, custom service publication,
-long-running jobs, batch, and GPU workloads require the local/self-hosted path.
+The npm package defaults to `FROGLET_PROFILE=local` with provider/runtime URLs
+pointing at `http://127.0.0.1:8080` and `http://127.0.0.1:8081`. Agents should
+call `status` first. If the local node or token files are missing, call
+`plan_install` and then `get_install_guide` before running host-shell setup
+commands.
 
 ### Local source checkout
 
@@ -54,7 +51,7 @@ user has not specified the target agent, install footprint, role, payment rail,
 network mode, marketplace URL, or first use case. After the profile is
 confirmed, `get_install_guide` returns the exact host-shell commands.
 
-### Local npm profile
+### Explicit local npm profile
 
 ```bash
 FROGLET_PROFILE=local \
@@ -71,10 +68,9 @@ All configuration is through environment variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `FROGLET_PROFILE` | No | `hosted-proof` by default; use `local` when pointing at your own provider/runtime |
-| `FROGLET_HOSTED_TRIAL_URL` | No | Hosted proof base URL (default: `https://try.froglet.dev`) |
-| `FROGLET_PROVIDER_URL` | Local | Provider base URL (fallback: `FROGLET_BASE_URL`; defaults to hosted trial in `hosted-proof`) |
-| `FROGLET_RUNTIME_URL` | Local | Runtime base URL (fallback: `FROGLET_BASE_URL`; defaults to hosted trial in `hosted-proof`) |
+| `FROGLET_PROFILE` | No | `local` by default |
+| `FROGLET_PROVIDER_URL` | No | Provider base URL (fallback: `FROGLET_BASE_URL`; default: `http://127.0.0.1:8080`) |
+| `FROGLET_RUNTIME_URL` | No | Runtime base URL (fallback: `FROGLET_BASE_URL`; default: `http://127.0.0.1:8081`) |
 | `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | No | Path to provider auth token file |
 | `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | No | Path to runtime auth token file |
 | `FROGLET_REQUEST_TIMEOUT_MS` | No | HTTP timeout in ms (default: 10000) |
@@ -85,9 +81,10 @@ All configuration is through environment variables:
 Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.
 
-Local actions that hit provider/runtime APIs require the matching token path at
-call time. `run_hosted_proof`, `plan_install`, and `get_install_guide` do not
-require local token files.
+Actions that hit provider/runtime APIs require the matching token path at call
+time. `plan_install` and `get_install_guide` do not require local token files.
+The hosted demo is intentionally not an MCP action; use
+`https://froglet.dev/llms.txt` for the no-install proof.
 
 ---
 

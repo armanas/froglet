@@ -110,10 +110,9 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_PROFILE` | `hosted-proof` | MCP profile: `hosted-proof` for the public hosted proof, or `local` for a local/self-hosted provider and runtime |
-| `FROGLET_HOSTED_TRIAL_URL` | `https://try.froglet.dev` | Hosted proof base URL |
-| `FROGLET_PROVIDER_URL` | hosted trial in `hosted-proof`; required in `local` | Provider base URL (fallback: `FROGLET_BASE_URL`) |
-| `FROGLET_RUNTIME_URL` | hosted trial in `hosted-proof`; required in `local` | Runtime base URL (fallback: `FROGLET_BASE_URL`) |
+| `FROGLET_PROFILE` | `local` | MCP profile for a local/self-hosted provider and runtime |
+| `FROGLET_PROVIDER_URL` | `http://127.0.0.1:8080` | Provider base URL (fallback: `FROGLET_BASE_URL`) |
+| `FROGLET_RUNTIME_URL` | `http://127.0.0.1:8081` | Runtime base URL (fallback: `FROGLET_BASE_URL`) |
 | `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | *(none)* | Provider auth token file for local provider actions (fallback: `FROGLET_AUTH_TOKEN_PATH`) |
 | `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | *(none)* | Runtime auth token file for local runtime actions (fallback: `FROGLET_AUTH_TOKEN_PATH`) |
 | `FROGLET_REQUEST_TIMEOUT_MS` | `10000` | HTTP request timeout in milliseconds |
@@ -127,8 +126,9 @@ The published MCP package is `froglet-mcp`:
 npx froglet-mcp
 ```
 
-In the default `hosted-proof` profile, `run_hosted_proof`, `plan_install`, and
-`get_install_guide` do not require local token files. Local provider/runtime
-actions require `FROGLET_PROFILE=local` plus the matching URL and token-path
-configuration. Equivalently: no env uses `FROGLET_PROFILE=hosted-proof`; a
-local node uses `FROGLET_PROFILE=local`.
+Equivalent explicit local launch: `FROGLET_PROFILE=local npx froglet-mcp`.
+
+`plan_install` and `get_install_guide` do not require local token files.
+Provider/runtime actions require the matching URL and token-path configuration.
+The no-install public hosted proof is intentionally outside the installed MCP
+surface; use `https://froglet.dev/llms.txt` for that HTTP flow.

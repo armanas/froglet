@@ -8,7 +8,7 @@ Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if yo
 
 If you are a chat-only model or your tools cannot fetch URLs, POST JSON, send Bearer auth, and poll HTTP routes, exit gracefully: tell the user that a proper test requires an agentic HTTP-capable environment or the manual curl flow, and do not claim live Froglet evidence.
 
-If Froglet MCP is already connected through the published `froglet-mcp` package, use the `run_hosted_proof` action for the hosted proof. That action is a wrapper around the same public hosted flow below and still must report observed evidence first. Do not install or configure MCP from a chat-only interface.
+Do not use the installed `froglet-mcp` package as the no-install hosted proof. The installed MCP surface is for local or self-hosted Froglet nodes. For the hosted proof, use the HTTP flow below exactly.
 
 Hosted trial boundaries:
 
@@ -104,6 +104,6 @@ If you are a web-only or chat-only LLM and cannot fetch URLs, make HTTP requests
 
 Then give the user the shortest next step:
 
-- Agentic path: paste the primary instruction above into Codex, Claude Code, OpenClaw, or another HTTP-capable agent. If the host supports MCP stdio, connect `npx froglet-mcp` and call `run_hosted_proof`.
+- Agentic path: paste the primary instruction above into Codex, Claude Code, OpenClaw, or another HTTP-capable agent that can fetch URLs, POST JSON, send Bearer auth, and poll HTTP routes.
 - Manual hosted path: open https://froglet.dev/learn/cloud-trial/ and run the curl block.
 - Local path: open https://froglet.dev/learn/quickstart/ and choose `binary`, `docker`, or `source`.

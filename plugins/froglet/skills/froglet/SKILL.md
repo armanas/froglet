@@ -5,17 +5,19 @@ description: Use when a user asks what Froglet can prove, whether they should in
 
 # Froglet
 
-Use the Froglet MCP server as the source of truth. Do not invent API calls or install commands.
+Use the Froglet MCP server as the source of truth for a local or self-hosted
+Froglet node. Do not invent API calls or install commands. The no-install demo
+proof lives at https://froglet.dev/llms.txt, not in this installed plugin.
 
 Default flow:
 
-1. Call `run_hosted_proof` first when the user wants to evaluate Froglet. Report observed HTTP statuses, result, receipt presence, feed shape, and mismatches before explaining usefulness.
+1. Call `status` first. If the provider/runtime are unreachable or token paths are missing, explain the local configuration gap instead of falling back to a demo.
 2. If the user wants to install locally, call `plan_install` before shell commands. Ask for missing choices: agent host, Docker versus local binary, provider/requester/both role, clearnet versus Tor, payment rail, marketplace URL, and first use case.
 3. After the profile is confirmed, call `get_install_guide` and execute its shell commands through the host agent shell, not through the Froglet runtime.
-4. Once Froglet is running, use the actual project context to propose one concrete service, witness/hash proof, or receipt-producing workflow.
+4. Once Froglet is running, use `list_local_services`, `discover_services`, `get_service`, `invoke_service`, `run_compute`, `publish_artifact`, and settlement/marketplace actions to implement the user's concrete workflow.
 
 Boundaries:
 
-- The hosted proof covers public free `demo.*` services only.
-- Hosted proof does not prove paid rails, persistent identity, service publication, marketplace depth, long-running jobs, batch execution, or GPU execution.
-- Chat-only LLMs that cannot make HTTP POST requests with Bearer auth should say they cannot run the proof and point the user to an agentic client or `curl`.
+- This plugin is local/actionable-first. It is not a hosted demo wrapper.
+- Paid rails, persistent identity, service publication, marketplace write flows, long-running jobs, batch execution, and GPU execution require a configured local or self-hosted Froglet node.
+- Chat-only LLMs that cannot make HTTP POST requests with Bearer auth should use the `llms.txt` fallback wording and point the user to an agentic client or `curl`.
