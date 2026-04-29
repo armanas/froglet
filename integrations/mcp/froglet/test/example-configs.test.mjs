@@ -8,6 +8,16 @@ import { readConfig } from "../lib/config.js"
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url))
 const examplesDir = path.join(packageRoot, "examples")
+const CONFIG_ENV_KEYS = [
+  "FROGLET_PROFILE",
+  "FROGLET_HOSTED_TRIAL_URL",
+  "FROGLET_PROVIDER_URL",
+  "FROGLET_RUNTIME_URL",
+  "FROGLET_PROVIDER_AUTH_TOKEN_PATH",
+  "FROGLET_RUNTIME_AUTH_TOKEN_PATH",
+  "FROGLET_BASE_URL",
+  "FROGLET_AUTH_TOKEN_PATH",
+]
 
 async function readJson(name) {
   return JSON.parse(await readFile(path.join(examplesDir, name), "utf8"))
@@ -28,6 +38,51 @@ function expectLocalNodeServer(config) {
     )
   )
 }
+
+function snapshotEnv(keys) {
+  return Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+}
+
+function restoreEnv(snapshot) {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
+}
+
+test("MCP config defaults to hosted proof without local token files", () => {
+  const previous = snapshotEnv(CONFIG_ENV_KEYS)
+  try {
+    for (const key of CONFIG_ENV_KEYS) {
+      delete process.env[key]
+    }
+    const loaded = readConfig()
+    assert.equal(loaded.profile, "hosted-proof")
+    assert.equal(loaded.hostedTrialUrl, "https://try.froglet.dev")
+    assert.equal(loaded.providerUrl, "https://try.froglet.dev")
+    assert.equal(loaded.runtimeUrl, "https://try.froglet.dev")
+    assert.equal(loaded.providerAuthTokenPath, null)
+    assert.equal(loaded.runtimeAuthTokenPath, null)
+  } finally {
+    restoreEnv(previous)
+  }
+})
+
+test("Local MCP profile still requires explicit provider and runtime URLs", () => {
+  const previous = snapshotEnv(CONFIG_ENV_KEYS)
+  try {
+    for (const key of CONFIG_ENV_KEYS) {
+      delete process.env[key]
+    }
+    process.env.FROGLET_PROFILE = "local"
+    assert.throws(() => readConfig(), /FROGLET_BASE_URL \/ FROGLET_PROVIDER_URL/)
+  } finally {
+    restoreEnv(previous)
+  }
+})
 
 test("Claude Desktop example is complete", async () => {
   expectLocalNodeServer(await readJson("claude-desktop-config.json"))
@@ -56,18 +111,13 @@ test("Docker example includes token mount and MCP image", async () => {
 test("Docker example env is accepted by the MCP config loader", async () => {
   const config = await readJson("docker-mcp-config.json")
   const server = config.mcpServers.froglet
-  const previous = {
-    FROGLET_PROVIDER_URL: process.env.FROGLET_PROVIDER_URL,
-    FROGLET_RUNTIME_URL: process.env.FROGLET_RUNTIME_URL,
-    FROGLET_PROVIDER_AUTH_TOKEN_PATH: process.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH,
-    FROGLET_RUNTIME_AUTH_TOKEN_PATH: process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH,
-    FROGLET_BASE_URL: process.env.FROGLET_BASE_URL,
-    FROGLET_AUTH_TOKEN_PATH: process.env.FROGLET_AUTH_TOKEN_PATH,
-  }
+  const previous = snapshotEnv(CONFIG_ENV_KEYS)
 
   try {
-    delete process.env.FROGLET_BASE_URL
-    delete process.env.FROGLET_AUTH_TOKEN_PATH
+    for (const key of CONFIG_ENV_KEYS) {
+      delete process.env[key]
+    }
+    process.env.FROGLET_PROFILE = "local"
     for (let index = 0; index < server.args.length; index += 1) {
       if (server.args[index] !== "-e") {
         continue
@@ -82,13 +132,7 @@ test("Docker example env is accepted by the MCP config loader", async () => {
     assert.equal(loaded.providerAuthTokenPath, "/tokens/froglet-control.token")
     assert.equal(loaded.runtimeAuthTokenPath, "/tokens/auth.token")
   } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) {
-        delete process.env[key]
-      } else {
-        process.env[key] = value
-      }
-    }
+    restoreEnv(previous)
   }
 })
 

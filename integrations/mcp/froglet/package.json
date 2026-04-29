@@ -4,6 +4,7 @@
   "version": "0.1.1",
   "type": "module",
   "description": "MCP server for Froglet services, projects, and compute.",
+  "license": "Apache-2.0",
   "author": "Armanas Povilionis-Muradian",
   "homepage": "https://github.com/armanas/froglet",
   "repository": "https://github.com/armanas/froglet",
@@ -19,7 +20,7 @@
   "scripts": {
     "check": "node --check server.js",
     "smoke:compose": "node test/compose-smoke.mjs",
-    "test": "node --test test/server.test.mjs test/example-configs.test.mjs",
+    "test": "node --test test/server.test.mjs test/example-configs.test.mjs test/provider-url-integration.test.mjs test/package.test.mjs ../../../integrations/shared/froglet-lib/test/*.test.mjs",
     "start": "node server.js"
   }
 }

@@ -1,0 +1,54 @@
+{
+  "name": "froglet-mcp",
+  "version": "0.1.1",
+  "type": "module",
+  "description": "MCP server for Froglet verifiable compute, hosted proof, signed receipts, and local install planning.",
+  "license": "Apache-2.0",
+  "author": "Armanas Povilionis-Muradian",
+  "homepage": "https://froglet.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/armanas/froglet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/armanas/froglet/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "froglet",
+    "agents",
+    "verifiable-compute",
+    "receipts",
+    "witness",
+    "notary"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "froglet-mcp": "integrations/mcp/froglet/server.js"
+  },
+  "files": [
+    "integrations/mcp/froglet/server.js",
+    "integrations/mcp/froglet/package.json",
+    "integrations/mcp/froglet/lib/**/*.js",
+    "integrations/mcp/froglet/README.md",
+    "integrations/mcp/froglet/examples/**/*",
+    "integrations/mcp/froglet/mcp-manifest.json",
+    "integrations/shared/froglet-lib/**/*.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
+  "scripts": {
+    "check:mcp": "node --check integrations/mcp/froglet/server.js",
+    "test:mcp": "node --test integrations/mcp/froglet/test/server.test.mjs integrations/mcp/froglet/test/example-configs.test.mjs integrations/mcp/froglet/test/provider-url-integration.test.mjs integrations/mcp/froglet/test/package.test.mjs integrations/shared/froglet-lib/test/*.test.mjs",
+    "pack:mcp": "npm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

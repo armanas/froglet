@@ -6,9 +6,29 @@ and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
 ## Requirements
 
 - Node.js 18+ (or Docker)
-- A running Froglet provider and runtime, or one node that exposes both surfaces
+- No local Froglet node is required for the zero-config hosted proof
+- A running Froglet provider/runtime is required for local provider, runtime,
+  marketplace, payment, and publication actions
 
 ## Quick Start
+
+### Zero-config hosted proof
+
+```bash
+npx froglet-mcp
+```
+
+The npm package defaults to `FROGLET_PROFILE=hosted-proof`. In that mode,
+agents should call `run_hosted_proof` first. It mints an anonymous hosted
+session, runs `demo.add`, runs one `demo.fetch-witness` or `demo.hash-verify`
+follow-up, and reports HTTP statuses, result, receipt presence, and `/v1/feed`
+artifact-envelope evidence.
+
+Hosted proof is intentionally narrow: only public free `demo.*` services are
+part of that proof. Paid rails, persistent identity, custom service publication,
+long-running jobs, batch, and GPU workloads require the local/self-hosted path.
+
+### Local source checkout
 
 ```bash
 # Install dependencies
@@ -34,14 +54,27 @@ user has not specified the target agent, install footprint, role, payment rail,
 network mode, marketplace URL, or first use case. After the profile is
 confirmed, `get_install_guide` returns the exact host-shell commands.
 
+### Local npm profile
+
+```bash
+FROGLET_PROFILE=local \
+FROGLET_PROVIDER_URL=http://127.0.0.1:8080 \
+FROGLET_RUNTIME_URL=http://127.0.0.1:8081 \
+FROGLET_PROVIDER_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/froglet-control.token \
+FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.token \
+  npx froglet-mcp
+```
+
 ## Configuration
 
 All configuration is through environment variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `FROGLET_PROVIDER_URL` | Yes | Provider base URL (fallback: `FROGLET_BASE_URL`) |
-| `FROGLET_RUNTIME_URL` | Yes | Runtime base URL (fallback: `FROGLET_BASE_URL`) |
+| `FROGLET_PROFILE` | No | `hosted-proof` by default; use `local` when pointing at your own provider/runtime |
+| `FROGLET_HOSTED_TRIAL_URL` | No | Hosted proof base URL (default: `https://try.froglet.dev`) |
+| `FROGLET_PROVIDER_URL` | Local | Provider base URL (fallback: `FROGLET_BASE_URL`; defaults to hosted trial in `hosted-proof`) |
+| `FROGLET_RUNTIME_URL` | Local | Runtime base URL (fallback: `FROGLET_BASE_URL`; defaults to hosted trial in `hosted-proof`) |
 | `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | No | Path to provider auth token file |
 | `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | No | Path to runtime auth token file |
 | `FROGLET_REQUEST_TIMEOUT_MS` | No | HTTP timeout in ms (default: 10000) |
@@ -51,6 +84,10 @@ All configuration is through environment variables:
 
 Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.
+
+Local actions that hit provider/runtime APIs require the matching token path at
+call time. `run_hosted_proof`, `plan_install`, and `get_install_guide` do not
+require local token files.
 
 ---
 
@@ -217,6 +254,23 @@ FROGLET_PROVIDER_AUTH_TOKEN_PATH=./data/runtime/froglet-control.token \
 FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token \
   node integrations/mcp/froglet/server.js
 ```
+
+## Publishing
+
+The npm package is defined at the repository root so the tarball can include
+both `integrations/mcp/froglet` and `integrations/shared/froglet-lib`.
+
+```bash
+npm run check:mcp
+npm run test:mcp
+npm pack --dry-run
+npm publish --provenance=false
+```
+
+Do not publish `integrations/mcp/froglet/package.json` directly; it is a
+repo-local development package and cannot include the shared library by itself.
+Local manual publishes must disable provenance. Use CI/OIDC for a later
+provenance-enabled publish flow.
 
 If you want to use the generated host-side agent configs against Docker Compose,
 start Compose with `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` so

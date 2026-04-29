@@ -8,7 +8,7 @@ function errorResult(error) {
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_stake (stake into a provider), marketplace_topup (add to existing stake). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime."
+  "Authoritative Froglet MCP tool. Use exact Froglet actions instead of guessing. First-run/zero-config users should call run_hosted_proof to execute the hosted demo.add plus optional witness/hash proof before recommending local install. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_stake (stake into a provider), marketplace_topup (add to existing stake). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime."
 
 function frogletToolInputSchema(config) {
   return {
@@ -18,8 +18,9 @@ function frogletToolInputSchema(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_search, marketplace_provider, marketplace_receipts, marketplace_stake, marketplace_topup — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime.",
+          "Exact Froglet action name. Do not invent actions. Use run_hosted_proof for the zero-config hosted proof. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_search, marketplace_provider, marketplace_receipts, marketplace_stake, marketplace_topup — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime.",
         enum: [
+          "run_hosted_proof",
           "discover_services",
           "get_service",
           "invoke_service",
@@ -47,6 +48,19 @@ function frogletToolInputSchema(config) {
         type: "string",
         description:
           "Service identifier. Required for publish_artifact, get_local_service, get_service, and invoke_service."
+      },
+      hosted_url: {
+        type: "string",
+        format: "uri",
+        pattern: "^https://[^\\s]+$",
+        description:
+          "Hosted trial base URL for run_hosted_proof. Defaults to https://try.froglet.dev."
+      },
+      followup: {
+        type: "string",
+        enum: ["none", "demo.fetch-witness", "demo.hash-verify"],
+        description:
+          "Optional hosted proof follow-up after demo.add. Defaults to demo.fetch-witness."
       },
       offer_id: { type: "string" },
       summary: {

@@ -11,6 +11,7 @@ import {
   listLocalServices,
   listSettlementActivity,
   publishArtifact,
+  runHostedProof,
   runCompute,
   waitTask
 } from "./froglet-client.js"
@@ -52,6 +53,10 @@ function runtimeCtx(config) {
 
 function renderResult(lines, response, includeRaw) {
   return toolTextResult(appendRaw(lines, response, includeRaw).join("\n"))
+}
+
+function boolText(value) {
+  return value === true ? "true" : "false"
 }
 
 function resolvedProviderId(args) {
@@ -368,6 +373,60 @@ async function handleDealPaymentIntent(args, config, includeRaw) {
     `deal_id: ${dealId}`,
     `intent: ${formatObject(intent)}`
   ]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleHostedProof(args, config, includeRaw) {
+  const response = await runHostedProof({
+    hostedUrl: args.hosted_url ?? config.hostedTrialUrl,
+    requestTimeoutMs: config.requestTimeoutMs,
+    followup: args.followup ?? "demo.fetch-witness",
+  })
+  const add = response.demo_add ?? {}
+  const followup = response.followup
+  const feed = response.feed ?? {}
+  const lines = [
+    `hosted_url: ${response.hosted_url}`,
+    `preflight_status: ${response.preflight?.status ?? "unknown"}`,
+    ...(response.preflight?.error ? [`preflight_error: ${response.preflight.error}`] : []),
+    `session_status: ${response.session?.status ?? "unknown"}`,
+    `session_slot_id: ${response.session?.slot_id ?? "unknown"}`,
+    `session_ttl_secs: ${response.session?.ttl_secs ?? "unknown"}`,
+    `services_status: ${response.services?.status ?? "unknown"}`,
+    `service_ids: ${(response.services?.service_ids ?? []).join(", ") || "none"}`,
+    `demo_service_ids: ${(response.services?.demo_services ?? []).join(", ") || "none"}`,
+    "",
+    "demo.add:",
+    `  create_status: ${add.create_status ?? "unknown"}`,
+    `  poll_status: ${add.poll_status ?? "unknown"}`,
+    `  deal_status: ${add.deal_status ?? "unknown"}`,
+    `  result: ${formatObject(add.result)}`,
+    `  receipt_present: ${boolText(add.receipt_present)}`,
+  ]
+  if (followup) {
+    lines.push(
+      "",
+      `${followup.service_id}:`,
+      `  create_status: ${followup.create_status ?? "unknown"}`,
+      `  poll_status: ${followup.poll_status ?? "unknown"}`,
+      `  deal_status: ${followup.deal_status ?? "unknown"}`,
+      ...(followup.error ? [`  error: ${followup.error}`] : []),
+      `  result: ${formatObject(followup.result)}`,
+      `  receipt_present: ${boolText(followup.receipt_present)}`
+    )
+  }
+  lines.push(
+    "",
+    "feed:",
+    `  status: ${feed.status ?? "unknown"}`,
+    `  artifact_envelope: ${boolText(feed.artifact_envelope)}`,
+    `  artifact_count: ${feed.artifact_count ?? "unknown"}`,
+    `  artifact_kinds: ${(feed.artifact_kinds ?? []).join(", ") || "none"}`,
+    `  has_events: ${boolText(feed.has_events)}`,
+    `  has_items: ${boolText(feed.has_items)}`,
+    "",
+    "Boundaries: hosted proof covers only demo.* free services. It does not prove paid rails, persistent identity, custom service publication, long-running jobs, batch, or GPU workloads."
+  )
   return renderResult(lines, response, includeRaw)
 }
 
@@ -856,6 +915,8 @@ async function handleDealInvoiceBundle(args, config, includeRaw) {
 
 export async function dispatchFrogletAction(args, config, { includeRaw = false } = {}) {
   switch (args.action) {
+    case "run_hosted_proof":
+      return handleHostedProof(args, config, includeRaw)
     case "status":
       return handleStatus(args, config, includeRaw)
     case "discover_services":
