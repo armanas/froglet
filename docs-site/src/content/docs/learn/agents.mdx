@@ -1,18 +1,67 @@
 ---
 title: Connect Agents
-description: Generate ready-to-use local config for Claude Code, Codex, and OpenClaw.
+description: Connect Froglet to Claude Code, Codex, OpenClaw, and other MCP hosts.
 ---
 
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">Agent setup</div>
-    <p class="learn-lead">One helper script, three supported local agent targets.</p>
-    <p class="learn-sublead">The public local path avoids hand-editing MCP JSON or TOML. The helper generates the exact file each supported agent expects and fills in the local provider, runtime, and token paths.</p>
+    <p class="learn-lead">Start with the hosted proof package, then generate local configs when you run a node.</p>
+    <p class="learn-sublead">The npm MCP package gives agents a zero-config hosted proof. The repo helper remains the right path when the agent needs a local provider, runtime, token files, payment rails, or service publication.</p>
   </div>
 </div>
 
+## Hosted proof from npm
+
+Use the published MCP package when the agent only needs to prove the hosted
+trial before recommending a local install:
+
+```bash
+npx froglet-mcp
+```
+
+That command starts an MCP stdio server. It defaults to
+`FROGLET_PROFILE=hosted-proof`, points at `https://try.froglet.dev`, and does
+not require a local Froglet node or local token files. In that profile the
+agent should call:
+
+- `run_hosted_proof` first, to run `demo.add` plus one witness/hash follow-up
+  and report statuses, result, receipt presence, and `/v1/feed` artifact shape
+- `plan_install` next, only if the user wants a local install and the target
+  agent, footprint, role, payment rail, network, marketplace, or first use case
+  is still ambiguous
+- `get_install_guide` only after the install profile is confirmed
+
+The hosted proof is intentionally narrow. Only public free `demo.*` services
+are in scope. Paid rails, persistent identity, custom service publication,
+long-running jobs, batch, and GPU workloads are local/self-hosted concerns.
+
+For MCP client config, use the package as the stdio command:
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "froglet-mcp"]
+    }
+  }
+}
+```
+
+For Codex-style TOML:
+
+```toml
+[mcp_servers.froglet]
+command = "npx"
+args = ["-y", "froglet-mcp"]
+```
+
+## Local config from the repo
+
 These helper commands are repo-local. `install.sh` only installs the signed
-`froglet-node` binary; if you want generated MCP/OpenClaw configs and the
+`froglet-node` binary; if you want generated local MCP/OpenClaw configs and the
 Compose stack, clone the repo first:
 
 ```bash
@@ -43,8 +92,10 @@ cd froglet && ./scripts/setup-agent.sh --target codex --out /tmp/froglet-codex.t
 
 ## Default values
 
-The helper uses these defaults unless you override them with environment variables:
+The helper writes local-profile values unless you override them with
+environment variables:
 
+- `FROGLET_PROFILE=local`
 - `FROGLET_PROVIDER_URL=http://127.0.0.1:8080`
 - `FROGLET_RUNTIME_URL=http://127.0.0.1:8081`
 - `FROGLET_PROVIDER_AUTH_TOKEN_PATH=<repo-root>/data/runtime/froglet-control.token`
@@ -77,6 +128,20 @@ The repo also ships checked-in MCP examples for:
 - Docker-backed MCP
 
 Those live under `integrations/mcp/froglet/examples/` and are covered by test.
+
+## Local npm profile
+
+If you prefer the published package but already have a local Froglet node,
+point the MCP server at local provider/runtime URLs and token files:
+
+```bash
+FROGLET_PROFILE=local \
+FROGLET_PROVIDER_URL=http://127.0.0.1:8080 \
+FROGLET_RUNTIME_URL=http://127.0.0.1:8081 \
+FROGLET_PROVIDER_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/froglet-control.token \
+FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.token \
+  npx froglet-mcp
+```
 
 ## Next step
 

@@ -35,6 +35,20 @@ Bearer auth, and poll HTTP routes, it should exit gracefully: say that a proper
 test requires an agentic HTTP-capable environment or the manual curl flow, and
 do not claim live Froglet evidence.
 
+## MCP-native shortcut
+
+For agent hosts that support MCP stdio, the published package can run the same
+hosted proof without a local node:
+
+```bash
+npx froglet-mcp
+```
+
+The package defaults to `FROGLET_PROFILE=hosted-proof`. In that profile, call
+`run_hosted_proof` before any local install recommendation. It reports the
+observed HTTP statuses, `demo.add` result, receipt presence, witness/hash
+follow-up result when available, and `/v1/feed` artifact-envelope shape.
+
 ## Public endpoints
 
 ```text

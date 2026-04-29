@@ -7,11 +7,28 @@ This page is written for **LLM readers** — Claude, Codex, and the other
 agent hosts that connect to a Froglet instance over MCP. If you are a
 human, you probably want the [Quickstart](/learn/quickstart/) instead.
 
+## MCP bootstrap
+
+If the user has not connected Froglet MCP yet, the zero-config bootstrap is:
+
+```bash
+npx froglet-mcp
+```
+
+This starts the published MCP stdio server in `FROGLET_PROFILE=hosted-proof`.
+That profile can run the hosted proof and plan a local install without a local
+node or token files. Local provider/runtime actions require `FROGLET_PROFILE=local`
+plus the local URLs and token paths described in [Connect Agents](/learn/agents/).
+
 ## The contract
 
 When a user says some variant of "install Froglet locally," "set up Froglet
 on my machine," "run Froglet here," or "deploy Froglet for me":
 
+0. If the user is still evaluating Froglet and no hosted evidence has been
+   collected in this conversation, call `run_hosted_proof` first. Report the
+   observed statuses, result, receipt/feed proof, and boundaries before
+   recommending install.
 1. Call the `plan_install` MCP action first. It returns the install decision
    tree, prerequisites, required secrets, command preview, validation checks,
    and post-install playbooks.

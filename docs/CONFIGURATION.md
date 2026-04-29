@@ -110,10 +110,25 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_PROVIDER_URL` | *(required)* | Provider base URL (fallback: `FROGLET_BASE_URL`) |
-| `FROGLET_RUNTIME_URL` | *(required)* | Runtime base URL (fallback: `FROGLET_BASE_URL`) |
-| `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | *(none)* | Provider auth token file (fallback: `FROGLET_AUTH_TOKEN_PATH`) |
-| `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | *(none)* | Runtime auth token file (fallback: `FROGLET_AUTH_TOKEN_PATH`) |
+| `FROGLET_PROFILE` | `hosted-proof` | MCP profile: `hosted-proof` for the public hosted proof, or `local` for a local/self-hosted provider and runtime |
+| `FROGLET_HOSTED_TRIAL_URL` | `https://try.froglet.dev` | Hosted proof base URL |
+| `FROGLET_PROVIDER_URL` | hosted trial in `hosted-proof`; required in `local` | Provider base URL (fallback: `FROGLET_BASE_URL`) |
+| `FROGLET_RUNTIME_URL` | hosted trial in `hosted-proof`; required in `local` | Runtime base URL (fallback: `FROGLET_BASE_URL`) |
+| `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | *(none)* | Provider auth token file for local provider actions (fallback: `FROGLET_AUTH_TOKEN_PATH`) |
+| `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | *(none)* | Runtime auth token file for local runtime actions (fallback: `FROGLET_AUTH_TOKEN_PATH`) |
 | `FROGLET_REQUEST_TIMEOUT_MS` | `10000` | HTTP request timeout in milliseconds |
-| `FROGLET_DEFAULT_SEARCH_LIMIT` | `20` | Default search result limit |
-| `FROGLET_MAX_SEARCH_LIMIT` | `100` | Maximum search result limit |
+| `FROGLET_DEFAULT_SEARCH_LIMIT` | `10` | Default search result limit |
+| `FROGLET_MAX_SEARCH_LIMIT` | `50` | Maximum search result limit |
+| `FROGLET_EGRESS_MODE` | lenient | `strict` applies DNS-pinning and SSRF validation to operator-configured provider/runtime URLs; lenient keeps local and Docker dev URLs working |
+
+The published MCP package is `froglet-mcp`:
+
+```bash
+npx froglet-mcp
+```
+
+In the default `hosted-proof` profile, `run_hosted_proof`, `plan_install`, and
+`get_install_guide` do not require local token files. Local provider/runtime
+actions require `FROGLET_PROFILE=local` plus the matching URL and token-path
+configuration. Equivalently: no env uses `FROGLET_PROFILE=hosted-proof`; a
+local node uses `FROGLET_PROFILE=local`.

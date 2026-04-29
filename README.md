@@ -45,7 +45,8 @@ Froglet gives one signed economic primitive for three product shapes:
 The primary bot-facing integration surfaces are intentionally simple:
 
 - One OpenClaw/NemoClaw plugin id: `froglet` (at `integrations/openclaw/froglet/`)
-- One MCP server under `integrations/mcp/froglet/`
+- One MCP server under `integrations/mcp/froglet/`, published as
+  `froglet-mcp` for `npx froglet-mcp`
 - Both surfaces register a single agent-facing tool named `froglet` to
   the host (Claude Code, Codex, Cursor, Windsurf, etc.). This is the
   "tool" exposed to the agent, not a standalone CLI binary — the only
@@ -269,10 +270,33 @@ External bot hosts and automation systems can use the MCP server instead of
 the OpenClaw or NemoClaw plugin:
 
 ```bash
+npx froglet-mcp
+```
+
+The npm package defaults to `FROGLET_PROFILE=hosted-proof`, so no local node or
+token file is required for the first hosted proof. In that mode agents should
+call `run_hosted_proof` first. It runs the public free hosted demo flow and
+reports HTTP statuses, `demo.add` result, receipt presence, and feed artifact
+shape. Only `demo.*` services are in scope for that hosted proof.
+
+For a local node, use the local profile:
+
+```bash
+FROGLET_PROFILE=local \
+FROGLET_PROVIDER_URL=http://127.0.0.1:8080 \
+FROGLET_RUNTIME_URL=http://127.0.0.1:8081 \
+FROGLET_PROVIDER_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/froglet-control.token \
+FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.token \
+  npx froglet-mcp
+```
+
+From a source checkout, the same server can be run directly:
+
+```bash
 node integrations/mcp/froglet/server.js
 ```
 
-It exposes the same Froglet control surface over MCP stdio.
+All three launch modes expose the same Froglet control surface over MCP stdio.
 
 For supported local agent targets, generate the exact config file instead of
 editing JSON or TOML by hand from the cloned repo:
@@ -297,9 +321,8 @@ node --test integrations/openclaw/froglet/test/plugin.test.js \
   integrations/openclaw/froglet/test/config-profiles.test.mjs \
   integrations/openclaw/froglet/test/doctor.test.mjs \
   integrations/openclaw/froglet/test/froglet-client.test.mjs
-node --check integrations/mcp/froglet/server.js
-node --test integrations/mcp/froglet/test/server.test.mjs \
-  integrations/mcp/froglet/test/example-configs.test.mjs
+npm run check:mcp
+npm run test:mcp
 ```
 
 **Full repo checks:**

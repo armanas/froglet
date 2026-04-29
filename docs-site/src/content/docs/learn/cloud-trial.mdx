@@ -51,6 +51,25 @@ Expected behavior:
 - if the model cannot fetch URLs, POST JSON, send Bearer auth, and poll HTTP
   routes, it should exit gracefully and not claim live Froglet evidence
 
+## MCP-native hosted proof
+
+If your agent host supports MCP stdio commands, the shortest no-install path is
+the published package:
+
+```bash
+npx froglet-mcp
+```
+
+The package defaults to `FROGLET_PROFILE=hosted-proof`, so it points at
+`https://try.froglet.dev` and needs no local node or token files. Ask the agent
+to call `run_hosted_proof`. That action is the MCP equivalent of the HTTP flow
+below: it mints a hosted session, discovers the demo catalog, runs `demo.add`,
+runs one witness/hash follow-up when possible, checks the feed, and reports the
+observed evidence without claiming local or paid-rail capability.
+
+Use `plan_install` only after the proof, when the user wants Froglet running
+locally and the install profile still needs choices.
+
 ## Public API contract
 
 The hosted gateway exposes these endpoints:

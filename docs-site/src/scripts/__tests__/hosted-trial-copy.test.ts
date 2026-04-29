@@ -227,4 +227,41 @@ describe('hosted trial docs copy', () => {
       expect(text).toContain('must not claim');
     }
   });
+
+  it('documents the published MCP package on the website and repo docs', () => {
+    const paths = [
+      'docs-site/src/content/docs/learn/agents.mdx',
+      'docs-site/src/content/docs/learn/cloud-trial.mdx',
+      'docs-site/src/content/docs/learn/llm-self-install.mdx',
+      'docs-site/src/content/docs/learn/quickstart.mdx',
+      'docs/HOSTED_TRIAL.md',
+      'docs/llms/try.froglet.dev.txt',
+      'README.md',
+      'docs/CONFIGURATION.md',
+    ];
+
+    for (const path of paths) {
+      const text = readRepoFile(path);
+      expect(text, `${path} should mention the npm package`).toContain('npx froglet-mcp');
+      expect(text, `${path} should mention hosted proof action`).toContain('run_hosted_proof');
+    }
+  });
+
+  it('keeps MCP hosted-proof and local-profile boundaries explicit', () => {
+    const agents = readRepoFile('docs-site/src/content/docs/learn/agents.mdx');
+    const config = readRepoFile('docs/CONFIGURATION.md');
+    const readme = readRepoFile('README.md');
+
+    for (const text of [agents, config, readme]) {
+      expect(text).toContain('FROGLET_PROFILE=hosted-proof');
+      expect(text).toContain('FROGLET_PROFILE=local');
+      expect(text).toContain('FROGLET_PROVIDER_AUTH_TOKEN_PATH');
+      expect(text).toContain('FROGLET_RUNTIME_AUTH_TOKEN_PATH');
+    }
+
+    expect(config).toContain('do not require local token files');
+    expect(config).toContain('Default search result limit');
+    expect(config).toContain('`10`');
+    expect(config).toContain('`50`');
+  });
 });
