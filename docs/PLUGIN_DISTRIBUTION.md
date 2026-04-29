@@ -104,6 +104,16 @@ Platform dashboard after Developer Mode testing. If approved and published, the
 app can appear in the ChatGPT Apps Directory and OpenAI creates a Codex plugin
 for Codex distribution.
 
+Current status:
+
+- first hosted Apps/MCP Worker scaffold exists in the sibling services repo at
+  `../froglet-services/ops/cloudflare-workers/chatgpt-app/`
+- proposed public endpoint is `https://apps.froglet.dev/mcp`
+- local tests cover MCP JSON-RPC routes, widget metadata, install planning,
+  use-case explanation, and mocked hosted proof execution
+- not yet done: public deploy, MCP Inspector, ChatGPT Developer Mode on web and
+  mobile, review assets, dashboard submission, approval, or publication
+
 Required before submission:
 
 - a hosted public MCP server endpoint, not a localhost or testing URL
