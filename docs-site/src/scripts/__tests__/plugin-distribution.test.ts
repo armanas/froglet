@@ -70,7 +70,9 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('hosted public MCP');
       expect(text).toContain('https://apps.froglet.dev/mcp');
       expect(text).toContain('../froglet-services/ops/cloudflare-workers/chatgpt-app/');
-      expect(text).toContain('not yet done: public deploy');
+      expect(text).toContain('public endpoint is deployed');
+      expect(text).toContain('demo.add` result `{ "sum": 12 }`');
+      expect(text).toContain('not yet done: MCP Inspector');
       expect(text).toContain('Developer Mode');
       expect(text).toContain('Codex plugin');
       expect(text).toContain('Claude Code');

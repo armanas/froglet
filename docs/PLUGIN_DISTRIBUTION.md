@@ -108,11 +108,14 @@ Current status:
 
 - first hosted Apps/MCP Worker scaffold exists in the sibling services repo at
   `../froglet-services/ops/cloudflare-workers/chatgpt-app/`
-- proposed public endpoint is `https://apps.froglet.dev/mcp`
+- public endpoint is deployed at `https://apps.froglet.dev/mcp`
 - local tests cover MCP JSON-RPC routes, widget metadata, install planning,
   use-case explanation, and mocked hosted proof execution
-- not yet done: public deploy, MCP Inspector, ChatGPT Developer Mode on web and
-  mobile, review assets, dashboard submission, approval, or publication
+- live smoke through the deployed MCP endpoint returned the expected three tools
+  and a successful `demo.add` result `{ "sum": 12 }` with receipt present and a
+  feed artifact envelope
+- not yet done: MCP Inspector, ChatGPT Developer Mode on web and mobile, review
+  assets, dashboard submission, approval, or publication
 
 Required before submission:
 
