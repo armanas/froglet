@@ -144,25 +144,32 @@ Or add via CLI: `claude mcp add froglet -- node integrations/mcp/froglet/server.
 
 ### Cursor
 
-Add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
+This repo includes a project config at `.cursor/mcp.json` that runs the
+published package with local defaults. Add the same shape to
+`~/.cursor/mcp.json` if you want a global config:
 
 ```json
 {
   "mcpServers": {
     "froglet": {
       "type": "stdio",
-      "command": "node",
-      "args": ["<path-to-repo>/integrations/mcp/froglet/server.js"],
+      "command": "npx",
+      "args": ["-y", "froglet-mcp"],
       "env": {
+        "FROGLET_PROFILE": "local",
         "FROGLET_PROVIDER_URL": "http://127.0.0.1:8080",
         "FROGLET_RUNTIME_URL": "http://127.0.0.1:8081",
-        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "/absolute/path/to/froglet/data/runtime/froglet-control.token",
-        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "/absolute/path/to/froglet/data/runtime/auth.token"
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "data/runtime/froglet-control.token",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "data/runtime/auth.token"
       }
     }
   }
 }
 ```
+
+Cursor host verification requires Cursor or `cursor-agent` to be installed. If
+neither is available, use the MCP server tests and direct stdio smoke as the
+available non-host evidence.
 
 ### OpenAI Codex CLI
 

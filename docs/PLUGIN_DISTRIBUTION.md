@@ -45,6 +45,7 @@ not as a repackaging of the local stdio MCP tool.
 | Shared plugin MCP | `plugins/froglet/.mcp.json` | Starts `npx -y froglet-mcp` with local provider/runtime env |
 | Shared plugin skill | `plugins/froglet/skills/froglet/SKILL.md` | Tells agents to check local status, plan install, then execute real actions |
 | Claude slash command | `plugins/froglet/commands/froglet.md` | `/froglet` entrypoint for the same local status/install/use-case flow |
+| Cursor project MCP | `.cursor/mcp.json` | Project-scoped Cursor config for the published `froglet-mcp` package |
 | OpenClaw/NemoClaw | `integrations/openclaw/froglet/` | Source plugin and examples; registry package still pending |
 
 The npm MCP package version and the host-plugin wrapper version are allowed to
@@ -127,6 +128,33 @@ running or tokens are missing, call `plan_install`; only after the profile is
 confirmed should the agent call `get_install_guide` and run host-shell commands.
 Claude Code also exposes `/froglet`, which follows the same local-first flow.
 
+Current Codex host status: Codex CLI 0.114.0 exposes `codex mcp`, but no public
+`plugin install` or `plugin validate` command. The repo-local plugin metadata is
+therefore packaging-ready, while clean Codex plugin installation remains blocked
+on a supported Codex host workflow. Direct MCP verification is available through
+`scripts/setup-agent.sh --target codex` or the shared `froglet-mcp` stdio config.
+
+## Cursor MCP
+
+The repository includes a project-scoped Cursor config at `.cursor/mcp.json`.
+It uses the published package:
+
+```json
+{
+  "mcpServers": {
+    "froglet": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "froglet-mcp"]
+    }
+  }
+}
+```
+
+Cursor host verification requires Cursor or `cursor-agent` to be installed. If
+neither binary is available, the supported evidence is limited to config
+inspection, MCP server tests, and direct MCP stdio smoke.
+
 ## Claude Code Plugin Marketplace
 
 Claude Code can consume a GitHub-hosted marketplace from the repository root.
@@ -174,6 +202,24 @@ OpenClaw can use loopback host URLs. NemoClaw must be verified separately
 because the plugin usually runs inside a sandbox and reaches the host over HTTPS.
 Do not claim NemoClaw distribution is complete until a real NemoClaw environment
 installs the package and runs at least one local Froglet action.
+
+Current OpenClaw status: source-level plugin tests, doctor runtime checks, and
+direct source-plugin `froglet` tool invocation pass against the local Froglet
+stack. Full OpenClaw gateway-mediated invocation remains separate evidence.
+
+NemoClaw status: source-level shared plugin tests pass, but real NemoClaw
+verification requires a NemoClaw/OpenShell environment, staged plugin source,
+staged token, HTTPS host reachability from the sandbox, and one successful
+Froglet tool action.
+
+## Third-Party MCP Directories
+
+Reusable metadata and directory-specific submission notes live in
+[`docs/MCP_DIRECTORY_SUBMISSIONS.md`](MCP_DIRECTORY_SUBMISSIONS.md). The official
+MCP Registry is active for `io.github.armanas/froglet`; third-party listings
+remain unverified until each public directory shows Froglet pointing at
+`froglet-mcp`, Apache-2.0, `https://github.com/armanas/froglet`, and the
+local/self-hosted MCP boundary.
 
 ## Boundary
 

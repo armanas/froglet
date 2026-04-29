@@ -34,6 +34,7 @@ describe('plugin and registry distribution metadata', () => {
     const codex = readJson('plugins/froglet/.codex-plugin/plugin.json');
     const claude = readJson('plugins/froglet/.claude-plugin/plugin.json');
     const mcp = readJson('plugins/froglet/.mcp.json');
+    const cursor = readJson('.cursor/mcp.json');
     const command = readRepoFile('plugins/froglet/commands/froglet.md');
 
     expect(codex.name).toBe('froglet');
@@ -50,6 +51,9 @@ describe('plugin and registry distribution metadata', () => {
     expect(mcp.mcpServers.froglet.env.FROGLET_RUNTIME_URL).toBe('http://127.0.0.1:8081');
     expect(mcp.mcpServers.froglet.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH).toContain('froglet-control.token');
     expect(mcp.mcpServers.froglet.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH).toContain('auth.token');
+    expect(cursor.mcpServers.froglet.command).toBe('npx');
+    expect(cursor.mcpServers.froglet.args).toEqual(['-y', 'froglet-mcp']);
+    expect(cursor.mcpServers.froglet.env.FROGLET_PROFILE).toBe('local');
     expect(command).toContain('allowed-tools: mcp__plugin_froglet_froglet__froglet');
     expect(command).toContain('{"action":"status"}');
     expect(command).toContain('plan_install');
@@ -88,6 +92,9 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('mcp-publisher publish');
       expect(text).toContain('Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof');
       expect(text).toContain('The npm MCP package version and the host-plugin wrapper version');
+      expect(text).toContain('MCP_DIRECTORY_SUBMISSIONS.md');
+      expect(text).toContain('Cursor');
+      expect(text).toContain('NemoClaw');
       expect(text).toContain('node -e');
       expect(text).toContain('claude plugin marketplace add armanas/froglet --sparse .claude-plugin plugins');
       expect(text).not.toContain('apps.froglet.dev');

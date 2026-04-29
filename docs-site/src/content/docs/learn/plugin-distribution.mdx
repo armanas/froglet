@@ -80,6 +80,7 @@ Repo-local artifacts:
 - `plugins/froglet/skills/froglet/SKILL.md`
 - `plugins/froglet/commands/froglet.md`
 - `.agents/plugins/marketplace.json`
+- `.cursor/mcp.json`
 
 The plugin starts the published MCP package in local mode:
 
@@ -105,10 +106,23 @@ The plugin starts the published MCP package in local mode:
 First call `status`. If the local node is not ready, use `plan_install` and
 `get_install_guide` before shell commands.
 
+Codex CLI 0.114.0 exposes `codex mcp`, but no public `plugin install` or
+`plugin validate` command. Until Codex exposes that host workflow, Codex plugin
+verification means metadata inspection plus direct MCP stdio smoke, not a clean
+plugin-install claim.
+
 The npm MCP package version and the host-plugin wrapper version are separate.
 Bump `package.json` and `server.json` for `froglet-mcp` package or registry
 changes. Bump plugin manifests and Claude marketplace metadata for wrapper-only
 skills, commands, or host packaging changes.
+
+## Cursor
+
+The repo includes `.cursor/mcp.json` for project-scoped Cursor MCP setup. It
+starts `npx -y froglet-mcp` against the local provider/runtime and token paths.
+Cursor host verification still requires Cursor or `cursor-agent`; when neither
+binary is installed, only config, MCP server tests, and direct stdio smoke are
+verified.
 
 ## Claude Code
 
@@ -151,6 +165,22 @@ node --test integrations/openclaw/froglet/test/plugin.test.js \
 OpenClaw usually talks to loopback. NemoClaw usually runs inside a sandbox and
 must reach the host over HTTPS, so do not claim NemoClaw marketplace/package
 completion until that path is run in a real NemoClaw environment.
+
+Current OpenClaw evidence covers static checks, plugin tests, doctor runtime
+checks, and direct source-plugin tool invocation. Full OpenClaw
+gateway-mediated invocation remains separate evidence.
+
+NemoClaw remains blocked until a real NemoClaw/OpenShell sandbox can stage the
+plugin source and token, reach the host over HTTPS, and run one `froglet` tool
+action.
+
+## Third-Party MCP Directories
+
+Reusable submission metadata lives in `docs/MCP_DIRECTORY_SUBMISSIONS.md`.
+The official MCP Registry is active for `io.github.armanas/froglet`;
+third-party listings are not complete until each public listing points at
+`froglet-mcp`, Apache-2.0, the GitHub repository, and the local/self-hosted
+MCP boundary.
 
 ## Boundary
 

@@ -60,6 +60,10 @@ If the host uses a private CA, stage that CA as well.
 
 ## Verification
 
+Current status: source-level shared OpenClaw/NemoClaw plugin checks pass, but
+real NemoClaw verification is not complete until a live NemoClaw/OpenShell
+sandbox runs the plugin and calls one Froglet action.
+
 ```bash
 nemoclaw my-node status
 openshell sandbox get my-node
@@ -73,6 +77,22 @@ TOKEN=$(cat /sandbox/.openclaw/froglet-control.token)
 curl -H "Authorization: Bearer $TOKEN" \
   https://node.example/health
 ```
+
+Minimum completion evidence:
+
+```bash
+openshell sandbox upload my-node \
+  /absolute/path/to/froglet/integrations/openclaw/froglet \
+  /sandbox/froglet/integrations/openclaw/froglet
+openshell sandbox upload my-node \
+  /absolute/path/to/froglet-control.token \
+  /sandbox/.openclaw/froglet-control.token
+nemoclaw my-node connect
+```
+
+Then run the `froglet` tool from inside NemoClaw with `action=status`,
+`action=plan_install`, and one real local action once the host Froglet node is
+reachable over HTTPS.
 
 The bot-facing tool contract is identical to OpenClaw: one tool named
 `froglet`.
