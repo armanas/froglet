@@ -4666,6 +4666,7 @@ fn provider_service_from_definition(
         provider_id: state.identity.node_id().to_string(),
         module_hash: definition.module_hash.clone(),
         binding_hash: definition.module_hash.clone(),
+        starter: definition.starter.clone(),
         input_schema: definition.input_schema.clone(),
         output_schema: definition.output_schema.clone(),
         module_bytes_hex: if include_binding {
@@ -5033,7 +5034,7 @@ pub fn artifact_provider_offer_definition(
         fuel_limit,
         price_sats: payload.price_sats,
         publication_state,
-        starter: None,
+        starter: payload.starter,
         module_hash,
         module_bytes_hex,
         inline_source,
@@ -10791,6 +10792,7 @@ mod tests {
                     "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
                 ),
                 summary: Some(format!("test service {service_id}")),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats,
                 publication_state: Some(publication_state.to_string()),
@@ -10922,7 +10924,7 @@ mod tests {
         idempotency_key: &str,
     ) -> Value {
         let execution =
-            ExecutionWorkload::builtin_service("demo.add".to_string(), json!({ "a": 2, "b": 3 }))
+            ExecutionWorkload::builtin_service("demo.add".to_string(), json!({ "a": 7, "b": 5 }))
                 .expect("demo.add execution workload");
         serde_json::to_value(RuntimeCreateDealRequest {
             provider: RuntimeProviderRef {
@@ -11615,6 +11617,7 @@ mod tests {
                         .to_string(),
                 ),
                 summary: Some("visible then hidden".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("active".to_string()),
@@ -11643,6 +11646,7 @@ mod tests {
                         .to_string(),
                 ),
                 summary: Some("visible then hidden".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("hidden".to_string()),
@@ -11716,6 +11720,7 @@ mod tests {
                     "def handler(event, context):\n    return {\"hidden\": True}\n".to_string(),
                 ),
                 summary: Some("hidden only".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("hidden".to_string()),
@@ -11749,6 +11754,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn demo_services_publish_llm_metadata() {
+        let state = test_app_state(PaymentBackend::None);
+        crate::builtins::register_demo_offers(state.as_ref())
+            .await
+            .expect("register demo offers");
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/services",
+                None,
+                None,
+            ))
+            .await
+            .expect("provider services response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let services = payload["services"].as_array().expect("services array");
+        let expected = [
+            "demo.add",
+            "demo.echo",
+            "demo.fetch-witness",
+            "demo.hash-verify",
+            "demo.notarize",
+        ];
+        for service_id in expected {
+            let service = services
+                .iter()
+                .find(|service| service["service_id"].as_str() == Some(service_id))
+                .unwrap_or_else(|| panic!("missing demo service {service_id}: {payload}"));
+            assert_eq!(service["runtime"], "builtin");
+            assert_eq!(service["package_kind"], "builtin");
+            assert_eq!(service["entrypoint_kind"], "builtin");
+            assert_eq!(service["entrypoint"], service_id);
+            assert_eq!(service["price_sats"], 0);
+            assert_eq!(service["publication_state"], "active");
+            assert!(
+                service["starter"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "missing starter for {service_id}: {service}"
+            );
+            assert!(
+                service["input_schema"].is_object(),
+                "missing input_schema for {service_id}: {service}"
+            );
+            assert!(
+                service["output_schema"].is_object(),
+                "missing output_schema for {service_id}: {service}"
+            );
+            assert_eq!(service["module_bytes_hex"], Value::Null);
+            assert_eq!(service["inline_source"], Value::Null);
+            assert_eq!(service["oci_reference"], Value::Null);
+            assert_eq!(service["oci_digest"], Value::Null);
+        }
+    }
+
+    #[tokio::test]
     async fn public_provider_service_detail_hides_hidden_services_and_binding_fields() {
         let state = test_app_state(PaymentBackend::None);
         publish_test_service(
@@ -11771,6 +11835,7 @@ mod tests {
                         .to_string(),
                 ),
                 summary: Some("public python service".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("active".to_string()),
@@ -11798,6 +11863,7 @@ mod tests {
                     "def handler(event, context):\n    return {\"hidden\": true}\n".to_string(),
                 ),
                 summary: Some("hidden python service".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("hidden".to_string()),
@@ -11874,6 +11940,7 @@ mod tests {
                         .to_string(),
                 ),
                 summary: Some("public python service".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("active".to_string()),
@@ -11941,6 +12008,7 @@ mod tests {
                 mounts: None,
                 inline_source: None,
                 summary: Some("public wasm service".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("active".to_string()),
@@ -12006,6 +12074,7 @@ mod tests {
                 mounts: None,
                 inline_source: None,
                 summary: Some("public OCI wasm service".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("active".to_string()),
@@ -12073,6 +12142,7 @@ mod tests {
                 }]),
                 inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
                 summary: Some("validated python service".to_string()),
+                starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
                 publication_state: Some("active".to_string()),
@@ -13616,6 +13686,7 @@ mod tests {
         assert_eq!(create_status, StatusCode::OK);
 
         let get_response = public
+            .clone()
             .oneshot(hosted_trial_runtime_request(
                 Method::GET,
                 &format!("/v1/runtime/deals/{}", create_payload.deal.deal_id),
@@ -13628,6 +13699,55 @@ mod tests {
             response_json(get_response).await;
         assert_eq!(get_status, StatusCode::OK);
         assert_eq!(get_payload.deal.deal_id, create_payload.deal.deal_id);
+        assert_eq!(get_payload.deal.status, "succeeded");
+        assert_eq!(get_payload.deal.result, Some(json!({ "sum": 12 })));
+        assert!(get_payload.deal.result_hash.is_some());
+        assert!(get_payload.deal.receipt.is_some());
+        assert_eq!(get_payload.deal.quote.artifact_type, ARTIFACT_KIND_QUOTE);
+
+        let feed_response = public
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
+            .await
+            .expect("hosted-trial feed response");
+        let (feed_status, feed_payload): (StatusCode, Value) = response_json(feed_response).await;
+        assert_eq!(feed_status, StatusCode::OK);
+        assert!(feed_payload["artifacts"].is_array());
+        assert_eq!(feed_payload["cursor_type"], "artifact_sequence");
+        assert!(feed_payload["cursor_semantics"].is_string());
+        assert!(feed_payload["applied_cursor"].is_number());
+        assert!(feed_payload["page_size"].is_number());
+        assert!(feed_payload["has_more"].is_boolean());
+        assert!(
+            feed_payload.get("events").is_none(),
+            "feed must expose artifacts, not events: {feed_payload}"
+        );
+        assert!(
+            feed_payload.get("items").is_none(),
+            "feed must expose artifacts, not items: {feed_payload}"
+        );
+        let artifact_kinds = feed_payload["artifacts"]
+            .as_array()
+            .expect("feed artifacts")
+            .iter()
+            .filter_map(|artifact| artifact["kind"].as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            artifact_kinds.contains(ARTIFACT_KIND_DESCRIPTOR),
+            "missing descriptor artifact: {feed_payload}"
+        );
+        assert!(
+            artifact_kinds.contains(ARTIFACT_KIND_OFFER),
+            "missing offer artifact: {feed_payload}"
+        );
+        assert!(
+            artifact_kinds.contains(ARTIFACT_KIND_RECEIPT),
+            "missing receipt artifact: {feed_payload}"
+        );
     }
 
     #[tokio::test]
@@ -13765,6 +13885,7 @@ mod tests {
         let session_token = issue_test_session_token(&state);
 
         for request in [
+            runtime_request(Method::GET, "/api/preflight", None, None),
             runtime_request(Method::POST, "/api/sessions", None, None),
             runtime_request(
                 Method::GET,
@@ -13798,6 +13919,13 @@ mod tests {
         }
 
         for request in [
+            hosted_trial_runtime_request_with_secret(
+                Method::GET,
+                "/api/preflight",
+                None,
+                None,
+                "wrong-secret",
+            ),
             hosted_trial_runtime_request_with_secret(
                 Method::POST,
                 "/api/sessions",
@@ -13838,6 +13966,72 @@ mod tests {
                 .expect("public response with wrong origin secret");
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_preflight_reports_agent_capability_requirements() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let public = public_router(state);
+
+        let response = public
+            .oneshot(hosted_trial_runtime_request(
+                Method::GET,
+                "/api/preflight",
+                None,
+                None,
+            ))
+            .await
+            .expect("preflight response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["service"], "froglet-hosted-trial");
+        assert_eq!(payload["public_ingress"], "https://try.froglet.dev");
+        assert_eq!(payload["session_pool"]["enabled"], true);
+        assert_eq!(payload["session_pool"]["size"], 4);
+        assert_eq!(payload["session_pool"]["ttl_secs"], 300);
+        assert_eq!(payload["required_client_capabilities"]["https_get"], true);
+        assert_eq!(
+            payload["required_client_capabilities"]["https_post_json"],
+            true
+        );
+        assert_eq!(payload["required_client_capabilities"]["polling"], true);
+        let headers = payload["required_client_capabilities"]["custom_headers"]
+            .as_array()
+            .expect("custom header list");
+        assert!(
+            headers
+                .iter()
+                .any(|value| { value.as_str() == Some("Authorization: Bearer <session-token>") })
+        );
+
+        let services = payload["public_hosted_proof_services"]
+            .as_array()
+            .expect("hosted proof service list");
+        for service_id in [
+            "demo.add",
+            "demo.echo",
+            "demo.fetch-witness",
+            "demo.hash-verify",
+            "demo.notarize",
+        ] {
+            assert!(
+                services
+                    .iter()
+                    .any(|value| value.as_str() == Some(service_id)),
+                "missing hosted proof service {service_id}: {payload}"
+            );
+        }
+        assert_eq!(
+            payload["non_demo_services"],
+            "Other service IDs may appear on the reference node, but they are outside the public hosted proof contract."
+        );
+        assert!(
+            payload["chat_only_fallback"]
+                .as_str()
+                .unwrap()
+                .contains("tool limitation")
+        );
     }
 
     #[tokio::test]

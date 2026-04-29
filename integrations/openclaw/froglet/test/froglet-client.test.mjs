@@ -178,6 +178,43 @@ test("buildServiceAddressedExecution uses binding hash and service defaults", ()
   assert.deepEqual(execution.requested_access, ["mount.filesystem.read.workspace"])
 })
 
+test("buildServiceAddressedExecution builds builtin service workload without binding hash", () => {
+  const execution = buildServiceAddressedExecution(
+    {
+      service_id: "demo.add",
+      offer_id: "demo.add",
+      offer_kind: "demo.add",
+      runtime: "builtin",
+      package_kind: "builtin",
+      entrypoint_kind: "builtin",
+      entrypoint: "demo.add"
+    },
+    { a: 7, b: 5 }
+  )
+  assert.equal(execution.workload_kind, "demo.add")
+  assert.equal(execution.runtime, "builtin")
+  assert.equal(execution.package_kind, "builtin")
+  assert.deepEqual(execution.entrypoint, { kind: "builtin", value: "demo.add" })
+  assert.equal(execution.contract_version, "froglet.builtin.demo.add.v1")
+  assert.equal(execution.builtin_name, "demo.add")
+  assert.equal(execution.input_hash, sha256Hex(canonicalJsonBytes({ a: 7, b: 5 })))
+  assert.equal(execution.module_hash, undefined)
+  assert.equal(execution.source_hash, undefined)
+  assert.equal(execution.security.service_id, "demo.add")
+})
+
+test("buildServiceAddressedExecution falls back to service_id for builtin name", () => {
+  const execution = buildServiceAddressedExecution({
+    service_id: "marketplace.search",
+    runtime: "builtin",
+    package_kind: "builtin"
+  })
+  assert.equal(execution.workload_kind, "marketplace.search")
+  assert.deepEqual(execution.entrypoint, { kind: "builtin", value: "marketplace.search" })
+  assert.equal(execution.contract_version, "froglet.builtin.marketplace.search.v1")
+  assert.equal(execution.builtin_name, "marketplace.search")
+})
+
 // ---------------------------------------------------------------------------
 // Provider + runtime HTTP clients
 // ---------------------------------------------------------------------------
@@ -191,6 +228,7 @@ test("publishArtifact posts to provider API and accepts HTTP 201", async () => {
       const body = JSON.parse(options.body)
       assert.equal(body.runtime, "wasm")
       assert.equal(body.package_kind, "inline_module")
+      assert.equal(body.starter, "{\"a\":7,\"b\":5}")
       return new Response(JSON.stringify({ status: "published" }), {
         status: 201,
         headers: { "Content-Type": "application/json" }
@@ -206,7 +244,8 @@ test("publishArtifact posts to provider API and accepts HTTP 201", async () => {
           offer_id: "svc-1",
           runtime: "wasm",
           package_kind: "inline_module",
-          artifact_path: "/tmp/lol.wasm"
+          artifact_path: "/tmp/lol.wasm",
+          starter: "{\"a\":7,\"b\":5}"
         }
       })
       assert.ok(capturedUrl.endsWith("/v1/provider/artifacts/publish"))

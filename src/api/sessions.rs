@@ -38,8 +38,67 @@ struct ErrorResponse {
 
 pub fn sessions_routes() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
+        .route("/api/preflight", get(preflight))
         .route("/api/sessions", post(create_session))
         .route("/api/sessions/validate", get(validate_session))
+}
+
+async fn preflight(State(state): State<Arc<AppState>>) -> Response {
+    let (session_pool_enabled, session_pool_size, session_ttl_secs) =
+        match state.session_pool.as_ref() {
+            Some(pool) => (true, Some(pool.size()), Some(pool.ttl().as_secs())),
+            None => (false, None, None),
+        };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "service": "froglet-hosted-trial",
+            "public_ingress": "https://try.froglet.dev",
+            "session_pool": {
+                "enabled": session_pool_enabled,
+                "size": session_pool_size,
+                "ttl_secs": session_ttl_secs,
+            },
+            "authorized_scope": {
+                "hosts": ["try.froglet.dev"],
+                "methods": ["GET", "POST"],
+                "paths": [
+                    "/llms.txt",
+                    "/.well-known/mcp.json",
+                    "/api/preflight",
+                    "/api/sessions",
+                    "/api/sessions/validate",
+                    "/v1/provider/services",
+                    "/v1/provider/services/{service_id}",
+                    "/v1/runtime/deals",
+                    "/v1/runtime/deals/{deal_id}",
+                    "/v1/feed"
+                ],
+                "rules": [
+                    "Only call the public hosted trial host and paths listed here.",
+                    "Do not scan, fuzz, enumerate unrelated paths, attack third-party hosts, or use arbitrary user-supplied URLs unless the user owns or controls them.",
+                    "Only demo.* services are part of the public hosted proof."
+                ]
+            },
+            "required_client_capabilities": {
+                "https_get": true,
+                "https_post_json": true,
+                "custom_headers": ["Authorization: Bearer <session-token>", "content-type: application/json"],
+                "polling": true
+            },
+            "public_hosted_proof_services": [
+                "demo.add",
+                "demo.echo",
+                "demo.fetch-witness",
+                "demo.hash-verify",
+                "demo.notarize"
+            ],
+            "non_demo_services": "Other service IDs may appear on the reference node, but they are outside the public hosted proof contract.",
+            "chat_only_fallback": "If this client cannot fetch URLs, POST JSON, send Bearer auth, or poll, report a tool limitation and ask the user to use an HTTP-capable agent or the documented curl flow."
+        })),
+    )
+        .into_response()
 }
 
 async fn create_session(State(state): State<Arc<AppState>>) -> Response {

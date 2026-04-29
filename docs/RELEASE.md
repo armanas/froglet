@@ -49,7 +49,8 @@ The repo no longer uses GitHub Pages for docs deployment. The intended public
 shape is the apex `https://froglet.dev`; `docs.froglet.dev` previously mirrored
 the same deployment and is no longer advertised as a separate launch surface.
 The public host should only be treated as live after the Cloudflare deployment
-and route checks pass (see [SUBDOMAIN_PLAN.md](SUBDOMAIN_PLAN.md)).
+and direct route checks for `/`, `/learn/quickstart/`, and `/learn/cloud-trial/`
+pass.
 
 ## Published Binaries
 
@@ -131,13 +132,14 @@ These checks must be green before a `v0.1.0` launch claim:
 - Live Claude MCP smoke. Claude Code or Claude Desktop must load the generated
   Froglet MCP config and complete the expected tool smoke. This is a hard
   blocker, not a nice-to-have.
-- First-party hosted trial smoke. `try.froglet.dev` must mint a session and
-  complete the documented free `demo.add` flow with a receipt.
+- First-party hosted trial smoke. `try.froglet.dev` must mint a session,
+  expose the documented free demo catalog, and complete the canonical
+  `demo.add` flow with a receipt.
 - Hosted upstream guard smoke. Direct public session/demo writes to
   `ai.froglet.dev` must remain outside contract and reject as documented in
   [HOSTED_TRIAL.md](HOSTED_TRIAL.md).
-- Distribution smoke for every launch channel named in the release notes. See
-  [DISTRIBUTION_MATRIX.md](DISTRIBUTION_MATRIX.md).
+- Distribution smoke for every launch channel named in the release notes.
+  Record direct evidence links in the release PR or release notes.
 
 Hosted paid rails are not part of the v0.1.0 launch gate. Hosted Lightning,
 Stripe, and x402 belong to v0.2 unless a later release plan explicitly changes
@@ -185,7 +187,7 @@ results.
 Froglet v0.1.0 is the first public release of the reference Froglet node and
 bot-facing integration surface. It ships the signed kernel artifacts, the
 `froglet-node` binary, container images, local agent setup, and a constrained
-hosted trial for one free end-to-end deal.
+free hosted demo catalog with one canonical end-to-end proof.
 
 ## What ships
 
@@ -227,9 +229,11 @@ Release evidence:
 
 ## Hosted trial scope
 
-The hosted trial proves one free `demo.add` discover -> deal -> result ->
-receipt flow through `try.froglet.dev`. It does not prove paid rails,
-persistent identity, hosted account recovery, or general hosted runtime access.
+The hosted trial is free-only. `demo.add` is the canonical discover -> deal ->
+result -> receipt proof through `try.froglet.dev`; witness/hash/notarize demos
+can provide stronger evidence for URLs or content hashes. It does not prove
+paid rails, persistent identity, hosted account recovery, service publication,
+marketplace depth, or general hosted runtime access.
 
 ## Payment rails
 

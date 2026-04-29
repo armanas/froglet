@@ -499,6 +499,8 @@ pub struct ProviderControlPublishArtifactRequest {
     #[serde(default)]
     pub summary: Option<String>,
     #[serde(default)]
+    pub starter: Option<String>,
+    #[serde(default)]
     pub mode: Option<String>,
     pub price_sats: u64,
     #[serde(default)]
@@ -568,6 +570,8 @@ pub struct ProviderServiceRecord {
     pub module_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

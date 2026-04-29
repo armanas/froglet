@@ -545,6 +545,14 @@ function normalizedExecutionProfile(service) {
   return { runtime, packageKind, entrypointKind, entrypoint, contractVersion }
 }
 
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+}
+
+function builtinServiceName(service, normalizedEntrypoint) {
+  return nonEmptyString(service?.entrypoint) ?? nonEmptyString(service?.service_id) ?? normalizedEntrypoint
+}
+
 export function buildWasmSubmission({
   moduleBytesHex,
   input = null,
@@ -691,19 +699,24 @@ export function buildServiceAddressedExecution(service, input = null) {
       : typeof service?.module_hash === "string" && service.module_hash.trim().length > 0
         ? service.module_hash
         : null
-  if (!bindingHash) {
+  if (packageKind !== "builtin" && !bindingHash) {
     throw new Error(`service ${service.service_id ?? "unknown"} does not expose a binding hash`)
   }
+  const builtinName = packageKind === "builtin" ? builtinServiceName(service, entrypoint) : null
+  const effectiveEntrypoint = builtinName ?? entrypoint
   const execution = {
     schema_version: FROGLET_SCHEMA_V1,
-    workload_kind: WORKLOAD_KIND_EXECUTION_V1,
+    workload_kind: builtinName ?? WORKLOAD_KIND_EXECUTION_V1,
     runtime,
     package_kind: packageKind,
     entrypoint: {
       kind: entrypointKind,
-      value: entrypoint,
+      value: effectiveEntrypoint,
     },
-    contract_version: contractVersion,
+    contract_version:
+      packageKind === "builtin" && builtinName && contractVersion === CONTRACT_BUILTIN_EVENTS_QUERY_V1 && builtinName !== "events.query"
+        ? `froglet.builtin.${builtinName}.v1`
+        : contractVersion,
     input_format: JCS_JSON_FORMAT,
     input_hash: inputHash(normalized),
     requested_access: requestedAccessFromMounts(mounts),
@@ -718,6 +731,8 @@ export function buildServiceAddressedExecution(service, input = null) {
     execution.source_hash = bindingHash
   } else if (packageKind === "inline_module" || packageKind === "oci_image") {
     execution.module_hash = bindingHash
+  } else if (packageKind === "builtin") {
+    execution.builtin_name = builtinName
   }
   return execution
 }

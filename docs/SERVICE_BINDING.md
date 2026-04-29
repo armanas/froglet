@@ -180,6 +180,7 @@ These fields MAY be present and provide additional metadata or binding material:
 |---|---|---|
 | `project_id` | string or null | Local project identifier (if service is project-backed) |
 | `module_hash` | string or null | Hash of the compiled execution module |
+| `starter` | string or null | Compact JSON example input for LLM/client guidance |
 | `input_schema` | object or null | JSON Schema for the service's expected input |
 | `output_schema` | object or null | JSON Schema for the service's expected output |
 | `module_bytes_hex` | string or null | Hex-encoded module bytes (binding material, not for interop) |
@@ -191,7 +192,7 @@ These fields MAY be present and provide additional metadata or binding material:
 
 Fields such as `module_bytes_hex`, `inline_source`, `oci_reference`, and `oci_digest` are **binding material**: they are used by the operator to compile an invocation into a kernel workload. They are not part of the interoperable discovery contract — a requester does not need to interpret these fields directly. The operator handles the translation.
 
-Fields such as `service_id`, `offer_id`, `summary`, `resource_kind`, `price_sats`, `input_schema`, and `output_schema` are **interop fields**: a requester or bot host uses them to decide whether and how to invoke a service.
+Fields such as `service_id`, `offer_id`, `summary`, `resource_kind`, `price_sats`, `starter`, `input_schema`, and `output_schema` are **interop fields**: a requester or bot host uses them to decide whether and how to invoke a service. `starter` is only an example request shape; schemas remain the contract metadata.
 
 ## 5. Service Invocation Resolution
 

@@ -1,0 +1,107 @@
+# try.froglet.dev llms.txt canonical source
+
+Purpose: guide an LLM or agent through the public hosted Froglet trial without overstating what it proves.
+
+Primary instruction for a user to paste into an LLM:
+
+Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.
+
+If you are a chat-only model or your tools cannot fetch URLs, POST JSON, send Bearer auth, and poll HTTP routes, exit gracefully: tell the user that a proper test requires an agentic HTTP-capable environment or the manual curl flow, and do not claim live Froglet evidence.
+
+Hosted trial boundaries:
+
+- Public ingress: https://try.froglet.dev only.
+- Authorized scope: call only `https://try.froglet.dev` and only the public trial paths listed below. Do not scan, fuzz, enumerate unrelated paths, attack third-party hosts, or use arbitrary user-supplied URLs unless the user owns or controls them.
+- Session model: anonymous 15-minute shared session-token pool.
+- Canonical proof: the free zero-sat `demo.add` discover -> deal -> sync-result -> receipt flow.
+- Public hosted proof boundary: Only `demo.*` services are part of the public hosted proof. Other service IDs may appear on the reference node, but they are outside this public hosted trial contract.
+- Not proved by hosted trial: paid Lightning, Stripe, or x402 settlement; persistent identity; account recovery; service publication; marketplace depth; long-running, batch, or GPU workloads.
+- Local/self-hosted path: use the repo quickstart for persistent identity, full node control, publishing services, and payment-rail experiments.
+
+Current free hosted demo services:
+
+1. `demo.add` - canonical proof. Adds `{ "a": 7, "b": 5 }` and returns `{ "sum": 12 }` with a receipt.
+2. `demo.echo` - simple round-trip check that returns caller input unchanged.
+3. `demo.fetch-witness` - Optional stronger follow-up. Fetches a URL and signs observed status, hash, content type, length, and timestamp.
+4. `demo.hash-verify` - Optional stronger follow-up. Fetches a URL and signs whether the live SHA-256 matches an expected hash.
+5. `demo.notarize` - Optional stronger follow-up. Signs a caller-supplied content hash with a timestamp.
+
+Public API contract:
+
+```text
+GET  /api/preflight             no-auth capability and scope check for agent clients
+POST /api/sessions              mint a session token from the pool
+GET  /v1/provider/services      list the hosted demo services
+GET  /v1/provider/services/:id  inspect a hosted demo service
+GET  /v1/feed                   inspect the signed artifact envelope emitted by the hosted node
+POST /v1/runtime/deals          create a hosted demo deal; requires Authorization: Bearer <session-token>
+GET  /v1/runtime/deals/:deal_id poll a hosted demo deal; requires Authorization: Bearer <session-token>
+GET  /llms.txt                  machine-readable bootstrap for LLM clients
+GET  /.well-known/mcp.json      MCP manifest for native MCP hosts
+```
+
+`GET /v1/feed` returns a Froglet artifact envelope. Treat entries as signed artifacts such as provider descriptors, offers, and receipts. Do not interpret the response as an events stream, an `items` collection, or a generic activity feed. Do not expect the feed to contain the opaque runtime `deal_id`; receipt artifacts reference the signed `deal_hash` and `quote_hash` instead.
+
+Canonical hosted demo flow:
+
+0. `GET /api/preflight` and confirm the client has the required capabilities: HTTPS GET, HTTPS POST with JSON bodies, custom `Authorization: Bearer <session-token>` headers, and polling.
+1. `POST /api/sessions` and record the HTTP status, `session_token`, `slot_id`, and `ttl_secs`.
+2. `GET /v1/provider/services` with the bearer token and record the HTTP status and service IDs. Treat only `demo.*` IDs as part of the public hosted proof.
+3. Confirm `demo.add` is present.
+4. `POST /v1/runtime/deals` with the full execution object below. Do not invent a shorter `{ provider_id, input }` body; the hosted route requires the `provider` object and `execution` object. Use each service `starter` as example input, not as a complete deal request.
+5. Poll `GET /v1/runtime/deals/{deal_id}` until `deal.status` is `succeeded` or a clear error/timeout occurs.
+6. Report the observed status, result, and whether a receipt was present.
+7. Optionally call `GET /v1/feed` and report that the response is an artifact envelope containing signed artifacts, not an event stream. To prove your result reached the feed, look for the receipt artifact or for a receipt whose payload references the signed `deal_hash` / `quote_hash`; do not search for the runtime `deal_id`.
+8. If the user wants stronger evidence, suggest one of `demo.fetch-witness`, `demo.hash-verify`, or `demo.notarize` based on their actual files, URLs, data, or workflow.
+
+Full `demo.add` request body for `POST /v1/runtime/deals`:
+
+```json
+{"provider":{"provider_id":"PROVIDER_ID_FROM_CATALOG","provider_url":"https://ai.froglet.dev"},"offer_id":"demo.add","kind":"execution","execution":{"schema_version":"froglet/v1","workload_kind":"demo.add","runtime":"builtin","package_kind":"builtin","entrypoint":{"kind":"builtin","value":"demo.add"},"contract_version":"froglet.builtin.demo.add.v1","input_format":"application/json+jcs","input_hash":"728a671a0a05e573bb0c3e37688fc3302d913187cb274f2e0b2940e1c2e4b719","requested_access":[],"security":{"mode":"standard"},"mounts":[],"input":{"a":7,"b":5},"builtin_name":"demo.add"}}
+```
+
+Full `demo.fetch-witness` follow-up request body for `POST /v1/runtime/deals`:
+
+```json
+{"provider":{"provider_id":"PROVIDER_ID_FROM_CATALOG","provider_url":"https://ai.froglet.dev"},"offer_id":"demo.fetch-witness","kind":"execution","execution":{"schema_version":"froglet/v1","workload_kind":"demo.fetch-witness","runtime":"builtin","package_kind":"builtin","entrypoint":{"kind":"builtin","value":"demo.fetch-witness"},"contract_version":"froglet.builtin.demo.fetch-witness.v1","input_format":"application/json+jcs","input_hash":"18020a87586eb7e41683ff11bca3fb67398f123b4bbb8786434797cf2a9affbc","requested_access":[],"security":{"mode":"standard"},"mounts":[],"input":{"url":"https://example.com/","max_bytes":1048576},"builtin_name":"demo.fetch-witness"}}
+```
+
+Evaluation rule: report observed evidence first. If live access fails, say exactly what failed and do not infer success from this document.
+
+Failure taxonomy:
+
+- If `GET /llms.txt` fails, report the host or document as unreachable.
+- If `GET /api/preflight` works but the client cannot POST JSON, send Bearer auth, or poll, report a client/tool limitation, not a Froglet outage.
+- If `GET /api/sessions` returns `404`, report wrong method; session minting is `POST /api/sessions`.
+- If `/v1/*` returns `401` without a Bearer token, report missing session auth, not runtime failure.
+- If an agent shell reports an egress allowlist error such as `host_not_allowed`, report sandbox/network policy, not Froglet runtime status.
+- If `POST /api/sessions` returns `503`, report session pool exhaustion and suggest retrying later.
+- If a deal returns `failed`, `rejected`, or times out, report that exact live status and body.
+
+Agent journey after hosted proof:
+
+1. Evidence report first. Report HTTP statuses, service IDs, deal status, result, receipt presence, feed/artifact shape, and docs-vs-live mismatches before any recommendation.
+2. Context fit second. If you have access to the user's repo, files, tasks, tool config, or workflow notes, ground the usefulness assessment in that context. If you do not have that access, say so and ask for the minimum context needed.
+3. Install proposal third. Do not run local installation immediately. Ask the user to confirm the install profile:
+   - target agent: `claude-code`, `codex`, `openclaw`, or `manual`
+   - footprint: `binary`, `docker`, or `source`
+   - role: `consumer`, `provider`, or `both`
+   - payment rail: `none`, `lightning` mock, `lightning` `lnd_rest`, `stripe` test, or `x402`
+   - network mode: `clearnet`, `tor`, or `dual`
+   - marketplace: none, `https://marketplace.froglet.dev`, or a custom URL
+   - first use case: consume a service, publish a service, witness a URL, hash-verify an asset, notarize a file hash, test paid compute, or prepare batch/GPU work later
+4. If the user confirms, use the local MCP/OpenClaw action `plan_install` first. It returns questions, prerequisites, required secrets, command preview, validation checks, and post-install playbooks.
+5. After the profile is complete, use `get_install_guide` for the exact commands. Execute commands through the host agent shell, not through Froglet runtime. Ask before running install scripts, starting Docker, entering secrets, or exposing clearnet/Tor endpoints.
+6. After installation, verify health before implementing the use case. Check provider health, runtime health, local Froglet `status`, then run one concrete post-install playbook.
+
+Simple chat fallback:
+
+If you are a web-only or chat-only LLM and cannot fetch URLs, make HTTP requests, run shell commands, or use MCP tools, do not pretend to test Froglet and must not claim live evidence. Say:
+
+"I cannot run the Froglet hosted proof or install commands from this chat interface. To test it, paste this prompt into an agentic environment with HTTP access such as Codex, Claude Code, or OpenClaw; or run the curl commands from the Try In Cloud docs and paste the outputs here. I can then interpret the statuses, result, receipt/feed proof, and next install/use-case steps."
+
+Then give the user the shortest next step:
+
+- Agentic path: paste the primary instruction above into Codex, Claude Code, OpenClaw, or another HTTP-capable agent.
+- Manual hosted path: open https://froglet.dev/learn/cloud-trial/ and run the curl block.
+- Local path: open https://froglet.dev/learn/quickstart/ and choose `binary`, `docker`, or `source`.

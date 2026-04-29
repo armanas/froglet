@@ -40,6 +40,7 @@ This is the implemented cutover architecture.
    - `entrypoint`
    - `mode`
    - price and publication state
+   - optional starter example
    - optional schemas
    - binding information needed to compile a service invocation into a normal
      Froglet workload

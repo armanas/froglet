@@ -26,6 +26,8 @@ servers:
 tags:
   - name: Common
     description: Health and node-identity endpoints available on both ports.
+  - name: Hosted Trial
+    description: First-party `try.froglet.dev` demo capability and session endpoints.
   - name: Catalog
     description: >
       Provider-port endpoints for discovering offers and services hosted by
@@ -56,6 +58,8 @@ tags:
     description: Marketplace search and provider-detail lookup via the runtime port.
   - name: Feed & Artifacts
     description: Paginated artifact feed and single-artifact retrieval.
+  - name: Provider Control
+    description: Bearer-authenticated local provider management endpoints.
   - name: Confidential
     description: TEE confidential-profile and session management.
 
@@ -71,6 +75,12 @@ components:
         Static Bearer token configured via `FROGLET_RUNTIME_AUTH_TOKEN`.
         Pass as `Authorization: Bearer <token>` on all runtime-port endpoints
         that require authentication.
+    ProviderControlBearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Static Bearer token configured via `FROGLET_PROVIDER_CONTROL_AUTH_TOKEN`.
+        Pass as `Authorization: Bearer <token>` on provider-control endpoints.
 
   schemas:
 
@@ -1134,12 +1144,191 @@ components:
           type: string
         binding_hash:
           type: string
+        starter:
+          type: string
+          description: Compact JSON example input for LLM/client guidance.
         input_schema:
           type: object
           additionalProperties: true
         output_schema:
           type: object
           additionalProperties: true
+
+    ProviderControlPublishArtifactRequest:
+      type: object
+      description: >
+        Provider-control request that publishes an artifact-backed service into
+        the local provider catalog. Schemas and `starter` are metadata for
+        clients; handlers remain responsible for enforcing actual input rules.
+      required:
+        - service_id
+        - price_sats
+      properties:
+        service_id:
+          type: string
+          description: Named service identifier to expose in the provider catalog.
+        offer_id:
+          type: string
+          description: Optional offer id; defaults to `service_id`.
+        artifact_path:
+          type: string
+          description: Local artifact path for Wasm modules or Python source.
+        wasm_module_hex:
+          type: string
+          description: Inline Wasm module bytes encoded as hex.
+        inline_source:
+          type: string
+          description: Inline Python source for `runtime=python package_kind=inline_source`.
+        oci_reference:
+          type: string
+          description: OCI image reference for `package_kind=oci_image`.
+        oci_digest:
+          type: string
+          description: Digest pin for the OCI image.
+        runtime:
+          type: string
+          description: Runtime hint, for example `wasm`, `python`, or `container`.
+        package_kind:
+          type: string
+          description: Package kind, for example `inline_module`, `inline_source`, or `oci_image`.
+        entrypoint_kind:
+          type: string
+          description: Entrypoint kind, for example `handler`, `script`, or `builtin`.
+        entrypoint:
+          type: string
+          description: Entrypoint path or identifier.
+        contract_version:
+          type: string
+          description: Execution contract version for the service.
+        mounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        summary:
+          type: string
+          description: Human-readable service summary.
+        starter:
+          type: string
+          description: Compact JSON example input for LLM/client guidance; not stronger than `input_schema`.
+        mode:
+          type: string
+          enum: [sync, async]
+        price_sats:
+          type: integer
+          format: int64
+          minimum: 0
+        publication_state:
+          type: string
+          enum: [active, hidden]
+        input_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+
+    ProviderControlOfferRecord:
+      type: object
+      description: Provider-control view of a published offer plus local binding metadata.
+      properties:
+        publication_state:
+          type: string
+          enum: [active, hidden]
+        service_id:
+          type: string
+        project_id:
+          type: string
+        source_kind:
+          type: string
+        runtime:
+          type: string
+        package_kind:
+          type: string
+        entrypoint_kind:
+          type: string
+        entrypoint:
+          type: string
+        contract_version:
+          type: string
+        mounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        mode:
+          type: string
+        summary:
+          type: string
+        module_hash:
+          type: string
+        binding_hash:
+          type: string
+        starter:
+          type: string
+          description: Compact JSON example input for LLM/client guidance; not stronger than `input_schema`.
+        input_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+        offer:
+          allOf:
+            - $ref: '#/components/schemas/SignedArtifact'
+            - type: object
+              properties:
+                payload:
+                  $ref: '#/components/schemas/OfferPayload'
+
+    ProviderControlMutationResponse:
+      type: object
+      required:
+        - request_id
+        - status
+        - summary
+        - artifacts
+        - evidence
+        - offer
+      properties:
+        request_id:
+          type: string
+        status:
+          type: string
+        failure_kind:
+          type: string
+        summary:
+          type: string
+        artifacts:
+          type: array
+          items:
+            type: object
+            required: [kind, hash]
+            properties:
+              kind:
+                type: string
+              hash:
+                type: string
+        evidence:
+          type: object
+          required:
+            - provider_id
+            - descriptor_hash
+            - offer_hash
+            - offer_id
+          properties:
+            provider_id:
+              type: string
+            descriptor_hash:
+              type: string
+            offer_hash:
+              type: string
+            offer_id:
+              type: string
+            service_id:
+              type: string
+        offer:
+          $ref: '#/components/schemas/ProviderControlOfferRecord'
 
     WorkloadSpec:
       type: object
@@ -1465,6 +1654,107 @@ components:
       additionalProperties: true
 
 paths:
+
+  # ---------------------------------------------------------------------------
+  # Hosted trial endpoints (try.froglet.dev worker -> public origin)
+  # ---------------------------------------------------------------------------
+
+  /api/preflight:
+    get:
+      operationId: getHostedTrialPreflight
+      summary: Hosted trial agent preflight
+      description: >
+        Returns the client capabilities, authorized scope, and demo-service
+        boundary required to run the public hosted proof. This endpoint is
+        intended for LLM and MCP clients before they mint a session token.
+        It does not require a session bearer token, but public origin
+        deployments may gate it behind the hosted-trial worker/origin secret.
+      tags: [Hosted Trial]
+      security: []
+      responses:
+        '200':
+          description: Hosted trial preflight metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - service
+                  - public_ingress
+                  - session_pool
+                  - authorized_scope
+                  - required_client_capabilities
+                  - public_hosted_proof_services
+                  - non_demo_services
+                  - chat_only_fallback
+                properties:
+                  service:
+                    type: string
+                    example: froglet-hosted-trial
+                  public_ingress:
+                    type: string
+                    format: uri
+                    example: https://try.froglet.dev
+                  session_pool:
+                    type: object
+                    required: [enabled]
+                    properties:
+                      enabled:
+                        type: boolean
+                      size:
+                        type: integer
+                        nullable: true
+                      ttl_secs:
+                        type: integer
+                        nullable: true
+                  authorized_scope:
+                    type: object
+                    required: [hosts, methods, paths, rules]
+                    properties:
+                      hosts:
+                        type: array
+                        items:
+                          type: string
+                      methods:
+                        type: array
+                        items:
+                          type: string
+                      paths:
+                        type: array
+                        items:
+                          type: string
+                      rules:
+                        type: array
+                        items:
+                          type: string
+                  required_client_capabilities:
+                    type: object
+                    required: [https_get, https_post_json, custom_headers, polling]
+                    properties:
+                      https_get:
+                        type: boolean
+                      https_post_json:
+                        type: boolean
+                      custom_headers:
+                        type: array
+                        items:
+                          type: string
+                      polling:
+                        type: boolean
+                  public_hosted_proof_services:
+                    type: array
+                    items:
+                      type: string
+                    example:
+                      - demo.add
+                      - demo.echo
+                      - demo.fetch-witness
+                      - demo.hash-verify
+                      - demo.notarize
+                  non_demo_services:
+                    type: string
+                  chat_only_fallback:
+                    type: string
 
   # ---------------------------------------------------------------------------
   # Common endpoints (both ports)
@@ -3116,6 +3406,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/provider/artifacts/publish:
+    post:
+      operationId: publishProviderArtifact
+      summary: Publish an artifact-backed provider service
+      description: >
+        Provider-control endpoint for publishing a locally built artifact as a
+        named service. `starter`, `input_schema`, and `output_schema` are
+        client guidance metadata and do not replace handler-side validation.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderControlPublishArtifactRequest'
+      responses:
+        '201':
+          description: Published offer metadata and signed artifact references.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderControlMutationResponse'
+        '400':
+          description: Invalid publication request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid provider-control bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   # ---------------------------------------------------------------------------
   # Feed & Artifacts
   # ---------------------------------------------------------------------------
@@ -3169,7 +3502,7 @@ paths:
                       $ref: '#/components/schemas/LedgerArtifact'
                   cursor_type:
                     type: string
-                    description: Cursor type identifier (always `sequence`).
+                    description: Cursor type identifier (always `artifact_sequence`).
                   cursor_semantics:
                     type: string
                     description: Human-readable description of cursor semantics.

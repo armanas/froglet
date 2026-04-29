@@ -17,6 +17,18 @@
 	outline-offset: 2px;
 }
 
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
 /* ── Learn hero ──────────────────────────────────────────────────────── */
 
 .learn-hero {
@@ -474,10 +486,15 @@
 .learn-code-box pre {
 	margin: 0.7rem 0 0;
 	padding: 0.95rem;
-	border: 1px solid hsl(var(--froglet-border));
+	border: 1px solid var(--copy-border);
 	border-radius: var(--froglet-card-radius);
-	background: hsl(var(--froglet-code));
-	color: hsl(0 0% 96%);
+	background: var(--copy-bg);
+	color: var(--copy-text);
+}
+
+.learn-code-box pre code {
+	background: transparent;
+	color: inherit;
 }
 
 /* ── Learn sequence ──────────────────────────────────────────────────── */
@@ -591,13 +608,17 @@
    ──────────────────────────────────────────────────────────────────── */
 
 .plot-button-row {
-	display: flex;
-	flex-wrap: wrap;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 	gap: 0.65rem;
 	margin: 1rem 0 0.9rem;
 }
 
 /* .plot-button base styles merged with .learn-button above */
+.plot-button-row .plot-button {
+	width: 100%;
+	min-height: 52px;
+}
 
 .plot-button.is-active {
 	border-color: hsl(var(--froglet-accent));
@@ -642,7 +663,18 @@
 	max-width: 100%;
 	border: 1px solid hsl(var(--froglet-border));
 	border-radius: var(--froglet-card-radius);
-	background: hsl(var(--froglet-code));
+	background: hsl(var(--froglet-card));
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, hsl(var(--froglet-accent)) 4%, transparent);
+}
+
+.plot-detail {
+	color: hsl(var(--froglet-muted));
+	font-size: 0.9rem;
+	line-height: 1.65;
+}
+
+.plot-muted {
+	color: hsl(var(--froglet-muted));
 }
 
 .plot-note {
@@ -732,6 +764,17 @@
 
 .compare-copy {
 	justify-self: start;
+	border-color: var(--copy-border);
+	background: var(--copy-head-bg);
+	color: var(--copy-muted);
+	font-family: var(--font-mono);
+	text-transform: uppercase;
+}
+
+.compare-copy:hover,
+.compare-copy:focus-visible {
+	border-color: var(--copy-muted);
+	color: var(--copy-text);
 }
 
 .compare-note {

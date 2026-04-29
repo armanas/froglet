@@ -12,16 +12,22 @@ human, you probably want the [Quickstart](/learn/quickstart/) instead.
 When a user says some variant of "install Froglet locally," "set up Froglet
 on my machine," "run Froglet here," or "deploy Froglet for me":
 
-1. Call the `get_install_guide` MCP action on the Froglet tool. It returns
+1. Call the `plan_install` MCP action first. It returns the install decision
+   tree, prerequisites, required secrets, command preview, validation checks,
+   and post-install playbooks.
+2. Ask any remaining questions from `questions_to_ask_before_running_commands`.
+   Do not silently default if the user's intent is ambiguous.
+3. Call the `get_install_guide` MCP action on the Froglet tool after the
+   profile is confirmed. It returns
    a structured response with:
    - `steps` — an ordered list of shell commands to run
    - `run_as: "user-host-shell"` — the commands run on the **user's host**,
      not through Froglet itself
    - `notes` — short explanations of what each step does
-2. Execute the commands one at a time through your host agent's shell
+4. Execute the commands one at a time through your host agent's shell
    (Claude Code's Bash tool, Codex's shell, or an equivalent). Pause for
    user approval on each step per your host agent's normal policy.
-3. After step 5 the local stack is up on `127.0.0.1:8080` (provider) and
+5. After the final Docker step the local stack is up on `127.0.0.1:8080` (provider) and
    `127.0.0.1:8081` (runtime), and the user's agent MCP config now
    includes the local instance.
 
@@ -29,20 +35,41 @@ on my machine," "run Froglet here," or "deploy Froglet for me":
 
 ```
 tool: froglet
-action: get_install_guide
-target_agent: "claude-code" | "codex" | "openclaw"        // default: claude-code
-payment_rail: "lightning" | "stripe" | "x402"             // default: lightning
+action: plan_install
+target_agent: "claude-code" | "codex" | "openclaw" | "manual"  // default: claude-code
+footprint: "docker" | "binary" | "source"                      // default: docker
+role: "consumer" | "provider" | "both"                         // default: both
+payment_rail: "none" | "lightning" | "stripe" | "x402"         // default: lightning
+lightning_mode: "mock" | "lnd_rest"                            // default: mock
+network_mode: "clearnet" | "tor" | "dual"                      // default: clearnet
+marketplace_url: "https://marketplace.froglet.dev"             // optional
+use_case: "publish a service"                                  // optional
 ```
 
-Both inputs are optional. If the user has not specified a target agent,
-default to `claude-code`. If the user has not specified a payment rail,
-default to `lightning` (mock mode — no credentials required; fine for
-getting started and for any user who wants to try the paid-deal flow
-without actually paying).
+```
+tool: froglet
+action: get_install_guide
+target_agent: "claude-code" | "codex" | "openclaw" | "manual"  // default: claude-code
+footprint: "docker" | "binary" | "source"                      // default: docker
+role: "consumer" | "provider" | "both"                         // default: both
+payment_rail: "none" | "lightning" | "stripe" | "x402"         // default: lightning
+lightning_mode: "mock" | "lnd_rest"                            // default: mock
+network_mode: "clearnet" | "tor" | "dual"                      // default: clearnet
+marketplace_url: "https://marketplace.froglet.dev"             // optional
+use_case: "witness URLs"                                       // optional
+```
+
+All inputs are optional, but `plan_install` should ask before command execution
+when the user's intent is unclear. The safe first local profile is:
+`target_agent=claude-code`, `footprint=docker`, `role=both`,
+`payment_rail=lightning`, `lightning_mode=mock`, `network_mode=clearnet`.
+Lightning mock mode needs no wallet credentials and is the right first paid-flow
+experiment for most users.
 
 These payment rails configure the user's local or self-hosted node. They do
 not turn the first-party hosted trial into a paid service; `try.froglet.dev`
-proves only the free `demo.add` path in v0.1.0.
+is a free hosted demo catalog with `demo.add` as the canonical proof and
+witness/hash/notarize as optional higher-signal follow-ups.
 
 ## What to run the commands as
 
@@ -64,14 +91,32 @@ Before step 1, the user's host needs:
 - **`curl`** — for fetching the install script (usually already present)
 - **`git`** — the public helper-script path clones the repo before it runs
   `setup-agent.sh`, `setup-payment.sh`, or Compose
-- **Docker with Compose v2** — for step 5 (`docker compose up`)
+- **Docker with Compose v2** — for the `footprint=docker` final step
 - **Linux x86_64 / arm64**, **macOS arm64**, or **macOS Intel with Rosetta**
   — the signed binary covers these targets
+- **Rust + cargo** — only for `footprint=source`
 
 If the user is on Windows, the current story is "use WSL2." If the user
 does not have Docker installed and you (the LLM) have host permissions
 to install it, ask first — installing Docker is a meaningful system
 change and should not be silent.
+
+## Payment and network choices
+
+- `payment_rail=none`: local execution with no payment backend.
+- `payment_rail=lightning`, `lightning_mode=mock`: default local paid-flow
+  simulation; no wallet required.
+- `payment_rail=lightning`, `lightning_mode=lnd_rest`: requires
+  `FROGLET_LIGHTNING_REST_URL`, `FROGLET_LIGHTNING_MACAROON_PATH`, and
+  optionally `FROGLET_LIGHTNING_TLS_CERT_PATH`. Guide the user to their own LND
+  wallet docs; do not create or manage a wallet silently.
+- `payment_rail=stripe`: requires a Stripe test secret key (`sk_test_...`).
+  Do not ask for live keys during public local onboarding.
+- `payment_rail=x402`: requires a Base wallet address (`0x...`) and defaults to
+  the current x402 facilitator URL.
+- `network_mode=clearnet`: default local/loopback-first path.
+- `network_mode=tor` or `dual`: only after the local health checks pass and the
+  user explicitly wants Tor reachability.
 
 ## Post-install verification
 
@@ -92,6 +137,22 @@ If `healthy: false`, check:
    Stripe or x402, the user needs valid credentials in the env snippet
    the `setup-payment.sh` script wrote inside the cloned `froglet/`
    directory.
+
+## Post-install playbooks
+
+After health checks pass, implement one concrete use case instead of stopping at
+"installed":
+
+- **Consumer-first:** list local/marketplace services, invoke one service,
+  inspect the result and receipt.
+- **Provider-first:** publish a small service, inspect descriptor/offer
+  metadata, then invoke it locally.
+- **Evidence-first:** run URL witness, hash verification, or content-hash
+  notarization for a file/URL the user actually cares about.
+- **Payments-first:** run Lightning mock before asking for Stripe, x402, or LND
+  credentials.
+- **Network-first:** prove loopback health, then move to clearnet, Tor, or dual
+  exposure only with explicit user confirmation.
 
 ## Residual constraints
 
@@ -118,7 +179,7 @@ user before running it.
 ## Related
 
 - [Quickstart](/learn/quickstart/) — the human-reader equivalent of this
-  page. The copy-paste block there is what `get_install_guide` returns.
+  page. The default copy-paste block there is what `get_install_guide` returns.
 - [Connect Agents](/learn/agents/) — what `setup-agent.sh --target X`
   actually writes to the user's config.
 - [Payment Rails](/learn/payment-rails/) — the rail differences beyond

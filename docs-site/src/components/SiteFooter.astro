@@ -13,7 +13,10 @@ const { compact = false } = Astro.props;
 				<span class="mark" style="font-size: 1.2rem;">_o..o_</span>
 				froglet
 			</div>
-			<p>Open protocol for AI agents. MIT licensed.</p>
+			<p>
+				Open protocol for AI agents. Apache-2.0 licensed.<br />
+				Built by <a class="author-link" href="https://armanas.dev" target="_blank" rel="noopener">Armanas</a>.
+			</p>
 		</div>
 		<div class="col">
 			<h5>Product</h5>
@@ -49,6 +52,18 @@ const { compact = false } = Astro.props;
 		margin: 12px 0 0;
 		max-width: 22ch;
 		line-height: 1.5;
+	}
+
+	.site-ftr .brand-col .author-link {
+		display: inline;
+		padding: 0;
+		font-size: inherit;
+		color: var(--fg1);
+		text-decoration: none;
+	}
+
+	.site-ftr .brand-col .author-link:hover {
+		color: var(--frog-400);
 	}
 
 	.site-ftr--compact {

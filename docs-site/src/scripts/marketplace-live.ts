@@ -87,6 +87,9 @@ function renderServicesBreakdown(root: ParentNode, offers: MarketplaceOfferSumma
 	for (const row of rows) {
 		const wrap = document.createElement('div');
 		wrap.className = 'svc-row';
+		wrap.dataset.marketplaceSearchRow = '';
+		wrap.dataset.marketplaceKind = 'service';
+		wrap.dataset.searchText = row.name;
 		const nm = document.createElement('span');
 		nm.className = 'nm';
 		nm.textContent = row.name;
@@ -102,6 +105,55 @@ function renderServicesBreakdown(root: ParentNode, offers: MarketplaceOfferSumma
 		wrap.append(nm, bar, ct);
 		container.append(wrap);
 	}
+}
+
+function searchableText(element: HTMLElement): string {
+	return `${element.dataset.searchText || ''} ${element.textContent || ''}`.toLowerCase();
+}
+
+function initMarketplaceSearch(root: HTMLElement): () => void {
+	const input = root.querySelector<HTMLInputElement>('[data-marketplace-search]');
+	const count = root.querySelector<HTMLOutputElement>('[data-marketplace-search-count]');
+	const form = root.querySelector<HTMLElement>('[data-marketplace-search-form]');
+
+	if (!input) return () => {};
+
+	const apply = () => {
+		const terms = input.value
+			.trim()
+			.toLowerCase()
+			.split(/\s+/)
+			.filter(Boolean);
+		const rows = Array.from(root.querySelectorAll<HTMLElement>('[data-marketplace-search-row]'));
+		let shown = 0;
+
+		for (const row of rows) {
+			const visible = terms.length === 0 || terms.every((term) => searchableText(row).includes(term));
+			row.hidden = !visible;
+			if (visible) shown += 1;
+		}
+
+		if (count) {
+			count.textContent = terms.length === 0
+				? 'All indexed rows'
+				: `${shown} match${shown === 1 ? '' : 'es'}`;
+		}
+	};
+
+	input.addEventListener('input', apply);
+	form?.addEventListener('click', () => input.focus());
+	form?.addEventListener('keydown', (event) => {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			input.focus();
+		}
+	});
+	form?.addEventListener('submit', (event) => {
+		event.preventDefault();
+		apply();
+	});
+	apply();
+	return apply;
 }
 
 function renderOfferBook(root: ParentNode, offers: MarketplaceOfferSummary[]): void {
@@ -171,6 +223,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 export function initMarketplaceLive(): void {
 	const root = document.querySelector<HTMLElement>('[data-marketplace-live]');
 	if (!root) return;
+	const applySearch = initMarketplaceSearch(root);
 
 	const refresh = async () => {
 		try {
@@ -181,6 +234,7 @@ export function initMarketplaceLive(): void {
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const snapshot = await response.json() as MarketplaceSnapshot;
 			renderSnapshot(root, snapshot);
+			applySearch();
 			setText(root, '[data-marketplace-field="refresh"]', 'LIVE');
 		} catch (error) {
 			setText(

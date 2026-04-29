@@ -18,7 +18,7 @@ In cryptography, "locking" is called **signing** and "unlocking" is called **ver
     <p class="plot-subtitle">Click each element to see how keypair generation produces your unforgeable identity.</p>
   </div>
 </div>
-<canvas id="identity-diagram" class="plot-canvas" width="700" height="110" role="img" aria-label="Interactive diagram showing keypair generation: private key to public key via secp256k1 multiplication, then to node identity via hex encoding" style="max-width:700px;height:110px;cursor:pointer"></canvas>
+<canvas id="identity-diagram" class="plot-canvas" width="760" height="150" role="img" aria-label="Interactive diagram showing keypair generation: private key to public key via secp256k1 multiplication, then to node identity via hex encoding" style="height:150px;cursor:pointer"></canvas>
 <noscript>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;padding:12px 0">
     <span style="color:#f87171">Private Key</span>
@@ -29,7 +29,7 @@ In cryptography, "locking" is called **signing** and "unlocking" is called **ver
   </div>
   <p class="plot-note">Enable JavaScript for the interactive version.</p>
 </noscript>
-<div id="identity-detail" class="learn-card" style="margin-top:12px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:48px"></div>
+<div id="identity-detail" class="learn-card plot-detail" style="margin-top:12px;min-height:48px"></div>
 <p class="plot-note">The math is one-way: you cannot derive the private key from the public key. This is the elliptic curve discrete logarithm problem.</p>
 </div>
 

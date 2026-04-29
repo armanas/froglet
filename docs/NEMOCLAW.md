@@ -24,8 +24,8 @@ Froglet control API over HTTPS.
 
 Use the checked-in configs:
 
-- [integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.example.json](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.example.json)
-- [integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.hosted.example.json](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.hosted.example.json)
+- [../integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.example.json](../integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.example.json)
+- [../integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.hosted.example.json](../integrations/openclaw/froglet/examples/openclaw.config.nemoclaw.hosted.example.json)
 
 Supported plugin keys are the same as OpenClaw:
 

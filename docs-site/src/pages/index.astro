@@ -58,23 +58,38 @@ Astro.locals.starlightRoute = { hasSidebar: false };
         <span class="lbl">Prompt for your AI agent</span>
         <div class="hero-prompt">
           <Code
-            code={`Open https://try.froglet.dev/llms.txt and run the Froglet demo flow. Then give me an honest read — is this useful for me, as a consumer or a provider, grounded in my actual projects, data, and ideas? If you can't reach it, say so.`}
+            code={`Open https://try.froglet.dev/llms.txt. Run demo.add and one witness/hash follow-up. Report statuses, result, receipt/feed proof, mismatches, and what this proves or does not prove for my projects/data. If unreachable, say so.`}
             lang="md"
           />
         </div>
         <p class="hero-agent-hint">
-          Paste into Claude Code, Codex, OpenClaw, or any agentic client. The agent verifies Froglet end-to-end before you trust our copy.
+          Paste into Claude Code, Codex, OpenClaw, or any agentic client. The agent should come back with live evidence, not a product summary.
         </p>
       </aside>
     </section>
 
-    {/* ── Artifact chain strip ───────────────────────── */}
-    <div class="artifact-strip">
-      <div class="art-step"><span class="art-k">01 · descriptor</span><span class="art-v"><code>sha256:8a2f…</code></span></div>
-      <div class="art-step"><span class="art-k">02 · offer</span><span class="art-v"><code>500 sats</code></span></div>
-      <div class="art-step"><span class="art-k">03 · quote</span><span class="art-v"><code>600 sats</code></span></div>
-      <div class="art-step"><span class="art-k">04 · deal</span><span class="art-v"><code>signed ✓</code></span></div>
-      <div class="art-step"><span class="art-k">05 · receipt</span><span class="art-v"><code>paid · ⚡</code></span></div>
+    {/* ── Agent proof checklist ──────────────────────── */}
+    <div class="proof-strip" aria-label="What the hosted demo should prove">
+      <div class="proof-card proof-card--lead">
+        <span class="proof-k">agent report</span>
+        <strong>No trust tour.</strong>
+        <span>Make the model bring back evidence from the live service.</span>
+      </div>
+      <div class="proof-card">
+        <span class="proof-k">catalog</span>
+        <strong>5 free demos</strong>
+        <code>demo.add + witness/hash</code>
+      </div>
+      <div class="proof-card">
+        <span class="proof-k">result</span>
+        <strong>sum = 12</strong>
+        <code>{"{"}a:7,b:5{"}"}</code>
+      </div>
+      <div class="proof-card">
+        <span class="proof-k">evidence</span>
+        <strong>receipt + feed</strong>
+        <code>descriptor · offer · receipt</code>
+      </div>
     </div>
 
     {/* ── Launch: two public entry points ────────────── */}
@@ -87,11 +102,11 @@ Astro.locals.starlightRoute = { hasSidebar: false };
         <div class="entry-card">
           <div class="entry-num">01 · hosted</div>
           <h3>Try in cloud</h3>
-          <p>Anonymous 15-minute shared session. No install, no keys, no sign-up. Paste the prompt into your AI assistant and make it run the hosted <code class="inline">demo.add</code> round-trip.</p>
+          <p>Anonymous 15-minute shared session. No install, no keys, no sign-up. Paste the prompt into your AI assistant, make it run the canonical <code class="inline">demo.add</code> proof, then ask for a witness/hash/notarize follow-up.</p>
           <a class="entry-cta" href="/learn/cloud-trial/">try.froglet.dev →</a>
           <div class="entry-proves">
-            <b>What it proves:</b> shared-session auth, live discovery, one free discover→deal→sync-result→receipt round-trip.<br>
-            <b>What it does not prove:</b> paid rails, persistent identity, or publishing services.
+            <b>What it proves:</b> shared-session auth, live discovery, five free hosted demos, and a signed receipt for the canonical flow.<br>
+            <b>What it does not prove:</b> paid rails, persistent identity, service publication, or marketplace depth.
           </div>
         </div>
 
@@ -210,6 +225,8 @@ Astro.locals.starlightRoute = { hasSidebar: false };
             <tr><td class="name"><span class="int-logo"><img src="/logos/wasm.svg" alt=""></span>WASM</td><td>runtime</td><td><code>wasi-preview-2</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Beta</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/python.svg" alt=""></span>Python</td><td>runtime</td><td><code>cpython 3.12</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/docker.svg" alt=""></span>Docker</td><td>runtime</td><td><code>OCI image</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo int-logo-text">B</span>Batch</td><td>execution mode</td><td><code>async job queue</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Beta</span></td></tr>
+            <tr><td class="name"><span class="int-logo int-logo-text">G</span>GPU</td><td>accelerator</td><td><code>provider advertises</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Planned</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/tor.svg" alt=""></span>Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/lock.svg" alt=""></span>TEE</td><td>runtime</td><td><code>SGX · Nitro</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Spec</span></td></tr>
           </tbody>

@@ -20,7 +20,7 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
   <div class="plot-metric"><strong>1 requester signature</strong><span>The deal is the requester's cryptographic commitment to pay.</span></div>
   <div class="plot-metric"><strong>1 terminal proof</strong><span>The receipt is the final artifact any third party can verify later.</span></div>
 </div>
-<canvas id="chain-canvas" class="plot-canvas" width="700" height="120" role="img" aria-label="Interactive artifact chain: descriptor, offer, quote, deal, invoice, receipt" style="max-width:700px;height:120px;cursor:pointer"></canvas>
+<canvas id="chain-canvas" class="plot-canvas" width="760" height="170" role="img" aria-label="Interactive artifact chain: descriptor, offer, quote, deal, invoice, receipt" style="height:170px;cursor:pointer"></canvas>
 <noscript>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;padding:12px 0">
     <span style="color:#a78bfa">Descriptor</span> →
@@ -33,7 +33,7 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
   <p class="plot-note">Each artifact references the previous one by SHA-256 hash. Enable JavaScript for the interactive version.</p>
 </noscript>
 <div id="chain-buttons" class="plot-button-row"></div>
-<div id="chain-detail" class="learn-card" style="margin-top:12px;font-size:13px;line-height:1.6;color:#9ca3af;min-height:60px"></div>
+<div id="chain-detail" class="learn-card plot-detail" style="margin-top:12px;min-height:60px"></div>
 <p class="plot-note">The artifact chain is both the protocol flow and the audit log. The same objects used during execution are the objects you verify afterwards.</p>
 </div>
 

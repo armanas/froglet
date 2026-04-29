@@ -100,6 +100,7 @@ describe("tool definitions", () => {
       "list_settlement_activity",
       "get_payment_intent",
       "get_invoice_bundle",
+      "plan_install",
       "get_install_guide",
       "marketplace_search",
       "marketplace_provider",
@@ -108,6 +109,21 @@ describe("tool definitions", () => {
       "marketplace_topup"
     ])
     assert.match(tools[0].description, /provider_id/)
+    assert.equal(tools[0].inputSchema.properties.starter.type, "string")
+    assert.deepEqual(tools[0].inputSchema.properties.footprint.enum, [
+      "docker",
+      "binary",
+      "source"
+    ])
+    assert.deepEqual(tools[0].inputSchema.properties.network_mode.enum, [
+      "clearnet",
+      "tor",
+      "dual"
+    ])
+    assert.match(
+      tools[0].inputSchema.properties.starter.description,
+      /example only/
+    )
   })
 })
 
@@ -185,6 +201,47 @@ describe("froglet MCP actions", () => {
     }
   })
 
+  it("publish_artifact forwards starter and schema metadata", async () => {
+    const restore = mockFetch(async (url, options = {}) => {
+      assert.equal(String(url), "http://127.0.0.1:8080/v1/provider/artifacts/publish")
+      const body = JSON.parse(options.body)
+      assert.equal(body.service_id, "svc-1")
+      assert.equal(body.starter, "{\"a\":7,\"b\":5}")
+      assert.deepEqual(body.input_schema, {
+        type: "object",
+        required: ["a", "b"]
+      })
+      assert.deepEqual(body.output_schema, {
+        type: "object",
+        required: ["sum"]
+      })
+      return new Response(JSON.stringify({ status: "published" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" }
+      })
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "publish_artifact",
+          service_id: "svc-1",
+          runtime: "wasm",
+          package_kind: "inline_module",
+          artifact_path: "/tmp/demo.wasm",
+          starter: "{\"a\":7,\"b\":5}",
+          input_schema: { type: "object", required: ["a", "b"] },
+          output_schema: { type: "object", required: ["sum"] }
+        },
+        config
+      )
+      assert.equal(result.isError, undefined)
+      assert.match(result.content[0].text, /status: published/)
+    } finally {
+      restore()
+    }
+  })
+
   it("returns the canonical install block for claude-code + lightning by default", async () => {
     // The helper never makes an HTTP call, so no fetch mock is needed.
     const result = await handleToolCall(
@@ -220,6 +277,62 @@ describe("froglet MCP actions", () => {
     assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/stripe\.env/)
   })
 
+  it("plans a local install before commands are executed", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      {
+        action: "plan_install",
+        target_agent: "codex",
+        footprint: "docker",
+        role: "provider",
+        payment_rail: "lightning",
+        lightning_mode: "lnd_rest",
+        network_mode: "tor",
+        marketplace_url: "https://marketplace.froglet.dev",
+        use_case: "publish a paid service"
+      },
+      config
+    )
+    assert.equal(result.isError, undefined)
+    const text = result.content[0].text
+    assert.match(text, /install_profile:/)
+    assert.match(text, /target_agent: codex/)
+    assert.match(text, /payment_rail: lightning/)
+    assert.match(text, /lightning_mode: lnd_rest/)
+    assert.match(text, /network_mode: tor/)
+    assert.match(text, /Questions to ask before running commands:\n  - None/)
+    assert.match(text, /FROGLET_LIGHTNING_REST_URL=<lnd-rest-url>/)
+    assert.match(text, /FROGLET_NETWORK_MODE=tor/)
+    assert.match(text, /FROGLET_MARKETPLACE_URL='https:\/\/marketplace\.froglet\.dev'/)
+    assert.match(text, /Post-install playbooks:/)
+    assert.match(text, /provider-first/)
+    assert.match(text, /Safety: Ask before running install scripts/)
+  })
+
+  it("threads expanded install profile choices into the command guide", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      {
+        action: "get_install_guide",
+        target_agent: "manual",
+        payment_rail: "none",
+        footprint: "docker",
+        network_mode: "dual",
+        role: "consumer"
+      },
+      config
+    )
+    assert.equal(result.isError, undefined)
+    const text = result.content[0].text
+    assert.match(text, /target_agent: manual/)
+    assert.match(text, /payment_rail: none/)
+    assert.match(text, /role: consumer/)
+    assert.doesNotMatch(text, /setup-agent\.sh --target manual/)
+    assert.match(text, /printf '%s\\n' 'FROGLET_PAYMENT_BACKEND=none'/)
+    assert.match(text, /FROGLET_NETWORK_MODE=dual/)
+    assert.match(text, /Manual target selected/)
+  })
+
   it("rejects unknown target_agent or payment_rail with a clear error", async () => {
     const badAgent = await handleToolCall(
       "froglet",
@@ -236,6 +349,14 @@ describe("froglet MCP actions", () => {
     )
     assert.equal(badRail.isError, true)
     assert.match(badRail.content[0].text, /payment_rail must be one of/)
+
+    const badNetwork = await handleToolCall(
+      "froglet",
+      { action: "plan_install", network_mode: "carrier-pigeon" },
+      config
+    )
+    assert.equal(badNetwork.isError, true)
+    assert.match(badNetwork.content[0].text, /network_mode must be one of/)
   })
 
   it("keeps the install guide synchronized with README, quickstart, and the landing-page configurator", async () => {
@@ -343,7 +464,14 @@ describe("froglet MCP actions", () => {
       const sourcePath = join(REPO_ROOT, relPath)
       const destPath = join(checkoutDir, relPath)
       await mkdir(dirname(destPath), { recursive: true })
-      await copyFile(sourcePath, destPath)
+      try {
+        await copyFile(sourcePath, destPath)
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          continue
+        }
+        throw error
+      }
     }
 
     await execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code"], {
@@ -372,6 +500,28 @@ describe("froglet MCP actions", () => {
         ],
         { cwd: checkoutDir }
       )
+    } catch (error) {
+      const message = `${error?.stderr ?? ""}${error?.stdout ?? ""}${error}`
+      if (/docker: command not found|Cannot connect to the Docker daemon|docker compose/i.test(message)) {
+        return
+      }
+      throw error
+    }
+  })
+
+  it("compose config honors selected payment and network env", async () => {
+    try {
+      const { stdout } = await execFile(
+        "bash",
+        [
+          "-lc",
+          "FROGLET_PAYMENT_BACKEND=stripe FROGLET_STRIPE_SECRET_KEY=sk_test_placeholder FROGLET_NETWORK_MODE=dual FROGLET_MARKETPLACE_URL=https://marketplace.froglet.dev docker compose config"
+        ],
+        { cwd: REPO_ROOT }
+      )
+      assert.match(stdout, /FROGLET_PAYMENT_BACKEND: stripe/)
+      assert.match(stdout, /FROGLET_NETWORK_MODE: dual/)
+      assert.match(stdout, /FROGLET_MARKETPLACE_URL: https:\/\/marketplace\.froglet\.dev/)
     } catch (error) {
       const message = `${error?.stderr ?? ""}${error?.stdout ?? ""}${error}`
       if (/docker: command not found|Cannot connect to the Docker daemon|docker compose/i.test(message)) {
@@ -423,8 +573,7 @@ describe("froglet MCP actions", () => {
               offer_id: "marketplace.search",
               provider_id: "prov-mkt",
               runtime: "builtin",
-              package_kind: "builtin",
-              binding_hash: "marketplace-search-binding-hash"
+              package_kind: "builtin"
             }
           }),
           { status: 200 }
@@ -457,10 +606,16 @@ describe("froglet MCP actions", () => {
       )
       assert.equal(result.isError, undefined, result.content?.[0]?.text)
       assert.ok(capturedBody, "expected a runtime deal invocation")
-      const body = JSON.stringify(capturedBody)
-      assert.match(body, /marketplace\.search/)
-      assert.match(body, /named\.v1/)
-      assert.match(body, /python/)
+      assert.equal(capturedBody.execution.workload_kind, "marketplace.search")
+      assert.equal(capturedBody.execution.builtin_name, "marketplace.search")
+      assert.deepEqual(capturedBody.execution.entrypoint, { kind: "builtin", value: "marketplace.search" })
+      assert.equal(capturedBody.execution.module_hash, undefined)
+      assert.equal(capturedBody.execution.source_hash, undefined)
+      assert.deepEqual(capturedBody.execution.input, {
+        offer_kind: "named.v1",
+        runtime: "python",
+        limit: 25
+      })
     } finally {
       restore()
     }
@@ -527,8 +682,7 @@ describe("froglet MCP actions", () => {
               offer_id: "marketplace.topup",
               provider_id: "prov-mkt",
               runtime: "builtin",
-              package_kind: "builtin",
-              binding_hash: "marketplace-topup-binding-hash"
+              package_kind: "builtin"
             }
           }),
           { status: 200 }
@@ -559,10 +713,13 @@ describe("froglet MCP actions", () => {
         config
       )
       assert.equal(result.isError, undefined, result.content?.[0]?.text)
-      const body = JSON.stringify(capturedInput)
-      assert.match(body, /marketplace\.topup/)
-      assert.match(body, /prov-7/)
-      assert.match(body, /1000/)
+      assert.equal(capturedInput.execution.workload_kind, "marketplace.topup")
+      assert.equal(capturedInput.execution.builtin_name, "marketplace.topup")
+      assert.equal(capturedInput.execution.module_hash, undefined)
+      assert.deepEqual(capturedInput.execution.input, {
+        provider_id: "prov-7",
+        amount_msat: 1000
+      })
     } finally {
       restore()
     }

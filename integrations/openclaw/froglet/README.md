@@ -49,6 +49,7 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `list_settlement_activity`
 - `get_payment_intent`
 - `get_invoice_bundle`
+- `plan_install`
 - `get_install_guide`
 - `marketplace_search`
 - `marketplace_provider`
@@ -86,7 +87,10 @@ The current checked-in API is service- and artifact-oriented:
   `list_settlement_activity`, `get_payment_intent`, and `get_invoice_bundle`
 - use the marketplace wrappers when you want marketplace-native search,
   provider detail, receipts, stake, or top-up operations
-- use `get_install_guide` when the user asks to install Froglet on the host
+- use `plan_install` before local setup to collect agent, footprint, role,
+  payment, network, marketplace, and use-case choices
+- use `get_install_guide` after the install profile is confirmed to return
+  host-shell commands
 
 The current public tool surface does not include project authoring, log tailing,
 or node restarts.

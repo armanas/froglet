@@ -74,8 +74,10 @@ OCI containers remain a supported packaging and deployment path.
 > Lightning, Stripe, and x402 are the launch adapters in this repo. Only
 > Lightning currently extends into the standardized signed
 > quote/deal/invoice-bundle flow; Stripe and x402 are local runtime settlement
-> adapters. The first-party hosted `try.froglet.dev` trial proves only the
-> free `demo.add` round-trip in v0.1.0; hosted paid rails are deferred to v0.2.
+> adapters. The first-party hosted `try.froglet.dev` trial is free-only: it
+> uses `demo.add` as the canonical proof and exposes optional
+> `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize` follow-ups for
+> stronger evidence. Hosted paid rails are deferred to v0.2.
 
 <details>
 <summary><strong>Discovery & Compute model</strong></summary>
@@ -136,9 +138,12 @@ The public launch story still has exactly two entry points:
   `POST /v1/runtime/deals` and `GET /v1/runtime/deals/{deal_id}`
 - `try.froglet.dev` is the only public hosted-trial ingress; `ai.froglet.dev`
   does not expose session minting or hosted demo deal routes directly
-- The hosted demo proves one free `demo.add` discover → deal → result →
-  receipt round-trip, not paid rails, persistent identity, or general runtime
-  access
+- The hosted demo catalog has five free services: `demo.add`, `demo.echo`,
+  `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize`
+- `demo.add` is the canonical discover → deal → result → receipt proof;
+  witness/hash/notarize flows are optional higher-signal follow-ups
+- The hosted trial still does not prove paid rails, persistent identity,
+  service publication, marketplace depth, or general runtime access
 
 ### 2. Run Locally
 
@@ -243,7 +248,7 @@ The one `froglet` tool covers:
 - Local resource inspection and publication via `publish_artifact`
 - Settlement visibility and marketplace-native wrappers
 - Status and task polling
-- Install guidance via `get_install_guide`
+- Install planning via `plan_install`, then command generation via `get_install_guide`
 - Raw compute
 
 <details>

@@ -12,7 +12,7 @@ provider API, usually:
 
 Use the checked-in example config:
 
-- [integrations/openclaw/froglet/examples/openclaw.config.example.json](/Users/armanas/Projects/github.com/armanas/froglet/integrations/openclaw/froglet/examples/openclaw.config.example.json)
+- [../integrations/openclaw/froglet/examples/openclaw.config.example.json](../integrations/openclaw/froglet/examples/openclaw.config.example.json)
 
 ## What The Tool Does
 

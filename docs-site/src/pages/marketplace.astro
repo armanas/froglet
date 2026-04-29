@@ -127,8 +127,11 @@ function formatFeedTime(iso: string | undefined): string {
 <main class="mkt-shell" data-marketplace-live data-status={marketplace.status}>
   <div class="mkt-title">
     <h1>Marketplace</h1>
-    <div class="search" role="search" aria-label="Marketplace search">
-      🔍 Search providers, services, or descriptors…
+    <div class="search" role="search" aria-label="Marketplace search" tabindex="0" data-marketplace-search-form>
+      <label class="sr-only" for="marketplace-search">Search providers, services, or descriptors</label>
+      <span class="search-icon" aria-hidden="true">🔍</span>
+      <input id="marketplace-search" type="search" placeholder="Search providers, services, or descriptors…" autocomplete="off" spellcheck="false" data-marketplace-search />
+      <output class="search-count" for="marketplace-search" data-marketplace-search-count>All indexed rows</output>
     </div>
   </div>
   <p class="mkt-sub">
@@ -146,7 +149,7 @@ function formatFeedTime(iso: string | undefined): string {
     <div class="metric">
       <div class="k">Offers</div>
       <div class="v" data-marketplace-field="offers">{marketplace.offerCount.toLocaleString()}</div>
-      <div class="d"><span data-marketplace-field="freeOffers">{stats.freeOffers}</span> free · <span data-marketplace-field="paidOffers">{stats.paidOffers}</span> paid</div>
+      <div class="d"><span data-marketplace-field="freeOffers">{stats.freeOffers}</span> free · <span data-marketplace-field="paidOffers">{stats.paidOffers}</span> priced</div>
     </div>
     <div class="metric">
       <div class="k">Receipts</div>
@@ -154,9 +157,9 @@ function formatFeedTime(iso: string | undefined): string {
       <div class="d"><span data-marketplace-field="successRate">{stats.successRate}</span> success rate</div>
     </div>
     <div class="metric">
-      <div class="k">Volume settled</div>
+      <div class="k">Receipt value</div>
       <div class="v" data-marketplace-field="settledSats">{stats.totalSettledSats.toLocaleString()}<span class="u">sats</span></div>
-      <div class="d">lightning + stripe + x402</div>
+      <div class="d">indexed receipt totals</div>
     </div>
   </div>
 
@@ -183,7 +186,7 @@ function formatFeedTime(iso: string | undefined): string {
           </tr></thead>
           <tbody>
             {topProviders.map((p) => (
-              <tr class="row">
+              <tr class="row" data-marketplace-search-row data-marketplace-kind="provider" data-search-text={`${p.providerId} ${compactId(p.providerId)} ${p.descriptorHash} ${p.endpoint ?? ''} ${p.serviceKinds.join(' ')}`}>
                 <td class="name">
                   <span class="av">{avatarInitials(p.providerId)}</span>
                   {compactId(p.providerId)}
@@ -217,7 +220,7 @@ function formatFeedTime(iso: string | undefined): string {
               const totalSats = Math.round((deal.baseFeeMsat + deal.successFeeMsat) / 1000);
               const statusOk = deal.status === 'succeeded' || deal.status === 'running';
               return (
-                <div class="row">
+                <div class="row" data-marketplace-search-row data-marketplace-kind="feed" data-search-text={`${deal.providerId} ${deal.offerId} ${deal.status} ${deal.updatedAt ?? ''}`}>
                   <span class="ts">{formatFeedTime(deal.updatedAt)}</span>
                   <span class="msg">
                     <b>deal</b> {compactId(deal.providerId)} · <span class="svc">{deal.offerId}</span>
@@ -243,7 +246,7 @@ function formatFeedTime(iso: string | undefined): string {
         <div class="svc-break" data-marketplace-services-breakdown>
           {serviceBreakdown.length > 0 ? (
             serviceBreakdown.map((s) => (
-              <div class="svc-row">
+              <div class="svc-row" data-marketplace-search-row data-marketplace-kind="service" data-search-text={s.name}>
                 <span class="nm">{s.name}</span>
                 <span class="bar">
                   <span class="fill" style={`width: ${Math.round((s.count / maxServiceCount) * 100)}%`}></span>

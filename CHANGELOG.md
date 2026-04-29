@@ -9,11 +9,6 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ### Added
 
-- `docs/RELEASE_PLAN.md` with the v0.1.0 launch plan, hard release
-  blockers, evidence placeholders, and explicit v0.2 deferrals for hosted
-  paid rails.
-- `docs/DISTRIBUTION_MATRIX.md` mapping release artifacts, publication
-  channels, verification commands, and launch blockers.
 - Docs-site and hosted-trial privacy posture note: v0.1.0 has no account,
   email, analytics cookie, or conversion tracking in the public hosted trial
   contract.
@@ -22,31 +17,34 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ### Changed
 
-- Public claim language now states that `try.froglet.dev` proves only the free
-  `demo.add` round-trip in v0.1.0, while Lightning, Stripe, and x402 remain
-  local/self-hosted launch adapters and first-party hosted paid rails are
-  deferred to v0.2.
+- Public claim language now states that `try.froglet.dev` exposes a free
+  hosted demo catalog: `demo.add` is the canonical round-trip proof, while
+  witness/hash/notarize flows are optional follow-up evidence and Lightning,
+  Stripe, and x402 remain local/self-hosted launch adapters.
 - `docs/RELEASE.md` now includes a v0.1.0 GitHub release body draft and
   separates scripted release gates from hard manual launch gates such as
   Claude MCP smoke and hosted-trial verification.
-- `docs/SUBDOMAIN_PLAN.md` flipped `ai.froglet.dev` and
-  `marketplace.froglet.dev` status to **Live** and updated the
-  `try.froglet.dev` row to reflect the Cloudflare Worker scaffold plus the
-  session endpoint being live on the upstream node.
 - `README.md` hosted-trial paragraph rewritten to match the MVP scope: a
-  Cloudflare Worker in front of the Lightsail reference node, a shared
-  session-token pool (authentication only, not per-session identity), and
-  explicit removal of the email-claim / account-conversion path.
+  first-party hosted gateway in front of the reference node, a shared
+  session-token pool (authentication only, not per-session identity), five free
+  demo services, and explicit removal of the email-claim / account-conversion
+  path.
 - Docs site `Try In Cloud` page (`docs-site/src/content/docs/learn/cloud-trial.mdx`)
   rewritten to describe the shared session-pool model and remove the stale
-  `POST /api/sessions/claim` / `verify` / `resume` endpoints and the
-  "hosted on GCP" reference; the first-party hosted deployment runs on
-  AWS Lightsail fronted by Cloudflare.
+  `POST /api/sessions/claim` / `verify` / `resume` endpoints and stale
+  hosted-provider implementation details.
 - Docs site landing (`docs-site/src/pages/index.astro`) hosted-trial card
   updated to match the session-pool model and drop the GCP wording.
 - Docs site learning index (`docs-site/src/content/docs/learn/index.mdx`)
   updates its roadmap copy and stat strip to reference the shared session
   pool and 15-minute session TTL instead of "temporary identity".
+
+### Removed
+
+- Pre-publication launch plans, distribution matrices, historical playground
+  plans, first-party hosted runbook stubs, and one-off security evidence docs
+  that belonged in private operator/release records rather than the public
+  open-source repo.
 
 ## [0.1.0-alpha.1] - 2026-04-20
 
@@ -60,9 +58,9 @@ The format follows Keep a Changelog and the release line currently targets the
 
 ### Changed
 
-- Moved first-party hosted deployment tooling, Lightsail specs, operator
+- Moved first-party hosted deployment tooling, hosted-provider specs, operator
   runbooks, and the working launch backlog out of this public repo and into
-  the private `froglet-services` workspace.
+  a private operator workspace.
 - standardized the public docs deployment path on Cloudflare Workers and
   removed the stale GitHub Pages workflow
 - enabled GitHub Discussions and linked it from the public README
@@ -81,9 +79,6 @@ The format follows Keep a Changelog and the release line currently targets the
   strict checks, docs-site build, docs-site tests, and optional packaging /
   install-smoke / hosted cells, with per-step evidence logs and a
   `summary.tsv`
-- `docs/SECURITY_PASS.md` — pre-launch security pass with cargo / pip / npm
-  audit remediations, full-history gitleaks scan (0 real leaks), and threat
-  model for `ai.froglet.dev`
 - `docs/PAYMENT_MATRIX.md` — supported payment rails × verification modes
   matrix with per-cell status and re-run commands
 - `docs/IDENTITY_ATTESTATION.md` — normative spec for DNS + OAuth/OIDC
@@ -95,11 +90,6 @@ The format follows Keep a Changelog and the release line currently targets the
 - `scripts/cloudflare_dns.sh` — Cloudflare v4 DNS helper (verify / zone /
   list / create / delete / upsert); reads token from macOS Keychain, never
   echoed
-- `scripts/deploy_aws.sh` + `ops/lightsail/*.json` — AWS Lightsail
-  Container Service deploy helper (verify / status / create / deploy /
-  logs / endpoint / destroy); AWS keys read from macOS Keychain per
-  invocation, never environment-persisted. First deployment live at
-  `ai.froglet.dev` (nginx placeholder pending the first Froglet image tag)
 - `FROGLET_EGRESS_MODE=strict` — opt-in propagation of the
   same DNS-pinning + SSRF validator used for LLM-controlled URLs to the
   operator-configured `FROGLET_PROVIDER_URL` / `FROGLET_RUNTIME_URL`

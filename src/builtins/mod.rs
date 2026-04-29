@@ -38,6 +38,7 @@ use crate::{
     state::AppState,
 };
 use axum::http::StatusCode;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -57,30 +58,134 @@ pub use demo_notarize::NotarizeHandler;
 /// Env var that enables demo-service publication on startup.
 pub const DEMO_SERVICES_ENV: &str = "FROGLET_PUBLISH_DEMO_SERVICES";
 
-/// Demo services published when `FROGLET_PUBLISH_DEMO_SERVICES=1`. Tuple is
-/// `(service_id, human-readable summary)`.
-const DEMO_SERVICES: &[(&str, &str)] = &[
-    (
-        "demo.echo",
-        "Echo — returns your input unchanged. Proves the discover → deal → execute round-trip works.",
-    ),
-    (
-        "demo.add",
-        "Add — returns {sum: a + b} for signed 64-bit integer operands.",
-    ),
-    (
-        "demo.fetch-witness",
-        "Fetch witness — provider fetches a URL and returns the body's SHA-256, status, content-type, length, and timestamp. The signed receipt is a third-party-verifiable attestation of what the URL served.",
-    ),
-    (
-        "demo.hash-verify",
-        "Hash verify — provider fetches a URL and reports whether the live SHA-256 matches the buyer's expected hash. Bonded reproducibility check: a wrong answer is detectable by anyone with the URL.",
-    ),
-    (
-        "demo.notarize",
-        "Notarize — provider binds a caller-supplied content hash to a Unix-millisecond timestamp. The kernel receipt's BIP340 signature on the output is the notarization itself.",
-    ),
-];
+struct DemoServiceSpec {
+    service_id: &'static str,
+    summary: &'static str,
+    starter: &'static str,
+    input_schema: Value,
+    output_schema: Value,
+}
+
+fn demo_service_specs() -> Vec<DemoServiceSpec> {
+    let sha256_pattern = "^[A-Fa-f0-9]{64}$";
+    vec![
+        DemoServiceSpec {
+            service_id: "demo.echo",
+            summary: "Echo — returns your input unchanged. Proves the discover → deal → execute round-trip works.",
+            starter: r#"{"message":"hello froglet"}"#,
+            input_schema: json!({
+                "description": "Any JSON value is accepted and returned unchanged."
+            }),
+            output_schema: json!({
+                "description": "The exact JSON value supplied as input."
+            }),
+        },
+        DemoServiceSpec {
+            service_id: "demo.add",
+            summary: "Add — returns {sum: a + b} for signed 64-bit integer operands.",
+            starter: r#"{"a":7,"b":5}"#,
+            input_schema: json!({
+                "type": "object",
+                "required": ["a", "b"],
+                "additionalProperties": false,
+                "properties": {
+                    "a": { "type": "integer", "description": "Signed 64-bit integer addend." },
+                    "b": { "type": "integer", "description": "Signed 64-bit integer addend." }
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "required": ["sum"],
+                "additionalProperties": false,
+                "properties": {
+                    "sum": { "type": "integer", "description": "Signed 64-bit sum of a + b." }
+                }
+            }),
+        },
+        DemoServiceSpec {
+            service_id: "demo.fetch-witness",
+            summary: "Fetch witness — provider fetches a URL and returns the body's SHA-256, status, content-type, length, and timestamp. The signed receipt is a third-party-verifiable attestation of what the URL served.",
+            starter: r#"{"url":"https://example.com/","max_bytes":1048576}"#,
+            input_schema: json!({
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": {
+                    "url": { "type": "string", "format": "uri", "description": "HTTP(S) URL for the provider to fetch." },
+                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576, "description": "Optional response byte ceiling." }
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "required": ["url", "final_url", "status_code", "content_length", "content_sha256", "fetched_at_ms"],
+                "additionalProperties": false,
+                "properties": {
+                    "url": { "type": "string", "format": "uri" },
+                    "final_url": { "type": "string", "format": "uri" },
+                    "status_code": { "type": "integer" },
+                    "content_type": { "type": ["string", "null"] },
+                    "content_length": { "type": "integer", "minimum": 0 },
+                    "content_sha256": { "type": "string", "pattern": sha256_pattern },
+                    "fetched_at_ms": { "type": "integer" }
+                }
+            }),
+        },
+        DemoServiceSpec {
+            service_id: "demo.hash-verify",
+            summary: "Hash verify — provider fetches a URL and reports whether the live SHA-256 matches the buyer's expected hash. Bonded reproducibility check: a wrong answer is detectable by anyone with the URL.",
+            starter: r#"{"url":"https://example.com/","expected_sha256":"fb91d75a6bb430787a61b0aec5e374f580030f2878e1613eab5ca6310f7bbb9a","max_bytes":1048576}"#,
+            input_schema: json!({
+                "type": "object",
+                "required": ["url", "expected_sha256"],
+                "additionalProperties": false,
+                "properties": {
+                    "url": { "type": "string", "format": "uri", "description": "HTTP(S) URL for the provider to fetch." },
+                    "expected_sha256": { "type": "string", "pattern": sha256_pattern },
+                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576, "description": "Optional response byte ceiling." }
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "required": ["url", "actual_sha256", "expected_sha256", "matches", "status_code", "content_length", "verified_at_ms"],
+                "additionalProperties": false,
+                "properties": {
+                    "url": { "type": "string", "format": "uri" },
+                    "actual_sha256": { "type": "string", "pattern": sha256_pattern },
+                    "expected_sha256": { "type": "string", "pattern": sha256_pattern },
+                    "matches": { "type": "boolean" },
+                    "status_code": { "type": "integer" },
+                    "content_length": { "type": "integer", "minimum": 0 },
+                    "verified_at_ms": { "type": "integer" }
+                }
+            }),
+        },
+        DemoServiceSpec {
+            service_id: "demo.notarize",
+            summary: "Notarize — provider binds a caller-supplied content hash to a Unix-millisecond timestamp. The kernel receipt's BIP340 signature on the output is the notarization itself.",
+            starter: r#"{"content_sha256":"fb91d75a6bb430787a61b0aec5e374f580030f2878e1613eab5ca6310f7bbb9a","context":"froglet-demo-example-com"}"#,
+            input_schema: json!({
+                "type": "object",
+                "required": ["content_sha256"],
+                "additionalProperties": false,
+                "properties": {
+                    "content_sha256": { "type": "string", "pattern": sha256_pattern },
+                    "context": { "type": "string", "maxLength": 256, "description": "Optional opaque caller context echoed into the output." }
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "required": ["content_sha256", "notarized_at_ms", "contract_version"],
+                "additionalProperties": false,
+                "properties": {
+                    "content_sha256": { "type": "string", "pattern": sha256_pattern },
+                    "context": { "type": ["string", "null"] },
+                    "notarized_at_ms": { "type": "integer" },
+                    "contract_version": { "type": "string", "const": "froglet.builtin.demo.notarize.v1" }
+                }
+            }),
+        },
+    ]
+}
 
 /// Returns true if the operator asked for demo services to be published via
 /// env var. A value of exactly "1" enables. Any other value or absence means
@@ -107,17 +212,17 @@ pub fn demo_handlers() -> HashMap<String, Arc<dyn BuiltinServiceHandler>> {
 /// Persist a `ProviderManagedOfferDefinition` for every demo service so it
 /// appears in `/v1/feed` and in downstream marketplace indexes.
 pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
-    for (service_id, summary) in DEMO_SERVICES {
+    for spec in demo_service_specs() {
         let definition = ProviderManagedOfferDefinition {
-            offer_id: (*service_id).to_string(),
-            service_id: Some((*service_id).to_string()),
+            offer_id: spec.service_id.to_string(),
+            service_id: Some(spec.service_id.to_string()),
             project_id: None,
-            offer_kind: (*service_id).to_string(),
+            offer_kind: spec.service_id.to_string(),
             runtime: "builtin".to_string(),
             package_kind: "builtin".to_string(),
             entrypoint_kind: "builtin".to_string(),
-            entrypoint: (*service_id).to_string(),
-            contract_version: format!("froglet.builtin.{service_id}.v1"),
+            entrypoint: spec.service_id.to_string(),
+            contract_version: format!("froglet.builtin.{}.v1", spec.service_id),
             mounts: Vec::new(),
             mode: "sync".to_string(),
             capabilities: Vec::new(),
@@ -128,7 +233,7 @@ pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
             fuel_limit: 0,
             price_sats: 0,
             publication_state: "active".to_string(),
-            starter: None,
+            starter: Some(spec.starter.to_string()),
             module_hash: None,
             module_bytes_hex: None,
             inline_source: None,
@@ -136,9 +241,9 @@ pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
             oci_digest: None,
             source_path: None,
             source_kind: "builtin".to_string(),
-            summary: Some((*summary).to_string()),
-            input_schema: None,
-            output_schema: None,
+            summary: Some(spec.summary.to_string()),
+            input_schema: Some(spec.input_schema),
+            output_schema: Some(spec.output_schema),
             terms_hash: None,
             confidential_profile_hash: None,
         };
@@ -147,14 +252,17 @@ pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
             state,
             definition,
             StatusCode::CREATED,
-            format!("registered demo service {service_id}"),
+            format!("registered demo service {}", spec.service_id),
         )
         .await
         .map_err(|(status, body)| {
-            format!("persist demo offer for {service_id}: {status} {body:?}")
+            format!(
+                "persist demo offer for {}: {status} {body:?}",
+                spec.service_id
+            )
         })?;
 
-        tracing::info!(service_id = %service_id, "registered demo service");
+        tracing::info!(service_id = %spec.service_id, "registered demo service");
     }
     Ok(())
 }

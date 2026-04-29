@@ -34,6 +34,12 @@ test("plugin registers exactly one froglet tool", async () => {
       maxSearchLimit: 50
     })
     assert.deepEqual([...tools.keys()], ["froglet"])
+    const froglet = tools.get("froglet")
+    assert.equal(froglet.definition.parameters.properties.starter.type, "string")
+    assert.match(
+      froglet.definition.parameters.properties.starter.description,
+      /example only/
+    )
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
@@ -208,6 +214,7 @@ test("get_local_service hits /v1/provider/services/:id and renders authoritative
               resource_kind: "service",
               project_id: "ping",
               summary: "Returns pong",
+              starter: { ping: true },
               runtime: "python",
               package_kind: "inline_source",
               entrypoint_kind: "handler",
@@ -235,6 +242,7 @@ test("get_local_service hits /v1/provider/services/:id and renders authoritative
     const text = result.content?.[0]?.text ?? ""
     assert.match(text, /offer_kind: compute\.execution\.v1/)
     assert.match(text, /resource_kind: service/)
+    assert.match(text, /starter: {"ping":true}/)
     assert.match(text, /runtime: python/)
     assert.match(text, /package_kind: inline_source/)
     assert.match(text, /entrypoint_kind: handler/)
@@ -242,6 +250,7 @@ test("get_local_service hits /v1/provider/services/:id and renders authoritative
     assert.match(text, /mounts: \[\{"kind":"filesystem","name":"workspace"\}\]/)
     assert.match(text, /input_schema: null/)
     assert.match(text, /output_schema: {"const":"pong"}/)
+    assert.match(text, /starter_example: service\.starter/)
     assert.match(text, /Only listed fields are authoritative/)
     assert.doesNotMatch(text, /template/i)
     assert.doesNotMatch(text, /execution_kind/i)

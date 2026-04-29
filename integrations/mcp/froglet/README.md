@@ -29,6 +29,11 @@ cd froglet && ./scripts/setup-agent.sh --target claude-code
 cd froglet && ./scripts/setup-agent.sh --target codex
 ```
 
+Agents should call the Froglet `plan_install` action before local setup when the
+user has not specified the target agent, install footprint, role, payment rail,
+network mode, marketplace URL, or first use case. After the profile is
+confirmed, `get_install_guide` returns the exact host-shell commands.
+
 ## Configuration
 
 All configuration is through environment variables:

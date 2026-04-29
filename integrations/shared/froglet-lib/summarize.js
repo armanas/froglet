@@ -54,6 +54,7 @@ export function summarizeService(service) {
     `resource_kind: ${service?.resource_kind ?? "unknown"}`,
     `project_id: ${service?.project_id ?? "none"}`,
     `summary: ${service?.summary ?? "none"}`,
+    ...(service?.starter !== undefined ? [`starter: ${formatObject(service.starter)}`] : []),
     `runtime: ${normalizeRuntime(service)}`,
     `package_kind: ${normalizePackageKind(service)}`,
     `entrypoint_kind: ${normalizeEntrypointKind(service)}`,
@@ -104,6 +105,7 @@ export function serviceAuthorityNotes(service) {
     service?.input_schema == null
       ? "input_contract: no input_schema is declared; Froglet may forward any JSON input and the service may ignore it."
       : "input_contract: input_schema is declared; stay within that contract when invoking the service.",
+    "starter_example: service.starter, when present, is only an example request shape; input_schema and output_schema remain authoritative.",
     "Only listed fields are authoritative; do not infer behavior beyond offer_kind, resource_kind, runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, input_schema, and output_schema."
   ]
 }

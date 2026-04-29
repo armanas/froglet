@@ -79,10 +79,15 @@
 
 	/* ── Theme chrome ────────────────────────── */
 	--hdr-bg: rgba(15, 19, 16, 0.82);
-	--term-bg: #000;
-	--term-head-bg: #0a0c0a;
-	--term-border: #1f2320;
-	--term-text: #c9d0c5;
+	--copy-bg: #000;
+	--copy-head-bg: #0a0c0a;
+	--copy-border: #1f2320;
+	--copy-text: #f8fff4;
+	--copy-muted: #8d978a;
+	--term-bg: var(--copy-bg);
+	--term-head-bg: var(--copy-head-bg);
+	--term-border: var(--copy-border);
+	--term-text: var(--copy-text);
 	--selection-bg: rgba(82, 199, 42, 0.35);
 	--selection-fg: #fff;
 	--accent-code: var(--frog-200);

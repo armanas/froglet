@@ -226,18 +226,22 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	font-size: 0.92em;
 }
 
+/* Copyable code/prompt surfaces stay black in both themes. */
 .sl-markdown-content pre,
-.sl-markdown-content .expressive-code {
-	border: 1px solid var(--term-border);
+.sl-markdown-content .expressive-code,
+.expressive-code {
+	border: 1px solid var(--copy-border);
 	border-radius: var(--r-3);
-	background: var(--term-bg);
+	background: var(--copy-bg);
 	box-shadow: none;
+	color: var(--copy-text);
 	overflow: hidden;
 }
 
-.sl-markdown-content pre {
-	background: var(--term-bg);
-	color: var(--term-text);
+.sl-markdown-content pre,
+.expressive-code pre {
+	background: var(--copy-bg) !important;
+	color: var(--copy-text) !important;
 	font-family: var(--font-mono);
 }
 
@@ -245,36 +249,37 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	margin-block: 1.25rem;
 }
 
-.sl-markdown-content .expressive-code figure,
-.sl-markdown-content .expressive-code figure.frame {
+.expressive-code figure,
+.expressive-code figure.frame {
 	margin: 0;
 	border: 0;
 	border-radius: var(--r-3);
-	background: var(--term-bg);
+	background: var(--copy-bg) !important;
 	box-shadow: none;
+}
+
+.expressive-code code,
+.expressive-code code span,
+.expressive-code .ec-line,
+.expressive-code .ec-line .code,
+.expressive-code .ec-line .code span {
+	background: transparent !important;
+	color: var(--copy-text) !important;
 }
 
 .sl-markdown-content .expressive-code .header,
 .sl-markdown-content .expressive-code figcaption {
-	border-bottom: 1px solid var(--term-border);
-	background: var(--term-head-bg);
-	color: var(--fg3);
-	font-family: var(--font-mono);
-	font-size: 0.72rem;
-	font-weight: 600;
-	letter-spacing: 0.05em;
-	text-transform: uppercase;
+	display: none;
 }
 
-.sl-markdown-content .expressive-code pre {
+.expressive-code pre {
 	margin: 0;
 	border: 0;
-	border-radius: 0;
-	background: var(--term-bg);
+	border-radius: var(--r-3);
 	padding-right: 64px;
 }
 
-.sl-markdown-content .expressive-code .copy button {
+.expressive-code .copy button {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -283,21 +288,27 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	height: 28px;
 	padding: 0 9px;
 	opacity: 1;
-	border: 1px solid var(--border-strong);
+	border: 1px solid var(--copy-border);
 	border-radius: var(--r-2);
-	background: var(--bg-elevated);
-	color: var(--fg2);
+	background: var(--copy-head-bg);
+	color: var(--copy-muted);
 	font-family: var(--font-mono);
 	font-size: 0;
 	font-weight: 600;
 }
 
-.sl-markdown-content .expressive-code .copy button::after {
+.expressive-code .copy button::after {
 	content: 'COPY';
 	font-size: 0.7rem;
 	letter-spacing: 0.05em;
 	line-height: 1;
 	position: static;
+}
+
+.expressive-code .copy button:hover,
+.expressive-code .copy button:focus-visible {
+	border-color: var(--copy-muted);
+	color: var(--copy-text);
 }
 
 .expressive-code .copy button[data-froglet-copy-label='true'] {
@@ -311,11 +322,11 @@ main[data-pagefind-body] > .content-panel:first-child h1 {
 	content: none;
 }
 
-.sl-markdown-content .expressive-code .copy button svg {
+.expressive-code .copy button svg {
 	display: none;
 }
 
-.sl-markdown-content .expressive-code .copy button > div {
+.expressive-code .copy button > div {
 	display: none;
 }
 
