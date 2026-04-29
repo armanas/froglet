@@ -1,6 +1,6 @@
 {
   "name": "froglet",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Connect agents to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
   "author": {
     "name": "Armanas Povilionis-Muradian",
@@ -9,7 +9,13 @@
   "homepage": "https://froglet.dev/learn/agents/",
   "repository": "https://github.com/armanas/froglet",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "froglet", "verifiable-compute", "receipts", "agents"],
+  "keywords": [
+    "mcp",
+    "froglet",
+    "verifiable-compute",
+    "receipts",
+    "agents"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -18,7 +24,10 @@
     "longDescription": "Runs the Froglet MCP server through the published npm package against a local or self-hosted Froglet provider/runtime. Use the public llms.txt flow for no-install demo proof; use this plugin for real local actions.",
     "developerName": "Armanas Povilionis-Muradian",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "External Tools"],
+    "capabilities": [
+      "Interactive",
+      "External Tools"
+    ],
     "websiteURL": "https://froglet.dev",
     "defaultPrompt": [
       "Check my local Froglet status.",

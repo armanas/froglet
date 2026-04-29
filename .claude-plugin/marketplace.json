@@ -3,21 +3,28 @@
   "owner": {
     "name": "Armanas Povilionis-Muradian"
   },
-  "description": "Froglet plugin marketplace for local verifiable compute, signed receipts, settlement, and service publication.",
-  "version": "0.1.2",
+  "metadata": {
+    "description": "Froglet plugin marketplace for local verifiable compute, signed receipts, settlement, and service publication.",
+    "version": "0.1.3"
+  },
   "plugins": [
     {
       "name": "froglet",
       "source": "./plugins/froglet",
       "description": "Connect Claude Code to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "author": {
         "name": "Armanas Povilionis-Muradian"
       },
       "homepage": "https://froglet.dev/learn/agents/",
       "repository": "https://github.com/armanas/froglet",
       "category": "Developer Tools",
-      "tags": ["mcp", "verifiable-compute", "receipts", "agents"]
+      "tags": [
+        "mcp",
+        "verifiable-compute",
+        "receipts",
+        "agents"
+      ]
     }
   ]
 }

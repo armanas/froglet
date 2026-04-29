@@ -12,6 +12,8 @@ import {
 } from "./shared.js"
 
 const HOST_PRODUCTS = new Set(["openclaw", "nemoclaw"])
+const DEFAULT_LOCAL_PROVIDER_URL = "http://127.0.0.1:8080"
+const DEFAULT_LOCAL_RUNTIME_URL = "http://127.0.0.1:8081"
 
 function resolveConfigValue(configValue, envName) {
   if (typeof configValue === "string" && configValue.trim().length > 0) {
@@ -35,12 +37,20 @@ function normalizeHostProduct(value) {
   return normalized
 }
 
+function normalizeOptionalFilesystemPath(value, fieldName) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null
+  }
+  return normalizeFilesystemPath(value, fieldName)
+}
+
 /**
  * Resolve the provider URL.
  *
  * Priority order:
  *   1. config.providerUrl / FROGLET_PROVIDER_URL
  *   2. config.baseUrl / FROGLET_BASE_URL  (legacy fallback — sets both URLs)
+ *   3. local loopback default
  */
 function resolveProviderUrl(config) {
   const explicit = resolveConfigValue(config.providerUrl, "FROGLET_PROVIDER_URL")
@@ -48,7 +58,10 @@ function resolveProviderUrl(config) {
     return normalizeBaseUrl(explicit, "providerUrl")
   }
   const fallback = resolveConfigValue(config.baseUrl, "FROGLET_BASE_URL")
-  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / providerUrl")
+  if (typeof fallback === "string" && fallback.trim().length > 0) {
+    return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / providerUrl")
+  }
+  return normalizeBaseUrl(DEFAULT_LOCAL_PROVIDER_URL, "providerUrl default")
 }
 
 /**
@@ -57,6 +70,7 @@ function resolveProviderUrl(config) {
  * Priority order:
  *   1. config.runtimeUrl / FROGLET_RUNTIME_URL
  *   2. config.baseUrl / FROGLET_BASE_URL  (legacy fallback — sets both URLs)
+ *   3. local loopback default
  */
 function resolveRuntimeUrl(config) {
   const explicit = resolveConfigValue(config.runtimeUrl, "FROGLET_RUNTIME_URL")
@@ -64,7 +78,10 @@ function resolveRuntimeUrl(config) {
     return normalizeBaseUrl(explicit, "runtimeUrl")
   }
   const fallback = resolveConfigValue(config.baseUrl, "FROGLET_BASE_URL")
-  return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / runtimeUrl")
+  if (typeof fallback === "string" && fallback.trim().length > 0) {
+    return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / runtimeUrl")
+  }
+  return normalizeBaseUrl(DEFAULT_LOCAL_RUNTIME_URL, "runtimeUrl default")
 }
 
 export function readPluginConfig(api) {
@@ -76,13 +93,13 @@ export function readPluginConfig(api) {
   const providerUrl = resolveProviderUrl(config)
   const runtimeUrl = resolveRuntimeUrl(config)
 
-  const providerAuthTokenPath = normalizeFilesystemPath(
+  const providerAuthTokenPath = normalizeOptionalFilesystemPath(
     resolveConfigValue(config.providerAuthTokenPath ?? config.authTokenPath, "FROGLET_PROVIDER_AUTH_TOKEN_PATH") ??
       process.env.FROGLET_AUTH_TOKEN_PATH,
     "providerAuthTokenPath / FROGLET_PROVIDER_AUTH_TOKEN_PATH"
   )
 
-  const runtimeAuthTokenPath = normalizeFilesystemPath(
+  const runtimeAuthTokenPath = normalizeOptionalFilesystemPath(
     resolveConfigValue(config.runtimeAuthTokenPath ?? config.authTokenPath, "FROGLET_RUNTIME_AUTH_TOKEN_PATH") ??
       process.env.FROGLET_AUTH_TOKEN_PATH,
     "runtimeAuthTokenPath / FROGLET_RUNTIME_AUTH_TOKEN_PATH"

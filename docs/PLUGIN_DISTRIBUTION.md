@@ -37,7 +37,7 @@ not as a repackaging of the local stdio MCP tool.
 | Surface | File | Current state |
 | --- | --- | --- |
 | npm package | `package.json` | `froglet-mcp`, Apache-2.0, stdio binary, `mcpName` set |
-| MCP Registry | `server.json` | Published for `io.github.armanas/froglet` after npm `0.1.2` |
+| MCP Registry | `server.json` | Published for `io.github.armanas/froglet` after npm `0.1.3` |
 | Codex plugin | `plugins/froglet/.codex-plugin/plugin.json` | Repo-local marketplace/test bundle |
 | Codex marketplace | `.agents/plugins/marketplace.json` | Local Codex marketplace entry |
 | Claude plugin | `plugins/froglet/.claude-plugin/plugin.json` | Claude Code plugin metadata |

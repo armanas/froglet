@@ -1,6 +1,6 @@
 {
   "name": "froglet",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Discover, invoke, and publish services on the Froglet protocol. Search the marketplace, run compute, manage async tasks.",
   "author": "Armanas Povilionis-Muradian",
   "homepage": "https://github.com/armanas/froglet",
@@ -43,5 +43,12 @@
       "description": "Maximum search result limit (default: 50, absolute max: 200)"
     }
   },
-  "tags": ["compute", "services", "marketplace", "ai-agents", "lightning", "wasm"]
+  "tags": [
+    "compute",
+    "services",
+    "marketplace",
+    "ai-agents",
+    "lightning",
+    "wasm"
+  ]
 }

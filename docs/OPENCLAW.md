@@ -61,12 +61,10 @@ Current API note:
   service id
 - `summary` is metadata only; it does not generate service code
 
-## Managed Launcher
+## Install Check
 
-For Froglet-managed OpenClaw hosts:
-
-```bash
-./integrations/openclaw/froglet/scripts/install-openclaw-launcher.sh
-```
-
-That makes plain `openclaw` open a local Froglet chat loop.
+OpenClaw blocks plugins that include executable launcher wrappers or
+`child_process` helpers inside the plugin directory. The Froglet OpenClaw plugin
+therefore ships only the plugin runtime, examples, and doctor/test scripts. Use
+OpenClaw's own plugin install command against this directory or a marketplace
+entry; do not install a Froglet-owned `openclaw` binary wrapper.

@@ -131,6 +131,33 @@ test("plugin falls back to legacy FROGLET_BASE_URL env var", async () => {
   }
 })
 
+test("plugin registers with local defaults when config and env are omitted", () => {
+  const envNames = [
+    "FROGLET_PROVIDER_URL",
+    "FROGLET_RUNTIME_URL",
+    "FROGLET_BASE_URL",
+    "FROGLET_PROVIDER_AUTH_TOKEN_PATH",
+    "FROGLET_RUNTIME_AUTH_TOKEN_PATH",
+    "FROGLET_AUTH_TOKEN_PATH"
+  ]
+  const previous = new Map(envNames.map((name) => [name, process.env[name]]))
+  try {
+    for (const name of envNames) {
+      delete process.env[name]
+    }
+    const tools = buildTools({})
+    assert.deepEqual([...tools.keys()], ["froglet"])
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name]
+      } else {
+        process.env[name] = value
+      }
+    }
+  }
+})
+
 test("create_project action returns isError with project-authoring message", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-plugin-"))
   try {

@@ -98,19 +98,6 @@ or node restarts.
 `summary` remains descriptive metadata only. It never generates code
 implicitly.
 
-## Managed Host Launcher
-
-For Froglet-managed OpenClaw hosts:
-
-```bash
-./integrations/openclaw/froglet/scripts/install-openclaw-launcher.sh
-```
-
-That installs an `openclaw` wrapper that:
-
-- opens a local Froglet chat loop when called with no args
-- forwards to the upstream OpenClaw CLI when args are present
-
 ## Verification
 
 ```bash
