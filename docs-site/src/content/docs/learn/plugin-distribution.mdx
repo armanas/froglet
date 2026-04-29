@@ -105,6 +105,11 @@ The plugin starts the published MCP package in local mode:
 First call `status`. If the local node is not ready, use `plan_install` and
 `get_install_guide` before shell commands.
 
+The npm MCP package version and the host-plugin wrapper version are separate.
+Bump `package.json` and `server.json` for `froglet-mcp` package or registry
+changes. Bump plugin manifests and Claude marketplace metadata for wrapper-only
+skills, commands, or host packaging changes.
+
 ## Claude Code
 
 GitHub-hosted install path:

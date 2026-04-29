@@ -34,9 +34,11 @@ describe('plugin and registry distribution metadata', () => {
     const codex = readJson('plugins/froglet/.codex-plugin/plugin.json');
     const claude = readJson('plugins/froglet/.claude-plugin/plugin.json');
     const mcp = readJson('plugins/froglet/.mcp.json');
+    const command = readRepoFile('plugins/froglet/commands/froglet.md');
 
     expect(codex.name).toBe('froglet');
     expect(claude.name).toBe('froglet');
+    expect(codex.version).toBe(claude.version);
     expect(codex.license).toBe('Apache-2.0');
     expect(claude.license).toBe('Apache-2.0');
     expect(codex.mcpServers).toBe('./.mcp.json');
@@ -48,11 +50,15 @@ describe('plugin and registry distribution metadata', () => {
     expect(mcp.mcpServers.froglet.env.FROGLET_RUNTIME_URL).toBe('http://127.0.0.1:8081');
     expect(mcp.mcpServers.froglet.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH).toContain('froglet-control.token');
     expect(mcp.mcpServers.froglet.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH).toContain('auth.token');
+    expect(command).toContain('allowed-tools: mcp__plugin_froglet_froglet__froglet');
+    expect(command).toContain('{"action":"status"}');
+    expect(command).toContain('plan_install');
   });
 
   it('publishes repo-local marketplace entries for Codex and Claude Code', () => {
     const codexMarketplace = readJson('.agents/plugins/marketplace.json');
     const claudeMarketplace = readJson('.claude-plugin/marketplace.json');
+    const claudePlugin = readJson('plugins/froglet/.claude-plugin/plugin.json');
 
     expect(codexMarketplace.name).toBe('froglet');
     expect(codexMarketplace.plugins[0].source.path).toBe('./plugins/froglet');
@@ -60,7 +66,8 @@ describe('plugin and registry distribution metadata', () => {
     expect(codexMarketplace.plugins[0].policy.authentication).toBe('ON_INSTALL');
     expect(claudeMarketplace.name).toBe('froglet');
     expect(claudeMarketplace.plugins[0].source).toBe('./plugins/froglet');
-    expect(claudeMarketplace.plugins[0].version).toBe(readJson('package.json').version);
+    expect(claudeMarketplace.metadata.version).toBe(claudePlugin.version);
+    expect(claudeMarketplace.plugins[0].version).toBe(claudePlugin.version);
   });
 
   it('documents distribution order and local/actionable boundaries on website and repo docs', () => {
@@ -80,6 +87,7 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('local/self-hosted provider/runtime actions');
       expect(text).toContain('mcp-publisher publish');
       expect(text).toContain('Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof');
+      expect(text).toContain('The npm MCP package version and the host-plugin wrapper version');
       expect(text).toContain('node -e');
       expect(text).toContain('claude plugin marketplace add armanas/froglet --sparse .claude-plugin plugins');
       expect(text).not.toContain('apps.froglet.dev');

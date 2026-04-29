@@ -47,6 +47,12 @@ not as a repackaging of the local stdio MCP tool.
 | Claude slash command | `plugins/froglet/commands/froglet.md` | `/froglet` entrypoint for the same local status/install/use-case flow |
 | OpenClaw/NemoClaw | `integrations/openclaw/froglet/` | Source plugin and examples; registry package still pending |
 
+The npm MCP package version and the host-plugin wrapper version are allowed to
+move independently. Bump `package.json` and `server.json` only when the
+published `froglet-mcp` package or MCP Registry metadata changes. Bump the
+plugin manifests and Claude marketplace version when only wrapper metadata,
+skills, or commands change.
+
 ## MCP Registry Publish
 
 The MCP Registry validates that the package metadata matches `server.json`, so
