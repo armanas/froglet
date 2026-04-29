@@ -58,6 +58,18 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.arm
 Expected live result: the registry search returns
 `io.github.armanas/froglet` and package identifier `froglet-mcp`.
 
+Verification commands:
+
+```bash
+npm view froglet-mcp version
+node -e 'fetch("https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet").then(r=>r.json()).then(j=>{const s=j.servers?.[0]?.server; console.log(JSON.stringify({name:s?.name, package:s?.packages?.[0]?.identifier, version:s?.version, count:j.metadata?.count}, null, 2));})'
+node -e 'fetch("https://froglet.dev/learn/plugin-distribution/").then(r=>console.log(r.status, r.headers.get("content-type")))'
+```
+
+Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof
+command. That URL is a rendered documentation page, so raw `curl` output is
+HTML by design.
+
 ## Codex
 
 Repo-local artifacts:

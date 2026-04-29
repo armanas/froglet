@@ -74,6 +74,8 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('ChatGPT App Directory is intentionally');
       expect(text).toContain('public free `demo.*` services');
       expect(text).toContain('mcp-publisher publish');
+      expect(text).toContain('Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof');
+      expect(text).toContain('node -e');
       expect(text).toContain('claude plugin marketplace add armanas/froglet --sparse .claude-plugin plugins');
     }
   });
