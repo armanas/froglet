@@ -220,8 +220,9 @@ before implementing consumer, provider, evidence, payments, batch, or GPU
 workflows. Batch starts with the existing async task status primitives but
 multi-item fan-out remains Order 44 work. GPU requires provider-advertised
 capability and real hardware evidence. Self-hosted GPU capability advertisement
-and Docker `--gpus all` gating exist, but scheduling policy, fallback semantics,
-and a verified GPU-backed workload remain Order 45 work.
+generic-compute offer metadata, Docker `--gpus all` gating, and no-CPU-fallback
+errors exist, but provider scheduling policy and a verified GPU-backed workload
+remain Order 45 work.
 
 If the LLM is only a web-chat interface with no HTTP, shell, or MCP access, it
 must not pretend to test Froglet. It should say it cannot run the hosted proof

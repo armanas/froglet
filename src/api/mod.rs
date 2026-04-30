@@ -4210,6 +4210,29 @@ fn capability_requires_gpu(capability: &str) -> bool {
     capability == "compute.gpu" || capability.starts_with("compute.gpu.")
 }
 
+fn capabilities_include_gpu(capabilities: &[String]) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability_requires_gpu(capability))
+}
+
+fn validate_gpu_capabilities_supported_by_execution(
+    execution: &ExecutionWorkload,
+    capabilities: &[String],
+) -> Result<(), String> {
+    if !capabilities_include_gpu(capabilities) {
+        return Ok(());
+    }
+    match (&execution.runtime, &execution.package_kind) {
+        (ExecutionRuntime::Container, ExecutionPackageKind::OciImage)
+        | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage) => Ok(()),
+        _ => Err(
+            "GPU capability requires container OCI execution; refusing to fall back to CPU"
+                .to_string(),
+        ),
+    }
+}
+
 fn validate_provider_offer_capabilities_for_node(
     state: &AppState,
     capabilities: &[String],
@@ -4738,6 +4761,7 @@ fn builtin_provider_offer_definitions(
         .as_ref()
         .map(|host| host.advertised_capabilities())
         .unwrap_or_default();
+    let gpu_capabilities = state.config.gpu.advertised_capabilities();
     let builtin = |offer_id: &str,
                    offer_kind: &str,
                    runtime: &str,
@@ -4832,7 +4856,7 @@ fn builtin_provider_offer_definitions(
             crate::execution::WORKLOAD_KIND_EXECUTION_V1,
             "any",
             "",
-            Vec::new(),
+            gpu_capabilities,
             state.pricing.price_for(ServiceId::ExecuteWasm),
             "builtin",
             "Run compute with any supported runtime (Python, Container, Wasm) using compute.execution.v1.",
@@ -9912,6 +9936,9 @@ async fn run_workload_spec_with_admission(
         ))
         .await;
     }
+    if let WorkloadSpec::Execution { execution } = &spec {
+        validate_gpu_capabilities_supported_by_execution(&execution, &capabilities_granted)?;
+    }
     match (spec, permit) {
         (WorkloadSpec::Execution { execution }, permit) => {
             match (&execution.runtime, &execution.package_kind, permit) {
@@ -11210,10 +11237,68 @@ mod tests {
             payload["execution"]["gpu"]["capabilities"],
             json!([
                 "compute.gpu",
-                "compute.gpu.vendor.nvidia",
-                "compute.gpu.runtime.docker"
+                "compute.gpu.runtime.docker",
+                "compute.gpu.vendor.nvidia"
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn generic_compute_offer_advertises_gpu_when_configured() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let state_mut = Arc::get_mut(&mut state).expect("unique app state");
+        state_mut.config.gpu = GpuConfig {
+            enabled: true,
+            vendor: Some("NVIDIA".to_string()),
+            model: Some("L4".to_string()),
+            count: 1,
+            memory_mb: Some(24_576),
+            container_runtime: Some("docker".to_string()),
+        };
+
+        let offer =
+            provider_control_offer_record(state.as_ref(), EXECUTE_COMPUTE_GENERIC_OFFER_ID, true)
+                .await
+                .expect("offer records")
+                .expect("generic compute offer");
+
+        let expected = vec![
+            "compute.gpu".to_string(),
+            "compute.gpu.runtime.docker".to_string(),
+            "compute.gpu.vendor.nvidia".to_string(),
+        ];
+        assert_eq!(offer.capabilities, expected);
+        assert_eq!(offer.offer.payload.execution_profile.capabilities, expected);
+    }
+
+    #[tokio::test]
+    async fn gpu_capability_rejects_non_container_execution_without_cpu_fallback() {
+        let state = test_app_state(PaymentBackend::None);
+        let execution = crate::execution::ExecutionWorkload::python_inline_handler(
+            "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
+            "handler".to_string(),
+            json!({}),
+        )
+        .expect("python execution workload");
+
+        let result = run_workload_spec_with_admission(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            vec!["compute.gpu".to_string()],
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("GPU-requested Python inline source should fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("GPU capability requires container OCI execution"));
     }
 
     async fn publish_test_service(

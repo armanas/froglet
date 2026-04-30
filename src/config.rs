@@ -338,6 +338,8 @@ impl GpuConfig {
         {
             capabilities.push(format!("compute.gpu.runtime.{runtime}"));
         }
+        capabilities.sort();
+        capabilities.dedup();
         capabilities
     }
 }

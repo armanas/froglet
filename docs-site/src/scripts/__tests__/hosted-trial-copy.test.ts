@@ -168,7 +168,7 @@ describe('hosted trial docs copy', () => {
     expect(index).toContain('async job queue');
     expect(index).toContain('GPU');
     expect(index).toContain('provider advertises');
-    expect(index).toContain('Planned');
+    expect(index).toContain('Alpha');
   });
 
   it('keeps the README aligned with the deployed five-service catalog', () => {

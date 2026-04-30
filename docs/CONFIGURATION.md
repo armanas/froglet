@@ -102,9 +102,12 @@ does not prove GPU execution.
 | `FROGLET_GPU_CONTAINER_RUNTIME` | `docker` when enabled | Container runtime expected to expose GPUs. Current execution wiring supports Docker with `--gpus all` |
 
 Publishing a service with `capabilities: ["compute.gpu"]` fails unless
-`FROGLET_GPU_ENABLED=1` is set. Runtime invocation grants GPU access only when
-the requested capability is listed in the signed offer, and non-GPU providers
-return a clear error instead of silently falling back to CPU.
+`FROGLET_GPU_ENABLED=1` is set. When GPU is enabled, the generic compute offer
+advertises the provider GPU capabilities so direct container workloads can
+request them. Runtime invocation grants GPU access only when the requested
+capability is listed in the signed offer. Non-GPU providers, and non-container
+workloads that request GPU, return clear errors instead of silently falling back
+to CPU.
 
 ## Confidential Execution
 

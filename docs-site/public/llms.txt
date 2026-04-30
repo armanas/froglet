@@ -95,7 +95,7 @@ Agent journey after hosted proof:
 4. If the user confirms, use the local MCP/OpenClaw action `plan_install` first. It returns questions, prerequisites, required secrets, command preview, validation checks, and post-install playbooks.
 5. After the profile is complete, use `get_install_guide` for the exact commands. Execute commands through the host agent shell, not through Froglet runtime. Ask before running install scripts, starting Docker, entering secrets, or exposing clearnet/Tor endpoints.
 6. After installation, verify health before implementing the use case. Check provider health, runtime health, local Froglet `status`, then call `plan_use_case` for the chosen consumer, provider, evidence, payments, batch, or GPU workflow.
-7. For batch or GPU requests, be strict: current hosted proof does not prove them. Batch starts with existing async task status primitives and still needs Order 44 for multi-item fan-out. GPU on self-hosted nodes now has provider-advertised capability metadata and Docker `--gpus all` gating, but the agent still needs real hardware evidence and Order 45 scheduling/fallback semantics before claiming production GPU support.
+7. For batch or GPU requests, be strict: current hosted proof does not prove them. Batch starts with existing async task status primitives and still needs Order 44 for multi-item fan-out. GPU on self-hosted nodes now has provider-advertised capability metadata, generic-compute offer advertisement, Docker `--gpus all` gating, and no-CPU-fallback errors, but the agent still needs real hardware evidence and Order 45 provider scheduling policy before claiming production GPU support.
 
 Simple chat fallback:
 
