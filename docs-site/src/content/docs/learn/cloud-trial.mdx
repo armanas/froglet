@@ -257,9 +257,10 @@ An agent that can run tools should use this staged local flow:
    multi-item fan-out until Order 44 lands. For GPU requests, require
    provider-advertised GPU capability plus real hardware evidence before
    accepting the job. Self-hosted GPU metadata, generic-compute offer
-   advertisement, Docker GPU gating, and no-CPU-fallback errors exist; provider
-   scheduling policy and a verified GPU workload are still separate Order 45
-   work.
+   advertisement, Docker GPU gating, no-CPU-fallback errors, and one GCP T4
+   container workload with a signed receipt are verified; provider scheduling
+   policy, marketplace routing, and operator deployment docs are still separate
+   Order 45 work.
 
 ## If your LLM cannot run tools
 

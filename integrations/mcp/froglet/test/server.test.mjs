@@ -357,7 +357,7 @@ describe("froglet MCP actions", () => {
     assert.equal(gpu.isError, undefined)
     assert.match(gpu.content[0].text, /workload_profile: gpu/)
     assert.match(gpu.content[0].text, /provider advertises GPU capability/)
-    assert.match(gpu.content[0].text, /does not prove a GPU-backed workload without real hardware evidence/)
+    assert.match(gpu.content[0].text, /one self-hosted GCP T4 Docker workload has been verified/)
   })
 
   it("threads expanded install profile choices into the command guide", async () => {

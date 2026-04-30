@@ -219,10 +219,11 @@ through the host shell. After local health is verified, call `plan_use_case`
 before implementing consumer, provider, evidence, payments, batch, or GPU
 workflows. Batch starts with the existing async task status primitives but
 multi-item fan-out remains Order 44 work. GPU requires provider-advertised
-capability and real hardware evidence. Self-hosted GPU capability advertisement
-generic-compute offer metadata, Docker `--gpus all` gating, and no-CPU-fallback
-errors exist, but provider scheduling policy and a verified GPU-backed workload
-remain Order 45 work.
+capability and real hardware evidence. Self-hosted GPU capability
+advertisement, generic-compute offer metadata, Docker `--gpus all` gating,
+no-CPU-fallback errors, and one GCP T4 container workload with a signed receipt
+are verified. Provider scheduling policy, marketplace routing, and operator
+deployment docs remain Order 45 work.
 
 If the LLM is only a web-chat interface with no HTTP, shell, or MCP access, it
 must not pretend to test Froglet. It should say it cannot run the hosted proof

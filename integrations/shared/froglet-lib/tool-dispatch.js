@@ -641,7 +641,7 @@ function useCaseSteps(profile) {
       ...common,
       "Confirm the provider advertises GPU capability in its descriptor/service metadata before routing GPU work.",
       "If no provider advertises GPU, report GPU unavailable rather than falling back silently.",
-      "For now, treat GPU as a provider/hardware requirement; full scheduling, quota, and fallback semantics remain Order 45 work."
+      "A single-node Docker GPU path has been verified on GCP T4; full provider scheduling, quota, marketplace routing, and fallback semantics remain Order 45 work."
     ]
   }
   return [
@@ -661,7 +661,7 @@ function useCaseBoundaries(profile) {
     boundaries.push("Current actionable surface can observe async task progress; true batch submission and fan-out is not yet implemented.")
   }
   if (profile === "gpu") {
-    boundaries.push("Current actionable surface can plan GPU work and require advertised capability; it does not prove a GPU-backed workload without real hardware evidence.")
+    boundaries.push("Current actionable surface can plan GPU work and require advertised capability; one self-hosted GCP T4 Docker workload has been verified, but provider scheduling and production capacity are not yet proved.")
   }
   return boundaries
 }

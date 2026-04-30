@@ -7102,21 +7102,29 @@ async fn run_container_execution(
             .arg("-i")
             .arg("--network")
             .arg("none")
+            .arg("-e")
+            .arg("FROGLET_CONTEXT")
             .env("FROGLET_CONTEXT", &context_json);
         if gpu_requested {
-            command.arg("--gpus").arg("all").env(
-                "FROGLET_GPU_CAPABILITIES",
-                serde_json::to_string(
-                    &granted_access_clone
-                        .iter()
-                        .filter(|capability| capability_requires_gpu(capability))
-                        .collect::<Vec<_>>(),
-                )
-                .map_err(|error| error.to_string())?,
-            );
+            let gpu_capabilities = serde_json::to_string(
+                &granted_access_clone
+                    .iter()
+                    .filter(|capability| capability_requires_gpu(capability))
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|error| error.to_string())?;
+            command
+                .arg("--gpus")
+                .arg("all")
+                .arg("-e")
+                .arg("FROGLET_GPU_CAPABILITIES")
+                .env("FROGLET_GPU_CAPABILITIES", gpu_capabilities);
         }
         if let Some(oci_digest) = oci_digest.as_ref() {
-            command.env("FROGLET_OCI_DIGEST", oci_digest);
+            command
+                .arg("-e")
+                .arg("FROGLET_OCI_DIGEST")
+                .env("FROGLET_OCI_DIGEST", oci_digest);
         }
         for mount in mounts.iter() {
             let Some(binding) = mount.binding.as_ref() else {
