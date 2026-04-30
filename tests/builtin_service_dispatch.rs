@@ -135,6 +135,7 @@ fn create_test_state_with_handler(
             policy_path: None,
             policy: None,
         },
+        gpu: Default::default(),
         confidential: ConfidentialConfig {
             policy_path: None,
             policy: None,

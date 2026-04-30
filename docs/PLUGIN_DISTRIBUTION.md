@@ -37,7 +37,7 @@ not as a repackaging of the local stdio MCP tool.
 | Surface | File | Current state |
 | --- | --- | --- |
 | npm package | `package.json` | `froglet-mcp`, Apache-2.0, stdio binary, `mcpName` set |
-| MCP Registry | `server.json` | Published for `io.github.armanas/froglet` after npm `0.1.3` |
+| MCP Registry | `server.json` | Prepared for `io.github.armanas/froglet` after npm `0.1.4`; publish after package release |
 | Codex plugin | `plugins/froglet/.codex-plugin/plugin.json` | Repo-local marketplace/test bundle |
 | Codex marketplace | `.agents/plugins/marketplace.json` | Local Codex marketplace entry |
 | Claude plugin | `plugins/froglet/.claude-plugin/plugin.json` | Claude Code plugin metadata |
@@ -126,7 +126,10 @@ local mode:
 Operational rule: the first task should call `status`. If the local node is not
 running or tokens are missing, call `plan_install`; only after the profile is
 confirmed should the agent call `get_install_guide` and run host-shell commands.
-Claude Code also exposes `/froglet`, which follows the same local-first flow.
+After local health is verified, call `plan_use_case` before implementing the
+user's first workflow, especially for batch or GPU requests where unsupported
+boundaries must be named before execution. Claude Code also exposes `/froglet`,
+which follows the same local-first flow.
 
 Current Codex host status: Codex CLI 0.114.0 exposes `codex mcp`, but no public
 `plugin install` or `plugin validate` command. The repo-local plugin metadata is

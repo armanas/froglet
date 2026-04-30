@@ -317,21 +317,32 @@ impl ExecutionWorkload {
         if self.entrypoint.value.trim().is_empty() {
             return Err("service-addressed execution requires entrypoint".to_string());
         }
-        let expected_access = self
-            .mounts
+        for expected_access in self.mounts.iter().map(|mount| {
+            format!(
+                "mount.{}.{}.{}",
+                mount.kind,
+                if mount.read_only { "read" } else { "write" },
+                mount.handle
+            )
+        }) {
+            if !self
+                .requested_access
+                .iter()
+                .any(|access| access == &expected_access)
+            {
+                return Err(
+                    "service-addressed execution requested_access must include declared mount access"
+                        .to_string(),
+                );
+            }
+        }
+        if self
+            .requested_access
             .iter()
-            .map(|mount| {
-                format!(
-                    "mount.{}.{}.{}",
-                    mount.kind,
-                    if mount.read_only { "read" } else { "write" },
-                    mount.handle
-                )
-            })
-            .collect::<Vec<_>>();
-        if self.requested_access != expected_access {
+            .any(|access| access.trim().is_empty())
+        {
             return Err(
-                "service-addressed execution requested_access must match the declared mounts"
+                "service-addressed execution requested_access must not contain empty capabilities"
                     .to_string(),
             );
         }

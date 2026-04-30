@@ -61,6 +61,7 @@ export function summarizeService(service) {
     `entrypoint: ${service?.entrypoint ?? "unknown"}`,
     `contract_version: ${normalizeContractVersion(service)}`,
     `mounts: ${formatObject(normalizeMounts(service))}`,
+    `capabilities: ${formatObject(service?.capabilities ?? [])}`,
     `mode: ${service?.mode ?? "unknown"}`,
     `price_sats: ${service?.price_sats ?? "unknown"}`,
     `publication_state: ${service?.publication_state ?? "unknown"}`,
@@ -82,6 +83,7 @@ export function summarizeProject(project) {
     `entrypoint: ${project?.entrypoint ?? "unknown"}`,
     `contract_version: ${normalizeContractVersion(project)}`,
     `mounts: ${formatObject(normalizeMounts(project))}`,
+    `capabilities: ${formatObject(project?.capabilities ?? [])}`,
     `mode: ${project?.mode ?? "unknown"}`,
     `price_sats: ${project?.price_sats ?? "unknown"}`,
     `publication_state: ${project?.publication_state ?? "unknown"}`,
@@ -106,7 +108,7 @@ export function serviceAuthorityNotes(service) {
       ? "input_contract: no input_schema is declared; Froglet may forward any JSON input and the service may ignore it."
       : "input_contract: input_schema is declared; stay within that contract when invoking the service.",
     "starter_example: service.starter, when present, is only an example request shape; input_schema and output_schema remain authoritative.",
-    "Only listed fields are authoritative; do not infer behavior beyond offer_kind, resource_kind, runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, input_schema, and output_schema."
+    "Only listed fields are authoritative; do not infer behavior beyond offer_kind, resource_kind, runtime, package_kind, entrypoint_kind, entrypoint, contract_version, mounts, capabilities, input_schema, and output_schema."
   ]
 }
 

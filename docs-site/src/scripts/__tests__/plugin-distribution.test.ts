@@ -57,6 +57,7 @@ describe('plugin and registry distribution metadata', () => {
     expect(command).toContain('allowed-tools: mcp__plugin_froglet_froglet__froglet');
     expect(command).toContain('{"action":"status"}');
     expect(command).toContain('plan_install');
+    expect(command).toContain('plan_use_case');
   });
 
   it('publishes repo-local marketplace entries for Codex and Claude Code', () => {
@@ -89,6 +90,7 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('public free `demo.*` services');
       expect(text).toContain('installed MCP/plugins');
       expect(text).toContain('local/self-hosted provider/runtime actions');
+      expect(text).toContain('plan_use_case');
       expect(text).toContain('mcp-publisher publish');
       expect(text).toContain('Do not use `curl https://froglet.dev/learn/plugin-distribution/` as a proof');
       expect(text).toContain('The npm MCP package version and the host-plugin wrapper version');

@@ -15,7 +15,7 @@ or a verified local/self-hosted Froglet path.
 | npm package | `froglet-mcp` |
 | Install command | `npx -y froglet-mcp` |
 | Transport | `stdio` |
-| Version | `0.1.3` for `froglet-mcp` |
+| Version | `0.1.4` for `froglet-mcp` after the next npm publish |
 | License | Apache-2.0 |
 | Homepage | `https://froglet.dev` |
 | Repository | `https://github.com/armanas/froglet` |
@@ -45,7 +45,7 @@ Installed MCP is for local/self-hosted Froglet nodes. The no-install hosted proo
 
 | Directory | Current action | Status |
 | --- | --- | --- |
-| Official MCP Registry | Published via `mcp-publisher`; verify latest active record before citing. | Verified active at `0.1.3`. |
+| Official MCP Registry | Published via `mcp-publisher`; verify latest active record before citing. | Active record is verified at `0.1.3`; update to `0.1.4` after the next package publish. |
 | MCP.Directory | Submit or claim the GitHub/npm listing; include repo URL, npm package, short description, and contact email if desired. | Prepared, not submitted here. |
 | MCPCentral | Use `mcp-publisher` with `--registry https://registry.mcpcentral.io` if the registry accepts the same `server.json` shape. | Prepared, not submitted here. |
 | MCP.so | Submit type/name/repo URL/server config using the canonical metadata above. | Prepared, not submitted here. |

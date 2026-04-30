@@ -1,7 +1,7 @@
 {
   "id": "froglet",
   "name": "Froglet",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Single-tool Froglet integration for local services, receipts, and settlement.",
   "configSchema": {
     "type": "object",
@@ -11,19 +11,34 @@
         "maxProperties": 0
       },
       {
-        "required": ["baseUrl", "authTokenPath"]
+        "required": [
+          "baseUrl",
+          "authTokenPath"
+        ]
       },
       {
-        "required": ["providerUrl", "runtimeUrl", "providerAuthTokenPath", "runtimeAuthTokenPath"]
+        "required": [
+          "providerUrl",
+          "runtimeUrl",
+          "providerAuthTokenPath",
+          "runtimeAuthTokenPath"
+        ]
       },
       {
-        "required": ["providerUrl", "runtimeUrl", "authTokenPath"]
+        "required": [
+          "providerUrl",
+          "runtimeUrl",
+          "authTokenPath"
+        ]
       }
     ],
     "properties": {
       "hostProduct": {
         "type": "string",
-        "enum": ["openclaw", "nemoclaw"],
+        "enum": [
+          "openclaw",
+          "nemoclaw"
+        ],
         "default": "openclaw"
       },
       "providerUrl": {

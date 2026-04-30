@@ -23,7 +23,8 @@ The npm package defaults to `FROGLET_PROFILE=local` with provider/runtime URLs
 pointing at `http://127.0.0.1:8080` and `http://127.0.0.1:8081`. Agents should
 call `status` first. If the local node or token files are missing, call
 `plan_install` and then `get_install_guide` before running host-shell setup
-commands.
+commands. After local health is verified, call `plan_use_case` before
+implementing consumer, provider, evidence, payments, batch, or GPU workflows.
 
 ### Local source checkout
 
@@ -50,6 +51,11 @@ Agents should call the Froglet `plan_install` action before local setup when the
 user has not specified the target agent, install footprint, role, payment rail,
 network mode, marketplace URL, or first use case. After the profile is
 confirmed, `get_install_guide` returns the exact host-shell commands.
+After health checks pass, `plan_use_case` returns a bounded first-workflow plan
+and names unsupported edges before execution. In particular, true batch
+fan-out, GPU scheduling, and verified GPU hardware smokes are still separate
+implementation work. Self-hosted GPU capability metadata and Docker GPU gating
+are available to providers that explicitly configure GPUs.
 
 ### Explicit local npm profile
 
@@ -82,7 +88,8 @@ Legacy shortcuts: `FROGLET_BASE_URL` sets both provider and runtime URLs.
 `FROGLET_AUTH_TOKEN_PATH` sets both auth token paths.
 
 Actions that hit provider/runtime APIs require the matching token path at call
-time. `plan_install` and `get_install_guide` do not require local token files.
+time. `plan_install`, `get_install_guide`, and `plan_use_case` do not require
+local token files.
 The hosted demo is intentionally not an MCP action; use
 `https://froglet.dev/llms.txt` for the no-install proof.
 

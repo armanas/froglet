@@ -1029,6 +1029,27 @@ components:
                   type: array
                   items:
                     type: string
+            gpu:
+              type: object
+              description: Provider-configured GPU advertisement. Presence does not prove hardware execution until a GPU-backed workload succeeds.
+              properties:
+                enabled:
+                  type: boolean
+                count:
+                  type: integer
+                vendor:
+                  type: string
+                model:
+                  type: string
+                memory_mb:
+                  type: integer
+                  format: int64
+                container_runtime:
+                  type: string
+                capabilities:
+                  type: array
+                  items:
+                    type: string
         limits:
           type: object
           properties:
@@ -1129,6 +1150,11 @@ components:
           items:
             type: object
             additionalProperties: true
+        capabilities:
+          type: array
+          description: Provider-required capability strings such as `compute.gpu`; callers must not infer capability support unless listed.
+          items:
+            type: string
         mode:
           type: string
           enum: [sync, async]
@@ -1205,6 +1231,11 @@ components:
           items:
             type: object
             additionalProperties: true
+        capabilities:
+          type: array
+          description: Provider-required capability strings such as `compute.gpu`.
+          items:
+            type: string
         summary:
           type: string
           description: Human-readable service summary.
@@ -1256,6 +1287,11 @@ components:
           items:
             type: object
             additionalProperties: true
+        capabilities:
+          type: array
+          description: Provider-required capability strings such as `compute.gpu`.
+          items:
+            type: string
         mode:
           type: string
         summary:

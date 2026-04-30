@@ -51,6 +51,7 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `get_invoice_bundle`
 - `plan_install`
 - `get_install_guide`
+- `plan_use_case`
 - `marketplace_search`
 - `marketplace_provider`
 - `marketplace_receipts`
@@ -91,6 +92,8 @@ The current checked-in API is service- and artifact-oriented:
   payment, network, marketplace, and use-case choices
 - use `get_install_guide` after the install profile is confirmed to return
   host-shell commands
+- use `plan_use_case` after health checks pass and before implementing
+  consumer, provider, evidence, payments, batch, or GPU workflows
 
 The current public tool surface does not include project authoring, log tailing,
 or node restarts.

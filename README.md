@@ -251,6 +251,7 @@ The one `froglet` tool covers:
 - Settlement visibility and marketplace-native wrappers
 - Status and task polling
 - Install planning via `plan_install`, then command generation via `get_install_guide`
+- Post-install workflow planning via `plan_use_case`
 - Raw compute
 
 <details>
@@ -278,8 +279,14 @@ The npm package defaults to `FROGLET_PROFILE=local`, with provider/runtime URLs
 pointing at `http://127.0.0.1:8080` and `http://127.0.0.1:8081`. Agents should
 call `status` first. If the local node or token files are missing, use
 `plan_install` and `get_install_guide` before running setup commands through
-the host shell. The public no-install proof remains the HTTP flow at
-`https://froglet.dev/llms.txt`; it is not an installed MCP action.
+the host shell. After local health is verified, use `plan_use_case` before
+implementing consumer, provider, evidence, payments, batch, or GPU workflows.
+Batch and GPU planning stays truthful: current MCP can plan and verify
+boundaries. GPU capability advertisement and Docker GPU gating are implemented
+for self-hosted container services, but true batch fan-out, GPU scheduling, and
+verified GPU hardware smokes remain separate work. The public no-install proof
+remains the HTTP flow at `https://froglet.dev/llms.txt`; it is not an installed
+MCP action.
 
 For a local node, use the local profile:
 

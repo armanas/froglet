@@ -103,6 +103,7 @@ describe("tool definitions", () => {
       "get_invoice_bundle",
       "plan_install",
       "get_install_guide",
+      "plan_use_case",
       "marketplace_search",
       "marketplace_provider",
       "marketplace_receipts",
@@ -121,6 +122,14 @@ describe("tool definitions", () => {
       "clearnet",
       "tor",
       "dual"
+    ])
+    assert.deepEqual(tools[0].inputSchema.properties.workload_profile.enum, [
+      "consumer",
+      "provider",
+      "evidence",
+      "payments",
+      "batch",
+      "gpu"
     ])
     assert.match(
       tools[0].inputSchema.properties.starter.description,
@@ -320,6 +329,35 @@ describe("froglet MCP actions", () => {
     assert.match(text, /Post-install playbooks:/)
     assert.match(text, /provider-first/)
     assert.match(text, /Safety: Ask before running install scripts/)
+  })
+
+  it("plans post-install use cases without claiming batch or GPU support is complete", async () => {
+    const batch = await handleToolCall(
+      "froglet",
+      {
+        action: "plan_use_case",
+        use_case: "run a batch queue for long-running model jobs"
+      },
+      config
+    )
+    assert.equal(batch.isError, undefined)
+    assert.match(batch.content[0].text, /workload_profile: batch/)
+    assert.match(batch.content[0].text, /get_task`\/`wait_task/)
+    assert.match(batch.content[0].text, /true batch submission and fan-out is not yet implemented/)
+
+    const gpu = await handleToolCall(
+      "froglet",
+      {
+        action: "plan_use_case",
+        workload_profile: "gpu",
+        use_case: "run CUDA inference"
+      },
+      config
+    )
+    assert.equal(gpu.isError, undefined)
+    assert.match(gpu.content[0].text, /workload_profile: gpu/)
+    assert.match(gpu.content[0].text, /provider advertises GPU capability/)
+    assert.match(gpu.content[0].text, /does not prove a GPU-backed workload without real hardware evidence/)
   })
 
   it("threads expanded install profile choices into the command guide", async () => {

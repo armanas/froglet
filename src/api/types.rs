@@ -49,6 +49,7 @@ pub struct TorInfo {
 #[derive(Debug, Serialize)]
 pub struct ExecutionInfo {
     pub wasm: WasmInfo,
+    pub gpu: GpuInfo,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +57,21 @@ pub struct WasmInfo {
     pub enabled: bool,
     pub fuel_limit: u64,
     pub entrypoints: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GpuInfo {
+    pub enabled: bool,
+    pub count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_runtime: Option<String>,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -453,6 +469,8 @@ pub struct ProviderControlOfferRecord {
     pub contract_version: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     pub mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -494,6 +512,8 @@ pub struct ProviderControlPublishArtifactRequest {
     pub contract_version: Option<String>,
     #[serde(default)]
     pub mounts: Option<Vec<ExecutionMount>>,
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
     #[serde(default)]
     pub inline_source: Option<String>,
     #[serde(default)]
@@ -562,6 +582,8 @@ pub struct ProviderServiceRecord {
     pub contract_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<ExecutionMount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     pub mode: String,
     pub price_sats: u64,
     pub publication_state: String,

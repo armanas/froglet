@@ -108,6 +108,7 @@ fn in_memory_state() -> AppState {
             policy_path: None,
             policy: None,
         },
+        gpu: Default::default(),
         confidential: ConfidentialConfig {
             policy_path: None,
             policy: None,

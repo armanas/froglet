@@ -25,7 +25,9 @@ Flow:
 4. If the install profile is complete, call `get_install_guide` and tell the
    user that shell commands run through the host agent shell, not through the
    Froglet runtime.
-5. If Froglet is already reachable, use the MCP actions for real local work:
+5. If Froglet is already reachable, call `plan_use_case` before implementing
+   the user's first workflow, especially for batch or GPU requests.
+6. Use the MCP actions for real local work:
    service discovery, invocation, artifacts, settlement inspection, marketplace
    operations, or the requested use-case implementation.
 

@@ -195,6 +195,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
             policy_path: None,
             policy: None,
         },
+        gpu: Default::default(),
         confidential: ConfidentialConfig {
             policy_path: None,
             policy: None,

@@ -524,6 +524,22 @@ function requestedAccessFromMounts(mounts) {
     .map((mount) => `mount.${mount.kind}.${mount.read_only === true ? "read" : "write"}.${mount.handle}`)
 }
 
+function requestedAccessFromService(service, mounts) {
+  const capabilities = Array.isArray(service?.capabilities) ? service.capabilities : []
+  return [...new Set([...requestedAccessFromMounts(mounts), ...capabilities])]
+    .filter((capability) => typeof capability === "string" && capability.trim().length > 0)
+    .map((capability) => capability.trim())
+    .sort()
+}
+
+function requestedAccessFromRequest(request, mounts) {
+  const capabilities = Array.isArray(request?.capabilities) ? request.capabilities : []
+  return [...new Set([...requestedAccessFromMounts(mounts), ...capabilities])]
+    .filter((capability) => typeof capability === "string" && capability.trim().length > 0)
+    .map((capability) => capability.trim())
+    .sort()
+}
+
 function normalizedExecutionProfile(service) {
   const runtime = typeof service?.runtime === "string" && service.runtime.trim().length > 0 ? service.runtime : "unknown"
   const packageKind =
@@ -654,7 +670,7 @@ export function buildExecutionWorkload(request = {}) {
     contract_version: contractVersion,
     input_format: JCS_JSON_FORMAT,
     input_hash: inputHash(input),
-    requested_access: requestedAccessFromMounts(mounts),
+    requested_access: requestedAccessFromRequest(request, mounts),
     security: {
       mode: "standard",
     },
@@ -731,7 +747,7 @@ export function buildServiceAddressedExecution(service, input = null) {
         : contractVersion,
     input_format: JCS_JSON_FORMAT,
     input_hash: inputHash(normalized),
-    requested_access: requestedAccessFromMounts(mounts),
+    requested_access: requestedAccessFromService(service, mounts),
     security,
     mounts,
     input: normalized,

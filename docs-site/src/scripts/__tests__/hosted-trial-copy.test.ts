@@ -44,6 +44,12 @@ describe('hosted trial docs copy', () => {
     expect(index).not.toContain(strongPrompt);
   });
 
+  it('serves the canonical llms.txt from the website public root', () => {
+    expect(readRepoFile('docs-site/public/llms.txt')).toEqual(
+      readRepoFile('docs/llms/try.froglet.dev.txt'),
+    );
+  });
+
   it('documents the five free hosted demo services', () => {
     for (const path of [
       'docs/HOSTED_TRIAL.md',
@@ -212,6 +218,7 @@ describe('hosted trial docs copy', () => {
       const text = readRepoFile(path);
       expect(text, `${path} should mention plan_install`).toContain('plan_install');
       expect(text, `${path} should mention get_install_guide`).toContain('get_install_guide');
+      expect(text, `${path} should mention plan_use_case`).toContain('plan_use_case');
       expect(text, `${path} should include network choice`).toContain('tor');
       expect(text, `${path} should include local footprint choice`).toContain('docker');
     }

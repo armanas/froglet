@@ -242,6 +242,7 @@ async function handlePublishArtifact(args, config, includeRaw) {
       entrypoint: args.entrypoint,
       contract_version: args.contract_version,
       mounts: args.mounts,
+      capabilities: args.capabilities,
       mode: args.mode,
       price_sats: args.price_sats,
       publication_state: args.publication_state,
@@ -293,6 +294,7 @@ async function handleCompute(args, config, includeRaw) {
       entrypoint: args.entrypoint,
       contract_version: args.contract_version,
       mounts: args.mounts,
+      capabilities: args.capabilities,
       timeout_secs: args.timeout_secs ?? 15
     }
   })
@@ -378,6 +380,14 @@ const SUPPORTED_LIGHTNING_MODES = new Set(["mock", "lnd_rest"])
 const SUPPORTED_INSTALL_FOOTPRINTS = new Set(["docker", "binary", "source"])
 const SUPPORTED_INSTALL_ROLES = new Set(["consumer", "provider", "both"])
 const SUPPORTED_NETWORK_MODES = new Set(["clearnet", "tor", "dual"])
+const SUPPORTED_USE_CASE_PROFILES = new Set([
+  "consumer",
+  "provider",
+  "evidence",
+  "payments",
+  "batch",
+  "gpu"
+])
 
 function normalizeChoice(args, field, defaultValue, supported) {
   const raw =
@@ -566,8 +576,125 @@ function postInstallPlaybooks() {
     "provider-first: publish a small service, inspect descriptor/offer, then invoke it locally.",
     "evidence-first: witness a URL, hash-verify a pinned asset, or notarize a content hash.",
     "payments-first: run a mock Lightning paid deal before entering real Stripe/x402/LND credentials.",
+    "batch-first: use existing async task status primitives for one long task; multi-item batch fan-out remains Order 44 work.",
+    "gpu-first: require provider-advertised GPU capability and hardware verification before accepting GPU work.",
     "network-first: keep loopback first, then move to clearnet, Tor, or dual after health checks pass."
   ]
+}
+
+function inferUseCaseProfile(args) {
+  if (typeof args.workload_profile === "string" && args.workload_profile.trim().length > 0) {
+    const profile = args.workload_profile.trim().toLowerCase()
+    if (!SUPPORTED_USE_CASE_PROFILES.has(profile)) {
+      throw new Error(`workload_profile must be one of: ${[...SUPPORTED_USE_CASE_PROFILES].join(", ")}`)
+    }
+    return profile
+  }
+  const text = `${args.use_case ?? ""}`.toLowerCase()
+  if (/\bgpu\b|cuda|nvidia|accelerat/.test(text)) return "gpu"
+  if (/\bbatch\b|queue|long[- ]?running|async|fan[- ]?out/.test(text)) return "batch"
+  if (/pay|stripe|x402|lightning|invoice|settle/.test(text)) return "payments"
+  if (/witness|hash|notari[sz]e|receipt|attest|prove/.test(text)) return "evidence"
+  if (/publish|provider|offer|service/.test(text)) return "provider"
+  return "consumer"
+}
+
+function useCaseSteps(profile) {
+  const common = [
+    "Call `status` and do not continue unless provider_healthy and runtime_healthy are true.",
+    "If status fails, call `plan_install` instead of guessing local URLs or token paths."
+  ]
+  if (profile === "provider") {
+    return [
+      ...common,
+      "Call `publish_artifact` with starter, input_schema, and output_schema metadata.",
+      "Call `list_local_services` and `get_local_service` to verify the descriptor/offer fields.",
+      "Call `invoke_service` against the published service and inspect the returned result plus receipt evidence."
+    ]
+  }
+  if (profile === "evidence") {
+    return [
+      ...common,
+      "Select one user-owned URL, file hash, or artifact hash; do not use arbitrary third-party targets without authorization.",
+      "Use `discover_services`/`get_service` or a local service to choose witness, hash-verify, or notarize behavior.",
+      "Call `invoke_service`, then report status, result hash, receipt presence, and feed/artifact evidence."
+    ]
+  }
+  if (profile === "payments") {
+    return [
+      ...common,
+      "Call `get_wallet_balance` and `list_settlement_activity` before a paid run.",
+      "Start with Lightning mock unless the user explicitly supplied Stripe test, x402, or LND REST credentials.",
+      "After execution, call `get_payment_intent` or `get_invoice_bundle` when a deal id is available, then report settlement state."
+    ]
+  }
+  if (profile === "batch") {
+    return [
+      ...common,
+      "Use `run_compute` or `invoke_service` for the smallest single long-running job first.",
+      "If the response returns a task_id or non-terminal task, call `get_task`/`wait_task` for progress and completion.",
+      "Do not claim multi-item batch fan-out, retries, or paid async settlement until Order 44 lands and is verified."
+    ]
+  }
+  if (profile === "gpu") {
+    return [
+      ...common,
+      "Confirm the provider advertises GPU capability in its descriptor/service metadata before routing GPU work.",
+      "If no provider advertises GPU, report GPU unavailable rather than falling back silently.",
+      "For now, treat GPU as a provider/hardware requirement; full scheduling, quota, and fallback semantics remain Order 45 work."
+    ]
+  }
+  return [
+    ...common,
+    "Call `list_local_services` or `discover_services` depending on whether the user wants local or marketplace-backed work.",
+    "Call `get_local_service`/`get_service` for the chosen service before invoking it.",
+    "Call `invoke_service`, then report status, result, receipt evidence, and what remains unproven."
+  ]
+}
+
+function useCaseBoundaries(profile) {
+  const boundaries = [
+    "The no-install hosted proof is not an MCP action; use https://froglet.dev/llms.txt for that.",
+    "Do not enter payment secrets, expose clearnet/Tor endpoints, or run install commands without user approval."
+  ]
+  if (profile === "batch") {
+    boundaries.push("Current actionable surface can observe async task progress; true batch submission and fan-out is not yet implemented.")
+  }
+  if (profile === "gpu") {
+    boundaries.push("Current actionable surface can plan GPU work and require advertised capability; it does not prove a GPU-backed workload without real hardware evidence.")
+  }
+  return boundaries
+}
+
+async function handlePlanUseCase(args, _config, includeRaw) {
+  const profile = inferUseCaseProfile(args)
+  const payload = {
+    workload_profile: profile,
+    use_case: optionalString(args, "use_case") ?? null,
+    readiness_checks: [
+      "local Froglet provider/runtime reachable",
+      "MCP token paths configured",
+      "service metadata inspected before invocation",
+      ...(profile === "gpu" ? ["provider advertises GPU capability", "real GPU host or cloud quota available"] : []),
+      ...(profile === "batch" ? ["single async task path verified before multi-item orchestration"] : [])
+    ],
+    next_actions: useCaseSteps(profile),
+    boundaries: useCaseBoundaries(profile)
+  }
+  const lines = [
+    `workload_profile: ${profile}`,
+    `use_case: ${payload.use_case ?? "not specified"}`,
+    "",
+    "Readiness checks:",
+    ...payload.readiness_checks.map((check) => `  - ${check}`),
+    "",
+    "Next actions:",
+    ...payload.next_actions.map((step, index) => `  ${index + 1}. ${step}`),
+    "",
+    "Boundaries:",
+    ...payload.boundaries.map((boundary) => `  - ${boundary}`)
+  ]
+  return renderResult(lines, payload, includeRaw)
 }
 
 async function handleInstallGuide(args, _config, includeRaw) {
@@ -888,6 +1015,8 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handlePlanInstall(args, config, includeRaw)
     case "get_install_guide":
       return handleInstallGuide(args, config, includeRaw)
+    case "plan_use_case":
+      return handlePlanUseCase(args, config, includeRaw)
     case "marketplace_search":
       return handleMarketplaceSearch(args, config, includeRaw)
     case "marketplace_provider":

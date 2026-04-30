@@ -46,6 +46,8 @@ Expected behavior:
 - if the model can use MCP tools after the proof, it should call `plan_install`
   before `get_install_guide` so it asks the right local setup questions instead
   of rushing into a default install
+- after a local install, the model should call `plan_use_case` before it tries
+  to implement consumer, provider, evidence, payments, batch, or GPU workflows
 - if the model is only a web-chat LLM with no HTTP, shell, or MCP access, it
   should say that plainly and give you the manual curl/docs path below
 - if the model cannot fetch URLs, POST JSON, send Bearer auth, and poll HTTP
@@ -58,7 +60,9 @@ The hosted proof is now only the HTTP flow below and the canonical
 local/actionable-first: it connects to a configured provider/runtime, then uses
 actions such as `status`, `discover_services`, `invoke_service`,
 `publish_artifact`, settlement inspection, `plan_install`, and
-`get_install_guide`.
+`get_install_guide`. After the local node is healthy, `plan_use_case` gives the
+agent a bounded plan for the user's first consumer, provider, evidence,
+payments, batch, or GPU workflow.
 
 Use MCP after the proof when the user wants Froglet running locally, publishing
 services, settlement visibility, marketplace actions, or a concrete workflow
@@ -247,8 +251,14 @@ An agent that can run tools should use this staged local flow:
    post-install playbooks.
 5. Call `get_install_guide` only after you confirm the profile. The agent runs
    those commands through its host shell, not through Froglet runtime.
-6. Verify provider health, runtime health, and local Froglet `status`, then
-   implement one concrete use case.
+6. Verify provider health, runtime health, and local Froglet `status`.
+7. Call `plan_use_case` before implementing the concrete workflow. For batch
+   requests, start with existing async task status primitives and do not claim
+   multi-item fan-out until Order 44 lands. For GPU requests, require
+   provider-advertised GPU capability plus real hardware evidence before
+   accepting the job. Self-hosted GPU metadata and Docker GPU gating exist;
+   scheduling policy, fallback semantics, and a verified GPU workload are still
+   separate Order 45 work.
 
 ## If your LLM cannot run tools
 

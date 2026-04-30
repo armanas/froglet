@@ -358,6 +358,15 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
                 fuel_limit: 50_000_000,
                 entrypoints: vec!["alloc".to_string(), "run".to_string()],
             },
+            gpu: GpuInfo {
+                enabled: state.config.gpu.enabled,
+                count: state.config.gpu.count,
+                vendor: state.config.gpu.vendor.clone(),
+                model: state.config.gpu.model.clone(),
+                memory_mb: state.config.gpu.memory_mb,
+                container_runtime: state.config.gpu.container_runtime.clone(),
+                capabilities: state.config.gpu.advertised_capabilities(),
+            },
         },
         limits: LimitsInfo {
             events_query_limit_default: 100,
@@ -4118,13 +4127,6 @@ fn grant_requested_capabilities_from_offer(
         return Ok(Vec::new());
     }
 
-    if spec.runtime() != Some("wasm") {
-        return Err(error_json(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "requested_capabilities are only supported for wasm workloads" }),
-        ));
-    }
-
     for capability in requested {
         if !offer
             .payload
@@ -4145,6 +4147,118 @@ fn grant_requested_capabilities_from_offer(
     }
 
     Ok(requested.to_vec())
+}
+
+fn mount_access_capabilities(mounts: &[ExecutionMount]) -> Vec<String> {
+    mounts
+        .iter()
+        .map(|mount| {
+            format!(
+                "mount.{}.{}.{}",
+                mount.kind,
+                if mount.read_only { "read" } else { "write" },
+                mount.handle
+            )
+        })
+        .collect()
+}
+
+fn merged_access_capabilities(definition: &ProviderManagedOfferDefinition) -> Vec<String> {
+    let mut capabilities = definition.capabilities.clone();
+    capabilities.extend(mount_access_capabilities(&definition.mounts));
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
+}
+
+fn service_access_capabilities(service: &ProviderServiceRecord) -> Vec<String> {
+    let mut capabilities = service.capabilities.clone();
+    capabilities.extend(mount_access_capabilities(&service.mounts));
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
+}
+
+fn normalize_declared_capabilities(capabilities: Vec<String>) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for capability in capabilities {
+        let trimmed = capability.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.len() > 128 {
+            return Err(format!("capability is too long: {trimmed}"));
+        }
+        if !trimmed
+            .split('.')
+            .all(|segment| !segment.is_empty() && segment.chars().all(valid_capability_char))
+        {
+            return Err(format!("invalid capability: {trimmed}"));
+        }
+        out.push(trimmed);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn valid_capability_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+}
+
+fn capability_requires_gpu(capability: &str) -> bool {
+    capability == "compute.gpu" || capability.starts_with("compute.gpu.")
+}
+
+fn validate_provider_offer_capabilities_for_node(
+    state: &AppState,
+    capabilities: &[String],
+) -> Result<(), String> {
+    let advertised_gpu_capabilities = state.config.gpu.advertised_capabilities();
+    for capability in capabilities {
+        if !capability_requires_gpu(capability) {
+            continue;
+        }
+        if !state.config.gpu.enabled {
+            return Err(
+                "GPU capabilities require FROGLET_GPU_ENABLED=1 on this provider".to_string(),
+            );
+        }
+        if !advertised_gpu_capabilities
+            .iter()
+            .any(|advertised| advertised == capability)
+        {
+            return Err(format!(
+                "GPU capability {capability} is not advertised by this provider"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn current_provider_capability_available(state: &AppState, capability: &str) -> bool {
+    if capability_requires_gpu(capability) {
+        return state
+            .config
+            .gpu
+            .advertised_capabilities()
+            .iter()
+            .any(|advertised| advertised == capability);
+    }
+
+    if let Some(host_env) = state.wasm_host.as_ref() {
+        let wasm_host_capabilities = host_env.advertised_capabilities();
+        if wasm_host_capabilities
+            .iter()
+            .any(|advertised| advertised == capability)
+        {
+            return true;
+        }
+    }
+
+    // Non-provider-wide capabilities such as mount handles are validated
+    // against the selected offer before the quote is issued.
+    true
 }
 
 fn local_wasm_capabilities_for_submission(
@@ -4570,9 +4684,9 @@ fn payload_from_provider_offer_definition(
             runtime,
             package_kind: definition.package_kind.clone(),
             contract_version: definition.contract_version.clone(),
-            access_handles: definition.capabilities.clone(),
+            access_handles: merged_access_capabilities(definition),
             abi_version: definition.contract_version.clone(),
-            capabilities: definition.capabilities.clone(),
+            capabilities: merged_access_capabilities(definition),
             max_input_bytes: definition.max_input_bytes,
             max_runtime_ms: definition.max_runtime_ms,
             max_memory_bytes: definition.max_memory_bytes,
@@ -4603,6 +4717,7 @@ pub(crate) fn provider_offer_record_from_parts(
         entrypoint: definition.entrypoint.clone(),
         contract_version: definition.contract_version.clone(),
         mounts: definition.mounts.clone(),
+        capabilities: definition.capabilities.clone(),
         mode: definition.mode.clone(),
         summary: definition.summary.clone(),
         module_hash: definition.module_hash.clone(),
@@ -4897,6 +5012,7 @@ fn provider_service_from_definition(
         entrypoint: definition.entrypoint.clone(),
         contract_version: definition.contract_version.clone(),
         mounts: definition.mounts.clone(),
+        capabilities: definition.capabilities.clone(),
         mode: definition.mode.clone(),
         price_sats: definition.price_sats,
         publication_state: definition.publication_state.clone(),
@@ -5263,7 +5379,8 @@ pub fn artifact_provider_offer_definition(
         contract_version: contract_version.clone(),
         mounts: payload.mounts.unwrap_or_default(),
         mode: payload.mode.unwrap_or_else(default_service_mode),
-        capabilities: Vec::new(),
+        capabilities: normalize_declared_capabilities(payload.capabilities.unwrap_or_default())
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?,
         max_input_bytes,
         max_runtime_ms,
         max_memory_bytes,
@@ -5290,6 +5407,9 @@ pub fn artifact_provider_offer_definition(
         confidential_profile_hash: None,
     };
     validate_provider_offer_definition(&definition)
+        .and_then(|_| {
+            validate_provider_offer_capabilities_for_node(state, &definition.capabilities)
+        })
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     Ok(definition)
 }
@@ -6908,6 +7028,7 @@ fn detect_container_runner() -> Option<String> {
 async fn run_container_execution(
     execution: &ExecutionWorkload,
     granted_access: &[String],
+    gpu_config: &crate::config::GpuConfig,
     timeout: Duration,
 ) -> Result<Value, String> {
     let runner = detect_container_runner().ok_or_else(|| {
@@ -6929,9 +7050,27 @@ async fn run_container_execution(
     let timeout_secs = timeout;
     let context_json = json!({ "mounts": mount_context }).to_string();
     let granted_access_clone = granted_access.to_vec();
+    let gpu_requested = granted_access
+        .iter()
+        .any(|capability| capability_requires_gpu(capability));
+    let gpu_config = gpu_config.clone();
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
     let kill_handle_clone = Arc::clone(&kill_handle);
     run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
+        if gpu_requested && !gpu_config.enabled {
+            return Err(
+                "GPU capability requested but FROGLET_GPU_ENABLED is not enabled on this provider"
+                    .to_string()
+                    .into(),
+            );
+        }
+        if gpu_requested && runner != "docker" {
+            return Err(
+                "GPU container execution currently requires Docker with GPU support"
+                    .to_string()
+                    .into(),
+            );
+        }
         let mut command = std::process::Command::new(&runner);
         command
             .arg("run")
@@ -6940,6 +7079,18 @@ async fn run_container_execution(
             .arg("--network")
             .arg("none")
             .env("FROGLET_CONTEXT", &context_json);
+        if gpu_requested {
+            command.arg("--gpus").arg("all").env(
+                "FROGLET_GPU_CAPABILITIES",
+                serde_json::to_string(
+                    &granted_access_clone
+                        .iter()
+                        .filter(|capability| capability_requires_gpu(capability))
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|error| error.to_string())?,
+            );
+        }
         if let Some(oci_digest) = oci_digest.as_ref() {
             command.env("FROGLET_OCI_DIGEST", oci_digest);
         }
@@ -7107,6 +7258,17 @@ fn validate_service_addressed_execution_against_service(
     if execution.mounts != service.mounts {
         return Err("service-addressed execution mounts do not match local service".to_string());
     }
+    let allowed_access = service_access_capabilities(service);
+    for requested_access in &execution.requested_access {
+        if !allowed_access
+            .iter()
+            .any(|allowed| allowed == requested_access)
+        {
+            return Err(format!(
+                "service-addressed execution requested_access is not offered by local service: {requested_access}"
+            ));
+        }
+    }
     let Some(requested_binding_hash) = execution.binding_hash() else {
         return Err("service-addressed execution binding hash is missing".to_string());
     };
@@ -7127,6 +7289,7 @@ fn build_bound_workload_spec_from_service(
 ) -> Result<WorkloadSpec, String> {
     let (runtime, package_kind, entrypoint_kind, entrypoint, contract_version) =
         normalized_service_execution_profile(service)?;
+    let requested_access = service_access_capabilities(service);
     match (&runtime, &package_kind) {
         (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
             let module_bytes_hex = service
@@ -7142,7 +7305,7 @@ fn build_bound_workload_spec_from_service(
                     submission_type: crate::wasm::WASM_SUBMISSION_TYPE_V1.to_string(),
                     workload: crate::wasm::ComputeWasmWorkload {
                         abi_version: contract_version,
-                        requested_capabilities: Vec::new(),
+                        requested_capabilities: requested_access,
                         ..workload
                     },
                     module_bytes_hex,
@@ -7175,7 +7338,7 @@ fn build_bound_workload_spec_from_service(
                         oci_digest,
                         input_format: crate::wasm::JCS_JSON_FORMAT.to_string(),
                         input_hash,
-                        requested_capabilities: Vec::new(),
+                        requested_capabilities: requested_access,
                     },
                     input,
                 }),
@@ -7191,6 +7354,11 @@ fn build_bound_workload_spec_from_service(
                     ExecutionWorkload::python_inline_script(source, input)?
                 }
                 _ => ExecutionWorkload::python_inline_handler(source, entrypoint, input)?,
+            };
+            let execution = ExecutionWorkload {
+                requested_access,
+                mounts: service.mounts.clone(),
+                ..execution
             };
             Ok(WorkloadSpec::Execution {
                 execution: Box::new(execution),
@@ -7214,6 +7382,11 @@ fn build_bound_workload_spec_from_service(
                 entrypoint,
                 input,
             )?;
+            let execution = ExecutionWorkload {
+                requested_access,
+                mounts: service.mounts.clone(),
+                ..execution
+            };
             Ok(WorkloadSpec::Execution {
                 execution: Box::new(execution),
             })
@@ -9445,7 +9618,13 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
             }
             (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
             | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
-                run_container_execution(&execution, &execution.requested_access, timeout).await
+                run_container_execution(
+                    &execution,
+                    &execution.requested_access,
+                    &state.config.gpu,
+                    timeout,
+                )
+                .await
             }
             (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
                 dispatch_builtin_workload(state, &execution, None).await
@@ -9781,9 +9960,13 @@ async fn run_workload_spec_with_admission(
                 }
                 (ExecutionRuntime::Python, ExecutionPackageKind::OciImage, _)
                 | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage, _) => {
-                    let result =
-                        run_container_execution(execution.as_ref(), &capabilities_granted, timeout)
-                            .await?;
+                    let result = run_container_execution(
+                        execution.as_ref(),
+                        &capabilities_granted,
+                        &state.config.gpu,
+                        timeout,
+                    )
+                    .await?;
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
@@ -10396,18 +10579,14 @@ async fn process_deal_with_reserved_permit(
     // Intersect the capabilities granted at quote-time with the provider's
     // current advertised capabilities, so that capabilities removed since the
     // quote was issued are no longer honoured at execution time.
-    let effective_capabilities = if let Some(host_env) = state.wasm_host.as_ref() {
-        let current = host_env.advertised_capabilities();
-        deal.quote
-            .payload
-            .capabilities_granted
-            .iter()
-            .filter(|cap| current.iter().any(|c| c == *cap))
-            .cloned()
-            .collect()
-    } else {
-        deal.quote.payload.capabilities_granted.clone()
-    };
+    let effective_capabilities = deal
+        .quote
+        .payload
+        .capabilities_granted
+        .iter()
+        .filter(|capability| current_provider_capability_available(state.as_ref(), capability))
+        .cloned()
+        .collect();
 
     let deal_requester_id = deal.artifact.payload.requester_id.clone();
     match run_workload_spec_with_admission(
@@ -10707,7 +10886,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+            GpuConfig, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
             PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
         },
         crypto,
@@ -10850,6 +11029,7 @@ mod tests {
                 policy_path: None,
                 policy: None,
             },
+            gpu: Default::default(),
             confidential: crate::confidential::ConfidentialConfig {
                 policy_path: None,
                 policy: None,
@@ -10985,6 +11165,55 @@ mod tests {
             payload["faas"]["runtimes"],
             json!(crate::jobs::FaaSDescriptor::standard().runtimes)
         );
+        assert_eq!(payload["execution"]["gpu"]["enabled"], Value::Bool(false));
+        assert_eq!(
+            payload["execution"]["gpu"]["count"],
+            Value::Number(0.into())
+        );
+        assert_eq!(payload["execution"]["gpu"]["capabilities"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn node_capabilities_reports_configured_gpu_profile() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let state_mut = Arc::get_mut(&mut state).expect("unique app state");
+        state_mut.config.gpu = GpuConfig {
+            enabled: true,
+            vendor: Some("NVIDIA".to_string()),
+            model: Some("L4".to_string()),
+            count: 2,
+            memory_mb: Some(24_576),
+            container_runtime: Some("docker".to_string()),
+        };
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/node/capabilities",
+                None,
+                None,
+            ))
+            .await
+            .expect("node capabilities response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["execution"]["gpu"]["enabled"], Value::Bool(true));
+        assert_eq!(
+            payload["execution"]["gpu"]["count"],
+            Value::Number(2.into())
+        );
+        assert_eq!(payload["execution"]["gpu"]["vendor"], "NVIDIA");
+        assert_eq!(payload["execution"]["gpu"]["model"], "L4");
+        assert_eq!(payload["execution"]["gpu"]["memory_mb"], 24_576);
+        assert_eq!(
+            payload["execution"]["gpu"]["capabilities"],
+            json!([
+                "compute.gpu",
+                "compute.gpu.vendor.nvidia",
+                "compute.gpu.runtime.docker"
+            ])
+        );
     }
 
     async fn publish_test_service(
@@ -11025,6 +11254,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
                 ),
@@ -11040,6 +11270,117 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn publishing_gpu_capability_requires_configured_provider_gpu() {
+        let state = test_app_state(PaymentBackend::None);
+
+        let error = artifact_provider_offer_definition(
+            state.as_ref(),
+            ProviderControlPublishArtifactRequest {
+                service_id: "gpu-container".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: Some("ghcr.io/example/gpu-runner".to_string()),
+                oci_digest: Some(format!("sha256:{}", "ab".repeat(32))),
+                runtime: Some("container".to_string()),
+                package_kind: Some("oci_image".to_string()),
+                entrypoint_kind: None,
+                entrypoint: None,
+                contract_version: Some(CONTRACT_CONTAINER_JSON_V1.to_string()),
+                mounts: None,
+                capabilities: Some(vec!["compute.gpu".to_string()]),
+                inline_source: None,
+                summary: Some("GPU container".to_string()),
+                starter: None,
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .expect_err("disabled GPU provider should reject GPU service publication");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("FROGLET_GPU_ENABLED=1")),
+            "unexpected error payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn published_service_capabilities_flow_to_service_offer_and_execution() {
+        let state = test_app_state(PaymentBackend::None);
+
+        publish_test_service(
+            &state,
+            ProviderControlPublishArtifactRequest {
+                service_id: "cap-python".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: Some(vec![crate::execution::ExecutionMount {
+                    handle: "fixtures".to_string(),
+                    kind: "fs".to_string(),
+                    read_only: true,
+                    binding: Some("/tmp".to_string()),
+                }]),
+                capabilities: Some(vec!["custom.vector-index".to_string()]),
+                inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
+                summary: Some("capability carrying service".to_string()),
+                starter: None,
+                mode: Some("sync".to_string()),
+                price_sats: 0,
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await;
+
+        let service = provider_service_record(state.as_ref(), "cap-python", false, false)
+            .await
+            .expect("service record")
+            .expect("published service");
+        assert_eq!(
+            service.capabilities,
+            vec!["custom.vector-index".to_string()]
+        );
+
+        let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
+            .await
+            .expect("offer record")
+            .expect("published offer");
+        assert_eq!(offer.capabilities, vec!["custom.vector-index".to_string()]);
+        assert_eq!(
+            offer.offer.payload.execution_profile.capabilities,
+            vec![
+                "custom.vector-index".to_string(),
+                "mount.fs.read.fixtures".to_string()
+            ]
+        );
+
+        let execution = service_addressed_execution_from_record(&service, Value::Null);
+        assert_eq!(
+            execution.requested_access,
+            vec![
+                "custom.vector-index".to_string(),
+                "mount.fs.read.fixtures".to_string()
+            ]
+        );
+    }
+
     fn service_addressed_execution_from_record(
         service: &ProviderServiceRecord,
         input: Value,
@@ -11048,18 +11389,7 @@ mod tests {
             normalized_service_execution_profile(service).expect("normalized service profile");
         let input_hash =
             crypto::sha256_hex(canonical_json::to_vec(&input).expect("canonical input"));
-        let requested_access = service
-            .mounts
-            .iter()
-            .map(|mount| {
-                format!(
-                    "mount.{}.{}.{}",
-                    mount.kind,
-                    if mount.read_only { "read" } else { "write" },
-                    mount.handle
-                )
-            })
-            .collect::<Vec<_>>();
+        let requested_access = service_access_capabilities(service);
         let binding_hash = service
             .binding_hash
             .clone()
@@ -11849,6 +12179,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"message\": \"visible\"}\n"
                         .to_string(),
@@ -11878,6 +12209,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"message\": \"hidden\"}\n"
                         .to_string(),
@@ -11953,6 +12285,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"hidden\": True}\n".to_string(),
                 ),
@@ -12067,6 +12400,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"message\": \"pong\"}\n"
                         .to_string(),
@@ -12096,6 +12430,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"hidden\": true}\n".to_string(),
                 ),
@@ -12172,6 +12507,7 @@ mod tests {
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: Some(
                     "def handler(event, context):\n    return {\"message\": \"pong\", \"input\": event}\n"
                         .to_string(),
@@ -12243,6 +12579,7 @@ mod tests {
                 entrypoint: None,
                 contract_version: Some(WASM_RUN_JSON_ABI_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: None,
                 summary: Some("public wasm service".to_string()),
                 starter: None,
@@ -12309,6 +12646,7 @@ mod tests {
                 entrypoint: None,
                 contract_version: Some(WASM_RUN_JSON_ABI_V1.to_string()),
                 mounts: None,
+                capabilities: None,
                 inline_source: None,
                 summary: Some("public OCI wasm service".to_string()),
                 starter: None,
@@ -12377,6 +12715,7 @@ mod tests {
                     read_only: true,
                     binding: Some("/tmp".to_string()),
                 }]),
+                capabilities: None,
                 inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
                 summary: Some("validated python service".to_string()),
                 starter: None,

@@ -147,11 +147,13 @@ test("buildExecutionWorkload applies JS defaults matching runtime execution help
     runtime: "python",
     package_kind: "inline_source",
     inline_source: "def handler(event):\n    return event\n",
+    capabilities: ["custom.vector-index"],
     input: { pong: true }
   })
   assert.equal(workload.entrypoint.kind, "handler")
   assert.equal(workload.entrypoint.value, "handler")
   assert.equal(workload.contract_version, "froglet.python.handler_json.v1")
+  assert.deepEqual(workload.requested_access, ["custom.vector-index"])
   assert.equal(workload.source_hash, sha256Hex(Buffer.from("def handler(event):\n    return event\n", "utf8")))
   assert.equal(
     workload.input_hash,
@@ -166,6 +168,7 @@ test("buildServiceAddressedExecution uses binding hash and service defaults", ()
       runtime: "python",
       package_kind: "inline_source",
       binding_hash: "deadbeef",
+      capabilities: ["custom.vector-index"],
       mounts: [{ kind: "filesystem", handle: "workspace", read_only: true }]
     },
     { ping: true }
@@ -175,7 +178,10 @@ test("buildServiceAddressedExecution uses binding hash and service defaults", ()
   assert.equal(execution.contract_version, "froglet.python.handler_json.v1")
   assert.equal(execution.source_hash, "deadbeef")
   assert.equal(execution.security.service_id, "svc-1")
-  assert.deepEqual(execution.requested_access, ["mount.filesystem.read.workspace"])
+  assert.deepEqual(execution.requested_access, [
+    "custom.vector-index",
+    "mount.filesystem.read.workspace"
+  ])
 })
 
 test("buildServiceAddressedExecution builds builtin service workload without binding hash", () => {

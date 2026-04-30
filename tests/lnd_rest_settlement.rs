@@ -498,6 +498,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             policy_path: None,
             policy: None,
         },
+        gpu: Default::default(),
         confidential: ConfidentialConfig {
             policy_path: None,
             policy: None,

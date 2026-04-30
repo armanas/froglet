@@ -24,7 +24,9 @@ default local provider/runtime ports:
 
 The first action should be `status`. If the local node is not running, use
 `plan_install` and `get_install_guide` to guide the user through Docker,
-binary, or source setup. The public no-install demo remains the HTTP
+binary, or source setup. Once local health is verified, use `plan_use_case`
+before implementing consumer, provider, evidence, payments, batch, or GPU
+workflows. The public no-install demo remains the HTTP
 `llms.txt` flow at `https://froglet.dev/llms.txt`; it is not exposed as an
 installed plugin action.
 

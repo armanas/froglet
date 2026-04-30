@@ -86,6 +86,26 @@ conversion from sats into backend-native fiat or token units.
 | `FROGLET_WASM_MODULE_CACHE_CAPACITY` | `128` | Number of compiled WASM modules to cache |
 | `FROGLET_WASM_POLICY_PATH` | *(none)* | Path to a TOML WASM policy file for host capabilities (HTTP, SQLite) |
 
+### GPU
+
+GPU support is opt-in and provider-local. A provider only advertises GPU
+capabilities when explicitly configured; the hosted proof remains free-only and
+does not prove GPU execution.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_GPU_ENABLED` | `false` | Enable GPU capability advertisement and GPU-gated container execution |
+| `FROGLET_GPU_COUNT` | `1` when enabled, otherwise `0` | Number of GPUs available to this provider |
+| `FROGLET_GPU_VENDOR` | *(none)* | Optional vendor label, for example `nvidia` |
+| `FROGLET_GPU_MODEL` | *(none)* | Optional model label shown in `/v1/node/capabilities` |
+| `FROGLET_GPU_MEMORY_MB` | *(none)* | Optional GPU memory per provider in MB |
+| `FROGLET_GPU_CONTAINER_RUNTIME` | `docker` when enabled | Container runtime expected to expose GPUs. Current execution wiring supports Docker with `--gpus all` |
+
+Publishing a service with `capabilities: ["compute.gpu"]` fails unless
+`FROGLET_GPU_ENABLED=1` is set. Runtime invocation grants GPU access only when
+the requested capability is listed in the signed offer, and non-GPU providers
+return a clear error instead of silently falling back to CPU.
+
 ## Confidential Execution
 
 | Variable | Default | Description |
@@ -129,7 +149,7 @@ npx froglet-mcp
 
 Equivalent explicit local launch: `FROGLET_PROFILE=local npx froglet-mcp`.
 
-`plan_install` and `get_install_guide` do not require local token files.
+`plan_install`, `get_install_guide`, and `plan_use_case` do not require local token files.
 Provider/runtime actions require the matching URL and token-path configuration.
 The no-install public hosted proof is intentionally outside the installed MCP
 surface; use `https://froglet.dev/llms.txt` for that HTTP flow.

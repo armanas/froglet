@@ -260,6 +260,7 @@ mod tests {
                 policy_path: None,
                 policy: None,
             },
+            gpu: Default::default(),
             confidential: crate::confidential::ConfidentialConfig {
                 policy_path: None,
                 policy: None,

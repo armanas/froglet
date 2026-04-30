@@ -104,7 +104,9 @@ The plugin starts the published MCP package in local mode:
 ```
 
 First call `status`. If the local node is not ready, use `plan_install` and
-`get_install_guide` before shell commands.
+`get_install_guide` before shell commands. After local health is verified, use
+`plan_use_case` before implementing the user's first consumer, provider,
+evidence, payments, batch, or GPU workflow.
 
 Codex CLI 0.114.0 exposes `codex mcp`, but no public `plugin install` or
 `plugin validate` command. Until Codex exposes that host workflow, Codex plugin

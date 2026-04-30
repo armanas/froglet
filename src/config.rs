@@ -312,6 +312,58 @@ pub struct WasmSqliteHandleConfig {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GpuConfig {
+    pub enabled: bool,
+    pub vendor: Option<String>,
+    pub model: Option<String>,
+    pub count: u32,
+    pub memory_mb: Option<u64>,
+    pub container_runtime: Option<String>,
+}
+
+impl GpuConfig {
+    pub fn advertised_capabilities(&self) -> Vec<String> {
+        if !self.enabled || self.count == 0 {
+            return Vec::new();
+        }
+        let mut capabilities = vec!["compute.gpu".to_string()];
+        if let Some(vendor) = self.vendor.as_deref().and_then(gpu_capability_segment) {
+            capabilities.push(format!("compute.gpu.vendor.{vendor}"));
+        }
+        if let Some(runtime) = self
+            .container_runtime
+            .as_deref()
+            .and_then(gpu_capability_segment)
+        {
+            capabilities.push(format!("compute.gpu.runtime.{runtime}"));
+        }
+        capabilities
+    }
+}
+
+fn gpu_capability_segment(value: &str) -> Option<String> {
+    let segment = value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() {
+                Some(character)
+            } else if matches!(character, '-' | '_' | '.') {
+                Some(character)
+            } else if character.is_ascii_whitespace() {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['-', '_', '.'])
+        .to_string();
+    (!segment.is_empty()).then_some(segment)
+}
+
 /// Short-lived session-pool config for the public `try.froglet.dev` surface.
 /// Disabled by default. When enabled, the node mounts the hosted-trial
 /// session endpoints behind the worker/origin shared-secret gate and hands
@@ -348,6 +400,7 @@ pub struct NodeConfig {
     pub stripe: Option<StripeConfig>,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
+    pub gpu: GpuConfig,
     pub confidential: ConfidentialConfig,
     pub marketplace_url: Option<String>,
     /// Operator-configured data-source mounts. Key is the mount handle
@@ -567,6 +620,33 @@ impl NodeConfig {
             Some(path) => Some(load_confidential_policy(path, &db_path)?),
             None => None,
         };
+        let gpu_enabled = env_bool("FROGLET_GPU_ENABLED", false)?;
+        let gpu_count_default = if gpu_enabled { 1 } else { 0 };
+        let gpu_count = env_u64("FROGLET_GPU_COUNT", gpu_count_default)?.clamp(0, 256) as u32;
+        if gpu_enabled && gpu_count == 0 {
+            return Err(
+                "FROGLET_GPU_COUNT must be greater than 0 when FROGLET_GPU_ENABLED=1".into(),
+            );
+        }
+        let gpu = GpuConfig {
+            enabled: gpu_enabled,
+            vendor: env::var("FROGLET_GPU_VENDOR")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            model: env::var("FROGLET_GPU_MODEL")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            count: gpu_count,
+            memory_mb: match env::var("FROGLET_GPU_MEMORY_MB") {
+                Ok(value) if value.trim().is_empty() => None,
+                Ok(_) => Some(env_u64("FROGLET_GPU_MEMORY_MB", 0)?),
+                Err(_) => None,
+            },
+            container_runtime: env::var("FROGLET_GPU_CONTAINER_RUNTIME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| gpu_enabled.then(|| "docker".to_string())),
+        };
         let hosted_trial_origin_secret = match env::var("FROGLET_HOSTED_TRIAL_ORIGIN_SECRET") {
             Ok(value) if value.trim().is_empty() => {
                 return Err("FROGLET_HOSTED_TRIAL_ORIGIN_SECRET must not be empty when set".into());
@@ -620,6 +700,7 @@ impl NodeConfig {
                 policy_path: wasm_policy_path,
                 policy: wasm_policy,
             },
+            gpu,
             confidential: ConfidentialConfig {
                 policy_path: confidential_policy_path,
                 policy: confidential_policy,

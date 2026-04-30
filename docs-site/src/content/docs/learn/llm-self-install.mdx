@@ -48,6 +48,9 @@ on my machine," "run Froglet here," or "deploy Froglet for me":
 5. After the final Docker step the local stack is up on `127.0.0.1:8080` (provider) and
    `127.0.0.1:8081` (runtime), and the user's agent MCP config now
    includes the local instance.
+6. Call `plan_use_case` before implementing the user's first workflow. That
+   action turns "what should Froglet do for me?" into a bounded local plan and
+   names unsupported edges before execution.
 
 ## Action schema
 
@@ -75,6 +78,13 @@ lightning_mode: "mock" | "lnd_rest"                            // default: mock
 network_mode: "clearnet" | "tor" | "dual"                      // default: clearnet
 marketplace_url: "https://marketplace.froglet.dev"             // optional
 use_case: "witness URLs"                                       // optional
+```
+
+```
+tool: froglet
+action: plan_use_case
+workload_profile: "consumer" | "provider" | "evidence" | "payments" | "batch" | "gpu" // optional
+use_case: "run a GPU-backed batch job"                                                 // optional
 ```
 
 All inputs are optional, but `plan_install` should ask before command execution
@@ -169,6 +179,15 @@ After health checks pass, implement one concrete use case instead of stopping at
   notarization for a file/URL the user actually cares about.
 - **Payments-first:** run Lightning mock before asking for Stripe, x402, or LND
   credentials.
+- **Batch-first:** start with one async task and prove `get_task`/`wait_task`
+  progress before promising multi-item fan-out. True batch submission,
+  retry policy, partial failure handling, and paid async settlement remain
+  implementation work.
+- **GPU-first:** require provider-advertised GPU capability and real hardware
+  evidence before accepting GPU work. Self-hosted nodes can advertise GPU
+  metadata and gate Docker container execution with `--gpus all`; scheduling,
+  fallback policy, and a verified hardware smoke are still open. Do not silently
+  route GPU requests to CPU.
 - **Network-first:** prove loopback health, then move to clearnet, Tor, or dual
   exposure only with explicit user confirmation.
 
