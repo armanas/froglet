@@ -1,6 +1,6 @@
 # Plugin And Registry Distribution
 
-Status date: 2026-04-29.
+Status date: 2026-04-30.
 
 Froglet distribution has two distinct paths:
 
@@ -37,7 +37,7 @@ not as a repackaging of the local stdio MCP tool.
 | Surface | File | Current state |
 | --- | --- | --- |
 | npm package | `package.json` | `froglet-mcp`, Apache-2.0, stdio binary, `mcpName` set |
-| MCP Registry | `server.json` | Prepared for `io.github.armanas/froglet` after npm `0.1.4`; publish after package release |
+| MCP Registry | `server.json` | Active for `io.github.armanas/froglet` at `0.1.4`; latest record verified with `isLatest: true` |
 | Codex plugin | `plugins/froglet/.codex-plugin/plugin.json` | Repo-local marketplace/test bundle |
 | Codex marketplace | `.agents/plugins/marketplace.json` | Local Codex marketplace entry |
 | Claude plugin | `plugins/froglet/.claude-plugin/plugin.json` | Claude Code plugin metadata |
@@ -84,7 +84,7 @@ Use compact verification commands after publishing:
 
 ```bash
 npm view froglet-mcp version
-node -e 'fetch("https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet").then(r=>r.json()).then(j=>{const s=j.servers?.[0]?.server; console.log(JSON.stringify({name:s?.name, package:s?.packages?.[0]?.identifier, version:s?.version, count:j.metadata?.count}, null, 2));})'
+node -e 'fetch("https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet&limit=20").then(r=>r.json()).then(j=>{const row=j.servers?.find(x=>x.server?.name==="io.github.armanas/froglet"&&x._meta?.["io.modelcontextprotocol.registry/official"]?.isLatest); const s=row?.server; console.log(JSON.stringify({name:s?.name, package:s?.packages?.[0]?.identifier, version:s?.version, isLatest:row?._meta?.["io.modelcontextprotocol.registry/official"]?.isLatest}, null, 2));})'
 node -e 'fetch("https://froglet.dev/learn/plugin-distribution/").then(r=>console.log(r.status, r.headers.get("content-type")))'
 ```
 

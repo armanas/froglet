@@ -57,13 +57,14 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.arm
 ```
 
 Expected live result: the registry search returns
-`io.github.armanas/froglet` and package identifier `froglet-mcp`.
+`io.github.armanas/froglet`, package identifier `froglet-mcp`, version `0.1.4`,
+and `isLatest: true`.
 
 Verification commands:
 
 ```bash
 npm view froglet-mcp version
-node -e 'fetch("https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet").then(r=>r.json()).then(j=>{const s=j.servers?.[0]?.server; console.log(JSON.stringify({name:s?.name, package:s?.packages?.[0]?.identifier, version:s?.version, count:j.metadata?.count}, null, 2));})'
+node -e 'fetch("https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet&limit=20").then(r=>r.json()).then(j=>{const row=j.servers?.find(x=>x.server?.name==="io.github.armanas/froglet"&&x._meta?.["io.modelcontextprotocol.registry/official"]?.isLatest); const s=row?.server; console.log(JSON.stringify({name:s?.name, package:s?.packages?.[0]?.identifier, version:s?.version, isLatest:row?._meta?.["io.modelcontextprotocol.registry/official"]?.isLatest}, null, 2));})'
 node -e 'fetch("https://froglet.dev/learn/plugin-distribution/").then(r=>console.log(r.status, r.headers.get("content-type")))'
 ```
 
@@ -179,7 +180,7 @@ action.
 ## Third-Party MCP Directories
 
 Reusable submission metadata lives in `docs/MCP_DIRECTORY_SUBMISSIONS.md`.
-The official MCP Registry is active for `io.github.armanas/froglet`;
+The official MCP Registry is active for `io.github.armanas/froglet` at `0.1.4`;
 third-party listings are not complete until each public listing points at
 `froglet-mcp`, Apache-2.0, the GitHub repository, and the local/self-hosted
 MCP boundary.
