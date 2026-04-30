@@ -97,7 +97,15 @@ idempotency, fresh test SPT creation, and one `stripe_mpp` token-settled
 `/v1/node/events/query` call. Paid-staging uses a Stripe-safe test price
 because Stripe rejects sub-minimum PaymentIntent amounts.
 
-The 2026-04-30 paid-staging check also captured a Stripe Dashboard-origin
+The 2026-04-30 paid-staging checks also captured a Stripe Dashboard-origin
 `payment_intent.succeeded` delivery returning HTTP `200` from the public
-webhook endpoint. Retry delivery, interrupted restart recovery, and live-money
-Stripe remain outside this proof.
+webhook endpoint, and a Stripe CLI resend that returned to
+`pending_webhooks=0`.
+
+Restart recovery is not proven. A 2026-04-30 Lightsail redeploy replay test
+sent `evt_froglet_restart_1777543048` before and after deployment version 3;
+both deliveries returned `processed:true` and `duplicate:false`. The current
+paid-staging node stores webhook event ids in the container-local SQLite
+database, so dedupe state does not survive a Lightsail container redeploy.
+Durable state is required before restart-safe Stripe webhook processing can be
+claimed. Live-money Stripe also remains outside this proof.
