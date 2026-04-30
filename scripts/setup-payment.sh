@@ -48,6 +48,11 @@ require_stripe_test_secret_key() {
   [[ "$secret_key" == sk_test_* ]] || fail "FROGLET_STRIPE_SECRET_KEY must be a Stripe test secret key (sk_test_...)"
 }
 
+validate_stripe_webhook_secret() {
+  local webhook_secret="${FROGLET_STRIPE_WEBHOOK_SECRET:-}"
+  [[ -z "$webhook_secret" || "$webhook_secret" == whsec_* ]] || fail "FROGLET_STRIPE_WEBHOOK_SECRET must start with whsec_ when set"
+}
+
 normalize_x402_network() {
   local network="${FROGLET_X402_NETWORK:-base}"
   network="$(printf '%s' "$network" | tr '[:upper:]' '[:lower:]')"
@@ -124,6 +129,9 @@ import json
 import sys
 
 payload = json.load(sys.stdin)
+if payload.get("object") != "account":
+    sys.stdout.write("not-account")
+    raise SystemExit(0)
 value = payload.get("livemode")
 if value is True:
     sys.stdout.write("true")
@@ -137,8 +145,14 @@ else:
     false)
       printf 'Verification: Stripe account access authenticated and livemode=false on /v1/account.\n'
       ;;
+    missing)
+      printf 'Verification: Stripe account access authenticated with an sk_test_ key; /v1/account omitted livemode.\n'
+      ;;
     true)
       fail "Stripe /v1/account reported livemode=true; public local setup requires a test secret key"
+      ;;
+    not-account)
+      fail "Stripe /v1/account response was not an account object"
       ;;
     *)
       fail "Stripe /v1/account response did not include livemode=false"
@@ -239,13 +253,16 @@ case "$rail" in
     out_path="${out_path:-$repo_root/.froglet/payment/stripe.env}"
     require_env FROGLET_STRIPE_SECRET_KEY
     require_stripe_test_secret_key
+    validate_stripe_webhook_secret
     write_snippet \
       "FROGLET_PAYMENT_BACKEND=stripe" \
       "FROGLET_STRIPE_SECRET_KEY=${FROGLET_STRIPE_SECRET_KEY}" \
-      "FROGLET_STRIPE_API_VERSION=${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}"
+      "FROGLET_STRIPE_API_VERSION=${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}" \
+      "${FROGLET_STRIPE_WEBHOOK_SECRET:+FROGLET_STRIPE_WEBHOOK_SECRET=${FROGLET_STRIPE_WEBHOOK_SECRET}}"
     printf 'Required inputs:\n'
     printf '  - FROGLET_STRIPE_SECRET_KEY (Stripe test-mode secret key)\n'
     printf '  - optional FROGLET_STRIPE_API_VERSION\n'
+    printf '  - optional FROGLET_STRIPE_WEBHOOK_SECRET for /v1/webhooks/stripe\n'
     if [[ "$verify" -eq 1 ]]; then
       probe_stripe
     fi

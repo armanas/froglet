@@ -97,6 +97,7 @@ pub struct X402Config {
 #[derive(Debug, Clone)]
 pub struct StripeConfig {
     pub api_version: String,
+    pub webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -451,9 +452,17 @@ impl NodeConfig {
         }
 
         let stripe = if stripe_active {
+            let webhook_secret = match env::var("FROGLET_STRIPE_WEBHOOK_SECRET") {
+                Ok(value) if value.trim().is_empty() => {
+                    return Err("FROGLET_STRIPE_WEBHOOK_SECRET must not be empty when set".into());
+                }
+                Ok(value) => Some(value),
+                Err(_) => None,
+            };
             Some(StripeConfig {
                 api_version: env::var("FROGLET_STRIPE_API_VERSION")
                     .unwrap_or_else(|_| "2026-03-04.preview".to_string()),
+                webhook_secret,
             })
         } else {
             None

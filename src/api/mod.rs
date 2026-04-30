@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    body::Bytes,
     error_handling::HandleErrorLayer,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -107,6 +108,8 @@ const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 const HOSTED_TRIAL_ORIGIN_SECRET_HEADER: &str = "x-froglet-hosted-trial-secret";
+const STRIPE_SIGNATURE_HEADER: &str = "stripe-signature";
+const STRIPE_WEBHOOK_TOLERANCE_SECS: i64 = 300;
 
 /// Offer ID for the generic compute offer that accepts any supported runtime
 /// (Python, Container, Wasm) with `offer_kind = "compute.execution.v1"`.
@@ -2766,6 +2769,116 @@ pub async fn verify_receipt(Json(payload): Json<VerifyReceiptRequest>) -> impl I
     )
 }
 
+pub async fn stripe_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let Some(secret) = state
+        .config
+        .stripe
+        .as_ref()
+        .and_then(|stripe| stripe.webhook_secret.as_deref())
+    else {
+        return error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "stripe webhook not configured" }),
+        );
+    };
+
+    let Some(signature_header) = headers
+        .get(STRIPE_SIGNATURE_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "missing Stripe-Signature header" }),
+        );
+    };
+
+    let timestamp = match verify_stripe_signature(secret, signature_header, &body) {
+        Ok(timestamp) => timestamp,
+        Err(error) => {
+            tracing::warn!("Stripe webhook signature verification failed: {error}");
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "invalid stripe webhook signature" }),
+            );
+        }
+    };
+
+    let payload: Value = match serde_json::from_slice(&body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!("Stripe webhook JSON parse failed: {error}");
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "invalid stripe webhook payload" }),
+            );
+        }
+    };
+
+    let event_id = match payload.get("id").and_then(Value::as_str) {
+        Some(id) if !id.trim().is_empty() => id.to_string(),
+        _ => {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "stripe webhook event missing id" }),
+            );
+        }
+    };
+    let event_type = match payload.get("type").and_then(Value::as_str) {
+        Some(event_type) if !event_type.trim().is_empty() => event_type.to_string(),
+        _ => {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "stripe webhook event missing type" }),
+            );
+        }
+    };
+    let object_id = stripe_event_object_id(&payload);
+    let payment_intent_id = stripe_event_payment_intent_id(&payload);
+    let now = settlement::current_unix_timestamp();
+    let record = db::StripeWebhookEventRecord {
+        event_id: event_id.clone(),
+        event_type: event_type.clone(),
+        object_id: object_id.clone(),
+        payment_intent_id: payment_intent_id.clone(),
+        payload_hash: crypto::sha256_hex(&body),
+        received_at: timestamp,
+        processed_at: now,
+    };
+    let payload_json = payload.to_string();
+
+    let inserted = match state
+        .db
+        .with_write_conn(move |conn| db::insert_stripe_webhook_event(conn, &record, &payload_json))
+        .await
+    {
+        Ok(inserted) => inserted,
+        Err(error) => {
+            tracing::error!("Failed to persist Stripe webhook event {event_id}: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "database error" }),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "event_id": event_id,
+            "event_type": event_type,
+            "object_id": object_id,
+            "payment_intent_id": payment_intent_id,
+            "duplicate": !inserted,
+            "processed": inserted
+        })),
+    )
+}
+
 pub async fn verify_curated_list(
     Json(payload): Json<VerifyCuratedListRequest>,
 ) -> impl IntoResponse {
@@ -3038,6 +3151,14 @@ pub async fn create_job(
         return response;
     }
 
+    if let Some(response) = async_paid_job_requires_synchronous_settlement(
+        state.as_ref(),
+        payload.spec.service_id(),
+        "/v1/node/jobs",
+    ) {
+        return response;
+    }
+
     let idempotency_key = match normalize_idempotency_key(payload.idempotency_key) {
         Ok(value) => value,
         Err(response) => return response,
@@ -3214,6 +3335,122 @@ fn legacy_paid_endpoint_requires_protocol_deal(
             "requires_protocol_deal": true
         }),
     ))
+}
+
+fn async_paid_job_requires_synchronous_settlement(
+    state: &AppState,
+    service_id: ServiceId,
+    endpoint_path: &str,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    let price_sats = state.pricing.price_for(service_id);
+    let accepted_payment_methods = settlement::accepted_payment_methods(state);
+    if price_sats == 0
+        || accepted_payment_methods.is_empty()
+        || state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Lightning)
+    {
+        return None;
+    }
+
+    Some(error_json(
+        StatusCode::CONFLICT,
+        json!({
+            "error": format!(
+                "priced async {} jobs require a synchronous token-settlement endpoint",
+                service_id.as_str()
+            ),
+            "service_id": service_id.as_str(),
+            "price_sats": price_sats,
+            "accepted_payment_methods": accepted_payment_methods,
+            "legacy_endpoint": endpoint_path,
+            "synchronous_endpoints": [
+                "/v1/node/events/query",
+                "/v1/node/execute/wasm"
+            ],
+            "requires_synchronous_settlement": true
+        }),
+    ))
+}
+
+fn verify_stripe_signature(secret: &str, header: &str, body: &[u8]) -> Result<i64, String> {
+    let mut timestamp = None;
+    let mut signatures = Vec::new();
+    for part in header.split(',') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "t" => {
+                timestamp = Some(
+                    value
+                        .trim()
+                        .parse::<i64>()
+                        .map_err(|_| "invalid timestamp".to_string())?,
+                );
+            }
+            "v1" => signatures.push(value.trim()),
+            _ => {}
+        }
+    }
+
+    let timestamp = timestamp.ok_or_else(|| "missing timestamp".to_string())?;
+    if signatures.is_empty() {
+        return Err("missing v1 signature".to_string());
+    }
+
+    let now = settlement::current_unix_timestamp();
+    if (now - timestamp).abs() > STRIPE_WEBHOOK_TOLERANCE_SECS {
+        return Err("timestamp outside tolerance".to_string());
+    }
+
+    let mut signed_payload = timestamp.to_string().into_bytes();
+    signed_payload.push(b'.');
+    signed_payload.extend_from_slice(body);
+    let expected = crypto::hmac_sha256_hex(secret.as_bytes(), &signed_payload);
+
+    if signatures
+        .iter()
+        .any(|signature| expected.as_bytes().ct_eq(signature.as_bytes()).into())
+    {
+        Ok(timestamp)
+    } else {
+        Err("no matching v1 signature".to_string())
+    }
+}
+
+fn stripe_event_object_id(payload: &Value) -> Option<String> {
+    payload
+        .pointer("/data/object/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn stripe_event_payment_intent_id(payload: &Value) -> Option<String> {
+    let object = payload.pointer("/data/object")?;
+    if object
+        .get("object")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "payment_intent")
+    {
+        return object
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string);
+    }
+
+    object
+        .get("payment_intent")
+        .and_then(|payment_intent| {
+            payment_intent
+                .as_str()
+                .or_else(|| payment_intent.get("id").and_then(Value::as_str))
+        })
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string)
 }
 
 async fn handle_timeout_error(_: BoxError) -> impl IntoResponse {

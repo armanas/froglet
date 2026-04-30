@@ -75,6 +75,7 @@ conversion from sats into backend-native fiat or token units.
 |----------|---------|-------------|
 | `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe test secret API key for the public local helper (must use a Stripe test key, not a live key) |
 | `FROGLET_STRIPE_API_VERSION` | `2026-03-04.preview` | Stripe API version (required for MPP features) |
+| `FROGLET_STRIPE_WEBHOOK_SECRET` | *(none)* | Optional Stripe webhook endpoint signing secret (`whsec_...`) for `POST /v1/webhooks/stripe` |
 
 ## Execution
 

@@ -141,13 +141,15 @@ fi
             [str(SETUP_PAYMENT), "stripe", "--out", str(out_path)],
             extra_env={
                 "FROGLET_STRIPE_SECRET_KEY": "sk_test_123",
-                "FAKE_CURL_BODY": '{"livemode": false}',
+                "FROGLET_STRIPE_WEBHOOK_SECRET": "whsec_test_123",
+                "FAKE_CURL_BODY": '{"object":"account","livemode":false}',
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         content = out_path.read_text(encoding="utf-8")
         self.assertIn("FROGLET_PAYMENT_BACKEND=stripe", content)
         self.assertIn("FROGLET_STRIPE_SECRET_KEY=sk_test_123", content)
+        self.assertIn("FROGLET_STRIPE_WEBHOOK_SECRET=whsec_test_123", content)
         self.assertIn("/v1/account", self.curl_log.read_text(encoding="utf-8"))
 
     def test_setup_payment_rejects_stripe_live_key_before_probe(self):
@@ -173,11 +175,23 @@ fi
             [str(SETUP_PAYMENT), "stripe", "--out", str(self.root / "stripe.env")],
             extra_env={
                 "FROGLET_STRIPE_SECRET_KEY": "sk_test_123",
-                "FAKE_CURL_BODY": '{"livemode": true}',
+                "FAKE_CURL_BODY": '{"object":"account","livemode":true}',
             },
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("livemode=true", result.stderr)
+
+    def test_setup_payment_rejects_malformed_stripe_webhook_secret(self):
+        result = self._run(
+            [str(SETUP_PAYMENT), "stripe", "--out", str(self.root / "stripe.env")],
+            extra_env={
+                "FROGLET_STRIPE_SECRET_KEY": "sk_test_123",
+                "FROGLET_STRIPE_WEBHOOK_SECRET": "not-whsec",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must start with whsec_", result.stderr)
+        self.assertEqual(self.curl_log.read_text(encoding="utf-8"), "")
 
     def test_setup_payment_generates_x402_env_and_probes_facilitator(self):
         out_path = self.root / "x402.env"

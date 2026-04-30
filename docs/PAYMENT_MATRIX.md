@@ -13,7 +13,9 @@ For v0.1.0, `try.froglet.dev` is not a hosted paid-rail proof. The public
 hosted trial is a free `PaymentBackend::None` catalog: `demo.add` is the
 canonical proof, while witness/hash/notarize demos can provide stronger URL or
 content-hash evidence. Lightning, Stripe, and x402 are local/self-hosted launch
-adapters in this release; first-party hosted paid rails are deferred to v0.2.
+adapters in this release. Stripe MPP has a separate paid-staging path under
+`paid-staging.froglet.dev`, but it is not part of the hosted proof until the
+public paid-staging smoke has been recorded.
 
 ## 1. Supported rails and modes
 
@@ -45,11 +47,13 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 | `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests | 🟢 local compose smoke (`release_gate.sh --compose`) | — | 🟡 manual hosted trial smoke for the free demo catalog; evidence is outside this matrix | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via MCP `get_settlement_state` |
 | `Lightning::Mock` | 🟢 lightning.rs in-file tests + stripe/x402 tests use Mock Lightning | 🟢 `payments_and_discovery.rs` | — | — | 🟢 mock can be forced to return failure in tests | 🟢 Mock state persists in sqlite between restarts | 🟢 settlement state via MCP |
 | `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs | 🟢 regtest E2E via `python/tests/test_lnd_regtest.py` and `tests/lnd_rest_settlement.rs` (gated by `FROGLET_RUN_LND_REGTEST=1` or `release_gate.sh --lnd-regtest`) | ⬜ deferred to v0.2 hosted paid rails | ⬜ deferred to v0.2 hosted paid rails | 🟡 timeout + cancellation tested in regtest; on-chain dispute path not exercised | 🟢 invoice bundle state + preimage persistence verified across process restart in the regtest test | 🟢 settlement state + invoice-bundle status via MCP |
-| `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering challenge issuance, verification, replay, nonce handling | 🟢 part of `payments_and_discovery.rs`; covered when `FROGLET_RUN_COMPOSE_SMOKE=1` | ⬜ deferred to v0.2 hosted paid rails | ⬜ deferred to v0.2 hosted paid rails | 🟡 expired-challenge + replay rejected in unit tests; flaky-peer behavior not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
-| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping | 🟡 Stripe driver tested against a **local mock HTTP server** (see `StripeDriver::with_base_url`); no live Stripe sandbox hit from this repo today | ⬜ deferred to v0.2 hosted paid rails | ⬜ deferred to v0.2 hosted paid rails | 🟡 API error mapping exercised; webhook-retry idempotency is planned work, not current behavior | 🟡 intent status is pulled on demand; webhook-driven reconciliation remains planned | 🟢 settlement state via MCP |
+| `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ deferred to v0.2 hosted paid rails | ⬜ deferred to v0.2 hosted paid rails | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
+| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping | 🟡 Stripe driver tested against a **local mock HTTP server** plus one operator-run Stripe sandbox smoke on 2026-04-30: local `/v1/node/events/query` returned `stripe_mpp` receipt status `committed` with a `pi_` PaymentIntent reference. Webhook signature verification and event-id dedupe are covered in `python/tests/test_payments.py` | 🟡 paid-staging template + smoke script exist; public `paid-staging.froglet.dev` run not yet recorded | ⬜ production/live-money Stripe not covered | 🟡 API error mapping exercised; webhook signature failure and duplicate delivery are tested; end-to-end hosted Stripe retry delivery is not yet proven | 🟡 intent status is pulled on demand; webhook events are recorded durably but do not yet reconcile async payment state | 🟢 settlement state via MCP |
 
-Hosted payment cells are intentionally out of v0.1.0 scope. The public hosted
-proofs are free demo services, all exercising `PaymentBackend::None`.
+Hosted paid cells are intentionally separate from `try.froglet.dev`. The public
+hosted proof stays free-only; the Stripe hosted-sandbox cell moves only when
+`paid-staging.froglet.dev` is deployed and `../froglet-services/ops/paid_staging_stripe_smoke.sh`
+passes against the public URL.
 
 ## 3. How to re-run a cell
 
@@ -62,18 +66,23 @@ Every cell in the matrix has one canonical entrypoint.
 # Local Lightning regtest (requires a reachable LND regtest node):
 ./scripts/release_gate.sh --lnd-regtest
 
-# Local compose smoke, including None + X402 flows end-to-end:
+# Local compose smoke for the free/default path:
 ./scripts/release_gate.sh --compose
 
-# v0.1.0 hosted payment cells do not exist. The hosted public proof is
-# the free demo catalog documented in docs/HOSTED_TRIAL.md.
+# Hosted Stripe sandbox smoke, after paid-staging is deployed:
+(cd ../froglet-services && \
+  FROGLET_PAID_STAGING_URL=https://paid-staging.froglet.dev \
+  ./ops/paid_staging_stripe_smoke.sh)
 ```
 
 For a single rail + single cell, invoke the underlying test directly:
 
 ```bash
 # Stripe unit tests only:
-cargo test --package froglet --test '*' settlement::stripe
+cargo test --lib settlement::stripe
+
+# x402 unit tests only:
+cargo test --lib settlement::x402
 
 # LND regtest integration tests only:
 FROGLET_RUN_LND_REGTEST=1 cargo test --test lnd_rest_settlement
@@ -91,9 +100,10 @@ Every rail exposes settlement state through the same MCP surface:
 - **Structured logs** — every settlement-driver call logs an event with the
   rail, deal id, operation, and outcome. Inspectable via `docker logs` on
   local compose; hosted log aggregation is planned separately.
-- **Health endpoint** — `/health` reports which rails are configured as
-  `payment_backends` in the running node, so operators can verify at a
-  glance that the rail they configured is actually enabled.
+- **Capabilities endpoint** — `/v1/node/capabilities` reports which rails are
+  configured as `payment_backends` in the running node, so operators can verify
+  at a glance that the rail they configured is actually enabled. `/health` only
+  reports process health.
 
 ## 5. Known gaps (explicit, not deferred-by-accident)
 
@@ -113,6 +123,10 @@ a reviewer can see they are known and tracked, not forgotten.
 - **No load testing** — throughput characteristics per rail are not
   measured. Should exist before any launch that claims "production ready";
   for a permissionless-alpha launch, deferring is OK if documented.
+- **No paid async job settlement** — `/v1/node/jobs` accepts only free async
+  jobs today. Priced Lightning work must use the signed quote/deal flow, while
+  Stripe/x402 token-settled work must use synchronous `/v1/node/events/query`
+  or `/v1/node/execute/wasm` until durable async payment reservations exist.
 - **PayPal** is out of scope for the current release scope.
 
 ## 6. What changes require an update to this matrix

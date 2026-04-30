@@ -18,6 +18,8 @@ That writes `.froglet/payment/stripe.env` with:
 FROGLET_PAYMENT_BACKEND=stripe
 FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key>
 FROGLET_STRIPE_API_VERSION=2026-03-04.preview
+# Optional after you register a Stripe webhook endpoint:
+FROGLET_STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 
 ## Verification
@@ -29,8 +31,8 @@ GET https://api.stripe.com/v1/account
 ```
 
 The probe uses the configured secret key and Stripe API version header, then
-requires Stripe to report `livemode=false`. Live keys are rejected on this
-public local setup path.
+requires either `livemode=false` or a valid account object from an `sk_test_`
+key. Live keys are rejected before the probe on this public local setup path.
 
 The current public adapter reuses the configured numeric service price
 directly for the PaymentIntent amount. It does not perform FX conversion from
@@ -42,9 +44,53 @@ For Froglet's local `/v1/node/*` settlement lifecycle, Stripe maps to:
 
 - descriptor exposes `stripe_mpp`
 - prepare validates the shared payment token and creates a manual-capture payment intent
+- the PaymentIntent uses Stripe's `shared_payment_granted_token` parameter
 - commit captures the payment intent
 - release cancels the uncaptured payment intent
+- `POST /v1/webhooks/stripe` verifies Stripe webhook signatures and stores
+  each event id once for retry-safe operator evidence
 
 This keeps the same local prepare/commit/release lifecycle as the other
 local/self-hosted adapters while using Stripe's own primitives underneath. It does not currently add
 Stripe-specific quote/deal settlement terms to the signed kernel flow.
+
+## Webhook endpoint
+
+When `FROGLET_STRIPE_WEBHOOK_SECRET` is set, Froglet exposes:
+
+```text
+POST /v1/webhooks/stripe
+```
+
+Register the public HTTPS URL in Stripe test mode after the node is reachable,
+for example:
+
+```text
+https://paid-staging.froglet.dev/v1/webhooks/stripe
+```
+
+Listen only to the payment-intent events used by this adapter:
+
+- `payment_intent.succeeded`
+- `payment_intent.payment_failed`
+- `payment_intent.canceled`
+
+The route requires Stripe's raw request body and `Stripe-Signature` header.
+Invalid signatures return `400`; duplicate event ids return `200` with
+`duplicate: true` so Stripe retries do not double-process the event.
+
+## Paid-staging smoke
+
+The first-party hosted Stripe proof uses a separate operator surface, not
+`try.froglet.dev`:
+
+```bash
+cd ../froglet-services
+FROGLET_PAID_STAGING_URL=https://paid-staging.froglet.dev \
+  ./ops/paid_staging_stripe_smoke.sh
+```
+
+That smoke expects a test-mode `sk_test_...` key and `whsec_...` webhook
+secret in Keychain. It verifies health, Stripe capability advertisement,
+webhook signature/dedupe behavior, and one `stripe_mpp` token-settled
+`/v1/node/events/query` call.

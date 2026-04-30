@@ -80,6 +80,17 @@ pub struct DealSettlementMaterializationRecord {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StripeWebhookEventRecord {
+    pub event_id: String,
+    pub event_type: String,
+    pub object_id: Option<String>,
+    pub payment_intent_id: Option<String>,
+    pub payload_hash: String,
+    pub received_at: i64,
+    pub processed_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderManagedOfferRecord {
     pub offer_id: String,
     pub definition: serde_json::Value,
@@ -285,7 +296,21 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             FOREIGN KEY (deal_id) REFERENCES deals(deal_id)
          );
          CREATE INDEX IF NOT EXISTS idx_deal_settlement_materializations_updated_at
-            ON deal_settlement_materializations (updated_at ASC);",
+            ON deal_settlement_materializations (updated_at ASC);
+         CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            object_id TEXT,
+            payment_intent_id TEXT,
+            payload_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            received_at INTEGER NOT NULL,
+            processed_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_type_received_at
+            ON stripe_webhook_events (event_type, received_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_payment_intent
+            ON stripe_webhook_events (payment_intent_id, received_at DESC);",
     )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS deal_quarantine (
@@ -511,6 +536,37 @@ pub fn batch_insert_events(
 
     conn.execute_batch("COMMIT")?;
     Ok(results)
+}
+
+pub fn insert_stripe_webhook_event(
+    conn: &Connection,
+    record: &StripeWebhookEventRecord,
+    payload_json: &str,
+) -> SqlResult<bool> {
+    let inserted = conn.execute(
+        "INSERT OR IGNORE INTO stripe_webhook_events (
+            event_id,
+            event_type,
+            object_id,
+            payment_intent_id,
+            payload_hash,
+            payload_json,
+            received_at,
+            processed_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            record.event_id,
+            record.event_type,
+            record.object_id,
+            record.payment_intent_id,
+            record.payload_hash,
+            payload_json,
+            record.received_at,
+            record.processed_at
+        ],
+    )?;
+
+    Ok(inserted > 0)
 }
 
 pub fn query_events_by_kind(

@@ -199,8 +199,16 @@ impl SettlementDriver for StripeDriver {
                 }
             })?;
 
-            // Verify the SPT is not expired.
-            if let Some(expires_at) = spt_data.get("expires_at").and_then(|v| v.as_i64()) {
+            let usage_limits = spt_data.get("usage_limits");
+
+            // Verify the SPT is not expired. Stripe currently returns these
+            // limits nested under usage_limits; keep the older top-level reads
+            // for compatibility with local mocks and earlier preview objects.
+            if let Some(expires_at) = spt_data
+                .get("expires_at")
+                .or_else(|| usage_limits.and_then(|limits| limits.get("expires_at")))
+                .and_then(|v| v.as_i64())
+            {
                 let now = super::current_unix_timestamp();
                 if expires_at < now {
                     tracing::warn!(
@@ -217,15 +225,33 @@ impl SettlementDriver for StripeDriver {
                 }
             }
 
+            if spt_data
+                .get("currency")
+                .or_else(|| usage_limits.and_then(|limits| limits.get("currency")))
+                .and_then(|v| v.as_str())
+                .is_some_and(|currency| !currency.eq_ignore_ascii_case("usd"))
+            {
+                tracing::warn!(spt_id = %spt_id, "Stripe SPT currency is not USD");
+                return Err(PaymentError::BackendUnavailable {
+                    service_id: request.service_id.as_str().to_string(),
+                    price_sats: request.price_sats,
+                    backend: "stripe".to_string(),
+                });
+            }
+
             // Verify the SPT covers at least the requested amount. The amount
             // on the SPT is in cents (same unit as price_sats for now).
             if spt_data
                 .get("maximum_amount")
+                .or_else(|| spt_data.get("max_amount"))
+                .or_else(|| usage_limits.and_then(|limits| limits.get("max_amount")))
                 .and_then(|v| v.as_u64())
                 .is_some_and(|max_amount| max_amount < request.price_sats)
             {
                 let max_amount = spt_data
                     .get("maximum_amount")
+                    .or_else(|| spt_data.get("max_amount"))
+                    .or_else(|| usage_limits.and_then(|limits| limits.get("max_amount")))
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 tracing::warn!(
@@ -247,8 +273,7 @@ impl SettlementDriver for StripeDriver {
             let params: &[(&str, &str)] = &[
                 ("amount", &amount_str),
                 ("currency", "usd"),
-                ("payment_method_data[type]", "stripe_payment_token"),
-                ("payment_method_data[stripe_payment_token]", spt_id),
+                ("shared_payment_granted_token", spt_id),
                 ("confirm", "true"),
                 ("capture_method", "manual"),
             ];
@@ -398,6 +423,7 @@ mod tests {
         StripeDriver::new(
             StripeConfig {
                 api_version: "2024-06-20".to_string(),
+                webhook_secret: None,
             },
             "stripe_test_secret_placeholder".to_string(),
         )
@@ -420,8 +446,11 @@ mod tests {
                 .push(format!("GET:/v1/shared_payment/granted_tokens/{token_id}"));
             Json(serde_json::json!({
                 "id": token_id,
-                "expires_at": super::super::current_unix_timestamp() + 600,
-                "maximum_amount": 50_000
+                "usage_limits": {
+                    "currency": "usd",
+                    "expires_at": super::super::current_unix_timestamp() + 600,
+                    "max_amount": 50_000
+                }
             }))
         }
 
@@ -698,6 +727,7 @@ mod tests {
         let driver = StripeDriver::with_base_url(
             StripeConfig {
                 api_version: "2024-06-20".to_string(),
+                webhook_secret: None,
             },
             "stripe_test_secret_placeholder".to_string(),
             &base_url,
@@ -745,6 +775,8 @@ mod tests {
             calls.iter().any(|call| {
                 call.contains("POST:/v1/payment_intents:amount=100")
                     && call.contains("capture_method=manual")
+                    && call.contains("shared_payment_granted_token=spt_test_123")
+                    && !call.contains("payment_method_data")
             }),
             "prepare should create a manual-capture payment intent"
         );
@@ -763,6 +795,7 @@ mod tests {
         let driver = StripeDriver::with_base_url(
             StripeConfig {
                 api_version: "2024-06-20".to_string(),
+                webhook_secret: None,
             },
             "stripe_test_secret_placeholder".to_string(),
             &base_url,

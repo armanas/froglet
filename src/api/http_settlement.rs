@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn provider_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/v1/webhooks/stripe", post(super::stripe_webhook))
         .route(
             "/v1/provider/deals/:deal_id/accept",
             post(super::release_deal_preimage),

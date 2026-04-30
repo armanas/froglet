@@ -1443,19 +1443,56 @@ components:
     ProvidedPayment:
       type: object
       description: >
-        Pre-provided payment token. Allows callers to supply a payment reservation
-        token alongside the deal request instead of using the Lightning invoice bundle flow.
+        Pre-provided payment token for local token-settled endpoints. Active
+        payment kinds are `stripe_mpp` and `x402_usdc`. Lightning-priced work
+        uses the signed quote/deal invoice-bundle flow instead of this object.
       required:
         - kind
         - token
       properties:
         kind:
           type: string
-          description: Payment method kind (e.g. `mock`, `lightning`).
-          example: mock
+          description: Payment method kind.
+          example: x402_usdc
         token:
           type: string
-          description: Opaque payment token issued by the payment backend.
+          description: >
+            Opaque payment token issued by the payment backend, for example an
+            x402 payment payload or Stripe Shared Payment Token id.
+
+    StripeWebhookResponse:
+      type: object
+      description: Result of accepting a Stripe webhook event.
+      required:
+        - status
+        - event_id
+        - event_type
+        - duplicate
+        - processed
+      properties:
+        status:
+          type: string
+          example: ok
+        event_id:
+          type: string
+          example: evt_test_123
+        event_type:
+          type: string
+          example: payment_intent.succeeded
+        object_id:
+          type: string
+          nullable: true
+          example: pi_test_123
+        payment_intent_id:
+          type: string
+          nullable: true
+          example: pi_test_123
+        duplicate:
+          type: boolean
+          description: True when this Stripe event id was already recorded.
+        processed:
+          type: boolean
+          description: True when this request inserted a new event record.
 
     NodeEventEnvelope:
       type: object
@@ -2513,6 +2550,52 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/webhooks/stripe:
+    post:
+      operationId: stripeWebhook
+      summary: Receive Stripe webhook event
+      description: >
+        Public Stripe webhook receiver for local/self-hosted Stripe MPP nodes.
+        The route requires `FROGLET_STRIPE_WEBHOOK_SECRET`, verifies the raw
+        request body against the `Stripe-Signature` header, and records each
+        Stripe event id once so retries are idempotent. Use an HTTPS URL in
+        Stripe test or live mode.
+      tags: [Settlement]
+      security: []
+      parameters:
+        - in: header
+          name: Stripe-Signature
+          required: true
+          schema:
+            type: string
+          description: Stripe webhook signature header (`t=...,v1=...`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Event accepted or duplicate event ignored idempotently.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeWebhookResponse'
+        '400':
+          description: Missing/invalid signature or malformed event payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Stripe webhook receiver is not configured on this node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /v1/curated-lists/verify:
     post:
       operationId: verifyCuratedList
@@ -2702,6 +2785,11 @@ paths:
         workload). The job ID is returned immediately; poll
         `GET /v1/node/jobs/{job_id}` for status.
         An optional `idempotency_key` ensures at-most-once creation.
+        Priced async jobs do not currently support token-based settlement:
+        Lightning-priced work must use the signed quote/deal flow, and
+        Stripe/x402 paid work must use synchronous `/v1/node/events/query` or
+        `/v1/node/execute/wasm` until durable async payment reservations are
+        implemented.
       tags: [Execution]
       security: []
       requestBody:
@@ -2724,6 +2812,9 @@ paths:
                     with the same key return the existing job.
                 payment:
                   $ref: '#/components/schemas/ProvidedPayment'
+                  description: >
+                    Reserved for future paid async-job support. Current priced
+                    async jobs are rejected before payment reservation.
               additionalProperties: true
               description: >
                 Additional fields depend on `kind`. For `wasm` include a
