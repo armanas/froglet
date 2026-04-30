@@ -9945,7 +9945,7 @@ async fn run_workload_spec_with_admission(
         .await;
     }
     if let WorkloadSpec::Execution { execution } = &spec {
-        validate_gpu_capabilities_supported_by_execution(&execution, &capabilities_granted)?;
+        validate_gpu_capabilities_supported_by_execution(execution, &capabilities_granted)?;
     }
     match (spec, permit) {
         (WorkloadSpec::Execution { execution }, permit) => {

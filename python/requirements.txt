@@ -1,3 +1,4 @@
 aiohttp>=3.9,<4
 ecdsa>=0.19,<1
 cryptography>=46.0.7,<47
+tomli>=2.0,<3; python_version < "3.11"

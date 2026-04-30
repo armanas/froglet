@@ -350,9 +350,7 @@ fn gpu_capability_segment(value: &str) -> Option<String> {
         .to_ascii_lowercase()
         .chars()
         .filter_map(|character| {
-            if character.is_ascii_alphanumeric() {
-                Some(character)
-            } else if matches!(character, '-' | '_' | '.') {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
                 Some(character)
             } else if character.is_ascii_whitespace() {
                 Some('-')
