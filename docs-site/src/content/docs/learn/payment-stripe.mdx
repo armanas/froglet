@@ -92,5 +92,7 @@ FROGLET_PAID_STAGING_URL=https://paid-staging.froglet.dev \
 
 That smoke expects a test-mode `sk_test_...` key and `whsec_...` webhook
 secret in Keychain. It verifies health, Stripe capability advertisement,
-webhook signature/dedupe behavior, and one `stripe_mpp` token-settled
-`/v1/node/events/query` call.
+webhook signature acceptance, forged-signature rejection, duplicate-event
+idempotency, fresh test SPT creation, and one `stripe_mpp` token-settled
+`/v1/node/events/query` call. Paid-staging uses a Stripe-safe test price
+because Stripe rejects sub-minimum PaymentIntent amounts.
