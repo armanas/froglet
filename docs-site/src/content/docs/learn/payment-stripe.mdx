@@ -102,10 +102,13 @@ The 2026-04-30 paid-staging checks also captured a Stripe Dashboard-origin
 webhook endpoint, and a Stripe CLI resend that returned to
 `pending_webhooks=0`.
 
-Restart recovery is not proven. A 2026-04-30 Lightsail redeploy replay test
-sent `evt_froglet_restart_1777543048` before and after deployment version 3;
-both deliveries returned `processed:true` and `duplicate:false`. The current
-paid-staging node stores webhook event ids in the container-local SQLite
-database, so dedupe state does not survive a Lightsail container redeploy.
-Durable state is required before restart-safe Stripe webhook processing can be
-claimed. Live-money Stripe also remains outside this proof.
+Restart recovery is now proven for the VM-backed paid-staging shape, not for
+the old Lightsail Container Service shape. A 2026-04-30 Lightsail Container
+Service redeploy replay sent `evt_froglet_restart_1777543048` before and after
+deployment version 3; both deliveries returned `processed:true` and
+`duplicate:false`, proving that container-service-local SQLite state was not
+durable enough. The hostname was then moved to a Lightsail VM with
+`/opt/froglet/data` mounted into the Froglet container. The repeatable restart
+smoke replayed `evt_froglet_restart_1777551288` after recreating the Froglet
+app container and returned `duplicate:true`. Live-money Stripe remains outside
+this proof.
