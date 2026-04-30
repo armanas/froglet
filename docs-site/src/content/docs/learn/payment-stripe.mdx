@@ -102,6 +102,46 @@ The 2026-04-30 paid-staging checks also captured a Stripe Dashboard-origin
 webhook endpoint, and a Stripe CLI resend that returned to
 `pending_webhooks=0`.
 
+## Webhook alerting
+
+The live paid-staging alerting surface is a Cloudflare Worker probe:
+
+```text
+https://paid-staging-stripe-probe.froglet.dev/health
+```
+
+The probe signs a fresh synthetic Stripe-style `payment_intent.succeeded`
+event and posts it through the real public webhook endpoint. It returns HTTP
+`200` only when Froglet accepts a fresh event and responds with
+`processed:true`, `duplicate:false`, and `upstream_status:200`.
+
+Use this probe for UptimeRobot, BetterStack, or an equivalent API monitor. Do
+not monitor `POST /v1/webhooks/stripe` directly from a static uptime check:
+Stripe webhook delivery requires a fresh timestamped `Stripe-Signature` HMAC
+header.
+
+Monitor assertions:
+
+- URL: `https://paid-staging-stripe-probe.froglet.dev/health`
+- Method: `GET`
+- Expected HTTP status: `200`
+- JSON assertion: `$.status` equals `ok`
+- Optional assertions: `$.upstream_status` equals `200`, `$.processed` equals
+  `true`, `$.duplicate` equals `false`
+
+Manual alert drill:
+
+1. Wait until `/health` is green in the external monitor.
+2. Temporarily change the monitor URL to
+   `https://paid-staging-stripe-probe.froglet.dev/fail`.
+3. Wait for the DOWN alert.
+4. Restore the URL to `/health`.
+5. Wait for the recovery/clear alert.
+
+As of 2026-04-30, the probe itself is live and verified. The external monitor
+alert-fire/clear drill still requires the operator to create the monitor and
+attach an alert destination.
+
 Restart recovery is now proven for the VM-backed paid-staging shape, not for
 the old Lightsail Container Service shape. A 2026-04-30 Lightsail Container
 Service redeploy replay sent `evt_froglet_restart_1777543048` before and after
