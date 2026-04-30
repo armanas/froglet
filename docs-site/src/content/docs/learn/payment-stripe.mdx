@@ -96,3 +96,8 @@ webhook signature acceptance, forged-signature rejection, duplicate-event
 idempotency, fresh test SPT creation, and one `stripe_mpp` token-settled
 `/v1/node/events/query` call. Paid-staging uses a Stripe-safe test price
 because Stripe rejects sub-minimum PaymentIntent amounts.
+
+The 2026-04-30 paid-staging check also captured a Stripe Dashboard-origin
+`payment_intent.succeeded` delivery returning HTTP `200` from the public
+webhook endpoint. Retry delivery, interrupted restart recovery, and live-money
+Stripe remain outside this proof.
