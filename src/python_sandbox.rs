@@ -6,7 +6,7 @@
 //! - read or write outside an explicit allow-list (enforced by `landlock`),
 //! - issue outbound network connections unless the caller grants it
 //!   (enforced by `seccomp` denying `socket`/`connect`/`bind`),
-//! - `execve` another binary (enforced by `seccomp`), or
+//! - `execve` another binary (enforced by Landlock execute restrictions), or
 //! - gain new privileges via suid binaries (enforced by `prctl PR_SET_NO_NEW_PRIVS`).
 //!
 //! This is a **deny-list** sandbox, not a full allow-list: Python stdlib uses
@@ -14,9 +14,8 @@
 //! fragile. The deny-list targets the five concrete attack surfaces a
 //! malicious workload would exploit: filesystem reads of host secrets,
 //! filesystem writes outside its tempdir, outbound network, arbitrary exec,
-//! and escape to a new privileged program. Each is closed by landlock or
-//! seccomp independently; failure of either primitive does not open the
-//! others.
+//! and escape to a new privileged program. Filesystem and executable access
+//! are closed by Landlock; network syscalls are closed by seccomp.
 //!
 //! On non-Linux hosts the module is a no-op and `install()` refuses to run a
 //! Python workload unless `FROGLET_ALLOW_UNSANDBOXED_PYTHON=1` is set. This
@@ -42,6 +41,10 @@ pub struct SandboxConfig {
     pub readonly_paths: Vec<PathBuf>,
     /// Paths the workload may read, write, create, and unlink recursively.
     pub writable_paths: Vec<PathBuf>,
+    /// Exact executables the child may `execve`. `harden_command` appends the
+    /// command's resolved program path before installing Landlock so the first
+    /// exec succeeds while later attempts to run other binaries are blocked.
+    pub executable_paths: Vec<PathBuf>,
     /// When true, outbound network syscalls are allowed. Set only when the
     /// workload has been granted a capability that requires network
     /// (e.g., a postgres mount).
@@ -55,6 +58,7 @@ impl SandboxConfig {
         Self {
             readonly_paths: default_readonly_paths(),
             writable_paths: vec![tempdir.to_path_buf()],
+            executable_paths: Vec::new(),
             allow_network: false,
         }
     }
@@ -62,10 +66,14 @@ impl SandboxConfig {
 
 fn default_readonly_paths() -> Vec<PathBuf> {
     // Python stdlib + linker + CA certs + DNS resolution. Conservative list
-    // that works on Debian / Ubuntu / Alpine / RHEL. Paths that don't exist
-    // on a given host are silently skipped when installing the ruleset.
+    // that works on Debian / Ubuntu / Alpine / RHEL. Do not allow all of
+    // `/usr`: Python only needs library/cert data, and broad `/usr` reads let
+    // a workload feed host binaries to the dynamic loader.
     vec![
-        PathBuf::from("/usr"),
+        PathBuf::from("/usr/lib"),
+        PathBuf::from("/usr/local/lib"),
+        PathBuf::from("/usr/share/ca-certificates"),
+        PathBuf::from("/usr/share/zoneinfo"),
         PathBuf::from("/lib"),
         PathBuf::from("/lib64"),
         PathBuf::from("/etc/ssl"),
@@ -112,7 +120,10 @@ pub fn harden_command(
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
-        let config_clone = config;
+        let mut config_clone = config;
+        config_clone
+            .executable_paths
+            .extend(resolve_command_executables(command));
         unsafe {
             command.pre_exec(move || {
                 install_sandbox(&config_clone).map_err(std::io::Error::other)?;
@@ -140,6 +151,71 @@ pub fn harden_command(
 }
 
 #[cfg(target_os = "linux")]
+fn resolve_command_executables(command: &std::process::Command) -> Vec<PathBuf> {
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    let program = command.get_program();
+    let program_path = Path::new(program);
+    let mut candidates = Vec::new();
+
+    if program_path.is_absolute() || program_path.components().count() > 1 {
+        candidates.push(program_path.to_path_buf());
+    } else {
+        let command_path = command.get_envs().find_map(|(key, value)| {
+            (key == OsStr::new("PATH")).then(|| value.map(std::ffi::OsString::from))
+        });
+        let path_value = command_path
+            .flatten()
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
+        for directory in std::env::split_paths(&path_value) {
+            candidates.push(directory.join(program));
+        }
+    }
+
+    let mut resolved = Vec::new();
+    for candidate in candidates {
+        if !candidate.exists() {
+            continue;
+        }
+        resolved.push(candidate.clone());
+        if let Ok(canonical) = candidate.canonicalize() {
+            resolved.push(canonical);
+        }
+    }
+    // Dynamically linked executables need the kernel to execute the ELF
+    // interpreter during the initial exec. Keep this list to loader files only;
+    // broad execute rights on /lib or /usr/bin would let workloads exec
+    // arbitrary host binaries.
+    for loader in default_dynamic_loader_paths() {
+        if !loader.exists() {
+            continue;
+        }
+        resolved.push(loader.clone());
+        if let Ok(canonical) = loader.canonicalize() {
+            resolved.push(canonical);
+        }
+    }
+    resolved.sort();
+    resolved.dedup();
+    resolved
+}
+
+#[cfg(target_os = "linux")]
+fn default_dynamic_loader_paths() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/lib64/ld-linux-x86-64.so.2"),
+        PathBuf::from("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"),
+        PathBuf::from("/lib/ld-linux-aarch64.so.1"),
+        PathBuf::from("/lib64/ld-linux-aarch64.so.1"),
+        PathBuf::from("/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"),
+        PathBuf::from("/lib/ld-musl-x86_64.so.1"),
+        PathBuf::from("/lib/ld-musl-aarch64.so.1"),
+    ]
+}
+
+#[cfg(target_os = "linux")]
 fn install_sandbox(config: &SandboxConfig) -> Result<(), String> {
     // PR_SET_NO_NEW_PRIVS is required to install a seccomp filter without
     // CAP_SYS_ADMIN, and also neutralises suid binaries that the workload
@@ -160,15 +236,30 @@ fn install_sandbox(config: &SandboxConfig) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 fn install_landlock(config: &SandboxConfig) -> Result<(), String> {
     use landlock::{
-        ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
-        RulesetStatus,
+        ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr, RulesetStatus, make_bitflags,
     };
 
     let abi = ABI::V1;
-    let read_access = AccessFs::from_read(abi);
-    let write_access = AccessFs::from_all(abi);
+    let read_dir_access = make_bitflags!(AccessFs::{ReadFile | ReadDir});
+    let read_file_access = make_bitflags!(AccessFs::{ReadFile});
+    let execute_access = make_bitflags!(AccessFs::{ReadFile | Execute});
+    let write_dir_access = read_dir_access | AccessFs::from_write(abi);
+    let write_file_access = read_file_access | make_bitflags!(AccessFs::{WriteFile});
+    let access_for_path = |path: &PathBuf, dir_access, file_access| {
+        if path
+            .metadata()
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
+            file_access
+        } else {
+            dir_access
+        }
+    };
 
     let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(abi))
         .map_err(|error| format!("landlock handle_access: {error}"))?
         .create()
@@ -179,33 +270,38 @@ fn install_landlock(config: &SandboxConfig) -> Result<(), String> {
             // Silently skip paths that don't exist — e.g., /lib64 on Alpine.
             continue;
         };
+        let access = access_for_path(path, read_dir_access, read_file_access);
         ruleset = ruleset
-            .add_rule(PathBeneath::new(fd, read_access))
+            .add_rule(PathBeneath::new(fd, access))
             .map_err(|error| format!("landlock add_rule ro {path:?}: {error}"))?;
     }
     for path in &config.writable_paths {
         let Ok(fd) = PathFd::new(path) else {
             continue;
         };
+        let access = access_for_path(path, write_dir_access, write_file_access);
         ruleset = ruleset
-            .add_rule(PathBeneath::new(fd, write_access))
+            .add_rule(PathBeneath::new(fd, access))
             .map_err(|error| format!("landlock add_rule rw {path:?}: {error}"))?;
+    }
+    for path in &config.executable_paths {
+        let Ok(fd) = PathFd::new(path) else {
+            continue;
+        };
+        ruleset = ruleset
+            .add_rule(PathBeneath::new(fd, execute_access))
+            .map_err(|error| format!("landlock add_rule exec {path:?}: {error}"))?;
     }
 
     let status = ruleset
         .restrict_self()
         .map_err(|error| format!("landlock restrict_self: {error}"))?;
 
-    // RulesetStatus::NotEnforced means the kernel did not apply the ruleset
-    // (pre-5.13 kernel, or landlock disabled at boot). In that case we
-    // continue with seccomp only — seccomp still blocks network and exec, and
-    // the caller has been told this is "Full" at startup via detect_tier().
-    // A warning here keeps operators informed.
     if status.ruleset != RulesetStatus::FullyEnforced {
-        tracing::warn!(
-            ruleset = ?status.ruleset,
-            "landlock not fully enforced; falling back to seccomp-only filesystem isolation"
-        );
+        return Err(format!(
+            "landlock not fully enforced ({:?}); refusing to run python workload without filesystem and executable isolation",
+            status.ruleset
+        ));
     }
     Ok(())
 }
@@ -215,13 +311,11 @@ fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
     use std::collections::BTreeMap;
 
-    // Deny-list of dangerous syscalls. Everything else continues to work, so
-    // Python stdlib is unaffected.
+    // Deny-list of dangerous network syscalls. Everything else continues to
+    // work, so Python stdlib is unaffected. Arbitrary exec is handled by
+    // Landlock execute rules because a pre-exec seccomp deny would also block
+    // the initial Python interpreter exec.
     let mut denied: HashSet<i64> = HashSet::new();
-    // Prevent the workload from exec'ing a different binary — the whole
-    // sandbox assumes python3 is the only executable in this process.
-    denied.insert(libc::SYS_execve);
-    denied.insert(libc::SYS_execveat);
     if !config.allow_network {
         // Block outbound sockets. Deny at the creation step (socket /
         // socketpair) so the workload can't even open a file descriptor; also
@@ -354,8 +448,11 @@ try:\n  open('/tmp/froglet-sandbox-outside', 'w').write('x')\n  print('LEAKED')\
             "open({:?}, 'w').write('hello')\nprint('WROTE')\n",
             target.to_string_lossy()
         );
-        let (code, stdout, _) = run_python(&script, config);
-        assert_eq!(code, 0);
+        let (code, stdout, stderr) = run_python(&script, config);
+        assert_eq!(
+            code, 0,
+            "unexpected exit {code}; stdout: {stdout}; stderr: {stderr}"
+        );
         assert!(stdout.contains("WROTE"));
     }
 
@@ -399,5 +496,66 @@ try:\n  os.execv('/bin/ls', ['ls'])\n  print('LEAKED')\nexcept PermissionError:\
         let (code, stdout, _) = run_python(script, config);
         assert_eq!(code, 0);
         assert!(stdout.contains("BLOCKED"));
+    }
+
+    #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
+    fn python_cannot_use_dynamic_loader_as_exec_bypass() {
+        let dir = tempdir();
+        let config = SandboxConfig::for_python(dir.path());
+        let copied_binary = dir.path().join("copied-ls");
+        let host_ls = if PathBuf::from("/bin/ls").exists() {
+            PathBuf::from("/bin/ls")
+        } else {
+            PathBuf::from("/usr/bin/ls")
+        };
+        std::fs::copy(&host_ls, &copied_binary).expect("copy test binary into sandbox tempdir");
+        let loaders = default_dynamic_loader_paths()
+            .into_iter()
+            .filter(|path| path.exists())
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let target_binaries = vec![
+            host_ls.to_string_lossy().to_string(),
+            copied_binary.to_string_lossy().to_string(),
+        ];
+        let script = format!(
+            concat!(
+                "import errno\n",
+                "import subprocess\n",
+                "loaders = {:?}\n",
+                "target_binaries = {:?}\n",
+                "if not loaders:\n",
+                "  print('NO_LOADER')\n",
+                "else:\n",
+                "  for loader in loaders:\n",
+                "    for target in target_binaries:\n",
+                "      try:\n",
+                "        result = subprocess.run([loader, target], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)\n",
+                "      except PermissionError:\n",
+                "        continue\n",
+                "      except OSError as e:\n",
+                "        if e.errno in (errno.EPERM, errno.EACCES):\n",
+                "          continue\n",
+                "        raise\n",
+                "      if result.returncode == 0:\n",
+                "        print('LEAKED')\n",
+                "        print('loader=' + loader)\n",
+                "        print('target=' + target)\n",
+                "        print(result.stdout)\n",
+                "        raise SystemExit(2)\n",
+                "  print('BLOCKED')\n",
+            ),
+            loaders, target_binaries
+        );
+        let (code, stdout, stderr) = run_python(&script, config);
+        assert_eq!(
+            code, 0,
+            "unexpected exit {code}; stdout: {stdout}; stderr: {stderr}"
+        );
+        assert!(
+            stdout.contains("BLOCKED") || stdout.contains("NO_LOADER"),
+            "unexpected stdout: {stdout}"
+        );
     }
 }

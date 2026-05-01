@@ -118,6 +118,15 @@ Docker was invoked with `--gpus all`, the container observed `Tesla T4` plus
 Docker GPU path, not cross-provider scheduling, marketplace routing, or
 production capacity management.
 
+Run the same proof on a GPU host with Docker NVIDIA support:
+
+```bash
+FROGLET_GPU_SMOKE_EXPECTED_GPU="Tesla T4" ./scripts/gpu_smoke.sh
+```
+
+The script writes the request, quote/deal/receipt, Docker invocation log, and
+GPU probe output under its printed evidence directory.
+
 ## Confidential Execution
 
 | Variable | Default | Description |

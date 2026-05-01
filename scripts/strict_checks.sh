@@ -40,6 +40,7 @@ bash -n scripts/gitleaks_gate.sh
 bash -n scripts/setup-agent.sh
 bash -n scripts/setup-payment.sh
 bash -n scripts/deploy_gcp_single_vm.sh
+bash -n scripts/gpu_smoke.sh
 bash -n scripts/package_release_assets.sh
 bash -n scripts/verify_release_assets.sh
 bash -n scripts/smoke_install_from_assets.sh
