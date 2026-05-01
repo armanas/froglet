@@ -185,9 +185,11 @@ After health checks pass, implement one concrete use case instead of stopping at
   implementation work.
 - **GPU-first:** require provider-advertised GPU capability and real hardware
   evidence before accepting GPU work. Self-hosted nodes can advertise GPU
-  metadata and gate Docker container execution with `--gpus all`; scheduling,
-  fallback policy, and a verified hardware smoke are still open. Do not silently
-  route GPU requests to CPU.
+  metadata, advertise generic-compute GPU offers, gate Docker container
+  execution with `--gpus all`, and reject CPU fallback. One GCP T4 container
+  workload with a signed receipt is verified; scheduling, marketplace routing,
+  and production capacity policy remain open. Do not silently route GPU requests
+  to CPU.
 - **Network-first:** prove loopback health, then move to clearnet, Tor, or dual
   exposure only with explicit user confirmation.
 

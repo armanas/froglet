@@ -1,6 +1,6 @@
 # MCP Directory Submissions
 
-Status date: 2026-04-30.
+Status date: 2026-05-01.
 
 Use this file when submitting Froglet to third-party MCP directories. Keep every
 claim tied to either the official MCP Registry entry, the published npm package,

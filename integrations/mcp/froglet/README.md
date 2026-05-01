@@ -53,9 +53,11 @@ network mode, marketplace URL, or first use case. After the profile is
 confirmed, `get_install_guide` returns the exact host-shell commands.
 After health checks pass, `plan_use_case` returns a bounded first-workflow plan
 and names unsupported edges before execution. In particular, true batch
-fan-out, GPU scheduling, and verified GPU hardware smokes are still separate
-implementation work. Self-hosted GPU capability metadata and Docker GPU gating
-are available to providers that explicitly configure GPUs.
+fan-out, GPU scheduling/provider selection, marketplace GPU routing, and
+production capacity management are still separate implementation work.
+Self-hosted GPU capability metadata, generic-compute offer metadata, Docker
+`--gpus all` gating, no-CPU-fallback errors, and one GCP T4 container workload
+with a signed receipt are verified for explicitly configured GPU providers.
 
 ### Explicit local npm profile
 

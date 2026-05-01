@@ -165,10 +165,11 @@ describe('hosted trial docs copy', () => {
   it('lists batch and GPU without claiming hosted GPU is live', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
     expect(index).toContain('Batch');
-    expect(index).toContain('async job queue');
+    expect(index).toContain('async task status');
+    expect(index).toContain('No fan-out');
     expect(index).toContain('GPU');
-    expect(index).toContain('provider advertises');
-    expect(index).toContain('Alpha');
+    expect(index).toContain('Docker --gpus');
+    expect(index).toContain('T4 verified');
   });
 
   it('keeps the README aligned with the deployed five-service catalog', () => {

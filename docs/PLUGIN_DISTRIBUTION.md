@@ -1,6 +1,6 @@
 # Plugin And Registry Distribution
 
-Status date: 2026-04-30.
+Status date: 2026-05-01.
 
 Froglet distribution has two distinct paths:
 

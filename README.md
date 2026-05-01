@@ -282,11 +282,12 @@ call `status` first. If the local node or token files are missing, use
 the host shell. After local health is verified, use `plan_use_case` before
 implementing consumer, provider, evidence, payments, batch, or GPU workflows.
 Batch and GPU planning stays truthful: current MCP can plan and verify
-boundaries. GPU capability advertisement and Docker GPU gating are implemented
-for self-hosted container services, but true batch fan-out, GPU scheduling, and
-verified GPU hardware smokes remain separate work. The public no-install proof
-remains the HTTP flow at `https://froglet.dev/llms.txt`; it is not an installed
-MCP action.
+boundaries. GPU capability advertisement, generic-compute offer metadata,
+Docker `--gpus all` gating, no-CPU-fallback errors, and one self-hosted GCP T4
+container workload with a signed receipt are verified. True batch fan-out, GPU
+scheduling/provider selection, marketplace GPU routing, and production capacity
+management remain separate work. The public no-install proof remains the HTTP
+flow at `https://froglet.dev/llms.txt`; it is not an installed MCP action.
 
 For a local node, use the local profile:
 

@@ -109,14 +109,15 @@ capability is listed in the signed offer. Non-GPU providers, and non-container
 workloads that request GPU, return clear errors instead of silently falling back
 to CPU.
 
-Verified smoke: on 2026-04-30, a self-hosted GCP `nvidia-tesla-t4` VM ran a
+Verified smoke: on 2026-05-01, a self-hosted GCP `nvidia-tesla-t4` VM ran a
 digest-pinned container through `POST /v1/runtime/deals` with
 `requested_access: ["compute.gpu"]`. The signed quote granted `compute.gpu`,
 Docker was invoked with `--gpus all`, the container observed `Tesla T4` plus
 `FROGLET_GPU_CAPABILITIES=["compute.gpu"]`, and the signed receipt recorded
-`deal_state: "succeeded"` with the result hash. This proves the single-node
-Docker GPU path, not cross-provider scheduling, marketplace routing, or
-production capacity management.
+`deal_state: "succeeded"` with deal id
+`63bcf0c2b5a9c60ca3799d8e6be910fa`. This proves the single-node Docker GPU
+path, not cross-provider scheduling, marketplace routing, or production
+capacity management.
 
 Run the same proof on a GPU host with Docker NVIDIA support:
 
