@@ -17,6 +17,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       owner_lc: ${{ steps.meta.outputs.owner_lc }}
       sha_tag: ${{ steps.meta.outputs.sha_tag }}
+      mcp_version: ${{ steps.mcp_meta.outputs.mcp_version }}
 
     steps:
       - name: Check out repo
@@ -61,14 +62,12 @@ jobs:
         env:
           TAG_VERSION: ${{ steps.meta.outputs.version }}
 
-      - name: Verify OpenClaw plugin versions match tag
+      - name: Verify OpenClaw plugin versions are consistent
         run: |
           python3 - <<'PY'
           import json
-          import os
           from pathlib import Path
 
-          tag_version = os.environ["TAG_VERSION"]
           package_version = json.loads(
               Path("integrations/openclaw/froglet/package.json").read_text()
           )["version"]
@@ -76,26 +75,21 @@ jobs:
               Path("integrations/openclaw/froglet/openclaw.plugin.json").read_text()
           )["version"]
 
-          if package_version != tag_version:
+          if plugin_version != package_version:
               raise SystemExit(
-                  f"package.json version {package_version!r} does not match tag {tag_version!r}"
-              )
-          if plugin_version != tag_version:
-              raise SystemExit(
-                  f"openclaw.plugin.json version {plugin_version!r} does not match tag {tag_version!r}"
+                  f"openclaw.plugin.json version {plugin_version!r} does not match package.json {package_version!r}"
               )
           PY
-        env:
-          TAG_VERSION: ${{ steps.meta.outputs.version }}
 
-      - name: Verify MCP versions match tag
+      - name: Verify MCP versions are consistent
+        id: mcp_meta
         run: |
           python3 - <<'PY'
           import json
           import os
           from pathlib import Path
 
-          tag_version = os.environ["TAG_VERSION"]
+          root_package_version = json.loads(Path("package.json").read_text())["version"]
           package_version = json.loads(
               Path("integrations/mcp/froglet/package.json").read_text()
           )["version"]
@@ -110,19 +104,21 @@ jobs:
 
           mismatches = []
           for label, value in (
+              ("root package.json", root_package_version),
               ("package.json", package_version),
               ("mcp-manifest.json", manifest_version),
               ("package-lock.json", lockfile_version),
               ("package-lock.json packages[\"\"]", lockfile_root_version),
           ):
-              if value != tag_version:
-                  mismatches.append(f"{label} version {value!r} does not match tag {tag_version!r}")
+              if value != package_version:
+                  mismatches.append(f"{label} version {value!r} does not match integrations/mcp/froglet/package.json {package_version!r}")
 
           if mismatches:
               raise SystemExit("\n".join(mismatches))
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"mcp_version={package_version}\n")
           PY
-        env:
-          TAG_VERSION: ${{ steps.meta.outputs.version }}
 
   ensure-release:
     name: Ensure GitHub Release Exists
@@ -269,7 +265,7 @@ jobs:
 
       - name: Build and push MCP server image
         env:
-          VERSION: ${{ needs.verify-release-metadata.outputs.version }}
+          VERSION: ${{ needs.verify-release-metadata.outputs.mcp_version }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
           SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
         run: |
@@ -289,6 +285,7 @@ jobs:
       - name: Write release summary
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.version }}
+          MCP_VERSION: ${{ needs.verify-release-metadata.outputs.mcp_version }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
           SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
         run: |
@@ -299,7 +296,7 @@ jobs:
             echo "- ghcr.io/${OWNER_LC}/froglet-provider:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${VERSION}"
             echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${SHA_TAG}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${VERSION}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${MCP_VERSION}"
             echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${SHA_TAG}"
             echo "- ghcr.io/${OWNER_LC}/froglet-mcp:latest"
           } >> "$GITHUB_STEP_SUMMARY"

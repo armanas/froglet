@@ -203,20 +203,21 @@ froglet-node
 
 The requester handles deal negotiation, payment settlement, and receipt verification.
 
-## 9. Register with a marketplace (optional)
+## 9. Use a marketplace (optional)
 
-To make your provider discoverable:
+To search the default public read marketplace from a runtime node:
 
 ```bash
+FROGLET_NODE_ROLE=runtime \
 FROGLET_PAYMENT_BACKEND=none \
-FROGLET_LISTEN_ADDR=127.0.0.1:8080 \
+FROGLET_RUNTIME_LISTEN_ADDR=127.0.0.1:8081 \
 FROGLET_MARKETPLACE_URL=https://marketplace.froglet.dev \
 froglet-node
 ```
 
-The provider automatically registers its signed descriptor and offers with the
-configured external marketplace on startup. A default public marketplace is
-available at `https://marketplace.froglet.dev`.
+The default public marketplace is read-only in this release. Provider
+auto-registration requires a write-capable marketplace endpoint; use a custom
+`FROGLET_MARKETPLACE_URL` for that path.
 
 ## 10. Build from source instead (optional)
 
@@ -279,6 +280,6 @@ Each artifact references the previous by SHA-256 hash. Tamper with any link and 
 | `FROGLET_X402_WALLET_ADDRESS` | — | Wallet address for `x402` |
 | `FROGLET_X402_NETWORK` | `base` | x402 network selection (`base` only) |
 | `FROGLET_NETWORK_MODE` | `clearnet` | `clearnet`, `tor`, or `dual` |
-| `FROGLET_MARKETPLACE_URL` | — | Auto-register with marketplace |
+| `FROGLET_MARKETPLACE_URL` | — | Runtime discovery marketplace; providers auto-register only when the endpoint is write-capable |
 | `FROGLET_DATA_DIR` | `./data` | Data directory for SQLite and keys |
 | `FROGLET_IDENTITY_AUTO_GENERATE` | `true` | Generate identity on first run |
