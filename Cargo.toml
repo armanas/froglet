@@ -47,7 +47,7 @@ lightning-invoice = { version = "0.34", features = ["std"] }
 aes-gcm-siv = "0.11"
 
 # Security Sandbox (WASM)
-wasmtime = "42.0.2"
+wasmtime = "43.0.2"
 
 # Database
 rusqlite = { version = "0.38", features = ["bundled"] }
