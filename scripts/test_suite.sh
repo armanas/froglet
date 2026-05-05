@@ -37,6 +37,10 @@ skip_warn() {
   echo -e "  ${YELLOW}[skip]${RESET} $1"
 }
 
+missing_req() {
+  echo -e "  ${RED}[missing]${RESET} $1"
+}
+
 step() {
   if [[ "$DRY_RUN" == "1" ]]; then
     echo -e "  ${BOLD}[dry-run]${RESET} $*"
@@ -304,12 +308,12 @@ run_smoke() {
   banner "smoke"
 
   if ! has_docker; then
-    skip_warn "smoke tests require Docker"
-    return 0
+    missing_req "smoke tests require Docker"
+    return 1
   fi
   if ! has_node; then
-    skip_warn "smoke tests require node >= 18"
-    return 0
+    missing_req "smoke tests require node >= 18"
+    return 1
   fi
   if ! ensure_mcp_deps; then
     return 1
@@ -323,7 +327,7 @@ run_smoke() {
   fi
 
   compose_test_setup smoke
-  step compose_test_env docker compose up --build -d --wait || rc=1
+  step compose_test_env docker compose -f compose.yaml -f compose.ci.yaml up --build -d --wait || rc=1
   if [[ "$rc" -eq 0 ]]; then
     step compose_test_env node integrations/openclaw/froglet/test/compose-smoke.mjs || rc=1
     step compose_test_env node integrations/mcp/froglet/test/compose-smoke.mjs || rc=1

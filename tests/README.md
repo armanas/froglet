@@ -67,7 +67,10 @@ Load and concurrency testing.
 
 End-to-end tests against a full Docker Compose stack (provider + runtime).
 
-- Starts compose, waits for health, runs OpenClaw and MCP compose-smoke.mjs
+- Starts `compose.yaml` with `compose.ci.yaml`, waits for health, runs
+  OpenClaw and MCP compose-smoke.mjs. The overlay only makes control-token
+  files host-readable for the smoke clients; normal `docker compose up` keeps
+  the default locked-down token permissions.
 - **Requires:** Docker, node >= 18
 
 ### agentic
