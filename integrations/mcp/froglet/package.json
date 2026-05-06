@@ -17,6 +17,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"
   },
+  "overrides": {
+    "ip-address": "10.2.0"
+  },
   "scripts": {
     "check": "node --check server.js",
     "smoke:compose": "node test/compose-smoke.mjs",
