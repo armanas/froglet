@@ -201,7 +201,6 @@ free hosted demo catalog with one canonical end-to-end proof.
 - OpenClaw/NemoClaw plugin under `integrations/openclaw/froglet/`
 - MCP server under `integrations/mcp/froglet/`
 - public docs at `froglet.dev`
-- public status snapshot at `froglet.dev/status/`
 - free hosted trial at `try.froglet.dev`
 
 ## Install

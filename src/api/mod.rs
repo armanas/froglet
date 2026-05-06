@@ -14695,6 +14695,22 @@ mod tests {
             payload["non_demo_services"],
             "Other service IDs may appear on the reference node, but they are outside the public hosted proof contract."
         );
+        assert_eq!(
+            payload["local_install_handoff"]["mcp_actions"],
+            json!(["plan_install", "get_install_guide", "plan_use_case"])
+        );
+        assert!(
+            payload["local_install_handoff"]["fresh_host_smoke"]
+                .as_str()
+                .unwrap()
+                .contains("fresh_host_quickstart_smoke.sh")
+        );
+        assert!(
+            payload["local_install_handoff"]["boundary"]
+                .as_str()
+                .unwrap()
+                .contains("user's own shell")
+        );
         assert!(
             payload["chat_only_fallback"]
                 .as_str()

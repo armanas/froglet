@@ -119,6 +119,8 @@ Before step 1, the user's host needs:
 - **`curl`** — for fetching the install script (usually already present)
 - **`git`** — the public helper-script path clones the repo before it runs
   `setup-agent.sh`, `setup-payment.sh`, or Compose
+- **Node.js 18+ with npm** — required when generating Claude Code or Codex
+  configs that point at the local MCP server
 - **Docker with Compose v2** — for the `footprint=docker` final step
 - **Linux x86_64 / arm64**, **macOS arm64**, or **macOS Intel with Rosetta**
   — the signed binary covers these targets
@@ -128,6 +130,12 @@ If the user is on Windows, the current story is "use WSL2." If the user
 does not have Docker installed and you (the LLM) have host permissions
 to install it, ask first — installing Docker is a meaningful system
 change and should not be silent.
+
+For a disposable-host proof of the default quickstart, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
+```
 
 ## Payment and network choices
 
@@ -148,7 +156,7 @@ change and should not be silent.
 
 ## Post-install verification
 
-After the five install steps, call the Froglet `status` action against
+After the install steps, call the Froglet `status` action against
 the local instance at `127.0.0.1:8081`. A healthy install returns:
 
 - `healthy: true`

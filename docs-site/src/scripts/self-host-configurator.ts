@@ -37,6 +37,11 @@ export function buildSelfHostScript(config: SelfHostConfig = DEFAULT_SELF_HOST_C
   lines.push(
     'git clone https://github.com/armanas/froglet.git',
     'cd froglet',
+  );
+  if (config.agent !== 'openclaw') {
+    lines.push('npm ci --prefix integrations/mcp/froglet');
+  }
+  lines.push(
     `./scripts/setup-agent.sh --target ${config.agent}`,
     PAYMENT_COMMANDS[config.payment],
     `set -a && . ./.froglet/payment/${config.payment}.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a`,

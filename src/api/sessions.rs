@@ -95,6 +95,12 @@ async fn preflight(State(state): State<Arc<AppState>>) -> Response {
                 "demo.notarize"
             ],
             "non_demo_services": "Other service IDs may appear on the reference node, but they are outside the public hosted proof contract.",
+            "local_install_handoff": {
+                "when_user_asks": "After reporting hosted evidence, collect the local install profile, call plan_install before get_install_guide, run commands through the user's host shell, verify provider/runtime health, then call plan_use_case.",
+                "mcp_actions": ["plan_install", "get_install_guide", "plan_use_case"],
+                "fresh_host_smoke": "curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash",
+                "boundary": "The hosted trial is free-only and cannot install Froglet on the user's machine; local installation commands must run in the user's own shell."
+            },
             "chat_only_fallback": "If this client cannot fetch URLs, POST JSON, send Bearer auth, or poll, report a tool limitation and ask the user to use an HTTP-capable agent or the documented curl flow."
         })),
     )

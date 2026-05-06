@@ -8,6 +8,7 @@ describe('buildSelfHostScript', () => {
     expect(script).toContain('git clone https://github.com/armanas/froglet.git\ncd froglet\n');
     expect(script.match(/^cd froglet$/gm)).toHaveLength(1);
     expect(script).not.toContain('cd froglet &&');
+    expect(script).toContain('npm ci --prefix integrations/mcp/froglet');
     expect(script).toContain('./scripts/setup-agent.sh --target claude-code');
     expect(script).toContain('./scripts/setup-payment.sh lightning');
     expect(script).toContain('docker compose up --build -d');
@@ -21,6 +22,7 @@ describe('buildSelfHostScript', () => {
     });
 
     expect(script).toContain('| ARCH=arm64 sh');
+    expect(script).toContain('npm ci --prefix integrations/mcp/froglet');
     expect(script).toContain('./scripts/setup-agent.sh --target codex');
     expect(script).toContain('FROGLET_X402_WALLET_ADDRESS=<base-wallet-address>');
   });
@@ -33,6 +35,7 @@ describe('buildSelfHostScript', () => {
     });
 
     expect(script).not.toContain('install.sh');
+    expect(script).not.toContain('npm ci --prefix integrations/mcp/froglet');
     expect(script).toContain('./scripts/setup-agent.sh --target openclaw');
     expect(script).toContain('FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key>');
   });

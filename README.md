@@ -115,8 +115,8 @@ The reference implementation exposes these binaries:
 **Binary install (quickest):** curl, tar, sha256sum (Linux) or shasum (macOS).
 Supported: Linux x86_64/arm64, macOS arm64.
 
-**Build from source:** Rust 1.91+, Python 3.12+ (for tests), Node 18+
-(optional, for MCP/OpenClaw integration tests).
+**Build from source:** Rust 1.91+, Python 3.12+ (for tests), Node 18+ with npm
+(for Claude Code/Codex MCP setup and integration tests).
 
 **Docker:** Docker with Compose v2.
 
@@ -163,9 +163,16 @@ Minimal full local stack from zero:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
 git clone https://github.com/armanas/froglet.git
+cd froglet && npm ci --prefix integrations/mcp/froglet
 cd froglet && ./scripts/setup-agent.sh --target claude-code
 cd froglet && ./scripts/setup-payment.sh lightning
 cd froglet && set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
+```
+
+Disposable-host proof runner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
 ```
 
 If you only want the signed binary:
@@ -303,6 +310,7 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.toke
 From a source checkout, the same server can be run directly:
 
 ```bash
+npm ci --prefix integrations/mcp/froglet
 node integrations/mcp/froglet/server.js
 ```
 

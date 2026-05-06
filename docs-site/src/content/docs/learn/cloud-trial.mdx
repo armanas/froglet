@@ -251,8 +251,10 @@ An agent that can run tools should use this staged local flow:
    post-install playbooks.
 5. Call `get_install_guide` only after you confirm the profile. The agent runs
    those commands through its host shell, not through Froglet runtime.
-6. Verify provider health, runtime health, and local Froglet `status`.
-7. Call `plan_use_case` before implementing the concrete workflow. For batch
+6. For a disposable-host proof of the default quickstart, run
+   `curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.
+7. Verify provider health, runtime health, and local Froglet `status`.
+8. Call `plan_use_case` before implementing the concrete workflow. For batch
    requests, start with existing async task status primitives and do not claim
    multi-item fan-out until Order 44 lands. For GPU requests, require
    provider-advertised GPU capability plus real hardware evidence before

@@ -215,7 +215,10 @@ If the agent has Froglet MCP/OpenClaw tools, it should call `plan_install`
 before `get_install_guide`. `plan_install` returns remaining questions,
 prerequisites, required secrets, command preview, validation checks, and
 post-install playbooks. `get_install_guide` is for confirmed command execution
-through the host shell. After local health is verified, call `plan_use_case`
+through the host shell. A disposable-host proof of the default quickstart is
+available with
+`curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.
+After local health is verified, call `plan_use_case`
 before implementing consumer, provider, evidence, payments, batch, or GPU
 workflows. Batch starts with the existing async task status primitives but
 multi-item fan-out remains Order 44 work. GPU requires provider-advertised

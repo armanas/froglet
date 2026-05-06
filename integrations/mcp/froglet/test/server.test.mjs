@@ -278,6 +278,7 @@ describe("froglet MCP actions", () => {
     assert.match(text, /run_as: user-host-shell/)
     assert.match(text, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/armanas\/froglet\/main\/scripts\/install\.sh \| sh/)
     assert.match(text, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
+    assert.match(text, /cd froglet && npm ci --prefix integrations\/mcp\/froglet/)
     assert.match(text, /cd froglet && \.\/scripts\/setup-agent\.sh --target claude-code/)
     assert.match(text, /cd froglet && \.\/scripts\/setup-payment\.sh lightning/)
     assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/lightning\.env/)
@@ -294,6 +295,7 @@ describe("froglet MCP actions", () => {
     const text = result.content[0].text
     assert.match(text, /target_agent: codex/)
     assert.match(text, /payment_rail: stripe/)
+    assert.match(text, /cd froglet && npm ci --prefix integrations\/mcp\/froglet/)
     assert.match(text, /cd froglet && \.\/scripts\/setup-agent\.sh --target codex/)
     assert.match(text, /cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> \.\/scripts\/setup-payment\.sh stripe/)
     assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/stripe\.env/)
@@ -378,6 +380,7 @@ describe("froglet MCP actions", () => {
     assert.match(text, /target_agent: manual/)
     assert.match(text, /payment_rail: none/)
     assert.match(text, /role: consumer/)
+    assert.doesNotMatch(text, /npm ci --prefix integrations\/mcp\/froglet/)
     assert.doesNotMatch(text, /setup-agent\.sh --target manual/)
     assert.match(text, /printf '%s\\n' 'FROGLET_PAYMENT_BACKEND=none'/)
     assert.match(text, /FROGLET_NETWORK_MODE=dual/)
@@ -425,7 +428,7 @@ describe("froglet MCP actions", () => {
       .split("\n")
       .filter((line) => /^\s*\d+\.\s+/.test(line))
       .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
-    assert.equal(steps.length, 5, `expected 5 commands, got ${steps.length}`)
+    assert.equal(steps.length, 6, `expected 6 commands, got ${steps.length}`)
 
     const readme = await readFile(join(REPO_ROOT, "README.md"), "utf8")
     for (const step of steps) {
@@ -458,6 +461,7 @@ describe("froglet MCP actions", () => {
       "utf8"
     )
     assert.match(configurator, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
+    assert.match(configurator, /npm ci --prefix integrations\/mcp\/froglet/)
     assert.match(configurator, /`\.\/scripts\/setup-agent\.sh --target \$\{config\.agent\}`/)
     assert.match(configurator, /lightning: '\.\/scripts\/setup-payment\.sh lightning'/)
     assert.match(

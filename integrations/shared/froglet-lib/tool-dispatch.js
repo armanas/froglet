@@ -375,6 +375,7 @@ async function handleDealPaymentIntent(args, config, includeRaw) {
 
 const SUPPORTED_INSTALL_AGENTS = new Set(["claude-code", "codex", "openclaw", "manual"])
 const SETUP_AGENT_TARGETS = new Set(["claude-code", "codex", "openclaw"])
+const LOCAL_MCP_AGENT_TARGETS = new Set(["claude-code", "codex"])
 const SUPPORTED_INSTALL_RAILS = new Set(["none", "lightning", "stripe", "x402"])
 const SUPPORTED_LIGHTNING_MODES = new Set(["mock", "lnd_rest"])
 const SUPPORTED_INSTALL_FOOTPRINTS = new Set(["docker", "binary", "source"])
@@ -476,6 +477,9 @@ function renderInstallBlock(profile) {
   } else {
     steps.unshift(stepOne)
   }
+  if (LOCAL_MCP_AGENT_TARGETS.has(profile.targetAgent)) {
+    steps.push("cd froglet && npm ci --prefix integrations/mcp/froglet")
+  }
   if (SETUP_AGENT_TARGETS.has(profile.targetAgent)) {
     steps.push(`cd froglet && ./scripts/setup-agent.sh --target ${profile.targetAgent}`)
   }
@@ -538,7 +542,7 @@ function installPrerequisites(profile) {
     prerequisites.push("Rust toolchain with cargo")
   }
   if (SETUP_AGENT_TARGETS.has(profile.targetAgent)) {
-    prerequisites.push("Node.js 18+ for the local MCP server")
+    prerequisites.push("Node.js 18+ with npm for the local MCP server")
   }
   if (profile.networkMode !== "clearnet") {
     prerequisites.push("Tor installed and reachable by the Froglet node")
@@ -727,6 +731,9 @@ async function handleInstallGuide(args, _config, includeRaw) {
       profile.footprint === "binary"
         ? "Binary footprint stops after froglet-node is installed; no repo-local helper scripts or Docker stack are started."
         : "The repo clone is required because the helper scripts, Compose file, and OpenClaw plugin live there.",
+      LOCAL_MCP_AGENT_TARGETS.has(profile.targetAgent)
+        ? "The npm step installs the local MCP server dependencies used by the generated Claude Code/Codex config."
+        : "This profile does not require installing the local MCP server dependencies before setup-agent.",
       SETUP_AGENT_TARGETS.has(profile.targetAgent)
         ? `The agent setup step writes the ${profile.targetAgent} config so the agent can talk to local Froglet.`
         : "Manual target selected: do not run setup-agent; show the MCP config docs instead.",

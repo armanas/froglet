@@ -107,4 +107,4 @@ Then give the user the shortest next step:
 
 - Agentic path: paste the primary instruction above into Codex, Claude Code, OpenClaw, or another HTTP-capable agent that can fetch URLs, POST JSON, send Bearer auth, and poll HTTP routes.
 - Manual hosted path: open https://froglet.dev/learn/cloud-trial/ and run the curl block.
-- Local path: open https://froglet.dev/learn/quickstart/ and choose `binary`, `docker`, or `source`.
+- Local path: open https://froglet.dev/learn/quickstart/ and choose `binary`, `docker`, or `source`. For a disposable-host proof of the default local path, run `curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.

@@ -243,6 +243,14 @@ EOF
     ;;
 esac
 
+if [[ -n "$repo_root" && "$target" =~ ^(claude-code|codex)$ ]]; then
+  mcp_dependency_marker="$repo_root/integrations/mcp/froglet/node_modules/@modelcontextprotocol/sdk/package.json"
+  if [[ ! -f "$mcp_dependency_marker" ]]; then
+    printf 'Dependency: run npm ci --prefix %s before starting the local MCP server.\n' \
+      "$repo_root/integrations/mcp/froglet"
+  fi
+fi
+
 if [[ "$provider_token_path" == "$repo_root/data/runtime/froglet-control.token" ]]; then
   printf 'Compose-backed usage: start docker compose with FROGLET_HOST_READABLE_CONTROL_TOKEN=true so %s is readable on the host.\n' "$provider_token_path"
 fi

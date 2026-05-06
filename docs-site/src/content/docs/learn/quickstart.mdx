@@ -21,15 +21,22 @@ description: "Run Froglet locally with either the signed binary or the cloned-re
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
 git clone https://github.com/armanas/froglet.git
+cd froglet && npm ci --prefix integrations/mcp/froglet
 cd froglet && ./scripts/setup-agent.sh --target claude-code
 cd froglet && ./scripts/setup-payment.sh lightning
 cd froglet && set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
 ```
 
 If you only want the signed `froglet-node` binary, stop after the first
-command. The rest of this page walks the five-step helper-script path
+command. The rest of this page walks the helper-script path
 individually if you want the local Compose stack, generated agent configs,
 and payment env snippets.
+
+To verify the full path on a disposable host with Docker:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
+```
 
 If you only want an agent to run the no-install hosted proof, do not start with
 this local stack. Use the HTTP prompt at `https://froglet.dev/llms.txt` or the
@@ -41,7 +48,7 @@ operate a local or self-hosted Froglet node.
 - **Linux x86_64 / arm64** or **macOS arm64**
 - **`curl`** to download the installer
 - **`git`** for the helper-script + Compose path
-- **Node.js 18+** if you want the local MCP server for Claude Code or Codex
+- **Node.js 18+ with npm** if you want the local MCP server for Claude Code or Codex
 - Optional: **Docker** if you want the local provider/runtime stack or the tagged GHCR images
 
 ## 1. Install Froglet
@@ -79,6 +86,13 @@ The public installer does not fetch `./scripts/setup-agent.sh`,
 plugin. Those live in the repo and are used below.
 
 ## 3. Connect an agent
+
+For Claude Code or Codex, install the local MCP server dependencies once after
+cloning:
+
+```bash
+cd froglet && npm ci --prefix integrations/mcp/froglet
+```
 
 Generate the exact local config file for the agent you plan to use:
 
