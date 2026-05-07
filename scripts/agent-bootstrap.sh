@@ -155,7 +155,7 @@ else
 fi
 PROVIDER_IMAGE="${PROVIDER_IMAGE:-ghcr.io/armanas/froglet-provider:$IMAGE_TAG}"
 RUNTIME_IMAGE="${RUNTIME_IMAGE:-ghcr.io/armanas/froglet-runtime:$IMAGE_TAG}"
-MCP_IMAGE="${MCP_IMAGE:-ghcr.io/armanas/froglet-mcp:$IMAGE_TAG}"
+MCP_IMAGE="${MCP_IMAGE:-ghcr.io/armanas/froglet-mcp:latest}"
 
 mkdir -p "$BIN_DIR" "$BOOTSTRAP_DIR"
 
