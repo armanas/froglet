@@ -839,6 +839,7 @@ async function resolveProviderReference({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  preferTrustedProviderUrl = false,
 }) {
   // The operator-configured `runtimeUrl` goes through the strict
   // `normalizeBaseUrl` helper at config-load time and is trusted thereafter.
@@ -877,28 +878,41 @@ async function resolveProviderReference({
   }
 
   if (explicitProviderId) {
-    if (typeof trustedProviderUrl === "string" && trustedProviderUrl.trim().length > 0) {
+    const hasTrustedProviderUrl =
+      typeof trustedProviderUrl === "string" && trustedProviderUrl.trim().length > 0
+    if (hasTrustedProviderUrl && preferTrustedProviderUrl) {
       return {
         providerId: explicitProviderId,
         providerUrl: trustedProviderUrl.trim(),
         matchSource: "trusted_provider_url",
       }
     }
-    const providerResponse = await runtimeProviderDetails({
-      runtimeUrl,
-      runtimeAuthTokenPath,
-      requestTimeoutMs,
-      providerId: explicitProviderId,
-    })
-    const detail = providerResponse?.provider
-    if (!detail) {
-      throw new Error(`provider ${explicitProviderId} not found`)
-    }
-    return {
-      providerId: explicitProviderId,
-      providerUrl: providerUrlFromRuntimeDetail(detail, explicitProviderId),
-      providerDetail: detail,
-      matchSource: "provider_id",
+    try {
+      const providerResponse = await runtimeProviderDetails({
+        runtimeUrl,
+        runtimeAuthTokenPath,
+        requestTimeoutMs,
+        providerId: explicitProviderId,
+      })
+      const detail = providerResponse?.provider
+      if (!detail) {
+        throw new Error(`provider ${explicitProviderId} not found`)
+      }
+      return {
+        providerId: explicitProviderId,
+        providerUrl: providerUrlFromRuntimeDetail(detail, explicitProviderId),
+        providerDetail: detail,
+        matchSource: "provider_id",
+      }
+    } catch (error) {
+      if (hasTrustedProviderUrl) {
+        return {
+          providerId: explicitProviderId,
+          providerUrl: trustedProviderUrl.trim(),
+          matchSource: "trusted_provider_url_fallback",
+        }
+      }
+      throw error
     }
   }
 
@@ -944,6 +958,7 @@ async function resolveRemoteService({
   requestTimeoutMs,
   request,
   searchLimit = 100,
+  trustedProviderUrl = null,
 }) {
   const serviceId =
     typeof request?.service_id === "string" && request.service_id.trim().length > 0
@@ -958,6 +973,7 @@ async function resolveRemoteService({
     requestTimeoutMs,
     request,
     searchLimit,
+    trustedProviderUrl,
   })
   const serviceResponse = await fetchPublicProviderService({
     providerUrl: provider.providerUrl,
@@ -1468,15 +1484,23 @@ export async function getService({ runtimeUrl, runtimeAuthTokenPath, requestTime
  * Invoke a named service by building a canonical service-addressed execution
  * workload and submitting it through the runtime deal flow.
  *
- * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, service_id?: string, input?: unknown }, searchLimit?: number }} config
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, service_id?: string, input?: unknown }, searchLimit?: number, trustedProviderUrl?: string | null }} config
  */
-export async function invokeService({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, request, searchLimit = 100 }) {
+export async function invokeService({
+  runtimeUrl,
+  runtimeAuthTokenPath,
+  requestTimeoutMs,
+  request,
+  searchLimit = 100,
+  trustedProviderUrl = null,
+}) {
   const resolved = await resolveRemoteService({
     runtimeUrl,
     runtimeAuthTokenPath,
     requestTimeoutMs,
     request,
     searchLimit,
+    trustedProviderUrl,
   })
   const response = await frogletRequest(
     runtimeUrl,
@@ -1523,6 +1547,7 @@ export async function runCompute({
     request,
     searchLimit,
     trustedProviderUrl,
+    preferTrustedProviderUrl: true,
   })
   let spec
   if (typeof request?.wasm_module_hex === "string" && request.wasm_module_hex.trim().length > 0) {

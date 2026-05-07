@@ -1231,6 +1231,62 @@ describe("froglet MCP actions", () => {
     }
   })
 
+  it("invokes local services with the operator-configured provider fallback", async () => {
+    let runtimeDealBody = null
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8080/v1/provider/services/demo.add.local") {
+        return new Response(
+          JSON.stringify({
+            service: {
+              service_id: "demo.add.local",
+              offer_id: "demo.add.local",
+              provider_id: "local-provider",
+              runtime: "python",
+              package_kind: "inline_source",
+              binding_hash: "feedface"
+            }
+          })
+        )
+      }
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
+        runtimeDealBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            provider_id: "local-provider",
+            provider_url: "http://127.0.0.1:8080",
+            quote: { hash: "quote-hash" },
+            deal: { deal_id: "deal-local", status: "succeeded", result: { sum: 12 } }
+          })
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "invoke_service",
+          provider_id: "local-provider",
+          service_id: "demo.add.local",
+          input: { a: 7, b: 5 }
+        },
+        config
+      )
+      const text = result.content[0].text
+      assert.match(text, /status: succeeded/)
+      assert.match(text, /result: {"sum":12}/)
+      assert.deepEqual(runtimeDealBody.provider, {
+        provider_id: "local-provider",
+        provider_url: "http://127.0.0.1:8080"
+      })
+      assert.equal(runtimeDealBody.offer_id, "demo.add.local")
+      assert.equal(runtimeDealBody.kind, "execution")
+    } finally {
+      restore()
+    }
+  })
+
   it("runs compute through runtime deals", async () => {
     let runtimeDealBody = null
     const restore = mockFetch(async (url, opts) => {
