@@ -130,6 +130,28 @@ fi
             config["providerAuthTokenPath"].endswith("/data/runtime/froglet-control.token")
         )
 
+    def test_setup_agent_binary_mode_adds_linux_host_gateway(self):
+        script = self.root / "setup-agent.sh"
+        script.write_text(SETUP_AGENT.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+
+        token_dir = self.root / "tokens"
+        token_dir.mkdir()
+        out_path = self.root / "binary.mcp.json"
+        result = self._run(
+            [str(script), "--target", "claude-code", "--out", str(out_path)],
+            extra_env={
+                "FROGLET_PROVIDER_AUTH_TOKEN_PATH": str(token_dir / "provider.token"),
+                "FROGLET_RUNTIME_AUTH_TOKEN_PATH": str(token_dir / "runtime.token"),
+            },
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        server = json.loads(out_path.read_text(encoding="utf-8"))["mcpServers"]["froglet"]
+        self.assertEqual(server["command"], "docker")
+        self.assertIn("--add-host", server["args"])
+        self.assertIn("host.docker.internal:host-gateway", server["args"])
+
     def test_setup_payment_generates_lightning_mock_env(self):
         out_path = self.root / "lightning.env"
         result = self._run([str(SETUP_PAYMENT), "lightning", "--out", str(out_path)])
@@ -259,7 +281,7 @@ fi
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("/verify endpoint not found", result.stderr)
 
-    def _run(self, args, extra_env=None):
+    def _run(self, args, extra_env=None, cwd=REPO_ROOT):
         env = os.environ.copy()
         env.update(
             {
@@ -271,7 +293,7 @@ fi
             env.update(extra_env)
         return subprocess.run(
             ["bash", *args],
-            cwd=REPO_ROOT,
+            cwd=cwd,
             env=env,
             text=True,
             capture_output=True,

@@ -4,6 +4,7 @@
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
+        "--add-host", "host.docker.internal:host-gateway",
         "-e", "FROGLET_PROVIDER_URL",
         "-e", "FROGLET_RUNTIME_URL",
         "ghcr.io/armanas/froglet-mcp:latest"
