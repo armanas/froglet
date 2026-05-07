@@ -11,7 +11,29 @@ description: Connect Froglet to Claude Code, Codex, OpenClaw, and other MCP host
   </div>
 </div>
 
-## Local MCP from npm
+## No-Clone Agent Bootstrap
+
+For a user who wants a local Froglet node, start with the bootstrap:
+
+```bash
+curl -fsSL https://froglet.dev/agent | bash
+```
+
+The bootstrap installs the signed node, starts provider/runtime from published
+images, and writes an MCP config backed by the published `froglet-mcp` image.
+After that, the agent should use MCP actions for everything else.
+
+Use Codex instead of Claude Code:
+
+```bash
+FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash
+```
+
+OpenClaw no-clone setup is not the default today because OpenClaw still loads a
+repo-local plugin folder. Use the MCP path above for normal users and source
+mode only for OpenClaw plugin development.
+
+## MCP From npm
 
 Use the published MCP package when the agent should operate an existing local
 or self-hosted Froglet node:
@@ -29,7 +51,8 @@ call:
   token files or local services plainly
 - `plan_install` if the local node is missing and the target agent, footprint,
   role, payment rail, network, marketplace, or first use case is still
-  ambiguous
+  ambiguous. If it returns `decision_required`, ask the user to pick a payment
+  rail and recommend `none` for the first free demo
 - `get_install_guide` only after the install profile is confirmed
 - `plan_use_case` after local health is verified and before implementing the
   user's first consumer, provider, evidence, payments, batch, or GPU workflow
@@ -82,9 +105,9 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH = "data/runtime/auth.token"
 
 ## Local config from the repo
 
-These helper commands are repo-local. `install.sh` only installs the signed
-`froglet-node` binary; if you want generated local MCP/OpenClaw configs and the
-Compose stack, clone the repo first:
+These helper commands are repo-local and are kept for contributors. The normal
+user path is `/agent`, not a clone. Clone only when you are developing Froglet,
+testing the OpenClaw plugin, or editing checked-in examples:
 
 ```bash
 git clone https://github.com/armanas/froglet.git
@@ -164,6 +187,19 @@ FROGLET_PROVIDER_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/froglet-
 FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.token \
   npx froglet-mcp
 ```
+
+## Marketplace Registration
+
+Use MCP wrappers instead of ad hoc HTTP when an agent is setting up discovery:
+
+- `marketplace_register` for public HTTPS or Tor registration
+- `marketplace_domain_claim` and `marketplace_domain_complete` for
+  `*.providers.froglet.dev`
+
+Tor registration is allowed only through `registration_transport=tor` and a
+provider-advertised `http://<v3>.onion` origin. General `provider_url`
+overrides still reject onion URLs so an LLM cannot silently route normal
+invocations through arbitrary Tor endpoints.
 
 ## Next step
 

@@ -53,7 +53,9 @@ conversion from sats into backend-native fiat or token units.
 | `FROGLET_LIGHTNING_MODE` | `mock` | Lightning mode: `mock` or `lnd_rest`. Required when payment backend is `lightning` |
 | `FROGLET_LIGHTNING_REST_URL` | *(none)* | LND REST API URL. Required when mode is `lnd_rest` |
 | `FROGLET_LIGHTNING_TLS_CERT_PATH` | *(none)* | Path to the LND TLS certificate. Required for `https://` REST URLs |
+| `FROGLET_LIGHTNING_TLS_CERT_B64` | *(none)* | Docker-only convenience input. Base64 PEM decoded by `docker-entrypoint.sh` into `FROGLET_LIGHTNING_TLS_CERT_PATH` when the path is unset |
 | `FROGLET_LIGHTNING_MACAROON_PATH` | *(none)* | Path to the LND macaroon file. Required when mode is `lnd_rest` |
+| `FROGLET_LIGHTNING_MACAROON_B64` | *(none)* | Docker-only convenience input. Base64 raw macaroon decoded by `docker-entrypoint.sh` into `FROGLET_LIGHTNING_MACAROON_PATH` when the path is unset |
 | `FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS` | `5` | HTTP request timeout for LND REST calls (1-30) |
 | `FROGLET_LIGHTNING_DESTINATION_IDENTITY` | *(none)* | Override Lightning destination node identity |
 | `FROGLET_LIGHTNING_BASE_INVOICE_EXPIRY_SECS` | `300` | Base invoice expiry (60-3600) |
@@ -147,7 +149,7 @@ GPU probe output under its printed evidence directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for runtime discovery and, when the target supports it, provider auto-registration. Use `https://marketplace.froglet.dev` for the default public read marketplace; provider registration requires a write-capable marketplace endpoint. |
+| `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for runtime discovery and provider self-registration. Use `https://marketplace.froglet.dev` for the default public marketplace. |
 
 ## MCP Server (integrations/mcp/froglet)
 

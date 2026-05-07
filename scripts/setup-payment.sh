@@ -43,9 +43,15 @@ require_http_url() {
   esac
 }
 
-require_stripe_test_secret_key() {
+require_stripe_secret_key() {
   local secret_key="${FROGLET_STRIPE_SECRET_KEY:-}"
-  [[ "$secret_key" == sk_test_* ]] || fail "FROGLET_STRIPE_SECRET_KEY must be a Stripe test secret key (sk_test_...)"
+  if [[ "$secret_key" == sk_test_* ]]; then
+    return 0
+  fi
+  if [[ "$secret_key" == sk_live_* && "${FROGLET_STRIPE_LIVE_CONFIRM:-}" == "fresh" ]]; then
+    return 0
+  fi
+  fail "FROGLET_STRIPE_SECRET_KEY must be sk_test_..., or sk_live_... with FROGLET_STRIPE_LIVE_CONFIRM=fresh"
 }
 
 validate_stripe_webhook_secret() {
@@ -149,7 +155,11 @@ else:
       printf 'Verification: Stripe account access authenticated with an sk_test_ key; /v1/account omitted livemode.\n'
       ;;
     true)
-      fail "Stripe /v1/account reported livemode=true; public local setup requires a test secret key"
+      if [[ "$secret_key" == sk_live_* && "${FROGLET_STRIPE_LIVE_CONFIRM:-}" == "fresh" ]]; then
+        printf 'Verification: Stripe live account access authenticated and livemode=true on /v1/account.\n'
+      else
+        fail "Stripe /v1/account reported livemode=true; set FROGLET_STRIPE_LIVE_CONFIRM=fresh before configuring a live key"
+      fi
       ;;
     not-account)
       fail "Stripe /v1/account response was not an account object"
@@ -252,7 +262,7 @@ case "$rail" in
   stripe)
     out_path="${out_path:-$repo_root/.froglet/payment/stripe.env}"
     require_env FROGLET_STRIPE_SECRET_KEY
-    require_stripe_test_secret_key
+    require_stripe_secret_key
     validate_stripe_webhook_secret
     write_snippet \
       "FROGLET_PAYMENT_BACKEND=stripe" \
@@ -260,7 +270,7 @@ case "$rail" in
       "FROGLET_STRIPE_API_VERSION=${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}" \
       "${FROGLET_STRIPE_WEBHOOK_SECRET:+FROGLET_STRIPE_WEBHOOK_SECRET=${FROGLET_STRIPE_WEBHOOK_SECRET}}"
     printf 'Required inputs:\n'
-    printf '  - FROGLET_STRIPE_SECRET_KEY (Stripe test-mode secret key)\n'
+    printf '  - FROGLET_STRIPE_SECRET_KEY (sk_test_... by default; sk_live_... only with FROGLET_STRIPE_LIVE_CONFIRM=fresh)\n'
     printf '  - optional FROGLET_STRIPE_API_VERSION\n'
     printf '  - optional FROGLET_STRIPE_WEBHOOK_SECRET for /v1/webhooks/stripe\n'
     if [[ "$verify" -eq 1 ]]; then

@@ -1,9 +1,13 @@
 import {
   discoverServices,
+  completeProviderDomainClaim,
+  createProviderDomainClaim,
+  fileMarketplaceComplaint,
   frogletStatus,
   getDealInvoiceBundle,
   getDealPaymentIntent,
   getLocalService,
+  getMarketplaceComplaint,
   getService,
   getTask,
   getWalletBalance,
@@ -11,6 +15,7 @@ import {
   listLocalServices,
   listSettlementActivity,
   publishArtifact,
+  registerProviderOnMarketplace,
   runCompute,
   waitTask
 } from "./froglet-client.js"
@@ -105,6 +110,51 @@ function summarizeMutationResponse(response) {
     ...serviceAuthorityNotes(service),
     `offer_hash: ${response.evidence?.offer_hash ?? response.offer_hash ?? "none"}`
   ]
+}
+
+function publishTemplateRequest(args) {
+  if (typeof args.template !== "string" || args.template.trim().length === 0) {
+    return args
+  }
+  const template = args.template.trim()
+  if (template !== "demo.add") {
+    throw new Error("template must be demo.add")
+  }
+  return {
+    ...args,
+    service_id: resolvedServiceId(args) ?? "demo.add.local",
+    offer_id: args.offer_id ?? "demo.add.local",
+    summary: args.summary ?? "Free local demo service that adds two integers.",
+    starter: args.starter ?? "{\"a\":7,\"b\":5}",
+    runtime: args.runtime ?? "python",
+    package_kind: args.package_kind ?? "inline_source",
+    entrypoint_kind: args.entrypoint_kind ?? "handler",
+    entrypoint: args.entrypoint ?? "handler",
+    contract_version: args.contract_version ?? "froglet.python.handler_json.v1",
+    inline_source:
+      args.inline_source ??
+      "def handler(event, context):\n    return {\"sum\": int(event[\"a\"]) + int(event[\"b\"])}\n",
+    input_schema:
+      args.input_schema ?? {
+        type: "object",
+        required: ["a", "b"],
+        properties: {
+          a: { type: "integer" },
+          b: { type: "integer" }
+        }
+      },
+    output_schema:
+      args.output_schema ?? {
+        type: "object",
+        required: ["sum"],
+        properties: {
+          sum: { type: "integer" }
+        }
+      },
+    price_sats: args.price_sats ?? 0,
+    publication_state: args.publication_state ?? "active",
+    mode: args.mode ?? "sync"
+  }
 }
 
 async function handleStatus(args, config, includeRaw) {
@@ -224,30 +274,31 @@ async function handleLocalServices(args, config, includeRaw) {
 }
 
 async function handlePublishArtifact(args, config, includeRaw) {
+  const requestArgs = publishTemplateRequest(args)
   const response = await publishArtifact({
     ...providerCtx(config),
     request: {
-      service_id: resolvedServiceId(args),
-      offer_id: args.offer_id,
-      summary: args.summary,
-      starter: args.starter,
-      artifact_path: args.artifact_path,
-      wasm_module_hex: args.wasm_module_hex,
-      inline_source: args.inline_source,
-      oci_reference: args.oci_reference,
-      oci_digest: args.oci_digest,
-      runtime: args.runtime,
-      package_kind: args.package_kind,
-      entrypoint_kind: args.entrypoint_kind,
-      entrypoint: args.entrypoint,
-      contract_version: args.contract_version,
-      mounts: args.mounts,
-      capabilities: args.capabilities,
-      mode: args.mode,
-      price_sats: args.price_sats,
-      publication_state: args.publication_state,
-      input_schema: args.input_schema,
-      output_schema: args.output_schema
+      service_id: resolvedServiceId(requestArgs),
+      offer_id: requestArgs.offer_id,
+      summary: requestArgs.summary,
+      starter: requestArgs.starter,
+      artifact_path: requestArgs.artifact_path,
+      wasm_module_hex: requestArgs.wasm_module_hex,
+      inline_source: requestArgs.inline_source,
+      oci_reference: requestArgs.oci_reference,
+      oci_digest: requestArgs.oci_digest,
+      runtime: requestArgs.runtime,
+      package_kind: requestArgs.package_kind,
+      entrypoint_kind: requestArgs.entrypoint_kind,
+      entrypoint: requestArgs.entrypoint,
+      contract_version: requestArgs.contract_version,
+      mounts: requestArgs.mounts,
+      capabilities: requestArgs.capabilities,
+      mode: requestArgs.mode,
+      price_sats: requestArgs.price_sats,
+      publication_state: requestArgs.publication_state,
+      input_schema: requestArgs.input_schema,
+      output_schema: requestArgs.output_schema
     }
   })
   return renderResult(summarizeMutationResponse(response), response, includeRaw)
@@ -376,7 +427,18 @@ async function handleDealPaymentIntent(args, config, includeRaw) {
 const SUPPORTED_INSTALL_AGENTS = new Set(["claude-code", "codex", "openclaw", "manual"])
 const SETUP_AGENT_TARGETS = new Set(["claude-code", "codex", "openclaw"])
 const LOCAL_MCP_AGENT_TARGETS = new Set(["claude-code", "codex"])
-const SUPPORTED_INSTALL_RAILS = new Set(["none", "lightning", "stripe", "x402"])
+const SUPPORTED_INSTALL_RAILS = new Set([
+  "none",
+  "lightning-mock",
+  "lightning-lnd-rest",
+  "stripe-test",
+  "stripe-live",
+  "x402",
+  // Backward-compatible aliases accepted on input; tool schemas should prefer
+  // the explicit values above.
+  "lightning",
+  "stripe"
+])
 const SUPPORTED_LIGHTNING_MODES = new Set(["mock", "lnd_rest"])
 const SUPPORTED_INSTALL_FOOTPRINTS = new Set(["docker", "binary", "source"])
 const SUPPORTED_INSTALL_ROLES = new Set(["consumer", "provider", "both"])
@@ -411,11 +473,29 @@ function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`
 }
 
+function normalizePaymentRail(args) {
+  if (typeof args.payment_rail !== "string" || args.payment_rail.trim().length === 0) {
+    return null
+  }
+  const raw = args.payment_rail.trim().toLowerCase()
+  if (!SUPPORTED_INSTALL_RAILS.has(raw)) {
+    throw new Error(`${"payment_rail"} must be one of: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, x402`)
+  }
+  if (raw === "lightning") {
+    return args.lightning_mode === "lnd_rest" ? "lightning-lnd-rest" : "lightning-mock"
+  }
+  if (raw === "stripe") {
+    return "stripe-test"
+  }
+  return raw
+}
+
 function normalizeInstallProfile(args) {
+  const paymentRail = normalizePaymentRail(args)
   const profile = {
     targetAgent: normalizeChoice(args, "target_agent", "claude-code", SUPPORTED_INSTALL_AGENTS),
-    paymentRail: normalizeChoice(args, "payment_rail", "lightning", SUPPORTED_INSTALL_RAILS),
-    lightningMode: normalizeChoice(args, "lightning_mode", "mock", SUPPORTED_LIGHTNING_MODES),
+    paymentRail,
+    lightningMode: paymentRail === "lightning-lnd-rest" ? "lnd_rest" : "mock",
     footprint: normalizeChoice(args, "footprint", "docker", SUPPORTED_INSTALL_FOOTPRINTS),
     role: normalizeChoice(args, "role", "both", SUPPORTED_INSTALL_ROLES),
     networkMode: normalizeChoice(args, "network_mode", "clearnet", SUPPORTED_NETWORK_MODES),
@@ -425,13 +505,19 @@ function normalizeInstallProfile(args) {
   if (profile.marketplaceUrl && !/^https?:\/\/[^\s]+$/.test(profile.marketplaceUrl)) {
     throw new Error("marketplace_url must be an http:// or https:// URL")
   }
-  if (profile.paymentRail !== "lightning" && args.lightning_mode) {
-    throw new Error("lightning_mode only applies when payment_rail is lightning")
+  if (args.lightning_mode && !["lightning", "lightning-mock", "lightning-lnd-rest"].includes(String(args.payment_rail ?? ""))) {
+    throw new Error("lightning_mode only applies when payment_rail is lightning-mock or lightning-lnd-rest")
   }
   return profile
 }
 
 function paymentEnvName(paymentRail) {
+  if (paymentRail === "lightning-mock" || paymentRail === "lightning-lnd-rest") {
+    return "lightning.env"
+  }
+  if (paymentRail === "stripe-test" || paymentRail === "stripe-live") {
+    return "stripe.env"
+  }
   return `${paymentRail}.env`
 }
 
@@ -439,13 +525,16 @@ function renderPaymentStep({ paymentRail, lightningMode }) {
   if (paymentRail === "none") {
     return "cd froglet && mkdir -p .froglet/payment && printf '%s\\n' 'FROGLET_PAYMENT_BACKEND=none' > .froglet/payment/none.env"
   }
-  if (paymentRail === "stripe") {
+  if (paymentRail === "stripe-test") {
     return "cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> ./scripts/setup-payment.sh stripe"
+  }
+  if (paymentRail === "stripe-live") {
+    return "cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-live-secret-key> FROGLET_STRIPE_LIVE_CONFIRM=fresh ./scripts/setup-payment.sh stripe"
   }
   if (paymentRail === "x402") {
     return "cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> ./scripts/setup-payment.sh x402"
   }
-  if (lightningMode === "lnd_rest") {
+  if (paymentRail === "lightning-lnd-rest" || lightningMode === "lnd_rest") {
     return "cd froglet && FROGLET_LIGHTNING_REST_URL=<lnd-rest-url> FROGLET_LIGHTNING_MACAROON_PATH=<macaroon-path> FROGLET_LIGHTNING_TLS_CERT_PATH=<tls-cert-path-if-needed> ./scripts/setup-payment.sh lightning --mode lnd_rest"
   }
   return "cd froglet && ./scripts/setup-payment.sh lightning"
@@ -463,9 +552,21 @@ function renderComposeEnv(profile) {
 }
 
 function renderInstallBlock(profile) {
-  // The public helper-script path is repo-local by design. Keep this in sync
-  // with README.md, docs-site/src/content/docs/learn/quickstart.mdx, and the
-  // landing-page configurator in docs-site/src/pages/index.astro.
+  if (!profile.paymentRail) {
+    return []
+  }
+  // The default public path is intentionally no-clone. It installs the signed
+  // node binary, starts provider/runtime from published GHCR images, and emits
+  // MCP setup JSON. Repo-local helper scripts are contributor/source mode.
+  if (profile.footprint === "docker") {
+    const vars = [
+      profile.targetAgent !== "claude-code" ? `FROGLET_AGENT_TARGET=${profile.targetAgent}` : null,
+      profile.networkMode !== "clearnet" ? `FROGLET_NETWORK_MODE=${profile.networkMode}` : null,
+      profile.marketplaceUrl ? `FROGLET_MARKETPLACE_URL=${shellSingleQuote(profile.marketplaceUrl)}` : null
+    ].filter(Boolean)
+    const prefix = vars.length > 0 ? `${vars.join(" ")} ` : ""
+    return [`${prefix}curl -fsSL https://froglet.dev/agent | bash`]
+  }
   const stepOne =
     "curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh"
   if (profile.footprint === "binary") {
@@ -505,7 +606,7 @@ function installQuestions(args) {
     questions.push("Is the user primarily a consumer, provider, or both?")
   }
   if (!args.payment_rail) {
-    questions.push("Which payment mode: none, lightning mock, lightning lnd_rest, stripe test, or x402?")
+    questions.push("Which payment mode: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, or x402?")
   }
   if (!args.network_mode) {
     questions.push("Which network mode: clearnet, tor, or dual?")
@@ -517,13 +618,21 @@ function installQuestions(args) {
 }
 
 function requiredInstallInputs(profile) {
-  if (profile.paymentRail === "stripe") {
+  if (!profile.paymentRail) {
+    return [
+      "Payment choice is required before commands are generated: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, or x402."
+    ]
+  }
+  if (profile.paymentRail === "stripe-test") {
     return ["Stripe test-mode secret key (`sk_test_...`)."]
+  }
+  if (profile.paymentRail === "stripe-live") {
+    return ["Stripe live-mode secret key (`sk_live_...`) and a literal fresh approval before live payment proof."]
   }
   if (profile.paymentRail === "x402") {
     return ["Base wallet address (`0x...`)."]
   }
-  if (profile.paymentRail === "lightning" && profile.lightningMode === "lnd_rest") {
+  if (profile.paymentRail === "lightning-lnd-rest") {
     return [
       "LND REST URL.",
       "LND macaroon path.",
@@ -534,14 +643,17 @@ function requiredInstallInputs(profile) {
 }
 
 function installPrerequisites(profile) {
-  const prerequisites = ["curl", "git"]
+  const prerequisites = ["curl"]
+  if (profile.footprint === "source") {
+    prerequisites.push("git")
+  }
   if (profile.footprint === "docker") {
     prerequisites.push("Docker with Compose v2")
   }
   if (profile.footprint === "source") {
     prerequisites.push("Rust toolchain with cargo")
   }
-  if (SETUP_AGENT_TARGETS.has(profile.targetAgent)) {
+  if (profile.footprint !== "docker" && SETUP_AGENT_TARGETS.has(profile.targetAgent)) {
     prerequisites.push("Node.js 18+ with npm for the local MCP server")
   }
   if (profile.networkMode !== "clearnet") {
@@ -552,23 +664,31 @@ function installPrerequisites(profile) {
 
 function validationChecks(profile) {
   const checks = []
+  if (!profile.paymentRail) {
+    checks.push("Choose a payment mode before running install commands.")
+    return checks
+  }
   if (profile.footprint === "binary") {
     checks.push("Run `froglet-node --help` to confirm the signed binary is installed.")
     return checks
   }
   if (profile.footprint === "source") {
     checks.push("Confirm the foreground `froglet-node` process starts without errors.")
+  } else if (profile.footprint === "docker") {
+    checks.push("Run `docker compose -f ~/.froglet/agent/compose.yaml ps` and confirm provider/runtime are healthy.")
   } else {
     checks.push("Run `docker compose ps` and confirm provider/runtime are healthy.")
   }
   checks.push("Run `curl http://127.0.0.1:8080/health`.")
   checks.push("Run `curl http://127.0.0.1:8081/health`.")
   checks.push("Use the Froglet `status` action against the local MCP config.")
-  if (profile.paymentRail === "stripe") {
+  if (profile.paymentRail === "stripe-test") {
     checks.push("Confirm `setup-payment.sh stripe` reported `livemode=false`.")
+  } else if (profile.paymentRail === "stripe-live") {
+    checks.push("Confirm `setup-payment.sh stripe` reported `livemode=true` after a literal fresh approval.")
   } else if (profile.paymentRail === "x402") {
     checks.push("Confirm the x402 facilitator `/verify` probe returned an expected HTTP status.")
-  } else if (profile.paymentRail === "lightning" && profile.lightningMode === "lnd_rest") {
+  } else if (profile.paymentRail === "lightning-lnd-rest") {
     checks.push("Confirm the LND REST `/v1/getinfo` probe succeeded.")
   }
   return checks
@@ -611,7 +731,8 @@ function useCaseSteps(profile) {
   if (profile === "provider") {
     return [
       ...common,
-      "Call `publish_artifact` with starter, input_schema, and output_schema metadata.",
+      "For the first service, call `publish_artifact` with `template: \"demo.add\"`, then invoke it locally.",
+      "For real services, call `publish_artifact` with starter, input_schema, and output_schema metadata.",
       "Call `list_local_services` and `get_local_service` to verify the descriptor/offer fields.",
       "Call `invoke_service` against the published service and inspect the returned result plus receipt evidence."
     ]
@@ -708,6 +829,23 @@ async function handleInstallGuide(args, _config, includeRaw) {
   // through the Froglet runtime, which has no way to touch the user's host
   // filesystem or docker socket.
   const profile = normalizeInstallProfile(args)
+  if (!profile.paymentRail) {
+    const payload = {
+      status: "decision_required",
+      decision: "payment_rail",
+      options: ["none", "lightning-mock", "lightning-lnd-rest", "stripe-test", "stripe-live", "x402"],
+      recommended_for_first_install: "none",
+      reason:
+        "Froglet setup no longer assumes a payment rail. Pick none for the first demo service; choose a paid rail only when the user has the required wallet or Stripe inputs."
+    }
+    return renderResult([
+      "status: decision_required",
+      "decision: payment_rail",
+      "options: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, x402",
+      "recommended_for_first_install: none",
+      `reason: ${payload.reason}`
+    ], payload, includeRaw)
+  }
   const steps = renderInstallBlock(profile)
   const payload = {
     target_agent: profile.targetAgent,
@@ -727,34 +865,46 @@ async function handleInstallGuide(args, _config, includeRaw) {
       "Run these commands on the user's machine, via your host agent's shell execution (e.g. Claude Code's Bash tool). Do NOT route them through the Froglet runtime — Froglet cannot install itself on the user's host.",
       profile.footprint === "source"
         ? "Source footprint clones the public repo and builds froglet-node with cargo instead of downloading the signed binary."
-        : "The installer command downloads and installs the signed froglet-node binary to ~/.local/bin.",
+        : profile.footprint === "docker"
+          ? "The agent bootstrap path downloads the signed froglet-node binary, writes ~/.froglet/agent/compose.yaml, and starts provider/runtime from published GHCR images without cloning the repo."
+          : "The installer command downloads and installs the signed froglet-node binary to ~/.local/bin.",
       profile.footprint === "binary"
         ? "Binary footprint stops after froglet-node is installed; no repo-local helper scripts or Docker stack are started."
-        : "The repo clone is required because the helper scripts, Compose file, and OpenClaw plugin live there.",
-      LOCAL_MCP_AGENT_TARGETS.has(profile.targetAgent)
+        : profile.footprint === "source"
+          ? "The repo clone is contributor/developer mode because helper scripts, local Compose, and the OpenClaw plugin live there."
+          : "Docker footprint is the no-clone user path. Agent configuration uses the published froglet-mcp image.",
+      profile.footprint !== "docker" && LOCAL_MCP_AGENT_TARGETS.has(profile.targetAgent)
         ? "The npm step installs the local MCP server dependencies used by the generated Claude Code/Codex config."
         : "This profile does not require installing the local MCP server dependencies before setup-agent.",
-      SETUP_AGENT_TARGETS.has(profile.targetAgent)
+      profile.footprint !== "docker" && SETUP_AGENT_TARGETS.has(profile.targetAgent)
         ? `The agent setup step writes the ${profile.targetAgent} config so the agent can talk to local Froglet.`
+        : profile.footprint === "docker" && SETUP_AGENT_TARGETS.has(profile.targetAgent)
+          ? `The bootstrap writes a ${profile.targetAgent} MCP config backed by the published froglet-mcp Docker image.`
         : "Manual target selected: do not run setup-agent; show the MCP config docs instead.",
-      `The payment step generates the ${profile.paymentRail} env snippet under froglet/.froglet/payment/.`,
       profile.footprint === "docker"
-        ? "The final step loads that snippet, enables host-readable control tokens, and brings up provider+runtime via docker compose."
+        ? "Bootstrap configures the first local stack with FROGLET_PAYMENT_BACKEND=none. Configure real payments later through the MCP-guided payment flow after local health checks pass."
+        : `The payment step generates the ${profile.paymentRail} env snippet under froglet/.froglet/payment/.`,
+      profile.footprint === "docker"
+        ? "The bootstrap starts provider+runtime from published images and writes ~/.froglet/agent/compose.yaml for inspection and restart."
         : "The final step starts the selected footprint; binary-only installs stop after the signed binary is present.",
-      "The repo-local steps intentionally start with `cd froglet &&` so they still work when your host shell asks for separate approvals per command.",
+      profile.footprint === "source"
+        ? "The repo-local steps intentionally start with `cd froglet &&` so they still work when your host shell asks for separate approvals per command."
+        : "No repo-local step is required for the default Docker footprint.",
       profile.footprint === "docker"
         ? "After the final step, the local stack listens on 127.0.0.1:8080 (provider) and 127.0.0.1:8081 (runtime); the agent config points there."
         : "For binary/source installs, confirm the actual node role and listen addresses before expecting MCP health checks to pass.",
       `Network mode: ${profile.networkMode}. Keep loopback first; expose clearnet or Tor only after local health checks pass.`,
       `Role intent: ${profile.role}. Docker compose starts provider and runtime together; split roles are a direct froglet-node concern.`,
       `${
-        profile.paymentRail === "stripe"
+        profile.paymentRail === "stripe-test"
           ? "Stripe: replace <stripe-test-secret-key> with your own Stripe test secret key before running the payment step."
+          : profile.paymentRail === "stripe-live"
+            ? "Stripe live: replace <stripe-live-secret-key> only after a fresh operator approval; run the tiny live payment/refund proof before claiming live fiat."
           : profile.paymentRail === "x402"
             ? "x402: replace <base-wallet-address> with your own Base wallet address before running the payment step."
-            : profile.paymentRail === "lightning" && profile.lightningMode === "lnd_rest"
+            : profile.paymentRail === "lightning-lnd-rest"
               ? "Lightning LND REST: provide your own REST URL, macaroon path, and TLS cert path when needed before running the payment step."
-              : profile.paymentRail === "lightning"
+              : profile.paymentRail === "lightning-mock"
                 ? "Lightning: mock mode needs no wallet credentials; use lightning_mode=lnd_rest only when the user already has LND REST credentials."
                 : "No payment rail: the local node runs without payment credentials."
       }`
@@ -792,6 +942,32 @@ async function handleInstallGuide(args, _config, includeRaw) {
 
 async function handlePlanInstall(args, _config, includeRaw) {
   const profile = normalizeInstallProfile(args)
+  if (!profile.paymentRail) {
+    const payload = {
+      status: "decision_required",
+      decision: "payment_rail",
+      options: ["none", "lightning-mock", "lightning-lnd-rest", "stripe-test", "stripe-live", "x402"],
+      recommended_for_first_install: "none",
+      prerequisites: installPrerequisites(profile),
+      questions_to_ask_before_running_commands: installQuestions(args),
+      safety:
+        "Ask before running install scripts, starting Docker, entering secrets, or exposing clearnet/Tor endpoints. Do not transmit secrets into hosted services."
+    }
+    return renderResult([
+      "status: decision_required",
+      "decision: payment_rail",
+      "options: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, x402",
+      "recommended_for_first_install: none",
+      "",
+      "Questions to ask before running commands:",
+      ...payload.questions_to_ask_before_running_commands.map((question) => `  - ${question}`),
+      "",
+      "Prerequisites:",
+      ...payload.prerequisites.map((item) => `  - ${item}`),
+      "",
+      `Safety: ${payload.safety}`
+    ], payload, includeRaw)
+  }
   const steps = renderInstallBlock(profile)
   const payload = {
     install_profile: {
@@ -898,6 +1074,86 @@ async function handleMarketplaceSearch(args, config, includeRaw) {
   })
 }
 
+async function handleMarketplaceRegister(args, config, includeRaw) {
+  const response = await registerProviderOnMarketplace({
+    marketplaceUrl: firstDefined(args.marketplace_url, config.marketplaceUrl),
+    providerUrl: config.providerUrl,
+    requestTimeoutMs: config.requestTimeoutMs,
+    request: {
+      provider_url: resolvedProviderUrl(args),
+      registration_transport: args.registration_transport
+    }
+  })
+  const lines = [
+    `status: ${response.status ?? "unknown"}`,
+    `provider_id: ${response.provider_id ?? "unknown"}`,
+    `provider_url: ${response.provider_url ?? "unknown"}`,
+    `transport: ${response.transport ?? args.registration_transport ?? "clearnet"}`,
+    `descriptor_hash: ${response.descriptor_hash ?? "unknown"}`,
+    `offers_seen: ${response.offers_seen ?? 0}`,
+    `already_registered: ${response.already_registered === true}`
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleMarketplaceDomainClaim(args, config, includeRaw) {
+  const providerId = resolvedProviderId(args)
+  if (typeof providerId !== "string" || providerId.trim().length === 0) {
+    throw new Error("provider_id is required for marketplace_domain_claim")
+  }
+  if (typeof args.public_ip !== "string" || args.public_ip.trim().length === 0) {
+    throw new Error("public_ip is required for marketplace_domain_claim")
+  }
+  const response = await createProviderDomainClaim({
+    marketplaceUrl: firstDefined(args.marketplace_url, config.marketplaceUrl),
+    requestTimeoutMs: config.requestTimeoutMs,
+    request: {
+      provider_id: providerId.trim(),
+      public_ip: args.public_ip.trim(),
+      ...(typeof args.requested_slug === "string" && args.requested_slug.trim().length > 0
+        ? { requested_slug: args.requested_slug.trim() }
+        : {})
+    }
+  })
+  const lines = [
+    `status: ${response.status ?? "unknown"}`,
+    `claim_id: ${response.claim_id ?? "unknown"}`,
+    `provider_id: ${response.provider_id ?? providerId}`,
+    `hostname: ${response.hostname ?? "unknown"}`,
+    `public_ip: ${response.public_ip ?? args.public_ip}`,
+    `expires_at: ${response.expires_at ?? "unknown"}`,
+    "next: call marketplace_domain_complete with claim_id and signing_message"
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleMarketplaceDomainComplete(args, config, includeRaw) {
+  const claimId = typeof args.claim_id === "string" ? args.claim_id.trim() : ""
+  if (claimId.length === 0) {
+    throw new Error("claim_id is required for marketplace_domain_complete")
+  }
+  const signingMessage =
+    typeof args.signing_message === "string" ? args.signing_message.trim() : ""
+  if (signingMessage.length === 0) {
+    throw new Error("signing_message is required for marketplace_domain_complete")
+  }
+  const response = await completeProviderDomainClaim({
+    marketplaceUrl: firstDefined(args.marketplace_url, config.marketplaceUrl),
+    ...providerCtx(config),
+    claimId,
+    signingMessage,
+  })
+  const lines = [
+    `status: ${response.status ?? "unknown"}`,
+    `provider_id: ${response.provider_id ?? response.signed_provider_id ?? "unknown"}`,
+    `hostname: ${response.hostname ?? "unknown"}`,
+    `public_ip: ${response.public_ip ?? "unknown"}`,
+    `dns_record_id: ${response.dns_record_id ?? "none"}`,
+    `dns_required: ${response.dns_required === true}`
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
 async function handleMarketplaceProvider(args, config, includeRaw) {
   const providerId = typeof args.marketplace_provider_id === "string"
     ? args.marketplace_provider_id.trim()
@@ -971,6 +1227,74 @@ async function handleMarketplaceTopup(args, config, includeRaw) {
   })
 }
 
+async function handleMarketplaceFileComplaint(args, config, includeRaw) {
+  const providerId = typeof args.marketplace_provider_id === "string"
+    ? args.marketplace_provider_id.trim()
+    : ""
+  if (providerId.length === 0) {
+    throw new Error("marketplace_provider_id is required for marketplace_file_complaint")
+  }
+  const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
+  if (dealId.length === 0) {
+    throw new Error("deal_id is required for marketplace_file_complaint")
+  }
+  const reason = typeof args.reason === "string" ? args.reason.trim() : ""
+  if (reason.length === 0) {
+    throw new Error("reason is required for marketplace_file_complaint")
+  }
+  const response = await fileMarketplaceComplaint({
+    arbiterUrl: firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl),
+    requestTimeoutMs: config.requestTimeoutMs,
+    request: {
+      provider_id: providerId,
+      deal_id: dealId,
+      reason,
+      ...(typeof args.receipt_hash === "string" && args.receipt_hash.trim().length > 0
+        ? { receipt_hash: args.receipt_hash.trim() }
+        : {}),
+      ...(typeof args.complainant_id === "string" && args.complainant_id.trim().length > 0
+        ? { complainant_id: args.complainant_id.trim() }
+        : {}),
+      ...(args.evidence !== undefined ? { evidence: args.evidence } : {})
+    }
+  })
+  const lines = [
+    `complaint_id: ${response.complaint_id ?? "unknown"}`,
+    `status: ${response.status ?? "unknown"}`,
+    `provider_id: ${response.provider_id ?? providerId}`,
+    `deal_id: ${response.deal_id ?? dealId}`,
+    `created_at: ${response.created_at ?? "unknown"}`
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleMarketplaceGetComplaint(args, config, includeRaw) {
+  const complaintId = typeof args.complaint_id === "string" ? args.complaint_id.trim() : ""
+  if (complaintId.length === 0) {
+    throw new Error("complaint_id is required for marketplace_get_complaint")
+  }
+  const response = await getMarketplaceComplaint({
+    arbiterUrl: firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl),
+    requestTimeoutMs: config.requestTimeoutMs,
+    complaintId,
+  })
+  const complaint = response.complaint ?? {}
+  const verdicts = Array.isArray(response.verdicts) ? response.verdicts : []
+  const lines = [
+    `complaint_id: ${complaint.complaint_id ?? complaintId}`,
+    `status: ${complaint.status ?? "unknown"}`,
+    `provider_id: ${complaint.provider_id ?? "unknown"}`,
+    `deal_id: ${complaint.deal_id ?? "unknown"}`,
+    `verdicts: ${verdicts.length}`
+  ]
+  if (verdicts.length > 0) {
+    const latest = verdicts[0]
+    lines.push(`latest_verdict: ${latest.verdict ?? "unknown"}`)
+    lines.push(`latest_remedy: ${latest.remedy ?? "unknown"}`)
+  }
+  return renderResult(lines, response, includeRaw)
+}
+
 async function handleDealInvoiceBundle(args, config, includeRaw) {
   const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
   if (dealId.length === 0) {
@@ -1026,6 +1350,12 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handlePlanUseCase(args, config, includeRaw)
     case "marketplace_search":
       return handleMarketplaceSearch(args, config, includeRaw)
+    case "marketplace_register":
+      return handleMarketplaceRegister(args, config, includeRaw)
+    case "marketplace_domain_claim":
+      return handleMarketplaceDomainClaim(args, config, includeRaw)
+    case "marketplace_domain_complete":
+      return handleMarketplaceDomainComplete(args, config, includeRaw)
     case "marketplace_provider":
       return handleMarketplaceProvider(args, config, includeRaw)
     case "marketplace_receipts":
@@ -1034,6 +1364,10 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleMarketplaceStake(args, config, includeRaw)
     case "marketplace_topup":
       return handleMarketplaceTopup(args, config, includeRaw)
+    case "marketplace_file_complaint":
+      return handleMarketplaceFileComplaint(args, config, includeRaw)
+    case "marketplace_get_complaint":
+      return handleMarketplaceGetComplaint(args, config, includeRaw)
     // Removed actions — return clear error messages
     case "run_hosted_proof":
       throw new Error("run_hosted_proof is not part of the installed MCP surface. Use https://froglet.dev/llms.txt for the no-install hosted proof, or use local MCP actions against a configured Froglet node.")

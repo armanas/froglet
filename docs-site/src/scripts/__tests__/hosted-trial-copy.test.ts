@@ -169,7 +169,12 @@ describe('hosted trial docs copy', () => {
     expect(index).toContain('No fan-out');
     expect(index).toContain('GPU');
     expect(index).toContain('Docker --gpus');
-    expect(index).toContain('T4 verified');
+    expect(index).toContain('Self-host T4');
+    expect(index).not.toContain('T4 verified');
+    expect(index).toContain('Tor');
+    expect(index).toContain('onion v3');
+    expect(index).toContain('Self-host');
+    expect(index).not.toContain('Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span>');
   });
 
   it('keeps the README aligned with the deployed five-service catalog', () => {

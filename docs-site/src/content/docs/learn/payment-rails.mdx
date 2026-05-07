@@ -11,9 +11,28 @@ description: Choose between Lightning, Stripe, and x402 for local or self-hosted
   </div>
 </div>
 
-## One helper
+## MCP-first payment setup
 
-Run these from the cloned `froglet/` repo:
+The no-clone bootstrap starts with `payment_rail=none`. After the free demo
+works, ask the Froglet MCP tool to plan the payment rail. It should return a
+decision checkpoint before any real secrets are entered.
+
+Use these rail names in MCP:
+
+- `none`
+- `lightning-lnd-rest`
+- `stripe-test`
+- `stripe-live`
+- `x402`
+
+`stripe-live` requires a fresh human approval and a tiny live payment/refund
+proof before public copy can claim live fiat. `lightning-lnd-rest` requires the
+user's LND REST URL, macaroon, TLS cert, and channel liquidity.
+
+## Source helper
+
+If you are in a source checkout or operator runbook, the repo-local helper can
+write env snippets and run probes:
 
 ```bash
 cd froglet && ./scripts/setup-payment.sh lightning

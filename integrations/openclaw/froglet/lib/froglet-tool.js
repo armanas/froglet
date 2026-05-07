@@ -2,7 +2,7 @@ import { dispatchFrogletAction } from "../../../shared/froglet-lib/tool-dispatch
 import { toolTextResult } from "./shared.js"
 
 const frogletToolDescription =
-  "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_stake (stake into a provider), marketplace_topup (add to existing stake). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime. After install, call plan_use_case before implementing consumer, provider, evidence, payments, batch, or GPU workflows so unsupported boundaries are named before execution."
+  "Authoritative Froglet tool. Use exact Froglet actions instead of guessing. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Use publish_artifact to publish a built artifact to the local provider. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent, or get_invoice_bundle. For the marketplace: marketplace_register (self-register a public provider), marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_stake (stake into a provider), marketplace_topup (add to existing stake), marketplace_file_complaint (file an arbiter complaint), marketplace_get_complaint (read complaint status). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime. After install, call plan_use_case before implementing consumer, provider, evidence, payments, batch, or GPU workflows so unsupported boundaries are named before execution."
 
 function frogletToolParameters(config) {
   return {
@@ -13,7 +13,7 @@ function frogletToolParameters(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_search, marketplace_provider, marketplace_receipts, marketplace_stake, marketplace_topup — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime. plan_use_case returns the post-install implementation plan for consumer/provider/evidence/payments/batch/GPU workflows.",
+          "Exact Froglet action name. Do not invent actions. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact, run_compute for open-ended compute. Settlement visibility: get_wallet_balance, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_register, marketplace_search, marketplace_provider, marketplace_receipts, marketplace_stake, marketplace_topup, marketplace_file_complaint, marketplace_get_complaint — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime. plan_use_case returns the post-install implementation plan for consumer/provider/evidence/payments/batch/GPU workflows.",
         enum: [
           "discover_services",
           "get_service",
@@ -32,11 +32,16 @@ function frogletToolParameters(config) {
           "plan_install",
           "get_install_guide",
           "plan_use_case",
+          "marketplace_register",
+          "marketplace_domain_claim",
+          "marketplace_domain_complete",
           "marketplace_search",
           "marketplace_provider",
           "marketplace_receipts",
           "marketplace_stake",
-          "marketplace_topup"
+          "marketplace_topup",
+          "marketplace_file_complaint",
+          "marketplace_get_complaint"
         ]
       },
       service_id: {
@@ -52,6 +57,12 @@ function frogletToolParameters(config) {
       starter: {
         type: "string",
         description: "Optional compact JSON example input for publish_artifact; example only, not a stronger contract than input_schema."
+      },
+      template: {
+        type: "string",
+        enum: ["demo.add"],
+        description:
+          "Optional publish_artifact template. demo.add publishes a free local Python add service for first-run verification."
       },
       runtime: {
         type: "string",
@@ -113,8 +124,16 @@ function frogletToolParameters(config) {
       },
       provider_url: {
         type: "string",
+        format: "uri",
+        pattern: "^(https://[^\\s]+|http://[a-z2-7]{56}\\.onion)$",
         description:
-          "Optional provider base URL override. Usually discovered automatically from provider_id or service_id."
+          "Optional provider base URL override. Must be public https except marketplace_register may use a Tor v3 http://*.onion URL with registration_transport=tor. Usually discovered automatically from provider_id or service_id."
+      },
+      registration_transport: {
+        type: "string",
+        enum: ["clearnet", "tor"],
+        description:
+          "Transport for marketplace_register. Defaults from provider_url; use tor only for http://*.onion provider registration."
       },
       limit: {
         type: "integer",
@@ -136,9 +155,9 @@ function frogletToolParameters(config) {
       },
       payment_rail: {
         type: "string",
-        enum: ["none", "lightning", "stripe", "x402"],
+        enum: ["none", "lightning-mock", "lightning-lnd-rest", "stripe-test", "stripe-live", "x402"],
         description:
-          "Payment rail for plan_install/get_install_guide. Defaults to lightning in mock mode; use lightning_mode=lnd_rest only when the user already has LND REST credentials."
+          "Explicit payment rail for plan_install/get_install_guide. Required before commands are generated; use none for the first free demo service."
       },
       lightning_mode: {
         type: "string",
@@ -169,6 +188,11 @@ function frogletToolParameters(config) {
         description:
           "Optional marketplace URL to export before starting the local stack."
       },
+      marketplace_arbiter_url: {
+        type: "string",
+        description:
+          "Optional marketplace arbiter URL for marketplace_file_complaint / marketplace_get_complaint."
+      },
       use_case: {
         type: "string",
         description:
@@ -183,7 +207,42 @@ function frogletToolParameters(config) {
       marketplace_provider_id: {
         type: "string",
         description:
-          "Provider id the marketplace_* actions target. Distinct from `provider_id`, which routes the invoke_service call itself."
+          "Provider id the marketplace_* actions target. Distinct from `provider_id`, which routes the invoke_service call itself. Required for marketplace_file_complaint."
+      },
+      complaint_id: {
+        type: "string",
+        description: "Complaint id returned by marketplace_file_complaint."
+      },
+      claim_id: {
+        type: "string",
+        description: "Domain claim id returned by marketplace_domain_claim."
+      },
+      requested_slug: {
+        type: "string",
+        description: "Optional providers.froglet.dev slug for marketplace_domain_claim."
+      },
+      public_ip: {
+        type: "string",
+        description: "Public IPv4 or IPv6 address for a Froglet-managed provider subdomain claim."
+      },
+      signing_message: {
+        type: "string",
+        description: "Signing message returned by marketplace_domain_claim; marketplace_domain_complete signs it with the local provider identity."
+      },
+      reason: {
+        type: "string",
+        description: "Human-readable reason for marketplace_file_complaint."
+      },
+      receipt_hash: {
+        type: "string",
+        description: "Optional receipt artifact hash for marketplace_file_complaint."
+      },
+      complainant_id: {
+        type: "string",
+        description: "Optional requester or complainant id for marketplace_file_complaint."
+      },
+      evidence: {
+        description: "Optional JSON object or array of evidence for marketplace_file_complaint."
       },
       amount_msat: {
         type: "integer",

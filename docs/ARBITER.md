@@ -1,42 +1,69 @@
-# Marketplace Arbiter / Claims-Court Service
+# Marketplace Arbiter
 
-Status: **design stub**. This file reserves the public design surface for a
-marketplace-layer arbitration service and gives future docs a stable
-cross-reference target.
+Froglet's MVP marketplace arbiter is a separate service, not a kernel feature.
+It gives the public marketplace an operator-run complaint and suspension path
+without changing signed Froglet artifacts or deal execution rules.
 
-## Scope
+## MVP Contract
 
-The arbiter is the Froglet marketplace's enforcement surface for cheating,
-grief-filing, and adjudicator capture. It is a **marketplace-layer service**,
-not a kernel change. Kernel artifacts (offers, descriptors, receipts) and
-settlement drivers remain unchanged; the arbiter operates on the signed
-artifacts they produce.
+Public endpoints:
 
-The full mechanism design is intentionally still open. This page keeps the
-public interface expectations visible without freezing deposit tiers, panel
-selection rules, or appeal economics before there is operational data.
+```http
+GET /healthz
+POST /v1/complaints
+GET /v1/complaints/:complaint_id
+```
 
-## Interaction with adjacent specs
+Admin endpoint:
 
-- **[IDENTITY_ATTESTATION.md](IDENTITY_ATTESTATION.md)** — the arbiter uses
-  the `IdentityAttestation` credentials defined there to gate adjudicator
-  eligibility at high-value dispute tiers. That is the single concrete
-  dependency between the two specs.
-- **[SERVICE_BINDING.md](SERVICE_BINDING.md)** — the arbiter follows the
-  same service-binding model as every other marketplace service; the
-  `invoke_service` path is the generic escape hatch.
-- **[KERNEL.md](KERNEL.md)** — the arbiter does not modify the kernel. Its
-  handlers only accept, index, and produce signed artifacts that conform to
-  the existing envelope shape.
-- **[MARKETPLACE.md](MARKETPLACE.md)** — the arbiter is a marketplace-layer
-  service. It uses the same public marketplace integration surface as other
-  marketplace services.
+```http
+POST /v1/admin/complaints/:complaint_id/verdict
+Authorization: Bearer <MARKETPLACE_ARBITER_ADMIN_TOKEN>
+```
 
-## Why this is a stub, not the full spec
+Complaint request:
 
-Writing the full mechanism design here before implementation begins would
-freeze economic parameters (deposit tiers, stake floors, fee split, appeal
-multiplier) whose defensible values depend on data we do not yet have:
-observed grief-filing attempts, adjudicator throughput, and the real cost
-of running an adjudicator node. The TODO entry captures the structure;
-concrete numbers land with the implementation.
+```json
+{
+  "provider_id": "provider-id",
+  "deal_id": "deal-id",
+  "receipt_hash": "optional-receipt-artifact-hash",
+  "complainant_id": "optional-requester-id",
+  "reason": "short human-readable grievance",
+  "evidence": []
+}
+```
+
+Admin verdict request:
+
+```json
+{
+  "verdict": "upheld",
+  "remedy": "suspend_provider",
+  "reason": "operator rationale",
+  "operator_id": "operator"
+}
+```
+
+Allowed verdicts are `upheld` and `dismissed`. Allowed remedies are `none`,
+`warning`, and `suspend_provider`. Dismissed complaints must use `remedy=none`.
+
+## Enforcement
+
+`suspend_provider` writes a provider enforcement record in the marketplace
+database. The public marketplace read API filters suspended providers from:
+
+- provider list and provider detail
+- offer list and offer detail
+- public stats and provider receipt reads
+
+The enforcement record remains in the database for auditability.
+
+## Boundaries
+
+The MVP arbiter is operator-adjudicated. It is not decentralized, stake-backed,
+panel-selected, or slashable. Deposits, public adjudicator registration,
+appeals, panel selection, and slashing are post-MVP hardening.
+
+The kernel remains unchanged. Arbiter state is marketplace policy and must not
+be described as a protocol-level validity rule.

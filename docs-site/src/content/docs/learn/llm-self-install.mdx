@@ -1,233 +1,143 @@
 ---
 title: "LLM-Guided Local Install"
-description: "How an LLM connected to a hosted Froglet can install Froglet on the user's machine when asked."
+description: "How an agent installs and operates Froglet without cloning the repo first."
 ---
 
-This page is written for **LLM readers** — Claude, Codex, and the other
-agent hosts that connect to a Froglet instance over MCP. If you are a
-human, you probably want the [Quickstart](/learn/quickstart/) instead.
+This page is for LLM readers. Human readers should start with
+[Quickstart](/learn/quickstart/).
 
-## MCP bootstrap
+## Prime Rule
 
-If the user has not connected Froglet MCP yet, the local bootstrap is:
+There is one maintained automation surface: `froglet-mcp`.
+
+Use the shell only for the setup bootstrap. After the node is running, do not
+invent separate CLI flows. Use MCP actions for status, service publication,
+invocation, public registration, payment planning, and marketplace operations.
+
+If the user only wants the hosted no-install proof, use
+`https://froglet.dev/llms.txt` instead of `froglet-mcp`. If the user already has
+a local Froglet node and only needs the MCP stdio server, use:
 
 ```bash
 npx froglet-mcp
 ```
 
-This starts the published MCP stdio server in `FROGLET_PROFILE=local` and points
-at `127.0.0.1` provider/runtime defaults. It can plan a local install without
-token files, but provider/runtime actions require a running local node plus the
-token paths described in [Connect Agents](/learn/agents/). The no-install
-hosted proof stays on `https://froglet.dev/llms.txt`, not inside the installed
-MCP surface.
+## Bootstrap
 
-## The contract
+If the user asks to run Froglet locally and has approved host-shell setup, run:
 
-When a user says some variant of "install Froglet locally," "set up Froglet
-on my machine," "run Froglet here," or "deploy Froglet for me":
-
-0. If the user is still evaluating Froglet and no hosted evidence has been
-   collected in this conversation, point them to `https://froglet.dev/llms.txt`
-   or the Try In Cloud curl block. Do not invent hosted evidence from MCP.
-1. Call the `plan_install` MCP action first. It returns the install decision
-   tree, prerequisites, required secrets, command preview, validation checks,
-   and post-install playbooks.
-2. Ask any remaining questions from `questions_to_ask_before_running_commands`.
-   Do not silently default if the user's intent is ambiguous.
-3. Call the `get_install_guide` MCP action on the Froglet tool after the
-   profile is confirmed. It returns
-   a structured response with:
-   - `steps` — an ordered list of shell commands to run
-   - `run_as: "user-host-shell"` — the commands run on the **user's host**,
-     not through Froglet itself
-   - `notes` — short explanations of what each step does
-4. Execute the commands one at a time through your host agent's shell
-   (Claude Code's Bash tool, Codex's shell, or an equivalent). Pause for
-   user approval on each step per your host agent's normal policy.
-5. After the final Docker step the local stack is up on `127.0.0.1:8080` (provider) and
-   `127.0.0.1:8081` (runtime), and the user's agent MCP config now
-   includes the local instance.
-6. Call `plan_use_case` before implementing the user's first workflow. That
-   action turns "what should Froglet do for me?" into a bounded local plan and
-   names unsupported edges before execution.
-
-## Action schema
-
+```bash
+curl -fsSL https://froglet.dev/agent | bash
 ```
-tool: froglet
+
+Use target overrides only when needed:
+
+```bash
+FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash
+FROGLET_AGENT_TARGET=manual curl -fsSL https://froglet.dev/agent | bash
+```
+
+The bootstrap prints JSON. Read these fields back to the user:
+
+- `provider_url`
+- `runtime_url`
+- `mcp_config_path`
+- `compose_file`
+- `next_mcp_actions`
+
+Then restart or point the agent at the printed MCP config path.
+The default footprint is docker-backed provider/runtime from published images;
+source checkout is contributor mode only.
+
+## First MCP Sequence
+
+After MCP is connected:
+
+1. Call `status`.
+2. Call `publish_artifact` with `template: "demo.add"`.
+3. Call `list_local_services`.
+4. Call `invoke_service` for `demo.add.local` with `{"a":7,"b":5}`.
+5. Report the result, service metadata, receipt evidence, and any missing
+   proof. Do not claim public reachability or paid settlement yet.
+6. Call `plan_use_case` before implementing the user's real workflow.
+
+## Install Planning
+
+If the user asks for options before running setup, call:
+
+```text
 action: plan_install
-target_agent: "claude-code" | "codex" | "openclaw" | "manual"  // default: claude-code
-footprint: "docker" | "binary" | "source"                      // default: docker
-role: "consumer" | "provider" | "both"                         // default: both
-payment_rail: "none" | "lightning" | "stripe" | "x402"         // default: lightning
-lightning_mode: "mock" | "lnd_rest"                            // default: mock
-network_mode: "clearnet" | "tor" | "dual"                      // default: clearnet
-marketplace_url: "https://marketplace.froglet.dev"             // optional
-use_case: "publish a service"                                  // optional
 ```
 
-```
-tool: froglet
-action: get_install_guide
-target_agent: "claude-code" | "codex" | "openclaw" | "manual"  // default: claude-code
-footprint: "docker" | "binary" | "source"                      // default: docker
-role: "consumer" | "provider" | "both"                         // default: both
-payment_rail: "none" | "lightning" | "stripe" | "x402"         // default: lightning
-lightning_mode: "mock" | "lnd_rest"                            // default: mock
-network_mode: "clearnet" | "tor" | "dual"                      // default: clearnet
-marketplace_url: "https://marketplace.froglet.dev"             // optional
-use_case: "witness URLs"                                       // optional
-```
+If `payment_rail` is omitted, MCP should return `decision_required`. Recommend
+`none` for the first install unless the user explicitly asks for paid services.
+After the profile is confirmed, call `get_install_guide` before executing host
+shell commands.
 
-```
-tool: froglet
-action: plan_use_case
-workload_profile: "consumer" | "provider" | "evidence" | "payments" | "batch" | "gpu" // optional
-use_case: "run a GPU-backed batch job"                                                 // optional
-```
+Current payment options:
 
-All inputs are optional, but `plan_install` should ask before command execution
-when the user's intent is unclear. The safe first local profile is:
-`target_agent=claude-code`, `footprint=docker`, `role=both`,
-`payment_rail=lightning`, `lightning_mode=mock`, `network_mode=clearnet`.
-Lightning mock mode needs no wallet credentials and is the right first paid-flow
-experiment for most users.
+- `none`
+- `lightning-lnd-rest`
+- `stripe-test`
+- `stripe-live`
+- `x402`
 
-These payment rails configure the user's local or self-hosted node. They do
-not turn the first-party hosted trial into a paid service; `try.froglet.dev`
-is a free hosted demo catalog with `demo.add` as the canonical proof and
-witness/hash/notarize as optional higher-signal follow-ups.
+Do not ask for live Stripe keys, LND credentials, or wallet/facilitator inputs
+until local health and the free demo have passed.
 
-## What to run the commands as
+## Public Reachability
 
-**Do not** route installation commands through `invoke_service` or
-`run_compute`. Froglet is not self-installing — it cannot download its
-own binary to the user's filesystem, cannot mutate the user's docker
-compose state, and cannot generate agent config files on a machine it is
-not already running on.
+Local health is not public reachability. If the user wants to appear in the
+marketplace, choose one of these paths:
 
-Installation commands run via the **host shell** your agent already has
-— the same shell you'd use for any other user-requested system change.
-On Claude Code that's the Bash tool; on Codex, the shell tool; on the
-OpenClaw plugin, whatever terminal the user has exposed.
+- **Tor**: zero-cost and NAT-friendly. Use `registration_transport=tor`.
+- **Froglet-managed subdomain**: zero-cost clearnet, but requires public
+  inbound connectivity. Use `marketplace_domain_claim`, then
+  `marketplace_domain_complete`, then `marketplace_register`.
+- **Own HTTPS domain**: advanced/operator path. Register only after the
+  provider advertises the exact public HTTPS origin.
 
-## Prerequisites you cannot install for the user
+Reject raw IP and self-signed clearnet marketplace registration. For local dev,
+keep the node unregistered.
 
-Before step 1, the user's host needs:
+## Backend Integration
 
-- **`curl`** — for fetching the install script (usually already present)
-- **`git`** — the public helper-script path clones the repo before it runs
-  `setup-agent.sh`, `setup-payment.sh`, or Compose
-- **Node.js 18+ with npm** — required when generating Claude Code or Codex
-  configs that point at the local MCP server
-- **Docker with Compose v2** — for the `footprint=docker` final step
-- **Linux x86_64 / arm64**, **macOS arm64**, or **macOS Intel with Rosetta**
-  — the signed binary covers these targets
-- **Rust + cargo** — only for `footprint=source`
+Ask what the user wants to expose and pick the smallest viable path:
 
-If the user is on Windows, the current story is "use WSL2." If the user
-does not have Docker installed and you (the LLM) have host permissions
-to install it, ask first — installing Docker is a meaningful system
-change and should not be silent.
+- demo
+- local script
+- HTTP backend
+- mounted files
+- database helper
+- OCI image
+- GPU service
 
-For a disposable-host proof of the default quickstart, run:
+Publish one service, invoke it locally, then only expose/register it if the user
+explicitly wants public use. For paid services, prove a tiny settlement and the
+failure path before claiming the rail works.
+
+## Commands Must Run On The Host
+
+Do not route installation through `invoke_service` or `run_compute`. Froglet
+cannot install itself onto a host it is not already controlling. Use the host
+shell exposed by Claude Code, Codex, or the user's agent host.
+
+## Fresh-Host Proof
+
+For an isolated no-clone proof:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
 ```
 
-## Payment and network choices
+Use `--skip-start` when Docker images are not expected to be pullable in the
+current environment but the installer/config path still needs evidence.
 
-- `payment_rail=none`: local execution with no payment backend.
-- `payment_rail=lightning`, `lightning_mode=mock`: default local paid-flow
-  simulation; no wallet required.
-- `payment_rail=lightning`, `lightning_mode=lnd_rest`: requires
-  `FROGLET_LIGHTNING_REST_URL`, `FROGLET_LIGHTNING_MACAROON_PATH`, and
-  optionally `FROGLET_LIGHTNING_TLS_CERT_PATH`. Guide the user to their own LND
-  wallet docs; do not create or manage a wallet silently.
-- `payment_rail=stripe`: requires a Stripe test secret key (`sk_test_...`).
-  Do not ask for live keys during public local onboarding.
-- `payment_rail=x402`: requires a Base wallet address (`0x...`) and defaults to
-  the current x402 facilitator URL.
-- `network_mode=clearnet`: default local/loopback-first path.
-- `network_mode=tor` or `dual`: only after the local health checks pass and the
-  user explicitly wants Tor reachability.
+## Residual Limits
 
-## Post-install verification
-
-After the install steps, call the Froglet `status` action against
-the local instance at `127.0.0.1:8081`. A healthy install returns:
-
-- `healthy: true`
-- `provider_healthy: true`
-- `runtime_healthy: true`
-
-If `healthy: false`, check:
-
-1. Did the user set `FROGLET_HOST_READABLE_CONTROL_TOKEN=true` (step 5
-   already exports it, but a re-run under different env can miss it)?
-   The container logs a clear warning if this is missing.
-2. Is the user's Docker daemon reachable?
-3. For the Lightning rail, the mock mode needs no external state. For
-   Stripe or x402, the user needs valid credentials in the env snippet
-   the `setup-payment.sh` script wrote inside the cloned `froglet/`
-   directory.
-
-## Post-install playbooks
-
-After health checks pass, implement one concrete use case instead of stopping at
-"installed":
-
-- **Consumer-first:** list local/marketplace services, invoke one service,
-  inspect the result and receipt.
-- **Provider-first:** publish a small service, inspect descriptor/offer
-  metadata, then invoke it locally.
-- **Evidence-first:** run URL witness, hash verification, or content-hash
-  notarization for a file/URL the user actually cares about.
-- **Payments-first:** run Lightning mock before asking for Stripe, x402, or LND
-  credentials.
-- **Batch-first:** start with one async task and prove `get_task`/`wait_task`
-  progress before promising multi-item fan-out. True batch submission,
-  retry policy, partial failure handling, and paid async settlement remain
-  implementation work.
-- **GPU-first:** require provider-advertised GPU capability and real hardware
-  evidence before accepting GPU work. Self-hosted nodes can advertise GPU
-  metadata, advertise generic-compute GPU offers, gate Docker container
-  execution with `--gpus all`, and reject CPU fallback. One GCP T4 container
-  workload with a signed receipt is verified; scheduling, marketplace routing,
-  and production capacity policy remain open. Do not silently route GPU requests
-  to CPU.
-- **Network-first:** prove loopback health, then move to clearnet, Tor, or dual
-  exposure only with explicit user confirmation.
-
-## Residual constraints
-
-A few things the LLM cannot do on the user's behalf, even with full
-shell access:
-
-- **Real Lightning liquidity.** The default mock mode is sufficient for
-  the paid-deal flow locally, but to receive real Lightning payments the
-  user needs their own LND node. Point them at
-  [Lightning](/learn/payment-lightning/).
-- **Real Stripe account.** Stripe test keys work out of the box; the
-  user creates their own Stripe account for live use.
-- **Hosted Froglet instance.** Local install gives the user a local
-  stack. Hosting it publicly (so other agents can reach it) still
-  requires the user to run on a VM and expose a public URL.
-
-## If the user asks about uninstall
-
-There is no first-class uninstall action. Run `cd froglet && docker compose down -v`,
-then remove `~/.local/bin/froglet-node`, and if the user wants a full cleanup
-remove the cloned `froglet/` directory. Confirm each destructive step with the
-user before running it.
-
-## Related
-
-- [Quickstart](/learn/quickstart/) — the human-reader equivalent of this
-  page. The default copy-paste block there is what `get_install_guide` returns.
-- [Connect Agents](/learn/agents/) — what `setup-agent.sh --target X`
-  actually writes to the user's config.
-- [Payment Rails](/learn/payment-rails/) — the rail differences beyond
-  the default `lightning` mock mode.
+- Real Lightning needs user-owned LND credentials and liquidity.
+- Stripe live needs a fresh human approval and a tiny live payment/refund proof.
+- x402 needs wallet/facilitator setup and verify/settle evidence.
+- Public HTTPS on a clearnet hostname still needs public inbound connectivity.
+- OpenClaw no-clone setup is not complete because the OpenClaw plugin is a
+  repo-local folder today.

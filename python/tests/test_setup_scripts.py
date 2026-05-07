@@ -162,7 +162,7 @@ fi
             extra_env={"FROGLET_STRIPE_SECRET_KEY": "sk_live_123"},
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must be a Stripe test secret key", result.stderr)
+        self.assertIn("FROGLET_STRIPE_LIVE_CONFIRM=fresh", result.stderr)
         self.assertEqual(self.curl_log.read_text(encoding="utf-8"), "")
 
     def test_setup_payment_rejects_stripe_malformed_key_before_probe(self):
@@ -171,8 +171,23 @@ fi
             extra_env={"FROGLET_STRIPE_SECRET_KEY": "not-a-stripe-key"},
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must be a Stripe test secret key", result.stderr)
+        self.assertIn("must be sk_test_...", result.stderr)
         self.assertEqual(self.curl_log.read_text(encoding="utf-8"), "")
+
+    def test_setup_payment_accepts_stripe_live_key_with_fresh_confirm(self):
+        out_path = self.root / "stripe-live.env"
+        result = self._run(
+            [str(SETUP_PAYMENT), "stripe", "--out", str(out_path)],
+            extra_env={
+                "FROGLET_STRIPE_SECRET_KEY": "sk_live_123",
+                "FROGLET_STRIPE_LIVE_CONFIRM": "fresh",
+                "FAKE_CURL_BODY": '{"object":"account","livemode":true}',
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = out_path.read_text(encoding="utf-8")
+        self.assertIn("FROGLET_STRIPE_SECRET_KEY=sk_live_123", content)
+        self.assertIn("livemode=true", result.stdout)
 
     def test_setup_payment_rejects_stripe_probe_when_account_is_live(self):
         result = self._run(

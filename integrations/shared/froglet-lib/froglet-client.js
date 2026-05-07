@@ -175,6 +175,23 @@ function sameApiBaseUrl(left, right) {
   return normalizedLeft !== null && normalizedLeft === normalizedRight
 }
 
+function normalizeMarketplaceUrl(value) {
+  const normalized = normalizeUrl(value)
+  if (!normalized) {
+    throw new Error("marketplace_url must be a non-empty URL")
+  }
+  let parsed
+  try {
+    parsed = new URL(normalized)
+  } catch (error) {
+    throw new Error(`marketplace_url is not a valid URL: ${error.message}`)
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`marketplace_url must use http:// or https:// (got ${parsed.protocol})`)
+  }
+  return parsed.toString().replace(/\/$/, "")
+}
+
 function missingTaskMessage(payload) {
   const error =
     typeof payload?.error === "string" && payload.error.trim().length > 0 ? payload.error.trim() : null
@@ -1183,6 +1200,245 @@ export async function discoverServices({ runtimeUrl, runtimeAuthTokenPath, reque
   return {
     ...response,
     services: flattenMarketplaceProviders(response, { query }),
+  }
+}
+
+function clearnetUrlFromCapabilities(capabilities) {
+  const nested = capabilities?.transports?.clearnet?.url
+  if (typeof nested === "string" && nested.trim().length > 0) {
+    return nested.trim()
+  }
+  const legacy = capabilities?.transports?.clearnet_url
+  if (typeof legacy === "string" && legacy.trim().length > 0) {
+    return legacy.trim()
+  }
+  return null
+}
+
+function onionUrlFromCapabilities(capabilities) {
+  const nested = capabilities?.transports?.tor?.url ?? capabilities?.transports?.tor?.onion_url
+  if (typeof nested === "string" && nested.trim().length > 0) {
+    return nested.trim()
+  }
+  const legacy = capabilities?.transports?.tor_onion_url
+  if (typeof legacy === "string" && legacy.trim().length > 0) {
+    return legacy.trim()
+  }
+  return null
+}
+
+function normalizeOnionProviderUrl(value, label = "provider_url") {
+  const normalized = normalizeUrl(value)
+  if (!normalized) {
+    throw new Error(`${label} must be a non-empty URL`)
+  }
+  let parsed
+  try {
+    parsed = new URL(normalized)
+  } catch (error) {
+    throw new Error(`${label} is not a valid URL: ${error.message}`)
+  }
+  if (parsed.protocol !== "http:") {
+    throw new Error(`${label} must use http:// for Tor onion registration`)
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error(`${label} must not contain credentials`)
+  }
+  if (parsed.pathname !== "/" && parsed.pathname !== "") {
+    throw new Error(`${label} must be an origin URL without a path`)
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error(`${label} must not include query or fragment`)
+  }
+  if (!/^[a-z2-7]{56}\.onion$/.test(parsed.hostname)) {
+    throw new Error(`${label} must be a Tor v3 .onion hostname`)
+  }
+  return parsed.toString().replace(/\/$/, "")
+}
+
+/**
+ * Register a provider with a marketplace's frictionless registration API.
+ *
+ * @param {{ marketplaceUrl: string, providerUrl: string, requestTimeoutMs: number, request?: { provider_url?: string, registration_transport?: string } }} config
+ */
+export async function registerProviderOnMarketplace({
+  marketplaceUrl,
+  providerUrl,
+  requestTimeoutMs,
+  request = {},
+}) {
+  let candidateProviderUrl = normalizeUrl(request.provider_url)
+  let transport =
+    typeof request.registration_transport === "string" && request.registration_transport.trim().length > 0
+      ? request.registration_transport.trim().toLowerCase()
+      : null
+  if (transport && transport !== "clearnet" && transport !== "tor") {
+    throw new Error("registration_transport must be clearnet or tor")
+  }
+  if (!candidateProviderUrl) {
+    const capabilities = await frogletPublicRequest(
+      providerUrl,
+      requestTimeoutMs,
+      "/v1/node/capabilities"
+    )
+    candidateProviderUrl =
+      transport === "tor" ? onionUrlFromCapabilities(capabilities) : clearnetUrlFromCapabilities(capabilities)
+    if (!candidateProviderUrl) {
+      throw new Error(
+        transport === "tor"
+          ? "provider_url was omitted and the configured provider did not advertise transports.tor.url. Start the provider in FROGLET_NETWORK_MODE=tor or dual, wait for the onion URL, then retry marketplace_register with registration_transport=tor."
+          : "provider_url was omitted and the configured provider did not advertise transports.clearnet.url. Set FROGLET_PUBLIC_BASE_URL on the provider, restart it, then retry marketplace_register."
+      )
+    }
+  }
+
+  if (!transport) {
+    transport = /\.onion(?::\d+)?$/i.test(new URL(candidateProviderUrl).hostname) ? "tor" : "clearnet"
+  }
+
+  let normalizedProviderUrl
+  if (transport === "tor") {
+    try {
+      normalizedProviderUrl = normalizeOnionProviderUrl(candidateProviderUrl, "provider_url")
+    } catch (error) {
+      throw new Error(
+        `provider_url is not marketplace-registerable: ${error.message}. Tor marketplace registration requires a public http://<v3>.onion origin advertised by the provider.`
+      )
+    }
+  } else {
+    try {
+      normalizedProviderUrl = (await validateProviderUrl(candidateProviderUrl, "provider_url")).normalizedUrl
+    } catch (error) {
+      throw new Error(
+        `provider_url is not marketplace-registerable: ${error.message}. Marketplace registration requires a public https URL; set FROGLET_PUBLIC_BASE_URL to the provider's public HTTPS origin and retry.`
+      )
+    }
+  }
+
+  const marketplace = normalizeMarketplaceUrl(marketplaceUrl)
+  const { status, payload } = await jsonRequest(`${marketplace}/v1/registrations`, {
+    method: "POST",
+    timeoutMs: requestTimeoutMs,
+    jsonBody: {
+      provider_url: normalizedProviderUrl,
+      transport,
+    },
+    expectedStatuses: [200, 201],
+  })
+
+  return {
+    ...payload,
+    http_status: status,
+    provider_url: payload?.provider_url ?? normalizedProviderUrl,
+  }
+}
+
+/**
+ * Create a Froglet-managed providers.froglet.dev domain claim.
+ *
+ * @param {{ marketplaceUrl: string, requestTimeoutMs: number, request: { provider_id: string, requested_slug?: string, public_ip: string } }} config
+ */
+export async function createProviderDomainClaim({
+  marketplaceUrl,
+  requestTimeoutMs,
+  request,
+}) {
+  const marketplace = normalizeMarketplaceUrl(marketplaceUrl)
+  const { status, payload } = await jsonRequest(`${marketplace}/v1/provider-domains/claims`, {
+    method: "POST",
+    timeoutMs: requestTimeoutMs,
+    jsonBody: request,
+    expectedStatuses: [200],
+  })
+  return { ...payload, http_status: status }
+}
+
+/**
+ * Sign and complete a Froglet-managed domain claim.
+ *
+ * @param {{ marketplaceUrl: string, providerUrl: string, providerAuthTokenPath: string, requestTimeoutMs: number, claimId: string, signingMessage: string }} config
+ */
+export async function completeProviderDomainClaim({
+  marketplaceUrl,
+  providerUrl,
+  providerAuthTokenPath,
+  requestTimeoutMs,
+  claimId,
+  signingMessage,
+}) {
+  const signResponse = await frogletRequest(
+    providerUrl,
+    providerAuthTokenPath,
+    requestTimeoutMs,
+    "POST",
+    "/v1/provider/domain-claims/sign",
+    {
+      jsonBody: { signing_message: signingMessage },
+      expectedStatuses: [200],
+    }
+  )
+  const marketplace = normalizeMarketplaceUrl(marketplaceUrl)
+  const { status, payload } = await jsonRequest(
+    `${marketplace}/v1/provider-domains/claims/${encodeURIComponent(claimId)}/complete`,
+    {
+      method: "POST",
+      timeoutMs: requestTimeoutMs,
+      jsonBody: {
+        signature: signResponse.signature,
+      },
+      expectedStatuses: [200],
+    }
+  )
+  return {
+    ...payload,
+    http_status: status,
+    signed_provider_id: signResponse.provider_id,
+  }
+}
+
+/**
+ * File an MVP marketplace complaint with the operator-run arbiter service.
+ *
+ * @param {{ arbiterUrl: string, requestTimeoutMs: number, request: object }} config
+ */
+export async function fileMarketplaceComplaint({
+  arbiterUrl,
+  requestTimeoutMs,
+  request,
+}) {
+  const arbiter = normalizeMarketplaceUrl(arbiterUrl)
+  const { status, payload } = await jsonRequest(`${arbiter}/v1/complaints`, {
+    method: "POST",
+    timeoutMs: requestTimeoutMs,
+    jsonBody: request,
+    expectedStatuses: [201],
+  })
+  return {
+    ...payload,
+    http_status: status,
+  }
+}
+
+/**
+ * Read an MVP marketplace complaint from the operator-run arbiter service.
+ *
+ * @param {{ arbiterUrl: string, requestTimeoutMs: number, complaintId: string }} config
+ */
+export async function getMarketplaceComplaint({
+  arbiterUrl,
+  requestTimeoutMs,
+  complaintId,
+}) {
+  const arbiter = normalizeMarketplaceUrl(arbiterUrl)
+  const encoded = encodeURIComponent(complaintId)
+  const { status, payload } = await jsonRequest(`${arbiter}/v1/complaints/${encoded}`, {
+    method: "GET",
+    timeoutMs: requestTimeoutMs,
+    expectedStatuses: [200],
+  })
+  return {
+    ...payload,
+    http_status: status,
   }
 }
 

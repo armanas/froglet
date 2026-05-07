@@ -1,5 +1,7 @@
 import {
   ABSOLUTE_MAX_SEARCH_LIMIT,
+  DEFAULT_MARKETPLACE_ARBITER_URL,
+  DEFAULT_MARKETPLACE_URL,
   DEFAULT_MAX_SEARCH_LIMIT,
   DEFAULT_SEARCH_LIMIT,
   DEFAULT_TIMEOUT_MS,
@@ -84,6 +86,29 @@ function resolveRuntimeUrl(config) {
   return normalizeBaseUrl(DEFAULT_LOCAL_RUNTIME_URL, "runtimeUrl default")
 }
 
+function resolveMarketplaceUrl(config) {
+  const explicit = resolveConfigValue(config.marketplaceUrl, "FROGLET_MARKETPLACE_URL")
+  return normalizeBaseUrl(
+    typeof explicit === "string" && explicit.trim().length > 0
+      ? explicit
+      : DEFAULT_MARKETPLACE_URL,
+    "marketplaceUrl / FROGLET_MARKETPLACE_URL"
+  )
+}
+
+function resolveMarketplaceArbiterUrl(config) {
+  const explicit = resolveConfigValue(
+    config.marketplaceArbiterUrl,
+    "FROGLET_MARKETPLACE_ARBITER_URL"
+  )
+  return normalizeBaseUrl(
+    typeof explicit === "string" && explicit.trim().length > 0
+      ? explicit
+      : DEFAULT_MARKETPLACE_ARBITER_URL,
+    "marketplaceArbiterUrl / FROGLET_MARKETPLACE_ARBITER_URL"
+  )
+}
+
 export function readPluginConfig(api) {
   const config = api?.config ?? {}
   const hostProduct = normalizeHostProduct(
@@ -92,6 +117,8 @@ export function readPluginConfig(api) {
 
   const providerUrl = resolveProviderUrl(config)
   const runtimeUrl = resolveRuntimeUrl(config)
+  const marketplaceUrl = resolveMarketplaceUrl(config)
+  const marketplaceArbiterUrl = resolveMarketplaceArbiterUrl(config)
 
   const providerAuthTokenPath = normalizeOptionalFilesystemPath(
     resolveConfigValue(config.providerAuthTokenPath ?? config.authTokenPath, "FROGLET_PROVIDER_AUTH_TOKEN_PATH") ??
@@ -116,6 +143,8 @@ export function readPluginConfig(api) {
     hostProduct,
     providerUrl,
     runtimeUrl,
+    marketplaceUrl,
+    marketplaceArbiterUrl,
     providerAuthTokenPath,
     runtimeAuthTokenPath,
     requestTimeoutMs: clampInteger(

@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec sh -c "$(curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/agent-bootstrap.sh)"

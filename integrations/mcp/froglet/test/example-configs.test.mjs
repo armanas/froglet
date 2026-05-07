@@ -16,6 +16,7 @@ const CONFIG_ENV_KEYS = [
   "FROGLET_RUNTIME_AUTH_TOKEN_PATH",
   "FROGLET_BASE_URL",
   "FROGLET_AUTH_TOKEN_PATH",
+  "FROGLET_MARKETPLACE_ARBITER_URL",
 ]
 
 async function readJson(name) {
@@ -64,6 +65,7 @@ test("MCP config defaults to local loopback without token files", () => {
     assert.equal(loaded.runtimeUrl, "http://127.0.0.1:8081")
     assert.equal(loaded.providerAuthTokenPath, null)
     assert.equal(loaded.runtimeAuthTokenPath, null)
+    assert.equal(loaded.marketplaceArbiterUrl, "https://arbiter.froglet.dev")
   } finally {
     restoreEnv(previous)
   }

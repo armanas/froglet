@@ -67,7 +67,9 @@ OCI containers remain a supported packaging and deployment path.
 - Easy bot authoring and local checking of scriptable services is a core
   product requirement
 - Identity is first-class in signed artifacts
-- The same signed deals can be served over clearnet HTTPS or Tor onion endpoints
+- Clearnet HTTPS and Tor v3 onion transport are supported registration paths
+  for self-hosted providers. The first-party hosted MVP does not publish an
+  onion endpoint until that endpoint is separately deployed and verified.
 
 > [!NOTE]
 > Marketplace, ranking, incentive, and broker policy live above the protocol.
@@ -78,7 +80,8 @@ OCI containers remain a supported packaging and deployment path.
 > adapters. The first-party hosted `try.froglet.dev` trial is free-only: it
 > uses `demo.add` as the canonical proof and exposes optional
 > `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize` follow-ups for
-> stronger evidence. Hosted paid rails are deferred to v0.2.
+> stronger evidence. Hosted paid rails must not be claimed live until Lightning
+> and Stripe have public payment transcripts.
 
 <details>
 <summary><strong>Discovery & Compute model</strong></summary>
@@ -104,8 +107,9 @@ The reference implementation exposes these binaries:
 
 > [!TIP]
 > Marketplace integration is part of the public Froglet surface. Runtimes can
-> point at the default public read marketplace with `FROGLET_MARKETPLACE_URL`;
-> provider auto-registration requires a write-capable marketplace endpoint. See
+> point at the default public marketplace with `FROGLET_MARKETPLACE_URL`;
+> providers can self-register there after exposing a public HTTPS URL, Tor v3
+> onion URL, or claimed `*.providers.froglet.dev` hostname. See
 > [docs/MARKETPLACE.md](docs/MARKETPLACE.md).
 
 ---
@@ -161,13 +165,13 @@ The public launch story still has exactly two entry points:
 Minimal full local stack from zero:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
-git clone https://github.com/armanas/froglet.git
-cd froglet && npm ci --prefix integrations/mcp/froglet
-cd froglet && ./scripts/setup-agent.sh --target claude-code
-cd froglet && ./scripts/setup-payment.sh lightning
-cd froglet && set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose up --build -d
+curl -fsSL https://froglet.dev/agent | bash
 ```
+
+The agent bootstrap installs the signed `froglet-node`, starts provider/runtime
+from published GHCR images under `~/.froglet/agent`, writes MCP config, and
+leaves payments/public registration for the installed `froglet-mcp` flow after
+local health checks pass.
 
 Disposable-host proof runner:
 
@@ -181,10 +185,11 @@ If you only want the signed binary:
 curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
 ```
 
-The Compose path and generated host-side agent configs depend on
-`FROGLET_HOST_READABLE_CONTROL_TOKEN=true`; the quickstart page carries the
-full step-by-step explanation, payment-rail variants, and direct
-`froglet-node` examples.
+Source-checkout Compose and generated host-side agent configs depend on
+`FROGLET_HOST_READABLE_CONTROL_TOKEN=true`; the default user path is the
+no-clone `/agent` bootstrap. The quickstart page carries the step-by-step
+MCP-first explanation, payment-rail decisions, Tor registration, managed
+subdomains, and contributor/source-mode fallbacks.
 
 <details>
 <summary><strong>Running binaries directly (without Compose)</strong></summary>
@@ -211,8 +216,9 @@ The normal model is one node running both provider and runtime roles
 remote ones.
 
 Set `FROGLET_MARKETPLACE_URL` on runtime nodes to search through an external
-marketplace. Set it on providers only when the target marketplace supports
-write-capable provider registration.
+marketplace. Providers can self-register with the default public marketplace
+after they advertise a matching public HTTPS origin, Tor v3 onion URL, or
+claimed `*.providers.froglet.dev` hostname.
 
 </details>
 
@@ -228,6 +234,10 @@ surfaces today. Distribution status and marketplace/plugin ordering live in
 
 Use the shared plugin package in
 [integrations/openclaw/froglet](integrations/openclaw/froglet).
+Current OpenClaw plugin install/inspect and gateway invocation require
+Node.js `22.14.0` or newer. Gateway-mediated local actions should launch with
+`FROGLET_PROVIDER_AUTH_TOKEN_PATH` and `FROGLET_RUNTIME_AUTH_TOKEN_PATH`
+pointing at the local `data/runtime/` token files.
 
 <details>
 <summary><strong>Configuration keys</strong></summary>
@@ -316,8 +326,9 @@ node integrations/mcp/froglet/server.js
 
 All three launch modes expose the same Froglet control surface over MCP stdio.
 
-For supported local agent targets, generate the exact config file instead of
-editing JSON or TOML by hand from the cloned repo:
+For normal users, the `/agent` bootstrap writes the local MCP config without a
+repo clone. From a source checkout, contributors can still generate the exact
+config file instead of editing JSON or TOML by hand:
 
 ```bash
 cd froglet && ./scripts/setup-agent.sh --target claude-code
@@ -376,7 +387,8 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - Protocol and supporting specifications under `docs/` and `conformance/`
 - Reference Froglet node implementation shipped as separable `runtime`,
   `provider`, `discovery`, and `operator` binaries
-- OpenClaw and NemoClaw bot integration
+- OpenClaw source-plugin integration and shared NemoClaw plugin code, with
+  host-specific verification status documented separately
 - MCP server for external agent hosts and automations
 - Python-backed helpers and tests for the public node and protocol surface
 - Local project authoring, build, test, and publish flows for bot-authored
@@ -386,14 +398,15 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
   execution paths
 - Local/self-hosted reference settlement support for Lightning, Stripe, and
   x402
-- Clearnet, Tor, and Nostr-facing adapter support
+- Clearnet launch transport plus optional self-hosted Tor and Nostr-facing
+  adapter support
 - Tests, validation scripts, and release docs for the public repo surface
 - Public-facing self-host documentation and examples
 
 **Later or separately deployed:**
 
-- First-party hosted paid rails for Lightning, Stripe, and x402, deferred to
-  v0.2
+- First-party hosted paid rail claims for Lightning and Stripe, pending public
+  live transcripts; hosted x402 remains desirable but non-blocking
 - The hosted `try.froglet.dev` gateway's private operational lifecycle
 - Higher-layer marketplace ranking, reputation, and policy services
 - Long-running batch orchestration, which remains out of scope for the current
@@ -432,9 +445,12 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [STORAGE_PROFILE.md](docs/STORAGE_PROFILE.md) | Storage profiles |
 | [GCP_SINGLE_VM.md](docs/GCP_SINGLE_VM.md) | Single-VM self-host deployment wrapper |
 | [MARKETPLACE.md](docs/MARKETPLACE.md) | Marketplace integration and the default public marketplace |
+| [ARBITER.md](docs/ARBITER.md) | MVP complaint and marketplace enforcement boundary |
 | [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the hosted trial |
 | [RELEASE.md](docs/RELEASE.md) | Release process |
+| [NAME_COHERENCE.md](docs/NAME_COHERENCE.md) | Lightweight launch name and registry-risk note |
 | [PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md) | Supported payment rails and verification coverage |
+| [FEEDBACK.md](docs/FEEDBACK.md) | MVP feedback channel and first-four-weeks triage loop |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards (Contributor Covenant 2.1) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 

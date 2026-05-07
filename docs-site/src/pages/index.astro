@@ -113,7 +113,7 @@ Astro.locals.starlightRoute = { hasSidebar: false };
         <div class="entry-card" id="self-host-card">
           <div class="entry-num">02 · local</div>
           <h3>Run locally</h3>
-          <p>Pick your platform, agent, and payment rail. The snippet below stays truthful: repo-local helpers run only after a clone, and the Docker path uses the checked-in compose stack.</p>
+          <p>Pick an agent and the first payment decision. The snippet stays no-clone: it installs the signed node, starts published images, writes MCP config, and leaves public registration or paid rails for the agent after health checks pass.</p>
 
           <div class="config-group">
             <span class="config-label">Install</span>
@@ -130,15 +130,16 @@ Astro.locals.starlightRoute = { hasSidebar: false };
             <div class="config-options" data-group="agent">
               <button class="config-btn is-active" type="button" data-value="claude-code" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</button>
               <button class="config-btn" type="button" data-value="codex" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</button>
-              <button class="config-btn" type="button" data-value="openclaw" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/openclaw.svg')" aria-hidden="true"></span>OpenClaw</button>
+              <button class="config-btn" type="button" data-value="manual" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>Manual</button>
             </div>
           </div>
 
           <div class="config-group">
             <span class="config-label">Payment</span>
             <div class="config-options" data-group="payment">
-              <button class="config-btn is-active" type="button" data-value="lightning" aria-pressed="true"><span class="brand-icon" style="color: var(--bolt); --logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning</button>
-              <button class="config-btn" type="button" data-value="stripe" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe</button>
+              <button class="config-btn is-active" type="button" data-value="none" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>None</button>
+              <button class="config-btn" type="button" data-value="lightning-mock" aria-pressed="false"><span class="brand-icon" style="color: var(--bolt); --logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning mock</button>
+              <button class="config-btn" type="button" data-value="stripe-test" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe test</button>
               <button class="config-btn" type="button" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</button>
             </div>
           </div>
@@ -150,8 +151,8 @@ Astro.locals.starlightRoute = { hasSidebar: false };
 
           <a class="entry-cta" href="/learn/quickstart/">docs / quickstart →</a>
           <div class="entry-proves">
-            <b>What it proves:</b> persistent identity, paid rails (Lightning / Stripe / x402), publishing services, real settlement.<br>
-            <b>What it does not prove:</b> repo-local helpers run only after a clone; anonymous pulls require public visibility.
+            <b>What it proves:</b> persistent identity, MCP wiring, local provider/runtime health, and free service publication.<br>
+            <b>What it does not prove:</b> live paid rails, public registration, or external backend connectivity until the agent guides those steps after local health passes.
           </div>
         </div>
       </div>
@@ -226,8 +227,8 @@ Astro.locals.starlightRoute = { hasSidebar: false };
             <tr><td class="name"><span class="int-logo"><img src="/logos/python.svg" alt=""></span>Python</td><td>runtime</td><td><code>cpython 3.12</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/docker.svg" alt=""></span>Docker</td><td>runtime</td><td><code>OCI image</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
             <tr><td class="name"><span class="int-logo int-logo-text">B</span>Batch</td><td>execution mode</td><td><code>async task status</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>No fan-out</span></td></tr>
-            <tr><td class="name"><span class="int-logo int-logo-text">G</span>GPU</td><td>accelerator</td><td><code>Docker --gpus</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>T4 verified</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/tor.svg" alt=""></span>Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo int-logo-text">G</span>GPU</td><td>accelerator</td><td><code>Docker --gpus</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Self-host T4</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/tor.svg" alt=""></span>Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Self-host</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/lock.svg" alt=""></span>TEE</td><td>runtime</td><td><code>SGX · Nitro</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Spec</span></td></tr>
           </tbody>
         </table>

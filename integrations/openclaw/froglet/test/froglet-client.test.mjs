@@ -23,6 +23,7 @@ import {
   publishArtifact,
   publishProject,
   readProjectFile,
+  registerProviderOnMarketplace,
   runCompute,
   testProject,
   waitTask,
@@ -332,6 +333,67 @@ test("discoverServices reads marketplace providers and flattens compatibility se
       global.fetch = previousFetch
     }
   })
+})
+
+test("registerProviderOnMarketplace posts explicit public provider URL", async () => {
+  const previousFetch = global.fetch
+  let capturedBody = null
+  global.fetch = async (url, options = {}) => {
+    assert.equal(String(url), "https://marketplace.froglet.dev/v1/registrations")
+    capturedBody = JSON.parse(options.body)
+    return new Response(
+      JSON.stringify({
+        status: "active",
+        provider_id: "prov-registered",
+        provider_url: "https://1.1.1.1",
+        descriptor_hash: "desc-registered",
+        offers_seen: 1,
+        already_registered: false
+      }),
+      { status: 201, headers: { "Content-Type": "application/json" } }
+    )
+  }
+  try {
+    const response = await registerProviderOnMarketplace({
+      marketplaceUrl: "https://marketplace.froglet.dev",
+      providerUrl: "http://127.0.0.1:8080",
+      requestTimeoutMs: 1000,
+      request: { provider_url: "https://1.1.1.1" }
+    })
+  assert.deepEqual(capturedBody, { provider_url: "https://1.1.1.1", transport: "clearnet" })
+    assert.equal(response.status, "active")
+    assert.equal(response.http_status, 201)
+    assert.equal(response.provider_id, "prov-registered")
+  } finally {
+    global.fetch = previousFetch
+  }
+})
+
+test("registerProviderOnMarketplace explains local advertised provider URL", async () => {
+  const previousFetch = global.fetch
+  global.fetch = async (url) => {
+    assert.equal(String(url), "http://127.0.0.1:8080/v1/node/capabilities")
+    return new Response(
+      JSON.stringify({
+        identity: { node_id: "prov-local" },
+        transports: { clearnet: { enabled: true, url: "http://127.0.0.1:8080" } }
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    )
+  }
+  try {
+    await assert.rejects(
+      () =>
+        registerProviderOnMarketplace({
+          marketplaceUrl: "https://marketplace.froglet.dev",
+          providerUrl: "http://127.0.0.1:8080",
+          requestTimeoutMs: 1000
+        }),
+      /FROGLET_PUBLIC_BASE_URL/
+    )
+  } finally {
+    global.fetch = previousFetch
+  }
 })
 
 test("getService resolves provider from runtime search and fetches provider public service detail", async () => {

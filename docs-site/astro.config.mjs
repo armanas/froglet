@@ -39,6 +39,7 @@ export default defineConfig({
 							{ label: 'Try In Cloud', slug: 'learn/cloud-trial' },
 							{ label: 'Run Locally', slug: 'learn/quickstart' },
 							{ label: 'Connect Agents', slug: 'learn/agents' },
+							{ label: 'LLM Install Contract', slug: 'learn/llm-self-install' },
 							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
 							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
 						],

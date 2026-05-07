@@ -206,9 +206,15 @@ because the plugin usually runs inside a sandbox and reaches the host over HTTPS
 Do not claim NemoClaw distribution is complete until a real NemoClaw environment
 installs the package and runs at least one local Froglet action.
 
-Current OpenClaw status: source-level plugin tests, doctor runtime checks, and
-direct source-plugin `froglet` tool invocation pass against the local Froglet
-stack. Full OpenClaw gateway-mediated invocation remains separate evidence.
+Current OpenClaw status: source-level plugin tests, doctor runtime checks,
+direct source-plugin `froglet` tool invocation, and OpenClaw `2026.5.5`
+Gateway-mediated invocation pass against a local Froglet provider/runtime stack.
+The 2026-05-06 GCP proof covered `plugins install --link`, `config validate`,
+`plugins inspect froglet --runtime --json`, Gateway startup, `tools.catalog`,
+and HTTP `/tools/invoke` for `status` plus `list_local_services`. Current
+OpenClaw requires Node.js `22.14.0+`; the verified Gateway run supplied
+`FROGLET_PROVIDER_AUTH_TOKEN_PATH` and `FROGLET_RUNTIME_AUTH_TOKEN_PATH` in the
+Gateway environment.
 
 NemoClaw status: source-level shared plugin tests pass, but real NemoClaw
 verification requires a NemoClaw/OpenShell environment, staged plugin source,

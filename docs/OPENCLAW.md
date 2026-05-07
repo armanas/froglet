@@ -10,6 +10,18 @@ provider API, usually:
 - `http://127.0.0.1:8080` (provider)
 - `http://127.0.0.1:8081` (runtime)
 
+Current OpenClaw releases require Node.js `22.14.0` or newer for plugin
+install/inspect and gateway-mediated invocation. Use Node 22 before running
+`npx openclaw@2026.5.5 ...`.
+
+For Gateway-mediated local actions, keep the Froglet token paths available in
+the Gateway process environment:
+
+```bash
+export FROGLET_PROVIDER_AUTH_TOKEN_PATH="$PWD/data/runtime/froglet-control.token"
+export FROGLET_RUNTIME_AUTH_TOKEN_PATH="$PWD/data/runtime/auth.token"
+```
+
 Use the checked-in example config:
 
 - [../integrations/openclaw/froglet/examples/openclaw.config.example.json](../integrations/openclaw/froglet/examples/openclaw.config.example.json)
@@ -68,3 +80,9 @@ OpenClaw blocks plugins that include executable launcher wrappers or
 therefore ships only the plugin runtime, examples, and doctor/test scripts. Use
 OpenClaw's own plugin install command against this directory or a marketplace
 entry; do not install a Froglet-owned `openclaw` binary wrapper.
+
+Verified status (2026-05-06): OpenClaw `2026.5.5` on Node 22 passed
+`plugins install --link`, `config validate`, `plugins inspect froglet --runtime
+--json`, Gateway startup, `tools.catalog`, and HTTP `/tools/invoke` for
+`action=status` and `action=list_local_services` against a local Froglet
+provider/runtime stack.

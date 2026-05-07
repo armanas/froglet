@@ -13,6 +13,19 @@ and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
 
 ## Quick Start
 
+### No-clone local node
+
+For a user who wants a local Froglet node plus MCP config:
+
+```bash
+curl -fsSL https://froglet.dev/agent | bash
+```
+
+That bootstrap installs the signed `froglet-node`, starts provider/runtime from
+published GHCR images matching the latest release, and writes MCP config backed
+by the published `froglet-mcp` image. After health passes, use MCP actions for service
+publication, invocation, public registration, and payment setup.
+
 ### Local npm profile
 
 ```bash
@@ -40,7 +53,8 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH=./data/runtime/auth.token \
   node integrations/mcp/froglet/server.js
 ```
 
-For project-local launch files, use the public helper:
+Source checkout is contributor mode. For project-local launch files in a clone,
+use the helper:
 
 ```bash
 cd froglet && ./scripts/setup-agent.sh --target claude-code
@@ -49,8 +63,10 @@ cd froglet && ./scripts/setup-agent.sh --target codex
 
 Agents should call the Froglet `plan_install` action before local setup when the
 user has not specified the target agent, install footprint, role, payment rail,
-network mode, marketplace URL, or first use case. After the profile is
-confirmed, `get_install_guide` returns the exact host-shell commands.
+network mode, marketplace URL, or first use case. If `payment_rail` is omitted,
+the tool returns `decision_required`; recommend `none` for the first local demo.
+After the profile is confirmed, `get_install_guide` returns the exact
+host-shell commands.
 After health checks pass, `plan_use_case` returns a bounded first-workflow plan
 and names unsupported edges before execution. In particular, true batch
 fan-out, GPU scheduling/provider selection, marketplace GPU routing, and
@@ -79,6 +95,8 @@ All configuration is through environment variables:
 | `FROGLET_PROFILE` | No | `local` by default |
 | `FROGLET_PROVIDER_URL` | No | Provider base URL (fallback: `FROGLET_BASE_URL`; default: `http://127.0.0.1:8080`) |
 | `FROGLET_RUNTIME_URL` | No | Runtime base URL (fallback: `FROGLET_BASE_URL`; default: `http://127.0.0.1:8081`) |
+| `FROGLET_MARKETPLACE_URL` | No | Marketplace API base URL for `marketplace_register` (default: `https://marketplace.froglet.dev`) |
+| `FROGLET_MARKETPLACE_ARBITER_URL` | No | Marketplace arbiter base URL for complaint filing/reads (default: `https://arbiter.froglet.dev`) |
 | `FROGLET_PROVIDER_AUTH_TOKEN_PATH` | No | Path to provider auth token file |
 | `FROGLET_RUNTIME_AUTH_TOKEN_PATH` | No | Path to runtime auth token file |
 | `FROGLET_REQUEST_TIMEOUT_MS` | No | HTTP timeout in ms (default: 10000) |
@@ -94,6 +112,16 @@ time. `plan_install`, `get_install_guide`, and `plan_use_case` do not require
 local token files.
 The hosted demo is intentionally not an MCP action; use
 `https://froglet.dev/llms.txt` for the no-install proof.
+
+Marketplace registration helpers:
+
+- `marketplace_register` posts a public HTTPS or Tor provider URL to
+  `/v1/registrations`.
+- `registration_transport=tor` is required for onion registration.
+- `marketplace_domain_claim` and `marketplace_domain_complete` claim a
+  Froglet-managed `*.providers.froglet.dev` hostname before HTTPS registration.
+- General `provider_url` overrides still reject onion URLs outside the
+  controlled registration path.
 
 ---
 

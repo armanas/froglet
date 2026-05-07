@@ -5,39 +5,37 @@ describe('buildSelfHostScript', () => {
   it('builds a pasteable default script without nested cd commands', () => {
     const script = buildSelfHostScript();
 
-    expect(script).toContain('git clone https://github.com/armanas/froglet.git\ncd froglet\n');
-    expect(script.match(/^cd froglet$/gm)).toHaveLength(1);
+    expect(script).toContain('curl -fsSL https://froglet.dev/agent | bash');
+    expect(script).not.toContain('git clone https://github.com/armanas/froglet.git');
+    expect(script.match(/^cd froglet$/gm)).toBeNull();
     expect(script).not.toContain('cd froglet &&');
-    expect(script).toContain('npm ci --prefix integrations/mcp/froglet');
-    expect(script).toContain('./scripts/setup-agent.sh --target claude-code');
-    expect(script).toContain('./scripts/setup-payment.sh lightning');
-    expect(script).toContain('docker compose up --build -d');
+    expect(script).not.toContain('npm ci --prefix integrations/mcp/froglet');
+    expect(script).not.toContain('./scripts/setup-payment.sh');
+    expect(script).not.toContain('docker compose up --build -d');
   });
 
-  it('adds the Linux arm64 installer environment', () => {
+  it('adds the selected agent and payment guidance', () => {
     const script = buildSelfHostScript({
       install: 'linux-arm',
       agent: 'codex',
       payment: 'x402',
     });
 
-    expect(script).toContain('| ARCH=arm64 sh');
-    expect(script).toContain('npm ci --prefix integrations/mcp/froglet');
-    expect(script).toContain('./scripts/setup-agent.sh --target codex');
-    expect(script).toContain('FROGLET_X402_WALLET_ADDRESS=<base-wallet-address>');
+    expect(script).toContain('FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash');
+    expect(script).toContain('configure x402 with your Base wallet address');
   });
 
-  it('omits the install curl command for Docker-only setup', () => {
+  it('keeps Docker/manual setup on the same no-clone bootstrap', () => {
     const script = buildSelfHostScript({
       install: 'docker',
-      agent: 'openclaw',
-      payment: 'stripe',
+      agent: 'manual',
+      payment: 'stripe-test',
     });
 
     expect(script).not.toContain('install.sh');
     expect(script).not.toContain('npm ci --prefix integrations/mcp/froglet');
-    expect(script).toContain('./scripts/setup-agent.sh --target openclaw');
-    expect(script).toContain('FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key>');
+    expect(script).toContain('FROGLET_AGENT_TARGET=manual curl -fsSL https://froglet.dev/agent | bash');
+    expect(script).toContain('configure Stripe test mode');
   });
 });
 
@@ -67,8 +65,8 @@ describe('initSelfHostConfigurator', () => {
           <button class="config-btn" data-value="codex" aria-pressed="false">Codex</button>
         </div>
         <div class="config-options" data-group="payment">
-          <button class="config-btn is-active" data-value="lightning" aria-pressed="true">Lightning</button>
-          <button class="config-btn" data-value="stripe" aria-pressed="false">Stripe</button>
+          <button class="config-btn is-active" data-value="none" aria-pressed="true">None</button>
+          <button class="config-btn" data-value="stripe-test" aria-pressed="false">Stripe test</button>
         </div>
       </div>
       <pre id="config-output"><code></code></pre>

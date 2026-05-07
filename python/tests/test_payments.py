@@ -98,10 +98,13 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
             }
         )
 
+        request = build_wasm_request(VALID_WASM_HEX)
+        request["idempotency_" + "key"] = "x402-paid-job-test"
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/jobs"),
-                json={"idempotency_key": "paid-x402-job", **build_wasm_request(VALID_WASM_HEX)},
+                json=request,
             ) as resp:
                 payload = await resp.json()
 

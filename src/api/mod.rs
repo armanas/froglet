@@ -200,6 +200,7 @@ fn provider_routes() -> Router<Arc<AppState>> {
         .merge(http_deals::provider_routes())
         .merge(http_events::provider_routes())
         .merge(http_settlement::provider_routes())
+        .route("/v1/provider/domain-claims/sign", post(sign_domain_claim))
         .route_layer(ConcurrencyLimitLayer::new(16))
         .layer(
             ServiceBuilder::new()
@@ -4556,6 +4557,55 @@ pub(crate) async fn publish_artifact(
         Ok((status, json)) => (status, json).into_response(),
         Err((status, body)) => (status, Json(json!(body))).into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SignDomainClaimRequest {
+    signing_message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SignDomainClaimResponse {
+    provider_id: String,
+    signature: String,
+}
+
+async fn sign_domain_claim(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SignDomainClaimRequest>,
+) -> impl IntoResponse {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let signing_message = payload.signing_message.trim();
+    if signing_message.is_empty() || signing_message.len() > 4096 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "signing_message must be 1-4096 bytes"
+            })),
+        )
+            .into_response();
+    }
+    if !signing_message.starts_with("froglet-provider-domain-claim-v1\n") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "signing_message must be a froglet provider-domain claim"
+            })),
+        )
+            .into_response();
+    }
+    let signature = state.identity.sign_message_hex(signing_message.as_bytes());
+    (
+        StatusCode::OK,
+        Json(json!(SignDomainClaimResponse {
+            provider_id: state.identity.node_id().to_string(),
+            signature,
+        })),
+    )
+        .into_response()
 }
 
 pub(crate) fn provider_offer_limits(

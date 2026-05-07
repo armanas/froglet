@@ -27,6 +27,7 @@ function normalizeResultValue(value) {
 async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs
   let lastRaw = null
+  let lastText = null
   let lastError = null
   while (Date.now() < deadline) {
     try {
@@ -34,7 +35,8 @@ async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
         action: "status",
         include_raw: true
       })
-      lastRaw = extractAppendedJson(status.content[0].text)
+      lastText = status.content[0].text
+      lastRaw = extractAppendedJson(lastText)
       lastError = null
       if (
         lastRaw.healthy === true &&
@@ -49,8 +51,9 @@ async function waitForHealthyStatus(froglet, timeoutMs = 15000) {
     await new Promise((resolve) => setTimeout(resolve, 1000))
   }
 
+  const output = lastText == null ? "" : `; last_output=${JSON.stringify(lastText.slice(0, 500))}`
   throw new Error(
-    `compose smoke requires a healthy stack: ${JSON.stringify(lastRaw)}${lastError ? `; last_error=${lastError.message}` : ""}`
+    `compose smoke requires a healthy stack: ${JSON.stringify(lastRaw)}${lastError ? `; last_error=${lastError.message}` : ""}${output}`
   )
 }
 

@@ -1,5 +1,7 @@
 import {
   ABSOLUTE_MAX_SEARCH_LIMIT,
+  DEFAULT_MARKETPLACE_ARBITER_URL,
+  DEFAULT_MARKETPLACE_URL,
   DEFAULT_MAX_SEARCH_LIMIT,
   DEFAULT_SEARCH_LIMIT,
   DEFAULT_TIMEOUT_MS,
@@ -121,12 +123,32 @@ function resolveRuntimeAuthTokenPath() {
     : null
 }
 
+function resolveMarketplaceUrl() {
+  const explicit = nonEmptyEnv("FROGLET_MARKETPLACE_URL")
+  return normalizeBaseUrl(
+    explicit ?? DEFAULT_MARKETPLACE_URL,
+    explicit ? "FROGLET_MARKETPLACE_URL" : "FROGLET_MARKETPLACE_URL default"
+  )
+}
+
+function resolveMarketplaceArbiterUrl() {
+  const explicit = nonEmptyEnv("FROGLET_MARKETPLACE_ARBITER_URL")
+  return normalizeBaseUrl(
+    explicit ?? DEFAULT_MARKETPLACE_ARBITER_URL,
+    explicit
+      ? "FROGLET_MARKETPLACE_ARBITER_URL"
+      : "FROGLET_MARKETPLACE_ARBITER_URL default"
+  )
+}
+
 export function readConfig() {
   const profile = resolveProfile()
   const providerUrl = resolveProviderUrl()
   const runtimeUrl = resolveRuntimeUrl()
   const providerAuthTokenPath = resolveProviderAuthTokenPath()
   const runtimeAuthTokenPath = resolveRuntimeAuthTokenPath()
+  const marketplaceUrl = resolveMarketplaceUrl()
+  const marketplaceArbiterUrl = resolveMarketplaceArbiterUrl()
 
   const maxSearchLimit = clampInteger(
     process.env.FROGLET_MAX_SEARCH_LIMIT,
@@ -141,6 +163,8 @@ export function readConfig() {
     runtimeUrl,
     providerAuthTokenPath,
     runtimeAuthTokenPath,
+    marketplaceUrl,
+    marketplaceArbiterUrl,
     requestTimeoutMs: clampInteger(
       process.env.FROGLET_REQUEST_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS,

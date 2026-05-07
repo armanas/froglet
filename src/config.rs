@@ -1081,11 +1081,17 @@ mod tests {
     }
 
     #[test]
-    fn compose_defaults_do_not_make_control_tokens_host_readable() {
+    fn compose_defaults_require_explicit_host_readable_token_opt_in() {
         const COMPOSE_YAML: &str = include_str!("../compose.yaml");
         assert!(
-            !COMPOSE_YAML.contains("FROGLET_HOST_READABLE_CONTROL_TOKEN"),
-            "compose.yaml should require explicit opt-in for host-readable control tokens"
+            COMPOSE_YAML.contains(
+                "FROGLET_HOST_READABLE_CONTROL_TOKEN: ${FROGLET_HOST_READABLE_CONTROL_TOKEN:-}"
+            ),
+            "compose.yaml should pass through the opt-in flag but keep the default empty"
+        );
+        assert!(
+            !COMPOSE_YAML.contains("FROGLET_HOST_READABLE_CONTROL_TOKEN: \"true\""),
+            "compose.yaml should not make host-readable control tokens the default"
         );
     }
 

@@ -37,9 +37,11 @@ fi
 echo "[strict] installer and release helper shell syntax"
 sh -n scripts/install.sh
 bash -n scripts/gitleaks_gate.sh
+bash -n scripts/agent-bootstrap.sh
 bash -n scripts/setup-agent.sh
 bash -n scripts/setup-payment.sh
 bash -n scripts/fresh_host_quickstart_smoke.sh
+sh -n docs-site/public/agent
 bash -n scripts/deploy_gcp_single_vm.sh
 bash -n scripts/gpu_smoke.sh
 bash -n scripts/package_release_assets.sh

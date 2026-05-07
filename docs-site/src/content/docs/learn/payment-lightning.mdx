@@ -35,10 +35,21 @@ cd froglet && ./scripts/setup-payment.sh lightning --mode lnd_rest
 Required inputs:
 
 - `FROGLET_LIGHTNING_REST_URL`
-- `FROGLET_LIGHTNING_MACAROON_PATH`
+- `FROGLET_LIGHTNING_MACAROON_PATH` pointing to the raw downloaded macaroon file
 - `FROGLET_LIGHTNING_TLS_CERT_PATH` for `https://` endpoints
 
 The verification probe calls `GET /v1/getinfo` on the configured LND REST endpoint with the provided macaroon.
+
+For Docker deployments, the entrypoint also accepts base64 inputs:
+
+```bash
+FROGLET_LIGHTNING_MACAROON_B64="$(base64 < /path/to/admin.macaroon | tr -d '\n')" \
+FROGLET_LIGHTNING_TLS_CERT_B64="$(base64 < /path/to/tls.cert | tr -d '\n')" \
+docker run ...
+```
+
+The container decodes those values into private files and sets the matching
+`*_PATH` variables before starting `froglet-node`.
 
 ## Runtime behavior
 

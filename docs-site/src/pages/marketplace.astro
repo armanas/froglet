@@ -174,18 +174,18 @@ function formatFeedTime(iso: string | undefined): string {
           <span>30d</span>
         </div>
       </div>
-      {topProviders.length > 0 ? (
-        <table class="providers">
-          <thead><tr>
-            <th>Identity</th>
-            <th>Endpoint</th>
-            <th>Services</th>
-            <th>OK</th>
-            <th>Fail</th>
-            <th>Receipts</th>
-          </tr></thead>
-          <tbody>
-            {topProviders.map((p) => (
+      <table class="providers">
+        <thead><tr>
+          <th>Identity</th>
+          <th>Endpoint</th>
+          <th>Services</th>
+          <th>OK</th>
+          <th>Fail</th>
+          <th>Receipts</th>
+        </tr></thead>
+        <tbody data-marketplace-provider-table>
+          {topProviders.length > 0 ? (
+            topProviders.map((p) => (
               <tr class="row" data-marketplace-search-row data-marketplace-kind="provider" data-search-text={`${p.providerId} ${compactId(p.providerId)} ${p.descriptorHash} ${p.endpoint ?? ''} ${p.serviceKinds.join(' ')}`}>
                 <td class="name">
                   <span class="av">{avatarInitials(p.providerId)}</span>
@@ -197,12 +197,14 @@ function formatFeedTime(iso: string | undefined): string {
                 <td class="fail">{p.failureCount}</td>
                 <td class="vol">{p.successCount + p.failureCount}</td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <div class="panel-empty">No providers indexed yet.</div>
-      )}
+            ))
+          ) : (
+            <tr>
+              <td colspan="6" class="panel-empty">No providers indexed yet.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
 
     <div class="mkt-side">

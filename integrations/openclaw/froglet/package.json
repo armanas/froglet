@@ -8,7 +8,7 @@
   "homepage": "https://github.com/armanas/froglet",
   "repository": "https://github.com/armanas/froglet",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.14.0"
   },
   "scripts": {
     "check": "node --check index.js",

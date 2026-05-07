@@ -29,6 +29,7 @@ Public launch entry points:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): system layering — kernel, adapters, runtime, services
 - [MARKETPLACE.md](MARKETPLACE.md): marketplace integration and the default public marketplace
+- [ARBITER.md](ARBITER.md): MVP complaint and marketplace enforcement boundary
 
 ## Companion Docs
 
@@ -43,6 +44,7 @@ Public launch entry points:
 - [DOCKER.md](DOCKER.md): local compose and container deployment
 - [GCP_SINGLE_VM.md](GCP_SINGLE_VM.md): single-VM self-host deployment wrapper
 - [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the hosted trial
+- [NAME_COHERENCE.md](NAME_COHERENCE.md): lightweight launch name and registry-risk note
 - [RELEASE.md](RELEASE.md): release process and published image contract
 
 ## Integrations

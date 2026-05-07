@@ -141,9 +141,10 @@ These checks must be green before a `v0.1.0` launch claim:
 - Distribution smoke for every launch channel named in the release notes.
   Record direct evidence links in the release PR or release notes.
 
-Hosted paid rails are not part of the v0.1.0 launch gate. Hosted Lightning,
-Stripe, and x402 belong to v0.2 unless a later release plan explicitly changes
-that scope.
+The current MVP launch gate requires one live crypto rail and one live fiat
+rail. Lightning and Stripe are the selected blockers; x402 is desirable but
+must not block launch if its hosted proof is not ready. Do not claim any
+hosted paid rail until the public transcript for that rail exists.
 
 Confidential/TEE execution must remain framed as experimental for v0.1.0
 unless a real attestation backend is proven and documented. The current launch
@@ -237,11 +238,11 @@ marketplace depth, or general hosted runtime access.
 ## Payment rails
 
 Local and self-hosted payment setup is documented for Lightning, Stripe, and
-x402. Hosted paid rails are v0.2 scope:
+x402. The MVP public paid-service claim requires hosted evidence for:
 
-- hosted Lightning: v0.2
-- hosted Stripe: v0.2
-- hosted x402: v0.2
+- hosted Lightning: launch blocker
+- hosted Stripe: launch blocker
+- hosted x402: desirable, not launch-blocking unless verified before launch
 
 ## Confidential and TEE scope
 
@@ -271,7 +272,8 @@ the release notes should call out:
 - reference discovery
 - reference operator image
 - local/self-hosted payment adapters: Lightning, Stripe, and x402
-- hosted paid rails deferred to v0.2
+- hosted Lightning and Stripe claims only if live transcripts exist; hosted
+  x402 remains desirable but non-blocking
 - Claude MCP smoke evidence, because it is a hard launch blocker
 - confidential/TEE scope as experimental unless a real backend is proven and
   documented

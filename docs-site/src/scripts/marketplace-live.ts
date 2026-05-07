@@ -1,4 +1,4 @@
-import type { MarketplaceOfferSummary, MarketplaceSnapshot } from '../data/live-snapshot';
+import type { MarketplaceOfferSummary, MarketplaceProviderSummary, MarketplaceSnapshot } from '../data/live-snapshot';
 
 function compactId(value: string): string {
 	if (value.length <= 18) return value;
@@ -32,9 +32,26 @@ function compactEndpoint(value: string | undefined): string {
 	}
 }
 
+function displayEndpoint(value: string | undefined): string {
+	if (!value) return 'n/a';
+	try {
+		return new URL(value).host;
+	} catch {
+		return value;
+	}
+}
+
 function runtimeNames(snapshot: MarketplaceSnapshot): string {
 	const runtimes = Array.from(new Set(snapshot.offers.map((offer) => offer.runtime).filter(Boolean)));
 	return runtimes.length > 0 ? runtimes.map((runtime) => runtime.toUpperCase()).join(' / ') : 'NONE';
+}
+
+function avatarInitials(id: string): string {
+	return compactId(id).slice(0, 2);
+}
+
+function topServiceKind(serviceKinds: string[]): string {
+	return serviceKinds[0] || 'n/a';
 }
 
 function serviceKindSummary(serviceKinds: string[]): string {
@@ -46,6 +63,50 @@ function serviceKindSummary(serviceKinds: string[]): string {
 		return kind.split('.')[0]?.toUpperCase() || 'OTHER';
 	})));
 	return `${serviceKinds.length} KINDS / ${groups.join(' / ')}`;
+}
+
+function renderProviderRow(provider: MarketplaceProviderSummary): HTMLTableRowElement {
+	const row = document.createElement('tr');
+	row.className = 'row';
+	row.dataset.marketplaceSearchRow = '';
+	row.dataset.marketplaceKind = 'provider';
+	row.dataset.searchText = [
+		provider.providerId,
+		compactId(provider.providerId),
+		provider.descriptorHash,
+		provider.endpoint,
+		...provider.serviceKinds,
+	].join(' ');
+
+	const identity = document.createElement('td');
+	identity.className = 'name';
+	const avatar = document.createElement('span');
+	avatar.className = 'av';
+	avatar.textContent = avatarInitials(provider.providerId);
+	identity.append(avatar, ` ${compactId(provider.providerId)}`);
+
+	const endpoint = document.createElement('td');
+	endpoint.className = 'endp';
+	endpoint.textContent = displayEndpoint(provider.endpoint);
+
+	const service = document.createElement('td');
+	service.className = 'svc';
+	service.textContent = topServiceKind(provider.serviceKinds);
+
+	const ok = document.createElement('td');
+	ok.className = 'ok';
+	ok.textContent = String(provider.successCount);
+
+	const fail = document.createElement('td');
+	fail.className = 'fail';
+	fail.textContent = String(provider.failureCount);
+
+	const receipts = document.createElement('td');
+	receipts.className = 'vol';
+	receipts.textContent = String(provider.successCount + provider.failureCount);
+
+	row.append(identity, endpoint, service, ok, fail, receipts);
+	return row;
 }
 
 function renderOfferRow(offer: MarketplaceOfferSummary): HTMLTableRowElement {
@@ -62,6 +123,26 @@ function renderOfferRow(offer: MarketplaceOfferSummary): HTMLTableRowElement {
 		row.append(cell);
 	}
 	return row;
+}
+
+function renderProviderTable(root: ParentNode, providers: MarketplaceProviderSummary[]): void {
+	const body = root.querySelector('[data-marketplace-provider-table]');
+	if (!body) return;
+	body.textContent = '';
+	const rows = [...providers]
+		.sort((a, b) => b.successCount + b.failureCount - (a.successCount + a.failureCount))
+		.slice(0, 8);
+	if (rows.length === 0) {
+		const row = document.createElement('tr');
+		const cell = document.createElement('td');
+		cell.colSpan = 6;
+		cell.className = 'panel-empty';
+		cell.textContent = 'No providers indexed yet.';
+		row.append(cell);
+		body.append(row);
+		return;
+	}
+	body.append(...rows.map(renderProviderRow));
 }
 
 function renderServicesBreakdown(root: ParentNode, offers: MarketplaceOfferSummary[]): void {
@@ -216,6 +297,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 	setText(root, '[data-marketplace-field="offerNames"]', offerNames);
 	setText(root, '[data-marketplace-field="ticker"]', offerNames);
 	setBar(root, '.terminal-meter', freeShare);
+	renderProviderTable(root, snapshot.providers);
 	renderOfferBook(root, snapshot.offers);
 	renderServicesBreakdown(root, snapshot.offers);
 }

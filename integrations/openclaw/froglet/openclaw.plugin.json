@@ -3,6 +3,14 @@
   "name": "Froglet",
   "version": "0.1.4",
   "description": "Single-tool Froglet integration for local services, receipts, and settlement.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "froglet"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -52,6 +60,14 @@
       "baseUrl": {
         "type": "string",
         "description": "Legacy unified Froglet control API base URL. When set, it is used for both providerUrl and runtimeUrl."
+      },
+      "marketplaceUrl": {
+        "type": "string",
+        "description": "Froglet marketplace API base URL used by marketplace_register."
+      },
+      "marketplaceArbiterUrl": {
+        "type": "string",
+        "description": "Froglet marketplace arbiter API base URL used by complaint filing and reads."
       },
       "providerAuthTokenPath": {
         "type": "string",

@@ -18,7 +18,7 @@ Hosted trial boundaries:
 - Canonical proof: the free zero-sat `demo.add` discover -> deal -> sync-result -> receipt flow.
 - Public hosted proof boundary: Only `demo.*` services are part of the public hosted proof. Other service IDs may appear on the reference node, but they are outside this public hosted trial contract.
 - Not proved by hosted trial: paid Lightning, Stripe, or x402 settlement; persistent identity; account recovery; service publication; marketplace depth; long-running, batch, or GPU workloads.
-- Local/self-hosted path: use the repo quickstart for persistent identity, full node control, publishing services, and payment-rail experiments.
+- Local/self-hosted path: use the no-clone quickstart for persistent identity, full node control, publishing services, and payment-rail experiments.
 
 Current free hosted demo services:
 
@@ -85,10 +85,10 @@ Agent journey after hosted proof:
 1. Evidence report first. Report HTTP statuses, service IDs, deal status, result, receipt presence, feed/artifact shape, and docs-vs-live mismatches before any recommendation.
 2. Context fit second. If you have access to the user's repo, files, tasks, tool config, or workflow notes, ground the usefulness assessment in that context. If you do not have that access, say so and ask for the minimum context needed.
 3. Install proposal third. Do not run local installation immediately. Ask the user to confirm the install profile:
-   - target agent: `claude-code`, `codex`, `openclaw`, or `manual`
+   - target agent: `claude-code`, `codex`, or `manual` for no-clone setup; `openclaw` only if the user accepts source/plugin mode
    - footprint: `binary`, `docker`, or `source`
    - role: `consumer`, `provider`, or `both`
-   - payment rail: `none`, `lightning` mock, `lightning` `lnd_rest`, `stripe` test, or `x402`
+   - payment rail: `none`, `lightning-lnd-rest`, `stripe-test`, `stripe-live`, or `x402`
    - network mode: `clearnet`, `tor`, or `dual`
    - marketplace: none, `https://marketplace.froglet.dev`, or a custom URL
    - first use case: consume a service, publish a service, witness a URL, hash-verify an asset, notarize a file hash, test paid compute, or prepare batch/GPU work later
@@ -107,4 +107,4 @@ Then give the user the shortest next step:
 
 - Agentic path: paste the primary instruction above into Codex, Claude Code, OpenClaw, or another HTTP-capable agent that can fetch URLs, POST JSON, send Bearer auth, and poll HTTP routes.
 - Manual hosted path: open https://froglet.dev/learn/cloud-trial/ and run the curl block.
-- Local path: open https://froglet.dev/learn/quickstart/ and choose `binary`, `docker`, or `source`. For a disposable-host proof of the default local path, run `curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.
+- Local path: open https://froglet.dev/learn/quickstart/ and run the no-clone bootstrap. For a disposable-host proof of the default local path, run `curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.

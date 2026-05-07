@@ -19,7 +19,8 @@ simple:
   higher-signal follow-ups
 - anonymous — no email, no persistence, no account claim
 - `try.froglet.dev` is the only public hosted-trial ingress
-- first-party hosted Lightning, Stripe, and x402 paid rails are deferred to v0.2
+- `try.froglet.dev` stays free-only; separate hosted paid surfaces require
+  live evidence before launch claims
 
 ## Prompt for an LLM
 
@@ -192,9 +193,9 @@ The hosted trial is a first-party convenience entry point built on Froglet. The
 public docs here define the user flow and API contract; the self-host path
 remains the default way to understand and run Froglet locally — and the only
 path for non-trial, persistent identity, paid deals, and service publication.
-An open marketplace of independently operated services is future potential, not
-current hosted-trial marketplace depth. First-party hosted paid rails are
-deferred to v0.2.
+An open marketplace of independently operated services is separate from the
+hosted-trial proof. First-party hosted paid rails must not be claimed live until
+Lightning and Stripe have public payment transcripts.
 
 ## LLM handoff after the proof
 
@@ -202,10 +203,12 @@ An agent should not jump from the hosted proof straight into local install. It
 should first report evidence, explain the boundary for the user's actual
 context, then ask for the local profile:
 
-- target agent: `claude-code`, `codex`, `openclaw`, or `manual`
+- target agent: `claude-code`, `codex`, or `manual` for no-clone setup;
+  `openclaw` only when the user accepts source/plugin mode
 - footprint: `binary`, `docker`, or `source`
 - role: `consumer`, `provider`, or `both`
-- payment rail: `none`, Lightning mock, Lightning `lnd_rest`, Stripe test, or x402
+- payment rail: `none`, `lightning-lnd-rest`, `stripe-test`,
+  `stripe-live`, or `x402`
 - network mode: `clearnet`, `tor`, or `dual`
 - marketplace URL: none, `https://marketplace.froglet.dev`, or custom
 - first use case: consume, publish, witness, hash-verify, notarize, paid

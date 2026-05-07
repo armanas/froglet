@@ -2,6 +2,17 @@
 
 This plugin exposes exactly one tool: `froglet`.
 
+Current OpenClaw releases require Node.js `22.14.0` or newer. Use Node 22 for
+OpenClaw plugin install/inspect and gateway-mediated invocation.
+
+For Gateway-mediated local actions, pass the Froglet token paths in the Gateway
+process environment:
+
+```bash
+export FROGLET_PROVIDER_AUTH_TOKEN_PATH="$PWD/data/runtime/froglet-control.token"
+export FROGLET_RUNTIME_AUTH_TOKEN_PATH="$PWD/data/runtime/auth.token"
+```
+
 The same plugin contract is used for both OpenClaw and NemoClaw. The only
 difference is where the Froglet control API runs:
 
@@ -26,7 +37,12 @@ Supported plugin keys:
 
 - `hostProduct`
 - `baseUrl`
+- `providerUrl`
+- `runtimeUrl`
+- `marketplaceUrl`
 - `authTokenPath`
+- `providerAuthTokenPath`
+- `runtimeAuthTokenPath`
 - `requestTimeoutMs`
 - `defaultSearchLimit`
 - `maxSearchLimit`
@@ -52,11 +68,14 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `plan_install`
 - `get_install_guide`
 - `plan_use_case`
+- `marketplace_register`
 - `marketplace_search`
 - `marketplace_provider`
 - `marketplace_receipts`
 - `marketplace_stake`
 - `marketplace_topup`
+- `marketplace_file_complaint`
+- `marketplace_get_complaint`
 
 Named services are the default UX. Raw compute is the expert path.
 
@@ -110,3 +129,7 @@ node --test integrations/openclaw/froglet/test/plugin.test.js \
   integrations/openclaw/froglet/test/config-profiles.test.mjs \
   integrations/openclaw/froglet/test/doctor.test.mjs
 ```
+
+OpenClaw `2026.5.5` Gateway invocation was verified on 2026-05-06 with
+`plugins install --link`, runtime inspection, `tools.catalog`, and
+`/tools/invoke` calls for `status` and `list_local_services`.

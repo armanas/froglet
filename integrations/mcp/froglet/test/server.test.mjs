@@ -70,6 +70,8 @@ before(async () => {
     runtimeUrl: "http://127.0.0.1:8081",
     providerAuthTokenPath: tokenPath,
     runtimeAuthTokenPath: tokenPath,
+    marketplaceUrl: "https://mkt.example",
+    marketplaceArbiterUrl: "https://arbiter.example",
     requestTimeoutMs: 5000,
     defaultSearchLimit: 10,
     maxSearchLimit: 50
@@ -104,11 +106,16 @@ describe("tool definitions", () => {
       "plan_install",
       "get_install_guide",
       "plan_use_case",
+      "marketplace_register",
+      "marketplace_domain_claim",
+      "marketplace_domain_complete",
       "marketplace_search",
       "marketplace_provider",
       "marketplace_receipts",
       "marketplace_stake",
-      "marketplace_topup"
+      "marketplace_topup",
+      "marketplace_file_complaint",
+      "marketplace_get_complaint"
     ])
     assert.match(tools[0].description, /provider_id/)
     assert.match(tools[0].description, /status/)
@@ -264,7 +271,50 @@ describe("froglet MCP actions", () => {
     }
   })
 
-  it("returns the canonical install block for claude-code + lightning by default", async () => {
+  it("publish_artifact demo.add template publishes a free local Python demo", async () => {
+    let capturedBody
+    const restore = mockFetch(async (url, options = {}) => {
+      assert.equal(String(url), "http://127.0.0.1:8080/v1/provider/artifacts/publish")
+      capturedBody = JSON.parse(options.body)
+      return new Response(
+        JSON.stringify({
+          status: "published",
+          offer: {
+            service_id: capturedBody.service_id,
+            runtime: capturedBody.runtime,
+            package_kind: capturedBody.package_kind,
+            publication_state: capturedBody.publication_state,
+            offer: { payload: { offer_id: capturedBody.offer_id, price_sats: capturedBody.price_sats } }
+          }
+        }),
+        {
+          status: 201,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "publish_artifact",
+          template: "demo.add"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined)
+      assert.equal(capturedBody.service_id, "demo.add.local")
+      assert.equal(capturedBody.runtime, "python")
+      assert.equal(capturedBody.package_kind, "inline_source")
+      assert.equal(capturedBody.price_sats, 0)
+      assert.match(capturedBody.inline_source, /def handler/)
+      assert.match(result.content[0].text, /status: published/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("requires an explicit payment choice before returning install commands", async () => {
     // The helper never makes an HTTP call, so no fetch mock is needed.
     const result = await handleToolCall(
       "froglet",
@@ -273,32 +323,39 @@ describe("froglet MCP actions", () => {
     )
     assert.equal(result.isError, undefined)
     const text = result.content[0].text
+    assert.match(text, /status: decision_required/)
+    assert.match(text, /decision: payment_rail/)
+    assert.match(text, /recommended_for_first_install: none/)
+  })
+
+  it("returns the no-clone agent bootstrap for claude-code + no payment", async () => {
+    const result = await handleToolCall(
+      "froglet",
+      { action: "get_install_guide", payment_rail: "none" },
+      config
+    )
+    assert.equal(result.isError, undefined)
+    const text = result.content[0].text
     assert.match(text, /target_agent: claude-code/)
-    assert.match(text, /payment_rail: lightning/)
+    assert.match(text, /payment_rail: none/)
     assert.match(text, /run_as: user-host-shell/)
-    assert.match(text, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/armanas\/froglet\/main\/scripts\/install\.sh \| sh/)
-    assert.match(text, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
-    assert.match(text, /cd froglet && npm ci --prefix integrations\/mcp\/froglet/)
-    assert.match(text, /cd froglet && \.\/scripts\/setup-agent\.sh --target claude-code/)
-    assert.match(text, /cd froglet && \.\/scripts\/setup-payment\.sh lightning/)
-    assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/lightning\.env/)
-    assert.match(text, /FROGLET_HOST_READABLE_CONTROL_TOKEN=true/)
+    assert.match(text, /curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
+    assert.doesNotMatch(text, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
+    assert.doesNotMatch(text, /npm ci --prefix integrations\/mcp\/froglet/)
   })
 
   it("swaps the agent and rail placeholders when the LLM picks different targets", async () => {
     const result = await handleToolCall(
       "froglet",
-      { action: "get_install_guide", target_agent: "codex", payment_rail: "stripe" },
+      { action: "get_install_guide", target_agent: "codex", payment_rail: "stripe-test" },
       config
     )
     assert.equal(result.isError, undefined)
     const text = result.content[0].text
     assert.match(text, /target_agent: codex/)
-    assert.match(text, /payment_rail: stripe/)
-    assert.match(text, /cd froglet && npm ci --prefix integrations\/mcp\/froglet/)
-    assert.match(text, /cd froglet && \.\/scripts\/setup-agent\.sh --target codex/)
-    assert.match(text, /cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> \.\/scripts\/setup-payment\.sh stripe/)
-    assert.match(text, /cd froglet && set -a && \. \.\/\.froglet\/payment\/stripe\.env/)
+    assert.match(text, /payment_rail: stripe-test/)
+    assert.match(text, /FROGLET_AGENT_TARGET=codex curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
+    assert.match(text, /Stripe: replace <stripe-test-secret-key>/)
   })
 
   it("plans a local install before commands are executed", async () => {
@@ -309,8 +366,7 @@ describe("froglet MCP actions", () => {
         target_agent: "codex",
         footprint: "docker",
         role: "provider",
-        payment_rail: "lightning",
-        lightning_mode: "lnd_rest",
+        payment_rail: "lightning-lnd-rest",
         network_mode: "tor",
         marketplace_url: "https://marketplace.froglet.dev",
         use_case: "publish a paid service"
@@ -321,13 +377,13 @@ describe("froglet MCP actions", () => {
     const text = result.content[0].text
     assert.match(text, /install_profile:/)
     assert.match(text, /target_agent: codex/)
-    assert.match(text, /payment_rail: lightning/)
+    assert.match(text, /payment_rail: lightning-lnd-rest/)
     assert.match(text, /lightning_mode: lnd_rest/)
     assert.match(text, /network_mode: tor/)
     assert.match(text, /Questions to ask before running commands:\n  - None/)
-    assert.match(text, /FROGLET_LIGHTNING_REST_URL=<lnd-rest-url>/)
     assert.match(text, /FROGLET_NETWORK_MODE=tor/)
     assert.match(text, /FROGLET_MARKETPLACE_URL='https:\/\/marketplace\.froglet\.dev'/)
+    assert.match(text, /curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
     assert.match(text, /Post-install playbooks:/)
     assert.match(text, /provider-first/)
     assert.match(text, /Safety: Ask before running install scripts/)
@@ -382,7 +438,7 @@ describe("froglet MCP actions", () => {
     assert.match(text, /role: consumer/)
     assert.doesNotMatch(text, /npm ci --prefix integrations\/mcp\/froglet/)
     assert.doesNotMatch(text, /setup-agent\.sh --target manual/)
-    assert.match(text, /printf '%s\\n' 'FROGLET_PAYMENT_BACKEND=none'/)
+    assert.match(text, /FROGLET_AGENT_TARGET=manual FROGLET_NETWORK_MODE=dual curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
     assert.match(text, /FROGLET_NETWORK_MODE=dual/)
     assert.match(text, /Manual target selected/)
   })
@@ -420,7 +476,7 @@ describe("froglet MCP actions", () => {
     // disagree about what to run.
     const result = await handleToolCall(
       "froglet",
-      { action: "get_install_guide" },
+      { action: "get_install_guide", payment_rail: "none" },
       config
     )
     const text = result.content[0].text
@@ -428,7 +484,7 @@ describe("froglet MCP actions", () => {
       .split("\n")
       .filter((line) => /^\s*\d+\.\s+/.test(line))
       .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
-    assert.equal(steps.length, 6, `expected 6 commands, got ${steps.length}`)
+    assert.equal(steps.length, 1, `expected 1 command, got ${steps.length}`)
 
     const readme = await readFile(join(REPO_ROOT, "README.md"), "utf8")
     for (const step of steps) {
@@ -460,26 +516,17 @@ describe("froglet MCP actions", () => {
       join(REPO_ROOT, "docs-site/src/scripts/self-host-configurator.ts"),
       "utf8"
     )
-    assert.match(configurator, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
-    assert.match(configurator, /npm ci --prefix integrations\/mcp\/froglet/)
-    assert.match(configurator, /`\.\/scripts\/setup-agent\.sh --target \$\{config\.agent\}`/)
-    assert.match(configurator, /lightning: '\.\/scripts\/setup-payment\.sh lightning'/)
-    assert.match(
-      configurator,
-      /stripe: 'FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> \.\/scripts\/setup-payment\.sh stripe'/
-    )
-    assert.match(
-      configurator,
-      /x402: 'FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> \.\/scripts\/setup-payment\.sh x402'/
-    )
-    assert.match(configurator, /docker compose up --build -d/)
+    assert.match(configurator, /curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
+    assert.doesNotMatch(configurator, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
+    assert.doesNotMatch(configurator, /npm ci --prefix integrations\/mcp\/froglet/)
+    assert.doesNotMatch(configurator, /docker compose up --build -d/)
     assert.doesNotMatch(configurator, /FROGLET_SETTLEMENT_METHOD/)
   })
 
-  it("keeps repo-local install steps safe to run from a clean directory", async () => {
+  it("keeps the default install command independent of a repo clone", async () => {
     const result = await handleToolCall(
       "froglet",
-      { action: "get_install_guide" },
+      { action: "get_install_guide", payment_rail: "none" },
       config
     )
     const text = result.content[0].text
@@ -488,20 +535,7 @@ describe("froglet MCP actions", () => {
       .filter((line) => /^\s*\d+\.\s+/.test(line))
       .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
 
-    const cloneIndex = steps.findIndex((step) =>
-      step.startsWith("git clone https://github.com/armanas/froglet.git")
-    )
-    assert.notEqual(cloneIndex, -1, "install guide must clone the repo before repo-local helpers")
-
-    for (const step of steps.slice(cloneIndex + 1)) {
-      if (step.includes("./scripts/") || step.includes("docker compose")) {
-        assert.match(
-          step,
-          /^cd froglet && /,
-          `repo-local step must re-enter the cloned repo: ${step}`
-        )
-      }
-    }
+    assert.deepEqual(steps, ["curl -fsSL https://froglet.dev/agent | bash"])
   })
 
   it("repo-local onboarding helpers work from a clean temp checkout", async () => {
@@ -570,7 +604,7 @@ describe("froglet MCP actions", () => {
         "bash",
         [
           "-lc",
-          "FROGLET_PAYMENT_BACKEND=stripe FROGLET_STRIPE_SECRET_KEY=sk_test_placeholder FROGLET_NETWORK_MODE=dual FROGLET_MARKETPLACE_URL=https://marketplace.froglet.dev docker compose config"
+          "FROGLET_PAYMENT_BACKEND=stripe FROGLET_STRIPE_SECRET_KEY=stripe-test-placeholder FROGLET_NETWORK_MODE=dual FROGLET_MARKETPLACE_URL=https://marketplace.froglet.dev docker compose config"
         ],
         { cwd: REPO_ROOT }
       )
@@ -677,6 +711,191 @@ describe("froglet MCP actions", () => {
     }
   })
 
+  it("marketplace_register posts a public provider URL to the marketplace API", async () => {
+    let capturedBody
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr === "https://mkt.example/v1/registrations") {
+        capturedBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            status: "active",
+            provider_id: "prov-registered",
+            provider_url: "https://1.1.1.1",
+            descriptor_hash: "desc-registered",
+            offers_seen: 2,
+            already_registered: false
+          }),
+          { status: 201 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_register",
+          provider_url: "https://1.1.1.1"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.deepEqual(capturedBody, { provider_url: "https://1.1.1.1", transport: "clearnet" })
+      const text = result.content[0].text
+      assert.match(text, /status: active/)
+      assert.match(text, /provider_id: prov-registered/)
+      assert.match(text, /offers_seen: 2/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_register posts a Tor onion provider URL to the marketplace API", async () => {
+    const onionHost = `${"a".repeat(56)}.onion`
+    let capturedBody
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr === "https://mkt.example/v1/registrations") {
+        capturedBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            status: "active",
+            provider_id: "prov-onion",
+            provider_url: `http://${onionHost}`,
+            transport: "tor",
+            descriptor_hash: "desc-onion",
+            offers_seen: 1,
+            already_registered: false
+          }),
+          { status: 201 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_register",
+          provider_url: `http://${onionHost}`,
+          registration_transport: "tor"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.deepEqual(capturedBody, {
+        provider_url: `http://${onionHost}`,
+        transport: "tor"
+      })
+      assert.match(result.content[0].text, /transport: tor/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_domain_claim creates a managed subdomain claim", async () => {
+    let capturedBody
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr === "https://mkt.example/v1/provider-domains/claims") {
+        capturedBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            status: "pending_signature",
+            claim_id: "claim-1",
+            provider_id: capturedBody.provider_id,
+            hostname: "demo-1.providers.froglet.dev",
+            public_ip: capturedBody.public_ip,
+            signing_message: "froglet-provider-domain-claim-v1\nclaim_id:claim-1",
+            expires_at: "2026-05-07T12:00:00Z"
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_domain_claim",
+          provider_id: "a".repeat(64),
+          requested_slug: "demo-1",
+          public_ip: "8.8.8.8"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.deepEqual(capturedBody, {
+        provider_id: "a".repeat(64),
+        requested_slug: "demo-1",
+        public_ip: "8.8.8.8"
+      })
+      assert.match(result.content[0].text, /claim_id: claim-1/)
+      assert.match(result.content[0].text, /hostname: demo-1\.providers\.froglet\.dev/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_domain_complete signs locally and completes the claim", async () => {
+    const seen = []
+    const restore = mockFetch(async (url, opts = {}) => {
+      const urlStr = String(url)
+      seen.push(urlStr)
+      if (urlStr === "http://127.0.0.1:8080/v1/provider/domain-claims/sign") {
+        assert.equal(opts.headers.Authorization, "Bearer test-token-abc")
+        assert.deepEqual(JSON.parse(opts.body), {
+          signing_message: "froglet-provider-domain-claim-v1\nclaim_id:claim-1"
+        })
+        return new Response(
+          JSON.stringify({
+            provider_id: "a".repeat(64),
+            signature: "b".repeat(128)
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr === "https://mkt.example/v1/provider-domains/claims/claim-1/complete") {
+        assert.deepEqual(JSON.parse(opts.body), {
+          signature: "b".repeat(128)
+        })
+        return new Response(
+          JSON.stringify({
+            status: "pending_operator_dns",
+            provider_id: "a".repeat(64),
+            hostname: "demo-1.providers.froglet.dev",
+            public_ip: "8.8.8.8",
+            dns_record_id: null,
+            dns_required: true
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_domain_complete",
+          claim_id: "claim-1",
+          signing_message: "froglet-provider-domain-claim-v1\nclaim_id:claim-1"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.deepEqual(seen, [
+        "http://127.0.0.1:8080/v1/provider/domain-claims/sign",
+        "https://mkt.example/v1/provider-domains/claims/claim-1/complete"
+      ])
+      assert.match(result.content[0].text, /dns_required: true/)
+    } finally {
+      restore()
+    }
+  })
+
   it("marketplace_stake requires marketplace_provider_id", async () => {
     const result = await handleToolCall(
       "froglet",
@@ -777,6 +996,109 @@ describe("froglet MCP actions", () => {
         provider_id: "prov-7",
         amount_msat: 1000
       })
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_file_complaint posts a public complaint to the arbiter", async () => {
+    let capturedBody
+    const restore = mockFetch(async (url, opts) => {
+      const urlStr = String(url)
+      if (urlStr === "https://arbiter.example/v1/complaints") {
+        capturedBody = JSON.parse(opts.body)
+        return new Response(
+          JSON.stringify({
+            complaint_id: "cmp-1",
+            provider_id: "prov-9",
+            deal_id: "deal-9",
+            receipt_hash: "receipt-9",
+            complainant_id: "requester-1",
+            reason: "receipt did not verify",
+            evidence: [{ artifact_hash: "receipt-9" }],
+            status: "open",
+            created_at: 1770000000
+          }),
+          { status: 201 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_file_complaint",
+          marketplace_provider_id: "prov-9",
+          deal_id: "deal-9",
+          receipt_hash: "receipt-9",
+          complainant_id: "requester-1",
+          reason: "receipt did not verify",
+          evidence: [{ artifact_hash: "receipt-9" }]
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.deepEqual(capturedBody, {
+        provider_id: "prov-9",
+        deal_id: "deal-9",
+        receipt_hash: "receipt-9",
+        complainant_id: "requester-1",
+        reason: "receipt did not verify",
+        evidence: [{ artifact_hash: "receipt-9" }]
+      })
+      assert.match(result.content[0].text, /complaint_id: cmp-1/)
+      assert.match(result.content[0].text, /status: open/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_get_complaint reads complaint status from the arbiter", async () => {
+    const restore = mockFetch(async (url) => {
+      const urlStr = String(url)
+      if (urlStr === "https://arbiter.example/v1/complaints/cmp-1") {
+        return new Response(
+          JSON.stringify({
+            complaint: {
+              complaint_id: "cmp-1",
+              provider_id: "prov-9",
+              deal_id: "deal-9",
+              reason: "receipt did not verify",
+              evidence: [],
+              status: "upheld",
+              created_at: 1770000000
+            },
+            verdicts: [
+              {
+                verdict_id: "vrd-1",
+                complaint_id: "cmp-1",
+                provider_id: "prov-9",
+                verdict: "upheld",
+                remedy: "suspend_provider",
+                reason: "bad receipt",
+                operator_id: "operator",
+                created_at: 1770000001
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_get_complaint",
+          complaint_id: "cmp-1"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.match(result.content[0].text, /status: upheld/)
+      assert.match(result.content[0].text, /latest_remedy: suspend_provider/)
     } finally {
       restore()
     }

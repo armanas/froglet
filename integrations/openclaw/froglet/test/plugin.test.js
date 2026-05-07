@@ -1,10 +1,18 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
 import register from "../index.js"
+
+test("OpenClaw manifest declares the froglet tool contract", async () => {
+  const manifest = JSON.parse(
+    await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8")
+  )
+  assert.equal(manifest.activation?.onStartup, true)
+  assert.deepEqual(manifest.contracts?.tools, ["froglet"])
+})
 
 function buildTools(config = {}) {
   const tools = new Map()
@@ -35,6 +43,12 @@ test("plugin registers exactly one froglet tool", async () => {
     })
     assert.deepEqual([...tools.keys()], ["froglet"])
     const froglet = tools.get("froglet")
+    assert.ok(
+      froglet.definition.parameters.properties.action.enum.includes("marketplace_register")
+    )
+    assert.ok(
+      froglet.definition.parameters.properties.action.enum.includes("marketplace_file_complaint")
+    )
     assert.equal(froglet.definition.parameters.properties.starter.type, "string")
     assert.match(
       froglet.definition.parameters.properties.starter.description,

@@ -205,7 +205,7 @@ froglet/                 open source node framework
 
 default public marketplace
   public contract        runtime discovery through the read API stays in froglet;
-                         provider registration requires a write-capable marketplace
+                         provider self-registration uses POST /v1/registrations
   endpoint               https://marketplace.froglet.dev
 ```
 

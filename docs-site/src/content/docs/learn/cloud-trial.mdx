@@ -219,9 +219,9 @@ This page documents the public hosted-trial contract: shared session-token
 pool, free-only demo scope, 15-minute TTL, and the demo-only runtime
 surface. The local path remains the default way to install Froglet, connect
 a payment rail, self-host the full node surface, and publish services.
-An open marketplace of independently operated services is future potential, not
-current hosted-trial marketplace depth. First-party hosted paid rails are
-deferred to v0.2.
+An open marketplace of independently operated services is separate from the
+hosted-trial proof. First-party hosted paid rails must not be claimed live until
+Lightning and Stripe have public payment transcripts.
 
 ## Local path
 
@@ -238,10 +238,11 @@ An agent that can run tools should use this staged local flow:
    If it cannot see your repo, files, data, tools, or workflow notes, it should
    say that before making claims about your setup.
 3. Ask for the local install profile before running commands:
-   - agent: `claude-code`, `codex`, `openclaw`, or `manual`
+   - agent: `claude-code`, `codex`, or `manual` for no-clone setup;
+     `openclaw` only for source/plugin mode
    - footprint: `binary`, `docker`, or `source`
    - role: `consumer`, `provider`, or `both`
-   - payment: `none`, Lightning mock, Lightning `lnd_rest`, Stripe test, or x402
+   - payment: `none`, `lightning-lnd-rest`, `stripe-test`, `stripe-live`, or `x402`
    - network: `clearnet`, `tor`, or `dual`
    - marketplace: none, `https://marketplace.froglet.dev`, or a custom URL
    - first use case: consume, publish, witness, hash-verify, notarize, paid

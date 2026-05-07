@@ -13,6 +13,21 @@ ensure_dir() {
   chmod "$mode" "$path"
 }
 
+write_secret_from_b64() {
+  local name="$1"
+  local value="$2"
+  local path="$3"
+  local parent
+  parent="$(dirname "$path")"
+  ensure_dir "$parent" 700
+  if ! printf '%s' "$value" | base64 --decode > "$path"; then
+    echo "docker-entrypoint: failed to decode $name as base64" >&2
+    exit 1
+  fi
+  chown froglet:froglet "$path"
+  chmod 600 "$path"
+}
+
 umask 077
 
 host_readable=0
@@ -48,6 +63,21 @@ docker-entrypoint: FROGLET_HOST_READABLE_CONTROL_TOKEN is not set.
 EOF
     fi
     ensure_dir "$data_dir" "$data_dir_mode"
+    secret_dir="${FROGLET_SECRET_DIR:-$data_dir/secrets}"
+    if [ -n "${FROGLET_LIGHTNING_MACAROON_B64:-}" ]; then
+      export FROGLET_LIGHTNING_MACAROON_PATH="${FROGLET_LIGHTNING_MACAROON_PATH:-$secret_dir/lightning/admin.macaroon}"
+      write_secret_from_b64 "FROGLET_LIGHTNING_MACAROON_B64" \
+        "$FROGLET_LIGHTNING_MACAROON_B64" \
+        "$FROGLET_LIGHTNING_MACAROON_PATH"
+      unset FROGLET_LIGHTNING_MACAROON_B64
+    fi
+    if [ -n "${FROGLET_LIGHTNING_TLS_CERT_B64:-}" ]; then
+      export FROGLET_LIGHTNING_TLS_CERT_PATH="${FROGLET_LIGHTNING_TLS_CERT_PATH:-$secret_dir/lightning/tls.cert}"
+      write_secret_from_b64 "FROGLET_LIGHTNING_TLS_CERT_B64" \
+        "$FROGLET_LIGHTNING_TLS_CERT_B64" \
+        "$FROGLET_LIGHTNING_TLS_CERT_PATH"
+      unset FROGLET_LIGHTNING_TLS_CERT_B64
+    fi
     ;;
   *)
     echo "docker-entrypoint: unknown command: $cmd" >&2

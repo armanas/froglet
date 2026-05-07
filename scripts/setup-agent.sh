@@ -29,12 +29,13 @@ runtime_url="${FROGLET_RUNTIME_URL:-http://127.0.0.1:8081}"
 # from inside a cloned repo. In binary-only mode we fall back to
 # `~/.froglet/runtime/` since the repo path doesn't exist.
 default_token_dir="${repo_root:+$repo_root/data/runtime}"
-default_token_dir="${default_token_dir:-$HOME/.froglet/runtime}"
+default_token_dir="${default_token_dir:-$HOME/.froglet/data/runtime}"
 provider_token_path="${FROGLET_PROVIDER_AUTH_TOKEN_PATH:-$default_token_dir/froglet-control.token}"
 runtime_token_path="${FROGLET_RUNTIME_AUTH_TOKEN_PATH:-$default_token_dir/auth.token}"
 request_timeout_ms="${FROGLET_REQUEST_TIMEOUT_MS:-10000}"
 default_search_limit="${FROGLET_DEFAULT_SEARCH_LIMIT:-10}"
 max_search_limit="${FROGLET_MAX_SEARCH_LIMIT:-50}"
+docker_token_mount="/froglet-tokens"
 target=""
 out_path=""
 
@@ -89,6 +90,16 @@ if [[ -n "$repo_root" ]]; then
   openclaw_plugin_path="$repo_root/integrations/openclaw/froglet"
 fi
 
+provider_token_dir="$(dirname "$provider_token_path")"
+runtime_token_dir="$(dirname "$runtime_token_path")"
+provider_token_file="$(basename "$provider_token_path")"
+runtime_token_file="$(basename "$runtime_token_path")"
+docker_provider_token_path="$docker_token_mount/$provider_token_file"
+docker_runtime_token_path="$docker_token_mount/$runtime_token_file"
+if [[ -z "$repo_root" && "$provider_token_dir" != "$runtime_token_dir" ]]; then
+  fail "Docker MCP mode requires provider/runtime token files in the same directory"
+fi
+
 case "$target" in
   claude-code)
     out_path="${out_path:-$default_out_dir/.mcp.json}"
@@ -116,11 +127,12 @@ case "$target" in
 }
 EOF
     else
-      # Binary-only mode: use the published MCP Docker image. Docker MCP
-      # mode intentionally omits token paths — host file mounts would be
-      # brittle across users. Provider/runtime URLs point at the local
-      # docker compose stack via host.docker.internal by default; override
-      # with FROGLET_PROVIDER_URL / FROGLET_RUNTIME_URL for hosted use.
+      # Binary-only mode: use the published MCP Docker image. Token files are
+      # mounted read-only so local management actions like publish_artifact
+      # work after the agent bootstrap creates ~/.froglet/data/runtime.
+      # Provider/runtime URLs point at the local docker compose stack via
+      # host.docker.internal by default; override with FROGLET_PROVIDER_URL /
+      # FROGLET_RUNTIME_URL for hosted use.
       docker_provider_url="${provider_url/127.0.0.1/host.docker.internal}"
       docker_provider_url="${docker_provider_url/localhost/host.docker.internal}"
       docker_runtime_url="${runtime_url/127.0.0.1/host.docker.internal}"
@@ -133,8 +145,11 @@ EOF
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
+        "-v", "$provider_token_dir:$docker_token_mount:ro",
         "-e", "FROGLET_PROVIDER_URL",
         "-e", "FROGLET_RUNTIME_URL",
+        "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH",
+        "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH",
         "-e", "FROGLET_REQUEST_TIMEOUT_MS",
         "-e", "FROGLET_DEFAULT_SEARCH_LIMIT",
         "-e", "FROGLET_MAX_SEARCH_LIMIT",
@@ -143,6 +158,8 @@ EOF
       "env": {
         "FROGLET_PROVIDER_URL": "$docker_provider_url",
         "FROGLET_RUNTIME_URL": "$docker_runtime_url",
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "$docker_provider_token_path",
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "$docker_runtime_token_path",
         "FROGLET_REQUEST_TIMEOUT_MS": "$request_timeout_ms",
         "FROGLET_DEFAULT_SEARCH_LIMIT": "$default_search_limit",
         "FROGLET_MAX_SEARCH_LIMIT": "$max_search_limit"
@@ -157,7 +174,7 @@ EOF
       printf 'Activation: restart Claude Code in this repo so it reloads %s\n' "$out_path"
     else
       printf 'Activation: move this .mcp.json to your project dir; Claude Code picks it up on next start\n'
-      printf 'Note: Docker MCP mode requires docker; host.docker.internal is used for provider/runtime URLs\n'
+      printf 'Note: Docker MCP mode requires docker; host.docker.internal is used for provider/runtime URLs and %s is mounted read-only for auth tokens\n' "$provider_token_dir"
     fi
     ;;
   codex)
@@ -178,8 +195,8 @@ EOF
       cat >"$out_path" <<EOF
 [mcp_servers.froglet]
 command = "docker"
-args = ["run", "--rm", "-i", "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", "$mcp_image"]
-env = { FROGLET_PROVIDER_URL = "$docker_provider_url", FROGLET_RUNTIME_URL = "$docker_runtime_url", FROGLET_REQUEST_TIMEOUT_MS = "$request_timeout_ms", FROGLET_DEFAULT_SEARCH_LIMIT = "$default_search_limit", FROGLET_MAX_SEARCH_LIMIT = "$max_search_limit" }
+args = ["run", "--rm", "-i", "-v", "$provider_token_dir:$docker_token_mount:ro", "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", "$mcp_image"]
+env = { FROGLET_PROVIDER_URL = "$docker_provider_url", FROGLET_RUNTIME_URL = "$docker_runtime_url", FROGLET_PROVIDER_AUTH_TOKEN_PATH = "$docker_provider_token_path", FROGLET_RUNTIME_AUTH_TOKEN_PATH = "$docker_runtime_token_path", FROGLET_REQUEST_TIMEOUT_MS = "$request_timeout_ms", FROGLET_DEFAULT_SEARCH_LIMIT = "$default_search_limit", FROGLET_MAX_SEARCH_LIMIT = "$max_search_limit" }
 EOF
     fi
     printf 'Wrote Codex MCP config to %s\n' "$out_path"

@@ -1,6 +1,6 @@
 export type InstallTarget = 'linux' | 'linux-arm' | 'macos' | 'docker';
-export type AgentTarget = 'claude-code' | 'codex' | 'openclaw';
-export type PaymentRail = 'lightning' | 'stripe' | 'x402';
+export type AgentTarget = 'claude-code' | 'codex' | 'manual';
+export type PaymentRail = 'none' | 'lightning-mock' | 'lightning-lnd-rest' | 'stripe-test' | 'stripe-live' | 'x402';
 
 export interface SelfHostConfig {
   install: InstallTarget;
@@ -11,42 +11,24 @@ export interface SelfHostConfig {
 export const DEFAULT_SELF_HOST_CONFIG: SelfHostConfig = {
   install: 'linux',
   agent: 'claude-code',
-  payment: 'lightning',
+  payment: 'none',
 };
 
-const INSTALL_COMMANDS: Record<Exclude<InstallTarget, 'docker'>, string> = {
-  linux: 'curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh',
-  'linux-arm':
-    'curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | ARCH=arm64 sh',
-  macos: 'curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh',
-};
-
-const PAYMENT_COMMANDS: Record<PaymentRail, string> = {
-  lightning: './scripts/setup-payment.sh lightning',
-  stripe: 'FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> ./scripts/setup-payment.sh stripe',
-  x402: 'FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> ./scripts/setup-payment.sh x402',
+const PAYMENT_NOTES: Record<PaymentRail, string> = {
+  none: '',
+  'lightning-mock': '# After MCP status passes, ask froglet-mcp for the Lightning mock payment setup.',
+  'lightning-lnd-rest': '# After MCP status passes, configure LND REST with your LND URL, macaroon, and TLS cert.',
+  'stripe-test': '# After MCP status passes, configure Stripe test mode with sk_test_... and webhook proof.',
+  'stripe-live': '# After MCP status passes, configure Stripe live mode only after a fresh live-payment approval.',
+  x402: '# After MCP status passes, configure x402 with your Base wallet address and facilitator.',
 };
 
 export function buildSelfHostScript(config: SelfHostConfig = DEFAULT_SELF_HOST_CONFIG): string {
   const lines: string[] = [];
-
-  if (config.install !== 'docker') {
-    lines.push(INSTALL_COMMANDS[config.install]);
-  }
-
-  lines.push(
-    'git clone https://github.com/armanas/froglet.git',
-    'cd froglet',
-  );
-  if (config.agent !== 'openclaw') {
-    lines.push('npm ci --prefix integrations/mcp/froglet');
-  }
-  lines.push(
-    `./scripts/setup-agent.sh --target ${config.agent}`,
-    PAYMENT_COMMANDS[config.payment],
-    `set -a && . ./.froglet/payment/${config.payment}.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a`,
-    'docker compose up --build -d',
-  );
+  const env: string[] = [];
+  if (config.agent !== 'claude-code') env.push(`FROGLET_AGENT_TARGET=${config.agent}`);
+  lines.push(`${env.length > 0 ? `${env.join(' ')} ` : ''}curl -fsSL https://froglet.dev/agent | bash`);
+  if (PAYMENT_NOTES[config.payment]) lines.push(PAYMENT_NOTES[config.payment]);
 
   return lines.join('\n');
 }
