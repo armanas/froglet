@@ -64,6 +64,19 @@ impl SandboxConfig {
     }
 }
 
+pub fn resolve_python3_executable() -> PathBuf {
+    if let Some(path) = std::env::var_os("FROGLET_PYTHON3") {
+        return PathBuf::from(path);
+    }
+    for candidate in ["/usr/bin/python3", "/usr/local/bin/python3", "/bin/python3"] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return path;
+        }
+    }
+    PathBuf::from("python3")
+}
+
 fn default_readonly_paths() -> Vec<PathBuf> {
     // Python stdlib + linker + CA certs + DNS resolution. Conservative list
     // that works on Debian / Ubuntu / Alpine / RHEL. Do not allow all of
@@ -390,7 +403,7 @@ mod tests {
     }
 
     fn run_python(script: &str, config: SandboxConfig) -> (i32, String, String) {
-        let mut command = Command::new("python3");
+        let mut command = Command::new(resolve_python3_executable());
         command
             .arg("-I")
             .arg("-c")

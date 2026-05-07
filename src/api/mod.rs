@@ -7016,7 +7016,8 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         .extend(mount_plan.writable_paths.clone());
     let mount_env = mount_plan.env.clone();
     let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
-        let mut command = std::process::Command::new("python3");
+        let python3 = crate::python_sandbox::resolve_python3_executable();
+        let mut command = std::process::Command::new(&python3);
         command
             .arg("-I")
             .arg("-c")
@@ -7035,7 +7036,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             .map_err(|error| format!("failed to install python sandbox: {error}"))?;
         let mut child = command
             .spawn()
-            .map_err(|error| format!("failed to spawn python3: {error}"))?;
+            .map_err(|error| format!("failed to spawn {}: {error}", python3.display()))?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(&input_json_clone)

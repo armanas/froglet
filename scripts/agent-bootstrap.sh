@@ -153,8 +153,8 @@ if [ -z "$IMAGE_TAG" ]; then
 else
   IMAGE_TAG="${IMAGE_TAG#v}"
 fi
-PROVIDER_IMAGE="${PROVIDER_IMAGE:-ghcr.io/armanas/froglet-provider:$IMAGE_TAG}"
-RUNTIME_IMAGE="${RUNTIME_IMAGE:-ghcr.io/armanas/froglet-runtime:$IMAGE_TAG}"
+PROVIDER_IMAGE="${PROVIDER_IMAGE:-ghcr.io/armanas/froglet-provider:latest}"
+RUNTIME_IMAGE="${RUNTIME_IMAGE:-ghcr.io/armanas/froglet-runtime:latest}"
 MCP_IMAGE="${MCP_IMAGE:-ghcr.io/armanas/froglet-mcp:latest}"
 
 mkdir -p "$BIN_DIR" "$BOOTSTRAP_DIR"
