@@ -16,6 +16,9 @@ RUNTIME_URL="${FROGLET_RUNTIME_URL:-http://127.0.0.1:8081}"
 NETWORK_MODE="${FROGLET_NETWORK_MODE:-clearnet}"
 MARKETPLACE_URL="${FROGLET_MARKETPLACE_URL:-https://marketplace.froglet.dev}"
 START_STACK="${FROGLET_BOOTSTRAP_START:-1}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-${FROGLET_COMPOSE_PROJECT_NAME:-froglet_agent}}"
+MCP_DOCKER_NETWORK="${FROGLET_MCP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
+export COMPOSE_PROJECT_NAME
 
 log() {
   printf '%s\n' "$*" >&2
@@ -136,6 +139,7 @@ configure_agent() {
   FROGLET_PROVIDER_URL="$PROVIDER_URL" \
   FROGLET_RUNTIME_URL="$RUNTIME_URL" \
   FROGLET_MCP_IMAGE="$MCP_IMAGE" \
+  FROGLET_MCP_DOCKER_NETWORK="$MCP_DOCKER_NETWORK" \
   FROGLET_PROVIDER_AUTH_TOKEN_PATH="$DATA_DIR/runtime/froglet-control.token" \
   FROGLET_RUNTIME_AUTH_TOKEN_PATH="$DATA_DIR/runtime/auth.token" \
     "$tmp_script" --target "$AGENT_TARGET" --out "$out_path" >/dev/null
@@ -165,7 +169,7 @@ if [ "$START_STACK" = "1" ]; then
   write_compose
   compose_file="$BOOTSTRAP_DIR/compose.yaml"
   log "Starting Froglet provider/runtime from published images..."
-  docker_compose -f "$compose_file" up -d
+  COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" docker_compose -f "$compose_file" up -d
   compose_started=true
 fi
 
@@ -181,8 +185,10 @@ cat <<EOF
   "runtime_url": "$(json_escape "$RUNTIME_URL")",
   "network_mode": "$(json_escape "$NETWORK_MODE")",
   "compose_file": "$(json_escape "$compose_file")",
+  "compose_project_name": "$(json_escape "$COMPOSE_PROJECT_NAME")",
   "compose_started": $compose_started,
   "agent_target": "$(json_escape "$AGENT_TARGET")",
+  "mcp_docker_network": "$(json_escape "$MCP_DOCKER_NETWORK")",
   "mcp_config_path": "$(json_escape "$mcp_config_path")",
   "next_mcp_actions": ["status", "publish_artifact"],
   "next_instruction": "Restart or point your agent at the MCP config path, call froglet status, then publish a demo service with template demo.add."

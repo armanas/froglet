@@ -22,6 +22,7 @@ if [[ -z "$repo_root" && -f "$PWD/integrations/mcp/froglet/server.js" ]]; then
 fi
 
 mcp_image="${FROGLET_MCP_IMAGE:-ghcr.io/armanas/froglet-mcp:latest}"
+mcp_docker_network="${FROGLET_MCP_DOCKER_NETWORK:-}"
 
 provider_url="${FROGLET_PROVIDER_URL:-http://127.0.0.1:8080}"
 runtime_url="${FROGLET_RUNTIME_URL:-http://127.0.0.1:8081}"
@@ -100,6 +101,14 @@ if [[ -z "$repo_root" && "$provider_token_dir" != "$runtime_token_dir" ]]; then
   fail "Docker MCP mode requires provider/runtime token files in the same directory"
 fi
 
+docker_network_json_args=""
+docker_network_toml_args=""
+if [[ -n "$mcp_docker_network" ]]; then
+  docker_network_json_args="        \"--network\", \"$mcp_docker_network\",
+"
+  docker_network_toml_args="\"--network\", \"$mcp_docker_network\", "
+fi
+
 case "$target" in
   claude-code)
     out_path="${out_path:-$default_out_dir/.mcp.json}"
@@ -137,6 +146,14 @@ EOF
       docker_provider_url="${docker_provider_url/localhost/host.docker.internal}"
       docker_runtime_url="${runtime_url/127.0.0.1/host.docker.internal}"
       docker_runtime_url="${docker_runtime_url/localhost/host.docker.internal}"
+      if [[ -n "$mcp_docker_network" ]]; then
+        case "$provider_url" in
+          http://127.0.0.1:8080|http://localhost:8080) docker_provider_url="http://provider:8080" ;;
+        esac
+        case "$runtime_url" in
+          http://127.0.0.1:8081|http://localhost:8081) docker_runtime_url="http://runtime:8081" ;;
+        esac
+      fi
       cat >"$out_path" <<EOF
 {
   "mcpServers": {
@@ -145,6 +162,7 @@ EOF
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
+${docker_network_json_args}
         "--add-host", "host.docker.internal:host-gateway",
         "-v", "$provider_token_dir:$docker_token_mount:ro",
         "-e", "FROGLET_PROVIDER_URL",
@@ -175,7 +193,7 @@ EOF
       printf 'Activation: restart Claude Code in this repo so it reloads %s\n' "$out_path"
     else
       printf 'Activation: move this .mcp.json to your project dir; Claude Code picks it up on next start\n'
-      printf 'Note: Docker MCP mode requires docker; host.docker.internal is used for provider/runtime URLs and %s is mounted read-only for auth tokens\n' "$provider_token_dir"
+      printf 'Note: Docker MCP mode requires docker; %s is mounted read-only for auth tokens\n' "$provider_token_dir"
     fi
     ;;
   codex)
@@ -193,10 +211,18 @@ EOF
       docker_provider_url="${docker_provider_url/localhost/host.docker.internal}"
       docker_runtime_url="${runtime_url/127.0.0.1/host.docker.internal}"
       docker_runtime_url="${docker_runtime_url/localhost/host.docker.internal}"
+      if [[ -n "$mcp_docker_network" ]]; then
+        case "$provider_url" in
+          http://127.0.0.1:8080|http://localhost:8080) docker_provider_url="http://provider:8080" ;;
+        esac
+        case "$runtime_url" in
+          http://127.0.0.1:8081|http://localhost:8081) docker_runtime_url="http://runtime:8081" ;;
+        esac
+      fi
       cat >"$out_path" <<EOF
 [mcp_servers.froglet]
 command = "docker"
-args = ["run", "--rm", "-i", "--add-host", "host.docker.internal:host-gateway", "-v", "$provider_token_dir:$docker_token_mount:ro", "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", "$mcp_image"]
+args = ["run", "--rm", "-i", ${docker_network_toml_args}"--add-host", "host.docker.internal:host-gateway", "-v", "$provider_token_dir:$docker_token_mount:ro", "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", "$mcp_image"]
 env = { FROGLET_PROVIDER_URL = "$docker_provider_url", FROGLET_RUNTIME_URL = "$docker_runtime_url", FROGLET_PROVIDER_AUTH_TOKEN_PATH = "$docker_provider_token_path", FROGLET_RUNTIME_AUTH_TOKEN_PATH = "$docker_runtime_token_path", FROGLET_REQUEST_TIMEOUT_MS = "$request_timeout_ms", FROGLET_DEFAULT_SEARCH_LIMIT = "$default_search_limit", FROGLET_MAX_SEARCH_LIMIT = "$max_search_limit" }
 EOF
     fi

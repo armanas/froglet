@@ -143,14 +143,19 @@ fi
             extra_env={
                 "FROGLET_PROVIDER_AUTH_TOKEN_PATH": str(token_dir / "provider.token"),
                 "FROGLET_RUNTIME_AUTH_TOKEN_PATH": str(token_dir / "runtime.token"),
+                "FROGLET_MCP_DOCKER_NETWORK": "froglet_agent_default",
             },
             cwd=self.root,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         server = json.loads(out_path.read_text(encoding="utf-8"))["mcpServers"]["froglet"]
         self.assertEqual(server["command"], "docker")
+        self.assertIn("--network", server["args"])
+        self.assertIn("froglet_agent_default", server["args"])
         self.assertIn("--add-host", server["args"])
         self.assertIn("host.docker.internal:host-gateway", server["args"])
+        self.assertEqual(server["env"]["FROGLET_PROVIDER_URL"], "http://provider:8080")
+        self.assertEqual(server["env"]["FROGLET_RUNTIME_URL"], "http://runtime:8081")
 
     def test_setup_payment_generates_lightning_mock_env(self):
         out_path = self.root / "lightning.env"
