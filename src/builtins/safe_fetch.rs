@@ -21,11 +21,12 @@
 //! request itself.
 
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Duration,
 };
 
-use reqwest::{Client, Url, redirect::Policy as RedirectPolicy};
+use reqwest::{Client, Proxy, Url, redirect::Policy as RedirectPolicy};
+use serde::de::DeserializeOwned;
 
 /// Default response cap for demo fetches. Bigger than a sane web page,
 /// smaller than a download. Callers can override per-request.
@@ -56,6 +57,16 @@ pub struct SafeFetchOutcome {
 /// Validate that a URL string is safe to fetch *based purely on its literal
 /// form*. Does not perform DNS. Intended to fail fast before any network IO.
 pub fn validate_fetch_url(raw: &str) -> Result<Url, String> {
+    validate_fetch_url_with_policy(raw, false)
+}
+
+/// Same as [`validate_fetch_url`] but lifts the private-network block when
+/// `allow_private_networks` is true. Test-only escape hatch — production
+/// callers should use [`validate_fetch_url`].
+pub fn validate_fetch_url_with_policy(
+    raw: &str,
+    allow_private_networks: bool,
+) -> Result<Url, String> {
     let parsed = Url::parse(raw).map_err(|e| format!("invalid url '{raw}': {e}"))?;
     match parsed.scheme() {
         "http" | "https" => {}
@@ -69,7 +80,7 @@ pub fn validate_fetch_url(raw: &str) -> Result<Url, String> {
         .host_str()
         .ok_or_else(|| "url must include a host".to_string())?
         .to_ascii_lowercase();
-    if host_is_blocked_literal(&host) {
+    if !allow_private_networks && host_is_blocked_literal(&host) {
         return Err(format!(
             "host '{host}' targets a private/loopback/link-local network"
         ));
@@ -131,10 +142,21 @@ fn ipv6_is_blocked(ip: Ipv6Addr) -> bool {
 
 /// Per-request fetch policy. Callers fill in caps; the helper clamps them
 /// to the global maxima so a buyer cannot pass `max_bytes = u64::MAX`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FetchPolicy {
     pub max_bytes: u64,
     pub timeout_ms: u64,
+    /// Optional SOCKS5 proxy URL (e.g. `socks5h://127.0.0.1:9050`) used when
+    /// the target hostname ends in `.onion`. `None` means "no proxy" — the
+    /// fetch then attempts a direct connection, which will fail for `.onion`
+    /// destinations on a host without a Tor sidecar.
+    pub tor_socks_proxy: Option<String>,
+    /// When true, lift the SSRF block on private/loopback/link-local
+    /// addresses. Intended only for in-process integration tests where the
+    /// target server bound `127.0.0.1`. Production callers MUST leave this
+    /// false (the `Default::default()` value) so a buyer-supplied URL
+    /// targeting `169.254.169.254` is rejected.
+    pub allow_private_networks: bool,
 }
 
 impl Default for FetchPolicy {
@@ -142,6 +164,8 @@ impl Default for FetchPolicy {
         Self {
             max_bytes: DEFAULT_MAX_BYTES,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            tor_socks_proxy: None,
+            allow_private_networks: false,
         }
     }
 }
@@ -153,39 +177,84 @@ impl FetchPolicy {
         Self {
             max_bytes: self.max_bytes.clamp(1, MAX_ALLOWED_BYTES),
             timeout_ms: self.timeout_ms.clamp(100, MAX_ALLOWED_TIMEOUT_MS),
+            tor_socks_proxy: self.tor_socks_proxy,
+            allow_private_networks: self.allow_private_networks,
         }
     }
 }
 
 /// Fetch a URL with SSRF protection, size cap, and timeout cap. Redirects are
 /// followed up to 5 hops; each hop is re-validated against the same SSRF
-/// rules so a 302 to `http://127.0.0.1` is rejected.
+/// rules so a 302 to `http://127.0.0.1` is rejected. To close the
+/// DNS-rebinding window, the resolved IPs of the initial host are pinned
+/// into the reqwest client via `resolve_to_addrs`, and cross-host redirects
+/// are rejected (since a different host would re-enter system DNS and
+/// re-open the rebinding window).
 pub async fn safe_fetch(raw_url: &str, policy: FetchPolicy) -> Result<SafeFetchOutcome, String> {
-    let validated = validate_fetch_url(raw_url)?;
+    let validated = validate_fetch_url_with_policy(raw_url, policy.allow_private_networks)?;
     let policy = policy.clamped();
 
-    // Pre-resolve to catch "innocent" hostnames that resolve to private IPs.
-    // We don't pin the IP for the actual request — reqwest will resolve again
-    // — so this is best-effort early rejection. A truly motivated rebinding
-    // attacker can race DNS; for a demo service this is acceptable, and the
-    // documented policy is "we may refuse hosts that recently resolved to
-    // private space."
-    if let Some(host) = validated.host_str() {
-        check_host_resolution(host, validated.port_or_known_default().unwrap_or(0)).await?;
-    }
+    let host = validated
+        .host_str()
+        .ok_or_else(|| "safe_fetch: url has no host".to_string())?
+        .to_ascii_lowercase();
+    let is_onion = host.ends_with(".onion");
 
-    let client = Client::builder()
+    // For .onion destinations the SOCKS proxy IS the destination as far as
+    // this process is concerned — DNS resolution and IP-pinning happen
+    // inside the Tor circuit, not here. For clearnet hosts we resolve and
+    // validate first, then pin the resolved IPs into reqwest so the real
+    // request cannot land on a different IP than the one we approved.
+    let pinned_addrs: Option<Vec<SocketAddr>> = if is_onion {
+        None
+    } else {
+        let port = validated.port_or_known_default().unwrap_or(0);
+        let resolved_ips =
+            check_host_resolution(&host, port, policy.allow_private_networks).await?;
+        Some(
+            resolved_ips
+                .iter()
+                .copied()
+                .map(|ip| SocketAddr::new(ip, port.max(1)))
+                .collect(),
+        )
+    };
+
+    let initial_host = host.clone();
+    let allow_private = policy.allow_private_networks;
+    let mut builder = Client::builder()
         .timeout(Duration::from_millis(policy.timeout_ms))
-        .redirect(RedirectPolicy::custom(|attempt| {
+        .redirect(RedirectPolicy::custom(move |attempt| {
             if attempt.previous().len() >= 5 {
                 return attempt.error("too many redirects");
             }
             // Re-validate every redirect target: scheme + literal IP block.
-            match validate_fetch_url(attempt.url().as_str()) {
-                Ok(_) => attempt.follow(),
-                Err(e) => attempt.error(e),
+            let next = match validate_fetch_url_with_policy(attempt.url().as_str(), allow_private) {
+                Ok(u) => u,
+                Err(e) => return attempt.error(e),
+            };
+            // Reject cross-host redirects: `resolve_to_addrs` only pins the
+            // initial host, so a redirect to a different hostname would
+            // re-enter system DNS and defeat the rebinding mitigation.
+            // Same-host redirects remain safe.
+            let next_host = next.host_str().unwrap_or("").to_ascii_lowercase();
+            if next_host != initial_host {
+                return attempt.error("safe_fetch: cross-host redirect not allowed");
             }
-        }))
+            attempt.follow()
+        }));
+    if let Some(addrs) = pinned_addrs.as_ref() {
+        builder = builder.resolve_to_addrs(&host, addrs);
+    }
+    if is_onion {
+        let proxy_url = policy.tor_socks_proxy.as_deref().ok_or_else(|| {
+            "safe_fetch: .onion destination requires FetchPolicy.tor_socks_proxy".to_string()
+        })?;
+        let proxy = Proxy::all(proxy_url)
+            .map_err(|e| format!("safe_fetch: invalid Tor SOCKS proxy {proxy_url}: {e}"))?;
+        builder = builder.proxy(proxy);
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("safe_fetch: build client: {e}"))?;
 
@@ -230,34 +299,74 @@ pub async fn safe_fetch(raw_url: &str, policy: FetchPolicy) -> Result<SafeFetchO
     })
 }
 
-async fn check_host_resolution(host: &str, port: u16) -> Result<(), String> {
+/// Typed wrapper over [`safe_fetch`] that JSON-decodes the response body into
+/// `T`. Use this for consumers that fetch a Froglet-protocol artifact or any
+/// other JSON document — replaces the per-call `response.json().await?`
+/// idiom that previously appeared in three different code paths
+/// (`froglet-adapter::fetch_json`, `marketplace-api::registration::fetch_json`,
+/// and demo builtins) with one place to fix when the rules drift.
+///
+/// Errors:
+/// - any error from [`safe_fetch`] (URL invalid, SSRF block, body cap, ...)
+/// - non-2xx HTTP status — caller can extract status via [`safe_fetch`] if it
+///   needs to distinguish 404 from 500
+/// - JSON decode failure
+pub async fn safe_fetch_json<T: DeserializeOwned>(
+    raw_url: &str,
+    policy: FetchPolicy,
+) -> Result<T, String> {
+    let outcome = safe_fetch(raw_url, policy).await?;
+    if !(200..300).contains(&outcome.status_code) {
+        let preview = String::from_utf8_lossy(&outcome.body)
+            .chars()
+            .take(200)
+            .collect::<String>();
+        return Err(format!(
+            "safe_fetch_json: upstream returned {} for {}: {}",
+            outcome.status_code, outcome.final_url, preview
+        ));
+    }
+    serde_json::from_slice(&outcome.body).map_err(|e| {
+        format!(
+            "safe_fetch_json: invalid JSON from {}: {e}",
+            outcome.final_url
+        )
+    })
+}
+
+async fn check_host_resolution(
+    host: &str,
+    port: u16,
+    allow_private_networks: bool,
+) -> Result<Vec<IpAddr>, String> {
     // If host is already an IP literal, validate_fetch_url already rejected
-    // private cases and we'd never get here. For DNS names, resolve and
-    // ensure no candidate address is blocked.
-    if host.parse::<IpAddr>().is_ok() {
-        return Ok(());
+    // private cases (unless allow_private_networks=true) and we'd never get
+    // here. For an IP literal, return the single parsed IP so the caller
+    // can pin it into the reqwest client.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![ip]);
     }
     let target = format!("{host}:{}", port.max(1));
     let resolved = tokio::net::lookup_host(target)
         .await
         .map_err(|e| format!("safe_fetch: dns lookup for '{host}': {e}"))?;
 
-    let mut any = false;
+    let mut ips = Vec::new();
     for sock in resolved {
-        any = true;
-        if ip_is_blocked(sock.ip()) {
+        if !allow_private_networks && ip_is_blocked(sock.ip()) {
             return Err(format!(
                 "safe_fetch: host '{host}' resolves to blocked address {}",
                 sock.ip()
             ));
         }
+        ips.push(sock.ip());
     }
-    if !any {
+    if ips.is_empty() {
         return Err(format!(
             "safe_fetch: dns lookup for '{host}' returned no addresses"
         ));
     }
-    Ok(())
+    Ok(ips)
 }
 
 #[cfg(test)]
@@ -344,6 +453,7 @@ mod tests {
         let p = FetchPolicy {
             max_bytes: u64::MAX,
             timeout_ms: 1_000,
+            ..FetchPolicy::default()
         }
         .clamped();
         assert_eq!(p.max_bytes, MAX_ALLOWED_BYTES);
@@ -354,6 +464,7 @@ mod tests {
         let p = FetchPolicy {
             max_bytes: 100,
             timeout_ms: u64::MAX,
+            ..FetchPolicy::default()
         }
         .clamped();
         assert_eq!(p.timeout_ms, MAX_ALLOWED_TIMEOUT_MS);
@@ -364,9 +475,25 @@ mod tests {
         let p = FetchPolicy {
             max_bytes: 0,
             timeout_ms: 0,
+            ..FetchPolicy::default()
         }
         .clamped();
         assert!(p.max_bytes >= 1);
         assert!(p.timeout_ms >= 100);
+    }
+
+    #[test]
+    fn policy_preserves_tor_proxy_through_clamping() {
+        let p = FetchPolicy {
+            max_bytes: 100,
+            timeout_ms: 1_000,
+            tor_socks_proxy: Some("socks5h://127.0.0.1:9050".to_string()),
+            ..FetchPolicy::default()
+        }
+        .clamped();
+        assert_eq!(
+            p.tor_socks_proxy.as_deref(),
+            Some("socks5h://127.0.0.1:9050")
+        );
     }
 }

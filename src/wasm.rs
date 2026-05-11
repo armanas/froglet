@@ -9,6 +9,36 @@ pub const WASM_SUBMISSION_TYPE_V1: &str = "wasm_submission";
 pub const WASM_OCI_SUBMISSION_TYPE_V1: &str = "wasm_oci_submission";
 pub const WASM_RUN_JSON_ABI_V1: &str = "froglet.wasm.run_json.v1";
 pub const WASM_HOST_JSON_ABI_V1: &str = "froglet.wasm.host_json.v1";
+
+/// Internal Copy/Hash representation of the two recognised WASM ABIs. Used as
+/// part of the module-cache key so cache lookups don't allocate a `String`
+/// per call. Pairs with [`WASM_RUN_JSON_ABI_V1`] / [`WASM_HOST_JSON_ABI_V1`]
+/// — convert at the boundary via [`WasmAbi::from_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WasmAbi {
+    RunJsonV1,
+    HostJsonV1,
+}
+
+impl WasmAbi {
+    /// Recognise an ABI version string. Mirrors `ExecutionRuntime::parse` in
+    /// `froglet-protocol::ExecutionRuntime`. Named `parse` (not `from_str`)
+    /// to avoid shadowing `std::str::FromStr::from_str`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            WASM_RUN_JSON_ABI_V1 => Some(Self::RunJsonV1),
+            WASM_HOST_JSON_ABI_V1 => Some(Self::HostJsonV1),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunJsonV1 => WASM_RUN_JSON_ABI_V1,
+            Self::HostJsonV1 => WASM_HOST_JSON_ABI_V1,
+        }
+    }
+}
 pub const WASM_MODULE_FORMAT: &str = "application/wasm";
 pub const WASM_MODULE_OCI_FORMAT: &str = "application/vnd.oci.image.manifest.v1+json";
 pub const JCS_JSON_FORMAT: &str = "application/json+jcs";

@@ -1,6 +1,6 @@
 use crate::{config::NodeConfig, crypto};
 use std::{fs, path::Path, time::UNIX_EPOCH};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Env var that, when set on first boot, seeds the node identity from a hex
 /// string instead of auto-generating a fresh one. Ignored if the identity
@@ -94,13 +94,18 @@ impl NodeIdentity {
 fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
     let mut seed_hex = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read node identity seed {}: {e}", path.display()))?;
-    let trimmed = seed_hex.trim().to_string();
+    // `trim().to_string()` allocates a fresh String containing the seed
+    // material; wrap so its heap bytes are zeroed when this function returns.
+    let trimmed = Zeroizing::new(seed_hex.trim().to_string());
     seed_hex.zeroize();
-    let mut bytes = hex::decode(&trimmed)
-        .map_err(|e| format!("Invalid hex in node identity seed {}: {e}", path.display()))?;
+    // `hex::decode` returns an unzeroized Vec<u8>. `Zeroizing<Vec<u8>>` wipes
+    // the heap allocation on Drop, including all early-return paths below.
+    let bytes = Zeroizing::new(
+        hex::decode(trimmed.as_str())
+            .map_err(|e| format!("Invalid hex in node identity seed {}: {e}", path.display()))?,
+    );
 
     if bytes.len() != 32 {
-        bytes.zeroize();
         return Err(format!(
             "Invalid node identity seed length in {}: expected 32 bytes, got {}",
             path.display(),
@@ -108,9 +113,8 @@ fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
         ));
     }
 
-    let mut seed: [u8; 32] = bytes
-        .try_into()
-        .expect("length validated as 32 bytes above");
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
     let result = crypto::signing_key_from_seed_bytes(&seed);
     seed.zeroize();
     result
@@ -193,11 +197,13 @@ fn load_or_create_signing_key(
 }
 
 /// Parse a hex-encoded secp256k1 seed (32 bytes / 64 hex chars). Whitespace
-/// around the value is trimmed. Zeroized-decode is not needed here: the hex
-/// crate does not hold the decoded bytes after return.
+/// around the value is trimmed. The decoded bytes are wrapped in `Zeroizing`
+/// so the heap buffer is wiped before this function returns — the previous
+/// "hex crate does not hold the decoded bytes" comment was misleading: the
+/// decoded `Vec<u8>` itself contains seed material until it's dropped.
 fn seed_from_hex_str(hex_str: &str) -> Result<[u8; 32], String> {
-    let trimmed = hex_str.trim();
-    let bytes = hex::decode(trimmed).map_err(|e| format!("invalid hex: {e}"))?;
+    let bytes =
+        Zeroizing::new(hex::decode(hex_str.trim()).map_err(|e| format!("invalid hex: {e}"))?);
     if bytes.len() != 32 {
         return Err(format!(
             "expected 32 bytes (64 hex chars), got {} bytes",

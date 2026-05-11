@@ -10,10 +10,6 @@ type HmacSha256 = Hmac<Sha256>;
 
 pub use k256::schnorr::SigningKey as NodeSigningKey;
 
-pub fn verify_signature(pubkey_hex: &str, sig_hex: &str, content: &str) -> bool {
-    verify_message(pubkey_hex, sig_hex, content.as_bytes())
-}
-
 pub fn verify_message(pubkey_hex: &str, sig_hex: &str, message: &[u8]) -> bool {
     let pubkey_bytes: Vec<u8> = match hex::decode(pubkey_hex) {
         Ok(b) if b.len() == 32 => b,
@@ -92,11 +88,6 @@ mod tests {
         let sig_hex = sign_message_hex(&signing_key, message);
 
         assert!(verify_message(&pubkey_hex, &sig_hex, message));
-        assert!(verify_signature(
-            &pubkey_hex,
-            &sig_hex,
-            "froglet-test-message"
-        ));
     }
 
     #[test]

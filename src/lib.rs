@@ -18,6 +18,19 @@ pub use froglet_protocol::canonical_json;
 pub use froglet_protocol::crypto;
 
 pub mod builtins;
+
+// Re-export the shared SSRF-protected HTTP fetch helper at the crate root.
+// Consumed by:
+//   - `froglet/src/builtins/{demo_fetch_witness,demo_notarize,demo_hash_verify}.rs`
+//   - `froglet-services/packages/froglet-adapter` (replaces its own fetch_json)
+//   - `froglet-services/services/marketplace-api/src/registration.rs`
+//
+// Originally lived under `builtins::safe_fetch`; promoted to the crate root
+// so the three sister implementations of "fetch JSON over HTTP with SSRF
+// protection and a body cap" collapse into one. A drift here turns into a
+// compile error in every consumer rather than silently re-introducing a
+// per-call SSRF gap.
+pub use builtins::safe_fetch;
 pub mod confidential;
 pub mod config;
 pub mod db;

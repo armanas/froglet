@@ -18,6 +18,8 @@ use crate::{
 };
 
 const LEGACY_ARTIFACTS_MIGRATION: &str = "20260313_legacy_artifacts_backfill";
+const ENFORCE_DEAL_ARTIFACT_HASH_UNIQUE: &str = "20261108_deal_artifact_hash_unique";
+const DOCUMENT_IDEMPOTENCY_KEY_UNIQUE: &str = "20261108_idempotency_key_partial_unique";
 const DEFAULT_DB_READ_CONNECTIONS: usize = 4;
 pub const MAX_EVENT_QUERY_KINDS: usize = 100;
 
@@ -326,6 +328,16 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             ON deal_quarantine (quarantined_at DESC);",
     )?;
     apply_migration_once(conn, LEGACY_ARTIFACTS_MIGRATION, migrate_legacy_artifacts)?;
+    apply_migration_once(
+        conn,
+        ENFORCE_DEAL_ARTIFACT_HASH_UNIQUE,
+        migrate_enforce_deal_artifact_hash_unique,
+    )?;
+    apply_migration_once(
+        conn,
+        DOCUMENT_IDEMPOTENCY_KEY_UNIQUE,
+        migrate_idempotency_key_partial_unique,
+    )?;
     Ok(())
 }
 
@@ -733,6 +745,59 @@ fn migrate_legacy_artifacts(conn: &Connection) -> SqlResult<()> {
             created_at
          FROM artifacts
          ORDER BY sequence ASC;",
+    )?;
+    Ok(())
+}
+
+/// Adds a partial UNIQUE index over `deals.deal_artifact_hash` for non-NULL
+/// values. Application code in `crate::deals` already enforces uniqueness via
+/// SELECT-then-INSERT under `BEGIN IMMEDIATE`; this is defense-in-depth at
+/// the DB layer. Refuses to apply if existing duplicates are present so
+/// operators can resolve them via the existing
+/// `audit_duplicate_deal_hashes` startup audit before retrying.
+fn migrate_enforce_deal_artifact_hash_unique(conn: &Connection) -> SqlResult<()> {
+    let dup_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+             SELECT deal_artifact_hash
+               FROM deals
+              WHERE deal_artifact_hash IS NOT NULL
+           GROUP BY deal_artifact_hash HAVING COUNT(*) > 1
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if dup_count > 0 {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            format!(
+                "cannot enforce UNIQUE on deals.deal_artifact_hash: {dup_count} \
+                 duplicate hash(es) present; inspect via audit_duplicate_deal_hashes \
+                 and resolve before retrying"
+            )
+            .into(),
+        ));
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_deals_deal_artifact_hash
+            ON deals(deal_artifact_hash)
+            WHERE deal_artifact_hash IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+/// Documents the existing column-level UNIQUE behaviour on `idempotency_key`
+/// across `jobs`, `deals`, and `requester_deals` via explicit partial unique
+/// indexes. SQLite already treats NULLs as not-equal in `UNIQUE` columns, so
+/// this is functionally equivalent but makes the intent visible at the
+/// schema level — future maintainers won't try to "fix" the column-level
+/// UNIQUE under the assumption that it disallows multiple NULLs.
+fn migrate_idempotency_key_partial_unique(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_jobs_idempotency_key
+            ON jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS uniq_deals_idempotency_key
+            ON deals(idempotency_key) WHERE idempotency_key IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS uniq_requester_deals_idempotency_key
+            ON requester_deals(idempotency_key) WHERE idempotency_key IS NOT NULL;",
     )?;
     Ok(())
 }

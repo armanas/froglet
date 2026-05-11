@@ -45,40 +45,75 @@ pub fn require_bearer_token(
     expected_token: &str,
     scope: &str,
 ) -> Result<(), (StatusCode, serde_json::Value)> {
-    let Some(header_value) = headers.get(header::AUTHORIZATION) else {
+    require_bearer_token_or_alt_header(headers, expected_token, scope, None)
+}
+
+/// Same gate as [`require_bearer_token`] but additionally accepts the token
+/// in a caller-specified alternative header (e.g. `x-froglet-admin-token`).
+/// The Authorization header is checked first; on miss, the alt header is
+/// consulted. Both comparisons use [`subtle::ConstantTimeEq`] so neither path
+/// leaks the expected token via timing.
+///
+/// Pass `alt_header = None` for "Authorization-only" semantics, identical to
+/// [`require_bearer_token`]. Pass `Some("x-froglet-admin-token")` for
+/// services that historically accept either header (e.g. the marketplace
+/// arbiter — without this, sister implementations drift and one was found
+/// using `==` instead of constant-time compare).
+pub fn require_bearer_token_or_alt_header(
+    headers: &HeaderMap,
+    expected_token: &str,
+    scope: &str,
+    alt_header: Option<&'static str>,
+) -> Result<(), (StatusCode, serde_json::Value)> {
+    let expected_bytes = expected_token.as_bytes();
+
+    if let Some(header_value) = headers.get(header::AUTHORIZATION) {
+        let authorization = header_value.to_str().map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                json!({ "error": format!("invalid {scope} authorization header") }),
+            )
+        })?;
+
+        if let Some(token) = authorization.strip_prefix("Bearer ") {
+            if token.as_bytes().ct_eq(expected_bytes).unwrap_u8() == 1 {
+                return Ok(());
+            }
+            // Authorization header present and well-formed but token did not
+            // match. If an alt header is configured, fall through to check
+            // it; otherwise reject with the historical message so existing
+            // tests that match on this string keep passing.
+            if alt_header.is_none() {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    json!({ "error": format!("invalid {scope} authorization token") }),
+                ));
+            }
+        } else if alt_header.is_none() {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                json!({ "error": format!("invalid {scope} authorization scheme") }),
+            ));
+        }
+    } else if alt_header.is_none() {
         return Err((
             StatusCode::UNAUTHORIZED,
             json!({ "error": format!("missing {scope} authorization") }),
         ));
-    };
-
-    let authorization = header_value.to_str().map_err(|_| {
-        (
-            StatusCode::UNAUTHORIZED,
-            json!({ "error": format!("invalid {scope} authorization header") }),
-        )
-    })?;
-
-    let Some(token) = authorization.strip_prefix("Bearer ") else {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            json!({ "error": format!("invalid {scope} authorization scheme") }),
-        ));
-    };
-
-    let valid = token
-        .as_bytes()
-        .ct_eq(expected_token.as_bytes())
-        .unwrap_u8()
-        == 1;
-    if !valid {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            json!({ "error": format!("invalid {scope} authorization token") }),
-        ));
     }
 
-    Ok(())
+    if let Some(name) = alt_header
+        && let Some(value) = headers.get(name)
+        && let Ok(value) = value.to_str()
+        && value.trim().as_bytes().ct_eq(expected_bytes).unwrap_u8() == 1
+    {
+        return Ok(());
+    }
+
+    Err((
+        StatusCode::UNAUTHORIZED,
+        json!({ "error": format!("invalid {scope} authorization token") }),
+    ))
 }
 
 fn load_or_create_token(
@@ -163,7 +198,9 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_or_create_local_token, require_bearer_token};
+    use super::{
+        load_or_create_local_token, require_bearer_token, require_bearer_token_or_alt_header,
+    };
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
     use std::os::unix::fs::PermissionsExt;
 
@@ -223,5 +260,103 @@ mod tests {
 
         assert_eq!(error.0, StatusCode::UNAUTHORIZED);
         assert_eq!(error.1["error"], "invalid runtime authorization scheme");
+    }
+
+    #[test]
+    fn alt_header_path_accepts_matching_token_when_authorization_is_absent() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-froglet-admin-token",
+            HeaderValue::from_static("admin-secret"),
+        );
+
+        let result = require_bearer_token_or_alt_header(
+            &headers,
+            "admin-secret",
+            "admin",
+            Some("x-froglet-admin-token"),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn alt_header_path_accepts_matching_token_when_authorization_mismatches() {
+        // Drift-protection regression: an attacker cannot steal admin
+        // access by sending a non-matching Authorization that previously
+        // would short-circuit before the alt-header check.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong-token"),
+        );
+        headers.insert(
+            "x-froglet-admin-token",
+            HeaderValue::from_static("admin-secret"),
+        );
+
+        let result = require_bearer_token_or_alt_header(
+            &headers,
+            "admin-secret",
+            "admin",
+            Some("x-froglet-admin-token"),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn alt_header_path_rejects_when_neither_header_matches() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong"),
+        );
+        headers.insert(
+            "x-froglet-admin-token",
+            HeaderValue::from_static("also-wrong"),
+        );
+
+        let error = require_bearer_token_or_alt_header(
+            &headers,
+            "admin-secret",
+            "admin",
+            Some("x-froglet-admin-token"),
+        )
+        .expect_err("both headers wrong must reject");
+
+        assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn alt_header_path_rejects_when_no_headers_present() {
+        let headers = HeaderMap::new();
+
+        let error = require_bearer_token_or_alt_header(
+            &headers,
+            "admin-secret",
+            "admin",
+            Some("x-froglet-admin-token"),
+        )
+        .expect_err("missing headers must reject");
+
+        assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn alt_header_disabled_preserves_authorization_only_behavior() {
+        // Sanity: with alt_header=None, behavior is byte-identical to
+        // require_bearer_token. An x-froglet-admin-token header is ignored.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-froglet-admin-token",
+            HeaderValue::from_static("test-token"),
+        );
+
+        let error = require_bearer_token_or_alt_header(&headers, "test-token", "runtime", None)
+            .expect_err("alt header must not be honored when alt_header=None");
+
+        assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(error.1["error"], "missing runtime authorization");
     }
 }

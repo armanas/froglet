@@ -47,7 +47,12 @@ pub mod demo_echo;
 pub mod demo_fetch_witness;
 pub mod demo_hash_verify;
 pub mod demo_notarize;
-pub(crate) mod safe_fetch;
+// `safe_fetch` started here because it was first used by demo builtins, but
+// it's a generally-useful HTTP utility. Re-exported at the crate root via
+// `pub use builtins::safe_fetch as safe_fetch_module` in `lib.rs` so private
+// downstream services (`froglet-services` adapters) can consume one shared
+// implementation rather than each rolling their own SSRF-protected fetch.
+pub mod safe_fetch;
 
 pub use demo_add::AddHandler;
 pub use demo_echo::EchoHandler;

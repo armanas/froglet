@@ -307,15 +307,28 @@ impl WasmSandbox {
         wasm_bytes: &[u8],
         abi_version: &str,
     ) -> Result<Module, Box<dyn std::error::Error + Send + Sync>> {
-        let cache_key = ModuleCacheKey::new(wasm_bytes, abi_version);
-        if let Some(module) = self.with_module_cache(|cache| cache.get(&cache_key)) {
-            return Ok(module);
-        }
+        // Convert the &str ABI to the enum once at the cache boundary so the
+        // cache key is `Copy` and lookups don't allocate. An unrecognised ABI
+        // is rejected by `validate_module_policy` below; we still build a
+        // cache key for the recognised case to avoid an extra branch.
+        let abi = wasm::WasmAbi::parse(abi_version);
+        if let Some(abi) = abi {
+            let cache_key = ModuleCacheKey::new(wasm_bytes, abi);
+            if let Some(module) = self.with_module_cache(|cache| cache.get(&cache_key)) {
+                return Ok(module);
+            }
 
-        let module = Module::new(&self.engine, wasm_bytes)?;
-        validate_module_policy(&module, abi_version)?;
-        self.with_module_cache(|cache| cache.insert(cache_key, module.clone()));
-        Ok(module)
+            let module = Module::new(&self.engine, wasm_bytes)?;
+            validate_module_policy(&module, abi_version)?;
+            self.with_module_cache(|cache| cache.insert(cache_key, module.clone()));
+            Ok(module)
+        } else {
+            // Fall through to validation, which will surface the unsupported
+            // ABI as a clear error rather than us guessing here.
+            let module = Module::new(&self.engine, wasm_bytes)?;
+            validate_module_policy(&module, abi_version)?;
+            Ok(module)
+        }
     }
 
     fn with_module_cache<T>(&self, operation: impl FnOnce(&mut ModuleCache) -> T) -> T {
@@ -327,23 +340,20 @@ impl WasmSandbox {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ModuleCacheKey {
     module_hash: [u8; 32],
-    abi_version: String,
+    abi: wasm::WasmAbi,
 }
 
 impl ModuleCacheKey {
-    fn new(wasm_bytes: &[u8], abi_version: &str) -> Self {
+    fn new(wasm_bytes: &[u8], abi: wasm::WasmAbi) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(wasm_bytes);
         let digest = hasher.finalize();
         let mut module_hash = [0u8; 32];
         module_hash.copy_from_slice(&digest);
-        Self {
-            module_hash,
-            abi_version: abi_version.to_string(),
-        }
+        Self { module_hash, abi }
     }
 }
 
@@ -393,7 +403,7 @@ impl ModuleCache {
                 .entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_used_tick)
-                .map(|(key, _)| key.clone())
+                .map(|(key, _)| *key)
             else {
                 break;
             };

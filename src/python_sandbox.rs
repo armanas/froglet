@@ -339,6 +339,15 @@ fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
         denied.insert(libc::SYS_connect);
         denied.insert(libc::SYS_bind);
     }
+    // io_uring (since Linux 5.1) bypasses the per-syscall seccomp gate above:
+    // its IORING_OP_SOCKET / CONNECT / BIND opcodes do not invoke the
+    // socket/connect/bind syscalls and thus would slip past the deny-list.
+    // Deny io_uring entry points unconditionally — Python stdlib does not use
+    // io_uring, and io_uring async file ops are also a known landlock-bypass
+    // class on older kernels.
+    denied.insert(libc::SYS_io_uring_setup);
+    denied.insert(libc::SYS_io_uring_enter);
+    denied.insert(libc::SYS_io_uring_register);
 
     let rules: BTreeMap<i64, Vec<SeccompRule>> =
         denied.into_iter().map(|sc| (sc, Vec::new())).collect();
@@ -480,6 +489,36 @@ try:\n  socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n  print('LEAKED')\nex
         let (code, stdout, _) = run_python(script, config);
         assert_eq!(code, 0);
         assert!(stdout.contains("BLOCKED"), "unexpected stdout: {stdout}");
+    }
+
+    #[test]
+    #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
+    fn python_cannot_setup_io_uring_under_seccomp() {
+        let dir = tempdir();
+        // io_uring deny is unconditional, so we test with allow_network=true
+        // to prove it's blocked even when the regular socket() syscall is
+        // allowed: this rules out the workload using io_uring as a network
+        // bypass when allow_network=false.
+        let mut config = SandboxConfig::for_python(dir.path());
+        config.allow_network = true;
+        let script = "\
+import ctypes\n\
+import errno\n\
+libc = ctypes.CDLL('libc.so.6', use_errno=True)\n\
+# io_uring_setup(entries=1, params=NULL) — params=NULL is rejected with EINVAL\n\
+# in normal kernels, but seccomp must intercept it FIRST and return EPERM.\n\
+res = libc.syscall(425, 1, 0)  # SYS_io_uring_setup = 425 on x86_64/aarch64\n\
+err = ctypes.get_errno()\n\
+if res < 0 and err == errno.EPERM:\n  print('BLOCKED')\nelse:\n  print(f'LEAKED res={res} errno={err}')\n";
+        let (code, stdout, stderr) = run_python(script, config);
+        assert_eq!(
+            code, 0,
+            "unexpected exit {code}; stdout: {stdout}; stderr: {stderr}"
+        );
+        assert!(
+            stdout.contains("BLOCKED"),
+            "io_uring_setup must be blocked by seccomp; stdout: {stdout}"
+        );
     }
 
     #[test]

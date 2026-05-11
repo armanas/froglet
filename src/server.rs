@@ -282,14 +282,17 @@ async fn run(
             .map_err(|e| format!("invalid FROGLET_LISTEN_ADDR: {e}"))?;
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
-        {
+        // Drop the mutex guard before potentially calling `process::exit`.
+        // `process::exit` skips Drop, so a guard held across it would never
+        // release; keeping the lock scope tight also avoids serialising
+        // unrelated transport-status work behind the bind path.
+        let bind_outcome = {
             let mut transport_status = state.transport_status.lock().await;
-            if let Err(error) =
-                transport_status.update_clearnet_bound_addr(&node_config, bound_addr)
-            {
-                error!("{error}");
-                std::process::exit(1);
-            }
+            transport_status.update_clearnet_bound_addr(&node_config, bound_addr)
+        };
+        if let Err(error) = bind_outcome {
+            error!("{error}");
+            std::process::exit(1);
         }
         let initial_public_listener = Arc::new(TokioMutex::new(Some(listener)));
         let public_listener_app = public_app.clone();
@@ -362,7 +365,13 @@ async fn run(
         let settlement_state = state.clone();
         spawn_supervised_task(
             "lightning-settlement-loop",
-            SupervisionPolicy::Fatal,
+            // Restart on panic instead of taking the whole node offline. The
+            // settlement reconciliation surface is large (Lightning RPC,
+            // database, signed-artifact verification) and a panic anywhere
+            // in that stack should not be Fatal. `spawn_supervised_task`
+            // already wraps the closure in `catch_unwind`, so a panic here
+            // surfaces as a task error and triggers restart with backoff.
+            restart_policy,
             Arc::new(move || {
                 let settlement_state = settlement_state.clone();
                 Box::pin(async move {

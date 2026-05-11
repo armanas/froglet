@@ -668,6 +668,128 @@ pub fn validate_offer_artifact(offer: &SignedArtifact<OfferPayload>) -> Result<(
     Ok(())
 }
 
+/// A signed artifact that has passed both `verify_artifact` (signature +
+/// payload-hash integrity) AND the kind-specific semantic validator
+/// (`signer == payload.provider_id` plus the per-kind invariants in
+/// `docs/KERNEL.md`). Returned by [`verify_typed_document`].
+///
+/// This is exhaustive over the artifact kinds that have semantic validators
+/// today: descriptor, offer, and receipt. New kinds added to the kernel
+/// (quote, deal, invoice_bundle, …) will need a new variant here AND a
+/// corresponding `validate_*_artifact` — the typed enum forces that link
+/// at compile time, so a consuming service cannot silently fall back to
+/// signature-only verification when a new kind appears.
+#[derive(Debug)]
+pub enum VerifiedArtifact {
+    Descriptor(Box<SignedArtifact<DescriptorPayload>>),
+    Offer(Box<SignedArtifact<OfferPayload>>),
+    /// Boxed: `ReceiptPayload` has many optional fields and lifts the enum's
+    /// stack size to ~1 KiB without it. Boxing makes all variants the same
+    /// pointer-sized payload (clippy::large_enum_variant).
+    Receipt(Box<SignedArtifact<ReceiptPayload>>),
+}
+
+/// Errors from [`verify_typed_document`]. Distinct from the per-step
+/// `Result<(), String>` returned by the legacy validators: this lets a
+/// caller distinguish "I don't support this kind" from "this artifact is
+/// malformed" from "this artifact is hostile". Manual enum to avoid pulling
+/// `thiserror` into the kernel crate's tight dep set.
+#[derive(Debug)]
+pub enum VerifyError {
+    /// The artifact_kind string is not one this kernel knows how to verify
+    /// strongly. Callers should treat this as "stop"; the legacy
+    /// `verify_artifact` is still available for kernel-internal use, but
+    /// projecting unknown kinds into a downstream store via the typed API
+    /// is a deliberate non-goal.
+    UnknownKind(String),
+    /// The signed envelope failed `verify_artifact` (signature mismatch,
+    /// payload_hash mismatch, schema_version mismatch).
+    SignatureFailed,
+    /// The JSON document could not be deserialised into the typed payload
+    /// for `artifact_kind`. Usually means a wire-format mismatch.
+    Decode(String),
+    /// The typed semantic validator (`validate_*_artifact`) rejected the
+    /// artifact. Includes `signer != payload.provider_id` rejections —
+    /// the binding check that would have caught the C2 receipt-attribution
+    /// bug in marketplace-node before it shipped.
+    Semantic(String),
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::UnknownKind(kind) => {
+                write!(f, "unknown or unsupported artifact_kind: {kind}")
+            }
+            VerifyError::SignatureFailed => write!(f, "artifact signature verification failed"),
+            VerifyError::Decode(msg) => write!(f, "artifact decode failed: {msg}"),
+            VerifyError::Semantic(msg) => write!(f, "artifact semantic validation failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
+/// Verify a signed artifact JSON document end to end:
+///
+/// 1. Parse the document into the typed `SignedArtifact<T>` for `artifact_kind`.
+/// 2. Run [`verify_artifact`] (signature + payload-hash integrity).
+/// 3. Run the kind-specific semantic validator
+///    (`validate_descriptor_artifact` / `validate_offer_artifact` /
+///    `validate_receipt_artifact`), which enforces `signer == payload.provider_id`
+///    plus the per-kind invariants from `docs/KERNEL.md`.
+///
+/// This is the **safe-by-default** entry point for consumers who project
+/// artifacts into derived stores. The standalone `verify_artifact` and
+/// `validate_*_artifact` functions remain available for kernel-internal use
+/// (round-tripping conformance vectors etc.), but new code in adapters or
+/// service layers should call this so a missed binding check (the C2
+/// receipt-attribution bug in marketplace-node) becomes a compile error
+/// rather than a silent verification gap.
+///
+/// `artifact_kind` must match one of the `ARTIFACT_KIND_*` constants. Kinds
+/// not yet covered by the typed enum (quote, deal, invoice_bundle,
+/// curated_list, confidential_*) return `VerifyError::UnknownKind` —
+/// callers must either add a `VerifiedArtifact` variant or handle those
+/// kinds explicitly via the legacy API.
+pub fn verify_typed_document(
+    document: &Value,
+    artifact_kind: &str,
+) -> Result<VerifiedArtifact, VerifyError> {
+    match artifact_kind {
+        ARTIFACT_KIND_DESCRIPTOR => {
+            let artifact: SignedArtifact<DescriptorPayload> =
+                serde_json::from_value(document.clone())
+                    .map_err(|error| VerifyError::Decode(error.to_string()))?;
+            if !verify_artifact(&artifact) {
+                return Err(VerifyError::SignatureFailed);
+            }
+            validate_descriptor_artifact(&artifact).map_err(VerifyError::Semantic)?;
+            Ok(VerifiedArtifact::Descriptor(Box::new(artifact)))
+        }
+        ARTIFACT_KIND_OFFER => {
+            let artifact: SignedArtifact<OfferPayload> =
+                serde_json::from_value(document.clone())
+                    .map_err(|error| VerifyError::Decode(error.to_string()))?;
+            if !verify_artifact(&artifact) {
+                return Err(VerifyError::SignatureFailed);
+            }
+            validate_offer_artifact(&artifact).map_err(VerifyError::Semantic)?;
+            Ok(VerifiedArtifact::Offer(Box::new(artifact)))
+        }
+        ARTIFACT_KIND_RECEIPT => {
+            let artifact: SignedArtifact<ReceiptPayload> = serde_json::from_value(document.clone())
+                .map_err(|error| VerifyError::Decode(error.to_string()))?;
+            if !verify_artifact(&artifact) {
+                return Err(VerifyError::SignatureFailed);
+            }
+            validate_receipt_artifact(&artifact).map_err(VerifyError::Semantic)?;
+            Ok(VerifiedArtifact::Receipt(Box::new(artifact)))
+        }
+        other => Err(VerifyError::UnknownKind(other.to_string())),
+    }
+}
+
 pub fn artifact_hash<T: Serialize>(artifact: &SignedArtifact<T>) -> Result<String, String> {
     let payload_hash = payload_hash(&artifact.payload)?;
     canonical_signing_bytes(
@@ -1280,5 +1402,135 @@ mod tests {
             validate_offer_artifact(&offer).unwrap_err(),
             "offer descriptor_hash must be non-empty"
         );
+    }
+
+    #[test]
+    fn verify_typed_document_accepts_descriptor_with_matching_signer() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            42,
+            valid_descriptor_payload(&signer),
+        )
+        .unwrap();
+        let document = serde_json::to_value(descriptor).unwrap();
+
+        match verify_typed_document(&document, ARTIFACT_KIND_DESCRIPTOR) {
+            Ok(VerifiedArtifact::Descriptor(_)) => {}
+            Ok(other) => panic!("expected Descriptor variant, got {other:?}"),
+            Err(error) => panic!("expected Ok, got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_typed_document_rejects_descriptor_signed_by_attacker_for_victim() {
+        // The exact attack class C2 (marketplace-node receipt-binding gap)
+        // generalised — an attacker's signature is valid under their own key,
+        // but `payload.provider_id` claims a victim. The strong-by-default
+        // entry point must reject before the typed artifact is returned.
+        let attacker_key = crypto::generate_signing_key();
+        let attacker_signer = crypto::public_key_hex(&attacker_key);
+        let victim_key = crypto::generate_signing_key();
+        let victim_signer = crypto::public_key_hex(&victim_key);
+        let artifact = sign_artifact(
+            &attacker_signer,
+            |message| crypto::sign_message_hex(&attacker_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            42,
+            valid_descriptor_payload(&victim_signer),
+        )
+        .unwrap();
+        let document = serde_json::to_value(artifact).unwrap();
+
+        match verify_typed_document(&document, ARTIFACT_KIND_DESCRIPTOR) {
+            Err(VerifyError::Semantic(message)) => {
+                assert!(
+                    message.contains("signer does not match provider_id"),
+                    "unexpected semantic message: {message}"
+                );
+            }
+            other => panic!("expected Err(Semantic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_typed_document_rejects_offer_signed_by_attacker_for_victim() {
+        let attacker_key = crypto::generate_signing_key();
+        let attacker_signer = crypto::public_key_hex(&attacker_key);
+        let victim_key = crypto::generate_signing_key();
+        let victim_signer = crypto::public_key_hex(&victim_key);
+        let artifact = sign_artifact(
+            &attacker_signer,
+            |message| crypto::sign_message_hex(&attacker_key, message),
+            ARTIFACT_TYPE_OFFER,
+            42,
+            valid_offer_payload(&victim_signer),
+        )
+        .unwrap();
+        let document = serde_json::to_value(artifact).unwrap();
+
+        match verify_typed_document(&document, ARTIFACT_KIND_OFFER) {
+            Err(VerifyError::Semantic(message)) => {
+                assert!(
+                    message.contains("signer does not match provider_id"),
+                    "unexpected semantic message: {message}"
+                );
+            }
+            other => panic!("expected Err(Semantic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_typed_document_rejects_tampered_payload_with_signature_failure() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            42,
+            valid_descriptor_payload(&signer),
+        )
+        .unwrap();
+        let mut document = serde_json::to_value(descriptor).unwrap();
+        document["payload_hash"] = serde_json::Value::String("00".repeat(32));
+
+        match verify_typed_document(&document, ARTIFACT_KIND_DESCRIPTOR) {
+            Err(VerifyError::SignatureFailed) => {}
+            other => panic!("expected Err(SignatureFailed), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_typed_document_rejects_unknown_kind() {
+        // Quote / deal / invoice_bundle don't have typed-projection support
+        // yet. Calling for an unsupported kind must return UnknownKind so
+        // consumers do NOT silently fall back to signature-only verification.
+        let document = serde_json::json!({});
+        match verify_typed_document(&document, ARTIFACT_KIND_QUOTE) {
+            Err(VerifyError::UnknownKind(kind)) => assert_eq!(kind, ARTIFACT_KIND_QUOTE),
+            other => panic!("expected Err(UnknownKind), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_typed_document_rejects_garbage_kind_string() {
+        let document = serde_json::json!({});
+        match verify_typed_document(&document, "not-a-real-kind") {
+            Err(VerifyError::UnknownKind(kind)) => assert_eq!(kind, "not-a-real-kind"),
+            other => panic!("expected Err(UnknownKind), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_typed_document_rejects_malformed_json_with_decode_error() {
+        let document = serde_json::json!({ "not": "a signed artifact" });
+        match verify_typed_document(&document, ARTIFACT_KIND_DESCRIPTOR) {
+            Err(VerifyError::Decode(_)) => {}
+            other => panic!("expected Err(Decode), got {other:?}"),
+        }
     }
 }
