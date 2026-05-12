@@ -104,6 +104,34 @@ make_tracked_snapshot() {
   done < <(git ls-files -z)
 }
 
+count_report_findings() {
+  local report="$1"
+  if [[ ! -s "$report" ]]; then
+    echo 0
+    return
+  fi
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 is required to verify gitleaks reports"
+  python3 - "$report" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    # Treat unparseable reports as suspicious (1 finding) so the gate fails closed.
+    print(1)
+    sys.exit(0)
+
+if isinstance(data, list):
+    print(len(data))
+else:
+    print(1)
+PY
+}
+
 run_scan() {
   local id="$1"
   shift
@@ -111,16 +139,30 @@ run_scan() {
   local report="${evidence_dir}/${id}.json"
   local rc=0
 
-  if run_gitleaks "$@" --redact --report-format json --report-path "$report" >"$log" 2>&1; then
+  # Do not use `if cmd; then ...; fi` to capture rc — after the `fi`, `$?` is the
+  # exit status of the `if` itself (0 when the false branch was taken), not of
+  # `cmd`. Use the `cmd || rc=$?` pattern so we observe gitleaks' true rc, and
+  # cross-check against the JSON report so a future gitleaks regression that
+  # returns rc=0 on findings still trips the gate.
+  run_gitleaks "$@" --redact --report-format json --report-path "$report" >"$log" 2>&1 || rc=$?
+
+  local findings
+  findings="$(count_report_findings "$report")"
+
+  if [[ $rc -eq 0 && $findings -eq 0 ]]; then
     echo "[PASS] ${id}"
     return 0
   fi
 
-  rc=$?
-  if [[ $rc -eq 1 ]]; then
-    echo "[FAIL] ${id} (findings)" >&2
+  if [[ $findings -gt 0 ]]; then
+    echo "[FAIL] ${id} (${findings} finding(s), rc=${rc})" >&2
   else
     echo "[FAIL] ${id} (rc=${rc})" >&2
+  fi
+
+  # Propagate failure even when gitleaks reports findings but exits 0.
+  if [[ $rc -eq 0 ]]; then
+    return 1
   fi
   return "$rc"
 }

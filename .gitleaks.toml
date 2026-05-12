@@ -10,9 +10,13 @@ commits = [
   "26050948d18fe4d374caf202ee829a31d2ea1496",
   "970655fe11481df285fa357a02322ee03d49012b",
   "b8986f7031b21a8d2a06b632e394e0e31a5f84c9",
+  "b07e707513a69d88d5226016d295a7d22a9b7e48",
 ]
 
 [[allowlists]]
 targetRules = ["generic-api-key"]
-description = "Historical Cashu test fixture on GitHub-visible refs"
-commits = ["d3ee6404b1c695737e01bfad6e6fdcef2e22c3ad"]
+description = "Historical Cashu and idempotency-key test fixtures on GitHub-visible refs"
+commits = [
+  "d3ee6404b1c695737e01bfad6e6fdcef2e22c3ad",
+  "d8187af22793888a98c0e5978561df50eb75951d",
+]
