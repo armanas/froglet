@@ -1,0 +1,125 @@
+---
+title: Ship A Provider Without DNS
+description: "Run a public Froglet provider without owning a domain — four supported paths and the trade-offs between them."
+---
+
+<div class="learn-hero compact">
+  <div>
+    <div class="learn-pill">No-domain onboarding</div>
+    <p class="learn-lead">Owning a DNS zone is optional. Four supported paths get you to a discoverable provider with no domain of your own.</p>
+    <p class="learn-sublead">Path A uses Tor v3 hidden services. Path B issues you a managed <code>&lt;slug&gt;.providers.froglet.dev</code>. Path D deploys to any PaaS that gives you an HTTPS URL. Path E is just "register your URL, skip attestation." Pick the one that fits your machine.</p>
+  </div>
+</div>
+
+## TL;DR
+
+| Path | Public URL form | What you need | Identity attestation |
+|---|---|---|---|
+| **A — Tor v3 hidden service** | `http://<56-char-hash>.onion` | Local `tor` daemon | optional |
+| **B — Managed subdomain** | `https://<slug>.providers.froglet.dev` | Public IP + signing key | optional |
+| **D — PaaS endpoint** | `https://<name>.fly.dev` / `<name>.onrender.com` / etc. | PaaS account | optional |
+| **E — Key-only registration** | any `https://` URL you control | the public URL itself | none |
+
+All four converge on the same kernel flow: descriptor + offer signed by your provider key, published from your `/v1/feed`, observed and verified by the marketplace at `POST https://marketplace.froglet.dev/v1/registrations`.
+
+The full reference doc lives at [docs/PROVIDER_ONBOARDING.md](https://github.com/armanas/froglet/blob/main/docs/PROVIDER_ONBOARDING.md) in the repo. This page is the practical "pick one and ship" version.
+
+## Path A — Tor v3 hidden service
+
+The strongest no-DNS posture. Your `.onion` hash is your address; Tor v3 provides end-to-end authentication and encryption; works behind any NAT.
+
+1. Install Tor: `brew install tor` (macOS) or `apt-get install tor` (Debian/Ubuntu).
+2. Add to `/etc/tor/torrc`:
+   ```
+   HiddenServiceDir /var/lib/tor/froglet/
+   HiddenServiceVersion 3
+   HiddenServicePort 80 127.0.0.1:8910
+   ```
+3. `systemctl reload tor` (or `tor --runasdaemon 1` on a workstation).
+4. Read your onion: `cat /var/lib/tor/froglet/hostname`.
+5. Start `froglet-node` advertising the onion in capabilities:
+   ```bash
+   FROGLET_PUBLIC_BASE_URL="http://<your-v3-hash>.onion" \
+   FROGLET_TRANSPORT_TOR_ENABLED=1 \
+   FROGLET_TRANSPORT_TOR_URL="http://<your-v3-hash>.onion" \
+   froglet-node
+   ```
+6. Register:
+   ```bash
+   curl -sS -X POST https://marketplace.froglet.dev/v1/registrations \
+     -H "content-type: application/json" \
+     -d '{"provider_url":"http://<your-v3-hash>.onion","transport":"tor"}'
+   ```
+
+**Tradeoff**: higher latency (~500ms+), clients must speak Tor.
+
+## Path B — Managed `<slug>.providers.froglet.dev`
+
+The marketplace allocates you a DNS record under its parent zone. You need a public IP; the marketplace handles the DNS and the slug↔key binding. TLS is your responsibility (Caddy with HTTP-01 ACME works).
+
+Two-phase signed claim — both phases use `froglet-node` to sign:
+
+```bash
+# 1. Read your provider pubkey from your already-running froglet-node
+PROVIDER_PUBKEY=$(froglet-node print-identity)
+PUBLIC_IP=<your public IPv4 or IPv6>
+SLUG=demo-1
+
+# 2. Sign the intent message
+INTENT_MSG="froglet-provider-domain-claim-intent-v1
+provider_id:${PROVIDER_PUBKEY}
+slug:${SLUG}
+hostname:${SLUG}.providers.froglet.dev
+public_ip:${PUBLIC_IP}"
+INTENT_SIG=$(printf '%s' "$INTENT_MSG" | froglet-node sign-message)
+
+# 3. Submit the claim
+curl -sS -X POST https://marketplace.froglet.dev/v1/provider-domains/claims \
+  -H "content-type: application/json" \
+  -d "{\"provider_id\":\"${PROVIDER_PUBKEY}\",\"requested_slug\":\"${SLUG}\",\"public_ip\":\"${PUBLIC_IP}\",\"intent_signature\":\"${INTENT_SIG}\"}"
+# Response contains: claim_id, signing_message, expires_at (15 min TTL)
+
+# 4. Sign the response's signing_message and complete
+COMPLETE_SIG=$(printf '%s' "$SIGNING_MESSAGE" | froglet-node sign-message)
+curl -sS -X POST "https://marketplace.froglet.dev/v1/provider-domains/claims/${CLAIM_ID}/complete" \
+  -H "content-type: application/json" \
+  -d "{\"signature\":\"${COMPLETE_SIG}\"}"
+```
+
+If the marketplace returns `status: pending_operator_dns`, poll `GET /v1/provider-domains/claims/<claim_id>` until it flips to `active`. After DNS is live, stand up Caddy on your box for TLS and then register through the standard `POST /v1/registrations`.
+
+## Path D — PaaS endpoint (Fly.io, Render, Railway, Vercel)
+
+The lowest-friction path for someone with no IP or domain. The marketplace accepts any public HTTPS URL with no path component.
+
+```bash
+# Generic shape — works on Fly.io, Render, Railway, etc.
+# Deploy ghcr.io/armanas/froglet-provider:latest with these env vars:
+FROGLET_NODE_ROLE=provider
+FROGLET_PUBLIC_BASE_URL=https://<your-paas-url>
+FROGLET_LISTEN_ADDR=0.0.0.0:8080
+
+# Then register
+curl -sS -X POST https://marketplace.froglet.dev/v1/registrations \
+  -H "content-type: application/json" \
+  -d '{"provider_url":"https://<your-paas-url>"}'
+```
+
+A complete Fly.io reference flow is available at [`scripts/fly_provider_smoke.sh`](https://github.com/armanas/froglet/blob/main/scripts/fly_provider_smoke.sh) — it builds, deploys, registers, and tears down a fresh Fly app end-to-end.
+
+## Path E — Key-only (no attestation)
+
+Per the [identity attestation spec](https://github.com/armanas/froglet/blob/main/docs/IDENTITY_ATTESTATION.md):
+
+> "attestations are always optional, always user-initiated, and never block a kernel-level deal flow."
+
+There is no separate "no attestation" code path — it is the default for any provider that does not issue a DNS or OAuth attestation. Such providers appear in `GET /v1/providers` by default, are filtered out by `attested=true`, and are valid counterparties for the full kernel deal flow regardless. Combined with A, D, or self-hosting on any cloud, you can be a Froglet provider in minutes.
+
+## Choose one
+
+If you ask "which should I use?":
+
+- **You have a laptop and no IP** → Path A (Tor).
+- **You have a public IP but no domain** → Path B (managed subdomain).
+- **You don't want to think about hosting** → Path D (Fly.io / Render).
+- **You already have a URL** → Path E (just register it).

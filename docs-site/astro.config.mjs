@@ -38,6 +38,7 @@ export default defineConfig({
 							{ label: 'Docs Home', slug: 'docs' },
 							{ label: 'Try In Cloud', slug: 'learn/cloud-trial' },
 							{ label: 'Run Locally', slug: 'learn/quickstart' },
+							{ label: 'Ship Without DNS', slug: 'learn/provider-onboarding' },
 							{ label: 'Connect Agents', slug: 'learn/agents' },
 							{ label: 'LLM Install Contract', slug: 'learn/llm-self-install' },
 							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
