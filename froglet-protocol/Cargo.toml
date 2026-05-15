@@ -16,3 +16,8 @@ rand = "0.8"
 hex = "0.4"
 sha2 = "0.10"
 hmac = "0.12"
+# Manifest parser (Phase 0 of agent-grade publish plan): TOML for the
+# froglet.toml (project) + froglet-service.toml (per-service) schemas
+# defined in docs/MANIFEST.md.
+toml = "0.9"
+thiserror = "2.0"

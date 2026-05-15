@@ -1,5 +1,6 @@
 pub mod canonical_json;
 pub mod crypto;
+pub mod manifest;
 pub mod protocol;
 
 use serde::{Deserialize, Serialize};
