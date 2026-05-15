@@ -1,10 +1,18 @@
 # Phase 4 — LLM acceptance matrix
 
-The launch gate for "agent-grade publish actually works." The matrix is
-**45 cells** (5 prompts × 3 LLM models × 3 hosting backends) and the
-pass bar is **≥40 of 45 (≥90%)**. If the matrix passes, Phase 6 (public
-launch) is unblocked. If it fails, the failure category tells us what
-to fix.
+The launch gate for "agent-grade publish actually works." The default
+matrix is **30 cells** (5 prompts × 2 Claude models × 3 hosting
+backends) and the pass bar is **≥27 of 30 (≥90%, with both a count
+and a percentage gate that must clear)**. If the matrix passes, Phase
+6 (public launch) is unblocked. If it fails, the failure category
+tells us what to fix.
+
+GPT-4 / OpenAI driving is intentionally NOT in the default matrix —
+no driver is wired yet. Adding one is a contribution: implement
+`drive_openai()` in `run_matrix.py` mirroring `drive_anthropic()`,
+then add the model name to `criteria.json`. The harness explicitly
+errors when you ask for a model it can't drive, so silent
+mis-routing is impossible.
 
 ## What's tested
 
@@ -36,9 +44,12 @@ export ANTHROPIC_API_KEY=...   # for Claude models
 ### Optional
 
 ```bash
-export OPENAI_API_KEY=...                       # for GPT-4 cells
 export FROGLET_TEST_SELF_URL=https://...        # for hosting=self cells
 ```
+
+(No OPENAI_API_KEY needed — GPT models aren't in the default matrix.
+If you wire `drive_openai()` and add the model to criteria.json, set
+the key then.)
 
 ### Required for `--execute` mode
 
@@ -88,23 +99,32 @@ _tmp/llm_acceptance/20260516T0930Z/
 
 ```json
 {
-  "total": 45,
-  "passed": 42,
+  "total": 30,
+  "passed": 28,
   "pass_rate_pct": 93.3,
   "bar_pct": 90,
+  "bar_count": 27,
+  "rate_ok": true,
+  "count_ok": true,
   "matrix_pass": true,
   "by_category": {
-    "tool-misuse": 2,
+    "tool-misuse": 1,
     "engine-error": 1
   }
 }
 ```
 
+Both `rate_ok` AND `count_ok` must be true for `matrix_pass`. The
+count gate guards against a small subset of cells accidentally
+clearing; the rate gate guards against a larger matrix where a low
+count still hits 90%. (In practice 27/30 satisfies both: 27 ≥ 27 and
+27/30 = 90.0% ≥ 90%.)
+
 ## Cost + time
 
-- ~$1-3 of API spend per full matrix run at current Anthropic + OpenAI
-  list prices (~6 tool-use rounds per cell × 45 cells)
-- ~15 min wall-clock without `--execute`; ~30-45 min with `--execute`
+- ~$0.50-2 of Anthropic API spend per full matrix run at current list
+  prices (~6 tool-use rounds per cell × 30 cells; Sonnet + Opus mix)
+- ~10 min wall-clock without `--execute`; ~25-40 min with `--execute`
   (dominated by indexer-lag polling)
 
 ## What happens when a cell fails

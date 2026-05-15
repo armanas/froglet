@@ -91,6 +91,31 @@ class CellResult:
 # ── LLM driver (Anthropic) ────────────────────────────────────────────
 
 
+async def drive_model(
+    model: str, system_prompt: str, user_message: str
+) -> list[dict[str, Any]]:
+    """Route to the appropriate LLM provider based on `model` prefix.
+
+    Currently only Anthropic models are supported. OpenAI / GPT-4
+    drivers are not wired; the matrix's criteria.json default model
+    list reflects this. Requesting a model the harness can't drive
+    must error loudly rather than silently route to the wrong API.
+    """
+    if model.startswith("claude-"):
+        return await drive_anthropic(model, system_prompt, user_message)
+    if model.startswith("gpt-") or model.startswith("o1-") or model.startswith("o3-"):
+        raise RuntimeError(
+            f"model {model!r}: OpenAI driver is not implemented yet. "
+            "Either remove the model from criteria.json's matrix.models "
+            "or contribute a drive_openai() function mirroring drive_anthropic()."
+        )
+    raise RuntimeError(
+        f"model {model!r}: no driver for this model family. Supported "
+        "prefixes: 'claude-'. Add a driver before adding the model to "
+        "criteria.json."
+    )
+
+
 async def drive_anthropic(
     model: str, system_prompt: str, user_message: str
 ) -> list[dict[str, Any]]:
@@ -215,16 +240,44 @@ def evaluate_cell(
     result = CellResult(cell=cell, passed=False, failure_category=None)
     result.tool_calls = tool_uses
 
+    # "Exactly once" enforcement: the system prompt says call
+    # marketplace_publish ONCE and nothing else. If the LLM ignores
+    # that — calls status first, retries, mixes other actions — the
+    # one-MCP-call promise is broken even if the eventual call would
+    # have been valid. Count by action.
     publish_calls = [
         tu for tu in tool_uses if tu["input"].get("action") == "marketplace_publish"
     ]
+    other_actions = sorted(
+        {
+            tu["input"].get("action") or "<no-action>"
+            for tu in tool_uses
+            if tu["input"].get("action") != "marketplace_publish"
+        }
+    )
+
     if not publish_calls:
         result.failure_category = "tool-not-called"
-        result.failed_checks.append("called-marketplace-publish")
+        called = sorted({tu["input"].get("action") or "<no-action>" for tu in tool_uses})
+        result.failed_checks.append(
+            f"called-marketplace-publish (LLM called {called!r} instead)"
+        )
         return result
 
     if len(publish_calls) > 1:
-        result.notes.append(f"LLM called marketplace_publish {len(publish_calls)} times")
+        result.failure_category = "llm-loop"
+        result.failed_checks.append(
+            f"no-retry-loop (LLM called marketplace_publish {len(publish_calls)} times)"
+        )
+        return result
+
+    if other_actions:
+        result.failure_category = "llm-loop"
+        result.failed_checks.append(
+            f"no-other-action (LLM also called {other_actions!r}; "
+            "system prompt requires exactly one marketplace_publish call)"
+        )
+        return result
 
     call_input = publish_calls[0]["input"]
 
@@ -252,10 +305,9 @@ def evaluate_cell(
         )
         result.failure_category = result.failure_category or "tool-misuse"
 
-    if cell.hosting_kind == "self":
-        if not (call_input.get("hosting") or {}).get("url"):
-            result.failed_checks.append("hosting-self-requires-url")
-            result.failure_category = result.failure_category or "tool-misuse"
+    if cell.hosting_kind == "self" and not (call_input.get("hosting") or {}).get("url"):
+        result.failed_checks.append("hosting-self-requires-url")
+        result.failure_category = result.failure_category or "tool-misuse"
 
     settlement_method = (call_input.get("settlement") or {}).get("method", "none")
     if settlement_method != "none":
@@ -267,6 +319,49 @@ def evaluate_cell(
     if not result.failed_checks:
         result.passed = True
     return result
+
+
+def validate_publish_response(
+    cell: Cell,
+    call_input: dict[str, Any],
+    response: dict[str, Any],
+) -> list[str]:
+    """Behavioural checks against the LIVE publish response. Returns a
+    list of failed check ids. Empty list = all checks passed.
+
+    Verifies the documented per-backend invariants:
+      - Every backend: provider_id + offer_hash are non-empty
+      - tor: public_url contains '.onion'
+      - self: public_url matches the input hosting.url
+      - local: public_url is a 127.0.0.1 / localhost URL
+    """
+    failed: list[str] = []
+    if not response.get("provider_id"):
+        failed.append("publish-succeeds:provider_id-empty")
+    if not response.get("offer_hash"):
+        failed.append("publish-succeeds:offer_hash-empty")
+
+    public_url = (response.get("public_url") or "").lower()
+    if not public_url:
+        failed.append("publish-succeeds:public_url-empty")
+        return failed
+
+    if cell.hosting_kind == "tor":
+        if ".onion" not in public_url:
+            failed.append(f"hosting-url-shape:tor (got {public_url!r}, want .onion URL)")
+    elif cell.hosting_kind == "self":
+        expected = (call_input.get("hosting") or {}).get("url", "").lower().rstrip("/")
+        actual = public_url.rstrip("/")
+        if expected and actual != expected:
+            failed.append(
+                f"hosting-url-shape:self (got {actual!r}, want {expected!r})"
+            )
+    elif cell.hosting_kind == "local":
+        if not (public_url.startswith("http://127.0.0.1") or public_url.startswith("http://localhost")):
+            failed.append(
+                f"hosting-url-shape:local (got {public_url!r}, want 127.0.0.1 or localhost)"
+            )
+    return failed
 
 
 # ── Live execution against the real MCP / engine ─────────────────────
@@ -392,7 +487,7 @@ async def run_cell(cell: Cell, prompt_spec: dict[str, Any], execute: bool) -> Ce
             user_msg += " (No FROGLET_TEST_SELF_URL was provided — the model may guess.)"
 
     try:
-        tool_uses = await drive_anthropic(
+        tool_uses = await drive_model(
             cell.model, system_prompt(cell.hosting_kind), user_msg
         )
     except RuntimeError as e:
@@ -415,10 +510,11 @@ async def run_cell(cell: Cell, prompt_spec: dict[str, Any], execute: bool) -> Ce
             )
             publish_output = await execute_publish(call_input, self_url)
             result.publish_response = publish_output
-            if not publish_output.get("provider_id") or not publish_output.get("offer_hash"):
+            failed = validate_publish_response(cell, call_input, publish_output)
+            if failed:
                 result.passed = False
                 result.failure_category = "engine-error"
-                result.failed_checks.append("publish-succeeds")
+                result.failed_checks.extend(failed)
         except Exception as e:
             result.passed = False
             result.failure_category = "engine-error"
@@ -466,15 +562,26 @@ async def main_async(args: argparse.Namespace) -> int:
     passed = sum(1 for r in results if r.passed)
     total = len(results)
     pass_rate = (passed / total * 100) if total else 0.0
-    bar = criteria["pass_bar"]["min_pass_rate_pct"]
+    bar_pct = criteria["pass_bar"]["min_pass_rate_pct"]
+    bar_count = criteria["pass_bar"].get("min_passing")
+
+    # Both gates must clear. Rate guards against a small subset
+    # accidentally passing; count guards against rate looking fine
+    # when the matrix is unexpectedly small.
+    rate_ok = pass_rate >= bar_pct
+    count_ok = bar_count is None or passed >= bar_count
+    matrix_pass = rate_ok and count_ok
 
     summary = {
         "ts": ts,
         "total": total,
         "passed": passed,
         "pass_rate_pct": pass_rate,
-        "bar_pct": bar,
-        "matrix_pass": pass_rate >= bar,
+        "bar_pct": bar_pct,
+        "bar_count": bar_count,
+        "rate_ok": rate_ok,
+        "count_ok": count_ok,
+        "matrix_pass": matrix_pass,
         "by_category": {},
     }
     for r in results:
@@ -499,15 +606,22 @@ async def main_async(args: argparse.Namespace) -> int:
     (out_dir / "summary.tsv").write_text("\n".join(tsv_lines) + "\n")
 
     print()
-    print(f"Pass rate: {passed}/{total} = {pass_rate:.1f}% (bar: {bar}%)")
+    bar_count_str = f", min count {bar_count}" if bar_count else ""
+    print(
+        f"Pass rate: {passed}/{total} = {pass_rate:.1f}% "
+        f"(bar: {bar_pct}%{bar_count_str})"
+    )
     if summary["by_category"]:
         print("Failure categories:")
         for k, v in summary["by_category"].items():
             print(f"  {k}: {v}")
-    if summary["matrix_pass"]:
+    if matrix_pass:
         print("MATRIX PASS — Phase 4 gate green; launch unblocked.")
         return 0
-    print("MATRIX FAIL — fix failing cells before launch.")
+    if not rate_ok:
+        print("MATRIX FAIL — pass rate below minimum.")
+    if not count_ok:
+        print(f"MATRIX FAIL — fewer than {bar_count} cells passed.")
     return 1
 
 

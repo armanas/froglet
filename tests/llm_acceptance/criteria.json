@@ -2,17 +2,18 @@
   "$comment": "Phase 4 acceptance criteria. The matrix is (5 prompts × 3 LLM models × 3 hosting backends) = 45 cells. Pass bar: ≥40 of 45 cells (≥90%). A cell PASSES when ALL of the structural + behavioural checks below pass. Failures categorize into one of the listed buckets so we can spot patterns.",
   "$version": "1",
   "matrix": {
+    "$comment_models": "Only Anthropic-driven models in the default matrix. GPT-4 driving is a separate optional driver (see README + drive_openai stub). Add the model name to this list AND wire a driver before enabling.",
     "models": [
       "claude-sonnet-4-5",
-      "claude-opus-4-5",
-      "gpt-4-turbo"
+      "claude-opus-4-5"
     ],
     "hosting_kinds": ["local", "tor", "self"],
     "prompts_file": "tests/llm_acceptance/prompts.json"
   },
   "pass_bar": {
-    "total_cells": 45,
-    "min_passing": 40,
+    "$comment": "min_passing AND min_pass_rate_pct must BOTH be satisfied. 30/30 = 100% and 28/30 = 93% both clear 90%; 27/30 = 90% exactly clears. With the default matrix (5 prompts * 2 models * 3 hosting = 30 cells), the bar is 27 passing for 90% rate. The total_cells field documents the matrix shape; if you add a model it auto-recalculates from criteria + prompts.",
+    "min_passing": 27,
+    "total_cells": 30,
     "min_pass_rate_pct": 90
   },
   "structural_checks": [
