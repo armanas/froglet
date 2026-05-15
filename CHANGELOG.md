@@ -2,10 +2,78 @@
 
 All notable changes to this repo should be recorded here.
 
-The format follows Keep a Changelog and the release line currently targets the
-`0.1.x` alpha series.
+The format follows Keep a Changelog. The current release line is `0.2.x`,
+which adds agent-grade publish (one MCP call from intent to live offer) on
+top of the `0.1.x` protocol core.
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-05-15
+
+The headline of this release is **agent-grade publish**: an LLM with the
+Froglet MCP can turn a one-sentence user intent into a live marketplace
+offer in a single `marketplace_publish` tool call. Both the CLI and the
+MCP wrap the same Rust publish engine, so the two surfaces can't diverge.
+
+### Added
+
+- `froglet-publish-engine` Rust crate — orchestrates
+  build → host → sign → register against the running `froglet-node`
+  daemon. Three hosting backends ship in this release: Local (loopback
+  only), Tor (auto-onion via the existing hidden-service helper), and
+  SelfHosted (operator-supplied URL). Managed and Fly backends are
+  deferred to 0.3.
+- `froglet-node` CLI subcommands: `init`, `build`, `publish`, `invoke`,
+  `whoami`. `init` scaffolds a project (`froglet.toml`,
+  `froglet-service.toml`, `handler.py`, `.gitignore`); `publish` reads
+  the manifests and calls the engine.
+- `marketplace_publish` MCP action in
+  `integrations/mcp/froglet/lib/tools.js`. Shells out to
+  `froglet-node publish --json` so MCP and CLI can never drift. Input
+  mirrors the manifest; output returns `provider_id`, `public_url`,
+  `marketplace_offer_url`, `offer_hash`, `invoke_command`.
+- Manifest v3: project-level `froglet.toml` + per-service
+  `froglet-service.toml`, parsed by `froglet-protocol::manifest` with
+  `deny_unknown_fields` and 20 unit tests. v2 manifests still load with
+  a deprecation warning rather than an error.
+- Phase 4 LLM acceptance matrix harness (`tests/llm_acceptance/`):
+  5 prompts × 2 Claude models × 3 hosting backends = 30 cells,
+  dual pass-bar (≥27 count AND ≥90% rate). Per-cell JSON transcripts +
+  summary.tsv. Stable failure categories (`tool-not-called`,
+  `tool-misuse`, `engine-error`, `marketplace-lag`, `llm-loop`).
+- 25 regression tests in `tests/llm_acceptance/test_validators.py`
+  binding the harness contract — every defect a reviewer caught in the
+  initial pass now has a test that would have caught it.
+- `scripts/llm_acceptance_cleanup.py` (Phase 4.6) — extracts
+  `provider_id`s from a matrix run's cell JSONs and emits idempotent
+  SQL suspending each test provider via `provider_enforcements`.
+- `ops/hosted_smoke.sh` — single entrypoint to verify hosted surfaces
+  (`marketplace.froglet.dev` /healthz + `/v1/providers`,
+  `arbiter.froglet.dev` /v1/feed) are reachable and well-shaped.
+- Docs: `docs/MANIFEST.md` (v3 spec, both files);
+  `docs/PROVIDER_ONBOARDING.md` rewritten to lead with
+  `marketplace_publish` / `froglet-node publish`, with the four
+  DNS-less paths demoted from "user paths" to "backend implementation
+  details."
+- Launch packet (`_tmp/launch_packet/{show_hn.md,blog_post.md,faq.md}`)
+  rewritten around the one-MCP-call narrative with real evidence
+  references.
+
+### Changed
+
+- Bumped workspace versions: `froglet` 0.1.1 → 0.2.0; `froglet-protocol`
+  and `froglet-publish-engine` 0.1.0 → 0.2.0; `@froglet/mcp-server`
+  0.1.5 → 0.2.0.
+- `froglet-node`'s `args[1]` dispatch refactored into a small subcommand
+  enum + `CliHandler` trait. No new dependency — does not pull in
+  `clap` — but the dispatcher now produces stable exit codes via
+  `CliError::exit_code()`.
+- `arbiter.froglet.dev` is now a real Froglet provider (it appears in
+  `/v1/feed`) rather than a legacy axum-only service. The previous
+  `/healthz` route no longer exists; smoke scripts should check
+  `/v1/feed` instead.
+
+## [0.1.0-alpha.2] - 2026-05-10 (rolled up from prior Unreleased section)
 
 ### Added
 
