@@ -1,0 +1,40 @@
+[package]
+name = "froglet-publish-engine"
+version = "0.1.0"
+edition = "2024"
+authors = ["Armanas Povilionis-Muradian"]
+homepage = "https://armanas.dev"
+repository = "https://github.com/armanas/froglet"
+description = "Build → host → sign → register pipeline for publishing Froglet services. Wraps the publish flow so an LLM or operator can take a service from idea to live marketplace offer in one call."
+
+[dependencies]
+# The protocol crate is where the manifest schema + signing primitives live.
+froglet-protocol = { path = "../froglet-protocol" }
+
+# Async + HTTP for marketplace registration + provider URL probes.
+tokio = { version = "1.37", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "time"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+
+# JSON + TOML for handling manifests + offer artifacts.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# URL parsing + validation for hosting backends.
+url = "2.5"
+
+# Hashing for inline_source artifacts.
+sha2 = "0.10"
+hex = "0.4"
+
+# Error handling.
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging.
+tracing = "0.1"
+
+# Backend trait dispatch.
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.37", features = ["full", "test-util"] }
