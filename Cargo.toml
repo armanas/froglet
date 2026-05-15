@@ -18,6 +18,8 @@ path = "src/bin/froglet-node.rs"
 
 [dependencies]
 froglet-protocol = { path = "froglet-protocol" }
+froglet-publish-engine = { path = "froglet-publish-engine" }
+url = "2.5"
 
 # Async Runtime & Web Framework
 tokio = { version = "1.37", features = ["full"] }

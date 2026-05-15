@@ -18,6 +18,7 @@ pub use froglet_protocol::canonical_json;
 pub use froglet_protocol::crypto;
 
 pub mod builtins;
+pub mod cli;
 
 // Re-export the shared SSRF-protected HTTP fetch helper at the crate root.
 // Consumed by:

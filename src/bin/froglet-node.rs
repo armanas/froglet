@@ -1,22 +1,47 @@
 use std::io::Read;
+use std::process::ExitCode;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // First positional arg (when present) selects a non-server subcommand.
-    // Anything else runs the long-running server. This keeps the binary's
-    // primary use case as the default and lets operators reach the
-    // node-key utilities without a separate CLI binary.
+async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str) {
-        Some("sign-message") => return run_sign_message(),
-        Some("print-identity") => return run_print_identity(),
-        Some("help" | "--help" | "-h") => {
-            print_help();
-            return Ok(());
-        }
-        _ => {}
+    let subcommand = args.get(1).map(String::as_str);
+
+    // CLI subcommands (Phase 2 of agent-grade publish): cli::* modules
+    // handle init / build / publish / invoke / whoami. They share a
+    // CliError type with stable exit codes so wrapping scripts can
+    // branch.
+    if let Some(name) = subcommand
+        && let Some(handler) = lookup_cli_handler(name)
+    {
+        let rest = args[2..].to_vec();
+        let result = handler.run(rest).await;
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::from(e.exit_code() as u8)
+            }
+        };
     }
 
+    // Legacy identity utilities (added before the cli/ module existed).
+    if let Some(handler) = subcommand.and_then(legacy_identity_handler) {
+        return match handler() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    if matches!(subcommand, Some("help" | "--help" | "-h")) {
+        print_help();
+        return ExitCode::SUCCESS;
+    }
+
+    // No subcommand → run the server (preserves backward compat with
+    // existing docker-compose / installer / agent-bootstrap callers).
     let role = match std::env::var("FROGLET_NODE_ROLE")
         .unwrap_or_default()
         .to_lowercase()
@@ -28,7 +53,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Default: both provider and runtime on one node
         _ => froglet::server::ServiceRole::Dual,
     };
-    froglet::server::run_with_role(role).await
+    match froglet::server::run_with_role(role).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("server error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Boxed future trait for async cli subcommand handlers. Returning
+/// the trait object keeps the lookup table simple and avoids generic
+/// fan-out across 5 handlers.
+trait CliHandler {
+    fn run<'a>(
+        &'a self,
+        args: Vec<String>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), froglet::cli::CliError>> + Send + 'a>,
+    >;
+}
+
+macro_rules! make_async_handler {
+    ($name:ident, $module:path) => {
+        struct $name;
+        impl CliHandler for $name {
+            fn run<'a>(
+                &'a self,
+                args: Vec<String>,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<(), froglet::cli::CliError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin($module(args))
+            }
+        }
+    };
+}
+
+macro_rules! make_sync_handler {
+    ($name:ident, $module:path) => {
+        struct $name;
+        impl CliHandler for $name {
+            fn run<'a>(
+                &'a self,
+                args: Vec<String>,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<(), froglet::cli::CliError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                let result = $module(args);
+                Box::pin(async move { result })
+            }
+        }
+    };
+}
+
+make_sync_handler!(InitHandler, froglet::cli::init::run);
+make_async_handler!(BuildHandler, froglet::cli::build::run);
+make_async_handler!(PublishHandler, froglet::cli::publish::run);
+make_async_handler!(WhoamiHandler, froglet::cli::whoami::run);
+make_async_handler!(InvokeHandler, froglet::cli::invoke::run);
+
+fn lookup_cli_handler(name: &str) -> Option<Box<dyn CliHandler>> {
+    match name {
+        "init" => Some(Box::new(InitHandler)),
+        "build" => Some(Box::new(BuildHandler)),
+        "publish" => Some(Box::new(PublishHandler)),
+        "whoami" => Some(Box::new(WhoamiHandler)),
+        "invoke" => Some(Box::new(InvokeHandler)),
+        _ => None,
+    }
+}
+
+type LegacyIdentityFn = fn() -> Result<(), Box<dyn std::error::Error>>;
+
+fn legacy_identity_handler(name: &str) -> Option<LegacyIdentityFn> {
+    match name {
+        "sign-message" => Some(run_sign_message),
+        "print-identity" => Some(run_print_identity),
+        _ => None,
+    }
 }
 
 /// Read a message from stdin and emit a hex BIP340 Schnorr signature over
@@ -69,12 +180,27 @@ fn load_identity_for_cli() -> Result<froglet::identity::NodeIdentity, Box<dyn st
 
 fn print_help() {
     println!(
-        "froglet-node — Froglet provider/runtime/dual server\n\
+        "froglet-node — Froglet provider/runtime daemon + author CLI\n\
          \n\
-         Usage:\n  \
-           froglet-node                          run the server (FROGLET_NODE_ROLE selects role)\n  \
+         Server mode (no subcommand):\n  \
+           froglet-node                          run the server (FROGLET_NODE_ROLE selects role)\n\
+         \n\
+         Author commands (Phase 2 of agent-grade publish):\n  \
+           froglet-node init <name>              scaffold a new Froglet service project\n  \
+           froglet-node build                    validate manifests + build artifact (no publish)\n  \
+           froglet-node publish [--host X]       publish service to marketplace via the local daemon\n  \
+           froglet-node whoami                   print identity + daemon info\n  \
+           froglet-node invoke <id> <input>      (Phase 2 stub; use MCP invoke_service for now)\n\
+         \n\
+         Identity utilities:\n  \
            froglet-node sign-message             read a message from stdin and emit a hex Schnorr signature\n  \
-           froglet-node print-identity           print the node's provider_id (pubkey hex)\n  \
+           froglet-node print-identity           print the node's provider_id (pubkey hex)\n\
+         \n\
+         Common flags:\n  \
+           --json                                emit machine-readable output\n  \
+           --host local|tor|self                 override the manifest's hosting choice (publish only)\n  \
+           --marketplace URL                     override the marketplace URL (publish only)\n  \
+         \n  \
            froglet-node help                     show this message\n"
     );
 }
