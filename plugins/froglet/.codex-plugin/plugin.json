@@ -1,6 +1,6 @@
 {
   "name": "froglet",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Connect agents to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
   "author": {
     "name": "Armanas Povilionis-Muradian",
