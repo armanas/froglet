@@ -1,0 +1,41 @@
+{
+  "$comment": "Phase 4 LLM acceptance prompts. Each prompt is a one-sentence user intent that an LLM with the Froglet MCP should turn into a single marketplace_publish call. Per-cell criteria define what 'pass' means.",
+  "$version": "1",
+  "prompts": [
+    {
+      "id": "translator-en-es",
+      "user_intent": "Publish a Froglet service that translates English to Spanish. Use a simple deterministic mock — return the input prefixed with 'es:' so I can test the pipeline.",
+      "expected_name_pattern": "^(translator|en.?es|translate).*",
+      "must_contain_in_source": ["es:"],
+      "min_source_lines": 3
+    },
+    {
+      "id": "hash-service",
+      "user_intent": "Publish a Froglet service that takes any JSON object and returns its SHA-256 hash.",
+      "expected_name_pattern": "^(hash|sha|sha256|sha-256|json.?hash).*",
+      "must_contain_in_source": ["hashlib", "sha256"],
+      "min_source_lines": 3
+    },
+    {
+      "id": "reverse-text",
+      "user_intent": "Register a Python function on Froglet that takes a JSON {text: string} and returns the reversed text.",
+      "expected_name_pattern": "^(reverse|reverser|text.?reverse).*",
+      "must_contain_in_source": ["[::-1]"],
+      "min_source_lines": 3
+    },
+    {
+      "id": "json-validator",
+      "user_intent": "Deploy a JSON validator service on Froglet. It accepts {schema, data} and returns {valid: bool, errors: list}.",
+      "expected_name_pattern": "^(json.?valid|validator|schema.?check).*",
+      "must_contain_in_source": ["valid"],
+      "min_source_lines": 5
+    },
+    {
+      "id": "echo",
+      "user_intent": "Publish a Froglet service that echoes input back unchanged.",
+      "expected_name_pattern": "^(echo|repeat).*",
+      "must_contain_in_source": [],
+      "min_source_lines": 2
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "$comment": "Phase 4 acceptance criteria. The matrix is (5 prompts × 3 LLM models × 3 hosting backends) = 45 cells. Pass bar: ≥40 of 45 cells (≥90%). A cell PASSES when ALL of the structural + behavioural checks below pass. Failures categorize into one of the listed buckets so we can spot patterns.",
+  "$version": "1",
+  "matrix": {
+    "models": [
+      "claude-sonnet-4-5",
+      "claude-opus-4-5",
+      "gpt-4-turbo"
+    ],
+    "hosting_kinds": ["local", "tor", "self"],
+    "prompts_file": "tests/llm_acceptance/prompts.json"
+  },
+  "pass_bar": {
+    "total_cells": 45,
+    "min_passing": 40,
+    "min_pass_rate_pct": 90
+  },
+  "structural_checks": [
+    {
+      "id": "called-marketplace-publish",
+      "description": "The LLM must have called the `marketplace_publish` action exactly once, not iterated through multiple tool calls."
+    },
+    {
+      "id": "valid-name",
+      "description": "The `name` field must match the prompt's expected_name_pattern (regex). LLM should pick a sensible service name."
+    },
+    {
+      "id": "source-inline-present",
+      "description": "The `source_inline` field must contain non-empty Python source ≥ min_source_lines lines."
+    },
+    {
+      "id": "source-contains-keywords",
+      "description": "For prompts with must_contain_in_source, each listed substring must appear in the source. Loose check; LLM may use synonyms."
+    },
+    {
+      "id": "hosting-kind-matches",
+      "description": "The `hosting.kind` field must match the cell's hosting backend. For 'self', `hosting.url` must also be present."
+    },
+    {
+      "id": "settlement-is-none",
+      "description": "v1 only supports `settlement.method = 'none'`. The LLM must not propose Lightning or Stripe."
+    }
+  ],
+  "behavioural_checks": [
+    {
+      "id": "publish-succeeds",
+      "description": "The MCP tool call must return a successful response (no isError). Returned provider_id + offer_hash must be non-empty."
+    },
+    {
+      "id": "no-retry-loop",
+      "description": "The LLM must succeed on the first marketplace_publish call. Counting one retry as still 'pass' but more than one as 'fail' indicates LLM is fumbling."
+    }
+  ],
+  "failure_categories": [
+    {
+      "id": "tool-not-called",
+      "description": "LLM never called marketplace_publish. May have called publish_artifact (wrong tool) or done nothing."
+    },
+    {
+      "id": "tool-misuse",
+      "description": "LLM called marketplace_publish but with wrong/missing args (e.g., no source_inline, wrong hosting.kind, settlement other than 'none')."
+    },
+    {
+      "id": "engine-error",
+      "description": "marketplace_publish was called with valid args but the engine returned a hard failure (build, host, sign, register)."
+    },
+    {
+      "id": "marketplace-lag",
+      "description": "Engine reported IndexerLag warning. NOT a failure — the offer is signed and persisted; the marketplace just hasn't projected yet."
+    },
+    {
+      "id": "llm-loop",
+      "description": "LLM took more than 1 retry to succeed, or got into a loop calling status/whoami repeatedly without progressing."
+    }
+  ],
+  "post_cell_cleanup": {
+    "description": "After each cell, the published offer is deliberately left in the marketplace so the run leaves an audit trail. To clean up, run `scripts/llm_acceptance_cleanup.sh` (TODO Phase 4.6).",
+    "estimated_offers_per_full_run": 45,
+    "operator_action": "Run cleanup after final assessment to keep marketplace small. Each provider_id from the run is logged in _tmp/llm_acceptance/<ts>/cells/<id>.json."
+  }
+}
