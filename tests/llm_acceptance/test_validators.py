@@ -281,5 +281,130 @@ class PassBarTests(unittest.TestCase):
         )
 
 
+class CleanupScriptTests(unittest.TestCase):
+    """Phase 4.6: cleanup script extracts provider_ids and emits
+    idempotent suspension SQL. Bind the cell-JSON shape contract so
+    future run_matrix.py changes can't silently break cleanup."""
+
+    def _load_cleanup_module(self):
+        import importlib.util
+
+        if "_cleanup_module" in self.__class__.__dict__:
+            return self.__class__._cleanup_module
+        script = ROOT / "scripts" / "llm_acceptance_cleanup.py"
+        spec = importlib.util.spec_from_file_location("phase4_cleanup", script)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        # @dataclass introspects cls.__module__ via sys.modules; must
+        # register before exec_module or import errors out.
+        sys.modules["phase4_cleanup"] = mod
+        spec.loader.exec_module(mod)
+        self.__class__._cleanup_module = mod  # type: ignore[attr-defined]
+        return mod
+
+    def _make_run(self, tmp_path, cells: list[dict]):
+        import tempfile
+
+        run = Path(tempfile.mkdtemp(dir=tmp_path)) / "20260515T2200Z"
+        (run / "cells").mkdir(parents=True)
+        for i, c in enumerate(cells):
+            (run / "cells" / f"cell-{i}.json").write_text(json.dumps(c))
+        return run
+
+    def test_extracts_provider_ids_with_publish_response(self):
+        import tempfile
+
+        cleanup = self._load_cleanup_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self._make_run(
+                tmp,
+                [
+                    {
+                        "cell": {"prompt_id": "a"},
+                        "passed": True,
+                        "publish_response": {
+                            "provider_id": "prov-1",
+                            "offer_hash": "h",
+                            "public_url": "u",
+                        },
+                    },
+                    {
+                        "cell": {"prompt_id": "b"},
+                        "passed": False,
+                        "publish_response": None,
+                    },
+                ],
+            )
+            recs = cleanup.load_cells(run)
+        self.assertEqual([r.provider_id for r in recs], ["prov-1"])
+
+    def test_empty_provider_id_skipped(self):
+        import tempfile
+
+        cleanup = self._load_cleanup_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self._make_run(
+                tmp,
+                [
+                    {
+                        "cell": {"prompt_id": "a"},
+                        "passed": False,
+                        "publish_response": {
+                            "provider_id": "",
+                            "offer_hash": "h",
+                        },
+                    },
+                ],
+            )
+            recs = cleanup.load_cells(run)
+        self.assertEqual(recs, [])
+
+    def test_emit_sql_is_idempotent_across_runs(self):
+        """deterministic_enforcement_id(provider_id, run_ts) must be
+        stable so re-running cleanup produces the same row keys."""
+        cleanup = self._load_cleanup_module()
+        a = cleanup.deterministic_enforcement_id("prov-1", "20260515T2200Z")
+        b = cleanup.deterministic_enforcement_id("prov-1", "20260515T2200Z")
+        self.assertEqual(a, b)
+        # Different run_ts → different id, so a re-run of a fresh
+        # matrix doesn't collide with prior cleanups.
+        c = cleanup.deterministic_enforcement_id("prov-1", "20260601T0000Z")
+        self.assertNotEqual(a, c)
+
+    def test_emit_sql_escapes_single_quotes_in_provider_id(self):
+        cleanup = self._load_cleanup_module()
+        recs = [
+            cleanup.CellRecord(
+                cell_id="x",
+                provider_id="o'malley",
+                offer_hash="h",
+                public_url="u",
+                passed=True,
+            )
+        ]
+        sql = cleanup.emit_sql(recs, "20260515T2200Z", "phase4-cleanup", "test")
+        # The literal "o'malley" must appear as "o''malley" inside a
+        # SQL string literal — otherwise it would be a syntax error.
+        self.assertIn("'o''malley'", sql)
+        self.assertNotIn("'o'malley'", sql)
+
+    def test_emit_sql_uses_on_conflict_do_nothing(self):
+        cleanup = self._load_cleanup_module()
+        recs = [
+            cleanup.CellRecord(
+                cell_id="x",
+                provider_id="p1",
+                offer_hash="h",
+                public_url="u",
+                passed=True,
+            )
+        ]
+        sql = cleanup.emit_sql(recs, "20260515T2200Z", "op", "r")
+        self.assertIn("ON CONFLICT (enforcement_id) DO NOTHING", sql)
+        self.assertIn("BEGIN;", sql)
+        self.assertIn("COMMIT;", sql)
+        self.assertIn("'suspend_provider'", sql)
+
+
 if __name__ == "__main__":
     unittest.main()

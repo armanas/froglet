@@ -159,16 +159,33 @@ Fixing flow:
 ## Cleanup after a matrix run
 
 Each `--execute` cell publishes a real offer to the marketplace. After
-final assessment, run:
+final assessment, suspend the test providers so the marketplace
+doesn't accumulate clutter.
 
 ```bash
-# TODO (Phase 4.6): scripts/llm_acceptance_cleanup.sh reads
-# _tmp/llm_acceptance/<ts>/cells/*.json, extracts each provider_id,
-# and calls the marketplace admin API to suspend the test offer.
+# Preview: list provider_ids that will be suspended (most recent run)
+python3 scripts/llm_acceptance_cleanup.py --list
+
+# Emit SQL to a file, then run it against marketplace Postgres
+python3 scripts/llm_acceptance_cleanup.py --output cleanup.sql
+psql "$MARKETPLACE_DB_URL" -f cleanup.sql
+
+# Or stream directly
+python3 scripts/llm_acceptance_cleanup.py | psql "$MARKETPLACE_DB_URL"
 ```
 
-For now, the provider_ids are in the per-cell JSON; clean up manually
-via the marketplace admin endpoints.
+The script reads `_tmp/llm_acceptance/<ts>/cells/*.json`, extracts each
+cell's `publish_response.provider_id`, and emits idempotent INSERTs
+into `provider_enforcements` with `remedy = 'suspend_provider'`. The
+marketplace-api's read queries filter on `suspended_providers_v1`
+(see `migrations/0003_marketplace_arbiter.sql`), so suspended
+providers and their offers immediately stop appearing in `/v1/providers`
+and `/v1/offers`.
+
+Why SQL and not an HTTP call: marketplace-api doesn't expose a
+suspension endpoint yet — suspension is operator-side via direct DB
+access. When that endpoint lands, this script can be swapped to call
+it without changing its CLI shape.
 
 ## Why this is the gate
 

@@ -75,8 +75,8 @@
     }
   ],
   "post_cell_cleanup": {
-    "description": "After each cell, the published offer is deliberately left in the marketplace so the run leaves an audit trail. To clean up, run `scripts/llm_acceptance_cleanup.sh` (TODO Phase 4.6).",
-    "estimated_offers_per_full_run": 45,
-    "operator_action": "Run cleanup after final assessment to keep marketplace small. Each provider_id from the run is logged in _tmp/llm_acceptance/<ts>/cells/<id>.json."
+    "description": "After each cell, the published offer is deliberately left in the marketplace so the run leaves an audit trail. To clean up, run `scripts/llm_acceptance_cleanup.py` which emits SQL suspending each provider_id from the run.",
+    "estimated_offers_per_full_run": 30,
+    "operator_action": "After final assessment: `python3 scripts/llm_acceptance_cleanup.py --output cleanup.sql && psql \"$MARKETPLACE_DB_URL\" -f cleanup.sql`. Each provider_id from the run is logged in _tmp/llm_acceptance/<ts>/cells/<id>.json."
   }
 }
