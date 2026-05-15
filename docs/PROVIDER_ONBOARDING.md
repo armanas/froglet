@@ -1,335 +1,196 @@
-# Provider onboarding without owning a domain
+# Provider onboarding
 
-Status: normative for the four supported MVP provider onboarding paths.
-Identity-attestation specifics remain in
-[IDENTITY_ATTESTATION.md](./IDENTITY_ATTESTATION.md); this document only
-covers how to be a discoverable Froglet provider.
+Two paths, depending on who's typing:
 
-The Froglet protocol is identity-agnostic at the kernel layer. A provider
-is anyone who can sign descriptors and offers with a Froglet key and
-expose `/v1/node/capabilities` + `/v1/feed` at a public URL. Owning a DNS
-zone is **optional** — it is one of two paths to identity attestation, and
-attestation itself is optional. This document covers the four supported
-MVP paths to a discoverable provider without a domain of your own.
+- **Agent-driven**: an LLM (Claude Code, Codex, etc.) with the Froglet
+  MCP attached calls `marketplace_publish` once. The user gets a live
+  marketplace offer in seconds.
+- **Human-driven**: `froglet-node init` + `froglet-node publish` in a
+  shell.
 
-| Path | Public URL form | What you need | Identity attestation |
-|---|---|---|---|
-| A — Tor v3 hidden service | `http://<56-char-hash>.onion` | Local `tor` daemon | optional |
-| B — Managed `<slug>.providers.<suffix>` | `https://<slug>.providers.froglet.dev` (first-party) | Public IP + Schnorr-signing key | optional |
-| D — PaaS endpoint | `https://<name>.fly.dev` / `<name>.onrender.com` / etc. | PaaS account | optional |
-| E — Key-only at any public URL | any `https://` URL you control | the public URL itself | none |
+Both surfaces run the same `froglet-publish-engine` pipeline: build →
+host → sign → register → verify. One source of truth.
 
-All four converge on the same kernel flow: descriptor + offer signed by
-your provider key, published from your `/v1/feed`, observed and verified
-by the marketplace. The marketplace's
-[`/v1/registrations` endpoint](../../froglet-services/services/marketplace-api/src/registration.rs)
-is the single entrypoint regardless of path.
+This document leads with the easy paths. The four DNS-free hosting
+backends (Tor, managed subdomain, PaaS, key-only) are documented in the
+[Hosting backends](#hosting-backends) appendix; you almost never need
+to think about them directly.
 
 ---
 
-## Path A — Tor v3 hidden service
+## The agent-driven flow (one MCP call)
 
-### Why pick this
-- Strongest DNS-free posture: the `.onion` hash is your address and your
-  identity. No domain, no TLS cert, no port forwarding, works behind any
-  NAT.
-- Tor v3 provides end-to-end authentication and encryption; the
-  marketplace verifies the onion address matches your descriptor's
-  advertised transport.
+```
+User: "Publish a Froglet service that translates English to Spanish."
 
-### Operator-side prerequisites
-The first-party marketplace at `marketplace.froglet.dev` must have
-`FROGLET_TOR_SOCKS_PROXY` set (default `socks5h://127.0.0.1:9050`) and a
-Tor client reachable on that endpoint. Without it, the marketplace cannot
-fetch your `/v1/node/capabilities` to verify the registration. Confirm
-the env var is wired by checking `https://marketplace.froglet.dev/healthz`
-followed by a probe registration; a failure surfaces as `502 bad gateway`
-on the `/v1/registrations` call.
+Claude (with froglet MCP):
+  Calls marketplace_publish:
+    name: "translator-en-es"
+    source_inline: "<generated handler.py>"
+    hosting: { kind: "tor" }
+    summary: "Translate EN→ES"
 
-### Provider-side flow
-1. Install Tor: `brew install tor` (macOS) or `apt-get install tor` (Debian/Ubuntu).
-2. Add a hidden service to `/etc/tor/torrc` (or wherever your distro puts
-   it) pointing at your local Froglet node port:
-   ```
-   HiddenServiceDir /var/lib/tor/froglet/
-   HiddenServiceVersion 3
-   HiddenServicePort 80 127.0.0.1:8910
-   ```
-   Replace `8910` with whatever port your `froglet-node` binds.
-3. `systemctl reload tor` (or `tor --runasdaemon 1` on a workstation).
-4. Read the generated `.onion` address: `cat /var/lib/tor/froglet/hostname`.
-5. Start `froglet-node` with the onion URL advertised in its
-   capabilities:
-   ```bash
-   FROGLET_PUBLIC_BASE_URL="http://<your-v3-hash>.onion" \
-   FROGLET_TRANSPORT_TOR_ENABLED=1 \
-   FROGLET_TRANSPORT_TOR_URL="http://<your-v3-hash>.onion" \
-   froglet-node serve
-   ```
-6. Register with the marketplace:
-   ```bash
-   curl -sS -X POST https://marketplace.froglet.dev/v1/registrations \
-     -H "content-type: application/json" \
-     -d '{"provider_url":"http://<your-v3-hash>.onion","transport":"tor"}'
-   ```
+→ Returns:
+    provider_id:            c9ecac3a…
+    public_url:             http://abc123…onion
+    marketplace_offer_url:  https://marketplace.froglet.dev/v1/offers/…
+    invoke_command:         froglet-node invoke translator-en-es '{}'
 
-### What can go wrong
-- **Marketplace returns 502**: marketplace Tor proxy is not reachable.
-  Operator config issue — file an issue or self-host the marketplace.
-- **400 "tor registration requires an http://<tor-v3>.onion provider_url"**:
-  you sent a v2 onion or a malformed address. Only Tor v3 (56-char
-  base32) is accepted.
-- **422 "capabilities advertise X, expected Y"**: `transports.tor.url`
-  in your node's `/v1/node/capabilities` does not match what you sent
-  to `/v1/registrations`. Make them byte-identical.
-
----
-
-## Path B — Managed `<slug>.providers.<suffix>`
-
-### Why pick this
-- You have a public IP (home or cloud) but no domain.
-- The marketplace operator allocates you a DNS record under their
-  parent zone — `demo-1.providers.froglet.dev` on the first-party
-  marketplace.
-- TLS is your responsibility (Caddy with HTTP-01 ACME on port 80/443
-  works once DNS resolves).
-
-### How the operator enables this
-The marketplace's [`provider_domain_suffix()`](../../froglet-services/services/marketplace-api/src/domain_claims.rs)
-reads three env vars; without all of them, claims still succeed but
-return `pending_operator_dns` for the operator to fulfil by hand. To
-fully automate:
-
-| Env var | Required? | Value |
-|---|---|---|
-| `PROVIDER_DOMAIN_SUFFIX` | optional (default `providers.froglet.dev`) | the parent zone under which slugs are allocated |
-| `PROVIDER_DOMAIN_CLOUDFLARE_ZONE_ID` | required to auto-write DNS | Cloudflare zone ID for the parent zone |
-| `PROVIDER_DOMAIN_CLOUDFLARE_API_TOKEN` | required to auto-write DNS | API token with `Zone:DNS:Edit` permission on that zone |
-
-Operators forking the marketplace under a different domain (`example.org`)
-set `PROVIDER_DOMAIN_SUFFIX=providers.example.org` and supply Cloudflare
-credentials for that zone (or fork the
-[`create_cloudflare_dns_record`](../../froglet-services/services/marketplace-api/src/domain_claims.rs)
-adapter for non-Cloudflare DNS).
-
-### Provider-side flow
-The claim has two phases (intent → complete) plus an optional poll. Both
-phases require Schnorr signatures by the provider key.
-
-**Phase 1 — request a slug**:
-
-```bash
-# Read your provider pubkey from your already-running froglet-node:
-PROVIDER_PUBKEY=$(froglet-node print-identity)
-PUBLIC_IP=<your public IPv4 or IPv6>
-SLUG=demo-1
-
-# Sign the intent message with your provider private key. The newlines and
-# field order in the message are part of the signed bytes; do not reformat.
-INTENT_MSG="froglet-provider-domain-claim-intent-v1
-provider_id:${PROVIDER_PUBKEY}
-slug:${SLUG}
-hostname:${SLUG}.providers.froglet.dev
-public_ip:${PUBLIC_IP}"
-
-INTENT_SIG=$(printf '%s' "$INTENT_MSG" | froglet-node sign-message)
-
-curl -sS -X POST https://marketplace.froglet.dev/v1/provider-domains/claims \
-  -H "content-type: application/json" \
-  -d "{\"provider_id\":\"${PROVIDER_PUBKEY}\",\"requested_slug\":\"${SLUG}\",\"public_ip\":\"${PUBLIC_IP}\",\"intent_signature\":\"${INTENT_SIG}\"}"
+Claude: "Your service is live at marketplace.froglet.dev/v1/offers/…
+        Call it with: froglet-node invoke …"
 ```
 
-The response contains `claim_id`, `signing_message`, and a 15-minute
-`expires_at`.
+That's the whole flow. Behind the scenes the MCP handler shells out to
+`froglet-node publish --json`, which scaffolds manifests in a temp
+directory, builds the artifact, posts to the local daemon's
+`/v1/provider/artifacts/publish` (daemon signs + persists), POSTs
+`/v1/registrations` on the marketplace, and polls
+`/v1/providers/<id>` until the indexer projects the offer. Failure
+modes are typed; the LLM gets back a structured error it can act on
+("set FROGLET_NETWORK_MODE=tor and retry") rather than a stack trace.
 
-**Phase 2 — complete with the second signature**:
+**MCP input shape (Phase 1A scope):**
 
-```bash
-CLAIM_ID=<from phase 1 response>
-SIGNING_MESSAGE=<from phase 1 response, multi-line, exactly as returned>
-COMPLETE_SIG=$(printf '%s' "$SIGNING_MESSAGE" | froglet-node sign-message)
-
-curl -sS -X POST "https://marketplace.froglet.dev/v1/provider-domains/claims/${CLAIM_ID}/complete" \
-  -H "content-type: application/json" \
-  -d "{\"signature\":\"${COMPLETE_SIG}\"}"
+```json
+{
+  "action": "marketplace_publish",
+  "name": "<lowercase-hyphenated-name>",
+  "source_inline": "<full Python source for handler.py>",
+  "hosting": { "kind": "local|tor|self", "url": "<required if self>" },
+  "settlement": { "method": "none" },
+  "marketplace_url": "https://marketplace.froglet.dev"
+}
 ```
 
-If Cloudflare creds are configured on the marketplace, the response is
-`status:"active"` with a `dns_record_id`. Otherwise the response is
-`status:"pending_operator_dns"` and you poll the new GET endpoint:
+Runtime is Python `inline_source` only in Phase 1A. WASM + OCI ship in
+Phase 1B. Settlement = `"none"` (free) in v1; Lightning + Stripe in v2.
+
+---
+
+## The human-driven flow
+
+For when you're typing directly, not driving through an LLM:
 
 ```bash
-curl -sS "https://marketplace.froglet.dev/v1/provider-domains/claims/${CLAIM_ID}"
+# 1. Install the daemon + CLI (one binary; init runs the CLI mode):
+curl -fsSL https://froglet.dev/agent | bash
+
+# 2. Scaffold a new service:
+froglet-node init my-translator
+cd my-translator
+
+# 3. Edit handler.py to do real work:
+$EDITOR handler.py
+
+# 4. Publish:
+froglet-node publish --host tor
 ```
 
-until `status` becomes `active`.
+`froglet-node init` writes four files: `froglet.toml` (project),
+`froglet-service.toml` (per-service, v3 schema), `handler.py` (Python
+skeleton), and `.gitignore`. See [docs/MANIFEST.md](./MANIFEST.md) for
+the manifest spec.
 
-**After DNS is live**:
-- Verify with `dig +short <slug>.providers.froglet.dev` — it should
-  return your `PUBLIC_IP`.
-- Stand up TLS on the public hostname. With Caddy:
-  ```
-  <slug>.providers.froglet.dev {
-    reverse_proxy 127.0.0.1:8910
-  }
-  ```
-  Caddy will fetch a Let's Encrypt cert via HTTP-01 the first time the
-  hostname resolves to your box.
-- Start `froglet-node` advertising the new hostname in its capabilities:
-  ```bash
-  FROGLET_PUBLIC_BASE_URL="https://<slug>.providers.froglet.dev" \
-  froglet-node serve
-  ```
-- Register the standard way:
-  ```bash
-  curl -sS -X POST https://marketplace.froglet.dev/v1/registrations \
-    -H "content-type: application/json" \
-    -d '{"provider_url":"https://<slug>.providers.froglet.dev"}'
-  ```
+`froglet-node publish` reads both manifests, builds the artifact, and
+runs the same engine pipeline the MCP tool does. It accepts:
 
-### What can go wrong
-- **409 "hostname X already has a live claim"**: another claim holds
-  the slot. Wait 15 minutes or pick a different slug.
-- **422 "intent_signature does not verify"**: signature is computed
-  over the wrong message bytes. The intent message starts with
-  `froglet-provider-domain-claim-intent-v1` — the complete-time
-  message starts with `froglet-provider-domain-claim-v1\n` (note the
-  newline). They are deliberately distinct to prevent replay.
-- **`pending_operator_dns` never flips to `active`**: marketplace has
-  no Cloudflare creds. Email the operator with your `claim_id` and
-  IP; they add the A/AAAA record manually.
-- **Slug rejected (400)**: slugs are 6-63 chars, lowercase ASCII +
-  digits + interior hyphens, no reserved names (`admin`, `api`,
-  `marketplace`, etc.). See
-  [`RESERVED_PROVIDER_DOMAIN_SLUGS`](../../froglet-services/services/marketplace-api/src/domain_claims.rs).
+- `--host local|tor|self` to override the manifest's `[hosting] default`
+- `--marketplace URL` to override the manifest's marketplace
+- `--json` to emit machine-readable output
+
+Other useful subcommands:
+
+- `froglet-node build` — validate manifests + build the artifact, no
+  publish. Quick sanity check.
+- `froglet-node whoami` — print identity + daemon transport info
+- `froglet-node print-identity` / `sign-message` — identity utilities
 
 ---
 
-## Path D — PaaS-hosted endpoint
+## Hosting backends
 
-### Why pick this
-- Free or near-free tier on most providers.
-- Zero DNS / TLS / port-forwarding work.
-- Stable enough URL for a Froglet provider that does not need to be
-  always-on.
+The publish pipeline supports five hosting choices. Phase 1A ships
+three; Phase 1B adds the other two. The right answer for most users is
+**Tor**.
 
-### Tested PaaS shapes
-The marketplace's
-[`normalize_submitted_provider_url`](../../froglet-services/services/marketplace-api/src/registration.rs)
-accepts any `https://` URL that:
-- has a public hostname (not `localhost`, `.local`, `.internal`, etc.),
-- DNS-resolves to a public IP (not 10/8, 172.16/12, 192.168/16, link-local,
-  documentation, or unspecified),
-- has no path component (origin URL only),
-- omits credentials, query, or fragment.
+### Tor (`--host tor`, Phase 1A) — default
 
-That accepts every common PaaS subdomain. Verified shapes:
+The daemon spawns a Tor hidden service; the `.onion` URL is your public
+address. No DNS, no TLS, no port-forwarding, works behind any NAT.
 
-| PaaS | URL shape | Notes |
-|---|---|---|
-| Fly.io | `https://<app>.fly.dev` | Free Hobby plan; 256MB RAM minimum is enough for `froglet-node` |
-| Render | `https://<app>.onrender.com` | Free tier idles after 15min — fine for low-traffic demos |
-| Railway | `https://<app>.up.railway.app` | Free trial credits, paid beyond |
-| Vercel | `https://<app>.vercel.app` | Serverless funcs may not satisfy `/v1/feed` polling — test before relying |
-| Cloudflare Tunnel | `https://<name>.trycloudflare.com` or your own zone | Trial URLs rotate; not stable enough to register without a custom hostname |
+Requires:
 
-### Provider-side flow
-1. Deploy the `froglet-node` container to your PaaS of choice. The
-   official image is at `ghcr.io/armanas/froglet-provider:<version>`.
-2. Configure the public base URL via env:
-   ```
-   FROGLET_PUBLIC_BASE_URL=https://<your-paas-url>
-   ```
-3. Make sure the PaaS exposes the container's listen port externally
-   on `https://` with a valid TLS cert.
-4. Register:
-   ```bash
-   curl -sS -X POST https://marketplace.froglet.dev/v1/registrations \
-     -H "content-type: application/json" \
-     -d '{"provider_url":"https://<your-paas-url>"}'
-   ```
+```bash
+FROGLET_NETWORK_MODE=tor froglet-node serve   # or "dual" for clearnet+tor
+```
 
-### What can go wrong
-- **400 "provider_url host X did not resolve"**: PaaS URL is not live
-  yet. Wait for deploy to finish.
-- **400 "provider_url resolves to a local or private address"**: this
-  is a misconfigured DNS record (you pointed a custom domain at
-  `127.0.0.1`). PaaS-generated subdomains do not trip this.
-- **422 "capabilities advertise X, expected Y"**: `FROGLET_PUBLIC_BASE_URL`
-  was not set on the PaaS deploy. The node defaults to the bind
-  address, which the marketplace will reject when it doesn't match.
+Strongest no-DNS posture. Tradeoff: higher latency (~500ms+), clients
+must speak Tor.
 
----
+### Local (`--host local`, Phase 1A)
 
-## Path E — Key-only registration (no attestation)
+Private development. Service binds to `127.0.0.1:8080`, never registers
+with the marketplace. Use during development; promote to Tor or
+self-hosted when ready.
 
-### Why pick this
-- Lowest friction. Combined with A, D, or self-host on any cloud, gets
-  you from zero to "I'm a Froglet provider" in minutes.
-- Identity attestation is optional; the kernel never requires it. See
-  [IDENTITY_ATTESTATION.md](./IDENTITY_ATTESTATION.md): "attestations
-  are always optional, always user-initiated, and never block a
-  kernel-level deal flow."
+### Self-hosted (`--host self`, Phase 1A)
 
-### What this is
-There is no separate "no attestation" code path — it is the default for
-any provider that does not issue a DNS or OAuth attestation. Such
-providers:
+You deploy the daemon somewhere with a public HTTPS URL (Fly, Render,
+Railway, your VPS) and supply the URL in the manifest. The engine
+trusts the URL after a basic shape check; the marketplace's
+`/v1/registrations` does the real validation (must serve `/v1/feed`
+with a signed descriptor + offer matching your provider key).
 
-- Appear in `GET /v1/providers` by default (the default query has
-  `attested=false`).
-- Are filtered out by `GET /v1/providers?attested=true` — useful for
-  consumers who want stronger identity guarantees.
-- Are valid counterparties for the full kernel deal flow regardless of
-  attestation status.
+```toml
+[hosting]
+default = "self"
 
-### Provider-side flow
-Any of A, D, or self-hosted-anywhere applies. The
-`/v1/registrations` call simply omits any attestation step. The
-marketplace records the public URL, fetches `/v1/feed`, verifies the
-descriptor + offer signatures, and you're live.
+[hosting.self]
+url = "https://my-translator.fly.dev"
+```
 
-### What can go wrong
-- **Discoverability ranking**: consumers using `attested=true` will
-  not see you. If you want broader discoverability and don't have a
-  domain, the OAuth attestation path in IDENTITY_ATTESTATION.md is the
-  no-domain way to upgrade (GitHub-based; the issuance service ships
-  in v0.2).
+### Managed (`--host managed`, Phase 1B)
+
+Marketplace allocates `<slug>.providers.froglet.dev` and creates the
+Cloudflare DNS record. You run Caddy or a similar proxy for TLS. Needs
+a public IP. Lands in Phase 1B.
+
+### Fly (`--host fly`, Phase 1B)
+
+Engine wraps `flyctl deploy` to deploy your service to Fly.io,
+then registers the `*.fly.dev` URL with the marketplace. Lands in
+Phase 1B.
 
 ---
 
-## Path comparison summary
+## Identity attestation (optional)
 
-| Concern | A (Tor) | B (Managed) | D (PaaS) | E (Key-only) |
-|---|---|---|---|---|
-| DNS work for provider | none | none | none | none |
-| TLS cert for provider | none (Tor) | yes (Caddy/HTTP-01) | none (PaaS handles) | depends on URL |
-| Public IP required | no | yes | no | depends |
-| Behind NAT works? | yes | only with port-forward | yes | depends |
-| Latency | higher (~500ms+) | low | low (PaaS warm) | low |
-| Attestation possible? | OAuth only | OAuth only | OAuth or DNS-on-PaaS-domain | OAuth |
-| Operator-side prerequisite | Tor proxy on marketplace | Cloudflare token on marketplace | none | none |
+Per [IDENTITY_ATTESTATION.md](./IDENTITY_ATTESTATION.md): "attestations
+are always optional, always user-initiated, and never block a
+kernel-level deal flow." The publish flow does not require any
+attestation. Consumers can filter discovery by `attested=true` if they
+want stronger identity guarantees; unattested providers are still
+first-class in the deal flow.
+
+When you eventually want one:
+
+- **DNS attestation** requires owning a zone (one path that does need
+  DNS).
+- **OAuth attestation** (GitHub today; pattern extends to Google,
+  GitLab, Gitea, Microsoft) needs only a GitHub account. Spec is
+  complete; the issuance service ships in v0.2.
 
 ---
 
-## Operator self-host checklist
+## What's deliberately not here
 
-If you are running your own marketplace (forking `froglet-services`):
+This document used to enumerate four "DNS-free paths" (A/B/D/E) as the
+top-level surface. They're now backend implementation details of a
+single `marketplace_publish` call — you tell the engine `hosting.kind`
+and it picks the right backend. The four-path framing is preserved in
+git history at `docs/PROVIDER_ONBOARDING.md@a5799dc` for reference.
 
-1. **Decide your parent zone**: set `PROVIDER_DOMAIN_SUFFIX=providers.<your-domain>`
-   on your marketplace-api deploy.
-2. **Enable Option A**: ensure a `tor` daemon is reachable from the
-   marketplace and set `FROGLET_TOR_SOCKS_PROXY=socks5h://<host>:<port>`.
-3. **Enable Option B**: set `PROVIDER_DOMAIN_CLOUDFLARE_ZONE_ID` and
-   `PROVIDER_DOMAIN_CLOUDFLARE_API_TOKEN` on your marketplace-api deploy.
-   If your DNS is not Cloudflare, fork
-   [`create_cloudflare_dns_record`](../../froglet-services/services/marketplace-api/src/domain_claims.rs)
-   to use your provider's API.
-4. **Options D and E work out of the box** — no operator-side config
-   beyond a running marketplace.
-
-The first-party marketplace at `marketplace.froglet.dev` configures
-suffix `providers.froglet.dev` and a Cloudflare API token; first-party
-providers using Option B receive `<slug>.providers.froglet.dev` records
-automatically.
+If you're an operator running your own marketplace, the engine talks
+to any `froglet-node` daemon over HTTP (`FROGLET_DAEMON_URL`) and
+registers against any marketplace (`marketplace_url` in the manifest).
+There is no first-party lock-in.

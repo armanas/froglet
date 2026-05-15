@@ -48,10 +48,16 @@ The primary bot-facing integration surfaces are intentionally simple:
 - One MCP server under `integrations/mcp/froglet/`, published as
   `froglet-mcp` for `npx froglet-mcp`
 - Both surfaces register a single agent-facing tool named `froglet` to
-  the host (Claude Code, Codex, Cursor, Windsurf, etc.). This is the
-  "tool" exposed to the agent, not a standalone CLI binary — the only
-  shipped binary is `froglet-node`. A standalone `froglet-cli` wrapper
-  is on the v0.2 backlog.
+  the host (Claude Code, Codex, Cursor, Windsurf, etc.). The headline
+  action is `marketplace_publish`: one MCP call turns a user prompt
+  ("publish a service that does X") into a live marketplace offer in
+  seconds. Behind the scenes it shells out to `froglet-node publish`,
+  the CLI subcommand that humans use for the same flow. One pipeline,
+  two surfaces, one source of truth.
+- The `froglet-node` binary is both the daemon (running as a provider)
+  and the author CLI (`froglet-node init` / `build` / `publish` /
+  `whoami`). A separate `froglet` CLI binary is deferred to v0.3+; the
+  split is unnecessary today.
 
 Bots should be able to create small scriptable services directly, validate them
 locally, and publish them without starting from OCI images.
