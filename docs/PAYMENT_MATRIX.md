@@ -1,7 +1,7 @@
 # Payment Verification Matrix
 
 Status: living document.
-Last refreshed: 2026-04-24.
+Last refreshed: 2026-05-15 (v0.2.0 cut).
 
 This is the single source of truth for **which payment rails Froglet
 supports, in which modes, with which test coverage, and how to re-run any
@@ -9,14 +9,28 @@ cell**. It exists so that "does Froglet support X?" has one answer, and so
 that regressions in a specific rail × mode cell fail a release gate rather
 than a launch post.
 
-For MVP, `try.froglet.dev` is not a hosted paid-rail proof. The public hosted
-trial is a free `PaymentBackend::None` catalog: `demo.add` is the canonical
-proof, while witness/hash/notarize demos can provide stronger URL or
-content-hash evidence. The MVP public paid-service claim requires hosted
-Lightning and Stripe evidence. x402 is desirable but non-blocking unless its
-hosted proof is completed before launch. Stripe MPP has a separate paid-staging
-path under `paid-staging.froglet.dev`, with sandbox evidence recorded
-separately from the free hosted proof.
+### v0.2 launch posture (free hosted + self-hosted paid)
+
+The v0.2 launch (the `marketplace_publish` MCP / `froglet-node publish` CLI
+narrative) is intentionally **free-only on the publish path**:
+
+- `froglet-protocol::manifest::validate_settlement_method` rejects any
+  `settlement.method` other than `"none"`. Lightning, Stripe, and x402 are
+  defined in the protocol kernel and the daemon supports them at runtime,
+  but the `0.2.x` publish surface does not expose them to LLMs or new
+  operators yet — that work is queued as a 0.3 follow-up.
+- The Phase 4 acceptance harness (`tests/llm_acceptance/`) tests only
+  free-publish prompts; a paid-publish prompt would fail the
+  `settlement-is-none` structural check.
+- Self-hosted operators who run their own `froglet-node` daemon can still
+  issue Lightning / Stripe / x402 offers via the lower-level provider API
+  — those rails are tested and shipping in this release, just not driven
+  end-to-end by the publish engine.
+
+`marketplace.froglet.dev` therefore remains a free-only hosted catalog at
+v0.2. The hosted Lightning + Stripe rows below are evidence that the
+**code is ready** when the publish-path gating is lifted; they are not
+v0.2 launch blockers in their own right.
 
 ## 1. Supported rails and modes
 
@@ -45,11 +59,11 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 
 | Rail / mode | Unit (Rust `#[test]`) | Local integration | Hosted sandbox | Hosted live | Failure injection | Restart recovery | Observability |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests | 🟢 local compose smoke (`release_gate.sh --compose`) | — | 🟡 manual hosted trial smoke for the free demo catalog; evidence is outside this matrix | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via MCP `get_settlement_state` |
-| `Lightning::Mock` | 🟢 lightning.rs in-file tests + stripe/x402 tests use Mock Lightning | 🟢 `payments_and_discovery.rs` | — | — | 🟢 mock can be forced to return failure in tests | 🟢 Mock state persists in sqlite between restarts | 🟢 settlement state via MCP |
-| `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs | 🟢 regtest E2E via `python/tests/test_lnd_regtest.py` and `tests/lnd_rest_settlement.rs` (gated by `FROGLET_RUN_LND_REGTEST=1` or `release_gate.sh --lnd-regtest`) | ⬜ MVP blocker; pending Voltage channel liquidity and hosted transcript | ⬜ MVP blocker; pending Voltage channel liquidity and hosted transcript | 🟡 timeout + cancellation tested in regtest; hosted expiry/cancel path still needed | 🟢 invoice bundle state + preimage persistence verified across process restart in the regtest test | 🟢 settlement state + invoice-bundle status via MCP |
-| `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ desirable, not launch-blocking | ⬜ desirable, not launch-blocking | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
-| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping | 🟡 Stripe driver tested against a **local mock HTTP server** plus one operator-run Stripe sandbox smoke on 2026-04-30: local `/v1/node/events/query` returned `stripe_mpp` receipt status `committed` with a `pi_` PaymentIntent reference. Webhook signature verification and event-id dedupe are covered in `python/tests/test_payments.py` | 🟢 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30: `/health`, `/v1/node/capabilities`, signed webhook accept, duplicate idempotency, forged-signature rejection, fresh test SPT creation, token-settled `/v1/node/events/query` with a `pi_` settlement reference, Stripe Dashboard-origin `payment_intent.succeeded` delivery returning HTTP 200, Stripe CLI resend delivery reaching `pending_webhooks=0`, and synthetic signed-webhook probe returning `status:"ok"` from `paid-staging-stripe-probe.froglet.dev` | ⬜ MVP blocker; production/live-money Stripe not covered | 🟡 API error mapping exercised; webhook signature failure and duplicate delivery are tested locally and on paid-staging; Stripe Dashboard-origin success delivery, Stripe CLI resend, and the Cloudflare synthetic webhook probe are observed, but the external monitor alert-fire/clear drill is accepted alpha risk | 🟢 VM-backed restart replay passed on 2026-04-30: the previous Lightsail Container Service redeploy replay failed for `evt_froglet_restart_1777543048`, then the hostname was moved to a Lightsail VM with persistent `/opt/froglet/data`; replaying `evt_froglet_restart_1777551288` after recreating the Froglet app container returned `duplicate:true` | 🟢 settlement state via MCP |
+| `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests; verified 2026-05-15 | 🟢 local compose smoke (`release_gate.sh --compose`) | 🟢 `marketplace.froglet.dev` /v1/providers /v1/offers /v1/stats verified 2026-05-15 via `scripts/hosted_smoke.sh` (5/5) | 🟢 v0.2 launch posture: free hosted catalog is the headline product; `marketplace_publish` MCP + CLI tested via 25-test Phase 4 harness | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via MCP `get_settlement_state` |
+| `Lightning::Mock` | 🟢 Mock-Lightning logic exercised via `tests/payments_and_discovery.rs` integration suite (6/6 pass, verified 2026-05-15); stripe/x402 in-file tests also exercise Mock-Lightning as their settlement substrate | 🟢 `payments_and_discovery.rs` 6/6 pass (verified 2026-05-15): mock invoice bundle persists across reload, quote/deal commitment validation, randomized invoice-bundle validation reports targeted issues, payments_enforce_all_error_paths | — | — | 🟢 mock can be forced to return failure in tests | 🟢 Mock state persists in sqlite between restarts (covered by `lightning_mock_invoice_bundle_persists_and_updates_state`) | 🟢 settlement state via MCP |
+| `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs; verified 2026-05-15 | 🟢 6/6 fake-LND-REST integration tests pass (`tests/lnd_rest_settlement.rs`, verified 2026-05-15) covering BOLT11 invoice issuance, bundle cancellation, backend cancellation reflection, orphaned-materialization recovery, and issue-delay tolerance. **Real-LND regtest** (`python/tests/test_lnd_regtest.py::test_lnd_regtest_hold_invoice_flow_and_restart_recovery`) passed 2026-05-15 in 78.8s end-to-end: Docker + bitcoind + 2 LND nodes (alice + bob, `lightninglabs/lnd:v0.20.0-beta`), hold-invoice issued by bob, paid by alice, success-fee settled through the Froglet provider, restart-recovery semantics verified. See [§ 7. Regtest run log](#7-regtest-run-log). | ⬜ v0.3 publish-path follow-up; daemon supports it today, `marketplace_publish` does not yet | ⬜ v0.3 publish-path follow-up | 🟢 timeout + cancellation tested in fake-LND-REST integration; restart-recovery exercised in the live regtest run | 🟢 invoice bundle state + preimage persistence verified across process restart in both `tests/lnd_rest_settlement.rs` and the live regtest (`test_lnd_regtest_hold_invoice_flow_and_restart_recovery`, 2026-05-15) | 🟢 settlement state + invoice-bundle status via MCP |
+| `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts (verified 2026-05-15) | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ v0.3 follow-up | ⬜ v0.3 follow-up | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
+| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping (verified 2026-05-15) | 🟡 Stripe driver tested against a **local mock HTTP server**; one operator-run Stripe sandbox smoke on 2026-04-30: local `/v1/node/events/query` returned `stripe_mpp` receipt status `committed` with a `pi_` PaymentIntent reference. Webhook signature verification and event-id dedupe covered in `python/tests/test_payments.py` | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); evidence above is point-in-time and has not been re-run for v0.2. The hosted endpoint is in the private `froglet-services` workspace; re-running requires deployment access | ⬜ v0.3 publish-path follow-up; production live-money Stripe not yet wired to `marketplace_publish` | 🟡 API error mapping exercised; webhook signature failure + duplicate delivery tested locally and on paid-staging as of 2026-04-30 | 🟡 VM-backed restart replay passed 2026-04-30 (replaying `evt_froglet_restart_1777551288` returned `duplicate:true`); not re-verified for v0.2 | 🟢 settlement state via MCP |
 
 Hosted paid cells are intentionally separate from `try.froglet.dev`. The public
 hosted proof stays free-only; Stripe hosted-sandbox evidence comes from
@@ -145,3 +159,44 @@ a reviewer can see they are known and tracked, not forgotten.
 The release gate runs the unit + local-integration cells on every PR; hosted
 cells light up through the separate first-party operator smoke once real URLs
 exist.
+
+## 7. Regtest run log
+
+This is the canonical evidence trail for `Lightning::LndRest` "local
+integration". Each row records a real-LND regtest run, not a fake-LND-REST
+unit test.
+
+| Date | Test | Duration | Result | Notes |
+| --- | --- | --- | --- | --- |
+| 2026-05-15 | `python.tests.test_lnd_regtest::test_lnd_regtest_hold_invoice_flow_and_restart_recovery` | 78.8s | ✅ pass | First real-LND regtest run post v0.2.0 cut. Docker `lightninglabs/lnd:v0.20.0-beta` + `ruimarinho/bitcoin-core:24`, 2 LND nodes (alice + bob), real BOLT11 hold invoice, restart-recovery verified. Containers cleaned up automatically. |
+
+### Reproduce the latest run
+
+```bash
+# Requires Docker daemon running. First run pulls ~600MB of images.
+FROGLET_RUN_LND_REGTEST=1 python3 -m unittest -v python.tests.test_lnd_regtest
+```
+
+What it does end-to-end:
+
+1. Spins up a docker network with bitcoind (`ruimarinho/bitcoin-core:24`)
+   and two LND nodes (alice + bob, `lightninglabs/lnd:v0.20.0-beta`).
+2. Mines initial blocks, opens a payment channel alice → bob.
+3. Builds a Froglet provider configured to use bob's LND REST endpoint for
+   settlement (`PaymentBackend::Lightning` / `LightningMode::LndRest`).
+4. Creates a signed Froglet quote + deal through the provider API; the
+   provider materialises a real BOLT11 hold invoice on bob.
+5. Alice pays the invoice; bob observes `ACCEPTED` state (hold invoice
+   intermediate).
+6. Provider settles the success-fee leg with the preimage; bob observes
+   `SETTLED`.
+7. Provider process is restarted with the same data directory; bundle
+   state is verified to survive the restart (preimage + settled state
+   intact).
+8. Cluster is torn down (containers stopped + removed, temp data dir
+   cleaned).
+
+Adding a row here for each scheduled regtest run keeps the
+"local integration: 🟢" claim honest. Stale-dated rows are a signal that
+the test hasn't been re-run; if more than a release cycle passes without
+a fresh row, downgrade the cell to 🟡.
