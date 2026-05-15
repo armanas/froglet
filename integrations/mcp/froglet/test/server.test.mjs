@@ -115,9 +115,11 @@ describe("tool definitions", () => {
       "marketplace_stake",
       "marketplace_topup",
       "marketplace_file_complaint",
-      "marketplace_get_complaint"
+      "marketplace_get_complaint",
+      "marketplace_publish"
     ])
     assert.match(tools[0].description, /provider_id/)
+    assert.match(tools[0].description, /marketplace_publish/)
     assert.match(tools[0].description, /status/)
     assert.equal(tools[0].inputSchema.properties.starter.type, "string")
     assert.deepEqual(tools[0].inputSchema.properties.footprint.enum, [

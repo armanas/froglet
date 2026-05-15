@@ -19,6 +19,7 @@ import {
   runCompute,
   waitTask
 } from "./froglet-client.js"
+import { runMarketplacePublish } from "./marketplace-publish.js"
 import { toolTextResult } from "./shared.js"
 import {
   appendRaw,
@@ -733,10 +734,11 @@ function useCaseSteps(profile) {
   if (profile === "provider") {
     return [
       ...common,
-      "For the first service, call `publish_artifact` with `template: \"demo.add\"`, then invoke it locally.",
-      "For real services, call `publish_artifact` with starter, input_schema, and output_schema metadata.",
-      "Call `list_local_services` and `get_local_service` to verify the descriptor/offer fields.",
-      "Call `invoke_service` against the published service and inspect the returned result plus receipt evidence."
+      "HEADLINE PATH for publishing user-described services: call `marketplace_publish` with `{name, source_inline, hosting:{kind:'tor'|'local'|'self'}}`. The handler shells out to `froglet-node publish --json`, which scaffolds manifests, builds the artifact, signs, registers, and verifies in one call. Returns provider_id, public_url, offer_hash, marketplace_offer_url, and invoke_command.",
+      "Hosting choices: 'tor' (default, public via auto hidden service — requires daemon FROGLET_NETWORK_MODE=tor), 'local' (private dev, no marketplace registration), 'self' (user-supplied URL via hosting.url). Managed + Fly land in Phase 1B.",
+      "Settlement in v1 is 'none' (free) only — do not pass settlement.method when the user asks for paid; surface that Lightning + Stripe ship in v2.",
+      "For the first-run verification on a fresh node, call `publish_artifact` with `template: \"demo.add\"` to publish the canonical local demo without writing source. This is a sanity check; real services go through `marketplace_publish`.",
+      "After `marketplace_publish` returns, call `list_local_services`/`get_local_service` to confirm the offer fields and `invoke_service` (using the returned invoke_command) to verify end-to-end."
     ]
   }
   if (profile === "evidence") {
@@ -1297,6 +1299,36 @@ async function handleMarketplaceGetComplaint(args, config, includeRaw) {
   return renderResult(lines, response, includeRaw)
 }
 
+async function handleMarketplacePublish(args, _config, includeRaw) {
+  // Delegates to `froglet-node publish --json` via the publish engine. The
+  // engine handles the full build → host → sign → register pipeline; the
+  // MCP tool's job is just to materialise the manifests + handler.py from
+  // structured input and parse the JSON the CLI emits.
+  const response = await runMarketplacePublish(args)
+  const lines = [
+    `status: ${response?.warnings?.length ? "published with warnings" : "published"}`,
+    `provider_id: ${response.provider_id}`,
+    `public_url: ${response.public_url}`,
+    `offer_hash: ${response.offer_hash}`
+  ]
+  if (response.marketplace_offer_url) {
+    lines.push(`marketplace_offer_url: ${response.marketplace_offer_url}`)
+  }
+  if (response.status_url) {
+    lines.push(`status_url: ${response.status_url}`)
+  }
+  if (response.invoke_command) {
+    lines.push(`invoke: ${response.invoke_command}`)
+  }
+  if (Array.isArray(response.warnings) && response.warnings.length > 0) {
+    lines.push(`warnings: ${response.warnings.length}`)
+    for (const w of response.warnings) {
+      lines.push(`  - ${JSON.stringify(w)}`)
+    }
+  }
+  return renderResult(lines, response, includeRaw)
+}
+
 async function handleDealInvoiceBundle(args, config, includeRaw) {
   const dealId = typeof args.deal_id === "string" ? args.deal_id.trim() : ""
   if (dealId.length === 0) {
@@ -1370,6 +1402,8 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleMarketplaceFileComplaint(args, config, includeRaw)
     case "marketplace_get_complaint":
       return handleMarketplaceGetComplaint(args, config, includeRaw)
+    case "marketplace_publish":
+      return handleMarketplacePublish(args, config, includeRaw)
     // Removed actions — return clear error messages
     case "run_hosted_proof":
       throw new Error("run_hosted_proof is not part of the installed MCP surface. Use https://froglet.dev/llms.txt for the no-install hosted proof, or use local MCP actions against a configured Froglet node.")
