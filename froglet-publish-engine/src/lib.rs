@@ -26,9 +26,11 @@
 
 pub mod backends;
 pub mod builder;
+pub mod daemon_client;
 pub mod error;
 pub mod registration;
 
+pub use daemon_client::{ControlAuth, DaemonClient};
 pub use error::{PublishError, PublishWarning};
 
 use froglet_protocol::manifest::{ProjectManifest, ServiceManifest};
@@ -109,12 +111,20 @@ pub struct PublishOutput {
     pub warnings: Vec<PublishWarning>,
 }
 
-/// Run the full build → host → sign → register pipeline.
+/// Run the full build → host → sign → register pipeline against a
+/// running `froglet-node` daemon.
 ///
-/// Phase 1A.1 stub. Subsequent sub-phases (1A.2 .. 1A.7) flesh out the
-/// pipeline. Returns [`PublishError::NotImplemented`] in Phase 1A.1.
-pub async fn publish(input: PublishInput) -> Result<PublishOutput, PublishError> {
-    // Resolve the effective hosting choice: override > manifest > project default > "local".
+/// Phase 1A.7 wiring: composes the 5 sub-phase pieces (LocalBackend,
+/// TorBackend, SelfHostedBackend, Python builder, DaemonClient,
+/// registration helpers) into one coherent flow.
+///
+/// Caller is responsible for ensuring the daemon is reachable (the
+/// CLI's `init` subcommand handles that for the operator path).
+pub async fn publish(
+    input: PublishInput,
+    daemon: &DaemonClient,
+) -> Result<PublishOutput, PublishError> {
+    // 1. Resolve hosting choice (override > service manifest > project default > local).
     let hosting = resolve_hosting_choice(&input)?;
 
     tracing::info!(
@@ -125,10 +135,158 @@ pub async fn publish(input: PublishInput) -> Result<PublishOutput, PublishError>
         "froglet-publish-engine: pipeline start",
     );
 
-    // Phase 1A.1: skeleton only. Real backends land in 1A.2 .. 1A.7.
-    Err(PublishError::NotImplemented {
-        what: format!("backend dispatch for {:?}", hosting),
+    // 2. Bring up the public surface.
+    let prepared = pipeline::prepare_hosting(&hosting, daemon).await?;
+
+    // 3. Build the artifact from source.
+    let runtime = input.service.runtime.as_str();
+    let package_kind = input.service.package_kind.as_str();
+    let publish_request = pipeline::build_publish_request(&input, runtime, package_kind).await?;
+
+    // 4. Publish via the daemon (signs + persists to /v1/feed).
+    let response = daemon.publish_artifact(&publish_request).await?;
+    let evidence = response.evidence;
+
+    // 5. Register with marketplace if the backend says we should.
+    let (marketplace_offer_url, status_url, indexer_warning) = if prepared.register_with_marketplace
+    {
+        let transport_hint = hosting_transport_hint(&hosting);
+        registration::register_with_marketplace(
+            &input.marketplace_url,
+            &prepared.public_url,
+            transport_hint,
+        )
+        .await?;
+
+        let offer_url =
+            registration::marketplace_offer_url(&input.marketplace_url, &evidence.offer_hash);
+        let provider_status_url = format!(
+            "{}/v1/providers/{}",
+            input.marketplace_url.as_str().trim_end_matches('/'),
+            evidence.provider_id,
+        );
+
+        // 6. Wait for indexer projection (eventually consistent).
+        let warning =
+            match registration::wait_for_indexer(&input.marketplace_url, &evidence.provider_id)
+                .await
+            {
+                Ok(_) => None,
+                Err(PublishError::Verification { tries: _, .. }) => {
+                    Some(PublishWarning::IndexerLag { seconds_waited: 90 })
+                }
+                Err(other) => return Err(other),
+            };
+        (Some(offer_url), Some(provider_status_url), warning)
+    } else {
+        (None, None, None)
+    };
+
+    let mut warnings: Vec<PublishWarning> = Vec::new();
+    if !prepared.register_with_marketplace {
+        warnings.push(PublishWarning::NotRegistered {
+            reason: format!("hosting backend {:?} is private", hosting),
+        });
+    }
+    if let Some(w) = indexer_warning {
+        warnings.push(w);
+    }
+
+    Ok(PublishOutput {
+        provider_id: evidence.provider_id,
+        public_url: prepared.public_url,
+        offer_hash: evidence.offer_hash,
+        marketplace_offer_url,
+        invoke_command: format!("froglet-node invoke {} '{{}}'", evidence.offer_id),
+        status_url,
+        warnings,
     })
+}
+
+fn hosting_transport_hint(hosting: &HostingChoice) -> Option<&'static str> {
+    match hosting {
+        HostingChoice::Tor => Some("tor"),
+        _ => Some("clearnet"),
+    }
+}
+
+/// Pipeline helpers — kept private to encourage callers to use [`publish`].
+mod pipeline {
+    use super::*;
+    use crate::backends::{HostingBackend, PreparedHosting};
+    use crate::backends::{local::LocalBackend, self_hosted::SelfHostedBackend, tor::TorBackend};
+
+    pub(super) async fn prepare_hosting(
+        choice: &HostingChoice,
+        daemon: &DaemonClient,
+    ) -> Result<PreparedHosting, PublishError> {
+        match choice {
+            HostingChoice::Local => {
+                LocalBackend::with_url(daemon.daemon_url.as_str())
+                    .prepare()
+                    .await
+            }
+            HostingChoice::Tor => TorBackend::new(daemon.daemon_url.clone()).prepare().await,
+            HostingChoice::SelfHosted { url } => {
+                SelfHostedBackend::new(url.clone()).prepare().await
+            }
+            HostingChoice::Managed { .. } => Err(PublishError::NotImplemented {
+                what: "Managed backend (Phase 1B)".to_string(),
+            }),
+            HostingChoice::Fly { .. } => Err(PublishError::NotImplemented {
+                what: "Fly backend (Phase 1B)".to_string(),
+            }),
+        }
+    }
+
+    pub(super) async fn build_publish_request(
+        input: &PublishInput,
+        runtime: &str,
+        package_kind: &str,
+    ) -> Result<daemon_client::PublishArtifactRequest, PublishError> {
+        let mut request = daemon_client::PublishArtifactRequest {
+            service_id: input.service.service_id.clone(),
+            offer_id: input.service.offer_id.clone(),
+            runtime: Some(runtime.to_string()),
+            package_kind: Some(package_kind.to_string()),
+            entrypoint_kind: input.service.entrypoint_kind.clone(),
+            entrypoint: input.service.entrypoint.clone(),
+            contract_version: input.service.contract_version.clone(),
+            summary: input.service.summary.clone(),
+            mode: input.service.mode.clone(),
+            price_sats: input
+                .service
+                .price
+                .as_ref()
+                .and_then(|p| p.sats)
+                .unwrap_or(0),
+            publication_state: input.service.publication_state.clone(),
+            input_schema: input.service.input_schema.clone(),
+            output_schema: input.service.output_schema.clone(),
+            ..Default::default()
+        };
+
+        match (runtime, package_kind) {
+            ("python", "inline_source") => {
+                let artifact = crate::builder::build_python_inline(
+                    &input.source,
+                    input.service.entrypoint.as_deref(),
+                )
+                .await?;
+                request.inline_source =
+                    Some(String::from_utf8(artifact.source_bytes).map_err(|_| {
+                        PublishError::Build("Python inline_source must be valid UTF-8".to_string())
+                    })?);
+            }
+            (rt, pk) => {
+                return Err(PublishError::NotImplemented {
+                    what: format!("builder for runtime={rt} package_kind={pk} (Phase 1B)"),
+                });
+            }
+        }
+
+        Ok(request)
+    }
 }
 
 fn resolve_hosting_choice(input: &PublishInput) -> Result<HostingChoice, PublishError> {
@@ -211,18 +369,10 @@ mod tests {
         ServiceManifest::from_toml(&toml).unwrap().0
     }
 
-    #[tokio::test]
-    async fn publish_returns_not_implemented_in_phase_1a1() {
-        let input = PublishInput {
-            project: None,
-            service: minimal_service_manifest("local"),
-            source: SourceLocator::Inline("print('hi')".to_string()),
-            hosting_override: None,
-            marketplace_url: Url::parse("https://marketplace.froglet.dev").unwrap(),
-        };
-        let err = publish(input).await.unwrap_err();
-        assert!(matches!(err, PublishError::NotImplemented { .. }));
-    }
+    // Note: an end-to-end `publish()` test requires a running daemon +
+    // marketplace, and lives in Phase 1A.8 as an `#[ignore]`d integration
+    // test. The pure-function tests below cover the hosting-resolution
+    // logic without a daemon.
 
     #[test]
     fn resolves_hosting_from_manifest_default() {

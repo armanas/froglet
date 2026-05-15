@@ -38,3 +38,4 @@ async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1.37", features = ["full", "test-util"] }
+tempfile = "3"
