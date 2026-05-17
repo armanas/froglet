@@ -61,7 +61,7 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests; verified 2026-05-15 | 🟢 local compose smoke (`release_gate.sh --compose`) | 🟢 `marketplace.froglet.dev` /v1/providers /v1/offers /v1/stats verified 2026-05-15 via `scripts/hosted_smoke.sh` (5/5) | 🟢 v0.2 launch posture: free hosted catalog is the headline product; `marketplace_publish` MCP + CLI tested via 25-test Phase 4 harness | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via MCP `get_settlement_state` |
 | `Lightning::Mock` | 🟢 Mock-Lightning logic exercised via `tests/payments_and_discovery.rs` integration suite (6/6 pass, verified 2026-05-15); stripe/x402 in-file tests also exercise Mock-Lightning as their settlement substrate | 🟢 `payments_and_discovery.rs` 6/6 pass (verified 2026-05-15): mock invoice bundle persists across reload, quote/deal commitment validation, randomized invoice-bundle validation reports targeted issues, payments_enforce_all_error_paths | — | — | 🟢 mock can be forced to return failure in tests | 🟢 Mock state persists in sqlite between restarts (covered by `lightning_mock_invoice_bundle_persists_and_updates_state`) | 🟢 settlement state via MCP |
-| `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs; verified 2026-05-15 | 🟢 6/6 fake-LND-REST integration tests pass (`tests/lnd_rest_settlement.rs`, verified 2026-05-15) covering BOLT11 invoice issuance, bundle cancellation, backend cancellation reflection, orphaned-materialization recovery, and issue-delay tolerance. **Real-LND regtest** (`python/tests/test_lnd_regtest.py::test_lnd_regtest_hold_invoice_flow_and_restart_recovery`) passed 2026-05-15 in 78.8s end-to-end: Docker + bitcoind + 2 LND nodes (alice + bob, `lightninglabs/lnd:v0.20.0-beta`), hold-invoice issued by bob, paid by alice, success-fee settled through the Froglet provider, restart-recovery semantics verified. See [§ 7. Regtest run log](#7-regtest-run-log). | ⬜ v0.3 publish-path follow-up; daemon supports it today, `marketplace_publish` does not yet | ⬜ v0.3 publish-path follow-up | 🟢 timeout + cancellation tested in fake-LND-REST integration; restart-recovery exercised in the live regtest run | 🟢 invoice bundle state + preimage persistence verified across process restart in both `tests/lnd_rest_settlement.rs` and the live regtest (`test_lnd_regtest_hold_invoice_flow_and_restart_recovery`, 2026-05-15) | 🟢 settlement state + invoice-bundle status via MCP |
+| `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs; verified 2026-05-15 | 🟢 6/6 fake-LND-REST integration tests pass (`tests/lnd_rest_settlement.rs`, verified 2026-05-15) covering BOLT11 invoice issuance, bundle cancellation, backend cancellation reflection, orphaned-materialization recovery, and issue-delay tolerance. **Real-LND regtest** (`python/tests/test_lnd_regtest.py::test_lnd_regtest_hold_invoice_flow_and_restart_recovery`) passed 2026-05-15 in 78.8s end-to-end: Docker + bitcoind + 2 LND nodes (alice + bob, `lightninglabs/lnd:v0.20.0-beta`), hold-invoice issued by bob, paid by alice, success-fee settled through the Froglet provider, restart-recovery semantics verified. See [§ 7. Regtest run log](#7-regtest-run-log). | 🟡 mainnet test harness in place (`python/tests/test_lnd_mainnet.py`, double-gated on `FROGLET_RUN_LND_MAINNET=1` + `~/.froglet/voltage/lightning.env`); blocked on inbound channel liquidity on the Voltage node (`channel_remote_sats = 0` as of 2026-05-15). See [§ 8. Mainnet run log](#8-mainnet-run-log) — empty until first real-money settlement clears. | ⬜ v0.3 publish-path follow-up; daemon supports mainnet Lightning today (`test_lnd_mainnet.py` will prove it once channels open), `marketplace_publish` does not yet | 🟢 timeout + cancellation tested in fake-LND-REST integration; restart-recovery exercised in the live regtest run | 🟢 invoice bundle state + preimage persistence verified across process restart in both `tests/lnd_rest_settlement.rs` and the live regtest (`test_lnd_regtest_hold_invoice_flow_and_restart_recovery`, 2026-05-15) | 🟢 settlement state + invoice-bundle status via MCP |
 | `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts (verified 2026-05-15) | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ v0.3 follow-up | ⬜ v0.3 follow-up | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
 | `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping (verified 2026-05-15) | 🟡 Stripe driver tested against a **local mock HTTP server**; one operator-run Stripe sandbox smoke on 2026-04-30: local `/v1/node/events/query` returned `stripe_mpp` receipt status `committed` with a `pi_` PaymentIntent reference. Webhook signature verification and event-id dedupe covered in `python/tests/test_payments.py` | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); evidence above is point-in-time and has not been re-run for v0.2. The hosted endpoint is in the private `froglet-services` workspace; re-running requires deployment access | ⬜ v0.3 publish-path follow-up; production live-money Stripe not yet wired to `marketplace_publish` | 🟡 API error mapping exercised; webhook signature failure + duplicate delivery tested locally and on paid-staging as of 2026-04-30 | 🟡 VM-backed restart replay passed 2026-04-30 (replaying `evt_froglet_restart_1777551288` returned `duplicate:true`); not re-verified for v0.2 | 🟢 settlement state via MCP |
 
@@ -200,3 +200,62 @@ Adding a row here for each scheduled regtest run keeps the
 "local integration: 🟢" claim honest. Stale-dated rows are a signal that
 the test hasn't been re-run; if more than a release cycle passes without
 a fresh row, downgrade the cell to 🟡.
+
+## 8. Mainnet run log
+
+This is the evidence trail for the `Lightning::LndRest` "Hosted live"
+column. The test is `python.tests.test_lnd_mainnet` and exercises a real
+mainnet Lightning settlement against a Voltage LND node — provider issues
+a real BOLT11 hold invoice, operator pays it from a separate funding
+wallet, provider releases the preimage, receipt is durable.
+
+| Date | Test | Amount | Result | Notes |
+| --- | --- | --- | --- | --- |
+| — | _no mainnet runs yet_ | — | — | The test is in place (`python/tests/test_lnd_mainnet.py`). First run is blocked on inbound channel liquidity on the Voltage node (`channel_remote_sats = 0` as of 2026-05-15). |
+
+### Reproduce a mainnet run
+
+The test is **double-gated**: it skips unless `FROGLET_RUN_LND_MAINNET=1`
+is set AND `~/.froglet/voltage/lightning.env` exists. The env file is
+written by `ops/voltage_lnd.sh materialize` in the `froglet-services`
+repo from Keychain-stored Voltage credentials. The test never moves
+funds itself; the operator pays the invoice externally.
+
+```bash
+# In the froglet-services repo, refresh the Voltage env + confirm inbound:
+cd ~/Projects/github.com/armanas/froglet-services
+./ops/voltage_lnd.sh materialize
+./ops/voltage_lnd.sh balance   # confirm channel_remote_sats > 50000
+
+# In the froglet repo, run the gated test:
+cd ~/Projects/github.com/armanas/froglet
+FROGLET_RUN_LND_MAINNET=1 python3 -m unittest -v python.tests.test_lnd_mainnet
+```
+
+What the test does end-to-end:
+
+1. Parses `~/.froglet/voltage/lightning.env` for the Voltage REST URL,
+   macaroon path, and TLS cert path.
+2. Probes the Voltage node via `GET /v1/getinfo` to confirm credentials
+   work and at least one active channel exists. Fails fast if not.
+3. Builds a local Froglet provider configured with the Voltage
+   credentials (`PaymentBackend::Lightning` / `LightningMode::LndRest`).
+4. Creates a signed Froglet quote + deal; provider materialises a real
+   mainnet BOLT11 hold invoice on Voltage.
+5. Prints the invoice and the sat amount to stdout and **waits up to
+   10 minutes** for the operator to pay it from a separate Lightning
+   wallet (Phoenix, Wallet of Satoshi, Alby, another LND, etc.).
+6. Polls the local provider's `/v1/provider/deals/{id}` until the
+   provider observes the invoice ACCEPTED via Voltage (deal status
+   flips to `result_ready`).
+7. Releases the preimage via `POST /v1/provider/deals/{id}/accept`.
+8. Verifies the deal lands in `succeeded` and is durable in the
+   provider DB.
+
+Typical invoice amount per run: 1-5 sats (~$0.005 USD at $60k BTC). The
+test prints the amount before asking for payment so the operator can
+refuse if it looks wrong.
+
+After a successful run, append a row to the table above with the date,
+sat amount, and any operator notes. Stale-dated rows are a signal that
+the cell should downgrade.
