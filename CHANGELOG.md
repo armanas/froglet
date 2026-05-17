@@ -8,6 +8,50 @@ top of the `0.1.x` protocol core.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-15
+
+Same surface as 0.2.0. Three corrections that made 0.2.0 imperfect:
+
+### Fixed
+
+- npm audit at the repo root and inside `integrations/mcp/froglet`
+  both now report 0 vulnerabilities. 0.2.0 was published with two
+  unpatched advisories in the MCP integration lockfile (high
+  `fast-uri`, moderate `hono`) plus four advisories at the root
+  (high `fast-uri`, moderate `hono` / `ip-address` / `express-rate-limit`),
+  all transitive through `@modelcontextprotocol/sdk`. `npm audit fix`
+  resolves both. The advisories are not reachable from
+  `marketplace_publish` or any other Froglet code path, but the clean
+  audit posture matters for downstream consumers and for the
+  `npx -y froglet-mcp` install story.
+- All 16 Froglet version sources now agree at 0.2.1. 0.2.0 shipped
+  the publish-engine + CLI + MCP work correctly, but four metadata
+  files (`server.json`, `plugins/froglet/.codex-plugin/plugin.json`,
+  `plugins/froglet/.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`) were left at 0.1.5. The
+  docs-site `plugin-distribution.test.ts` caught it and the fix
+  landed on main but did not make it into the 0.2.0 tag.
+- The 0.2.0 git tag points at commit `201db5e`, which has CI
+  failures on the docs-site test and the npm audit gate. 0.2.1
+  points at a tip with all gates green so the tagged commit and the
+  published Docker images / binary tarballs match a CI-green state.
+
+### Changed
+
+- No feature changes. The publish engine, CLI subcommands, MCP
+  tool, manifest v3, Phase 4 harness, and cleanup script ship at
+  byte-identical behavior to 0.2.0; the only differences are in
+  metadata files, lockfile dependency-resolution, and the
+  `Cargo.toml` / `package.json` version strings.
+
+### Migration
+
+If you pulled `ghcr.io/armanas/froglet-mcp:0.2.0` or installed
+`froglet-mcp@0.2.0` from npm (it's not yet published there), repull
+or reinstall at 0.2.1. The 0.2.0 Docker images remain available
+under their original tags; 0.2.1 supersedes them as the recommended
+version.
+
 ## [0.2.0] - 2026-05-15
 
 The headline of this release is **agent-grade publish**: an LLM with the

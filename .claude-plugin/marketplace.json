@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Froglet plugin marketplace for local verifiable compute, signed receipts, settlement, and service publication.",
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "plugins": [
     {
       "name": "froglet",
       "source": "./plugins/froglet",
       "description": "Connect Claude Code to a local Froglet node for verifiable compute, signed receipts, settlement, and service publication.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "Armanas Povilionis-Muradian"
       },
