@@ -32,7 +32,7 @@ body {
 	grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
 	grid-template-rows: auto minmax(0, 1fr);
 	grid-template-areas: 'lesson scene' 'term scene';
-	gap: 14px;
+	gap: 16px;
 	padding: 16px var(--shell-gut);
 	min-height: 680px;
 	max-width: var(--shell-max);
@@ -41,38 +41,36 @@ body {
 	align-items: stretch;
 }
 
-/* ── Scene / canvas (protocol whiteboard) ──────────────── */
+/* ── Scene / canvas (protocol diagram) ──────────────── */
 
 #scene {
 	grid-area: scene;
 	position: relative;
-	border: 1px solid var(--border);
-	border-radius: var(--r-3);
-	overflow: hidden;
 	background: var(--bg-elevated);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--r-4);
+	box-shadow: var(--shadow-2);
+	overflow-x: auto;
+	overflow-y: hidden;
 	min-height: 0;
 }
 
-/* Subtle whiteboard grid — built from the same border token
-   so it reads as a protocol panel, not a chalkboard. */
-#scene::before {
-	content: '';
-	position: absolute;
-	inset: 0;
-	background-image:
-		linear-gradient(to right, var(--border) 1px, transparent 1px),
-		linear-gradient(to bottom, var(--border) 1px, transparent 1px);
-	background-size: 64px 64px;
-	opacity: 0.5;
-	pointer-events: none;
+#scene::-webkit-scrollbar {
+	height: 6px;
+}
+#scene::-webkit-scrollbar-track {
+	background: transparent;
+}
+#scene::-webkit-scrollbar-thumb {
+	background: var(--border-strong);
+	border-radius: var(--r-pill);
+}
+#scene::-webkit-scrollbar-thumb:hover {
+	background: var(--fg3);
 }
 
 #scene canvas {
 	display: block;
-	width: 100%;
-	height: 100%;
-	position: absolute;
-	inset: 0;
 }
 
 /* ── Lesson card ───────────────────────────────────────── */
@@ -87,10 +85,23 @@ body {
 }
 
 #lesson-card {
-	padding: 22px 24px;
-	background: var(--bg-elevated);
-	border: 1px solid var(--border);
-	border-radius: var(--r-3);
+	padding: 24px;
+	background: rgba(23, 27, 24, 0.72);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	border: 1px solid rgba(232, 237, 230, 0.08);
+	border-radius: var(--r-4);
+	box-shadow: 
+		0 4px 20px rgba(0, 0, 0, 0.25),
+		inset 0 1px 0 rgba(255, 255, 255, 0.05);
+	transition: transform var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+}
+
+#lesson-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 
+		0 8px 30px rgba(0, 0, 0, 0.35),
+		inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .step-n {
@@ -143,17 +154,20 @@ body {
 /* ── Annotation ───────────────────────────────────────── */
 
 #annotation {
-	padding: 14px 18px;
-	background: var(--bg-elevated);
-	border: 1px solid var(--border);
-	border-left: 2px solid var(--frog-400);
-	border-radius: 0 var(--r-3) var(--r-3) 0;
+	padding: 16px 20px;
+	background: rgba(23, 27, 24, 0.55);
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
+	border: 1px solid rgba(232, 237, 230, 0.06);
+	border-left: 3px solid var(--frog-400);
+	border-radius: 0 var(--r-4) var(--r-4) 0;
 	font-size: 0.88rem;
 	line-height: 1.6;
 	color: var(--fg2);
 	display: none;
 	max-height: 160px;
 	overflow-y: auto;
+	box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
 }
 
 #annotation strong {
@@ -173,13 +187,23 @@ body {
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-	background: var(--term-bg);
-	border: 1px solid var(--term-border);
-	border-radius: var(--r-3);
+	background: rgba(10, 12, 10, 0.85);
+	backdrop-filter: blur(16px);
+	-webkit-backdrop-filter: blur(16px);
+	border: 1px solid rgba(232, 237, 230, 0.08);
+	border-radius: var(--r-4);
 	min-height: 240px;
 	max-height: 340px;
 	align-self: end;
 	z-index: 3;
+	box-shadow: 
+		0 8px 30px rgba(0, 0, 0, 0.3),
+		inset 0 1px 0 rgba(255, 255, 255, 0.05);
+	transition: border-color var(--dur-med) var(--ease-out);
+}
+
+#term:hover {
+	border-color: rgba(82, 199, 42, 0.2);
 }
 
 #term-bar {
@@ -408,3 +432,4 @@ body {
 		padding-inline: 12px;
 	}
 }
+

@@ -98,4 +98,45 @@ describe('initSelfHostConfigurator', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(buildSelfHostScript());
     expect(document.querySelector('#config-copy-btn')?.textContent).toBe('Copied');
   });
+
+  it('updates the output script dynamically when typing in the credentials field', () => {
+    document.body.innerHTML = `
+      <div id="self-host-card">
+        <div class="config-options" data-group="install">
+          <button class="config-btn is-active" data-value="linux" aria-pressed="true">Linux</button>
+        </div>
+        <div class="config-options" data-group="agent">
+          <button class="config-btn is-active" data-value="claude-code" aria-pressed="true">Claude Code</button>
+        </div>
+        <div class="config-options" data-group="payment">
+          <button class="config-btn" data-value="none" aria-pressed="false">None</button>
+          <button class="config-btn is-active" data-value="stripe-test" aria-pressed="true">Stripe test</button>
+        </div>
+        <div id="config-payment-input-container" style="display: none;">
+          <span id="config-payment-input-label">Credential</span>
+          <input id="config-payment-input" type="text" />
+        </div>
+      </div>
+      <pre id="config-output"><code></code></pre>
+    `;
+
+    initSelfHostConfigurator();
+
+    const stripeButton = document.querySelector<HTMLButtonElement>('[data-value="stripe-test"]');
+    stripeButton?.click();
+
+    const inputContainer = document.querySelector<HTMLElement>('#config-payment-input-container');
+    const inputField = document.querySelector<HTMLInputElement>('#config-payment-input');
+    const codeBlock = document.querySelector<HTMLElement>('#config-output code');
+
+    expect(inputContainer?.style.display).toBe('block');
+    expect(inputField?.placeholder).toBe('sk_test_...');
+
+    if (inputField) {
+      inputField.value = 'sk_test_testkey123'; // gitleaks:allow
+      inputField.dispatchEvent(new Event('input'));
+    }
+
+    expect(codeBlock?.textContent).toContain('export FROGLET_STRIPE_SECRET_KEY=sk_test_testkey123'); // gitleaks:allow
+  });
 });

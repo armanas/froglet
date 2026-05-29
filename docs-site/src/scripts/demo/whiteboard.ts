@@ -1,101 +1,64 @@
 // ═══════ Whiteboard canvas renderer ═══════
-// Extracted from demo.astro inline script (Requirements 1.3, 7.2, 13.3)
+// Clean, crisp, high-precision technical diagram rendering (No gamification, high contrast, perfect alignment)
 
 import type { Step, BoardNode, BoardArrow, BoardNote } from './steps';
 
-/** Named constants replacing all magic numbers in the whiteboard renderer */
+/** Named constants for the clean visual workspace */
 export const WHITEBOARD = {
   NODE_RADIUS: 56,
   NODE_RADIUS_SMALL: 34,
-  ARROW_HEAD_SIZE: 11,
-  ARROW_PAD: 64,
-  GRID_SPACING_Y: 58,
-  GRID_MIN_SPACING_X: 120,
+  ARROW_HEAD_SIZE: 10,
   FRAME_MARGIN: 16,
   ANIMATION_DURATION_MS: 1200,
-  GRID_START: 40,
-  GRID_INSET: 30,
-  GRID_LINE_WIDTH: 0.5,
-  FRAME_LINE_WIDTH: 1,
-  ARROW_LINE_WIDTH: 2.2,
-  ARROW_HEAD_LINE_WIDTH: 2,
-  ARROW_HEAD_ANGLE: 0.4,
-  ARROW_LABEL_FONT_SIZE: 17,
-  ARROW_LABEL_OFFSET_Y: 14,
-  NODE_LABEL_FONT_SIZE: 30,
-  NODE_LABEL_FONT_SIZE_SMALL: 16,
-  NODE_SUB_FONT_SIZE: 16,
-  NODE_SUB_FONT_SIZE_SMALL: 12,
-  NODE_SUB_OFFSET_Y: 19,
-  NODE_SUB_OFFSET_Y_SMALL: 13,
-  NODE_LABEL_OFFSET_Y: 6,
-  NODE_HIGHLIGHT_LINE_WIDTH: 1.8,
-  NODE_DEFAULT_LINE_WIDTH: 1.3,
-  NOTE_DEFAULT_SIZE: 16,
-  CHALK_OFFSETS: [
-    { dx: 0, dy: 0, alpha: 0.85 },
-    { dx: -0.8, dy: 0.45, alpha: 0.2 },
-    { dx: 0.65, dy: -0.45, alpha: 0.16 },
-    { dx: 0.2, dy: 0.95, alpha: 0.09 },
-  ] as const,
-  CHALK_LINE_OFFSETS: [
-    { dx: 0, dy: 0, alphaScale: 1, widthAdd: 0 },
-    { dx: -0.7, dy: 0.5, alphaScale: 0.24, widthAdd: 0.75 },
-    { dx: 0.55, dy: -0.45, alphaScale: 0.18, widthAdd: 1 },
-    { dx: 0.15, dy: 0.9, alphaScale: 0.08, widthAdd: 1.4 },
-  ] as const,
-  DASH_PATTERN: [6, 8] as readonly number[],
-  // Colors mirror design-system tokens from tokens.css. Canvas can't
-  // read CSS vars directly, so these are hex/rgba equivalents of
-  // --bg-elevated, --fg1/--fg2, --frog-400/--frog-200, --bolt, --border.
+  DASH_PATTERN: [5, 5] as readonly number[],
+  // Sleek dark-mode developer color system matching tokens.css
   COLORS: {
-    bg: '#171b18',
-    grid: 'rgba(43,48,40,0.65)',
-    text: '#e8ede6',
-    muted: 'rgba(154,164,151,0.78)',
-    accent: '#52c72a',
-    accentDim: 'rgba(82,199,42,0.15)',
+    bg: '#0a0d0a', // very rich solid dark green-black background
+    grid: 'rgba(232, 237, 230, 0.035)', // sharp, clean grid line
+    text: '#e8ede6', // high-contrast crisp text
+    muted: 'rgba(154, 164, 151, 0.72)', // clean muted labels
+    accent: '#52c72a', // crisp green highlights
+    accentDim: 'rgba(82, 199, 42, 0.08)',
     warn: '#f5c518',
-    frame: 'rgba(43,48,40,0.6)',
-    labelBackplate: 'rgba(23,27,24,0.88)',
-    highlightFill: 'rgba(82,199,42,0.10)',
-    defaultFill: 'rgba(23,27,24,0.4)',
+    frame: 'rgba(232, 237, 230, 0.06)',
+    labelBackplate: '#0a0d0a', // solid background for text blocks
+    highlightFill: 'rgba(82,199,42,0.12)',
+    defaultFill: 'rgba(23,27,24,0.7)',
     highlightStroke: '#a8e88a',
-    defaultStroke: 'rgba(232,237,230,0.7)',
+    defaultStroke: 'rgba(232,237,230,0.6)',
   },
   FONTS: {
-    hand: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
+    hand: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace", // changed hand font to mono for premium crisp style
     mono: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
   },
 } as const;
-
 
 interface NodePosition {
   cx: number;
   cy: number;
   r: number;
+  w: number;
+  h: number;
 }
 
-/**
- * Initialize the whiteboard canvas renderer.
- *
- * @param canvas - The canvas element to render into
- * @param getStep - Returns the current Step data
- * @param getSceneStartedAt - Returns the timestamp when the current scene started
- * @returns Object with resize() and destroy() methods
- */
 export function initWhiteboard(
   canvas: HTMLCanvasElement,
   getStep: () => Step,
   getSceneStartedAt: () => number,
-): { resize: () => void; destroy: () => void } {
+): {
+  resize: () => void;
+  destroy: () => void;
+  setActiveTool: (tool: string | null) => void;
+  clearBoard: () => void;
+} {
   const ctx = canvas.getContext('2d');
 
-  // Null-check guard: skip rendering if 2D context unavailable (Req 3.2)
   if (!ctx) {
     return {
       resize() {},
       destroy() {},
+      setActiveTool() {},
+      clearBoard() {},
     };
   }
 
@@ -104,8 +67,6 @@ export function initWhiteboard(
   let H = 0;
   let animationFrameId: number | null = null;
   let destroyed = false;
-
-  // ── helpers ──
 
   function logicalW(): number {
     return W / devicePixelRatio;
@@ -118,173 +79,284 @@ export function initWhiteboard(
   function resize(): void {
     const scene = canvas.parentElement;
     if (!scene) return;
-    W = Math.max(1, scene.clientWidth * devicePixelRatio);
-    H = Math.max(1, scene.clientHeight * devicePixelRatio);
+    const logicalWVal = Math.max(850, scene.clientWidth);
+    const logicalHVal = scene.clientHeight;
+    canvas.style.width = `${logicalWVal}px`;
+    canvas.style.height = `${logicalHVal}px`;
+    W = logicalWVal * devicePixelRatio;
+    H = logicalHVal * devicePixelRatio;
     canvas.width = W;
     canvas.height = H;
     ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   }
 
-  // ── chalk-style line helper ──
+  // ── Crisp Render Helpers ──
 
-  function chalkLine(
+  function drawLine(
     ax: number, ay: number,
     bx: number, by: number,
     color: string, width: number, alpha: number, isDashed: boolean,
   ): void {
-    for (const o of WB.CHALK_LINE_OFFSETS) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    if (isDashed) ctx.setLineDash(WB.DASH_PATTERN as number[]);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawRect(x: number, y: number, w: number, h: number, color: string, width: number, fill?: string): void {
+    ctx.save();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fillRect(x, y, w, h);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawRectProgressive(
+    x: number, y: number,
+    w: number, h: number,
+    color: string, width: number,
+    drawProgress: number,
+    fill?: string,
+  ): void {
+    if (drawProgress <= 0) return;
+
+    if (drawProgress >= 1) {
+      drawRect(x, y, w, h, color, width, fill);
+      return;
+    }
+
+    if (fill) {
       ctx.save();
-      ctx.globalAlpha = alpha * o.alphaScale;
-      if (isDashed) ctx.setLineDash(WB.DASH_PATTERN as number[]);
-      ctx.beginPath();
-      ctx.moveTo(ax + o.dx, ay + o.dy);
-      ctx.lineTo(bx + o.dx, by + o.dy);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width + o.widthAdd;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 2.5;
-      ctx.stroke();
-      if (isDashed) ctx.setLineDash([]);
+      ctx.globalAlpha = drawProgress;
+      ctx.fillStyle = fill;
+      ctx.fillRect(x, y, w, h);
       ctx.restore();
+    }
+
+    const perimeter = (w * 2) + (h * 2);
+    const targetLen = drawProgress * perimeter;
+    let remaining = targetLen;
+
+    // Segment 1: Top
+    const draw1 = Math.min(w, remaining);
+    if (draw1 > 0) {
+      drawLine(x, y, x + draw1, y, color, width, 1, false);
+      remaining -= draw1;
+    }
+
+    // Segment 2: Right
+    const draw2 = Math.min(h, remaining);
+    if (draw2 > 0) {
+      drawLine(x + w, y, x + w, y + draw2, color, width, 1, false);
+      remaining -= draw2;
+    }
+
+    // Segment 3: Bottom
+    const draw3 = Math.min(w, remaining);
+    if (draw3 > 0) {
+      drawLine(x + w, y + h, x + w - draw3, y + h, color, width, 1, false);
+      remaining -= draw3;
+    }
+
+    // Segment 4: Left
+    const draw4 = Math.min(h, remaining);
+    if (draw4 > 0) {
+      drawLine(x, y + h, x, y + h - draw4, color, width, 1, false);
     }
   }
 
-  function chalkRect(x: number, y: number, w: number, h: number, color: string, width: number): void {
-    for (const o of WB.CHALK_OFFSETS) {
-      ctx.save();
-      ctx.globalAlpha = o.alpha;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width + o.alpha * 0.7;
-      ctx.lineJoin = 'round';
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 2;
-      ctx.beginPath();
-      ctx.moveTo(x + o.dx, y + o.dy);
-      ctx.lineTo(x + w + o.dx + 0.8, y + o.dy - 0.35);
-      ctx.lineTo(x + w + o.dx - 0.4, y + h + o.dy + 0.75);
-      ctx.lineTo(x + o.dx + 0.35, y + h + o.dy - 0.25);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.restore();
-    }
+  function drawText(text: string, x: number, y: number, color: string, alpha = 1): void {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+    ctx.restore();
   }
 
-  function chalkText(text: string, x: number, y: number, color: string, alpha = 1): void {
-    for (const o of WB.CHALK_OFFSETS) {
-      ctx.save();
-      ctx.globalAlpha = alpha * o.alpha;
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 1.8;
-      ctx.fillText(text, x + o.dx, y + o.dy);
-      ctx.restore();
-    }
+  function drawTextProgressive(
+    text: string,
+    x: number, y: number,
+    color: string,
+    drawProgress: number,
+    alpha = 1,
+  ): void {
+    if (drawProgress <= 0) return;
+    const visibleChars = Math.floor(drawProgress * text.length);
+    if (visibleChars <= 0) return;
+    drawText(text.substring(0, visibleChars), x, y, color, alpha);
   }
 
-  // ── background ──
+  function drawTextCenteredProgressive(
+    text: string,
+    x: number, y: number,
+    color: string,
+    drawProgress: number,
+    alpha = 1,
+  ): void {
+    if (drawProgress <= 0) return;
+    const visibleChars = Math.floor(drawProgress * text.length);
+    if (visibleChars <= 0) return;
+    const visibleText = text.substring(0, visibleChars);
+
+    ctx.save();
+    ctx.textAlign = 'left';
+    const fullWidth = ctx.measureText(text).width;
+    const startX = x - fullWidth / 2;
+    drawText(visibleText, startX, y, color, alpha);
+    ctx.restore();
+  }
+
+  // ── Background & Grid ──
 
   function drawBg(time: number): void {
     const ww = logicalW();
     const hh = logicalH();
     ctx.clearRect(0, 0, ww, hh);
-    const gradient = ctx.createLinearGradient(0, 0, ww, hh);
-    gradient.addColorStop(0, '#07150f');
-    gradient.addColorStop(0.56, WB.COLORS.bg);
-    gradient.addColorStop(1, '#092316');
-    ctx.fillStyle = gradient;
+
+    // Deep modern charcoal solid background
+    ctx.fillStyle = WB.COLORS.bg;
     ctx.fillRect(0, 0, ww, hh);
 
-    // static chalk dust and erased smudges
-    ctx.save();
-    ctx.strokeStyle = 'rgba(232,238,225,0.026)';
-    ctx.lineWidth = 0.8;
-    for (let i = 0; i < 82; i++) {
-      const x = ((i * 97) % Math.max(1, Math.floor(ww))) + 0.5;
-      const y = ((i * 53) % Math.max(1, Math.floor(hh))) + 0.5;
-      const len = 9 + ((i * 17) % 22);
-      ctx.globalAlpha = 0.08 + ((i * 13) % 9) / 100;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + len, y + ((i % 3) - 1) * 1.4);
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // subtle chalk grid
+    // Crisp high-precision fine grid
     ctx.strokeStyle = WB.COLORS.grid;
-    ctx.lineWidth = WB.GRID_LINE_WIDTH;
-    for (let y = WB.GRID_START; y < hh; y += WB.GRID_SPACING_Y) {
+    ctx.lineWidth = 1;
+    const gridSize = 64;
+    for (let x = 0; x < ww; x += gridSize) {
       ctx.beginPath();
-      ctx.moveTo(WB.GRID_INSET, y);
-      ctx.lineTo(ww - WB.GRID_INSET, y);
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, hh);
       ctx.stroke();
     }
-    for (let x = WB.GRID_START; x < ww; x += Math.max(WB.GRID_MIN_SPACING_X, ww / 5)) {
+    for (let y = 0; y < hh; y += gridSize) {
       ctx.beginPath();
-      ctx.moveTo(x, WB.GRID_INSET);
-      ctx.lineTo(x, hh - WB.GRID_INSET);
+      ctx.moveTo(0, y);
+      ctx.lineTo(ww, y);
       ctx.stroke();
     }
 
-    // frame with subtle pulse
-    const pulse = 0.5 + 0.15 * Math.sin(time / 1000);
-    chalkRect(
+    // Outer frame boundary
+    drawRect(
       WB.FRAME_MARGIN, WB.FRAME_MARGIN,
       ww - WB.FRAME_MARGIN * 2, hh - WB.FRAME_MARGIN * 2,
-      `rgba(229,239,223,${0.14 + pulse * 0.04})`,
-      WB.FRAME_LINE_WIDTH,
+      WB.COLORS.frame,
+      1,
     );
   }
 
-  // ── node drawing (Req 13.3: text labels inside/adjacent to circles) ──
+  // ── Components rendering ──
 
-  function drawNode(nd: BoardNode): NodePosition {
+  function drawNode(nd: BoardNode, ease: number): NodePosition {
     const ww = logicalW();
     const hh = logicalH();
     const cx = nd.x * ww;
     const cy = nd.y * hh;
     const r = nd.small ? WB.NODE_RADIUS_SMALL : WB.NODE_RADIUS;
 
-    // square fill
-    ctx.fillStyle = nd.highlight ? WB.COLORS.highlightFill : WB.COLORS.defaultFill;
-    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    // Setup typeface sizing
+    const labelSize = nd.small ? 13 : 15;
+    ctx.font = `700 ${labelSize}px ${WB.FONTS.mono}`;
+    ctx.textBaseline = 'middle';
 
-    // chalk square: multi-pass offset rendering
-    const col = nd.highlight ? WB.COLORS.highlightStroke : WB.COLORS.defaultStroke;
-    const lw = nd.highlight ? WB.NODE_HIGHLIGHT_LINE_WIDTH : WB.NODE_DEFAULT_LINE_WIDTH;
-    chalkRect(cx - r, cy - r, r * 2, r * 2, col, lw);
+    // Calculate dynamic width based on actual text length
+    const labelText = nd.label;
+    const textWidth = ctx.measureText(labelText).width;
+    
+    // Nodes should be elegant rectangles with 24px padding on sides
+    const boxW = Math.max(nd.small ? 84 : 124, textWidth + 24);
+    const boxH = nd.small ? 38 : 56;
 
-    // Sequence diagram lifeline (dashed vertical line below node)
+    // Node Outline & Fill Animation (ease: 0.0 to 0.4)
+    const boxProgress = Math.min(1, ease / 0.4);
+    const strokeColor = nd.highlight ? WB.COLORS.highlightStroke : WB.COLORS.defaultStroke;
+    const fillColor = nd.highlight ? WB.COLORS.highlightFill : WB.COLORS.defaultFill;
+    const lineWidth = nd.highlight ? 1.8 : 1.2;
+
+    drawRectProgressive(
+      cx - boxW / 2,
+      cy - boxH / 2,
+      boxW,
+      boxH,
+      strokeColor,
+      lineWidth,
+      boxProgress,
+      fillColor,
+    );
+
+    // Sequence diagram lifeline (dashed vertical line below node, ease: 0.35 to 0.65)
     if (nd.lifeline !== undefined) {
-      const lifelineEnd = nd.lifeline * hh;
-      chalkLine(cx, cy + r, cx, lifelineEnd, WB.COLORS.defaultStroke, 0.8, 0.4, true);
+      const lifelineProgress = Math.min(1, Math.max(0, (ease - 0.35) / 0.3));
+      if (lifelineProgress > 0) {
+        const lifelineEnd = (cy + boxH / 2) + (nd.lifeline * hh - (cy + boxH / 2)) * lifelineProgress;
+        drawLine(
+          cx,
+          cy + boxH / 2,
+          cx,
+          lifelineEnd,
+          WB.COLORS.defaultStroke,
+          1,
+          0.4 * lifelineProgress,
+          true,
+        );
+      }
     }
 
-    // Text label inside the square (Req 13.3: accessibility)
-    const labelSize = nd.small ? WB.NODE_LABEL_FONT_SIZE_SMALL : WB.NODE_LABEL_FONT_SIZE;
-    ctx.font = `700 ${labelSize}px ${WB.FONTS.hand}`;
-    ctx.fillStyle = nd.highlight ? WB.COLORS.accent : WB.COLORS.text;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    chalkText(nd.label, cx, cy - (nd.sub ? WB.NODE_LABEL_OFFSET_Y : 0), nd.highlight ? WB.COLORS.accent : WB.COLORS.text);
+    // Text label inside the rectangle (ease: 0.25 to 0.6)
+    const labelProgress = Math.min(1, Math.max(0, (ease - 0.25) / 0.35));
+    if (labelProgress > 0) {
+      ctx.font = `700 ${labelSize}px ${WB.FONTS.mono}`;
+      ctx.fillStyle = nd.highlight ? WB.COLORS.accent : WB.COLORS.text;
+      ctx.textBaseline = 'middle';
+      
+      const labelY = cy - (nd.sub ? 8 : 0);
+      drawTextCenteredProgressive(
+        labelText,
+        cx,
+        labelY,
+        nd.highlight ? WB.COLORS.accent : WB.COLORS.text,
+        labelProgress,
+      );
+    }
 
-    // Sub-label below the main label
+    // Sub-label below the main label (ease: 0.35 to 0.7)
     if (nd.sub) {
-      const subSize = nd.small ? WB.NODE_SUB_FONT_SIZE_SMALL : WB.NODE_SUB_FONT_SIZE;
-      const subOffset = nd.small ? WB.NODE_SUB_OFFSET_Y_SMALL : WB.NODE_SUB_OFFSET_Y;
-      ctx.font = `400 ${subSize}px ${WB.FONTS.hand}`;
-      ctx.fillStyle = WB.COLORS.muted;
-      chalkText(nd.sub, cx, cy + subOffset, WB.COLORS.muted, 0.9);
+      const subProgress = Math.min(1, Math.max(0, (ease - 0.35) / 0.35));
+      if (subProgress > 0) {
+        const subSize = nd.small ? 10 : 11;
+        ctx.font = `400 ${subSize}px ${WB.FONTS.mono}`;
+        ctx.fillStyle = WB.COLORS.muted;
+        
+        const subY = cy + (nd.small ? 10 : 13);
+        drawTextCenteredProgressive(
+          nd.sub,
+          cx,
+          subY,
+          WB.COLORS.muted,
+          subProgress,
+          0.85 * subProgress,
+        );
+      }
     }
 
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    return { cx, cy, r };
-  }
 
-  // ── arrow drawing ──
+    return { cx, cy, r, w: boxW, h: boxH };
+  }
 
   function drawArrowLine(
     x1: number, y1: number,
@@ -299,83 +371,90 @@ export function initWhiteboard(
     const dx = x2 - x1;
     const dy = y2 - y1;
     const len = Math.hypot(dx, dy);
+    if (len <= 0) return;
+
     const nx = dx / len;
     const ny = dy / len;
 
-    const s1x = x1 + nx * WB.ARROW_PAD;
-    const s1y = y1 + ny * WB.ARROW_PAD;
-    const s2x = x1 + nx * (WB.ARROW_PAD + (len - WB.ARROW_PAD * 2) * progress);
-    const s2y = y1 + ny * (WB.ARROW_PAD + (len - WB.ARROW_PAD * 2) * progress);
+    const endX = x1 + nx * len * progress;
+    const endY = y1 + ny * len * progress;
 
-    chalkLine(s1x, s1y, s2x, s2y, WB.COLORS.accent, WB.ARROW_LINE_WIDTH, 0.8, dashed);
+    // Draw neat crisp arrow line
+    drawLine(x1, y1, endX, endY, WB.COLORS.accent, 1.8, 0.9, dashed);
 
-    // arrowhead (chalk style)
-    if (progress > 0.9) {
+    // Arrowhead drawing
+    if (progress > 0.92) {
       const angle = Math.atan2(dy, dx);
-      const sz = WB.ARROW_HEAD_SIZE;
-      const lx = s2x - Math.cos(angle - WB.ARROW_HEAD_ANGLE) * sz;
-      const ly = s2y - Math.sin(angle - WB.ARROW_HEAD_ANGLE) * sz;
-      const rx = s2x - Math.cos(angle + WB.ARROW_HEAD_ANGLE) * sz;
-      const ry = s2y - Math.sin(angle + WB.ARROW_HEAD_ANGLE) * sz;
-      chalkLine(lx, ly, s2x, s2y, WB.COLORS.accent, WB.ARROW_HEAD_LINE_WIDTH, 0.85, false);
-      chalkLine(rx, ry, s2x, s2y, WB.COLORS.accent, WB.ARROW_HEAD_LINE_WIDTH, 0.85, false);
+      const headSize = WB.ARROW_HEAD_SIZE;
+      const headAngle = 0.38;
+
+      const lx = endX - Math.cos(angle - headAngle) * headSize;
+      const ly = endY - Math.sin(angle - headAngle) * headSize;
+      const rx = endX - Math.cos(angle + headAngle) * headSize;
+      const ry = endY - Math.sin(angle + headAngle) * headSize;
+
+      drawLine(lx, ly, endX, endY, WB.COLORS.accent, 1.8, 0.9, false);
+      drawLine(rx, ry, endX, endY, WB.COLORS.accent, 1.8, 0.9, false);
 
       if (bidi) {
-        const a2 = angle + Math.PI;
-        const l2x = s1x - Math.cos(a2 - WB.ARROW_HEAD_ANGLE) * sz;
-        const l2y = s1y - Math.sin(a2 - WB.ARROW_HEAD_ANGLE) * sz;
-        const r2x = s1x - Math.cos(a2 + WB.ARROW_HEAD_ANGLE) * sz;
-        const r2y = s1y - Math.sin(a2 + WB.ARROW_HEAD_ANGLE) * sz;
-        chalkLine(l2x, l2y, s1x, s1y, WB.COLORS.accent, WB.ARROW_HEAD_LINE_WIDTH, 0.85, false);
-        chalkLine(r2x, r2y, s1x, s1y, WB.COLORS.accent, WB.ARROW_HEAD_LINE_WIDTH, 0.85, false);
+        const rAngle = angle + Math.PI;
+        const l2x = x1 - Math.cos(rAngle - headAngle) * headSize;
+        const l2y = y1 - Math.sin(rAngle - headAngle) * headSize;
+        const r2x = x1 - Math.cos(rAngle + headAngle) * headSize;
+        const r2y = y1 - Math.sin(rAngle + headAngle) * headSize;
+
+        drawLine(l2x, l2y, x1, y1, WB.COLORS.accent, 1.8, 0.9, false);
+        drawLine(r2x, r2y, x1, y1, WB.COLORS.accent, 1.8, 0.9, false);
       }
     }
 
-    // label
-    if (label && progress > 0.5) {
-      const mx = (s1x + s2x) / 2;
-      const my = (s1y + s2y) / 2;
+    // Arrow text label
+    if (label && progress > 0.4) {
+      const mx = (x1 + endX) / 2;
+      const my = (y1 + endY) / 2;
       ctx.save();
-      ctx.font = `700 ${WB.ARROW_LABEL_FONT_SIZE}px ${WB.FONTS.hand}`;
-      ctx.fillStyle = WB.COLORS.accent;
-      ctx.globalAlpha = Math.min(1, (progress - 0.5) * 4);
+      ctx.font = `600 12px ${WB.FONTS.mono}`;
+      ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
+
       const metrics = ctx.measureText(label);
+      const bgW = metrics.width + 12;
+      const bgH = 18;
+
       ctx.fillStyle = WB.COLORS.labelBackplate;
-      ctx.fillRect(
-        mx - metrics.width / 2 - 10,
-        my - WB.ARROW_LABEL_OFFSET_Y - WB.ARROW_LABEL_FONT_SIZE - 5,
-        metrics.width + 20,
-        WB.ARROW_LABEL_FONT_SIZE + 10,
-      );
+      ctx.fillRect(mx - bgW / 2, my - bgH / 2, bgW, bgH);
+
+      ctx.strokeStyle = 'rgba(82, 199, 42, 0.2)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(mx - bgW / 2, my - bgH / 2, bgW, bgH);
+
       ctx.fillStyle = WB.COLORS.accent;
-      chalkText(label, mx, my - WB.ARROW_LABEL_OFFSET_Y, WB.COLORS.accent);
-      ctx.textAlign = 'left';
+      drawText(label, mx, my, WB.COLORS.accent, Math.min(1, (progress - 0.4) * 5));
       ctx.restore();
     }
   }
 
-  // ── note drawing ──
-
-  function drawNote(note: BoardNote): void {
+  function drawNoteProgressive(note: BoardNote, noteProgress: number): void {
     const ww = logicalW();
     const hh = logicalH();
     const x = note.x * ww;
     const y = note.y * hh;
-    const sz = note.size || WB.NOTE_DEFAULT_SIZE;
+    const sz = Math.min(13, note.size || 13);
     const col =
       note.color === 'accent' ? WB.COLORS.accent :
       note.color === 'warn' ? WB.COLORS.warn :
       note.color === 'muted' ? WB.COLORS.muted :
       WB.COLORS.text;
-    const weight = (note.color === 'accent' || note.color === 'warn') ? 700 : 400;
-    ctx.font = `${weight} ${sz}px ${WB.FONTS.hand}`;
-    ctx.fillStyle = col;
+
+    ctx.save();
+    ctx.font = `400 ${sz}px ${WB.FONTS.mono}`;
+    ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
-    chalkText(note.text, x, y, col, 0.95);
+    drawTextProgressive(note.text, x, y, col, noteProgress, 0.95);
+    ctx.restore();
   }
 
-  // ── scene composition ──
+  // ── Scene Composition ──
 
   function drawScene(time: number): void {
     drawBg(time);
@@ -384,37 +463,74 @@ export function initWhiteboard(
 
     const board = s.board;
     const progress = Math.min(1, (time - getSceneStartedAt()) / WB.ANIMATION_DURATION_MS);
-    const ease = 1 - Math.pow(1 - progress, 3);
+    const ease = 1 - Math.pow(1 - progress, 3); // nice cubic ease-out
 
-    // draw nodes
+    // 1. Draw system nodes
     const nodePos: Record<string, NodePosition> = {};
     for (const nd of board.nodes || []) {
-      nodePos[nd.id] = drawNode(nd);
+      nodePos[nd.id] = drawNode(nd, ease);
     }
 
-    // draw arrows
+    // 2. Draw system arrows (calculating high-fidelity box intersection alignments)
     for (let i = 0; i < (board.arrows || []).length; i++) {
       const a = board.arrows[i];
       const from = nodePos[a.from];
       const to = nodePos[a.to];
       if (!from || !to) continue;
+
       const aProgress = Math.min(1, Math.max(0, (ease - i * 0.1) / 0.6));
-      const fy = a.y !== undefined ? a.y * logicalH() : from.cy;
-      const ty = a.y !== undefined ? a.y * logicalH() : to.cy;
-      drawArrowLine(from.cx, fy, to.cx, ty, a.label, a.bidi, a.style === 'dashed', aProgress);
+      let x1 = from.cx;
+      let y1 = from.cy;
+      let x2 = to.cx;
+      let y2 = to.cy;
+
+      if (a.y !== undefined) {
+        // Sequence diagram lifeline horizontal arrow
+        const arrowY = a.y * logicalH();
+        const isLeftToRight = x2 > x1;
+        x1 = x1 + (isLeftToRight ? 3 : -3);
+        x2 = x2 + (isLeftToRight ? -3 : 3);
+        y1 = arrowY;
+        y2 = arrowY;
+        drawArrowLine(x1, y1, x2, y2, a.label, a.bidi, a.style === 'dashed', aProgress);
+      } else {
+        // Node-to-node arrow. Calculate bounding box intersection.
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const angle = Math.atan2(dy, dx);
+
+        const getBoxBoundaryOffset = (w: number, h: number, theta: number) => {
+          const absCos = Math.abs(Math.cos(theta));
+          const absSin = Math.abs(Math.sin(theta));
+          if (w * absSin < h * absCos) {
+            return (w / 2) / absCos;
+          } else {
+            return (h / 2) / absSin;
+          }
+        };
+
+        const offset1 = getBoxBoundaryOffset(from.w, from.h, angle) + 4;
+        const offset2 = getBoxBoundaryOffset(to.w, to.h, angle + Math.PI) + 4;
+
+        x1 = from.cx + Math.cos(angle) * offset1;
+        y1 = from.cy + Math.sin(angle) * offset1;
+        x2 = to.cx - Math.cos(angle) * offset2;
+        y2 = to.cy - Math.sin(angle) * offset2;
+
+        drawArrowLine(x1, y1, x2, y2, a.label, a.bidi, a.style === 'dashed', aProgress);
+      }
     }
 
-    // draw notes with fade-in
-    if (ease > 0.4) {
-      ctx.globalAlpha = Math.min(1, (ease - 0.4) * 2.5);
+    // 3. Draw footnotes / notes
+    const noteProgress = Math.min(1, Math.max(0, (ease - 0.6) / 0.4));
+    if (noteProgress > 0) {
       for (const note of board.notes || []) {
-        drawNote(note);
+        drawNoteProgressive(note, noteProgress);
       }
-      ctx.globalAlpha = 1;
     }
   }
 
-  // ── animation loop with try/catch (Req 3.3) ──
+  // ── Animation Loop ──
 
   function loop(time?: number): void {
     if (destroyed) return;
@@ -425,8 +541,6 @@ export function initWhiteboard(
     }
     animationFrameId = requestAnimationFrame(loop);
   }
-
-  // ── start ──
 
   resize();
   animationFrameId = requestAnimationFrame(loop);
@@ -439,5 +553,10 @@ export function initWhiteboard(
     }
   }
 
-  return { resize, destroy };
+  return {
+    resize,
+    destroy,
+    setActiveTool(tool: string | null) {},
+    clearBoard() {},
+  };
 }

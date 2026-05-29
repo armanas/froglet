@@ -16,19 +16,37 @@ export const DEFAULT_SELF_HOST_CONFIG: SelfHostConfig = {
 
 const PAYMENT_NOTES: Record<PaymentRail, string> = {
   none: '',
-  'lightning-mock': '# After MCP status passes, ask froglet-mcp for the Lightning mock payment setup.',
+  'lightning-mock': '# configure Lightning mock payment setup locally\nexport FROGLET_PAYMENT_BACKEND=lightning\nexport FROGLET_LIGHTNING_MODE=mock',
   'lightning-lnd-rest': '# After MCP status passes, configure LND REST with your LND URL, macaroon, and TLS cert.',
-  'stripe-test': '# After MCP status passes, configure Stripe test mode with sk_test_... and webhook proof.',
+  'stripe-test': '# configure Stripe test mode with sk_test_... and webhook proof.\nexport FROGLET_PAYMENT_BACKEND=stripe\nexport FROGLET_STRIPE_SECRET_KEY=sk_test_...',
   'stripe-live': '# After MCP status passes, configure Stripe live mode only after a fresh live-payment approval.',
-  x402: '# After MCP status passes, configure x402 with your Base wallet address and facilitator.',
+  x402: '# configure x402 with your Base wallet address and facilitator.\nexport FROGLET_PAYMENT_BACKEND=x402\nexport FROGLET_X402_WALLET_ADDRESS=0x...',
 };
 
-export function buildSelfHostScript(config: SelfHostConfig = DEFAULT_SELF_HOST_CONFIG): string {
+function getPaymentNote(payment: PaymentRail, cred?: string): string {
+  if (payment === 'stripe-test' && cred) {
+    return `# configure Stripe test mode with sk_test_... and webhook proof.\nexport FROGLET_PAYMENT_BACKEND=stripe\nexport FROGLET_STRIPE_SECRET_KEY=${cred}`;
+  }
+  if (payment === 'x402' && cred) {
+    return `# configure x402 with your Base wallet address and facilitator.\nexport FROGLET_PAYMENT_BACKEND=x402\nexport FROGLET_X402_WALLET_ADDRESS=${cred}`;
+  }
+  return PAYMENT_NOTES[payment] || '';
+}
+
+export function buildSelfHostScript(config: SelfHostConfig = DEFAULT_SELF_HOST_CONFIG, credential?: string): string {
   const lines: string[] = [];
   const env: string[] = [];
-  if (config.agent !== 'claude-code') env.push(`FROGLET_AGENT_TARGET=${config.agent}`);
+
+  const note = getPaymentNote(config.payment, credential);
+  if (note) {
+    lines.push(note);
+  }
+
+  if (config.agent !== 'claude-code') {
+    env.push(`FROGLET_AGENT_TARGET=${config.agent}`);
+  }
+
   lines.push(`${env.length > 0 ? `${env.join(' ')} ` : ''}curl -fsSL https://froglet.dev/agent | bash`);
-  if (PAYMENT_NOTES[config.payment]) lines.push(PAYMENT_NOTES[config.payment]);
 
   return lines.join('\n');
 }
@@ -45,14 +63,37 @@ export function initSelfHostConfigurator(root: Document | HTMLElement = document
   const card = root.querySelector<HTMLElement>('#self-host-card');
   const output = root.querySelector<HTMLElement>('#config-output');
   const copyButton = root.querySelector<HTMLButtonElement>('#config-copy-btn');
+  const inputContainer = root.querySelector<HTMLElement>('#config-payment-input-container');
+  const inputLabel = root.querySelector<HTMLElement>('#config-payment-input-label');
+  const inputField = root.querySelector<HTMLInputElement>('#config-payment-input');
 
   if (!card || !output) return;
 
   const state: SelfHostConfig = { ...DEFAULT_SELF_HOST_CONFIG };
 
+  function updateInputVisibility(): void {
+    if (!inputContainer || !inputLabel || !inputField) return;
+
+    if (state.payment === 'stripe-test') {
+      inputContainer.style.display = 'block';
+      inputLabel.textContent = 'Stripe Secret Key';
+      inputField.placeholder = 'sk_test_...';
+    } else if (state.payment === 'x402') {
+      inputContainer.style.display = 'block';
+      inputLabel.textContent = 'Base Wallet Address';
+      inputField.placeholder = '0x...';
+    } else {
+      inputContainer.style.display = 'none';
+      inputField.value = '';
+    }
+  }
+
   function render(): void {
     const code = output?.querySelector('code');
-    if (code) code.textContent = buildSelfHostScript(state);
+    if (code) {
+      const cred = inputField?.value?.trim() || '';
+      code.textContent = buildSelfHostScript(state, cred);
+    }
   }
 
   card.querySelectorAll<HTMLElement>('.config-options').forEach((group) => {
@@ -70,9 +111,14 @@ export function initSelfHostConfigurator(root: Document | HTMLElement = document
         button.blur();
         state[groupName] = nextValue as SelfHostConfig[typeof groupName];
         setGroupValue(group, nextValue);
+        updateInputVisibility();
         render();
       });
     });
+  });
+
+  inputField?.addEventListener('input', () => {
+    render();
   });
 
   copyButton?.addEventListener('click', async () => {

@@ -53,6 +53,9 @@ export function initDemo(): void {
   function renderLesson(): void {
     const s = STEPS[step];
 
+    // Clear custom user drawings on step transition (Requirements 1.3, 7.2)
+    whiteboard.clearBoard();
+
     // Lesson card content
     lessonCard.innerHTML =
       `<div class="step-n">Step ${step + 1} / ${STEPS.length}</div>` +

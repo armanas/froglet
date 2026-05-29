@@ -14,6 +14,18 @@
 	max-width: var(--shell-max);
 	margin: 0 auto;
 	padding: 72px var(--shell-gut) 56px;
+	position: relative;
+}
+.hero::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: -5%;
+	width: 60%;
+	height: 100%;
+	background: radial-gradient(circle at 20% 30%, rgba(82, 199, 42, 0.06) 0%, transparent 60%);
+	pointer-events: none;
+	z-index: -1;
 }
 .hero .eyebrow {
 	margin-bottom: 22px;
@@ -125,6 +137,12 @@
 	border-radius: 6px;
 	padding: 16px;
 	background: var(--bg-elevated);
+	transition: border-color var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
+}
+.proof-card:hover {
+	border-color: rgba(82, 199, 42, 0.35);
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 0 10px rgba(82, 199, 42, 0.05);
+	transform: translateY(-2px);
 }
 .proof-card--lead {
 	background:
@@ -212,10 +230,12 @@ section.block.full-bleed .inner {
 	border: 1px solid var(--border);
 	border-radius: 6px;
 	background: var(--bg-elevated);
-	transition: border-color var(--dur-fast) var(--ease-out);
+	transition: border-color var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
 }
 .entry-card:hover {
-	border-color: var(--border-strong);
+	border-color: rgba(82, 199, 42, 0.45);
+	box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35), 0 0 16px rgba(82, 199, 42, 0.08);
+	transform: translateY(-2px);
 }
 .entry-card .entry-num {
 	font-family: var(--font-mono);
@@ -300,6 +320,12 @@ section.block.full-bleed .inner {
 	border: 1px solid var(--border);
 	border-radius: 6px;
 	background: var(--bg);
+	transition: border-color var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
+}
+.gt-card:hover {
+	border-color: rgba(82, 199, 42, 0.35);
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3), 0 0 12px rgba(82, 199, 42, 0.06);
+	transform: translateY(-2px);
 }
 .gt-card .gt-n {
 	font-family: var(--font-mono);
@@ -473,6 +499,23 @@ section.block.full-bleed .inner {
 	flex-shrink: 0;
 }
 
+.config-input {
+	width: 100%;
+	padding: 8px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-2);
+	background: var(--bg);
+	color: var(--fg1);
+	font-family: var(--font-mono);
+	font-size: 0.78rem;
+	outline: none;
+	transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.config-input:focus {
+	border-color: var(--frog-400);
+	box-shadow: 0 0 8px rgba(82, 199, 42, 0.15);
+}
+
 .config-shell {
 	position: relative;
 	margin: 14px 0 18px;
@@ -538,10 +581,12 @@ section.block.full-bleed .inner {
 	border: 1px solid var(--border);
 	border-radius: 6px;
 	background: var(--bg-elevated);
-	transition: border-color var(--dur-fast) var(--ease-out);
+	transition: border-color var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
 }
 .svc:hover {
-	border-color: var(--border-strong);
+	border-color: rgba(82, 199, 42, 0.35);
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3), 0 0 12px rgba(82, 199, 42, 0.06);
+	transform: translateY(-2px);
 }
 .svc .svc-top {
 	display: flex;
@@ -596,6 +641,12 @@ html[data-theme='light'] .svc .svc-logo img {
 	border: 1px solid var(--border);
 	border-radius: var(--r-3);
 	background: var(--bg-elevated);
+	transition: border-color var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
+}
+.mkt-metric:hover {
+	border-color: rgba(82, 199, 42, 0.35);
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 0 10px rgba(82, 199, 42, 0.05);
+	transform: translateY(-2px);
 }
 .mkt-metric .mkt-k {
 	display: block;

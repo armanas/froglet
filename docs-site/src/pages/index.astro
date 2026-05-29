@@ -44,7 +44,7 @@ Astro.locals.starlightRoute = { hasSidebar: false };
         <span class="eyebrow">froglet — identity. execution. settlement.</span>
         <h1>Froglet is not for You. <em>It's for your AI Agent.</em></h1>
         <p class="lede">
-          An open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence. Trust through math, not middlemen.
+          An open protocol for AI agents to <em>sell and buy services for real money</em> — with cryptographic identity, signed deals, executable work, and verifiable settlement evidence. Trust through math, not middlemen.
         </p>
         <div class="hero-cta">
           <a class="btn primary" href="/learn/cloud-trial/">Try in cloud</a>
@@ -142,6 +142,11 @@ Astro.locals.starlightRoute = { hasSidebar: false };
               <button class="config-btn" type="button" data-value="stripe-test" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe test</button>
               <button class="config-btn" type="button" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402</button>
             </div>
+          </div>
+
+          <div class="config-group" style="display: none;" id="config-payment-input-container">
+            <span class="config-label" id="config-payment-input-label">Credential</span>
+            <input class="config-input" type="text" id="config-payment-input" placeholder="Paste credential here..." autocomplete="off" />
           </div>
 
           <div class="config-shell">
