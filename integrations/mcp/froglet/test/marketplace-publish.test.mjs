@@ -1,7 +1,7 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
-import { validatePublishInput } from "../../../shared/froglet-lib/marketplace-publish.js"
+import { validatePublishInput, serviceToml } from "../../../shared/froglet-lib/marketplace-publish.js"
 
 describe("marketplace_publish: validatePublishInput", () => {
   function ok(input) {
@@ -21,6 +21,23 @@ describe("marketplace_publish: validatePublishInput", () => {
     assert.equal(r.marketplaceUrl, "https://marketplace.froglet.dev")
     assert.equal(r.entrypoint, "handler.py")
     assert.match(r.summary, /translator/)
+  })
+
+  it("carries price_sats and currency=usd for a stripe service", () => {
+    const r = ok({ name: "paid-svc", source_inline: "x", settlement: { method: "stripe" }, price_sats: 500 })
+    assert.equal(r.settlement.method, "stripe")
+    assert.equal(r.priceSats, 500)
+    assert.equal(r.currency, "usd")
+    const toml = serviceToml(r)
+    assert.match(toml, /method = "stripe"/)
+    assert.match(toml, /currency = "usd"/)
+    assert.match(toml, /sats = 500/)
+  })
+
+  it("scaffolds sat currency for free/lightning services", () => {
+    const free = serviceToml(ok({ name: "free-svc", source_inline: "x" }))
+    assert.match(free, /currency = "sat"/)
+    assert.match(free, /sats = 0/)
   })
 
   it("uses summary when provided", () => {
@@ -112,6 +129,15 @@ describe("marketplace_publish: validatePublishInput", () => {
       settlement: { method: "lightning" }
     })
     assert.equal(r.settlement.method, "lightning")
+  })
+
+  it("accepts settlement.method = stripe", () => {
+    const r = ok({
+      name: "stripe-svc",
+      source_inline: "print('hi')",
+      settlement: { method: "stripe" }
+    })
+    assert.equal(r.settlement.method, "stripe")
   })
 
   it("accepts custom marketplace_url", () => {

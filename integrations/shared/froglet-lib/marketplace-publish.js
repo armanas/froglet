@@ -22,7 +22,7 @@ const VALID_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 const VALID_RUNTIMES = new Set(["python"])
 const VALID_PACKAGE_KINDS = new Set(["inline_source"])
 const VALID_HOSTING = new Set(["local", "tor", "self"])
-const VALID_SETTLEMENT = new Set(["none", "lightning"])
+const VALID_SETTLEMENT = new Set(["none", "lightning", "stripe"])
 
 /**
  * Validate the MCP-shaped publish input. Throws on the first problem with a
@@ -78,9 +78,17 @@ export function validatePublishInput(args) {
   if (!VALID_SETTLEMENT.has(settlementMethod)) {
     throw new Error(
       `marketplace_publish: settlement.method ${JSON.stringify(settlementMethod)} not supported; ` +
-        "use 'none' (free) or 'lightning' (paid; Stripe + x402 not yet on the publish path)"
+        "use 'none' (free), 'lightning' (paid via Lightning), or 'stripe' (paid via Stripe MPP)"
     )
   }
+
+  const priceSats = Number.isInteger(args.price_sats) ? args.price_sats : 0
+  if (priceSats < 0) {
+    throw new Error("marketplace_publish: price_sats must be a non-negative integer")
+  }
+  // The manifest validator requires currency="usd" for stripe settlement and
+  // "sat"/absent for lightning/none. Stripe "sats" are therefore USD cents.
+  const currency = settlementMethod === "stripe" ? "usd" : "sat"
 
   return {
     name,
@@ -94,6 +102,8 @@ export function validatePublishInput(args) {
       url: args.hosting?.url,
     },
     settlement: { method: settlementMethod },
+    priceSats,
+    currency,
     marketplaceUrl: typeof args.marketplace_url === "string"
       ? args.marketplace_url
       : "https://marketplace.froglet.dev",
@@ -118,8 +128,8 @@ function projectToml({ name, marketplaceUrl }) {
   ].join("\n")
 }
 
-function serviceToml(input) {
-  const { name, summary, runtime, packageKind, entrypoint, hosting, settlement, marketplaceUrl } = input
+export function serviceToml(input) {
+  const { name, summary, runtime, packageKind, entrypoint, hosting, settlement, priceSats, currency, marketplaceUrl } = input
   const lines = [
     `schema_version = "froglet-service/v3"`,
     ``,
@@ -141,7 +151,7 @@ function serviceToml(input) {
   }
   lines.push(``, `[settlement]`, `method = "${settlement.method}"`)
   lines.push(``, `[marketplace]`, `url = "${marketplaceUrl}"`)
-  lines.push(``, `[price]`, `sats = 0`, ``)
+  lines.push(``, `[price]`, `sats = ${priceSats ?? 0}`, `currency = "${currency ?? "sat"}"`, ``)
   return lines.join("\n")
 }
 

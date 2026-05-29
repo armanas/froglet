@@ -201,37 +201,35 @@ impl SettlementDriver for StripeDriver {
 
             let usage_limits = spt_data.get("usage_limits");
 
-            // Verify the SPT is not expired. Stripe currently returns these
-            // limits nested under usage_limits; keep the older top-level reads
-            // for compatibility with local mocks and earlier preview objects.
-            if let Some(expires_at) = spt_data
+            // ── FAIL-CLOSED: all three SPT fields are REQUIRED ─────────────
+            //
+            // The prior code used `if let Some(...)` / `.is_some_and(...)` for
+            // all three checks, meaning an SPT that omitted `expires_at`,
+            // `currency`, or `maximum_amount` silently passed. An attacker
+            // could craft a token without these fields to bypass payment.
+            // Every check below now rejects on field-absent.
+
+            // (1) Expiry — MUST be present and in the future.
+            let expires_at = spt_data
                 .get("expires_at")
                 .or_else(|| usage_limits.and_then(|limits| limits.get("expires_at")))
                 .and_then(|v| v.as_i64())
-            {
-                let now = super::current_unix_timestamp();
-                if expires_at < now {
-                    tracing::warn!(
-                        spt_id = %spt_id,
-                        expires_at = %expires_at,
-                        now = %now,
-                        "Stripe SPT has expired"
-                    );
-                    return Err(PaymentError::BackendUnavailable {
+                .ok_or_else(|| {
+                    tracing::warn!(spt_id = %spt_id, "Stripe SPT missing expires_at field");
+                    PaymentError::BackendUnavailable {
                         service_id: request.service_id.as_str().to_string(),
                         price_sats: request.price_sats,
                         backend: "stripe".to_string(),
-                    });
-                }
-            }
-
-            if spt_data
-                .get("currency")
-                .or_else(|| usage_limits.and_then(|limits| limits.get("currency")))
-                .and_then(|v| v.as_str())
-                .is_some_and(|currency| !currency.eq_ignore_ascii_case("usd"))
-            {
-                tracing::warn!(spt_id = %spt_id, "Stripe SPT currency is not USD");
+                    }
+                })?;
+            let now = super::current_unix_timestamp();
+            if expires_at < now {
+                tracing::warn!(
+                    spt_id = %spt_id,
+                    expires_at = %expires_at,
+                    now = %now,
+                    "Stripe SPT has expired"
+                );
                 return Err(PaymentError::BackendUnavailable {
                     service_id: request.service_id.as_str().to_string(),
                     price_sats: request.price_sats,
@@ -239,21 +237,43 @@ impl SettlementDriver for StripeDriver {
                 });
             }
 
-            // Verify the SPT covers at least the requested amount. The amount
-            // on the SPT is in cents (same unit as price_sats for now).
-            if spt_data
+            // (2) Currency — MUST be present and MUST be "usd".
+            let currency = spt_data
+                .get("currency")
+                .or_else(|| usage_limits.and_then(|limits| limits.get("currency")))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    tracing::warn!(spt_id = %spt_id, "Stripe SPT missing currency field");
+                    PaymentError::BackendUnavailable {
+                        service_id: request.service_id.as_str().to_string(),
+                        price_sats: request.price_sats,
+                        backend: "stripe".to_string(),
+                    }
+                })?;
+            if !currency.eq_ignore_ascii_case("usd") {
+                tracing::warn!(spt_id = %spt_id, %currency, "Stripe SPT currency is not USD");
+                return Err(PaymentError::BackendUnavailable {
+                    service_id: request.service_id.as_str().to_string(),
+                    price_sats: request.price_sats,
+                    backend: "stripe".to_string(),
+                });
+            }
+
+            // (3) Amount — MUST be present and MUST cover the requested price.
+            let max_amount = spt_data
                 .get("maximum_amount")
                 .or_else(|| spt_data.get("max_amount"))
                 .or_else(|| usage_limits.and_then(|limits| limits.get("max_amount")))
                 .and_then(|v| v.as_u64())
-                .is_some_and(|max_amount| max_amount < request.price_sats)
-            {
-                let max_amount = spt_data
-                    .get("maximum_amount")
-                    .or_else(|| spt_data.get("max_amount"))
-                    .or_else(|| usage_limits.and_then(|limits| limits.get("max_amount")))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                .ok_or_else(|| {
+                    tracing::warn!(spt_id = %spt_id, "Stripe SPT missing maximum_amount / max_amount field");
+                    PaymentError::BackendUnavailable {
+                        service_id: request.service_id.as_str().to_string(),
+                        price_sats: request.price_sats,
+                        backend: "stripe".to_string(),
+                    }
+                })?;
+            if max_amount < request.price_sats {
                 tracing::warn!(
                     spt_id = %spt_id,
                     spt_max = %max_amount,
@@ -305,6 +325,27 @@ impl SettlementDriver for StripeDriver {
                     }
                 })?
                 .to_string();
+
+            // FIX 2: Verify the PaymentIntent status is "requires_capture".
+            // Any other status (requires_payment_method, canceled, etc.) means
+            // the authorisation was not successful; reject to avoid recording a
+            // reservation that can never be captured.
+            let pi_status = pi_data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            if pi_status != "requires_capture" {
+                tracing::error!(
+                    pi_id = %pi_id,
+                    pi_status = %pi_status,
+                    "Stripe PaymentIntent status is not requires_capture after creation"
+                );
+                return Err(PaymentError::BackendUnavailable {
+                    service_id: request.service_id.as_str().to_string(),
+                    price_sats: request.price_sats,
+                    backend: "stripe".to_string(),
+                });
+            }
 
             // Store the PaymentIntent ID in token_hash so commit/release can
             // reference it. The field name is inherited from the shared struct;
@@ -933,6 +974,300 @@ mod tests {
                 .any(|call| call == "POST:/v1/payment_intents/pi_test_123/cancel"),
             "release should cancel the payment intent"
         );
+        handle.abort();
+    }
+
+    // ── Fix 1: fail-closed SPT field validation ──────────────────────────
+
+    /// Spin up a mock Stripe server that returns a custom SPT body and always
+    /// returns a valid PI body with status "requires_capture".
+    async fn start_mock_stripe_with_custom_spt(
+        spt_body: serde_json::Value,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::extract::State as AxumState;
+
+        #[derive(Clone)]
+        struct CustomSptState {
+            spt_body: serde_json::Value,
+        }
+
+        async fn get_token(AxumState(s): AxumState<CustomSptState>) -> Json<serde_json::Value> {
+            Json(s.spt_body.clone())
+        }
+
+        async fn create_pi() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "id": "pi_custom_test",
+                "status": "requires_capture"
+            }))
+        }
+
+        let shared = CustomSptState { spt_body };
+        let app = Router::new()
+            .route(
+                "/v1/shared_payment/granted_tokens/:token_id",
+                axum::routing::get(get_token),
+            )
+            .route("/v1/payment_intents", axum::routing::post(create_pi))
+            .with_state(shared);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind custom spt mock");
+        let address = listener.local_addr().expect("listener address");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve custom spt mock");
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn make_driver_with_base(base_url: &str) -> StripeDriver {
+        StripeDriver::with_base_url(
+            StripeConfig {
+                api_version: "2024-06-20".to_string(),
+                webhook_secret: None,
+            },
+            "sk_test_placeholder".to_string(),
+            base_url,
+        )
+    }
+
+    fn stripe_payment(token: &str) -> Option<ProvidedPayment> {
+        Some(ProvidedPayment {
+            kind: "stripe_mpp".to_string(),
+            token: token.to_string(),
+        })
+    }
+
+    fn priced_request(price_sats: u64, payment: Option<ProvidedPayment>) -> PreparePaymentRequest {
+        PreparePaymentRequest {
+            service_id: ServiceId::EventsQuery,
+            price_sats,
+            payment,
+            request_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn spt_missing_expires_at_is_rejected() {
+        // SPT body has currency + max_amount but no expires_at anywhere.
+        let spt_body = serde_json::json!({
+            "id": "spt_no_expiry",
+            "usage_limits": {
+                "currency": "usd",
+                "max_amount": 50_000
+                // expires_at deliberately absent
+            }
+        });
+        let (base_url, handle) = start_mock_stripe_with_custom_spt(spt_body).await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(&state, priced_request(100, stripe_payment("spt_no_expiry")))
+            .await;
+        assert!(
+            result.is_err(),
+            "SPT missing expires_at must be rejected (fail-closed)"
+        );
+        assert!(
+            matches!(result.unwrap_err(), PaymentError::BackendUnavailable { .. }),
+            "rejection must be BackendUnavailable"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn spt_missing_currency_is_rejected() {
+        // SPT body has expires_at + max_amount but no currency.
+        let spt_body = serde_json::json!({
+            "id": "spt_no_currency",
+            "usage_limits": {
+                "expires_at": super::super::current_unix_timestamp() + 600,
+                "max_amount": 50_000
+                // currency deliberately absent
+            }
+        });
+        let (base_url, handle) = start_mock_stripe_with_custom_spt(spt_body).await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(
+                &state,
+                priced_request(100, stripe_payment("spt_no_currency")),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "SPT missing currency must be rejected (fail-closed)"
+        );
+        assert!(
+            matches!(result.unwrap_err(), PaymentError::BackendUnavailable { .. }),
+            "rejection must be BackendUnavailable"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn spt_missing_amount_is_rejected() {
+        // SPT body has expires_at + currency but no amount field.
+        let spt_body = serde_json::json!({
+            "id": "spt_no_amount",
+            "usage_limits": {
+                "currency": "usd",
+                "expires_at": super::super::current_unix_timestamp() + 600
+                // max_amount / maximum_amount deliberately absent
+            }
+        });
+        let (base_url, handle) = start_mock_stripe_with_custom_spt(spt_body).await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(&state, priced_request(100, stripe_payment("spt_no_amount")))
+            .await;
+        assert!(
+            result.is_err(),
+            "SPT missing amount must be rejected (fail-closed)"
+        );
+        assert!(
+            matches!(result.unwrap_err(), PaymentError::BackendUnavailable { .. }),
+            "rejection must be BackendUnavailable"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn spt_amount_less_than_price_is_rejected() {
+        // SPT has max_amount=50 but requested price is 100.
+        let spt_body = serde_json::json!({
+            "id": "spt_low_amount",
+            "usage_limits": {
+                "currency": "usd",
+                "expires_at": super::super::current_unix_timestamp() + 600,
+                "max_amount": 50u64
+            }
+        });
+        let (base_url, handle) = start_mock_stripe_with_custom_spt(spt_body).await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(
+                &state,
+                priced_request(100, stripe_payment("spt_low_amount")),
+            )
+            .await;
+        assert!(result.is_err(), "SPT with amount < price must be rejected");
+        assert!(
+            matches!(result.unwrap_err(), PaymentError::BackendUnavailable { .. }),
+            "rejection must be BackendUnavailable"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn fully_valid_spt_is_accepted() {
+        // All three fields present; amount >= price; expiry in future.
+        let spt_body = serde_json::json!({
+            "id": "spt_fully_valid",
+            "usage_limits": {
+                "currency": "usd",
+                "expires_at": super::super::current_unix_timestamp() + 3600,
+                "max_amount": 10_000u64
+            }
+        });
+        let (base_url, handle) = start_mock_stripe_with_custom_spt(spt_body).await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(
+                &state,
+                priced_request(100, stripe_payment("spt_fully_valid")),
+            )
+            .await;
+        assert!(result.is_ok(), "fully-valid SPT should be accepted");
+        assert!(result.unwrap().is_some(), "should return a reservation");
+        handle.abort();
+    }
+
+    // ── Fix 2: PaymentIntent status check ────────────────────────────────
+
+    /// Spin up a mock that returns a good SPT but a PI with a non-requires_capture status.
+    async fn start_mock_stripe_with_pi_status(
+        pi_status: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        async fn get_good_token(Path(token_id): Path<String>) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "id": token_id,
+                "usage_limits": {
+                    "currency": "usd",
+                    "expires_at": super::super::current_unix_timestamp() + 3600,
+                    "max_amount": 50_000u64
+                }
+            }))
+        }
+
+        async fn create_pi_with_status(
+            State(status): State<&'static str>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "id": "pi_bad_status",
+                "status": status
+            }))
+        }
+
+        let app = Router::new()
+            .route(
+                "/v1/shared_payment/granted_tokens/:token_id",
+                axum::routing::get(get_good_token),
+            )
+            .route(
+                "/v1/payment_intents",
+                axum::routing::post(create_pi_with_status),
+            )
+            .with_state(pi_status);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind pi status mock");
+        let address = listener.local_addr().expect("listener address");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve pi status mock");
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn pi_status_requires_payment_method_is_rejected() {
+        let (base_url, handle) = start_mock_stripe_with_pi_status("requires_payment_method").await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(
+                &state,
+                priced_request(100, stripe_payment("spt_good_token")),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "PI with status requires_payment_method must be rejected"
+        );
+        assert!(
+            matches!(result.unwrap_err(), PaymentError::BackendUnavailable { .. }),
+            "rejection must be BackendUnavailable"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn pi_status_canceled_is_rejected() {
+        let (base_url, handle) = start_mock_stripe_with_pi_status("canceled").await;
+        let driver = make_driver_with_base(&base_url);
+        let state = make_state();
+        let result = driver
+            .prepare(&state, priced_request(100, stripe_payment("spt_good")))
+            .await;
+        assert!(result.is_err(), "PI with status canceled must be rejected");
         handle.abort();
     }
 }

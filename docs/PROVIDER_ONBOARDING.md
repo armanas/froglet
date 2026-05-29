@@ -57,14 +57,15 @@ modes are typed; the LLM gets back a structured error it can act on
   "name": "<lowercase-hyphenated-name>",
   "source_inline": "<full Python source for handler.py>",
   "hosting": { "kind": "local|tor|self", "url": "<required if self>" },
-  "settlement": { "method": "none" },
+  "settlement": { "method": "none|lightning|stripe" },
   "marketplace_url": "https://marketplace.froglet.dev"
 }
 ```
 
 Runtime is Python `inline_source` only in Phase 1A. WASM + OCI ship in
-Phase 1B. Settlement = `"none"` (free) or `"lightning"` (paid, requires a
-Lightning backend on the node); Stripe + x402 are not yet on the publish path.
+Settlement = `"none"` (free), `"lightning"` (paid, requires a Lightning
+backend + `price.currency="sat"`), or `"stripe"` (Stripe MPP, requires a
+Stripe backend + `price.currency="usd"`).
 
 ---
 

@@ -128,7 +128,7 @@ url = "https://my-existing-app.fly.dev"
 
 # Settlement (NEW in v3)
 [settlement]
-method = "none"                     # v1: "none" only
+method = "none"                     # "none" | "lightning" | "stripe"
 
 # Marketplace override (NEW in v3, optional)
 [marketplace]
@@ -164,7 +164,7 @@ sats = 0                            # 0 for free; ignored if settlement.method =
 - `runtime` — one of `python` | `wasm` | `container` | `builtin`
 - `package_kind` — one of `inline_source` | `inline_module` | `oci_image` | `builtin`
 - `[hosting] default` — one of `local` | `tor` | `self` (v1A) | `managed` | `fly` (v1B)
-- `[settlement] method` — `"none"` (v1 only)
+- `[settlement] method` — one of `"none"` | `"lightning"` | `"stripe"`
 
 ### Conditional requirements
 
@@ -235,8 +235,10 @@ The parser's `validate()` method enforces:
   rejected with a message naming the combo and the allowed alternatives.
 - **Hosting backend gating**: `local` is rejected if `marketplace.url` is set
   (local services are private; marketplace registration would fail).
-- **Settlement v1 gate**: any `[settlement] method` other than `"none"`
-  rejected in v1, with a message pointing at the v2 roadmap.
+- **Settlement allowlist**: `[settlement] method` must be one of `"none"`,
+  `"lightning"`, or `"stripe"`; any other value is rejected. `"stripe"`
+  additionally requires `price.currency = "usd"`; `"lightning"` requires
+  `price.currency = "sat"` or absent.
 - **Limits sanity**: every limit must be `> 0`. `fuel_limit` may be `0` to
   mean "unlimited within max_runtime_ms".
 - **Entrypoint reachability**: relative paths in `entrypoint` are resolved
@@ -291,3 +293,36 @@ not translate field names; it maps directly:
 | `output_schema` | `output_schema` |
 
 The 1:1 mapping is deliberate. Translation logic in the engine = bugs.
+
+---
+
+## Stripe service example
+
+A Stripe-priced service uses `settlement.method = "stripe"` with
+`price.currency = "usd"`. The integer in `price.sats` is US cents
+(e.g. `500` = $5.00).
+
+```toml
+schema_version = "froglet-service/v3"
+service_id     = "my-stripe-service"
+runtime        = "python"
+package_kind   = "inline_source"
+entrypoint     = "handler.py"
+
+[hosting]
+default = "tor"
+
+[settlement]
+method = "stripe"
+
+[price]
+sats     = 500     # $5.00 in US cents
+currency = "usd"   # required when settlement.method = "stripe"
+
+[marketplace]
+url = "https://marketplace.froglet.dev"
+```
+
+The `settlement.method = "stripe"` declaration is the manifest-level intent.
+The signed offer's `settlement_method` field is stamped by the backend as
+`"stripe_mpp.v1"` at publish time — do not set that field manually.

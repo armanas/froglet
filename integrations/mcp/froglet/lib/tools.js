@@ -304,9 +304,9 @@ function frogletToolInputSchema(config) {
       settlement: {
         type: "object",
         description:
-          "Settlement method for marketplace_publish. Supported: 'none' (free) or 'lightning' (hold-invoice escrow, settled by the node's Lightning wallet; requires a Lightning backend configured). Stripe + x402 are not yet exposed on the publish path.",
+          "Settlement method for marketplace_publish. Supported: 'none' (free), 'lightning' (hold-invoice escrow, settled by the node's Lightning wallet; requires Lightning backend + price.currency='sat'), or 'stripe' (Stripe MPP / Shared Payment Tokens; requires Stripe backend + price.currency='usd').",
         properties: {
-          method: { type: "string", enum: ["none", "lightning"] }
+          method: { type: "string", enum: ["none", "lightning", "stripe"] }
         }
       },
       marketplace_url: {

@@ -64,7 +64,9 @@ pub enum ManifestError {
         field: &'static str,
         context: String,
     },
-    #[error("settlement.method = {method:?} is not supported; allowed: \"none\", \"lightning\"")]
+    #[error(
+        "settlement.method = {method:?} is not supported; allowed: \"none\", \"lightning\", \"stripe\""
+    )]
     UnsupportedSettlement { method: String },
     #[error(
         "hosting.default = {choice:?} requires section [hosting.{choice}] with field {missing:?}"
@@ -438,6 +440,40 @@ impl ServiceManifest {
             validate_price_currency(price)?;
         }
 
+        // Settlement ↔ currency consistency.
+        // "stripe" requires currency="usd"; "lightning" requires currency="sat"
+        // (or absent, which defaults to "sat"). Any mismatch is a hard error so
+        // the provider cannot publish an offer the settlement backend can't
+        // handle.
+        if let Some(settlement) = &self.settlement {
+            let currency = self.price.as_ref().and_then(|p| p.currency.as_deref());
+            match settlement.method.as_str() {
+                "stripe" => {
+                    if !matches!(currency, Some("usd")) {
+                        return Err(ManifestError::InvalidValue {
+                            field: "price.currency",
+                            value: currency.unwrap_or("<absent>").to_string(),
+                            reason:
+                                "settlement.method = \"stripe\" requires price.currency = \"usd\""
+                                    .to_string(),
+                        });
+                    }
+                }
+                "lightning" => {
+                    if matches!(currency, Some(c) if !c.eq_ignore_ascii_case("sat")) {
+                        return Err(ManifestError::InvalidValue {
+                            field: "price.currency",
+                            value: currency.unwrap_or("<absent>").to_string(),
+                            reason:
+                                "settlement.method = \"lightning\" requires price.currency = \"sat\" (or absent)"
+                                    .to_string(),
+                        });
+                    }
+                }
+                _ => {} // "none" has no currency constraint
+            }
+        }
+
         if let Some(mode) = &self.mode
             && mode != "sync"
             && mode != "async"
@@ -623,11 +659,10 @@ fn validate_hosting_config(hosting: &HostingSection) -> Result<(), ManifestError
 }
 
 fn validate_settlement_method(value: &str) -> Result<(), ManifestError> {
-    // v1 publish surface: free ("none") plus Lightning (hold-invoice escrow,
-    // settled at the daemon level). Stripe/x402 remain gated pending a
-    // verifiable-proof design. Keep this an allowlist so unknown methods still
-    // fail closed rather than silently publishing an unsettleable offer.
-    if matches!(value, "none" | "lightning") {
+    // Allowlist: free ("none"), Lightning (hold-invoice escrow), and Stripe
+    // (MPP / Shared Payment Tokens). Keep this an allowlist so unknown methods
+    // still fail closed rather than silently publishing an unsettleable offer.
+    if matches!(value, "none" | "lightning" | "stripe") {
         return Ok(());
     }
     Err(ManifestError::UnsupportedSettlement {
@@ -1226,6 +1261,138 @@ mod tests {
         assert!(
             matches!(err, ManifestError::InvalidPriceCurrency { ref value } if value == "eur"),
             "unexpected error: {err}"
+        );
+    }
+
+    // ── Fix 5: stripe settlement method + consistency checks ──────────────
+
+    #[test]
+    fn accepts_stripe_settlement_method() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "stripe-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "stripe"
+            [price]
+            sats = 500
+            currency = "usd"
+        "#;
+        assert!(
+            ServiceManifest::from_toml(toml).is_ok(),
+            "stripe settlement with usd currency should be accepted"
+        );
+    }
+
+    #[test]
+    fn stripe_settlement_requires_usd_currency() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "stripe-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "stripe"
+            [price]
+            sats = 500
+            currency = "sat"
+        "#;
+        let err = ServiceManifest::from_toml(toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ManifestError::InvalidValue {
+                    field: "price.currency",
+                    ..
+                }
+            ),
+            "stripe + sat currency must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn stripe_settlement_rejects_absent_currency() {
+        // stripe requires currency = "usd"; absent currency must be rejected.
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "stripe-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "stripe"
+            [price]
+            sats = 500
+        "#;
+        let err = ServiceManifest::from_toml(toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ManifestError::InvalidValue {
+                    field: "price.currency",
+                    ..
+                }
+            ),
+            "stripe without explicit currency must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn lightning_settlement_rejects_usd_currency() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "lightning-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "lightning"
+            [price]
+            sats = 1000
+            currency = "usd"
+        "#;
+        let err = ServiceManifest::from_toml(toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ManifestError::InvalidValue {
+                    field: "price.currency",
+                    ..
+                }
+            ),
+            "lightning + usd currency must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn lightning_settlement_accepts_absent_currency() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "lightning-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "lightning"
+            [price]
+            sats = 1000
+        "#;
+        assert!(
+            ServiceManifest::from_toml(toml).is_ok(),
+            "lightning with absent currency (defaults to sat) should be accepted"
         );
     }
 }

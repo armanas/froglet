@@ -94,10 +94,22 @@ pub struct X402Config {
 }
 
 /// Configuration for the Stripe metered payment provider (seller side).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StripeConfig {
     pub api_version: String,
     pub webhook_secret: Option<String>,
+}
+
+impl fmt::Debug for StripeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StripeConfig")
+            .field("api_version", &self.api_version)
+            .field(
+                "webhook_secret",
+                &self.webhook_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Configuration for the buyer (requester) side of Stripe Machine Payments.
@@ -106,7 +118,7 @@ pub struct StripeConfig {
 /// (SPTs) that it presents to a provider whose service is priced with
 /// `stripe_mpp.v1` settlement terms.  The funding source (payment method or
 /// customer) must be attached to this account in Stripe before use.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BuyerStripeConfig {
     /// Stripe secret key for the buyer's Stripe account
     /// (`FROGLET_BUYER_STRIPE_SECRET_KEY`).
@@ -124,6 +136,17 @@ pub struct BuyerStripeConfig {
     /// Stripe customer ID (`cus_…`) whose default payment method funds the SPT
     /// (`FROGLET_BUYER_STRIPE_CUSTOMER`).
     pub customer: Option<String>,
+}
+
+impl fmt::Debug for BuyerStripeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BuyerStripeConfig")
+            .field("secret_key", &"[REDACTED]")
+            .field("api_version", &self.api_version)
+            .field("payment_method", &self.payment_method)
+            .field("customer", &self.customer)
+            .finish()
+    }
 }
 
 impl BuyerStripeConfig {
@@ -1248,5 +1271,50 @@ path = "{}"
         assert!(error.contains("must not reference Froglet's internal database"));
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    // ── Fix 3: Debug redaction tests ──────────────────────────────────────
+
+    #[test]
+    fn stripe_config_debug_redacts_webhook_secret() {
+        let secret_value = "whsec_supersecret123";
+        let config = StripeConfig {
+            api_version: "2026-03-04.preview".to_string(),
+            webhook_secret: Some(secret_value.to_string()),
+        };
+        let debug_output = format!("{config:?}");
+        assert!(
+            !debug_output.contains(secret_value),
+            "Debug output must not contain the webhook_secret value; got: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output must contain [REDACTED]; got: {debug_output}"
+        );
+        // Non-secret fields should still be present.
+        assert!(debug_output.contains("2026-03-04.preview"));
+    }
+
+    #[test]
+    fn buyer_stripe_config_debug_redacts_secret_key() {
+        let secret_value = "sk_live_supersecret456";
+        let config = BuyerStripeConfig {
+            secret_key: secret_value.to_string(),
+            api_version: "2026-03-04.preview".to_string(),
+            payment_method: Some("pm_test_abc".to_string()),
+            customer: None,
+        };
+        let debug_output = format!("{config:?}");
+        assert!(
+            !debug_output.contains(secret_value),
+            "Debug output must not contain the secret_key value; got: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output must contain [REDACTED]; got: {debug_output}"
+        );
+        // Non-secret fields should still be present.
+        assert!(debug_output.contains("pm_test_abc"));
+        assert!(debug_output.contains("2026-03-04.preview"));
     }
 }

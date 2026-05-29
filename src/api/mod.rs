@@ -11198,7 +11198,36 @@ async fn process_deal_with_reserved_permit(
                             .await;
 
                         if let Err(error) = persisted {
-                            tracing::error!("Failed to persist successful deal result: {error}");
+                            // CRITICAL: Stripe capture succeeded but the
+                            // subsequent DB persist failed. The buyer HAS been
+                            // charged (capture is irreversible). The deal is
+                            // left in DEAL_STATUS_RUNNING; on node restart the
+                            // recovery path resets running deals to accepted and
+                            // re-executes them, which would attempt a second
+                            // capture against an already-captured PaymentIntent
+                            // (Stripe will reject it, so no double charge, but
+                            // the deal may loop). Manual intervention required:
+                            // mark the deal as succeeded in the DB or otherwise
+                            // prevent re-execution (e.g., cancel the
+                            // PaymentIntent reservation or mark the deal
+                            // terminal via a direct SQL update).
+                            //
+                            // RESIDUAL GAP: full atomicity requires a
+                            // two-phase-commit or an idempotency key on the
+                            // capture request. That is larger surgery deferred
+                            // to a future change.
+                            let pi_id_for_log =
+                                deal.payment_token_hash.as_deref().unwrap_or("<unknown>");
+                            let amount_for_log = deal.payment_amount_sats.unwrap_or(0);
+                            tracing::error!(
+                                deal_id = %deal.deal_id,
+                                payment_intent_id = %pi_id_for_log,
+                                amount_sats = %amount_for_log,
+                                persist_error = %error,
+                                "CRITICAL: Stripe capture succeeded but deal persist failed; \
+                                 buyer has been charged and deal is stuck in running state; \
+                                 manual reconciliation required"
+                            );
                         }
                     }
                     Err((pi_id, charged_msat, capture_err)) => {
@@ -11370,9 +11399,18 @@ async fn process_deal_with_reserved_permit(
                 if let Err(err) =
                     settlement::release_payment(state.as_ref(), &stripe_reservation).await
                 {
+                    // CRITICAL: execution failed and the PaymentIntent cancel
+                    // (release) also failed. The buyer's funds may remain held.
+                    // Manual intervention required: cancel/expire the
+                    // PaymentIntent via the Stripe dashboard or API before the
+                    // hold expires naturally (typically 7 days).
                     tracing::error!(
                         deal_id = %deal.deal_id,
-                        "Stripe cancel (release) failed for failed deal: {err}"
+                        payment_intent_id = %pi_id,
+                        amount_sats = %deal.payment_amount_sats.unwrap_or(0),
+                        release_error = %err,
+                        "CRITICAL: Stripe release (cancel) failed for failed deal; \
+                         buyer funds may remain held; manual release required"
                     );
                 }
                 Some(StripeSettlementInfo {
