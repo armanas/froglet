@@ -33,6 +33,9 @@ Froglet v1 is a small economic primitive for short-lived, bounded, fixed-price r
 
 - `none` — free execution, no payment
 - `lightning.base_fee_plus_success_fee.v1` — two-leg Lightning settlement
+- `stripe_mpp.v1` — Stripe manual-capture PaymentIntent settlement (agentic Shared Payment Token model)
+
+Note: `x402_usdc` is a daemon-level payment kind for lower-level compute endpoints, not a marketplace receipt settlement method.
 
 ## What stays out
 

@@ -3,6 +3,15 @@ title: x402
 description: Operator setup and verification for the local/self-hosted x402 adapter.
 ---
 
+:::note
+x402 is implemented at the **daemon level** for self-hosted operators on the
+generic compute endpoints. It is **not** exposed on the marketplace publish
+path (`marketplace_publish` / `froglet-node publish`). To publish a paid
+marketplace service, use [Lightning](/learn/payment-lightning/) or
+[Stripe](/learn/payment-stripe/). `x402_usdc` is a lower-level payment *kind*,
+not a kernel receipt settlement method.
+:::
+
 ## Setup
 
 Provide the Base wallet address that will back the authorization flow:
@@ -49,4 +58,6 @@ x402 maps Froglet's local `/v1/node/*` lifecycle to a facilitator-backed authori
 This adapter does not currently add x402-specific quote/deal settlement terms
 to the signed kernel flow.
 
-Use this rail when you want USDC-style machine payment instead of Lightning or Stripe.
+Use this rail for daemon-level, USDC-style machine payment on self-hosted
+compute endpoints. For published marketplace services, settle with Lightning
+or Stripe instead.

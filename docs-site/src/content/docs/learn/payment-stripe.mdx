@@ -3,6 +3,28 @@ title: Stripe
 description: Operator setup and verification for the local/self-hosted Stripe adapter.
 ---
 
+## The agentic Shared Payment Token model
+
+Froglet's Stripe rail uses Stripe's **Agentic Commerce "Shared Payment Token"
+(SPT)** model. Read the buyer/seller split carefully — it is not generic
+"pay with your credit card."
+
+- **Froglet is the seller / merchant.** It accepts and charges an SPT,
+  creating a manual-capture `PaymentIntent` (prepare creates it, commit
+  captures, release cancels the uncaptured intent).
+- **The buyer side is external in production.** A froglet node can only
+  *mint* an SPT in **test mode** (via Stripe `test_helpers`). In production
+  the SPT is granted by the buyer's **external agentic platform** — a
+  ChatGPT-style ACP agent — **not** by a froglet node.
+- **froglet-node → froglet-node Stripe payment is test-only**, because only
+  the test path can mint the buyer's token.
+- **US-only.** SPTs are currently restricted to US accounts.
+- **Preview API.** Requires the preview header `Stripe-Version:
+  2026-04-22.preview`.
+- **Attested, not cryptographic.** Stripe settlement proof is a
+  `PaymentIntent` reference — an attestation. The cryptographic settlement
+  rail is Lightning (its payment preimage is the cryptographic proof).
+
 ## Setup
 
 Use a Stripe test-mode secret key:
@@ -17,7 +39,7 @@ That writes `.froglet/payment/stripe.env` with:
 ```bash
 FROGLET_PAYMENT_BACKEND=stripe
 FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key>
-FROGLET_STRIPE_API_VERSION=2026-03-04.preview
+FROGLET_STRIPE_API_VERSION=2026-04-22.preview
 # Optional after you register a Stripe webhook endpoint:
 FROGLET_STRIPE_WEBHOOK_SECRET=whsec_...
 ```

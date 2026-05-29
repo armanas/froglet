@@ -290,7 +290,7 @@ export const STEPS: Step[] = [
       {text:'EXECUTION',x:.08,y:.42,size:14,color:'accent'},
       {text:'  wasm  /  python  /  container  /  gpu (coming)',x:.08,y:.50,size:13},
       {text:'SETTLEMENT',x:.08,y:.62,size:14,color:'accent'},
-      {text:'  none  /  lightning  /  fiat (coming)',x:.08,y:.70,size:13},
+      {text:'  none  /  lightning  /  stripe (test-mode agentic)',x:.08,y:.70,size:13},
       {text:'TRANSPORT',x:.08,y:.82,size:14,color:'accent'},
       {text:'  clearnet  /  tor  /  bluetooth (coming)',x:.08,y:.90,size:13},
     ],

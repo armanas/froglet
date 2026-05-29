@@ -99,14 +99,16 @@ The bootstrap starts with `payment_rail=none`. Paid services are explicit:
 | Rail | When to choose it | Human checkpoint |
 |------|-------------------|------------------|
 | `none` | First local demo and free services | none |
-| `lightning-lnd-rest` | Real Bitcoin Lightning payments | LND REST URL, macaroon, TLS cert, funded channel liquidity |
-| `stripe-test` | Card-flow development | Stripe test secret key and webhook secret |
-| `stripe-live` | Public fiat claim | fresh approval, live secret, tiny live payment/refund proof |
-| `x402` | HTTP 402 / Base-style payment flow | wallet address, facilitator, verify/settle proof |
+| `lightning-lnd-rest` | Bitcoin Lightning payments. Reference rail, proven on regtest; mainnet pending channel liquidity | LND REST URL, macaroon, TLS cert, funded channel liquidity |
+| `stripe-test` | Card-flow development on Stripe's agentic Shared Payment Token model (US-only; froglet↔froglet is test-only) | Stripe test secret key and webhook secret |
+| `stripe-live` | Production Stripe via the agentic SPT model — buyers are external ACP agents, not froglet nodes (US-only) | fresh explicit approval, live secret, tiny live payment/refund proof |
+| `x402` | Daemon-only USDC-style rail for self-hosted compute endpoints. **Not** a marketplace publish-path option | wallet address, facilitator, verify/settle proof |
 
 If an agent calls `plan_install` or `get_install_guide` without a rail, MCP
 returns `decision_required`. Pick `none` for the first demo. Do not enter real
-payment secrets until the local free path is healthy.
+payment secrets until the local free path is healthy. Published marketplace
+services settle with `none`, `lightning`, or `stripe`; x402 stays at the daemon
+level. No real money has moved yet anywhere (test-mode / regtest only).
 
 ## Public Registration Choices
 

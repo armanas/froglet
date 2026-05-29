@@ -466,6 +466,16 @@ section.block.full-bleed .inner {
 	flex-wrap: wrap;
 	gap: 6px;
 }
+.config-hint {
+	margin: 8px 0 0;
+	font-size: 0.72rem;
+	line-height: 1.5;
+	color: var(--fg3);
+}
+.config-btn small {
+	font-size: 0.85em;
+	opacity: 0.7;
+}
 .config-btn {
 	display: inline-flex;
 	align-items: center;

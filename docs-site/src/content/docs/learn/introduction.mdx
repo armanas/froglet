@@ -67,7 +67,7 @@ AI agents need to buy and sell compute from each other without intermediaries. A
   </div>
 </div>
 
-Froglet solves those needs with signed artifacts, explicit execution terms, and verifiable settlement. Lightning is the reference rail, and Stripe/x402 are local launch adapters.
+Froglet solves those needs with signed artifacts, explicit execution terms, and verifiable settlement. **Lightning** is the reference rail — proven end-to-end on regtest, with the payment preimage as cryptographic proof. **Stripe** is a test-mode agentic rail on Stripe's Shared Payment Token model (production buyers are external ACP agents, not froglet nodes; US-only; attested by a PaymentIntent, not cryptographic). **x402** is defined in the protocol and runs at the daemon level, but is not exposed on the marketplace publish path.
 
 ## Read next
 

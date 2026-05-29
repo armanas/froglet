@@ -96,11 +96,27 @@ ships three; Phase 1B adds the other two.
 
 For most users the answer is just **tor**.
 
+## Settlement on the publish path
+
+The publish path now accepts `settlement.method` ∈ `none` | `lightning` |
+`stripe`:
+
+- **`none`** — free execution, no payment.
+- **`lightning`** — two-leg hold-invoice settlement (base + success fee),
+  proven end-to-end on regtest; the payment preimage is the cryptographic
+  proof. Real mainnet money is not yet proven (pending channel liquidity).
+- **`stripe`** — test-mode agentic rail on Stripe's Shared Payment Token
+  (SPT) model. froglet is the seller; US-only; settlement is attested by a
+  PaymentIntent reference, not a cryptographic proof. See
+  [Stripe](/learn/payment-stripe/) for the buyer/seller caveats.
+
+Price a service with `[price] sats = N` plus `currency = "sat"` (satoshis →
+Lightning) or `currency = "usd"` (US cents → Stripe). The hosted trial at
+`try.froglet.dev` stays free-only. **x402** is defined in the protocol and
+implemented at the daemon level, but is not a publish-path option.
+
 ## What v1 doesn't do yet
 
-- **Paid rails (Lightning, Stripe)**: settlement is `"none"` (free) in
-  v1. Lightning + Stripe ship in v2. The manifest field is wired but
-  the engine rejects non-`none` values for now.
 - **WASM and OCI runtimes**: `runtime: "python"` + `package_kind: "inline_source"`
   is the v1A scope. WASM modules and container images ship in v1B.
 - **Managed + Fly backends**: documented above, land in v1B.
