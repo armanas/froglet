@@ -20,3 +20,11 @@ commits = [
   "d3ee6404b1c695737e01bfad6e6fdcef2e22c3ad",
   "d8187af22793888a98c0e5978561df50eb75951d",
 ]
+
+[[allowlists]]
+targetRules = ["stripe-access-token"]
+description = "Fake Stripe keys in unit-test fixtures — Debug-redaction test (config.rs) and the Stripe driver test helper (stripe.rs). Not real credentials."
+regexes = [
+  '''sk_live_supersecret456''',
+  '''sk_test_placeholder''',
+]
