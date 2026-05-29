@@ -3,12 +3,12 @@ use crate::{
     crypto,
     db::{self, LightningInvoiceBundleRecord},
     deals,
-    lnd::{LndRestClient, LndRestError},
     protocol::{
         DealPayload, InvoiceBundleLeg, InvoiceBundleLegState, InvoiceBundlePayload, QuotePayload,
         QuoteSettlementTerms, SignedArtifact, TRANSPORT_KIND_INVOICE_BUNDLE, sign_artifact,
         verify_artifact,
     },
+    settlement::wallet::{LightningWallet, WalletError},
     state::AppState,
 };
 use futures::future::BoxFuture;
@@ -159,11 +159,10 @@ fn deterministic_base_fee_payment_hash(
     Ok(crypto::sha256_hex(preimage_bytes))
 }
 
-fn lnd_rest_client(state: &AppState) -> Result<LndRestClient, String> {
+fn lightning_wallet(state: &AppState) -> Result<&dyn LightningWallet, String> {
     state
-        .lnd_rest_client
-        .as_ref()
-        .map(|client| client.as_ref().clone())
+        .lightning_wallet
+        .as_deref()
         .ok_or_else(|| "missing lnd_rest configuration".to_string())
 }
 
@@ -382,7 +381,7 @@ fn push_bundle_issue(
 }
 
 async fn cleanup_failed_lnd_bundle_issue(
-    client: &LndRestClient,
+    client: &dyn LightningWallet,
     payment_hashes: &[String],
     issue_error: String,
 ) -> String {
@@ -395,7 +394,7 @@ async fn cleanup_failed_lnd_bundle_issue(
 }
 
 async fn cancel_lnd_invoices(
-    client: &LndRestClient,
+    client: &dyn LightningWallet,
     payment_hashes: &[String],
 ) -> Result<(), String> {
     let mut failures = Vec::new();
@@ -412,13 +411,13 @@ async fn cancel_lnd_invoices(
 }
 
 async fn cancel_lnd_invoices_allowing_missing(
-    client: &LndRestClient,
+    client: &dyn LightningWallet,
     payment_hashes: &[String],
 ) -> Result<(), String> {
     let mut failures = Vec::new();
     for payment_hash in payment_hashes {
         match client.cancel_invoice(payment_hash).await {
-            Ok(()) | Err(LndRestError::Status { status: 404, .. }) => {}
+            Ok(()) | Err(WalletError::NotFound) => {}
             Err(error) => failures.push(format!("{payment_hash}: {error}")),
         }
     }
@@ -550,7 +549,7 @@ pub async fn sync_lightning_invoice_bundle_session(
     let session = match state.config.lightning.mode {
         LightningMode::Mock => session,
         LightningMode::LndRest => {
-            let client = lnd_rest_client(state)?;
+            let client = lightning_wallet(state)?;
             let mut base_state = if session.bundle.payload.base_fee.amount_msat == 0 {
                 InvoiceBundleLegState::Settled
             } else {
@@ -571,7 +570,7 @@ pub async fn sync_lightning_invoice_bundle_session(
                     .await
                 {
                     Ok(()) => {}
-                    Err(LndRestError::Status { status: 409, .. }) => {
+                    Err(WalletError::AlreadySettled) => {
                         // Already settled — proceed idempotently.
                     }
                     Err(error) => return Err(error.to_string()),
@@ -651,7 +650,7 @@ pub async fn settle_lightning_success_hold_invoice(
             Ok(updated)
         }
         LightningMode::LndRest => {
-            let client = lnd_rest_client(state)?;
+            let client = lightning_wallet(state)?;
             client
                 .settle_invoice(success_preimage_hex)
                 .await
@@ -672,7 +671,7 @@ pub async fn cancel_lightning_invoice_bundle(
     match state.config.lightning.mode {
         LightningMode::Mock => Ok(()),
         LightningMode::LndRest => {
-            let client = lnd_rest_client(state)?;
+            let client = lightning_wallet(state)?;
             let mut payment_hashes = Vec::new();
             if session.bundle.payload.base_fee.amount_msat > 0
                 && matches!(
@@ -688,7 +687,7 @@ pub async fn cancel_lightning_invoice_bundle(
             ) {
                 payment_hashes.push(session.bundle.payload.success_fee.payment_hash.clone());
             }
-            cancel_lnd_invoices(&client, &payment_hashes).await
+            cancel_lnd_invoices(client, &payment_hashes).await
         }
     }
 }
@@ -700,7 +699,7 @@ pub async fn cancel_pending_lightning_materialization_request(
     match state.config.lightning.mode {
         LightningMode::Mock => Ok(()),
         LightningMode::LndRest => {
-            let client = lnd_rest_client(state)?;
+            let client = lightning_wallet(state)?;
             let mut payment_hashes = Vec::new();
             if request.success_fee_msat > 0 {
                 payment_hashes.push(request.success_payment_hash.clone());
@@ -710,7 +709,7 @@ pub async fn cancel_pending_lightning_materialization_request(
             {
                 payment_hashes.push(deterministic_base_fee_payment_hash(state, session_id)?);
             }
-            cancel_lnd_invoices_allowing_missing(&client, &payment_hashes).await
+            cancel_lnd_invoices_allowing_missing(client, &payment_hashes).await
         }
     }
 }
@@ -725,7 +724,7 @@ pub async fn resolve_lightning_destination_identity(state: &AppState) -> Result<
         LightningMode::LndRest => state
             .lightning_destination_identity
             .get_or_try_init(|| async {
-                let client = lnd_rest_client(state)?;
+                let client = lightning_wallet(state)?;
                 client
                     .get_info()
                     .await
@@ -1233,7 +1232,7 @@ async fn issue_lnd_rest_invoice_bundle(
     state: &AppState,
     request: BuildLightningInvoiceBundleRequest,
 ) -> Result<LightningInvoiceBundleSession, String> {
-    let client = lnd_rest_client(state)?;
+    let client = lightning_wallet(state)?;
     let (max_base_invoice_expiry_secs, max_success_hold_expiry_secs) =
         effective_bundle_expiry_secs(state, &request)?;
     let base_invoice_expiry_secs = guarded_lnd_invoice_expiry_secs(max_base_invoice_expiry_secs);
@@ -1269,7 +1268,7 @@ async fn issue_lnd_rest_invoice_bundle(
             Ok(invoice) => invoice,
             Err(error) => {
                 return Err(cleanup_failed_lnd_bundle_issue(
-                    &client,
+                    client,
                     &issued_payment_hashes,
                     error.to_string(),
                 )
@@ -1296,7 +1295,7 @@ async fn issue_lnd_rest_invoice_bundle(
         Ok(invoice) => invoice,
         Err(error) => {
             return Err(cleanup_failed_lnd_bundle_issue(
-                &client,
+                client,
                 &issued_payment_hashes,
                 error.to_string(),
             )
@@ -1310,7 +1309,7 @@ async fn issue_lnd_rest_invoice_bundle(
             Ok(decoded) => decoded,
             Err(error) => {
                 return Err(cleanup_failed_lnd_bundle_issue(
-                    &client,
+                    client,
                     &issued_payment_hashes,
                     error.to_string(),
                 )
@@ -1319,7 +1318,7 @@ async fn issue_lnd_rest_invoice_bundle(
         };
         if decoded_base.amount_msat != request.base_fee_msat {
             return Err(cleanup_failed_lnd_bundle_issue(
-                &client,
+                client,
                 &issued_payment_hashes,
                 "LND base invoice amount did not match the requested amount".to_string(),
             )
@@ -1327,7 +1326,7 @@ async fn issue_lnd_rest_invoice_bundle(
         }
         if decoded_base.payment_hash != deterministic_base_payment_hash {
             return Err(cleanup_failed_lnd_bundle_issue(
-                &client,
+                client,
                 &issued_payment_hashes,
                 "LND base invoice payment hash did not match the deterministic session payment hash"
                     .to_string(),
@@ -1338,7 +1337,7 @@ async fn issue_lnd_rest_invoice_bundle(
             && decoded_base.expires_at > admission_deadline
         {
             return Err(cleanup_failed_lnd_bundle_issue(
-                &client,
+                client,
                 &issued_payment_hashes,
                 "LND base invoice expiry exceeded the deal admission_deadline".to_string(),
             )
@@ -1346,7 +1345,7 @@ async fn issue_lnd_rest_invoice_bundle(
         }
         if decoded_base.destination_identity != destination_identity {
             return Err(cleanup_failed_lnd_bundle_issue(
-                &client,
+                client,
                 &issued_payment_hashes,
                 "LND base invoice destination did not match the provider identity".to_string(),
             )
@@ -1363,7 +1362,7 @@ async fn issue_lnd_rest_invoice_bundle(
         Ok(decoded) => decoded,
         Err(error) => {
             return Err(cleanup_failed_lnd_bundle_issue(
-                &client,
+                client,
                 &issued_payment_hashes,
                 error.to_string(),
             )
@@ -1372,7 +1371,7 @@ async fn issue_lnd_rest_invoice_bundle(
     };
     if decoded_success.amount_msat != request.success_fee_msat {
         return Err(cleanup_failed_lnd_bundle_issue(
-            &client,
+            client,
             &issued_payment_hashes,
             "LND success hold invoice amount did not match the requested amount".to_string(),
         )
@@ -1382,7 +1381,7 @@ async fn issue_lnd_rest_invoice_bundle(
         && decoded_success.expires_at > admission_deadline
     {
         return Err(cleanup_failed_lnd_bundle_issue(
-            &client,
+            client,
             &issued_payment_hashes,
             "LND success hold invoice expiry exceeded the deal admission_deadline".to_string(),
         )
@@ -1390,7 +1389,7 @@ async fn issue_lnd_rest_invoice_bundle(
     }
     if decoded_success.payment_hash != request.success_payment_hash {
         return Err(cleanup_failed_lnd_bundle_issue(
-            &client,
+            client,
             &issued_payment_hashes,
             "LND success hold invoice payment hash did not match the deal payment lock".to_string(),
         )
@@ -1398,7 +1397,7 @@ async fn issue_lnd_rest_invoice_bundle(
     }
     if decoded_success.destination_identity != destination_identity {
         return Err(cleanup_failed_lnd_bundle_issue(
-            &client,
+            client,
             &issued_payment_hashes,
             "LND success hold invoice destination did not match the provider identity".to_string(),
         )
@@ -1406,7 +1405,7 @@ async fn issue_lnd_rest_invoice_bundle(
     }
     if decoded_success.min_final_cltv_expiry < state.config.lightning.min_final_cltv_expiry {
         return Err(cleanup_failed_lnd_bundle_issue(
-            &client,
+            client,
             &issued_payment_hashes,
             "LND success hold invoice min_final_cltv_expiry was below the configured floor"
                 .to_string(),

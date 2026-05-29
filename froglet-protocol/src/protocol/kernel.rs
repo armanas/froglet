@@ -620,6 +620,65 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
                 );
             }
         }
+        // Interop note: stripe_mpp.v1 is an additive settlement method introduced
+        // alongside lightning.base_fee_plus_success_fee.v1.  It uses the same
+        // ReceiptSettlementRefs struct shape but without hold invoices: bundle_hash
+        // is absent, destination_identity is empty, base_fee carries the PaymentIntent
+        // ID as payment_hash, and success_fee is an empty-canceled placeholder.
+        "stripe_mpp.v1" => {
+            if payload.settlement_refs.bundle_hash.is_some() {
+                return Err("stripe_mpp.v1 receipt must not include bundle_hash".to_string());
+            }
+            if !payload.settlement_refs.destination_identity.is_empty() {
+                return Err("stripe_mpp.v1 receipt destination_identity must be empty".to_string());
+            }
+            if !receipt_leg_is_empty_canceled(&payload.settlement_refs.success_fee) {
+                return Err(
+                    "stripe_mpp.v1 receipt success_fee must be a zero-valued canceled placeholder"
+                        .to_string(),
+                );
+            }
+            // The base_fee leg carries the charge; its state must be terminal.
+            if matches!(
+                payload.settlement_refs.base_fee.state,
+                ReceiptLegState::Open | ReceiptLegState::Accepted
+            ) {
+                return Err(
+                    "stripe_mpp.v1 receipt base_fee.state must be terminal (settled or canceled)"
+                        .to_string(),
+                );
+            }
+            match payload.settlement_state.as_str() {
+                "settled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Settled {
+                        return Err(
+                            "stripe_mpp.v1 receipt settlement_state settled requires base_fee.state settled"
+                                .to_string(),
+                        );
+                    }
+                }
+                "canceled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Canceled {
+                        return Err(
+                            "stripe_mpp.v1 receipt settlement_state canceled requires base_fee.state canceled"
+                                .to_string(),
+                        );
+                    }
+                }
+                _ => {
+                    return Err(
+                        "stripe_mpp.v1 receipt settlement_state must be settled or canceled"
+                            .to_string(),
+                    );
+                }
+            }
+            if payload.deal_state == "succeeded" && payload.settlement_state != "settled" {
+                return Err(
+                    "successful stripe_mpp.v1 receipt must have settlement_state settled"
+                        .to_string(),
+                );
+            }
+        }
         _ => return Err("receipt settlement_refs.method is invalid".to_string()),
     }
 
@@ -1532,5 +1591,228 @@ mod tests {
             Err(VerifyError::Decode(_)) => {}
             other => panic!("expected Err(Decode), got {other:?}"),
         }
+    }
+
+    // ─── Stripe MPP kernel validation tests ───────────────────────────────────
+
+    /// Build a minimal but valid stripe_mpp.v1 receipt payload.
+    fn valid_stripe_receipt_payload(provider_id: &str, captured: bool) -> ReceiptPayload {
+        let (deal_state, execution_state, settlement_state, base_state, result_hash, result_format) =
+            if captured {
+                (
+                    "succeeded",
+                    "succeeded",
+                    "settled",
+                    ReceiptLegState::Settled,
+                    Some("44".repeat(32)),
+                    Some("application/json+jcs".to_string()),
+                )
+            } else {
+                (
+                    "failed",
+                    "failed",
+                    "canceled",
+                    ReceiptLegState::Canceled,
+                    None,
+                    None,
+                )
+            };
+
+        ReceiptPayload {
+            provider_id: provider_id.to_string(),
+            requester_id: "11".repeat(32),
+            deal_hash: "22".repeat(32),
+            quote_hash: "33".repeat(32),
+            extension_refs: Vec::new(),
+            acceptance_ref: None,
+            started_at: Some(100),
+            finished_at: 200,
+            deal_state: deal_state.to_string(),
+            execution_state: execution_state.to_string(),
+            settlement_state: settlement_state.to_string(),
+            result_hash,
+            confidential_session_hash: None,
+            result_envelope_hash: None,
+            result_format,
+            executor: ReceiptExecutor {
+                runtime: "wasm".to_string(),
+                runtime_version: "test".to_string(),
+                execution_mode: None,
+                attestation_platform: None,
+                measurement: None,
+                abi_version: Some("froglet.wasm.run_json.v1".to_string()),
+                module_hash: Some("55".repeat(32)),
+                capabilities_granted: Vec::new(),
+            },
+            limits_applied: ExecutionLimits {
+                max_input_bytes: 1,
+                max_runtime_ms: 2,
+                max_memory_bytes: 3,
+                max_output_bytes: 4,
+                fuel_limit: 5,
+            },
+            settlement_refs: ReceiptSettlementRefs {
+                method: "stripe_mpp.v1".to_string(),
+                bundle_hash: None,
+                destination_identity: String::new(),
+                base_fee: ReceiptSettlementLeg {
+                    amount_msat: 30_000,
+                    invoice_hash: String::new(),
+                    payment_hash: "pi_test_stripe_intent_123".to_string(),
+                    state: base_state,
+                },
+                success_fee: ReceiptSettlementLeg {
+                    amount_msat: 0,
+                    invoice_hash: String::new(),
+                    payment_hash: String::new(),
+                    state: ReceiptLegState::Canceled,
+                },
+            },
+            failure_code: if captured {
+                None
+            } else {
+                Some("execution_failed".to_string())
+            },
+            failure_message: if captured {
+                None
+            } else {
+                Some("test failure".to_string())
+            },
+            result_ref: None,
+        }
+    }
+
+    #[test]
+    fn stripe_mpp_v1_success_receipt_passes_kernel_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            valid_stripe_receipt_payload(&signer, true),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt), "signature must be valid");
+        assert!(
+            validate_receipt_artifact(&receipt).is_ok(),
+            "stripe_mpp.v1 success receipt must pass kernel validation: {:?}",
+            validate_receipt_artifact(&receipt)
+        );
+    }
+
+    #[test]
+    fn stripe_mpp_v1_failure_receipt_passes_kernel_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            valid_stripe_receipt_payload(&signer, false),
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt), "signature must be valid");
+        assert!(
+            validate_receipt_artifact(&receipt).is_ok(),
+            "stripe_mpp.v1 failure receipt must pass kernel validation: {:?}",
+            validate_receipt_artifact(&receipt)
+        );
+    }
+
+    #[test]
+    fn stripe_mpp_v1_receipt_with_bundle_hash_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_stripe_receipt_payload(&signer, true);
+        payload.settlement_refs.bundle_hash = Some("aa".repeat(32));
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "stripe_mpp.v1 receipt must not include bundle_hash"
+        );
+    }
+
+    #[test]
+    fn stripe_mpp_v1_receipt_with_non_empty_destination_identity_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_stripe_receipt_payload(&signer, true);
+        payload.settlement_refs.destination_identity = "02".to_string() + &"aa".repeat(32);
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "stripe_mpp.v1 receipt destination_identity must be empty"
+        );
+    }
+
+    #[test]
+    fn stripe_mpp_v1_receipt_with_wrong_settlement_state_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        // A "succeeded" deal must have settlement_state "settled".
+        let mut payload = valid_stripe_receipt_payload(&signer, true);
+        payload.settlement_state = "canceled".to_string();
+        payload.settlement_refs.base_fee.state = ReceiptLegState::Canceled;
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        let err = validate_receipt_artifact(&receipt).unwrap_err();
+        assert!(
+            err.contains("successful stripe_mpp.v1 receipt must have settlement_state settled"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn stripe_mpp_v1_receipt_with_nonempty_success_fee_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_stripe_receipt_payload(&signer, true);
+        // A non-empty success_fee leg should be rejected.
+        payload.settlement_refs.success_fee.payment_hash = "bb".repeat(32);
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "stripe_mpp.v1 receipt success_fee must be a zero-valued canceled placeholder"
+        );
     }
 }

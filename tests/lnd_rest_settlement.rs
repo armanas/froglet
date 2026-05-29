@@ -481,6 +481,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         },
         x402: None,
         stripe: None,
+        buyer_stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -514,14 +515,16 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
     let events_query_capacity = pool.read_connection_count().max(1);
     let pricing = PricingTable::from_config(node_config.pricing);
     let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
-    let lnd_rest_client = froglet::lnd::LndRestClient::from_config(
-        node_config
-            .lightning
-            .lnd_rest
-            .as_ref()
-            .expect("lnd rest config"),
-    )
-    .expect("cached lnd client");
+    let lnd_rest_client = Arc::new(
+        froglet::lnd::LndRestClient::from_config(
+            node_config
+                .lightning
+                .lnd_rest
+                .as_ref()
+                .expect("lnd rest config"),
+        )
+        .expect("cached lnd client"),
+    );
     let settlement_registry = froglet::settlement::SettlementRegistry::new(&node_config);
 
     AppState {
@@ -541,7 +544,10 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         provider_control_auth_token: "test-provider-token".to_string(),
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
-        lnd_rest_client: Some(Arc::new(lnd_rest_client)),
+        lnd_rest_client: Some(Arc::clone(&lnd_rest_client)),
+        lightning_wallet: Some(
+            Arc::clone(&lnd_rest_client) as froglet::settlement::wallet::ArcLightningWallet
+        ),
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),

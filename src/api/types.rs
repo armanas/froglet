@@ -419,6 +419,12 @@ pub struct ProviderManagedOfferDefinition {
     pub max_output_bytes: usize,
     pub fuel_limit: u64,
     pub price_sats: u64,
+    /// Currency unit for `price_sats`. `"sat"` (default) = satoshis, settled
+    /// via Lightning. `"usd"` = US cents, settled via Stripe. Absent means
+    /// `"sat"`. Lives in the node-side definition only; not part of the signed
+    /// offer payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_currency: Option<String>,
     #[serde(default = "super::default_offer_publication_state")]
     pub publication_state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -523,6 +529,10 @@ pub struct ProviderControlPublishArtifactRequest {
     #[serde(default)]
     pub mode: Option<String>,
     pub price_sats: u64,
+    /// Currency unit for `price_sats`: `"sat"` (satoshis, Lightning) or
+    /// `"usd"` (US cents, Stripe). Defaults to `"sat"` when absent.
+    #[serde(default)]
+    pub price_currency: Option<String>,
     #[serde(default)]
     pub publication_state: Option<String>,
     #[serde(default)]

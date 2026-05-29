@@ -178,6 +178,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         },
         x402: None,
         stripe: None,
+        buyer_stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -243,6 +244,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
+        lightning_wallet: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),

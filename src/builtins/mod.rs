@@ -237,6 +237,7 @@ pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
             max_output_bytes: 1_048_576,
             fuel_limit: 0,
             price_sats: 0,
+            price_currency: None, // demo builtins are always free / sat
             publication_state: "active".to_string(),
             starter: Some(spec.starter.to_string()),
             module_hash: None,

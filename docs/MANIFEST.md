@@ -145,6 +145,9 @@ fuel_limit = 0
 # Pricing
 [price]
 sats = 0                            # 0 for free; ignored if settlement.method = "none"
+# currency = "sat"                  # "sat" (default) = satoshis via Lightning
+#                                   # "usd"           = US cents via Stripe
+#                                   # currency="usd" requires a Stripe payment backend
 
 # Optional I/O schemas (JSON Schema, free shape)
 [input_schema]
@@ -199,6 +202,7 @@ When omitted from the manifest:
 | `publication_state` | `"active"` |
 | `limits.*` | provider state defaults (currently 64 KiB input, 30 s runtime, 16 MiB memory) |
 | `price.sats` | `0` |
+| `price.currency` | `"sat"` — satoshis, Lightning rail. Use `"usd"` for US cents on the Stripe rail (requires Stripe payment backend). |
 | `marketplace.url` | inherited from `froglet.toml`, else `"https://marketplace.froglet.dev"` |
 
 ---
@@ -281,6 +285,7 @@ not translate field names; it maps directly:
 | `limits.max_output_bytes` | `max_output_bytes` |
 | `limits.fuel_limit` | `fuel_limit` |
 | `price.sats` | `price_sats` |
+| `price.currency` | `price_currency` |
 | `summary` | `summary` |
 | `input_schema` | `input_schema` |
 | `output_schema` | `output_schema` |

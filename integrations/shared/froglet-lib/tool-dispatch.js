@@ -736,7 +736,7 @@ function useCaseSteps(profile) {
       ...common,
       "HEADLINE PATH for publishing user-described services: call `marketplace_publish` with `{name, source_inline, hosting:{kind:'tor'|'local'|'self'}}`. The handler shells out to `froglet-node publish --json`, which scaffolds manifests, builds the artifact, signs, registers, and verifies in one call. Returns provider_id, public_url, offer_hash, marketplace_offer_url, and invoke_command.",
       "Hosting choices: 'tor' (default, public via auto hidden service — requires daemon FROGLET_NETWORK_MODE=tor), 'local' (private dev, no marketplace registration), 'self' (user-supplied URL via hosting.url). Managed + Fly land in Phase 1B.",
-      "Settlement in v1 is 'none' (free) only — do not pass settlement.method when the user asks for paid; surface that Lightning + Stripe ship in v2.",
+      "Settlement supports 'none' (free) and 'lightning' (hold-invoice escrow paid to the node's Lightning wallet; the node must have a Lightning backend configured). Pass settlement.method='lightning' with a non-zero price for a paid service. Stripe + x402 are not yet on the publish path.",
       "For the first-run verification on a fresh node, call `publish_artifact` with `template: \"demo.add\"` to publish the canonical local demo without writing source. This is a sanity check; real services go through `marketplace_publish`.",
       "After `marketplace_publish` returns, call `list_local_services`/`get_local_service` to confirm the offer fields and `invoke_service` (using the returned invoke_command) to verify end-to-end."
     ]

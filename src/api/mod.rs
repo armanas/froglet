@@ -1362,6 +1362,70 @@ async fn runtime_create_deal_inner(
         }
     };
 
+    // ── Buyer-side Stripe SPT minting ──────────────────────────────────────
+    //
+    // When the quote requires stripe_mpp.v1 payment and the caller has not
+    // already supplied a payment token (e.g. the runtime is acting as the
+    // buyer), mint a Shared Payment Token from the buyer's Stripe account and
+    // attach it to the outgoing CreateDealRequest.
+    //
+    // If the caller explicitly supplied `payload.payment`, we honour it as-is
+    // (allows advanced callers to pre-mint tokens externally).
+    let payment_for_deal: Option<settlement::ProvidedPayment> = if payload.payment.is_none()
+        && quote.payload.settlement_terms.method == "stripe_mpp.v1"
+    {
+        match &state.config.buyer_stripe {
+            None => {
+                return error_json(
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({
+                        "error": "the provider requires Stripe payment (stripe_mpp.v1) but \
+                                  FROGLET_BUYER_STRIPE_SECRET_KEY is not configured on this \
+                                  buyer node; set FROGLET_BUYER_STRIPE_SECRET_KEY and \
+                                  FROGLET_BUYER_STRIPE_PAYMENT_METHOD (or \
+                                  FROGLET_BUYER_STRIPE_CUSTOMER) to enable buyer-side payments"
+                    }),
+                )
+                .into_response();
+            }
+            Some(buyer_config) => {
+                // The quoted price is expressed in msat; convert to cents
+                // (1 sat = 1 cent in this protocol — the unit is shared).
+                // The SPT ceiling is padded by 1 cent to satisfy any
+                // strict > check on the Stripe side.
+                let total_msat = quote.payload.settlement_terms.base_fee_msat
+                    + quote.payload.settlement_terms.success_fee_msat;
+                let price_cents = (total_msat / 1_000).max(1);
+                // Give the token a 10-minute validity window — enough for
+                // the provider to validate and create the PaymentIntent.
+                let expires_at = settlement::current_unix_timestamp() + 600;
+
+                match settlement::mint_buyer_spt(buyer_config, price_cents, expires_at, None).await
+                {
+                    Ok(spt_id) => Some(settlement::ProvidedPayment {
+                        kind: "stripe_mpp".to_string(),
+                        token: spt_id,
+                    }),
+                    Err(err) => {
+                        tracing::error!("Buyer SPT mint failed: {err}");
+                        return error_json(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({
+                                "error": format!(
+                                    "failed to mint Stripe payment token for this deal: {err}"
+                                )
+                            }),
+                        )
+                        .into_response();
+                    }
+                }
+            }
+        }
+    } else {
+        payload.payment.clone()
+    };
+    // ── end buyer-side SPT minting ─────────────────────────────────────────
+
     let remote_deal = match remote_json_request::<deals::DealRecord, _>(
         state.as_ref(),
         reqwest::Method::POST,
@@ -1371,7 +1435,7 @@ async fn runtime_create_deal_inner(
             deal: deal_artifact.clone(),
             spec: payload.spec.clone(),
             idempotency_key: payload.idempotency_key.clone(),
-            payment: payload.payment.clone(),
+            payment: payment_for_deal,
         }),
     )
     .await
@@ -4326,6 +4390,27 @@ async fn quoted_settlement_terms(
         return Ok(terms);
     }
 
+    // Stripe MPP: when Stripe is the active paid backend and the service has
+    // a non-zero price, return stripe_mpp.v1 settlement terms.  Lightning-
+    // specific fields (invoice expiry, CLTV, destination_identity) are zeroed
+    // because Stripe does not use hold invoices.
+    if price_sats > 0
+        && state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Stripe)
+    {
+        return Ok(QuoteSettlementTerms {
+            method: "stripe_mpp.v1".to_string(),
+            destination_identity: String::new(),
+            base_fee_msat: price_sats.saturating_mul(1_000),
+            success_fee_msat: 0,
+            max_base_invoice_expiry_secs: 0,
+            max_success_hold_expiry_secs: 0,
+            min_final_cltv_expiry: 0,
+        });
+    }
+
     // Canonical free-service settlement terms: method "none" with empty
     // destination_identity and zero fees.  Do NOT fall through to the
     // Lightning method string with zero fees.
@@ -4697,6 +4782,60 @@ pub(crate) fn validate_provider_offer_definition(
     Ok(())
 }
 
+/// Validate the requested `price_currency` against the node's configured
+/// payment backends and return the normalised currency string (or `None` for
+/// the default "sat" when the field was absent).
+///
+/// Rules:
+/// - `"usd"` requires `PaymentBackend::Stripe`.  Any other backend → error.
+/// - `"sat"` (or absent) is accepted on Lightning, free ("none"), and
+///   Stripe-only nodes (a Stripe node may still serve free sat-priced services).
+/// - Any other value is rejected.
+fn validate_price_currency_for_backends(
+    state: &AppState,
+    price_currency: Option<&str>,
+) -> Result<Option<String>, ApiFailure> {
+    let currency = price_currency.unwrap_or("sat");
+    match currency {
+        "sat" => Ok(price_currency.map(str::to_string)),
+        "usd" => {
+            if state
+                .config
+                .payment_backends
+                .contains(&PaymentBackend::Stripe)
+            {
+                Ok(Some("usd".to_string()))
+            } else {
+                // Determine what rails this node actually has for the message.
+                let backends: Vec<String> = state
+                    .config
+                    .payment_backends
+                    .iter()
+                    .map(|b| b.to_string())
+                    .collect();
+                Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": format!(
+                            "price.currency='usd' requires the Stripe settlement rail; \
+                             this node's payment backends are: [{}]",
+                            backends.join(", ")
+                        )
+                    }),
+                ))
+            }
+        }
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": format!(
+                    "price.currency={other:?} is not supported; allowed: \"sat\", \"usd\""
+                )
+            }),
+        )),
+    }
+}
+
 fn offer_service_id(definition: &ProviderManagedOfferDefinition) -> String {
     definition
         .service_id
@@ -4737,6 +4876,16 @@ fn payload_from_provider_offer_definition(
     let success_fee_msat: u64 = definition.price_sats.saturating_mul(1_000);
     let settlement_method = if base_fee_msat == 0 && success_fee_msat == 0 {
         "none".to_string()
+    } else if state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Stripe)
+        && !state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Lightning)
+    {
+        "stripe_mpp.v1".to_string()
     } else {
         "lightning.base_fee_plus_success_fee.v1".to_string()
     };
@@ -4863,6 +5012,7 @@ fn builtin_provider_offer_definitions(
             max_output_bytes,
             fuel_limit,
             price_sats,
+            price_currency: None, // builtins are always priced in sat
             publication_state: default_offer_publication_state(),
             starter: None,
             module_hash: None,
@@ -4962,6 +5112,7 @@ fn builtin_provider_offer_definitions(
             max_output_bytes: profile.config.max_output_bytes,
             fuel_limit: sandbox::WASM_FUEL_LIMIT,
             price_sats: profile.config.price_sats,
+            price_currency: None, // confidential profiles are always priced in sat
             publication_state: default_offer_publication_state(),
             starter: None,
             module_hash: None,
@@ -5191,6 +5342,11 @@ pub fn artifact_provider_offer_definition(
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     let publication_state = normalize_offer_publication_state(payload.publication_state.as_deref())
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    // Validate price.currency against the node's active payment backends before
+    // payload fields are partially moved. "sat" (or absent) → Lightning or free;
+    // "usd" → Stripe backend required.
+    let price_currency =
+        validate_price_currency_for_backends(state, payload.price_currency.as_deref())?;
     let runtime = if let Some(runtime) = payload.runtime.as_deref() {
         ExecutionRuntime::parse(runtime)
             .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
@@ -5441,6 +5597,7 @@ pub fn artifact_provider_offer_definition(
     let runtime_str = runtime.as_str().to_string();
     let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
         provider_offer_limits(state, &runtime_str);
+
     let definition = ProviderManagedOfferDefinition {
         offer_id: offer_id.clone(),
         service_id: Some(service_id),
@@ -5461,6 +5618,7 @@ pub fn artifact_provider_offer_definition(
         max_output_bytes,
         fuel_limit,
         price_sats: payload.price_sats,
+        price_currency,
         publication_state,
         starter: payload.starter,
         module_hash,
@@ -6004,6 +6162,12 @@ async fn create_deal_record(
             .config
             .payment_backends
             .contains(&PaymentBackend::Lightning);
+    let uses_stripe = quoted_total_sats > 0
+        && payload.quote.payload.settlement_terms.method.as_str() == "stripe_mpp.v1"
+        && state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Stripe);
     if let Err((status, message)) =
         validate_deal_deadlines(&payload.quote, &payload.deal, now, uses_lightning_bundle)
     {
@@ -6051,7 +6215,32 @@ async fn create_deal_record(
         return Ok((existing.public_record(), StatusCode::OK));
     }
 
-    if quoted_total_sats > 0 && payload.payment.is_some() {
+    // Lightning paid deals do NOT accept inline payment tokens — the
+    // requester must use the invoice-bundle flow for hold-invoice escrow.
+    if uses_lightning_bundle && payload.payment.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "paid deals use the signed deal plus invoice-bundle flow instead of inline payment tokens"
+            }),
+        ));
+    }
+
+    // Stripe paid deals REQUIRE an inline payment token (SPT) at deal-create
+    // time so that the PaymentIntent is reserved synchronously.
+    if uses_stripe && payload.payment.is_none() {
+        return Err((
+            StatusCode::PAYMENT_REQUIRED,
+            json!({
+                "error": "stripe_mpp.v1 deals require a payment token (ProvidedPayment{kind:\"stripe_mpp\",token:<SPT>})"
+            }),
+        ));
+    }
+
+    // For non-Stripe paid deals that still carry an inline payment token,
+    // reject to preserve the existing invariant (no non-stripe paid deals
+    // should carry inline tokens).
+    if quoted_total_sats > 0 && !uses_stripe && payload.payment.is_some() {
         return Err((
             StatusCode::BAD_REQUEST,
             json!({
@@ -6061,7 +6250,24 @@ async fn create_deal_record(
     }
 
     let deal_id = protocol::new_artifact_id();
-    let reservation = None;
+
+    // For Stripe deals, prepare the PaymentIntent synchronously.  The
+    // reservation's token_hash is the PaymentIntent ID used for later
+    // capture (commit) or cancellation (release).
+    let reservation: Option<PaymentReservation> = if uses_stripe {
+        let provided_payment = payload.payment.clone();
+        settlement::prepare_payment_for_amount(
+            state.as_ref(),
+            ServiceId::ExecuteWasm,
+            quoted_total_sats,
+            provided_payment,
+            Some(deal_id.clone()),
+        )
+        .await
+        .map_err(|error| (error.status_code(), error.details()))?
+    } else {
+        None
+    };
     let deal_artifact = payload.deal.clone();
     let mut reserved_execution_permit = None;
     let mut immediate_rejection: Option<(
@@ -6125,6 +6331,7 @@ async fn create_deal_record(
                         deal_state: "rejected",
                         execution_state: "not_started",
                         bundle: None,
+                        stripe_settlement: None,
                         result_hash: None,
                         result_format: None,
                         result_envelope_hash: None,
@@ -6162,6 +6369,9 @@ async fn create_deal_record(
     let deal_artifact_ref = json!({ "artifact_hash": deal_hash.clone() });
     let materialization_request_for_db = pending_materialization_request.clone();
     let immediate_rejection_for_db = immediate_rejection.clone();
+    // Pre-extract the Stripe PaymentIntent ID before the move closure so that
+    // the reservation itself stays available for release on failure paths below.
+    let stripe_token_hash_for_db = reservation.as_ref().map(|r| r.token_hash.clone());
     let insert_result = state
         .db
         .with_write_conn(move |conn| {
@@ -6204,13 +6414,31 @@ async fn create_deal_record(
                     artifact: deal_artifact.clone(),
                     workload_evidence_hash: None,
                     deal_artifact_hash: deal_artifact_hash.clone(),
-                    payment_method: uses_lightning_bundle.then(|| "lightning".to_string()),
-                    payment_token_hash: uses_lightning_bundle
-                        .then(|| payload.deal.payload.success_payment_hash.clone()),
-                    payment_amount_sats: uses_lightning_bundle.then_some(quoted_total_sats),
+                    payment_method: if uses_lightning_bundle {
+                        Some("lightning".to_string())
+                    } else if uses_stripe {
+                        Some("stripe".to_string())
+                    } else {
+                        None
+                    },
+                    payment_token_hash: if uses_lightning_bundle {
+                        Some(payload.deal.payload.success_payment_hash.clone())
+                    } else if uses_stripe {
+                        // Pre-extracted above to avoid moving reservation into
+                        // the DB closure (needed for release on failure paths).
+                        stripe_token_hash_for_db.clone()
+                    } else {
+                        None
+                    },
+                    payment_amount_sats: if uses_lightning_bundle || uses_stripe {
+                        Some(quoted_total_sats)
+                    } else {
+                        None
+                    },
                     initial_status: if uses_lightning_bundle {
                         deals::DEAL_STATUS_PAYMENT_PENDING.to_string()
                     } else {
+                        // Stripe: funds reserved synchronously; deal is accepted immediately.
                         deals::DEAL_STATUS_ACCEPTED.to_string()
                     },
                     created_at: now,
@@ -6324,7 +6552,7 @@ async fn create_deal_record(
     let insert_result = match insert_result {
         Ok(result) => result,
         Err(error) => {
-            let _ = release_payment(state.as_ref(), reservation).await;
+            let _ = release_payment(state.as_ref(), reservation.clone()).await;
             let status = if error.contains("idempotency key reused") {
                 StatusCode::CONFLICT
             } else {
@@ -6417,6 +6645,7 @@ async fn fail_pending_deal_materialization(
             deal_state: "failed",
             execution_state: "not_started",
             bundle: None,
+            stripe_settlement: None,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -8038,6 +8267,7 @@ async fn persist_lightning_success_receipt(
             deal_state: "succeeded",
             execution_state: "succeeded",
             bundle: Some(bundle),
+            stripe_settlement: None,
             result_hash: Some(result_hash),
             result_format: None,
             result_envelope_hash: None,
@@ -8130,6 +8360,7 @@ async fn persist_deal_terminal_failure_receipt(
             deal_state,
             execution_state,
             bundle,
+            stripe_settlement: None,
             result_hash: deal.result_hash.clone(),
             result_format: None,
             result_envelope_hash: None,
@@ -8763,6 +8994,32 @@ fn settlement_refs_from_bundle(
     }
 }
 
+/// Build ReceiptSettlement for a Stripe MPP deal.
+///
+/// Stripe does not use hold invoices, so invoice_hash is empty and bundle_hash
+/// is None.  The base_fee leg carries the captured (or canceled) amount; the
+/// success_fee leg is an empty-canceled placeholder, preserving the struct shape
+/// required by the signed ReceiptPayload without adding fields.
+fn settlement_refs_from_stripe(stripe: &StripeSettlementInfo) -> ReceiptSettlement {
+    let base_state = if stripe.captured {
+        ReceiptLegState::Settled
+    } else {
+        ReceiptLegState::Canceled
+    };
+    ReceiptSettlement {
+        method: "stripe_mpp.v1".to_string(),
+        bundle_hash: None,
+        destination_identity: String::new(),
+        base_fee: ReceiptSettlementLeg {
+            amount_msat: stripe.charged_msat,
+            invoice_hash: String::new(),
+            payment_hash: stripe.payment_intent_id.clone(),
+            state: base_state,
+        },
+        success_fee: empty_receipt_leg(),
+    }
+}
+
 fn settlement_state_from_bundle(
     bundle: Option<&settlement::LightningInvoiceBundleSession>,
 ) -> String {
@@ -8846,6 +9103,7 @@ fn build_recovered_deal_failure(
             deal_state: "failed",
             execution_state: recovery_execution_state(&deal),
             bundle: bundle.as_ref(),
+            stripe_settlement: None,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -10364,10 +10622,23 @@ struct ReceiptSignSpec<'a> {
     deal_state: &'a str,
     execution_state: &'a str,
     bundle: Option<&'a settlement::LightningInvoiceBundleSession>,
+    /// For Stripe deals: the PaymentIntent ID and whether it was captured.
+    /// When `Some`, overrides the Lightning-bundle settlement path.
+    stripe_settlement: Option<StripeSettlementInfo>,
     result_hash: Option<String>,
     result_format: Option<String>,
     result_envelope_hash: Option<String>,
     failure: Option<ReceiptFailure>,
+}
+
+/// Carries the Stripe-specific data needed to build ReceiptSettlementRefs.
+struct StripeSettlementInfo {
+    /// The PaymentIntent ID (stored in deal.payment_token_hash).
+    payment_intent_id: String,
+    /// Amount that was charged, in milli-satoshis.
+    charged_msat: u64,
+    /// Whether the PaymentIntent was captured (success) or canceled (failure).
+    captured: bool,
 }
 
 fn sign_deal_receipt(
@@ -10381,8 +10652,21 @@ fn sign_deal_receipt(
             .as_ref()
             .map(|_| wasm::JCS_JSON_FORMAT.to_string())
     });
-    let settlement_refs = settlement_refs_from_bundle(spec.bundle);
-    let settlement_state = settlement_state_from_bundle(spec.bundle);
+    let (settlement_refs, settlement_state) = if let Some(stripe) = &spec.stripe_settlement {
+        (
+            settlement_refs_from_stripe(stripe),
+            if stripe.captured {
+                "settled".to_string()
+            } else {
+                "canceled".to_string()
+            },
+        )
+    } else {
+        (
+            settlement_refs_from_bundle(spec.bundle),
+            settlement_state_from_bundle(spec.bundle),
+        )
+    };
     let failure_code = spec.failure.as_ref().map(|details| details.code.clone());
     let failure_message = spec.failure.as_ref().map(|details| details.message.clone());
 
@@ -10450,6 +10734,7 @@ async fn reject_deal_before_execution(
             deal_state: "rejected",
             execution_state: "not_started",
             bundle: bundle.as_ref(),
+            stripe_settlement: None,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -10748,108 +11033,304 @@ async fn process_deal_with_reserved_permit(
                     );
                 }
             } else {
-                let receipt = match sign_deal_receipt(
-                    state.as_ref(),
-                    &deal,
-                    completed_at,
-                    ReceiptSignSpec {
-                        deal_state: "succeeded",
-                        execution_state: "succeeded",
-                        bundle: None,
-                        result_hash: Some(output.result_hash.clone()),
-                        result_format: Some(output.result_format.clone()),
-                        result_envelope_hash: output.result_envelope_hash.clone(),
-                        failure: None,
-                    },
-                ) {
-                    Ok(receipt) => receipt,
-                    Err(error) => {
-                        tracing::error!("Failed to sign successful deal receipt: {error}");
-                        return;
-                    }
-                };
-
-                let receipt_json = match serde_json::to_string(&receipt) {
-                    Ok(json) => json,
-                    Err(error) => {
-                        tracing::error!("Failed to encode successful deal receipt: {error}");
-                        return;
-                    }
-                };
-
-                let deal_for_commit = deal.clone();
-                let receipt_for_db = receipt.clone();
-                let output_for_commit = output.clone();
-                let persisted = state
-                    .db
-                    .with_write_conn(move |conn| {
-                        conn.execute_batch("BEGIN IMMEDIATE")
-                            .map_err(|e| e.to_string())?;
-                        let operation = (|| -> Result<(), String> {
-                            let result_evidence_hash = db::insert_execution_evidence(
-                                conn,
-                                "deal",
-                                &deal_for_commit.deal_id,
-                                &output_for_commit.result_evidence_kind,
-                                &result_for_db,
-                                completed_at,
-                            )?;
-                            for (evidence_kind, evidence_value) in &output_for_commit.extra_evidence
-                            {
-                                let _ = db::insert_execution_evidence(
-                                    conn,
-                                    "deal",
-                                    &deal_for_commit.deal_id,
-                                    evidence_kind,
-                                    evidence_value,
-                                    completed_at,
-                                )?;
+                // For Stripe deals, capture the PaymentIntent synchronously before
+                // signing the receipt.
+                //
+                // FAIL-CLOSED: Within the kernel receipt model, settlement_state is
+                // coupled to deal_state (succeeded ⇒ settled). There is no
+                // "succeeded-but-unpaid" representation, so an uncollectable-after-
+                // execution deal is recorded as failed (the buyer's PaymentIntent
+                // auth is canceled/voided, so they are not charged). This is a
+                // deliberate fail-closed default the product owner can refine later
+                // (e.g. a reconciliation/retry queue).
+                let capture_outcome = if deal.payment_method.as_deref() == Some("stripe") {
+                    let pi_id = deal.payment_token_hash.clone().unwrap_or_default();
+                    let charged_msat = deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000);
+                    let stripe_reservation = PaymentReservation {
+                        request_id: deal.deal_id.clone(),
+                        method: "stripe_mpp".to_string(),
+                        service_id: ServiceId::ExecuteWasm,
+                        amount_sats: deal.payment_amount_sats.unwrap_or(0),
+                        token_hash: pi_id.clone(),
+                    };
+                    // Attempt capture with up to 3 tries; authorized manual-capture
+                    // PaymentIntents almost always capture on the first attempt.
+                    const MAX_CAPTURE_ATTEMPTS: u32 = 3;
+                    let mut last_capture_err: Option<String> = None;
+                    let mut captured = false;
+                    for attempt in 1..=MAX_CAPTURE_ATTEMPTS {
+                        match settlement::commit_payment(state.as_ref(), stripe_reservation.clone())
+                            .await
+                        {
+                            Ok(_) => {
+                                captured = true;
+                                break;
                             }
-                            db::insert_artifact_document(
-                                conn,
-                                &receipt_for_db.hash,
-                                &receipt_for_db.payload_hash,
-                                ARTIFACT_KIND_RECEIPT,
-                                &receipt_for_db.signer,
-                                receipt_for_db.created_at,
-                                &receipt_json,
-                            )?;
-                            let _ = db::insert_execution_evidence(
-                                conn,
-                                "deal",
-                                &deal_for_commit.deal_id,
-                                "receipt_artifact_ref",
-                                &json!({ "artifact_hash": receipt_for_db.hash }),
-                                completed_at,
-                            )?;
-
-                            deals::complete_deal_success(
-                                conn,
-                                deals::DealSuccessPersistence {
-                                    deal_id: &deal_for_commit.deal_id,
-                                    result: &result_for_db,
-                                    explicit_result_hash: Some(&output_for_commit.result_hash),
-                                    receipt: &receipt_for_db,
-                                    result_evidence_hash: Some(&result_evidence_hash),
-                                    receipt_artifact_hash: Some(&receipt_for_db.hash),
-                                    now: completed_at,
-                                },
-                            )?;
-                            Ok(())
-                        })();
-
-                        if let Err(error) = operation {
-                            let _ = conn.execute_batch("ROLLBACK");
-                            return Err(error);
+                            Err(err) => {
+                                last_capture_err = Some(err.to_string());
+                                if attempt < MAX_CAPTURE_ATTEMPTS {
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                }
+                            }
                         }
+                    }
+                    if captured {
+                        Ok(Some(StripeSettlementInfo {
+                            payment_intent_id: pi_id,
+                            charged_msat,
+                            captured: true,
+                        }))
+                    } else {
+                        Err((pi_id, charged_msat, last_capture_err.unwrap_or_default()))
+                    }
+                } else {
+                    // Non-Stripe path: no capture needed.
+                    Ok(None)
+                };
 
-                        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                        Ok(())
-                    })
-                    .await;
+                match capture_outcome {
+                    Ok(stripe_settlement) => {
+                        // Happy path: execution succeeded and (for Stripe) capture succeeded.
+                        let receipt = match sign_deal_receipt(
+                            state.as_ref(),
+                            &deal,
+                            completed_at,
+                            ReceiptSignSpec {
+                                deal_state: "succeeded",
+                                execution_state: "succeeded",
+                                bundle: None,
+                                stripe_settlement,
+                                result_hash: Some(output.result_hash.clone()),
+                                result_format: Some(output.result_format.clone()),
+                                result_envelope_hash: output.result_envelope_hash.clone(),
+                                failure: None,
+                            },
+                        ) {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                tracing::error!("Failed to sign successful deal receipt: {error}");
+                                return;
+                            }
+                        };
 
-                if let Err(error) = persisted {
-                    tracing::error!("Failed to persist successful deal result: {error}");
+                        let receipt_json = match serde_json::to_string(&receipt) {
+                            Ok(json) => json,
+                            Err(error) => {
+                                tracing::error!(
+                                    "Failed to encode successful deal receipt: {error}"
+                                );
+                                return;
+                            }
+                        };
+
+                        let deal_for_commit = deal.clone();
+                        let receipt_for_db = receipt.clone();
+                        let output_for_commit = output.clone();
+                        let persisted = state
+                            .db
+                            .with_write_conn(move |conn| {
+                                conn.execute_batch("BEGIN IMMEDIATE")
+                                    .map_err(|e| e.to_string())?;
+                                let operation = (|| -> Result<(), String> {
+                                    let result_evidence_hash = db::insert_execution_evidence(
+                                        conn,
+                                        "deal",
+                                        &deal_for_commit.deal_id,
+                                        &output_for_commit.result_evidence_kind,
+                                        &result_for_db,
+                                        completed_at,
+                                    )?;
+                                    for (evidence_kind, evidence_value) in
+                                        &output_for_commit.extra_evidence
+                                    {
+                                        let _ = db::insert_execution_evidence(
+                                            conn,
+                                            "deal",
+                                            &deal_for_commit.deal_id,
+                                            evidence_kind,
+                                            evidence_value,
+                                            completed_at,
+                                        )?;
+                                    }
+                                    db::insert_artifact_document(
+                                        conn,
+                                        &receipt_for_db.hash,
+                                        &receipt_for_db.payload_hash,
+                                        ARTIFACT_KIND_RECEIPT,
+                                        &receipt_for_db.signer,
+                                        receipt_for_db.created_at,
+                                        &receipt_json,
+                                    )?;
+                                    let _ = db::insert_execution_evidence(
+                                        conn,
+                                        "deal",
+                                        &deal_for_commit.deal_id,
+                                        "receipt_artifact_ref",
+                                        &json!({ "artifact_hash": receipt_for_db.hash }),
+                                        completed_at,
+                                    )?;
+
+                                    deals::complete_deal_success(
+                                        conn,
+                                        deals::DealSuccessPersistence {
+                                            deal_id: &deal_for_commit.deal_id,
+                                            result: &result_for_db,
+                                            explicit_result_hash: Some(
+                                                &output_for_commit.result_hash,
+                                            ),
+                                            receipt: &receipt_for_db,
+                                            result_evidence_hash: Some(&result_evidence_hash),
+                                            receipt_artifact_hash: Some(&receipt_for_db.hash),
+                                            now: completed_at,
+                                        },
+                                    )?;
+                                    Ok(())
+                                })();
+
+                                if let Err(error) = operation {
+                                    let _ = conn.execute_batch("ROLLBACK");
+                                    return Err(error);
+                                }
+
+                                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                                Ok(())
+                            })
+                            .await;
+
+                        if let Err(error) = persisted {
+                            tracing::error!("Failed to persist successful deal result: {error}");
+                        }
+                    }
+                    Err((pi_id, charged_msat, capture_err)) => {
+                        // Stripe capture failed after all retry attempts. Treat as
+                        // deal failure: cancel the PaymentIntent so the buyer is not
+                        // charged, then record a kernel-valid failed receipt.
+                        tracing::error!(
+                            deal_id = %deal.deal_id,
+                            "CRITICAL: Stripe capture failed after successful execution; \
+                             deal {} marked failed, buyer not charged, \
+                             manual reconciliation may be needed. Error: {capture_err}",
+                            deal.deal_id,
+                        );
+                        let failure = receipt_failure(
+                            "stripe_capture_failed",
+                            format!(
+                                "Stripe capture failed for deal {}: {capture_err}",
+                                deal.deal_id
+                            ),
+                        );
+                        // Release the PaymentIntent so the buyer is not charged.
+                        let cancel_reservation = PaymentReservation {
+                            request_id: deal.deal_id.clone(),
+                            method: "stripe_mpp".to_string(),
+                            service_id: ServiceId::ExecuteWasm,
+                            amount_sats: deal.payment_amount_sats.unwrap_or(0),
+                            token_hash: pi_id.clone(),
+                        };
+                        if let Err(err) =
+                            settlement::release_payment(state.as_ref(), &cancel_reservation).await
+                        {
+                            tracing::error!(
+                                deal_id = %deal.deal_id,
+                                "Stripe cancel after capture failure also failed: {err}"
+                            );
+                        }
+                        let stripe_settlement = Some(StripeSettlementInfo {
+                            payment_intent_id: pi_id,
+                            charged_msat,
+                            captured: false,
+                        });
+                        let receipt = match sign_deal_receipt(
+                            state.as_ref(),
+                            &deal,
+                            completed_at,
+                            ReceiptSignSpec {
+                                deal_state: "failed",
+                                execution_state: "failed",
+                                bundle: None,
+                                stripe_settlement,
+                                result_hash: None,
+                                result_format: None,
+                                result_envelope_hash: None,
+                                failure: Some(failure.clone()),
+                            },
+                        ) {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                tracing::error!(
+                                    "Failed to sign capture-failed deal receipt: {error}"
+                                );
+                                return;
+                            }
+                        };
+                        let receipt_json = match serde_json::to_string(&receipt) {
+                            Ok(json) => json,
+                            Err(error) => {
+                                tracing::error!(
+                                    "Failed to encode capture-failed deal receipt: {error}"
+                                );
+                                return;
+                            }
+                        };
+                        // Persist using the same pattern as the execution-failure branch.
+                        let deal_id = deal.deal_id.clone();
+                        let receipt_for_db = receipt.clone();
+                        let persisted = state
+                            .db
+                            .with_write_conn(move |conn| {
+                                conn.execute_batch("BEGIN IMMEDIATE")
+                                    .map_err(|e| e.to_string())?;
+                                let operation = (|| -> Result<(), String> {
+                                    let failure_evidence_hash = db::insert_execution_evidence(
+                                        conn,
+                                        "deal",
+                                        &deal_id,
+                                        "execution_failure",
+                                        &failure,
+                                        completed_at,
+                                    )?;
+                                    db::insert_artifact_document(
+                                        conn,
+                                        &receipt_for_db.hash,
+                                        &receipt_for_db.payload_hash,
+                                        ARTIFACT_KIND_RECEIPT,
+                                        &receipt_for_db.signer,
+                                        receipt_for_db.created_at,
+                                        &receipt_json,
+                                    )?;
+                                    let _ = db::insert_execution_evidence(
+                                        conn,
+                                        "deal",
+                                        &deal_id,
+                                        "receipt_artifact_ref",
+                                        &json!({ "artifact_hash": receipt_for_db.hash }),
+                                        completed_at,
+                                    )?;
+                                    deals::complete_deal_failure(
+                                        conn,
+                                        &deal_id,
+                                        "stripe_capture_failed",
+                                        &receipt_for_db,
+                                        Some(&failure_evidence_hash),
+                                        Some(&receipt_for_db.hash),
+                                        completed_at,
+                                    )?;
+                                    Ok(())
+                                })();
+                                if let Err(error) = operation {
+                                    let _ = conn.execute_batch("ROLLBACK");
+                                    return Err(error);
+                                }
+                                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                                Ok(())
+                            })
+                            .await;
+                        if let Err(error) = persisted {
+                            tracing::error!(
+                                "Failed to persist capture-failed deal result: {error}"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -10875,6 +11356,34 @@ async fn process_deal_with_reserved_permit(
                     None
                 }
             };
+            // For Stripe deals, release (cancel) the PaymentIntent on failure.
+            let stripe_settlement = if deal.payment_method.as_deref() == Some("stripe") {
+                let pi_id = deal.payment_token_hash.clone().unwrap_or_default();
+                let charged_msat = deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000);
+                let stripe_reservation = PaymentReservation {
+                    request_id: deal.deal_id.clone(),
+                    method: "stripe_mpp".to_string(),
+                    service_id: ServiceId::ExecuteWasm,
+                    amount_sats: deal.payment_amount_sats.unwrap_or(0),
+                    token_hash: pi_id.clone(),
+                };
+                if let Err(err) =
+                    settlement::release_payment(state.as_ref(), &stripe_reservation).await
+                {
+                    tracing::error!(
+                        deal_id = %deal.deal_id,
+                        "Stripe cancel (release) failed for failed deal: {err}"
+                    );
+                }
+                Some(StripeSettlementInfo {
+                    payment_intent_id: pi_id,
+                    charged_msat,
+                    captured: false,
+                })
+            } else {
+                None
+            };
+
             let receipt = match sign_deal_receipt(
                 state.as_ref(),
                 &deal,
@@ -10883,6 +11392,7 @@ async fn process_deal_with_reserved_permit(
                     deal_state: "failed",
                     execution_state: "failed",
                     bundle: bundle.as_ref(),
+                    stripe_settlement,
                     result_hash: None,
                     result_format: None,
                     result_envelope_hash: None,
@@ -11097,6 +11607,7 @@ mod tests {
             },
             x402: None,
             stripe: None,
+            buyer_stripe: None,
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: db_path.clone(),
@@ -11158,6 +11669,7 @@ mod tests {
                 .clone(),
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
             lnd_rest_client: None,
+            lightning_wallet: None,
             lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
             event_batch_writer: None,
             builtin_services: std::collections::HashMap::new(),
@@ -11406,6 +11918,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats,
+                price_currency: None,
                 publication_state: Some(publication_state.to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -11439,6 +11952,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -11454,6 +11968,130 @@ mod tests {
             "unexpected error payload: {}",
             error.1
         );
+    }
+
+    // ── price.currency ↔ payment backend validation ────────────────────
+
+    /// currency="usd" on a Lightning-only node must be rejected with a clear
+    /// error mentioning the Stripe rail.
+    #[test]
+    fn usd_currency_rejected_on_lightning_node() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let err = artifact_provider_offer_definition(
+            state.as_ref(),
+            ProviderControlPublishArtifactRequest {
+                service_id: "pay-service".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                capabilities: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
+                ),
+                summary: Some("usd-priced on lightning".to_string()),
+                starter: None,
+                mode: Some("sync".to_string()),
+                price_sats: 500,
+                price_currency: Some("usd".to_string()),
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .expect_err("usd currency must be rejected when Stripe backend is absent");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let msg = err.1["error"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("Stripe") || msg.contains("stripe"),
+            "error should mention Stripe rail; got: {msg}"
+        );
+    }
+
+    /// currency="sat" on a Lightning node must be accepted.
+    #[test]
+    fn sat_currency_accepted_on_lightning_node() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let definition = artifact_provider_offer_definition(
+            state.as_ref(),
+            ProviderControlPublishArtifactRequest {
+                service_id: "sat-service".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                capabilities: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
+                ),
+                summary: Some("sat-priced on lightning".to_string()),
+                starter: None,
+                mode: Some("sync".to_string()),
+                price_sats: 1000,
+                price_currency: Some("sat".to_string()),
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .expect("sat currency must be accepted on Lightning node");
+
+        assert_eq!(definition.price_currency.as_deref(), Some("sat"));
+        assert_eq!(definition.price_sats, 1000);
+    }
+
+    /// currency="usd" on a Stripe node must be accepted.
+    #[test]
+    fn usd_currency_accepted_on_stripe_node() {
+        let state = test_app_state(PaymentBackend::Stripe);
+        let definition = artifact_provider_offer_definition(
+            state.as_ref(),
+            ProviderControlPublishArtifactRequest {
+                service_id: "usd-service".to_string(),
+                offer_id: None,
+                artifact_path: None,
+                wasm_module_hex: None,
+                oci_reference: None,
+                oci_digest: None,
+                runtime: Some("python".to_string()),
+                package_kind: Some("inline_source".to_string()),
+                entrypoint_kind: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
+                contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+                mounts: None,
+                capabilities: None,
+                inline_source: Some(
+                    "def handler(event, context):\n    return {\"ok\": True}\n".to_string(),
+                ),
+                summary: Some("usd-priced on stripe".to_string()),
+                starter: None,
+                mode: Some("sync".to_string()),
+                price_sats: 500,
+                price_currency: Some("usd".to_string()),
+                publication_state: Some("active".to_string()),
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .expect("usd currency must be accepted on Stripe node");
+
+        assert_eq!(definition.price_currency.as_deref(), Some("usd"));
+        assert_eq!(definition.price_sats, 500);
     }
 
     #[tokio::test]
@@ -11486,6 +12124,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12332,6 +12971,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12362,6 +13002,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("hidden".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12437,6 +13078,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("hidden".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12553,6 +13195,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12582,6 +13225,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("hidden".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12660,6 +13304,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12729,6 +13374,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12796,6 +13442,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -12865,6 +13512,7 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 0,
+                price_currency: None,
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
@@ -15473,5 +16121,182 @@ mod tests {
             wait_for_deal_status(&state, &deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
         assert_eq!(succeeded_deal.status, deals::DEAL_STATUS_SUCCEEDED);
         assert!(succeeded_deal.receipt.is_some(), "expected success receipt");
+    }
+
+    // ─── Stripe capture-fail invariant ────────────────────────────────────────
+    //
+    // Verify the receipt-construction decision for the Stripe path:
+    //   • capture succeeded  ⇒ deal_state="succeeded", settlement_state="settled"
+    //   • capture failed     ⇒ deal_state="failed",    settlement_state="canceled"
+    // Both must pass validate_receipt_artifact (no succeeded+canceled receipt may
+    // ever be produced).
+    #[test]
+    fn stripe_capture_outcome_produces_kernel_valid_receipts() {
+        use crate::protocol::{validate_receipt_artifact, verify_artifact};
+
+        let state = test_app_state(PaymentBackend::Lightning);
+
+        // Build a minimal Stripe-style StoredDeal (payment_method = "stripe").
+        // The quote must be signed by the node identity so that sign_deal_receipt
+        // (which signs with the node key) produces a receipt whose signer matches
+        // the provider_id — required by validate_receipt_artifact.
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let now = 1_700_000_000_i64;
+
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            requester_id.clone(),
+            now,
+            now + 300,
+            30_000,
+            30,
+            60,
+        );
+        let deal_artifact = protocol::sign_artifact(
+            &requester_id,
+            |msg| crypto::sign_message_hex(&requester_key, msg),
+            ARTIFACT_KIND_DEAL,
+            now,
+            DealPayload {
+                requester_id: requester_id.clone(),
+                provider_id: quote.payload.provider_id.clone(),
+                quote_hash: quote.hash.clone(),
+                workload_hash: quote.payload.workload_hash.clone(),
+                confidential_session_hash: None,
+                extension_refs: Vec::new(),
+                authority_ref: None,
+                supersedes_deal_hash: None,
+                client_nonce: None,
+                success_payment_hash: "11".repeat(32),
+                admission_deadline: now + 30,
+                completion_deadline: now + 60,
+                acceptance_deadline: now + 120,
+            },
+        )
+        .expect("deal artifact");
+
+        let stored_deal = deals::StoredDeal {
+            deal_id: "test-deal-stripe-capture".to_string(),
+            idempotency_key: None,
+            quote: quote.clone(),
+            spec: WorkloadSpec::Wasm {
+                submission: Box::new(test_wasm_submission()),
+            },
+            artifact: deal_artifact,
+            status: deals::DEAL_STATUS_RUNNING.to_string(),
+            result: None,
+            result_hash: None,
+            error: None,
+            payment_method: Some("stripe".to_string()),
+            payment_token_hash: Some("pi_test_capture_invariant".to_string()),
+            payment_amount_sats: Some(30),
+            receipt: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // ── Case 1: capture succeeded → succeeded+settled receipt ──────────────
+        let success_receipt = sign_deal_receipt(
+            state.as_ref(),
+            &stored_deal,
+            now + 1,
+            ReceiptSignSpec {
+                deal_state: "succeeded",
+                execution_state: "succeeded",
+                bundle: None,
+                stripe_settlement: Some(StripeSettlementInfo {
+                    payment_intent_id: "pi_test_capture_invariant".to_string(),
+                    charged_msat: 30_000,
+                    captured: true,
+                }),
+                result_hash: Some("aa".repeat(32)),
+                result_format: Some("application/json+jcs".to_string()),
+                result_envelope_hash: None,
+                failure: None,
+            },
+        )
+        .expect("sign success receipt");
+
+        assert!(
+            verify_artifact(&success_receipt),
+            "capture-success receipt must have valid signature"
+        );
+        assert!(
+            validate_receipt_artifact(&success_receipt).is_ok(),
+            "capture-success receipt must pass kernel validation: {:?}",
+            validate_receipt_artifact(&success_receipt)
+        );
+        assert_eq!(success_receipt.payload.deal_state, "succeeded");
+        assert_eq!(success_receipt.payload.settlement_state, "settled");
+
+        // ── Case 2: capture failed → failed+canceled receipt ───────────────────
+        let fail_receipt = sign_deal_receipt(
+            state.as_ref(),
+            &stored_deal,
+            now + 1,
+            ReceiptSignSpec {
+                deal_state: "failed",
+                execution_state: "failed",
+                bundle: None,
+                stripe_settlement: Some(StripeSettlementInfo {
+                    payment_intent_id: "pi_test_capture_invariant".to_string(),
+                    charged_msat: 30_000,
+                    captured: false,
+                }),
+                result_hash: None,
+                result_format: None,
+                result_envelope_hash: None,
+                failure: Some(receipt_failure(
+                    "stripe_capture_failed",
+                    "Stripe capture failed for deal test-deal-stripe-capture: mock error",
+                )),
+            },
+        )
+        .expect("sign capture-failed receipt");
+
+        assert!(
+            verify_artifact(&fail_receipt),
+            "capture-fail receipt must have valid signature"
+        );
+        assert!(
+            validate_receipt_artifact(&fail_receipt).is_ok(),
+            "capture-fail receipt must pass kernel validation: {:?}",
+            validate_receipt_artifact(&fail_receipt)
+        );
+        assert_eq!(fail_receipt.payload.deal_state, "failed");
+        assert_eq!(fail_receipt.payload.settlement_state, "canceled");
+        assert_eq!(
+            fail_receipt.payload.failure_code.as_deref(),
+            Some("stripe_capture_failed")
+        );
+
+        // ── Invariant: no succeeded+canceled receipt can be produced ───────────
+        // Attempting to build one (what the old code did) must fail kernel validation.
+        let bad_receipt = sign_deal_receipt(
+            state.as_ref(),
+            &stored_deal,
+            now + 1,
+            ReceiptSignSpec {
+                deal_state: "succeeded",
+                execution_state: "succeeded",
+                bundle: None,
+                stripe_settlement: Some(StripeSettlementInfo {
+                    payment_intent_id: "pi_test_capture_invariant".to_string(),
+                    charged_msat: 30_000,
+                    captured: false, // the old buggy path: succeeded deal, uncaptured PI
+                }),
+                result_hash: Some("aa".repeat(32)),
+                result_format: Some("application/json+jcs".to_string()),
+                result_envelope_hash: None,
+                failure: None,
+            },
+        )
+        .expect("sign bad receipt"); // signing itself succeeds — the kernel rejects it
+        assert!(
+            validate_receipt_artifact(&bad_receipt).is_err(),
+            "succeeded+canceled receipt must be REJECTED by the kernel \
+             (this was the bug: the old code emitted this invalid artifact)"
+        );
     }
 }

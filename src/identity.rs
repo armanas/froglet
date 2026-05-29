@@ -302,6 +302,7 @@ mod tests {
             },
             x402: None,
             stripe: None,
+            buyer_stripe: None,
             storage: StorageConfig {
                 data_dir: temp_dir.to_path_buf(),
                 db_path: temp_dir.join("node.db"),

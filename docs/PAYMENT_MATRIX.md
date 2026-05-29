@@ -9,28 +9,25 @@ cell**. It exists so that "does Froglet support X?" has one answer, and so
 that regressions in a specific rail × mode cell fail a release gate rather
 than a launch post.
 
-### v0.2 launch posture (free hosted + self-hosted paid)
+### Publish-path posture (free + Lightning)
 
-The v0.2 launch (the `marketplace_publish` MCP / `froglet-node publish` CLI
-narrative) is intentionally **free-only on the publish path**:
+The publish path (the `marketplace_publish` MCP / `froglet-node publish` CLI
+narrative) supports **free (`none`) and Lightning** settlement:
 
-- `froglet-protocol::manifest::validate_settlement_method` rejects any
-  `settlement.method` other than `"none"`. Lightning, Stripe, and x402 are
-  defined in the protocol kernel and the daemon supports them at runtime,
-  but the `0.2.x` publish surface does not expose them to LLMs or new
-  operators yet — that work is queued as a 0.3 follow-up.
-- The Phase 4 acceptance harness (`tests/llm_acceptance/`) tests only
-  free-publish prompts; a paid-publish prompt would fail the
-  `settlement-is-none` structural check.
-- Self-hosted operators who run their own `froglet-node` daemon can still
-  issue Lightning / Stripe / x402 offers via the lower-level provider API
-  — those rails are tested and shipping in this release, just not driven
-  end-to-end by the publish engine.
+- `froglet-protocol::manifest::validate_settlement_method` accepts
+  `settlement.method` in {`"none"`, `"lightning"`} and fails closed on any
+  other value. Lightning is settled via the daemon's hold-invoice escrow
+  (base fee + success fee, preimage as proof). Publishing a paid Lightning
+  service requires a Lightning backend on the node
+  (`FROGLET_PAYMENT_BACKEND=lightning`).
+- Stripe and x402 are defined in the protocol kernel and supported by their
+  settlement drivers at runtime, but are **not yet exposed on the publish
+  path**: fiat cannot produce a third-party-verifiable settlement proof, so
+  Stripe is deferred pending a labeled-proof design. Self-hosted operators
+  can still issue those offers via the lower-level provider API.
 
-`marketplace.froglet.dev` therefore remains a free-only hosted catalog at
-v0.2. The hosted Lightning + Stripe rows below are evidence that the
-**code is ready** when the publish-path gating is lifted; they are not
-v0.2 launch blockers in their own right.
+The hosted Lightning + Stripe rows below are evidence that the **code is
+ready**; Lightning is now on the publish path, Stripe/x402 are not yet.
 
 ## 1. Supported rails and modes
 

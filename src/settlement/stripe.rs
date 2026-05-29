@@ -36,7 +36,7 @@ impl StripeDriver {
         Self::with_base_url(config, api_key, "https://api.stripe.com")
     }
 
-    fn with_base_url(config: StripeConfig, api_key: String, api_base_url: &str) -> Self {
+    pub(crate) fn with_base_url(config: StripeConfig, api_key: String, api_base_url: &str) -> Self {
         Self {
             api_key,
             api_version: config.api_version,
@@ -370,6 +370,106 @@ impl SettlementDriver for StripeDriver {
     }
 }
 
+// ─── Buyer-side SPT minting ───────────────────────────────────────────────────
+
+/// A minted Stripe Shared Payment Token returned by [`StripeDriver::mint_spt`].
+pub struct MintedSpt {
+    /// The SPT ID (e.g. `spt_…`) to hand to the seller as
+    /// `ProvidedPayment { kind: "stripe_mpp", token: spt_id }`.
+    pub spt_id: String,
+}
+
+impl StripeDriver {
+    /// Mint a Stripe Shared Payment Token (SPT) from the **buyer's** Stripe
+    /// account so it can be submitted to a provider as a `stripe_mpp`
+    /// payment token.
+    ///
+    /// The caller provides:
+    /// - `amount_cents` — the maximum amount in cents (≥ the quoted price).
+    /// - `expires_at` — Unix timestamp at which the token expires (must be in
+    ///   the future; the seller will reject an expired token).
+    /// - `funding_source` — either a payment-method ID (`pm_…`) or a Stripe
+    ///   customer ID (`cus_…`).
+    ///
+    /// # Assumed Stripe preview API shape
+    ///
+    /// NOTE: Stripe shared-payment is a preview API; confirm exact field
+    /// names/endpoint against Stripe preview docs before live use.  The
+    /// parameters below are modelled on documented preview behaviour and the
+    /// seller-side validation in `prepare()` (which reads
+    /// `usage_limits.{currency, max_amount, expires_at}`).
+    ///
+    /// Endpoint:   `POST /v1/shared_payment/granted_tokens`
+    /// Key params: `payment_method` or `customer`, `currency`, `maximum_amount`,
+    ///             `expires_at`, `usage_limits[max_amount]`,
+    ///             `usage_limits[expires_at]`, `usage_limits[currency]`
+    ///
+    /// The seller validates the token via
+    /// `GET /v1/shared_payment/granted_tokens/{spt_id}` and checks:
+    /// - `usage_limits.expires_at` > now
+    /// - `usage_limits.currency` == "usd" (or absent)
+    /// - `usage_limits.max_amount` >= price_sats
+    pub async fn mint_spt(
+        &self,
+        amount_cents: u64,
+        expires_at: i64,
+        funding_source: &BuyerFundingSource<'_>,
+    ) -> Result<MintedSpt, String> {
+        // NOTE: Stripe shared-payment is a preview API; confirm exact field
+        // names/endpoint against Stripe preview docs before live use.
+        // All param names below are kept in one place (this slice) so they
+        // are easy to adjust when the API stabilises.
+        let amount_str = amount_cents.to_string();
+        let expires_str = expires_at.to_string();
+
+        // Build the funding-source param.  The Stripe preview API accepts
+        // either `payment_method` (a pm_… ID) or `customer` (a cus_… ID).
+        // Assumed field names — confirm against Stripe preview docs.
+        let (funding_key, funding_value) = match funding_source {
+            BuyerFundingSource::PaymentMethod(pm_id) => ("payment_method", *pm_id),
+            BuyerFundingSource::Customer(cus_id) => ("customer", *cus_id),
+        };
+
+        // All SPT create params in one slice for easy auditing/adjustment.
+        let params: &[(&str, &str)] = &[
+            // Assumed field name — confirm against Stripe preview docs.
+            (funding_key, funding_value),
+            // Assumed field name — confirm against Stripe preview docs.
+            ("currency", "usd"),
+            // Assumed field name — confirm against Stripe preview docs.
+            ("usage_limits[currency]", "usd"),
+            // Assumed field name — confirm against Stripe preview docs.
+            ("usage_limits[max_amount]", &amount_str),
+            // Assumed field name — confirm against Stripe preview docs.
+            ("usage_limits[expires_at]", &expires_str),
+        ];
+
+        let response = self
+            .stripe_post_form("/v1/shared_payment/granted_tokens", params)
+            .await
+            .map_err(|err| {
+                tracing::error!("Stripe SPT mint failed: {err}");
+                format!("failed to mint Stripe Shared Payment Token: {err}")
+            })?;
+
+        let spt_id = response
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Stripe SPT create response missing 'id' field".to_string())?
+            .to_string();
+
+        Ok(MintedSpt { spt_id })
+    }
+}
+
+/// The buyer's Stripe funding source used to back a minted SPT.
+pub enum BuyerFundingSource<'a> {
+    /// A Stripe payment method ID (`pm_…`).
+    PaymentMethod(&'a str),
+    /// A Stripe customer ID (`cus_…`) whose default payment method is charged.
+    Customer(&'a str),
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Encode key-value pairs as `application/x-www-form-urlencoded`.
@@ -575,6 +675,7 @@ mod tests {
             },
             x402: None,
             stripe: None,
+            buyer_stripe: None,
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: db_path.clone(),
@@ -630,6 +731,7 @@ mod tests {
             provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
             lnd_rest_client: None,
+            lightning_wallet: None,
             lightning_destination_identity: Arc::new(OnceCell::new()),
             event_batch_writer: None,
             builtin_services: HashMap::new(),

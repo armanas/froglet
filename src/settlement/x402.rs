@@ -450,6 +450,7 @@ mod tests {
             },
             x402: None,
             stripe: None,
+            buyer_stripe: None,
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: db_path.clone(),
@@ -505,6 +506,7 @@ mod tests {
             provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
             lnd_rest_client: None,
+            lightning_wallet: None,
             lightning_destination_identity: Arc::new(OnceCell::new()),
             event_batch_writer: None,
             builtin_services: HashMap::new(),

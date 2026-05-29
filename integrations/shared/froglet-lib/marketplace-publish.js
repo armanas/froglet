@@ -22,7 +22,7 @@ const VALID_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 const VALID_RUNTIMES = new Set(["python"])
 const VALID_PACKAGE_KINDS = new Set(["inline_source"])
 const VALID_HOSTING = new Set(["local", "tor", "self"])
-const VALID_SETTLEMENT = new Set(["none"])
+const VALID_SETTLEMENT = new Set(["none", "lightning"])
 
 /**
  * Validate the MCP-shaped publish input. Throws on the first problem with a
@@ -77,8 +77,8 @@ export function validatePublishInput(args) {
   const settlementMethod = args.settlement?.method ?? "none"
   if (!VALID_SETTLEMENT.has(settlementMethod)) {
     throw new Error(
-      `marketplace_publish: settlement.method ${JSON.stringify(settlementMethod)} not supported in v1; ` +
-        "use 'none' (Lightning + Stripe land in v2)"
+      `marketplace_publish: settlement.method ${JSON.stringify(settlementMethod)} not supported; ` +
+        "use 'none' (free) or 'lightning' (paid; Stripe + x402 not yet on the publish path)"
     )
   }
 

@@ -64,7 +64,7 @@ pub enum ManifestError {
         field: &'static str,
         context: String,
     },
-    #[error("settlement.method = {method:?} is not supported in v1; only \"none\" is accepted")]
+    #[error("settlement.method = {method:?} is not supported; allowed: \"none\", \"lightning\"")]
     UnsupportedSettlement { method: String },
     #[error(
         "hosting.default = {choice:?} requires section [hosting.{choice}] with field {missing:?}"
@@ -73,6 +73,9 @@ pub enum ManifestError {
         choice: String,
         missing: &'static str,
     },
+    /// price.currency value is not in the allowed set {"sat", "usd"}.
+    #[error("price.currency = {value:?} is not supported; allowed: \"sat\", \"usd\"")]
+    InvalidPriceCurrency { value: String },
 }
 
 /// Soft warning. Returned alongside a parsed manifest; not a failure.
@@ -296,6 +299,17 @@ pub struct PriceSection {
     pub base_fee_msat: Option<u64>,
     #[serde(default)]
     pub success_fee_msat: Option<u64>,
+    /// Unit for the `sats` price integer.
+    ///
+    /// - `"sat"` (default when omitted): the integer is **satoshis**, settled
+    ///   via the Lightning rail.
+    /// - `"usd"`: the integer is **US cents** (e.g. `500` = $5.00), settled
+    ///   via the Stripe rail.
+    ///
+    /// Publishing a service with `currency = "usd"` on a node whose
+    /// payment backend is not Stripe is a hard error.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -418,6 +432,10 @@ impl ServiceManifest {
 
         if let Some(limits) = &self.limits {
             validate_limits(limits)?;
+        }
+
+        if let Some(price) = &self.price {
+            validate_price_currency(price)?;
         }
 
         if let Some(mode) = &self.mode
@@ -605,12 +623,30 @@ fn validate_hosting_config(hosting: &HostingSection) -> Result<(), ManifestError
 }
 
 fn validate_settlement_method(value: &str) -> Result<(), ManifestError> {
-    if value == "none" {
+    // v1 publish surface: free ("none") plus Lightning (hold-invoice escrow,
+    // settled at the daemon level). Stripe/x402 remain gated pending a
+    // verifiable-proof design. Keep this an allowlist so unknown methods still
+    // fail closed rather than silently publishing an unsettleable offer.
+    if matches!(value, "none" | "lightning") {
         return Ok(());
     }
     Err(ManifestError::UnsupportedSettlement {
         method: value.to_string(),
     })
+}
+
+fn validate_price_currency(price: &PriceSection) -> Result<(), ManifestError> {
+    if let Some(currency) = price.currency.as_deref() {
+        match currency {
+            "sat" | "usd" => {}
+            other => {
+                return Err(ManifestError::InvalidPriceCurrency {
+                    value: other.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_identity_strategy(value: &str) -> Result<(), ManifestError> {
@@ -956,7 +992,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_settlement_method_other_than_none() {
+    fn rejects_unsupported_settlement_method() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "x"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "x.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "paypal"
+        "#;
+        let err = ServiceManifest::from_toml(toml).unwrap_err();
+        assert!(matches!(err, ManifestError::UnsupportedSettlement { .. }));
+    }
+
+    #[test]
+    fn accepts_lightning_settlement_method() {
         let toml = r#"
             schema_version = "froglet-service/v3"
             service_id = "x"
@@ -968,8 +1021,10 @@ mod tests {
             [settlement]
             method = "lightning"
         "#;
-        let err = ServiceManifest::from_toml(toml).unwrap_err();
-        assert!(matches!(err, ManifestError::UnsupportedSettlement { .. }));
+        assert!(
+            ServiceManifest::from_toml(toml).is_ok(),
+            "lightning settlement should be accepted on the v1 publish surface"
+        );
     }
 
     #[test]
@@ -1072,5 +1127,105 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── price.currency field tests ─────────────────────────────────────
+
+    /// Absent [price] section → currency is None (treated as "sat").
+    #[test]
+    fn price_currency_absent_defaults_to_sat() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "my-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "none"
+        "#;
+        let (m, warnings) = ServiceManifest::from_toml(toml).unwrap();
+        assert!(warnings.is_empty());
+        assert!(m.price.is_none() || m.price.as_ref().unwrap().currency.is_none());
+    }
+
+    /// Explicit currency = "sat" parses and round-trips.
+    #[test]
+    fn price_currency_sat_parses_and_roundtrips() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "my-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "none"
+            [price]
+            sats = 500
+            currency = "sat"
+        "#;
+        let (m, warnings) = ServiceManifest::from_toml(toml).unwrap();
+        assert!(warnings.is_empty());
+        let price = m.price.as_ref().unwrap();
+        assert_eq!(price.sats, Some(500));
+        assert_eq!(price.currency.as_deref(), Some("sat"));
+        // Round-trip through TOML serialization.
+        let serialized = toml::to_string(&m).unwrap();
+        let (m2, _) = ServiceManifest::from_toml(&serialized).unwrap();
+        assert_eq!(m, m2);
+    }
+
+    /// Explicit currency = "usd" parses and round-trips.
+    #[test]
+    fn price_currency_usd_parses_and_roundtrips() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "my-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "none"
+            [price]
+            sats = 100
+            currency = "usd"
+        "#;
+        let (m, warnings) = ServiceManifest::from_toml(toml).unwrap();
+        assert!(warnings.is_empty());
+        let price = m.price.as_ref().unwrap();
+        assert_eq!(price.sats, Some(100));
+        assert_eq!(price.currency.as_deref(), Some("usd"));
+        let serialized = toml::to_string(&m).unwrap();
+        let (m2, _) = ServiceManifest::from_toml(&serialized).unwrap();
+        assert_eq!(m, m2);
+    }
+
+    /// An unrecognised currency value is a hard error.
+    #[test]
+    fn price_currency_invalid_value_is_rejected() {
+        let toml = r#"
+            schema_version = "froglet-service/v3"
+            service_id = "my-svc"
+            runtime = "python"
+            package_kind = "inline_source"
+            entrypoint = "handler.py"
+            [hosting]
+            default = "tor"
+            [settlement]
+            method = "none"
+            [price]
+            sats = 100
+            currency = "eur"
+        "#;
+        let err = ServiceManifest::from_toml(toml).unwrap_err();
+        assert!(
+            matches!(err, ManifestError::InvalidPriceCurrency { ref value } if value == "eur"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -114,9 +114,10 @@ impl LndRestClient {
         let client = builder
             .build()
             .map_err(|error| LndRestError::Client(error.to_string()))?;
-        let macaroon_hex = Zeroizing::new(hex::encode(fs::read(&config.macaroon_path).map_err(
-            |error| LndRestError::Io(format!("{}: {error}", config.macaroon_path.display())),
-        )?));
+        let macaroon_bytes = Zeroizing::new(fs::read(&config.macaroon_path).map_err(|error| {
+            LndRestError::Io(format!("{}: {error}", config.macaroon_path.display()))
+        })?);
+        let macaroon_hex = Zeroizing::new(hex::encode(&*macaroon_bytes));
 
         Ok(Self {
             base_url,

@@ -94,15 +94,24 @@ describe("marketplace_publish: validatePublishInput", () => {
     assert.equal(r.hosting.url, "https://my-host.fly.dev")
   })
 
-  it("rejects settlement.method != none in v1", () => {
+  it("rejects unsupported settlement.method", () => {
     err(
       {
         name: "translator",
         source_inline: "x",
-        settlement: { method: "lightning" }
+        settlement: { method: "paypal" }
       },
-      /settlement.method .* not supported in v1/
+      /settlement.method .* not supported/
     )
+  })
+
+  it("accepts settlement.method = lightning", () => {
+    const r = ok({
+      name: "translator",
+      source_inline: "x",
+      settlement: { method: "lightning" }
+    })
+    assert.equal(r.settlement.method, "lightning")
   })
 
   it("accepts custom marketplace_url", () => {

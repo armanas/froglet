@@ -63,7 +63,8 @@ modes are typed; the LLM gets back a structured error it can act on
 ```
 
 Runtime is Python `inline_source` only in Phase 1A. WASM + OCI ship in
-Phase 1B. Settlement = `"none"` (free) in v1; Lightning + Stripe in v2.
+Phase 1B. Settlement = `"none"` (free) or `"lightning"` (paid, requires a
+Lightning backend on the node); Stripe + x402 are not yet on the publish path.
 
 ---
 
@@ -160,6 +161,45 @@ a public IP. Lands in Phase 1B.
 Engine wraps `flyctl deploy` to deploy your service to Fly.io,
 then registers the `*.fly.dev` URL with the marketplace. Lands in
 Phase 1B.
+
+---
+
+## Pricing and currency
+
+The `[price]` section in `froglet-service.toml` accepts two fields:
+
+- `sats` — the price integer (default `0` = free)
+- `currency` — the unit for that integer (default `"sat"`)
+
+**Allowed values for `currency`:**
+
+| Value | Unit | Settled via |
+|---|---|---|
+| `"sat"` (default) | satoshis | Lightning rail |
+| `"usd"` | US cents (e.g. `500` = $5.00) | Stripe rail |
+
+```toml
+# Lightning-priced: 1000 satoshis (~$0.40 at time of writing)
+[price]
+sats = 1000
+currency = "sat"   # or omit — "sat" is the default
+
+# Stripe-priced: $5.00
+[price]
+sats = 500
+currency = "usd"
+```
+
+Publishing with `currency = "usd"` requires the node to have a Stripe payment
+backend configured. Attempting to publish a USD-priced service on a
+Lightning-only node returns a clear error at publish time — the node rejects
+the offer before signing it.
+
+The `currency` field lives only in the manifest (provider configuration). The
+signed offer and receipt carry the raw integer; each settlement rail
+interprets it according to its own rules, which is also why the field name
+`price.sats` is misleading on the Stripe rail — treat `sats` as "price units"
+and let `currency` disambiguate.
 
 ---
 

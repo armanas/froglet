@@ -93,6 +93,11 @@ pub struct AppState {
     pub provider_control_auth_token_path: PathBuf,
     pub events_query_semaphore: Arc<Semaphore>,
     pub lnd_rest_client: Option<Arc<LndRestClient>>,
+    /// Backend-neutral Lightning wallet used by `settlement/lightning.rs`.
+    /// Populated from `lnd_rest_client` when LND REST is configured;
+    /// `None` in Mock mode and in test fixtures that set
+    /// `lnd_rest_client: None`.
+    pub lightning_wallet: Option<crate::settlement::wallet::ArcLightningWallet>,
     pub lightning_destination_identity: Arc<OnceCell<String>>,
     pub event_batch_writer: Option<db::EventBatchWriter>,
     pub builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>>,
@@ -160,6 +165,13 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         .map_err(|error| format!("failed to initialize cached LND REST client: {error}"))?
         .map(Arc::new);
 
+    // Build the backend-neutral wallet trait object from the concrete LND
+    // client when one is available.  Cast is explicit to guarantee the
+    // Arc<LndRestClient> satisfies LightningWallet before it is erased.
+    let lightning_wallet: Option<crate::settlement::wallet::ArcLightningWallet> = lnd_rest_client
+        .as_ref()
+        .map(|client| Arc::clone(client) as crate::settlement::wallet::ArcLightningWallet);
+
     let settlement_registry = SettlementRegistry::new(&config);
 
     let session_pool = if config.session_pool.enabled {
@@ -189,6 +201,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         provider_control_auth_token_path: config.storage.provider_control_auth_token_path.clone(),
         events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
         lnd_rest_client,
+        lightning_wallet,
         lightning_destination_identity: Arc::new(OnceCell::new()),
         event_batch_writer: None,
         builtin_services: HashMap::new(),
@@ -239,6 +252,7 @@ mod tests {
             },
             x402: None,
             stripe: None,
+            buyer_stripe: None,
             storage: StorageConfig {
                 data_dir: PathBuf::from("./data"),
                 db_path: PathBuf::from("./data/node.db"),

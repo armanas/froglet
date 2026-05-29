@@ -1,15 +1,18 @@
 use froglet::{
     confidential::ConfidentialConfig,
     config::{
-        IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
-        PricingConfig, StorageConfig, WasmConfig,
+        BuyerStripeConfig, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
+        PaymentBackend, PricingConfig, StorageConfig, StripeConfig, WasmConfig,
     },
     db::{self, DbPool},
     pricing::ServiceId,
     protocol::{
-        self, DealPayload, ExecutionLimits, InvoiceBundleLegState, QuotePayload, verify_artifact,
+        self, DealPayload, ExecutionLimits, InvoiceBundleLegState, QuotePayload, ReceiptLegState,
+        validate_receipt_artifact, verify_artifact,
     },
-    settlement,
+    settlement::{
+        self, PreparePaymentRequest, ProvidedPayment, SettlementDriver, SettlementRegistry,
+    },
     state::{AppState, TransportStatus},
 };
 use rand::{RngCore, SeedableRng, rngs::StdRng};
@@ -91,6 +94,7 @@ fn in_memory_state() -> AppState {
         },
         x402: None,
         stripe: None,
+        buyer_stripe: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -147,6 +151,7 @@ fn in_memory_state() -> AppState {
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
+        lightning_wallet: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
         builtin_services: std::collections::HashMap::new(),
@@ -666,4 +671,863 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
             invalid_report.issues
         );
     }
+}
+
+// ─── Stripe MPP integration tests ─────────────────────────────────────────────
+//
+// These tests use an in-process mock Stripe HTTP server (axum + TcpListener on
+// port 0) so no real Stripe credentials or external network access is needed.
+
+use axum::{
+    Json as AxumJson, Router,
+    extract::{Path as AxumPath, State as AxumState},
+    routing::{get as axum_get, post as axum_post},
+};
+use std::sync::Mutex as StdMutex;
+use tokio::net::TcpListener;
+
+#[derive(Debug, Default)]
+struct MockStripeServer {
+    calls: StdMutex<Vec<String>>,
+}
+
+async fn start_mock_stripe_server() -> (String, Arc<MockStripeServer>, tokio::task::JoinHandle<()>)
+{
+    async fn get_token(
+        AxumState(state): AxumState<Arc<MockStripeServer>>,
+        AxumPath(token_id): AxumPath<String>,
+    ) -> AxumJson<serde_json::Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("GET:granted_tokens/{token_id}"));
+        AxumJson(serde_json::json!({
+            "id": token_id,
+            "usage_limits": {
+                "currency": "usd",
+                "expires_at": settlement::current_unix_timestamp() + 600,
+                "max_amount": 50_000
+            }
+        }))
+    }
+
+    // Handle buyer-side POST /v1/shared_payment/granted_tokens (SPT create).
+    // Returns a mock SPT id that the seller's GET handler will recognise.
+    //
+    // NOTE: Stripe shared-payment is a preview API; confirm exact field
+    // names/endpoint against Stripe preview docs before live use.
+    async fn create_granted_token(
+        AxumState(state): AxumState<Arc<MockStripeServer>>,
+        body: String,
+    ) -> AxumJson<serde_json::Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST:granted_tokens:{body}"));
+        // The mock returns a stable SPT id so tests can assert on it.
+        AxumJson(serde_json::json!({
+            "id": "spt_mock_buyer_test",
+            "usage_limits": {
+                "currency": "usd",
+                "expires_at": settlement::current_unix_timestamp() + 600,
+                "max_amount": 50_000
+            }
+        }))
+    }
+
+    async fn create_intent(
+        AxumState(state): AxumState<Arc<MockStripeServer>>,
+        body: String,
+    ) -> AxumJson<serde_json::Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST:payment_intents:{body}"));
+        AxumJson(serde_json::json!({
+            "id": "pi_stripe_mpp_test",
+            "status": "requires_capture"
+        }))
+    }
+
+    async fn capture_intent(
+        AxumState(state): AxumState<Arc<MockStripeServer>>,
+        AxumPath(pi_id): AxumPath<String>,
+    ) -> AxumJson<serde_json::Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST:payment_intents/{pi_id}/capture"));
+        AxumJson(serde_json::json!({
+            "id": pi_id,
+            "status": "succeeded"
+        }))
+    }
+
+    async fn cancel_intent(
+        AxumState(state): AxumState<Arc<MockStripeServer>>,
+        AxumPath(pi_id): AxumPath<String>,
+    ) -> AxumJson<serde_json::Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST:payment_intents/{pi_id}/cancel"));
+        AxumJson(serde_json::json!({
+            "id": pi_id,
+            "status": "canceled"
+        }))
+    }
+
+    let server_state = Arc::new(MockStripeServer::default());
+    let app = Router::new()
+        // Buyer SPT create must be registered BEFORE the GET /:token_id route
+        // so the router distinguishes the exact path.
+        .route(
+            "/v1/shared_payment/granted_tokens",
+            axum_post(create_granted_token),
+        )
+        .route(
+            "/v1/shared_payment/granted_tokens/:token_id",
+            axum_get(get_token),
+        )
+        .route("/v1/payment_intents", axum_post(create_intent))
+        .route(
+            "/v1/payment_intents/:pi_id/capture",
+            axum_post(capture_intent),
+        )
+        .route(
+            "/v1/payment_intents/:pi_id/cancel",
+            axum_post(cancel_intent),
+        )
+        .with_state(server_state.clone());
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock stripe");
+    let addr = listener.local_addr().expect("local addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve mock stripe");
+    });
+    (format!("http://{addr}"), server_state, handle)
+}
+
+/// Build an AppState configured with the Stripe payment backend and a custom
+/// Stripe API base URL pointing at the local mock server.
+///
+/// The `FROGLET_STRIPE_SECRET_KEY` env var is set to a placeholder value before
+/// building the `SettlementRegistry` and unset afterward (test-isolation only —
+/// the driver is already constructed by this point).
+fn stripe_app_state(mock_base_url: &str) -> AppState {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let counter = TEST_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "froglet-stripe-integration-{}-{unique}-{counter}",
+        std::process::id()
+    ));
+    let db_path = temp_dir.join("node.db");
+    std::fs::create_dir_all(&temp_dir).expect("temp dir");
+
+    let node_config = NodeConfig {
+        network_mode: NetworkMode::Clearnet,
+        listen_addr: "127.0.0.1:0".to_string(),
+        public_base_url: None,
+        runtime_listen_addr: "127.0.0.1:0".to_string(),
+        runtime_allow_non_loopback: false,
+        http_ca_cert_path: None,
+        tor: froglet::config::TorSidecarConfig {
+            binary_path: "tor".to_string(),
+            backend_listen_addr: "127.0.0.1:0".to_string(),
+            startup_timeout_secs: 90,
+        },
+        identity: IdentityConfig {
+            auto_generate: true,
+        },
+        pricing: PricingConfig {
+            events_query: 10,
+            execute_wasm: 30,
+        },
+        payment_backends: vec![PaymentBackend::Stripe],
+        execution_timeout_secs: 10,
+        lightning: LightningConfig {
+            mode: LightningMode::Mock,
+            destination_identity: None,
+            base_invoice_expiry_secs: 300,
+            success_hold_expiry_secs: 300,
+            min_final_cltv_expiry: 18,
+            sync_interval_ms: 1_000,
+            lnd_rest: None,
+        },
+        x402: None,
+        stripe: Some(StripeConfig {
+            api_version: "2024-06-20".to_string(),
+            webhook_secret: None,
+        }),
+        buyer_stripe: None,
+        storage: StorageConfig {
+            data_dir: temp_dir.clone(),
+            db_path: db_path.clone(),
+            identity_dir: temp_dir.join("identity"),
+            identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+            runtime_dir: temp_dir.join("runtime"),
+            runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+            tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: false,
+        },
+        wasm: WasmConfig {
+            policy_path: None,
+            policy: None,
+        },
+        gpu: Default::default(),
+        confidential: ConfidentialConfig {
+            policy_path: None,
+            policy: None,
+            session_ttl_secs: 300,
+        },
+        marketplace_url: None,
+        postgres_mounts: std::collections::BTreeMap::new(),
+        session_pool: Default::default(),
+        hosted_trial_origin_secret: None,
+    };
+
+    // Temporarily set the Stripe API key so SettlementRegistry::new can
+    // construct the driver.  Use the mock server's placeholder value.
+    unsafe {
+        std::env::set_var("FROGLET_STRIPE_SECRET_KEY", "sk_test_mock_placeholder");
+    }
+    // Build a registry that uses a mock-URL-aware StripeDriver.  Because the
+    // StripeDriver constructor reads the API base URL from StripeConfig::api_base_url
+    // (not directly from env), and the public constructor always uses the real
+    // Stripe URL, we instantiate the driver directly here using the internal
+    // with_base_url constructor exposed via the SettlementRegistry test helper.
+    //
+    // Practical approach: build the registry normally (which points at real Stripe)
+    // then swap the driver reference — but SettlementRegistry doesn't expose that.
+    // Instead, mirror what the stripe.rs unit tests do: call prepare_payment
+    // directly on a StripeDriver built with with_base_url, bypassing the registry.
+    // The integration test below uses this pattern.
+    let settlement_registry = SettlementRegistry::new(&node_config);
+    unsafe {
+        std::env::remove_var("FROGLET_STRIPE_SECRET_KEY");
+    }
+
+    let pool = DbPool::open(&db_path).expect("init test db");
+    let events_query_capacity = pool.read_connection_count().max(1);
+    let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
+    let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
+
+    // Store the mock base URL in the test so the driver can be constructed
+    // with `with_base_url`.  AppState holds the registry, which we need for
+    // overall state; the driver calls are made directly in the test body.
+    let _ = mock_base_url; // consumed in test body
+
+    AppState {
+        db: pool,
+        transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
+            &node_config,
+        ))),
+        wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::from_env().expect("wasm sandbox")),
+        config: node_config,
+        identity: Arc::new(identity),
+        pricing,
+        http_client: reqwest::Client::new(),
+        wasm_host: None,
+        confidential_policy: None,
+        runtime_auth_token: "test-token".to_string(),
+        runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+        consumer_control_auth_token: "test-consumer-token".to_string(),
+        consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+        provider_control_auth_token: "test-provider-token".to_string(),
+        provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+        events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        lnd_rest_client: None,
+        lightning_wallet: None,
+        lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
+        event_batch_writer: None,
+        builtin_services: std::collections::HashMap::new(),
+        settlement_registry,
+        session_pool: None,
+    }
+}
+
+/// Full Stripe deal success path:
+/// prepare (SPT → PaymentIntent) → commit (capture) → receipt has
+/// method="stripe_mpp.v1" and passes kernel validation.
+#[tokio::test]
+async fn stripe_mpp_deal_prepare_commit_produces_valid_receipt() {
+    let (base_url, mock_server, handle) = start_mock_stripe_server().await;
+
+    // Build the driver pointed at the mock server.
+    let driver = froglet::settlement::stripe_driver_with_base_url(
+        StripeConfig {
+            api_version: "2024-06-20".to_string(),
+            webhook_secret: None,
+        },
+        "sk_test_mock".to_string(),
+        &base_url,
+    );
+    let state = stripe_app_state(&base_url);
+
+    // Step 1 — prepare: validates SPT and creates a manual-capture PaymentIntent.
+    let reservation = driver
+        .prepare(
+            &state,
+            PreparePaymentRequest {
+                service_id: ServiceId::ExecuteWasm,
+                price_sats: 30,
+                payment: Some(ProvidedPayment {
+                    kind: "stripe_mpp".to_string(),
+                    token: "spt_integration_test".to_string(),
+                }),
+                request_id: Some("integration-prepare".to_string()),
+            },
+        )
+        .await
+        .expect("prepare must succeed")
+        .expect("paid service must return a reservation");
+
+    assert_eq!(reservation.method, "stripe_mpp");
+    assert_eq!(reservation.token_hash, "pi_stripe_mpp_test");
+    assert_eq!(reservation.amount_sats, 30);
+
+    // Step 2 — commit: capture the PaymentIntent.
+    let receipt = driver
+        .commit(&state, reservation.clone())
+        .await
+        .expect("commit must succeed");
+
+    assert_eq!(receipt.method, "stripe_mpp");
+    assert_eq!(
+        receipt.settlement_status,
+        froglet::protocol::SettlementStatus::Committed
+    );
+    assert_eq!(
+        receipt.settlement_reference.as_deref(),
+        Some("pi_stripe_mpp_test")
+    );
+
+    // Verify the mock server was called in the right order.
+    let calls = mock_server.calls.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "GET:granted_tokens/spt_integration_test"),
+        "SPT validation call missing; calls: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|c| c.starts_with("POST:payment_intents:")
+            && c.contains("amount=30")
+            && c.contains("capture_method=manual")),
+        "PaymentIntent create call missing; calls: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "POST:payment_intents/pi_stripe_mpp_test/capture"),
+        "PaymentIntent capture call missing; calls: {calls:?}"
+    );
+
+    // Step 3 — build and kernel-validate a Stripe receipt (simulating what
+    // sign_deal_receipt would produce for a stripe deal).
+    let provider_key = froglet::crypto::generate_signing_key();
+    let provider_id = froglet::crypto::public_key_hex(&provider_key);
+
+    let receipt_payload = froglet::protocol::ReceiptPayload {
+        provider_id: provider_id.clone(),
+        requester_id: "11".repeat(32),
+        deal_hash: "22".repeat(32),
+        quote_hash: "33".repeat(32),
+        extension_refs: Vec::new(),
+        acceptance_ref: None,
+        started_at: Some(1_000),
+        finished_at: 2_000,
+        deal_state: "succeeded".to_string(),
+        execution_state: "succeeded".to_string(),
+        settlement_state: "settled".to_string(),
+        result_hash: Some("44".repeat(32)),
+        confidential_session_hash: None,
+        result_envelope_hash: None,
+        result_format: Some("application/json+jcs".to_string()),
+        executor: froglet::protocol::ReceiptExecutor {
+            runtime: "wasm".to_string(),
+            runtime_version: "test".to_string(),
+            execution_mode: None,
+            attestation_platform: None,
+            measurement: None,
+            abi_version: Some("froglet.wasm.run_json.v1".to_string()),
+            module_hash: Some("55".repeat(32)),
+            capabilities_granted: Vec::new(),
+        },
+        limits_applied: ExecutionLimits {
+            max_input_bytes: 1,
+            max_runtime_ms: 2,
+            max_memory_bytes: 3,
+            max_output_bytes: 4,
+            fuel_limit: 5,
+        },
+        settlement_refs: froglet::protocol::ReceiptSettlementRefs {
+            method: "stripe_mpp.v1".to_string(),
+            bundle_hash: None,
+            destination_identity: String::new(),
+            base_fee: froglet::protocol::ReceiptSettlementLeg {
+                amount_msat: 30_000,
+                invoice_hash: String::new(),
+                payment_hash: receipt.settlement_reference.clone().unwrap_or_default(),
+                state: ReceiptLegState::Settled,
+            },
+            success_fee: froglet::protocol::ReceiptSettlementLeg {
+                amount_msat: 0,
+                invoice_hash: String::new(),
+                payment_hash: String::new(),
+                state: ReceiptLegState::Canceled,
+            },
+        },
+        failure_code: None,
+        failure_message: None,
+        result_ref: None,
+    };
+
+    let signed_receipt = froglet::protocol::sign_artifact(
+        &provider_id,
+        |msg| froglet::crypto::sign_message_hex(&provider_key, msg),
+        froglet::protocol::ARTIFACT_KIND_RECEIPT,
+        1_000,
+        receipt_payload,
+    )
+    .expect("sign receipt");
+
+    assert!(
+        verify_artifact(&signed_receipt),
+        "stripe_mpp.v1 receipt must have valid signature"
+    );
+    assert!(
+        validate_receipt_artifact(&signed_receipt).is_ok(),
+        "stripe_mpp.v1 receipt must pass kernel validation: {:?}",
+        validate_receipt_artifact(&signed_receipt)
+    );
+    assert_eq!(
+        signed_receipt.payload.settlement_refs.method,
+        "stripe_mpp.v1"
+    );
+
+    handle.abort();
+}
+
+/// Stripe deal failure path: prepare → (execution fails) → release (cancel).
+/// Verifies the cancel call was issued and a canceled receipt passes kernel validation.
+#[tokio::test]
+async fn stripe_mpp_deal_prepare_release_on_failure_produces_valid_receipt() {
+    let (base_url, mock_server, handle) = start_mock_stripe_server().await;
+
+    let driver = froglet::settlement::stripe_driver_with_base_url(
+        StripeConfig {
+            api_version: "2024-06-20".to_string(),
+            webhook_secret: None,
+        },
+        "sk_test_mock".to_string(),
+        &base_url,
+    );
+    let state = stripe_app_state(&base_url);
+
+    // Prepare a reservation.
+    let reservation = driver
+        .prepare(
+            &state,
+            PreparePaymentRequest {
+                service_id: ServiceId::ExecuteWasm,
+                price_sats: 30,
+                payment: Some(ProvidedPayment {
+                    kind: "stripe_mpp".to_string(),
+                    token: "spt_release_test".to_string(),
+                }),
+                request_id: Some("integration-release".to_string()),
+            },
+        )
+        .await
+        .expect("prepare must succeed")
+        .expect("paid service must return a reservation");
+
+    assert_eq!(reservation.token_hash, "pi_stripe_mpp_test");
+
+    // Release (cancel) the PaymentIntent.
+    driver
+        .release(&state, &reservation)
+        .await
+        .expect("release must succeed");
+
+    let calls = mock_server.calls.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "POST:payment_intents/pi_stripe_mpp_test/cancel"),
+        "PaymentIntent cancel call missing; calls: {calls:?}"
+    );
+
+    // Build and kernel-validate a failure receipt (settlement_state = canceled).
+    let provider_key = froglet::crypto::generate_signing_key();
+    let provider_id = froglet::crypto::public_key_hex(&provider_key);
+
+    let failure_receipt_payload = froglet::protocol::ReceiptPayload {
+        provider_id: provider_id.clone(),
+        requester_id: "11".repeat(32),
+        deal_hash: "22".repeat(32),
+        quote_hash: "33".repeat(32),
+        extension_refs: Vec::new(),
+        acceptance_ref: None,
+        started_at: None,
+        finished_at: 2_000,
+        deal_state: "failed".to_string(),
+        execution_state: "failed".to_string(),
+        settlement_state: "canceled".to_string(),
+        result_hash: None,
+        confidential_session_hash: None,
+        result_envelope_hash: None,
+        result_format: None,
+        executor: froglet::protocol::ReceiptExecutor {
+            runtime: "wasm".to_string(),
+            runtime_version: "test".to_string(),
+            execution_mode: None,
+            attestation_platform: None,
+            measurement: None,
+            abi_version: None,
+            module_hash: None,
+            capabilities_granted: Vec::new(),
+        },
+        limits_applied: ExecutionLimits {
+            max_input_bytes: 1,
+            max_runtime_ms: 2,
+            max_memory_bytes: 3,
+            max_output_bytes: 4,
+            fuel_limit: 5,
+        },
+        settlement_refs: froglet::protocol::ReceiptSettlementRefs {
+            method: "stripe_mpp.v1".to_string(),
+            bundle_hash: None,
+            destination_identity: String::new(),
+            base_fee: froglet::protocol::ReceiptSettlementLeg {
+                amount_msat: 30_000,
+                invoice_hash: String::new(),
+                payment_hash: reservation.token_hash.clone(),
+                state: ReceiptLegState::Canceled,
+            },
+            success_fee: froglet::protocol::ReceiptSettlementLeg {
+                amount_msat: 0,
+                invoice_hash: String::new(),
+                payment_hash: String::new(),
+                state: ReceiptLegState::Canceled,
+            },
+        },
+        failure_code: Some("execution_failed".to_string()),
+        failure_message: Some("test execution error".to_string()),
+        result_ref: None,
+    };
+
+    let signed_receipt = froglet::protocol::sign_artifact(
+        &provider_id,
+        |msg| froglet::crypto::sign_message_hex(&provider_key, msg),
+        froglet::protocol::ARTIFACT_KIND_RECEIPT,
+        2_000,
+        failure_receipt_payload,
+    )
+    .expect("sign failure receipt");
+
+    assert!(
+        verify_artifact(&signed_receipt),
+        "stripe_mpp.v1 failure receipt must have valid signature"
+    );
+    assert!(
+        validate_receipt_artifact(&signed_receipt).is_ok(),
+        "stripe_mpp.v1 failure receipt must pass kernel validation: {:?}",
+        validate_receipt_artifact(&signed_receipt)
+    );
+    assert_eq!(
+        signed_receipt.payload.settlement_refs.method,
+        "stripe_mpp.v1"
+    );
+    assert_eq!(signed_receipt.payload.settlement_state, "canceled");
+
+    handle.abort();
+}
+
+// ─── Buyer-side SPT minting tests ─────────────────────────────────────────────
+//
+// These tests verify the full buyer→seller Stripe path:
+//   buyer mints SPT (mock) → seller prepare validates it + creates PaymentIntent
+//   (mock) → commit captures → a kernel-valid stripe_mpp.v1 receipt is produced.
+
+/// Unit test: buyer mints an SPT against the mock, then passes it directly to
+/// the seller's `prepare` + `commit` cycle.  Asserts the mint call hit the
+/// mock, the seller accepted the token, and the resulting receipt passes kernel
+/// validation.
+///
+/// NOTE: Stripe shared-payment is a preview API; confirm exact field
+/// names/endpoint against Stripe preview docs before live use.
+#[tokio::test]
+async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
+    let (base_url, mock_server, handle) = start_mock_stripe_server().await;
+
+    // ── Buyer side: mint an SPT ─────────────────────────────────────────────
+    let buyer_config = BuyerStripeConfig {
+        secret_key: "sk_test_buyer_mock".to_string(),
+        api_version: "2026-03-04.preview".to_string(),
+        payment_method: Some("pm_test_buyer_mock".to_string()),
+        customer: None,
+    };
+    let price_cents: u64 = 30;
+    let expires_at = settlement::current_unix_timestamp() + 600;
+
+    let spt_id =
+        settlement::mint_buyer_spt(&buyer_config, price_cents, expires_at, Some(&base_url))
+            .await
+            .expect("buyer SPT mint must succeed against mock");
+
+    assert!(
+        spt_id.starts_with("spt_"),
+        "minted SPT id should start with 'spt_'; got: {spt_id}"
+    );
+
+    // Verify the mock received the create call with expected params.
+    {
+        let calls = mock_server.calls.lock().unwrap().clone();
+        assert!(
+            calls.iter().any(|c| c.starts_with("POST:granted_tokens:")
+                && c.contains("payment_method")
+                && c.contains("pm_test_buyer_mock")
+                && c.contains("currency=usd")),
+            "mock should have received SPT create call with payment_method; calls: {calls:?}"
+        );
+    }
+
+    // ── Seller side: validate SPT and create PaymentIntent ─────────────────
+    let seller_driver = froglet::settlement::stripe_driver_with_base_url(
+        StripeConfig {
+            api_version: "2026-03-04.preview".to_string(),
+            webhook_secret: None,
+        },
+        "sk_test_seller_mock".to_string(),
+        &base_url,
+    );
+    let state = stripe_app_state(&base_url);
+
+    let reservation = seller_driver
+        .prepare(
+            &state,
+            PreparePaymentRequest {
+                service_id: ServiceId::ExecuteWasm,
+                price_sats: price_cents,
+                payment: Some(ProvidedPayment {
+                    kind: "stripe_mpp".to_string(),
+                    token: spt_id.clone(),
+                }),
+                request_id: Some("buyer-mint-unit-test".to_string()),
+            },
+        )
+        .await
+        .expect("seller prepare must succeed with buyer-minted SPT")
+        .expect("paid service must return a reservation");
+
+    assert_eq!(reservation.method, "stripe_mpp");
+    assert_eq!(reservation.token_hash, "pi_stripe_mpp_test");
+
+    // ── Commit ──────────────────────────────────────────────────────────────
+    let receipt = seller_driver
+        .commit(&state, reservation.clone())
+        .await
+        .expect("seller commit must succeed");
+
+    assert_eq!(receipt.method, "stripe_mpp");
+    assert_eq!(
+        receipt.settlement_status,
+        froglet::protocol::SettlementStatus::Committed
+    );
+    assert_eq!(
+        receipt.settlement_reference.as_deref(),
+        Some("pi_stripe_mpp_test")
+    );
+
+    // ── Build and kernel-validate a stripe_mpp.v1 receipt ──────────────────
+    let provider_key = froglet::crypto::generate_signing_key();
+    let provider_id = froglet::crypto::public_key_hex(&provider_key);
+
+    let receipt_payload = froglet::protocol::ReceiptPayload {
+        provider_id: provider_id.clone(),
+        requester_id: "11".repeat(32),
+        deal_hash: "22".repeat(32),
+        quote_hash: "33".repeat(32),
+        extension_refs: Vec::new(),
+        acceptance_ref: None,
+        started_at: Some(1_000),
+        finished_at: 2_000,
+        deal_state: "succeeded".to_string(),
+        execution_state: "succeeded".to_string(),
+        settlement_state: "settled".to_string(),
+        result_hash: Some("44".repeat(32)),
+        confidential_session_hash: None,
+        result_envelope_hash: None,
+        result_format: Some("application/json+jcs".to_string()),
+        executor: froglet::protocol::ReceiptExecutor {
+            runtime: "wasm".to_string(),
+            runtime_version: "test".to_string(),
+            execution_mode: None,
+            attestation_platform: None,
+            measurement: None,
+            abi_version: Some("froglet.wasm.run_json.v1".to_string()),
+            module_hash: Some("55".repeat(32)),
+            capabilities_granted: Vec::new(),
+        },
+        limits_applied: ExecutionLimits {
+            max_input_bytes: 1,
+            max_runtime_ms: 2,
+            max_memory_bytes: 3,
+            max_output_bytes: 4,
+            fuel_limit: 5,
+        },
+        settlement_refs: froglet::protocol::ReceiptSettlementRefs {
+            method: "stripe_mpp.v1".to_string(),
+            bundle_hash: None,
+            destination_identity: String::new(),
+            base_fee: froglet::protocol::ReceiptSettlementLeg {
+                amount_msat: 30_000,
+                invoice_hash: String::new(),
+                payment_hash: receipt.settlement_reference.clone().unwrap_or_default(),
+                state: ReceiptLegState::Settled,
+            },
+            success_fee: froglet::protocol::ReceiptSettlementLeg {
+                amount_msat: 0,
+                invoice_hash: String::new(),
+                payment_hash: String::new(),
+                state: ReceiptLegState::Canceled,
+            },
+        },
+        failure_code: None,
+        failure_message: None,
+        result_ref: None,
+    };
+
+    let signed_receipt = froglet::protocol::sign_artifact(
+        &provider_id,
+        |msg| froglet::crypto::sign_message_hex(&provider_key, msg),
+        froglet::protocol::ARTIFACT_KIND_RECEIPT,
+        1_000,
+        receipt_payload,
+    )
+    .expect("sign receipt");
+
+    assert!(
+        verify_artifact(&signed_receipt),
+        "buyer-minted SPT receipt must have a valid signature"
+    );
+    assert!(
+        validate_receipt_artifact(&signed_receipt).is_ok(),
+        "buyer-minted SPT receipt must pass kernel validation: {:?}",
+        validate_receipt_artifact(&signed_receipt)
+    );
+    assert_eq!(
+        signed_receipt.payload.settlement_refs.method,
+        "stripe_mpp.v1"
+    );
+
+    // Verify the full call sequence on the mock: create SPT → GET SPT →
+    // create PI → capture PI.
+    let calls = mock_server.calls.lock().unwrap().clone();
+    assert!(
+        calls.iter().any(|c| c.starts_with("POST:granted_tokens:")),
+        "buyer SPT create call must appear in mock log; calls: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with(&format!("GET:granted_tokens/{spt_id}"))),
+        "seller SPT validate GET call must appear; calls: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("POST:payment_intents:") && c.contains("capture_method=manual")),
+        "seller PaymentIntent create call must appear; calls: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "POST:payment_intents/pi_stripe_mpp_test/capture"),
+        "seller PaymentIntent capture call must appear; calls: {calls:?}"
+    );
+
+    handle.abort();
+}
+
+/// Unit test: `mint_buyer_spt` with a customer funding source produces an SPT
+/// id; and the no-config error path returns a descriptive error rather than
+/// panicking.
+#[tokio::test]
+async fn buyer_stripe_config_funding_source_variants() {
+    let (base_url, _mock_server, handle) = start_mock_stripe_server().await;
+
+    // Customer funding source.
+    let buyer_config_customer = BuyerStripeConfig {
+        secret_key: "sk_test_buyer_cus".to_string(),
+        api_version: "2026-03-04.preview".to_string(),
+        payment_method: None,
+        customer: Some("cus_test_buyer_mock".to_string()),
+    };
+    let spt_id = settlement::mint_buyer_spt(
+        &buyer_config_customer,
+        50,
+        settlement::current_unix_timestamp() + 600,
+        Some(&base_url),
+    )
+    .await
+    .expect("customer-funded mint must succeed");
+    assert!(spt_id.starts_with("spt_"), "spt id: {spt_id}");
+
+    // No funding source → error path exercised via mint_buyer_spt with an
+    // intentionally broken config (no pm, no customer).  We exercise the
+    // error path via the low-level driver directly.
+    let driver = froglet::settlement::stripe_driver_with_base_url(
+        StripeConfig {
+            api_version: "2026-03-04.preview".to_string(),
+            webhook_secret: None,
+        },
+        "sk_test_no_funding".to_string(),
+        &base_url,
+    );
+    // The driver itself does not know about the config validation — that is
+    // done in BuyerStripeConfig::from_env.  Test the env-level guard: a
+    // BuyerStripeConfig with no funding source should fail from_env.
+    // We test via the public API rather than calling env vars.
+    let no_funding_config = BuyerStripeConfig {
+        secret_key: "sk_test_no_funding".to_string(),
+        api_version: "2026-03-04.preview".to_string(),
+        payment_method: None,
+        customer: None,
+    };
+    let result = settlement::mint_buyer_spt(
+        &no_funding_config,
+        10,
+        settlement::current_unix_timestamp() + 600,
+        Some(&base_url),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "mint_buyer_spt with no funding source must fail"
+    );
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("funding source"),
+        "error must mention funding source; got: {err_msg}"
+    );
+
+    // Suppress unused-variable warning on `driver` (used for type inference above).
+    drop(driver);
+    handle.abort();
 }

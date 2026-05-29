@@ -9,6 +9,7 @@ use thiserror::Error;
 pub mod lightning;
 pub mod none;
 pub mod stripe;
+pub mod wallet;
 pub mod x402;
 
 // ─── Settlement Registry ──────────────────────────────────────────────────────
@@ -117,6 +118,9 @@ impl SettlementRegistry {
         self.drivers.is_empty()
     }
 }
+
+// Re-export wallet trait and its error type.
+pub use wallet::{ArcLightningWallet, LightningWallet, WalletError};
 
 // Re-export everything from lightning that was previously accessible as settlement::X
 pub use lightning::{
@@ -427,6 +431,75 @@ pub async fn release_payment(
         .unwrap_or_else(|| state.settlement_registry.primary_driver());
     driver.release(state, reservation).await
 }
+
+/// Build a [`StripeDriver`] pointed at a custom base URL.
+///
+/// This constructor is intentionally public so that integration tests can
+/// wire the driver to a local mock HTTP server without touching real Stripe
+/// infrastructure.  Production code always uses [`StripeDriver::new`] (which
+/// defaults to `https://api.stripe.com`).
+pub fn stripe_driver_with_base_url(
+    config: crate::config::StripeConfig,
+    api_key: String,
+    api_base_url: &str,
+) -> impl SettlementDriver {
+    stripe::StripeDriver::with_base_url(config, api_key, api_base_url)
+}
+
+/// Mint a Stripe Shared Payment Token (SPT) using the buyer node's Stripe
+/// credentials.
+///
+/// This is the buyer-side complement to the seller's `prepare()` step.  Call
+/// this before sending a `CreateDealRequest` to a provider whose quote carries
+/// `settlement_terms.method == "stripe_mpp.v1"`.
+///
+/// # Parameters
+/// - `buyer_config` — the buyer's Stripe credentials and funding source.
+/// - `amount_cents` — the SPT ceiling in cents; must be ≥ the quoted price.
+/// - `expires_at` — Unix timestamp; the seller rejects tokens past this time.
+/// - `api_base_url` — override the Stripe API base URL (use `None` for
+///   production `https://api.stripe.com`; pass a mock URL in tests).
+///
+/// # Errors
+/// Returns a human-readable error string when the Stripe call fails.
+pub async fn mint_buyer_spt(
+    buyer_config: &crate::config::BuyerStripeConfig,
+    amount_cents: u64,
+    expires_at: i64,
+    api_base_url: Option<&str>,
+) -> Result<String, String> {
+    let seller_config = crate::config::StripeConfig {
+        api_version: buyer_config.api_version.clone(),
+        webhook_secret: None,
+    };
+    let driver = match api_base_url {
+        Some(url) => {
+            stripe::StripeDriver::with_base_url(seller_config, buyer_config.secret_key.clone(), url)
+        }
+        None => stripe::StripeDriver::new(seller_config, buyer_config.secret_key.clone()),
+    };
+
+    let funding_source = match (
+        buyer_config.payment_method.as_deref(),
+        buyer_config.customer.as_deref(),
+    ) {
+        (Some(pm_id), _) => stripe::BuyerFundingSource::PaymentMethod(pm_id),
+        (None, Some(cus_id)) => stripe::BuyerFundingSource::Customer(cus_id),
+        (None, None) => {
+            return Err(
+                "buyer Stripe config has no funding source (payment_method or customer)".into(),
+            );
+        }
+    };
+
+    let minted = driver
+        .mint_spt(amount_cents, expires_at, &funding_source)
+        .await?;
+    Ok(minted.spt_id)
+}
+
+// Re-export buyer-mint types so tests can use them directly.
+pub use stripe::{BuyerFundingSource, MintedSpt};
 
 pub fn current_unix_timestamp() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {

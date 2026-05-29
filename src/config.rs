@@ -93,11 +93,80 @@ pub struct X402Config {
     pub network: String,
 }
 
-/// Configuration for the Stripe metered payment provider.
+/// Configuration for the Stripe metered payment provider (seller side).
 #[derive(Debug, Clone)]
 pub struct StripeConfig {
     pub api_version: String,
     pub webhook_secret: Option<String>,
+}
+
+/// Configuration for the buyer (requester) side of Stripe Machine Payments.
+///
+/// A buyer node needs its own Stripe secret key to mint Shared Payment Tokens
+/// (SPTs) that it presents to a provider whose service is priced with
+/// `stripe_mpp.v1` settlement terms.  The funding source (payment method or
+/// customer) must be attached to this account in Stripe before use.
+#[derive(Debug, Clone)]
+pub struct BuyerStripeConfig {
+    /// Stripe secret key for the buyer's Stripe account
+    /// (`FROGLET_BUYER_STRIPE_SECRET_KEY`).
+    pub secret_key: String,
+    /// Optional Stripe API version override for the buyer key.
+    /// Defaults to the same version used for the seller config
+    /// (`FROGLET_STRIPE_API_VERSION`) or `"2026-03-04.preview"`.
+    pub api_version: String,
+    /// Stripe payment method ID (`pm_…`) attached to the buyer's Stripe
+    /// account that will fund the minted SPT
+    /// (`FROGLET_BUYER_STRIPE_PAYMENT_METHOD`).
+    /// Mutually exclusive with `customer`.  At least one of `payment_method`
+    /// or `customer` must be set.
+    pub payment_method: Option<String>,
+    /// Stripe customer ID (`cus_…`) whose default payment method funds the SPT
+    /// (`FROGLET_BUYER_STRIPE_CUSTOMER`).
+    pub customer: Option<String>,
+}
+
+impl BuyerStripeConfig {
+    /// Parse buyer Stripe config from the process environment.
+    ///
+    /// Returns `Ok(None)` when `FROGLET_BUYER_STRIPE_SECRET_KEY` is absent
+    /// (buyer-side payments simply remain unconfigured).
+    /// Returns `Err` when the key is set but the funding source is missing.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let secret_key = match env::var("FROGLET_BUYER_STRIPE_SECRET_KEY") {
+            Ok(value) if !value.trim().is_empty() => value,
+            Ok(_) => {
+                return Err("FROGLET_BUYER_STRIPE_SECRET_KEY must not be empty when set".into());
+            }
+            Err(_) => return Ok(None),
+        };
+
+        let api_version = env::var("FROGLET_STRIPE_API_VERSION")
+            .unwrap_or_else(|_| "2026-03-04.preview".to_string());
+
+        let payment_method = env::var("FROGLET_BUYER_STRIPE_PAYMENT_METHOD")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let customer = env::var("FROGLET_BUYER_STRIPE_CUSTOMER")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
+        if payment_method.is_none() && customer.is_none() {
+            return Err(
+                "FROGLET_BUYER_STRIPE_SECRET_KEY is set but no funding source is configured; \
+                 set either FROGLET_BUYER_STRIPE_PAYMENT_METHOD (pm_…) or \
+                 FROGLET_BUYER_STRIPE_CUSTOMER (cus_…)"
+                    .into(),
+            );
+        }
+
+        Ok(Some(BuyerStripeConfig {
+            secret_key,
+            api_version,
+            payment_method,
+            customer,
+        }))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -398,6 +467,7 @@ pub struct NodeConfig {
     pub lightning: LightningConfig,
     pub x402: Option<X402Config>,
     pub stripe: Option<StripeConfig>,
+    pub buyer_stripe: Option<BuyerStripeConfig>,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
     pub gpu: GpuConfig,
@@ -683,6 +753,7 @@ impl NodeConfig {
             lightning,
             x402,
             stripe,
+            buyer_stripe: BuyerStripeConfig::from_env()?,
             storage: StorageConfig {
                 data_dir,
                 db_path,
