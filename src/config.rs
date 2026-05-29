@@ -125,7 +125,7 @@ pub struct BuyerStripeConfig {
     pub secret_key: String,
     /// Optional Stripe API version override for the buyer key.
     /// Defaults to the same version used for the seller config
-    /// (`FROGLET_STRIPE_API_VERSION`) or `"2026-03-04.preview"`.
+    /// (`FROGLET_STRIPE_API_VERSION`) or `"2026-04-22.preview"`.
     pub api_version: String,
     /// Stripe payment method ID (`pm_…`) attached to the buyer's Stripe
     /// account that will fund the minted SPT
@@ -165,7 +165,7 @@ impl BuyerStripeConfig {
         };
 
         let api_version = env::var("FROGLET_STRIPE_API_VERSION")
-            .unwrap_or_else(|_| "2026-03-04.preview".to_string());
+            .unwrap_or_else(|_| "2026-04-22.preview".to_string());
 
         let payment_method = env::var("FROGLET_BUYER_STRIPE_PAYMENT_METHOD")
             .ok()
@@ -607,7 +607,7 @@ impl NodeConfig {
             };
             Some(StripeConfig {
                 api_version: env::var("FROGLET_STRIPE_API_VERSION")
-                    .unwrap_or_else(|_| "2026-03-04.preview".to_string()),
+                    .unwrap_or_else(|_| "2026-04-22.preview".to_string()),
                 webhook_secret,
             })
         } else {
@@ -1279,7 +1279,7 @@ path = "{}"
     fn stripe_config_debug_redacts_webhook_secret() {
         let secret_value = "whsec_supersecret123";
         let config = StripeConfig {
-            api_version: "2026-03-04.preview".to_string(),
+            api_version: "2026-04-22.preview".to_string(),
             webhook_secret: Some(secret_value.to_string()),
         };
         let debug_output = format!("{config:?}");
@@ -1292,7 +1292,7 @@ path = "{}"
             "Debug output must contain [REDACTED]; got: {debug_output}"
         );
         // Non-secret fields should still be present.
-        assert!(debug_output.contains("2026-03-04.preview"));
+        assert!(debug_output.contains("2026-04-22.preview"));
     }
 
     #[test]
@@ -1300,7 +1300,7 @@ path = "{}"
         let secret_value = "sk_live_supersecret456";
         let config = BuyerStripeConfig {
             secret_key: secret_value.to_string(),
-            api_version: "2026-03-04.preview".to_string(),
+            api_version: "2026-04-22.preview".to_string(),
             payment_method: Some("pm_test_abc".to_string()),
             customer: None,
         };
@@ -1315,6 +1315,6 @@ path = "{}"
         );
         // Non-secret fields should still be present.
         assert!(debug_output.contains("pm_test_abc"));
-        assert!(debug_output.contains("2026-03-04.preview"));
+        assert!(debug_output.contains("2026-04-22.preview"));
     }
 }

@@ -440,10 +440,17 @@ impl StripeDriver {
     /// seller-side validation in `prepare()` (which reads
     /// `usage_limits.{currency, max_amount, expires_at}`).
     ///
-    /// Endpoint:   `POST /v1/shared_payment/granted_tokens`
-    /// Key params: `payment_method` or `customer`, `currency`, `maximum_amount`,
-    ///             `expires_at`, `usage_limits[max_amount]`,
-    ///             `usage_limits[expires_at]`, `usage_limits[currency]`
+    /// TEST-ONLY mint via the Stripe Agentic Commerce test helper:
+    ///   `POST /v1/test_helpers/shared_payment/granted_tokens`
+    /// Params (per Stripe docs): `payment_method`, `usage_limits[currency]`,
+    /// `usage_limits[max_amount]`, `usage_limits[expires_at]`. Requires
+    /// `Stripe-Version: 2026-04-22.preview` (sent from the driver's api_version).
+    ///
+    /// NOTE: the `test_helpers` endpoint only works with TEST keys. In
+    /// production the Shared Payment Token is granted by the buyer's
+    /// agentic-commerce platform (an ACP agent), not minted by a Froglet node;
+    /// production buyers supply the SPT in the deal request's `payment` field.
+    /// This mint is a test/demo convenience for validating the seller flow.
     ///
     /// The seller validates the token via
     /// `GET /v1/shared_payment/granted_tokens/{spt_id}` and checks:
@@ -456,37 +463,31 @@ impl StripeDriver {
         expires_at: i64,
         funding_source: &BuyerFundingSource<'_>,
     ) -> Result<MintedSpt, String> {
-        // NOTE: Stripe shared-payment is a preview API; confirm exact field
-        // names/endpoint against Stripe preview docs before live use.
-        // All param names below are kept in one place (this slice) so they
-        // are easy to adjust when the API stabilises.
+        // Param shapes match Stripe's Agentic Commerce (Shared Payment Token)
+        // test-helper grant endpoint. Stripe-Version is sent from the driver's
+        // api_version (must be "2026-04-22.preview").
         let amount_str = amount_cents.to_string();
         let expires_str = expires_at.to_string();
 
-        // Build the funding-source param.  The Stripe preview API accepts
-        // either `payment_method` (a pm_… ID) or `customer` (a cus_… ID).
-        // Assumed field names — confirm against Stripe preview docs.
+        // The test-helper grant uses `payment_method` (a pm_… ID). Froglet also
+        // accepts a `customer` (cus_…) funding source, though Stripe's docs only
+        // document `payment_method`.
         let (funding_key, funding_value) = match funding_source {
             BuyerFundingSource::PaymentMethod(pm_id) => ("payment_method", *pm_id),
             BuyerFundingSource::Customer(cus_id) => ("customer", *cus_id),
         };
 
-        // All SPT create params in one slice for easy auditing/adjustment.
+        // SPT test-helper create params, per Stripe docs: no top-level currency;
+        // limits live under usage_limits[...].
         let params: &[(&str, &str)] = &[
-            // Assumed field name — confirm against Stripe preview docs.
             (funding_key, funding_value),
-            // Assumed field name — confirm against Stripe preview docs.
-            ("currency", "usd"),
-            // Assumed field name — confirm against Stripe preview docs.
             ("usage_limits[currency]", "usd"),
-            // Assumed field name — confirm against Stripe preview docs.
             ("usage_limits[max_amount]", &amount_str),
-            // Assumed field name — confirm against Stripe preview docs.
             ("usage_limits[expires_at]", &expires_str),
         ];
 
         let response = self
-            .stripe_post_form("/v1/shared_payment/granted_tokens", params)
+            .stripe_post_form("/v1/test_helpers/shared_payment/granted_tokens", params)
             .await
             .map_err(|err| {
                 tracing::error!("Stripe SPT mint failed: {err}");

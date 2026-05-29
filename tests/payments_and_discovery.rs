@@ -787,7 +787,7 @@ async fn start_mock_stripe_server() -> (String, Arc<MockStripeServer>, tokio::ta
         // Buyer SPT create must be registered BEFORE the GET /:token_id route
         // so the router distinguishes the exact path.
         .route(
-            "/v1/shared_payment/granted_tokens",
+            "/v1/test_helpers/shared_payment/granted_tokens",
             axum_post(create_granted_token),
         )
         .route(
@@ -1278,7 +1278,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
     // ── Buyer side: mint an SPT ─────────────────────────────────────────────
     let buyer_config = BuyerStripeConfig {
         secret_key: "sk_test_buyer_mock".to_string(),
-        api_version: "2026-03-04.preview".to_string(),
+        api_version: "2026-04-22.preview".to_string(),
         payment_method: Some("pm_test_buyer_mock".to_string()),
         customer: None,
     };
@@ -1302,7 +1302,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
             calls.iter().any(|c| c.starts_with("POST:granted_tokens:")
                 && c.contains("payment_method")
                 && c.contains("pm_test_buyer_mock")
-                && c.contains("currency=usd")),
+                && c.contains("usage_limits")),
             "mock should have received SPT create call with payment_method; calls: {calls:?}"
         );
     }
@@ -1310,7 +1310,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
     // ── Seller side: validate SPT and create PaymentIntent ─────────────────
     let seller_driver = froglet::settlement::stripe_driver_with_base_url(
         StripeConfig {
-            api_version: "2026-03-04.preview".to_string(),
+            api_version: "2026-04-22.preview".to_string(),
             webhook_secret: None,
         },
         "sk_test_seller_mock".to_string(),
@@ -1475,7 +1475,7 @@ async fn buyer_stripe_config_funding_source_variants() {
     // Customer funding source.
     let buyer_config_customer = BuyerStripeConfig {
         secret_key: "sk_test_buyer_cus".to_string(),
-        api_version: "2026-03-04.preview".to_string(),
+        api_version: "2026-04-22.preview".to_string(),
         payment_method: None,
         customer: Some("cus_test_buyer_mock".to_string()),
     };
@@ -1494,7 +1494,7 @@ async fn buyer_stripe_config_funding_source_variants() {
     // error path via the low-level driver directly.
     let driver = froglet::settlement::stripe_driver_with_base_url(
         StripeConfig {
-            api_version: "2026-03-04.preview".to_string(),
+            api_version: "2026-04-22.preview".to_string(),
             webhook_secret: None,
         },
         "sk_test_no_funding".to_string(),
@@ -1506,7 +1506,7 @@ async fn buyer_stripe_config_funding_source_variants() {
     // We test via the public API rather than calling env vars.
     let no_funding_config = BuyerStripeConfig {
         secret_key: "sk_test_no_funding".to_string(),
-        api_version: "2026-03-04.preview".to_string(),
+        api_version: "2026-04-22.preview".to_string(),
         payment_method: None,
         customer: None,
     };
@@ -1551,7 +1551,7 @@ async fn buyer_stripe_config_funding_source_variants() {
 #[ignore = "hits live Stripe; run manually with test keys (see doc comment)"]
 async fn stripe_real_api_smoke() {
     const REAL: &str = "https://api.stripe.com";
-    const API_VERSION: &str = "2026-03-04.preview";
+    const API_VERSION: &str = "2026-04-22.preview";
 
     let Ok(seller_key) = std::env::var("FROGLET_STRIPE_SECRET_KEY") else {
         eprintln!(
