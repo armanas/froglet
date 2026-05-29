@@ -8,6 +8,37 @@ top of the `0.1.x` protocol core.
 
 ## [Unreleased]
 
+### Added
+
+- Paid services on the publish path. `settlement.method` now accepts
+  `"lightning"` and `"stripe"` in addition to `"none"` (the hosted trial stays
+  free). Price a service with `[price] sats = N` plus `currency = "sat"`
+  (satoshis, settled over Lightning) or `currency = "usd"` (US cents, settled
+  via Stripe).
+- Stripe settlement rail using Shared Payment Tokens + manual-capture
+  PaymentIntents: buyer-side SPT minting and seller-side reserve → capture →
+  release, producing a signed `stripe_mpp.v1` receipt. Stripe settlement proof
+  is attested (PaymentIntent reference); Lightning remains the
+  preimage-verifiable rail.
+- `LightningWallet` trait abstracting the settlement backend (LND REST behind
+  it; behavior unchanged).
+
+### Security
+
+- SPT validation now fails closed: a Shared Payment Token missing
+  `expires_at`, `currency`, or `maximum_amount` is rejected instead of
+  silently passing (previously a payment-bypass risk).
+- Stripe `secret_key` / `webhook_secret` are redacted in `Debug` output.
+
+### Notes
+
+- Stripe shared-payment is a preview API; the SPT field shapes are validated
+  against a mock and must be confirmed against live Stripe before production
+  use (see `src/settlement/stripe.rs::mint_spt`).
+- Capture-then-persist is not atomic: a DB failure after a successful Stripe
+  capture is logged CRITICAL for manual reconciliation; a durable
+  reconciliation queue is a follow-up.
+
 ## [0.2.1] - 2026-05-15
 
 Same surface as 0.2.0. Three corrections that made 0.2.0 imperfect:
