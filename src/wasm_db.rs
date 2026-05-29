@@ -1,10 +1,5 @@
 use std::{
     env,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
     time::{Duration, Instant},
 };
 
@@ -19,7 +14,6 @@ use serde_json::{Value, json};
 use crate::{config::WasmSqlitePolicy, wasm::WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX};
 
 const DEFAULT_SQLITE_MAX_CELL_BYTES: usize = 64 * 1024;
-const SQLITE_DEADLINE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Deserialize)]
 pub struct DbQueryRequest {
@@ -64,7 +58,9 @@ pub fn query(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|error| format!("failed to open sqlite handle '{}': {error}", request.handle))?;
-    let _deadline_interrupt = QueryDeadlineInterrupt::start(&connection, deadline);
+    if let Some(dl) = deadline {
+        let _ = connection.progress_handler(100, Some(move || Instant::now() >= dl));
+    }
     let max_cell_bytes = sqlite_max_cell_bytes(policy);
 
     reject_unsafe_sql(&request.sql)?;
@@ -149,61 +145,6 @@ pub fn query(
     }
 
     Ok(response)
-}
-
-struct QueryDeadlineInterrupt {
-    stop: Arc<AtomicBool>,
-    worker: Option<thread::JoinHandle<()>>,
-}
-
-impl QueryDeadlineInterrupt {
-    fn start(connection: &Connection, deadline: Option<Instant>) -> Option<Self> {
-        let deadline = deadline?;
-        if deadline.checked_duration_since(Instant::now()).is_none() {
-            connection.get_interrupt_handle().interrupt();
-            return None;
-        }
-
-        let interrupt_handle = connection.get_interrupt_handle();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = stop.clone();
-        let worker = thread::Builder::new()
-            .name("froglet-wasm-sqlite-deadline".to_string())
-            .spawn(move || {
-                loop {
-                    if stop_flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    match deadline.checked_duration_since(Instant::now()) {
-                        Some(remaining) if remaining > SQLITE_DEADLINE_POLL_INTERVAL => {
-                            thread::sleep(SQLITE_DEADLINE_POLL_INTERVAL);
-                        }
-                        Some(remaining) if remaining > Duration::ZERO => {
-                            thread::sleep(remaining);
-                        }
-                        _ => {
-                            interrupt_handle.interrupt();
-                            break;
-                        }
-                    }
-                }
-            })
-            .ok()?;
-
-        Some(Self {
-            stop,
-            worker: Some(worker),
-        })
-    }
-}
-
-impl Drop for QueryDeadlineInterrupt {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
 }
 
 fn reject_unsafe_sql(sql: &str) -> Result<(), String> {

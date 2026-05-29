@@ -113,16 +113,35 @@ fn ip_is_blocked(ip: IpAddr) -> bool {
     }
 }
 
+/// Exhaustively evaluates if an IPv4 address targets private, local, CGNAT,
+/// benchmarking, protocol assignments, multicast, or reserved networks.
+pub fn ipv4_is_local_or_private(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    match octets[0] {
+        0 => true,                               // 0.0.0.0/8 (Local identification, RFC 1122)
+        10 => true,                              // 10.0.0.0/8 (Private-Use, RFC 1918)
+        100 => (octets[1] & 0xC0) == 64, // 100.64.0.0/10 (Shared Address Space / CGNAT, RFC 6598)
+        127 => true,                     // 127.0.0.0/8 (Loopback, RFC 1122)
+        169 if octets[1] == 254 => true, // 169.254.0.0/16 (Link-Local, RFC 3927)
+        172 if (octets[1] & 0xF0) == 16 => true, // 172.16.0.0/12 (Private-Use, RFC 1918)
+        192 => match octets[1] {
+            0 if octets[2] == 0 || octets[2] == 2 => true, // 192.0.0.0/24 (IETF Protocol, RFC 6890) & 192.0.2.0/24 (TEST-NET-1, RFC 5737)
+            168 => true,                                   // 192.168.0.0/16 (Private-Use, RFC 1918)
+            _ => false,
+        },
+        198 => match octets[1] {
+            18 | 19 => true,                // 198.18.0.0/15 (Benchmarking, RFC 2544)
+            51 if octets[2] == 100 => true, // 198.51.100.0/24 (TEST-NET-2, RFC 5737)
+            _ => false,
+        },
+        203 if octets[1] == 0 && octets[2] == 113 => true, // 203.0.113.0/24 (TEST-NET-3, RFC 5737)
+        224..=255 => true, // 224.0.0.0/4 (Multicast, RFC 1112) & 240.0.0.0/4 (Reserved / Limited Broadcast, RFC 1112/RFC 919)
+        _ => false,
+    }
+}
+
 fn ipv4_is_blocked(ip: Ipv4Addr) -> bool {
-    ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_multicast()
-        || ip.is_unspecified()
-        // 169.254.169.254 — cloud metadata. Already covered by is_link_local
-        // for v4 but keep explicit so intent is obvious.
-        || ip == Ipv4Addr::new(169, 254, 169, 254)
+    ipv4_is_local_or_private(ip)
 }
 
 fn ipv6_is_blocked(ip: Ipv6Addr) -> bool {
@@ -407,6 +426,24 @@ mod tests {
     fn rejects_link_local_metadata() {
         let err = validate_fetch_url("http://169.254.169.254/latest/meta-data/").unwrap_err();
         assert!(err.contains("private/loopback"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_expanded_private_ranges() {
+        for url in &[
+            "http://100.64.0.1/x",
+            "http://100.127.255.254/x",
+            "http://198.18.1.1/x",
+            "http://198.19.255.254/x",
+            "http://192.0.2.1/x",
+            "http://198.51.100.1/x",
+            "http://203.0.113.1/x",
+            "http://224.0.0.1/x",
+            "http://240.0.0.1/x",
+        ] {
+            let err = validate_fetch_url(url).unwrap_err();
+            assert!(err.contains("private/loopback"), "{url}: got {err}");
+        }
     }
 
     #[test]

@@ -29,13 +29,7 @@ pub struct ValidatedRemoteEndpoint {
 }
 
 fn ip_v4_targets_local_network(ip: std::net::Ipv4Addr) -> bool {
-    ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_unspecified()
-        || ip.octets() == [169, 254, 169, 254]
+    crate::builtins::safe_fetch::ipv4_is_local_or_private(ip)
 }
 
 fn ip_targets_local_network(ip: IpAddr) -> bool {

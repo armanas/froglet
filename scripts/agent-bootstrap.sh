@@ -59,16 +59,40 @@ resolve_latest_image_tag() {
   fi
 }
 
+configure_payment() {
+  local payment_backend="${FROGLET_PAYMENT_BACKEND:-none}"
+  local tmp_payment_script="$BOOTSTRAP_DIR/setup-payment.sh"
+
+  if [ "$payment_backend" != "none" ]; then
+    log "Configuring and verifying payment rail: $payment_backend..."
+    curl -fsSL "$RAW_BASE/scripts/setup-payment.sh" -o "$tmp_payment_script"
+    chmod 0755 "$tmp_payment_script"
+
+    local setup_args=""
+    if [ "$payment_backend" = "lightning" ]; then
+      setup_args="--mode ${FROGLET_LIGHTNING_MODE:-mock}"
+    fi
+
+    if ! "$tmp_payment_script" "$payment_backend" $setup_args --out "$BOOTSTRAP_DIR/payment.env"; then
+      fail "Payment rail verification failed. Please check your credentials."
+    fi
+  else
+    mkdir -p "$BOOTSTRAP_DIR"
+    printf '%s\n' "FROGLET_PAYMENT_BACKEND=none" >"$BOOTSTRAP_DIR/payment.env"
+  fi
+}
+
 write_compose() {
   mkdir -p "$BOOTSTRAP_DIR" "$DATA_DIR"
   cat >"$BOOTSTRAP_DIR/compose.yaml" <<EOF
 services:
   provider:
     image: ${PROVIDER_IMAGE}
+    env_file:
+      - payment.env
     environment:
       FROGLET_DATA_ROOT: /data
       FROGLET_DB_PATH: /data/provider.node.db
-      FROGLET_PAYMENT_BACKEND: none
       FROGLET_NETWORK_MODE: ${NETWORK_MODE}
       FROGLET_PUBLIC_BASE_URL: http://provider:8080
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
@@ -88,12 +112,13 @@ services:
     depends_on:
       provider:
         condition: service_healthy
+    env_file:
+      - payment.env
     environment:
       FROGLET_DATA_ROOT: /data
       FROGLET_DB_PATH: /data/runtime.node.db
       FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
       FROGLET_MARKETPLACE_URL: ${MARKETPLACE_URL}
-      FROGLET_PAYMENT_BACKEND: none
       FROGLET_NETWORK_MODE: ${NETWORK_MODE}
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
     ports:
@@ -166,6 +191,7 @@ compose_started=false
 compose_file=""
 if [ "$START_STACK" = "1" ]; then
   need_cmd docker
+  configure_payment
   write_compose
   compose_file="$BOOTSTRAP_DIR/compose.yaml"
   log "Starting Froglet provider/runtime from published images..."

@@ -347,7 +347,7 @@ fn deadline_expired(deadline: Option<Instant>) -> bool {
 }
 
 fn ip_v4_targets_private_network(ip: std::net::Ipv4Addr) -> bool {
-    ip.is_private() || ip.is_loopback() || ip.is_link_local()
+    crate::builtins::safe_fetch::ipv4_is_local_or_private(ip)
 }
 
 fn ip_targets_private_network(ip: IpAddr) -> bool {
