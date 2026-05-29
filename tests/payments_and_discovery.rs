@@ -1578,7 +1578,7 @@ async fn stripe_real_api_smoke() {
         payment_method,
         customer,
     };
-    let price_cents: u64 = 50; // $0.50 expressed in USD cents
+    let price_cents: u64 = 200; // $2.00 — above Stripe's per-account minimum charge
     let expires_at = settlement::current_unix_timestamp() + 600;
 
     eprintln!("\n=== [1/4] buyer mint_buyer_spt against {REAL} (the most uncertain call) ===");
