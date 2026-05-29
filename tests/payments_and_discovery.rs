@@ -1531,3 +1531,161 @@ async fn buyer_stripe_config_funding_source_variants() {
     drop(driver);
     handle.abort();
 }
+
+/// REAL-STRIPE smoke test — validates the shared-payment (SPT) PREVIEW API
+/// shapes end-to-end against LIVE Stripe. `#[ignore]`d so it never runs in CI.
+///
+/// It exercises the *actual* froglet code paths: buyer `mint_buyer_spt` →
+/// seller `prepare` (validate SPT + create a manual-capture PaymentIntent) →
+/// `commit` (capture); then a second mint → `prepare` → `release` (cancel).
+/// Every step prints. If the preview API field shapes differ from our
+/// assumptions, the mint step's error string shows the real Stripe error so
+/// `src/settlement/stripe.rs::mint_spt` can be corrected.
+///
+/// Run with your Stripe TEST keys (no real money moves in test mode):
+///   FROGLET_STRIPE_SECRET_KEY=sk_test_... \
+///   FROGLET_BUYER_STRIPE_SECRET_KEY=sk_test_... \
+///   FROGLET_BUYER_STRIPE_PAYMENT_METHOD=pm_card_visa \
+///   cargo test --test payments_and_discovery stripe_real_api_smoke -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "hits live Stripe; run manually with test keys (see doc comment)"]
+async fn stripe_real_api_smoke() {
+    const REAL: &str = "https://api.stripe.com";
+    const API_VERSION: &str = "2026-03-04.preview";
+
+    let Ok(seller_key) = std::env::var("FROGLET_STRIPE_SECRET_KEY") else {
+        eprintln!(
+            "SKIP stripe_real_api_smoke: set FROGLET_STRIPE_SECRET_KEY (+ \
+             FROGLET_BUYER_STRIPE_SECRET_KEY + FROGLET_BUYER_STRIPE_PAYMENT_METHOD) to run"
+        );
+        return;
+    };
+    let buyer_key =
+        std::env::var("FROGLET_BUYER_STRIPE_SECRET_KEY").unwrap_or_else(|_| seller_key.clone());
+    let payment_method = std::env::var("FROGLET_BUYER_STRIPE_PAYMENT_METHOD").ok();
+    let customer = std::env::var("FROGLET_BUYER_STRIPE_CUSTOMER").ok();
+    if payment_method.is_none() && customer.is_none() {
+        eprintln!(
+            "SKIP stripe_real_api_smoke: set FROGLET_BUYER_STRIPE_PAYMENT_METHOD (pm_...) \
+             or FROGLET_BUYER_STRIPE_CUSTOMER (cus_...)"
+        );
+        return;
+    }
+
+    let buyer_config = BuyerStripeConfig {
+        secret_key: buyer_key,
+        api_version: API_VERSION.to_string(),
+        payment_method,
+        customer,
+    };
+    let price_cents: u64 = 50; // $0.50 expressed in USD cents
+    let expires_at = settlement::current_unix_timestamp() + 600;
+
+    eprintln!("\n=== [1/4] buyer mint_buyer_spt against {REAL} (the most uncertain call) ===");
+    let spt_id =
+        match settlement::mint_buyer_spt(&buyer_config, price_cents, expires_at, None).await {
+            Ok(id) => {
+                eprintln!("  OK  spt_id = {id}");
+                id
+            }
+            Err(e) => {
+                eprintln!(
+                    "  FAIL mint: {e}\n  >>> The shared-payment preview API rejected our \
+                     request. Paste this error to the agent; the assumed field names live in \
+                     src/settlement/stripe.rs::mint_spt and are easy to adjust."
+                );
+                panic!("mint_buyer_spt failed against live Stripe: {e}");
+            }
+        };
+
+    let state = stripe_app_state(REAL);
+    let seller = froglet::settlement::stripe_driver_with_base_url(
+        StripeConfig {
+            api_version: API_VERSION.to_string(),
+            webhook_secret: None,
+        },
+        seller_key,
+        REAL,
+    );
+
+    eprintln!("=== [2/4] seller prepare (validate SPT + create manual-capture PaymentIntent) ===");
+    let reservation = match seller
+        .prepare(
+            &state,
+            PreparePaymentRequest {
+                service_id: ServiceId::ExecuteWasm,
+                price_sats: price_cents,
+                payment: Some(ProvidedPayment {
+                    kind: "stripe_mpp".to_string(),
+                    token: spt_id,
+                }),
+                request_id: Some("stripe-real-smoke".to_string()),
+            },
+        )
+        .await
+    {
+        Ok(Some(r)) => {
+            eprintln!("  OK  PaymentIntent = {}", r.token_hash);
+            r
+        }
+        Ok(None) => panic!("a priced service must return a reservation"),
+        Err(e) => {
+            eprintln!(
+                "  FAIL prepare: {e:?}\n  >>> Mint worked but validate/PI-create failed. Check \
+                 your Stripe dashboard for the attempted PaymentIntent, and/or re-run a seller \
+                 node with RUST_LOG=froglet=debug to see the underlying Stripe error."
+            );
+            panic!("seller prepare failed: {e:?}");
+        }
+    };
+
+    eprintln!("=== [3/4] seller commit (capture the PaymentIntent) ===");
+    match seller.commit(&state, reservation.clone()).await {
+        Ok(r) => eprintln!(
+            "  OK  captured: method={} ref={:?}",
+            r.method, r.settlement_reference
+        ),
+        Err(e) => {
+            eprintln!("  FAIL capture: {e:?}");
+            panic!("seller commit failed: {e:?}");
+        }
+    }
+
+    eprintln!("=== [4/4] release/cancel path (fresh mint -> prepare -> release) ===");
+    let spt2 = settlement::mint_buyer_spt(
+        &buyer_config,
+        price_cents,
+        settlement::current_unix_timestamp() + 600,
+        None,
+    )
+    .await
+    .expect("second SPT mint for the cancel path");
+    let res2 = seller
+        .prepare(
+            &state,
+            PreparePaymentRequest {
+                service_id: ServiceId::ExecuteWasm,
+                price_sats: price_cents,
+                payment: Some(ProvidedPayment {
+                    kind: "stripe_mpp".to_string(),
+                    token: spt2,
+                }),
+                request_id: Some("stripe-real-smoke-cancel".to_string()),
+            },
+        )
+        .await
+        .expect("prepare (cancel path)")
+        .expect("reservation (cancel path)");
+    match seller.release(&state, &res2).await {
+        Ok(()) => eprintln!("  OK  canceled PaymentIntent {}", res2.token_hash),
+        Err(e) => {
+            eprintln!("  FAIL release: {e}");
+            panic!("seller release failed: {e}");
+        }
+    }
+
+    eprintln!(
+        "\n=== stripe_real_api_smoke PASSED — mint/validate/capture/cancel all work against \
+         live Stripe. The Stripe rail is API-shape-validated. ===\n"
+    );
+}
