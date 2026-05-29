@@ -136,6 +136,15 @@ pub struct BuyerStripeConfig {
     /// Stripe customer ID (`cus_…`) whose default payment method funds the SPT
     /// (`FROGLET_BUYER_STRIPE_CUSTOMER`).
     pub customer: Option<String>,
+    /// Override the Stripe API base URL used for buyer-side SPT minting.
+    ///
+    /// When `None` (the default in production), the standard
+    /// `https://api.stripe.com` is used.  Set this in integration tests to
+    /// redirect SPT mint calls to a local mock Stripe server rather than the
+    /// real Stripe API.
+    ///
+    /// Not sourced from the environment — set programmatically in test setups.
+    pub api_base_url: Option<String>,
 }
 
 impl fmt::Debug for BuyerStripeConfig {
@@ -145,6 +154,7 @@ impl fmt::Debug for BuyerStripeConfig {
             .field("api_version", &self.api_version)
             .field("payment_method", &self.payment_method)
             .field("customer", &self.customer)
+            .field("api_base_url", &self.api_base_url)
             .finish()
     }
 }
@@ -188,6 +198,7 @@ impl BuyerStripeConfig {
             api_version,
             payment_method,
             customer,
+            api_base_url: None,
         }))
     }
 }
@@ -1303,6 +1314,7 @@ path = "{}"
             api_version: "2026-04-22.preview".to_string(),
             payment_method: Some("pm_test_abc".to_string()),
             customer: None,
+            api_base_url: None,
         };
         let debug_output = format!("{config:?}");
         assert!(

@@ -1371,59 +1371,64 @@ async fn runtime_create_deal_inner(
     //
     // If the caller explicitly supplied `payload.payment`, we honour it as-is
     // (allows advanced callers to pre-mint tokens externally).
-    let payment_for_deal: Option<settlement::ProvidedPayment> = if payload.payment.is_none()
-        && quote.payload.settlement_terms.method == "stripe_mpp.v1"
-    {
-        match &state.config.buyer_stripe {
-            None => {
-                return error_json(
-                    StatusCode::PAYMENT_REQUIRED,
-                    json!({
-                        "error": "the provider requires Stripe payment (stripe_mpp.v1) but \
-                                  FROGLET_BUYER_STRIPE_SECRET_KEY is not configured on this \
-                                  buyer node; set FROGLET_BUYER_STRIPE_SECRET_KEY and \
-                                  FROGLET_BUYER_STRIPE_PAYMENT_METHOD (or \
-                                  FROGLET_BUYER_STRIPE_CUSTOMER) to enable buyer-side payments"
-                    }),
-                )
-                .into_response();
-            }
-            Some(buyer_config) => {
-                // The quoted price is expressed in msat; convert to cents
-                // (1 sat = 1 cent in this protocol — the unit is shared).
-                // The SPT ceiling is padded by 1 cent to satisfy any
-                // strict > check on the Stripe side.
-                let total_msat = quote.payload.settlement_terms.base_fee_msat
-                    + quote.payload.settlement_terms.success_fee_msat;
-                let price_cents = (total_msat / 1_000).max(1);
-                // Give the token a 10-minute validity window — enough for
-                // the provider to validate and create the PaymentIntent.
-                let expires_at = settlement::current_unix_timestamp() + 600;
+    let payment_for_deal: Option<settlement::ProvidedPayment> =
+        if payload.payment.is_none() && quote.payload.settlement_terms.method == "stripe_mpp.v1" {
+            match &state.config.buyer_stripe {
+                None => {
+                    return error_json(
+                        StatusCode::PAYMENT_REQUIRED,
+                        json!({
+                            "error": "the provider requires Stripe payment (stripe_mpp.v1) but \
+                                      FROGLET_BUYER_STRIPE_SECRET_KEY is not configured on this \
+                                      buyer node; set FROGLET_BUYER_STRIPE_SECRET_KEY and \
+                                      FROGLET_BUYER_STRIPE_PAYMENT_METHOD (or \
+                                      FROGLET_BUYER_STRIPE_CUSTOMER) to enable buyer-side payments"
+                        }),
+                    )
+                    .into_response();
+                }
+                Some(buyer_config) => {
+                    // The quoted price is expressed in msat; convert to cents
+                    // (1 sat = 1 cent in this protocol — the unit is shared).
+                    // The SPT ceiling is padded by 1 cent to satisfy any
+                    // strict > check on the Stripe side.
+                    let total_msat = quote.payload.settlement_terms.base_fee_msat
+                        + quote.payload.settlement_terms.success_fee_msat;
+                    let price_cents = (total_msat / 1_000).max(1);
+                    // Give the token a 10-minute validity window — enough for
+                    // the provider to validate and create the PaymentIntent.
+                    let expires_at = settlement::current_unix_timestamp() + 600;
 
-                match settlement::mint_buyer_spt(buyer_config, price_cents, expires_at, None).await
-                {
-                    Ok(spt_id) => Some(settlement::ProvidedPayment {
-                        kind: "stripe_mpp".to_string(),
-                        token: spt_id,
-                    }),
-                    Err(err) => {
-                        tracing::error!("Buyer SPT mint failed: {err}");
-                        return error_json(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            json!({
-                                "error": format!(
-                                    "failed to mint Stripe payment token for this deal: {err}"
-                                )
-                            }),
-                        )
-                        .into_response();
+                    match settlement::mint_buyer_spt(
+                        buyer_config,
+                        price_cents,
+                        expires_at,
+                        buyer_config.api_base_url.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(spt_id) => Some(settlement::ProvidedPayment {
+                            kind: "stripe_mpp".to_string(),
+                            token: spt_id,
+                        }),
+                        Err(err) => {
+                            tracing::error!("Buyer SPT mint failed: {err}");
+                            return error_json(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                json!({
+                                    "error": format!(
+                                        "failed to mint Stripe payment token for this deal: {err}"
+                                    )
+                                }),
+                            )
+                            .into_response();
+                        }
                     }
                 }
             }
-        }
-    } else {
-        payload.payment.clone()
-    };
+        } else {
+            payload.payment.clone()
+        };
     // ── end buyer-side SPT minting ─────────────────────────────────────────
 
     let remote_deal = match remote_json_request::<deals::DealRecord, _>(

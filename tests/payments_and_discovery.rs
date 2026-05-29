@@ -1281,6 +1281,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
         api_version: "2026-04-22.preview".to_string(),
         payment_method: Some("pm_test_buyer_mock".to_string()),
         customer: None,
+        api_base_url: None,
     };
     let price_cents: u64 = 30;
     let expires_at = settlement::current_unix_timestamp() + 600;
@@ -1478,6 +1479,7 @@ async fn buyer_stripe_config_funding_source_variants() {
         api_version: "2026-04-22.preview".to_string(),
         payment_method: None,
         customer: Some("cus_test_buyer_mock".to_string()),
+        api_base_url: None,
     };
     let spt_id = settlement::mint_buyer_spt(
         &buyer_config_customer,
@@ -1509,6 +1511,7 @@ async fn buyer_stripe_config_funding_source_variants() {
         api_version: "2026-04-22.preview".to_string(),
         payment_method: None,
         customer: None,
+        api_base_url: None,
     };
     let result = settlement::mint_buyer_spt(
         &no_funding_config,
@@ -1577,6 +1580,7 @@ async fn stripe_real_api_smoke() {
         api_version: API_VERSION.to_string(),
         payment_method,
         customer,
+        api_base_url: None,
     };
     let price_cents: u64 = 200; // $2.00 — above Stripe's per-account minimum charge
     let expires_at = settlement::current_unix_timestamp() + 600;

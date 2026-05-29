@@ -117,6 +117,24 @@ impl SettlementRegistry {
     pub fn is_empty(&self) -> bool {
         self.drivers.is_empty()
     }
+
+    /// Build a registry with a single explicitly-provided driver.
+    ///
+    /// Used in integration tests to inject a driver pointed at a mock HTTP
+    /// server without touching real external infrastructure.  Not gated by
+    /// `#[cfg(test)]` so that integration test crates (which compile the
+    /// library in non-test mode) can call it.
+    ///
+    /// Pass the driver via [`Arc`] so that the return type is unambiguously
+    /// `'static` even when constructed from a function returning `impl Trait`.
+    pub fn with_single_driver(
+        payment_method: impl Into<String>,
+        driver: Arc<dyn SettlementDriver>,
+    ) -> Self {
+        Self {
+            drivers: vec![(payment_method.into(), driver)],
+        }
+    }
 }
 
 // Re-export wallet trait and its error type.
@@ -444,6 +462,25 @@ pub fn stripe_driver_with_base_url(
     api_base_url: &str,
 ) -> impl SettlementDriver {
     stripe::StripeDriver::with_base_url(config, api_key, api_base_url)
+}
+
+/// Build a [`StripeDriver`] and box it as `Box<dyn SettlementDriver + Send + Sync + 'static>`.
+///
+/// Identical to [`stripe_driver_with_base_url`] but returns an owned, type-erased
+/// driver suitable for storage in a `SettlementRegistry` constructed via
+/// [`SettlementRegistry::with_single_driver`].  The extra erasure step avoids
+/// the opaque-`impl`-return lifetime issue when passing the driver across
+/// function boundaries in integration tests.
+pub fn stripe_driver_boxed(
+    config: crate::config::StripeConfig,
+    api_key: String,
+    api_base_url: impl Into<String>,
+) -> Box<dyn SettlementDriver> {
+    Box::new(stripe::StripeDriver::with_base_url(
+        config,
+        api_key,
+        &api_base_url.into(),
+    ))
 }
 
 /// Mint a Stripe Shared Payment Token (SPT) using the buyer node's Stripe
