@@ -8,6 +8,8 @@ top of the `0.1.x` protocol core.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-30
+
 ### Added
 
 - Paid services on the publish path. `settlement.method` now accepts
