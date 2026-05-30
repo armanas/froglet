@@ -39,6 +39,16 @@ pub struct NewDeal {
     pub created_at: i64,
 }
 
+/// A prepaid (`lightning.prepaid.v1`) BOLT11 invoice the provider mints at
+/// deal-create time and returns to the buyer so it can pay upfront.  Conveyed
+/// only on the create response; never persisted in `StoredDeal`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrepaidInvoice {
+    pub bolt11: String,
+    pub payment_hash: String,
+    pub amount_sat: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DealRecord {
     pub deal_id: String,
@@ -56,6 +66,10 @@ pub struct DealRecord {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt: Option<SignedArtifact<ReceiptPayload>>,
+    /// Set only on the provider's deal-create response for prepaid Lightning
+    /// deals, so the buyer can pay the invoice.  Not persisted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prepaid_invoice: Option<PrepaidInvoice>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -100,6 +114,7 @@ impl StoredDeal {
             result_hash: self.result_hash.clone(),
             error: self.error.clone(),
             receipt: self.receipt.clone(),
+            prepaid_invoice: None,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -887,6 +902,59 @@ pub fn list_lightning_watch_deals(conn: &Connection) -> Result<Vec<StoredDeal>, 
                 DEAL_STATUS_PAYMENT_PENDING,
                 DEAL_STATUS_RESULT_READY
             ],
+            decode_deal_row,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut deals = Vec::new();
+    for row in rows {
+        deals.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(deals)
+}
+
+/// List prepaid (`lightning.prepaid.v1`) deals awaiting payment confirmation.
+///
+/// Prepaid deals have `payment_method = 'lightning_prepaid'` and sit in
+/// `payment_pending` until the provider's phoenixd reports the invoice paid,
+/// at which point they are promoted to `accepted` and executed.  Unlike the
+/// hold-invoice bundle path, prepaid deals never enter `result_ready` (the
+/// receipt is signed inline at execution), so only `payment_pending` is
+/// watched.
+pub fn list_prepaid_watch_deals(conn: &Connection) -> Result<Vec<StoredDeal>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                deal_id,
+                idempotency_key,
+                quote_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.quote_hash LIMIT 1),
+                spec_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.workload_evidence_hash LIMIT 1),
+                deal_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.deal_artifact_hash LIMIT 1),
+                status,
+                result_json,
+                (SELECT content_json FROM execution_evidence WHERE content_hash = deals.result_evidence_hash LIMIT 1),
+                result_hash,
+                error,
+                payment_method,
+                payment_token_hash,
+                payment_amount_sats,
+                receipt_artifact_json,
+                (SELECT document_json FROM artifact_documents WHERE artifact_hash = deals.receipt_artifact_hash LIMIT 1),
+                created_at,
+                updated_at
+             FROM deals
+             WHERE payment_method = ?1 AND status = ?2
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(
+            params!["lightning_prepaid", DEAL_STATUS_PAYMENT_PENDING],
             decode_deal_row,
         )
         .map_err(|e| e.to_string())?;

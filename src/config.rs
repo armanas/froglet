@@ -6,6 +6,7 @@ use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
 };
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -203,11 +204,70 @@ impl BuyerStripeConfig {
     }
 }
 
+/// Buyer-side phoenixd connection used to pay prepaid Lightning invoices.
+///
+/// Distinct from the provider-side [`LightningPhoenixdConfig`]: a node that
+/// buys services points this at *its own* phoenixd to pay the seller's BOLT11.
+#[derive(Clone)]
+pub struct BuyerPhoenixdConfig {
+    pub url: String,
+    pub http_password: Zeroizing<String>,
+    /// Test-only override of the phoenixd base URL (redirects buyer-side pay
+    /// calls to a mock server).  Not sourced from the environment.
+    pub api_base_url: Option<String>,
+}
+
+impl fmt::Debug for BuyerPhoenixdConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BuyerPhoenixdConfig")
+            .field("url", &self.url)
+            .field("http_password", &"[REDACTED]")
+            .field("api_base_url", &self.api_base_url)
+            .finish()
+    }
+}
+
+impl BuyerPhoenixdConfig {
+    /// Parse buyer phoenixd config from the environment.
+    ///
+    /// Returns `Ok(None)` when `FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` is absent
+    /// (buyer-side prepaid payments simply remain unconfigured).
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let url = match env::var("FROGLET_LIGHTNING_BUYER_PHOENIXD_URL") {
+            Ok(value) if !value.trim().is_empty() => value,
+            Ok(_) => {
+                return Err(
+                    "FROGLET_LIGHTNING_BUYER_PHOENIXD_URL must not be empty when set".into(),
+                );
+            }
+            Err(_) => return Ok(None),
+        };
+        let http_password = match env::var("FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD") {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => {
+                return Err(
+                    "FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD is required when \
+                     FROGLET_LIGHTNING_BUYER_PHOENIXD_URL is set"
+                        .into(),
+                );
+            }
+        };
+        Ok(Some(BuyerPhoenixdConfig {
+            url,
+            http_password: Zeroizing::new(http_password),
+            api_base_url: None,
+        }))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LightningMode {
     Mock,
     LndRest,
+    /// phoenixd (ACINQ) self-custodial backend.  Drives the prepaid,
+    /// non-escrow `lightning.prepaid.v1` method (phoenixd has no hold invoices).
+    Phoenixd,
 }
 
 impl fmt::Display for LightningMode {
@@ -215,6 +275,7 @@ impl fmt::Display for LightningMode {
         match self {
             LightningMode::Mock => write!(f, "mock"),
             LightningMode::LndRest => write!(f, "lnd_rest"),
+            LightningMode::Phoenixd => write!(f, "phoenixd"),
         }
     }
 }
@@ -224,8 +285,9 @@ impl LightningMode {
         match s.to_lowercase().as_str() {
             "mock" => Ok(Self::Mock),
             "lnd_rest" => Ok(Self::LndRest),
+            "phoenixd" => Ok(Self::Phoenixd),
             _ => Err(format!(
-                "Invalid FROGLET_LIGHTNING_MODE value: '{s}'. Allowed values: mock, lnd_rest"
+                "Invalid FROGLET_LIGHTNING_MODE value: '{s}'. Allowed values: mock, lnd_rest, phoenixd"
             )),
         }
     }
@@ -257,6 +319,8 @@ pub struct LightningConfig {
     pub min_final_cltv_expiry: u32,
     pub sync_interval_ms: u64,
     pub lnd_rest: Option<LightningLndRestConfig>,
+    /// phoenixd backend config; `Some` only when `mode == Phoenixd`.
+    pub phoenixd: Option<LightningPhoenixdConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +329,26 @@ pub struct LightningLndRestConfig {
     pub tls_cert_path: Option<PathBuf>,
     pub macaroon_path: PathBuf,
     pub request_timeout_secs: u64,
+}
+
+/// Provider-side phoenixd connection (the node that mints + watches invoices).
+#[derive(Clone)]
+pub struct LightningPhoenixdConfig {
+    /// phoenixd HTTP API base URL (default `http://127.0.0.1:9740`).
+    pub url: String,
+    /// phoenixd `http-password` (HTTP Basic auth; username is empty).
+    pub http_password: Zeroizing<String>,
+    pub request_timeout_secs: u64,
+}
+
+impl fmt::Debug for LightningPhoenixdConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LightningPhoenixdConfig")
+            .field("url", &self.url)
+            .field("http_password", &"[REDACTED]")
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -502,6 +586,7 @@ pub struct NodeConfig {
     pub x402: Option<X402Config>,
     pub stripe: Option<StripeConfig>,
     pub buyer_stripe: Option<BuyerStripeConfig>,
+    pub buyer_phoenixd: Option<BuyerPhoenixdConfig>,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
     pub gpu: GpuConfig,
@@ -674,6 +759,48 @@ impl NodeConfig {
             }
         }
 
+        let phoenixd_url = env::var("FROGLET_LIGHTNING_PHOENIXD_URL").ok();
+        let phoenixd_http_password = env::var("FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD").ok();
+        let phoenixd_request_timeout_secs =
+            env_u64("FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS", 15)?.clamp(1, 60);
+
+        if matches!(lightning_mode, LightningMode::Phoenixd) {
+            let Some(url) = phoenixd_url.as_ref() else {
+                return Err(
+                    "FROGLET_LIGHTNING_MODE=phoenixd requires FROGLET_LIGHTNING_PHOENIXD_URL"
+                        .into(),
+                );
+            };
+            // Reuse the loopback/https guard: plain http only on loopback.
+            let plaintext_loopback =
+                lnd_rest_url_allows_plaintext_loopback(url).map_err(|error| error.to_string())?;
+            if url.starts_with("http://") && !plaintext_loopback {
+                return Err(
+                    "FROGLET_LIGHTNING_PHOENIXD_URL must use https:// unless it points to a loopback-only http:// endpoint".into(),
+                );
+            }
+            // A non-loopback phoenixd may be a real-money mainnet node; require
+            // an explicit opt-in so it is never reached by accident.  (phoenixd's
+            // own `chain` setting still governs which network it actually runs.)
+            if !plaintext_loopback
+                && !env_bool("FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM", false)?
+            {
+                return Err("non-loopback FROGLET_LIGHTNING_PHOENIXD_URL requires \
+                     FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=1 to confirm real-funds operation"
+                    .into());
+            }
+            if phoenixd_http_password
+                .as_ref()
+                .map(|p| p.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return Err(
+                    "FROGLET_LIGHTNING_MODE=phoenixd requires FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD"
+                        .into(),
+                );
+            }
+        }
+
         let lightning = LightningConfig {
             mode: lightning_mode,
             destination_identity: env::var("FROGLET_LIGHTNING_DESTINATION_IDENTITY").ok(),
@@ -691,6 +818,15 @@ impl NodeConfig {
                     tls_cert_path: lnd_tls_cert_path,
                     macaroon_path: lnd_macaroon_path.expect("validated lnd macaroon path"),
                     request_timeout_secs: lnd_request_timeout_secs,
+                }
+            }),
+            phoenixd: matches!(lightning_mode, LightningMode::Phoenixd).then(|| {
+                LightningPhoenixdConfig {
+                    url: phoenixd_url.expect("validated phoenixd url"),
+                    http_password: Zeroizing::new(
+                        phoenixd_http_password.expect("validated phoenixd password"),
+                    ),
+                    request_timeout_secs: phoenixd_request_timeout_secs,
                 }
             }),
         };
@@ -788,6 +924,7 @@ impl NodeConfig {
             x402,
             stripe,
             buyer_stripe: BuyerStripeConfig::from_env()?,
+            buyer_phoenixd: BuyerPhoenixdConfig::from_env()?,
             storage: StorageConfig {
                 data_dir,
                 db_path,
@@ -1124,6 +1261,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_phoenixd_lightning_mode() {
+        assert_eq!(
+            LightningMode::parse("phoenixd").unwrap(),
+            LightningMode::Phoenixd
+        );
+        assert_eq!(
+            LightningMode::parse("PHOENIXD").unwrap(),
+            LightningMode::Phoenixd
+        );
+        assert_eq!(LightningMode::Phoenixd.to_string(), "phoenixd");
+        // The error message enumerates phoenixd as an allowed value.
+        let err = LightningMode::parse("bogus").unwrap_err();
+        assert!(err.contains("phoenixd"), "got: {err}");
+    }
+
+    #[test]
     fn test_paid_services_detection() {
         let pricing = PricingConfig {
             events_query: 0,
@@ -1328,5 +1481,32 @@ path = "{}"
         // Non-secret fields should still be present.
         assert!(debug_output.contains("pm_test_abc"));
         assert!(debug_output.contains("2026-04-22.preview"));
+    }
+
+    #[test]
+    fn phoenixd_config_debug_redacts_http_password() {
+        let secret = "phoenixd-http-password-supersecret";
+        let provider = LightningPhoenixdConfig {
+            url: "http://127.0.0.1:9740".to_string(),
+            http_password: Zeroizing::new(secret.to_string()),
+            request_timeout_secs: 15,
+        };
+        let buyer = BuyerPhoenixdConfig {
+            url: "http://127.0.0.1:9741".to_string(),
+            http_password: Zeroizing::new(secret.to_string()),
+            api_base_url: None,
+        };
+        for output in [format!("{provider:?}"), format!("{buyer:?}")] {
+            assert!(
+                !output.contains(secret),
+                "Debug output must not contain the http_password; got: {output}"
+            );
+            assert!(
+                output.contains("[REDACTED]"),
+                "Debug output must contain [REDACTED]; got: {output}"
+            );
+            // Non-secret URL stays visible.
+            assert!(output.contains("127.0.0.1:974"));
+        }
     }
 }

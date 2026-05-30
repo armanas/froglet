@@ -482,6 +482,12 @@ fn receipt_leg_is_empty_canceled(leg: &ReceiptSettlementLeg) -> bool {
         && leg.state == ReceiptLegState::Canceled
 }
 
+/// Decode a hex string that must represent exactly 32 bytes (a SHA-256 hash or
+/// a Lightning preimage).  Returns `None` for invalid hex or wrong length.
+fn decode_hash32(value: &str) -> Option<Vec<u8>> {
+    hex::decode(value).ok().filter(|bytes| bytes.len() == 32)
+}
+
 pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Result<(), String> {
     let payload = &receipt.payload;
 
@@ -675,6 +681,95 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
             if payload.deal_state == "succeeded" && payload.settlement_state != "settled" {
                 return Err(
                     "successful stripe_mpp.v1 receipt must have settlement_state settled"
+                        .to_string(),
+                );
+            }
+        }
+        // Interop note: lightning.prepaid.v1 is the prepaid, non-escrow Lightning
+        // method backed by phoenixd.  Like stripe_mpp.v1 it reuses the
+        // ReceiptSettlementRefs shape without hold invoices (no bundle_hash,
+        // empty destination_identity, empty-canceled success_fee).  Unlike
+        // Stripe, a settled receipt carries a CRYPTOGRAPHIC proof of payment:
+        // base_fee.payment_hash is the Lightning payment hash and
+        // base_fee.invoice_hash carries the preimage, with
+        // sha256(preimage) == payment_hash.
+        "lightning.prepaid.v1" => {
+            if payload.settlement_refs.bundle_hash.is_some() {
+                return Err("lightning.prepaid.v1 receipt must not include bundle_hash".to_string());
+            }
+            if !payload.settlement_refs.destination_identity.is_empty() {
+                return Err(
+                    "lightning.prepaid.v1 receipt destination_identity must be empty".to_string(),
+                );
+            }
+            if !receipt_leg_is_empty_canceled(&payload.settlement_refs.success_fee) {
+                return Err(
+                    "lightning.prepaid.v1 receipt success_fee must be a zero-valued canceled placeholder"
+                        .to_string(),
+                );
+            }
+            if matches!(
+                payload.settlement_refs.base_fee.state,
+                ReceiptLegState::Open | ReceiptLegState::Accepted
+            ) {
+                return Err(
+                    "lightning.prepaid.v1 receipt base_fee.state must be terminal (settled or canceled)"
+                        .to_string(),
+                );
+            }
+            match payload.settlement_state.as_str() {
+                "settled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Settled {
+                        return Err(
+                            "lightning.prepaid.v1 receipt settlement_state settled requires base_fee.state settled"
+                                .to_string(),
+                        );
+                    }
+                    // Cryptographic proof of payment: the preimage (carried in
+                    // base_fee.invoice_hash) must hash to base_fee.payment_hash.
+                    let payment_hash = &payload.settlement_refs.base_fee.payment_hash;
+                    let preimage = &payload.settlement_refs.base_fee.invoice_hash;
+                    let preimage_bytes = decode_hash32(preimage).ok_or_else(|| {
+                        "lightning.prepaid.v1 settled receipt preimage must be 32-byte hex"
+                            .to_string()
+                    })?;
+                    if decode_hash32(payment_hash).is_none() {
+                        return Err(
+                            "lightning.prepaid.v1 settled receipt payment_hash must be 32-byte hex"
+                                .to_string(),
+                        );
+                    }
+                    if crypto::sha256_hex(&preimage_bytes) != payment_hash.to_lowercase() {
+                        return Err(
+                            "lightning.prepaid.v1 receipt preimage does not match payment_hash"
+                                .to_string(),
+                        );
+                    }
+                }
+                "canceled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Canceled {
+                        return Err(
+                            "lightning.prepaid.v1 receipt settlement_state canceled requires base_fee.state canceled"
+                                .to_string(),
+                        );
+                    }
+                    if !payload.settlement_refs.base_fee.invoice_hash.is_empty() {
+                        return Err(
+                            "lightning.prepaid.v1 canceled receipt must not carry a preimage"
+                                .to_string(),
+                        );
+                    }
+                }
+                _ => {
+                    return Err(
+                        "lightning.prepaid.v1 receipt settlement_state must be settled or canceled"
+                            .to_string(),
+                    );
+                }
+            }
+            if payload.deal_state == "succeeded" && payload.settlement_state != "settled" {
+                return Err(
+                    "successful lightning.prepaid.v1 receipt must have settlement_state settled"
                         .to_string(),
                 );
             }
@@ -1813,6 +1908,228 @@ mod tests {
         assert_eq!(
             validate_receipt_artifact(&receipt).unwrap_err(),
             "stripe_mpp.v1 receipt success_fee must be a zero-valued canceled placeholder"
+        );
+    }
+
+    // ─── lightning.prepaid.v1 (phoenixd) ────────────────────────────────────
+
+    /// A known preimage and its SHA-256 payment hash (the cryptographic proof
+    /// of payment carried by a settled prepaid receipt).
+    fn prepaid_preimage_and_hash() -> (String, String) {
+        let preimage = "11".repeat(32);
+        let payment_hash = crypto::sha256_hex(hex::decode(&preimage).unwrap());
+        (preimage, payment_hash)
+    }
+
+    /// Build a minimal valid lightning.prepaid.v1 receipt payload.
+    ///
+    /// `settled` true → the buyer paid: deal succeeded, settlement settled with
+    /// a valid preimage proof.  `settled` false → execution failed AFTER the
+    /// buyer prepaid (the MVP no-refund case): deal failed, but settlement is
+    /// still "settled" because funds moved, with the preimage proof intact.
+    fn valid_prepaid_receipt_payload(provider_id: &str, settled: bool) -> ReceiptPayload {
+        let (preimage, payment_hash) = prepaid_preimage_and_hash();
+        let (deal_state, execution_state, result_hash, result_format, failure) = if settled {
+            (
+                "succeeded",
+                "succeeded",
+                Some("44".repeat(32)),
+                Some("application/json+jcs".to_string()),
+                None,
+            )
+        } else {
+            ("failed", "failed", None, None, Some("execution_failed"))
+        };
+
+        ReceiptPayload {
+            provider_id: provider_id.to_string(),
+            requester_id: "11".repeat(32),
+            deal_hash: "22".repeat(32),
+            quote_hash: "33".repeat(32),
+            extension_refs: Vec::new(),
+            acceptance_ref: None,
+            started_at: Some(100),
+            finished_at: 200,
+            deal_state: deal_state.to_string(),
+            execution_state: execution_state.to_string(),
+            // Both paths are "settled": the buyer prepaid before execution, so
+            // funds moved regardless of execution outcome.
+            settlement_state: "settled".to_string(),
+            result_hash,
+            confidential_session_hash: None,
+            result_envelope_hash: None,
+            result_format,
+            executor: ReceiptExecutor {
+                runtime: "wasm".to_string(),
+                runtime_version: "test".to_string(),
+                execution_mode: None,
+                attestation_platform: None,
+                measurement: None,
+                abi_version: Some("froglet.wasm.run_json.v1".to_string()),
+                module_hash: Some("55".repeat(32)),
+                capabilities_granted: Vec::new(),
+            },
+            limits_applied: ExecutionLimits {
+                max_input_bytes: 1,
+                max_runtime_ms: 2,
+                max_memory_bytes: 3,
+                max_output_bytes: 4,
+                fuel_limit: 5,
+            },
+            settlement_refs: ReceiptSettlementRefs {
+                method: "lightning.prepaid.v1".to_string(),
+                bundle_hash: None,
+                destination_identity: String::new(),
+                base_fee: ReceiptSettlementLeg {
+                    amount_msat: 30_000,
+                    // invoice_hash carries the preimage (the proof).
+                    invoice_hash: preimage,
+                    payment_hash,
+                    state: ReceiptLegState::Settled,
+                },
+                success_fee: ReceiptSettlementLeg {
+                    amount_msat: 0,
+                    invoice_hash: String::new(),
+                    payment_hash: String::new(),
+                    state: ReceiptLegState::Canceled,
+                },
+            },
+            failure_code: failure.map(str::to_string),
+            failure_message: failure.map(|_| "test failure".to_string()),
+            result_ref: None,
+        }
+    }
+
+    /// Build a canceled prepaid receipt (invoice never paid → no funds moved).
+    fn canceled_prepaid_receipt_payload(provider_id: &str) -> ReceiptPayload {
+        let mut payload = valid_prepaid_receipt_payload(provider_id, false);
+        payload.settlement_state = "canceled".to_string();
+        payload.settlement_refs.base_fee.state = ReceiptLegState::Canceled;
+        payload.settlement_refs.base_fee.invoice_hash = String::new();
+        payload.settlement_refs.base_fee.payment_hash = String::new();
+        payload.settlement_refs.base_fee.amount_msat = 0;
+        payload
+    }
+
+    fn sign_prepaid(payload: ReceiptPayload) -> SignedArtifact<ReceiptPayload> {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = payload;
+        payload.provider_id = signer.clone();
+        sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            100,
+            payload,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_success_receipt_passes_kernel_validation() {
+        let receipt = sign_prepaid(valid_prepaid_receipt_payload("placeholder", true));
+        assert!(verify_artifact(&receipt), "signature must be valid");
+        assert!(
+            validate_receipt_artifact(&receipt).is_ok(),
+            "prepaid success receipt must pass: {:?}",
+            validate_receipt_artifact(&receipt)
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_failed_but_paid_receipt_passes_kernel_validation() {
+        // The MVP no-refund case: execution failed, buyer was charged, the
+        // signed receipt is the buyer's cryptographic evidence.
+        let receipt = sign_prepaid(valid_prepaid_receipt_payload("placeholder", false));
+        assert!(verify_artifact(&receipt));
+        assert!(
+            validate_receipt_artifact(&receipt).is_ok(),
+            "failed-but-paid prepaid receipt must pass: {:?}",
+            validate_receipt_artifact(&receipt)
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_canceled_receipt_passes_kernel_validation() {
+        let receipt = sign_prepaid(canceled_prepaid_receipt_payload("placeholder"));
+        assert!(verify_artifact(&receipt));
+        assert!(
+            validate_receipt_artifact(&receipt).is_ok(),
+            "canceled prepaid receipt must pass: {:?}",
+            validate_receipt_artifact(&receipt)
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_receipt_with_mismatched_preimage_fails_validation() {
+        // The headline cryptographic check: a preimage that does NOT hash to
+        // the payment_hash must be rejected.
+        let mut payload = valid_prepaid_receipt_payload("placeholder", true);
+        payload.settlement_refs.base_fee.invoice_hash = "22".repeat(32); // wrong preimage
+        let receipt = sign_prepaid(payload);
+        assert!(verify_artifact(&receipt), "signature is still valid");
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "lightning.prepaid.v1 receipt preimage does not match payment_hash"
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_receipt_with_non_hex_preimage_fails_validation() {
+        let mut payload = valid_prepaid_receipt_payload("placeholder", true);
+        payload.settlement_refs.base_fee.invoice_hash = "not-hex".to_string();
+        let receipt = sign_prepaid(payload);
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "lightning.prepaid.v1 settled receipt preimage must be 32-byte hex"
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_receipt_with_bundle_hash_fails_validation() {
+        let mut payload = valid_prepaid_receipt_payload("placeholder", true);
+        payload.settlement_refs.bundle_hash = Some("aa".repeat(32));
+        let receipt = sign_prepaid(payload);
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "lightning.prepaid.v1 receipt must not include bundle_hash"
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_receipt_with_non_empty_destination_fails_validation() {
+        let mut payload = valid_prepaid_receipt_payload("placeholder", true);
+        payload.settlement_refs.destination_identity = "02".to_string() + &"55".repeat(32);
+        let receipt = sign_prepaid(payload);
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "lightning.prepaid.v1 receipt destination_identity must be empty"
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_receipt_with_nonempty_success_fee_fails_validation() {
+        let mut payload = valid_prepaid_receipt_payload("placeholder", true);
+        payload.settlement_refs.success_fee.payment_hash = "bb".repeat(32);
+        let receipt = sign_prepaid(payload);
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "lightning.prepaid.v1 receipt success_fee must be a zero-valued canceled placeholder"
+        );
+    }
+
+    #[test]
+    fn lightning_prepaid_v1_succeeded_with_canceled_settlement_fails_validation() {
+        // deal succeeded but settlement canceled is contradictory.
+        let mut payload = valid_prepaid_receipt_payload("placeholder", true);
+        payload.settlement_state = "canceled".to_string();
+        payload.settlement_refs.base_fee.state = ReceiptLegState::Canceled;
+        payload.settlement_refs.base_fee.invoice_hash = String::new();
+        let receipt = sign_prepaid(payload);
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "successful lightning.prepaid.v1 receipt must have settlement_state settled"
         );
     }
 }

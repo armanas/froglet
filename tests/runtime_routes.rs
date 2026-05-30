@@ -175,10 +175,12 @@ fn create_test_state_with_identity_seed_and_public_base_url(
             min_final_cltv_expiry: 18,
             sync_interval_ms: 1_000,
             lnd_rest: None,
+            phoenixd: None,
         },
         x402: None,
         stripe: None,
         buyer_stripe: None,
+        buyer_phoenixd: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -244,6 +246,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
+        phoenixd_client: None,
         lightning_wallet: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
@@ -714,6 +717,7 @@ async fn provider_deals(
         result_hash: None,
         error: None,
         receipt: None,
+        prepaid_invoice: None,
         created_at: 1_700_000_250,
         updated_at: 1_700_000_250,
     };

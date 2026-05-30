@@ -50,7 +50,13 @@ conversion from sats into backend-native fiat or token units.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FROGLET_PAYMENT_BACKEND` | `none` | Payment backends (comma-separated): `none`, `lightning`, `x402`, `stripe`. Example: `lightning,x402`. Auto-set to `lightning` when any price > 0 |
-| `FROGLET_LIGHTNING_MODE` | `mock` | Lightning mode: `mock` or `lnd_rest`. Required when payment backend is `lightning` |
+| `FROGLET_LIGHTNING_MODE` | `mock` | Lightning mode: `mock`, `lnd_rest` (hold-invoice escrow), or `phoenixd` (self-custodial prepaid). Required when payment backend is `lightning` |
+| `FROGLET_LIGHTNING_PHOENIXD_URL` | *(none)* | phoenixd HTTP API URL (default `http://127.0.0.1:9740`). Required when mode is `phoenixd` |
+| `FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD` | *(none)* | phoenixd `http-password` (HTTP Basic auth; from `~/.phoenix/phoenix.conf`). Required when mode is `phoenixd` |
+| `FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS` | `15` | HTTP request timeout for phoenixd calls (1-60) |
+| `FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM` | *(none)* | Set to `1` to allow a non-loopback `phoenixd` URL (a real-funds node); loopback URLs do not require it |
+| `FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` | *(none)* | Buyer-side phoenixd URL used to pay prepaid invoices when this node buys services |
+| `FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD` | *(none)* | Buyer-side phoenixd `http-password`. Required when `FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` is set |
 | `FROGLET_LIGHTNING_REST_URL` | *(none)* | LND REST API URL. Required when mode is `lnd_rest` |
 | `FROGLET_LIGHTNING_TLS_CERT_PATH` | *(none)* | Path to the LND TLS certificate. Required for `https://` REST URLs |
 | `FROGLET_LIGHTNING_TLS_CERT_B64` | *(none)* | Docker-only convenience input. Base64 PEM decoded by `docker-entrypoint.sh` into `FROGLET_LIGHTNING_TLS_CERT_PATH` when the path is unset |

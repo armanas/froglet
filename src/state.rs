@@ -93,10 +93,16 @@ pub struct AppState {
     pub provider_control_auth_token_path: PathBuf,
     pub events_query_semaphore: Arc<Semaphore>,
     pub lnd_rest_client: Option<Arc<LndRestClient>>,
+    /// Concrete phoenixd client used by the prepaid (`lightning.prepaid.v1`)
+    /// settlement flow.  `Some` only when `LightningMode::Phoenixd` is
+    /// configured.  The prepaid flow reaches phoenixd's prepaid-specific
+    /// methods (create_invoice / get_incoming_payment / pay_invoice) through
+    /// this concrete handle, not the `LightningWallet` trait.
+    pub phoenixd_client: Option<Arc<crate::settlement::phoenixd::PhoenixdClient>>,
     /// Backend-neutral Lightning wallet used by `settlement/lightning.rs`.
-    /// Populated from `lnd_rest_client` when LND REST is configured;
-    /// `None` in Mock mode and in test fixtures that set
-    /// `lnd_rest_client: None`.
+    /// Populated from `phoenixd_client` (prepaid) or `lnd_rest_client`
+    /// (escrow) when configured; `None` in Mock mode and in test fixtures
+    /// that set both clients to `None`.
     pub lightning_wallet: Option<crate::settlement::wallet::ArcLightningWallet>,
     pub lightning_destination_identity: Arc<OnceCell<String>>,
     pub event_batch_writer: Option<db::EventBatchWriter>,
@@ -165,12 +171,28 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         .map_err(|error| format!("failed to initialize cached LND REST client: {error}"))?
         .map(Arc::new);
 
-    // Build the backend-neutral wallet trait object from the concrete LND
-    // client when one is available.  Cast is explicit to guarantee the
-    // Arc<LndRestClient> satisfies LightningWallet before it is erased.
-    let lightning_wallet: Option<crate::settlement::wallet::ArcLightningWallet> = lnd_rest_client
+    let phoenixd_client = config
+        .lightning
+        .phoenixd
         .as_ref()
-        .map(|client| Arc::clone(client) as crate::settlement::wallet::ArcLightningWallet);
+        .map(crate::settlement::phoenixd::PhoenixdClient::from_config)
+        .transpose()
+        .map_err(|error| format!("failed to initialize phoenixd client: {error}"))?
+        .map(Arc::new);
+
+    // Build the backend-neutral wallet trait object.  phoenixd (prepaid) takes
+    // precedence when configured, otherwise the LND REST client (escrow).  At
+    // most one Lightning backend is active per node (enforced by
+    // `LightningMode`).  Casts are explicit so the concrete Arc is proven to
+    // satisfy LightningWallet before it is erased.
+    let lightning_wallet: Option<crate::settlement::wallet::ArcLightningWallet> =
+        if let Some(client) = phoenixd_client.as_ref() {
+            Some(Arc::clone(client) as crate::settlement::wallet::ArcLightningWallet)
+        } else {
+            lnd_rest_client
+                .as_ref()
+                .map(|client| Arc::clone(client) as crate::settlement::wallet::ArcLightningWallet)
+        };
 
     let settlement_registry = SettlementRegistry::new(&config);
 
@@ -201,6 +223,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         provider_control_auth_token_path: config.storage.provider_control_auth_token_path.clone(),
         events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
         lnd_rest_client,
+        phoenixd_client,
         lightning_wallet,
         lightning_destination_identity: Arc::new(OnceCell::new()),
         event_batch_writer: None,
@@ -249,10 +272,12 @@ mod tests {
                 min_final_cltv_expiry: 18,
                 sync_interval_ms: 1_000,
                 lnd_rest: None,
+                phoenixd: None,
             },
             x402: None,
             stripe: None,
             buyer_stripe: None,
+            buyer_phoenixd: None,
             storage: StorageConfig {
                 data_dir: PathBuf::from("./data"),
                 db_path: PathBuf::from("./data/node.db"),

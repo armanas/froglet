@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "froglet"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 autobins = false
 authors = ["Armanas Povilionis-Muradian"]
@@ -83,3 +83,4 @@ proptest = "1"
 rcgen = "0.13"
 tempfile = "3"
 tokio-rustls = "0.26"
+zeroize = "1"

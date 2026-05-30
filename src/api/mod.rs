@@ -1470,6 +1470,74 @@ async fn runtime_create_deal_inner(
         return error_json(error.0, error.1).into_response();
     }
 
+    // ── Buyer-side prepaid Lightning payment ───────────────────────────────
+    //
+    // For a prepaid (`lightning.prepaid.v1`) quote, the provider mints a BOLT11
+    // invoice and returns it on the deal-create response.  Pay it now from the
+    // buyer's own phoenixd so the provider can confirm payment and execute.
+    // The provider reads the preimage from its OWN phoenixd at receipt time, so
+    // we never transmit the preimage; we only verify it locally as a sanity
+    // check that the payment landed.
+    if quote.payload.settlement_terms.method == "lightning.prepaid.v1" {
+        let Some(invoice) = remote_deal.prepaid_invoice.as_ref() else {
+            return error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": "provider accepted a prepaid Lightning deal but did not return an invoice"
+                }),
+            )
+            .into_response();
+        };
+        match &state.config.buyer_phoenixd {
+            None => {
+                return error_json(
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({
+                        "error": "the provider requires prepaid Lightning (lightning.prepaid.v1) but \
+                                  this buyer node has no phoenixd configured; set \
+                                  FROGLET_LIGHTNING_BUYER_PHOENIXD_URL and \
+                                  FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD to enable \
+                                  buyer-side payments"
+                    }),
+                )
+                .into_response();
+            }
+            Some(buyer_phoenixd) => {
+                match settlement::pay_buyer_prepaid_invoice(buyer_phoenixd, &invoice.bolt11).await {
+                    Ok(sent) => {
+                        let computed =
+                            crypto::sha256_hex(hex::decode(&sent.preimage_hex).unwrap_or_default());
+                        if computed != invoice.payment_hash.to_lowercase() {
+                            tracing::error!(
+                                deal_id = %remote_deal.deal_id,
+                                "prepaid payment preimage does not match the invoice payment hash"
+                            );
+                            return error_json(
+                                StatusCode::BAD_GATEWAY,
+                                json!({
+                                    "error": "prepaid payment preimage did not match the invoice payment hash"
+                                }),
+                            )
+                            .into_response();
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!("Buyer prepaid Lightning payment failed: {error}");
+                        return error_json(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({
+                                "error": format!(
+                                    "failed to pay the prepaid Lightning invoice for this deal: {error}"
+                                )
+                            }),
+                        )
+                        .into_response();
+                    }
+                }
+            }
+        }
+    }
+
     if let Err(error) = persist_requester_artifacts(
         state.clone(),
         &quote,
@@ -4891,6 +4959,14 @@ fn payload_from_provider_offer_definition(
             .contains(&PaymentBackend::Lightning)
     {
         "stripe_mpp.v1".to_string()
+    } else if state
+        .config
+        .payment_backends
+        .contains(&PaymentBackend::Lightning)
+        && state.config.lightning.mode == LightningMode::Phoenixd
+    {
+        // phoenixd has no hold invoices → prepaid, non-escrow method.
+        "lightning.prepaid.v1".to_string()
     } else {
         "lightning.base_fee_plus_success_fee.v1".to_string()
     };
@@ -6163,10 +6239,19 @@ async fn create_deal_record(
         + payload.quote.payload.settlement_terms.success_fee_msat;
     let quoted_total_sats = quoted_total_msat / 1_000;
     let uses_lightning_bundle = quoted_total_sats > 0
+        && payload.quote.payload.settlement_terms.method.as_str()
+            == "lightning.base_fee_plus_success_fee.v1"
         && state
             .config
             .payment_backends
             .contains(&PaymentBackend::Lightning);
+    let uses_prepaid = quoted_total_sats > 0
+        && payload.quote.payload.settlement_terms.method.as_str() == "lightning.prepaid.v1"
+        && state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Lightning)
+        && state.config.lightning.mode == LightningMode::Phoenixd;
     let uses_stripe = quoted_total_sats > 0
         && payload.quote.payload.settlement_terms.method.as_str() == "stripe_mpp.v1"
         && state
@@ -6273,6 +6358,38 @@ async fn create_deal_record(
     } else {
         None
     };
+
+    // For prepaid (phoenixd) deals, mint an ordinary invoice now.  phoenixd
+    // chooses the payment hash + preimage; we record the hash as the deal's
+    // payment token and return the BOLT11 to the buyer so it can pay upfront.
+    let prepaid_invoice: Option<deals::PrepaidInvoice> = if uses_prepaid {
+        let client = state.phoenixd_client.as_ref().ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({ "error": "phoenixd backend is not configured for prepaid Lightning" }),
+            )
+        })?;
+        let created = client
+            .create_invoice(
+                quoted_total_sats,
+                &deal_id,
+                state.config.lightning.base_invoice_expiry_secs,
+            )
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "error": format!("failed to mint prepaid invoice: {error}") }),
+                )
+            })?;
+        Some(deals::PrepaidInvoice {
+            bolt11: created.payment_request,
+            payment_hash: created.payment_hash_hex,
+            amount_sat: quoted_total_sats,
+        })
+    } else {
+        None
+    };
     let deal_artifact = payload.deal.clone();
     let mut reserved_execution_permit = None;
     let mut immediate_rejection: Option<(
@@ -6306,7 +6423,10 @@ async fn create_deal_record(
             created_at: now,
         });
 
-    if !uses_lightning_bundle && payload.spec.runtime() == Some("wasm") {
+    // Prepaid deals defer execution until the invoice is paid (like the bundle
+    // flow), so they do not acquire an execution permit at create time; the
+    // reconcile→promote path acquires one when the payment is confirmed.
+    if !uses_lightning_bundle && !uses_prepaid && payload.spec.runtime() == Some("wasm") {
         match state.wasm_sandbox.try_acquire_execution_permit() {
             Ok(permit) => reserved_execution_permit = Some(permit),
             Err(error_message) => {
@@ -6337,6 +6457,7 @@ async fn create_deal_record(
                         execution_state: "not_started",
                         bundle: None,
                         stripe_settlement: None,
+                        prepaid_settlement: None,
                         result_hash: None,
                         result_format: None,
                         result_envelope_hash: None,
@@ -6377,6 +6498,9 @@ async fn create_deal_record(
     // Pre-extract the Stripe PaymentIntent ID before the move closure so that
     // the reservation itself stays available for release on failure paths below.
     let stripe_token_hash_for_db = reservation.as_ref().map(|r| r.token_hash.clone());
+    // Pre-extract the prepaid payment hash; the BOLT11 itself stays out of the DB
+    // (it is returned to the buyer in the response, not persisted).
+    let prepaid_payment_hash_for_db = prepaid_invoice.as_ref().map(|i| i.payment_hash.clone());
     let insert_result = state
         .db
         .with_write_conn(move |conn| {
@@ -6421,6 +6545,8 @@ async fn create_deal_record(
                     deal_artifact_hash: deal_artifact_hash.clone(),
                     payment_method: if uses_lightning_bundle {
                         Some("lightning".to_string())
+                    } else if uses_prepaid {
+                        Some("lightning_prepaid".to_string())
                     } else if uses_stripe {
                         Some("stripe".to_string())
                     } else {
@@ -6428,6 +6554,9 @@ async fn create_deal_record(
                     },
                     payment_token_hash: if uses_lightning_bundle {
                         Some(payload.deal.payload.success_payment_hash.clone())
+                    } else if uses_prepaid {
+                        // phoenixd-chosen payment hash of the minted invoice.
+                        prepaid_payment_hash_for_db.clone()
                     } else if uses_stripe {
                         // Pre-extracted above to avoid moving reservation into
                         // the DB closure (needed for release on failure paths).
@@ -6435,12 +6564,13 @@ async fn create_deal_record(
                     } else {
                         None
                     },
-                    payment_amount_sats: if uses_lightning_bundle || uses_stripe {
+                    payment_amount_sats: if uses_lightning_bundle || uses_prepaid || uses_stripe {
                         Some(quoted_total_sats)
                     } else {
                         None
                     },
-                    initial_status: if uses_lightning_bundle {
+                    initial_status: if uses_lightning_bundle || uses_prepaid {
+                        // Prepaid + bundle both wait for payment before executing.
                         deals::DEAL_STATUS_PAYMENT_PENDING.to_string()
                     } else {
                         // Stripe: funds reserved synchronously; deal is accepted immediately.
@@ -6624,6 +6754,15 @@ async fn create_deal_record(
         return Ok((persisted.public_record(), StatusCode::ACCEPTED));
     }
 
+    if uses_prepaid {
+        // Prepaid deals stay payment_pending until the buyer pays the invoice;
+        // the Lightning reconcile loop promotes + executes once phoenixd reports
+        // the payment received.  Return the BOLT11 so the buyer can pay it.
+        let mut record = insert_result.deal.public_record();
+        record.prepaid_invoice = prepaid_invoice;
+        return Ok((record, StatusCode::ACCEPTED));
+    }
+
     if !uses_lightning_bundle {
         tokio::spawn(process_deal_with_reserved_permit(
             state,
@@ -6651,6 +6790,7 @@ async fn fail_pending_deal_materialization(
             execution_state: "not_started",
             bundle: None,
             stripe_settlement: None,
+            prepaid_settlement: None,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -8273,6 +8413,7 @@ async fn persist_lightning_success_receipt(
             execution_state: "succeeded",
             bundle: Some(bundle),
             stripe_settlement: None,
+            prepaid_settlement: None,
             result_hash: Some(result_hash),
             result_format: None,
             result_envelope_hash: None,
@@ -8366,6 +8507,7 @@ async fn persist_deal_terminal_failure_receipt(
             execution_state,
             bundle,
             stripe_settlement: None,
+            prepaid_settlement: None,
             result_hash: deal.result_hash.clone(),
             result_format: None,
             result_envelope_hash: None,
@@ -8492,6 +8634,179 @@ async fn reconcile_lightning_deal(
     Ok(())
 }
 
+/// Reconcile a single prepaid (phoenixd) deal.
+///
+/// Polls the deal's invoice; promotes the deal to execution once the buyer's
+/// payment is confirmed.  If the invoice expires unpaid past the deal's
+/// admission deadline, fails the deal with a canceled receipt (no funds moved).
+async fn reconcile_prepaid_deal(
+    state: Arc<AppState>,
+    deal: deals::StoredDeal,
+) -> Result<(), String> {
+    if deal.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+        return Ok(());
+    }
+    let Some(client) = state.phoenixd_client.as_ref() else {
+        return Ok(());
+    };
+    let Some(payment_hash) = deal.payment_token_hash.as_deref() else {
+        return Ok(());
+    };
+
+    match client.get_incoming_payment(payment_hash).await {
+        Ok(payment) if payment.is_paid => {
+            promote_prepaid_deal_if_paid(state.clone(), &deal).await?;
+        }
+        Ok(_) => {
+            // Not yet paid: fail the deal once the admission window has elapsed.
+            if settlement::current_unix_timestamp() > deal.artifact.payload.admission_deadline {
+                fail_unpaid_prepaid_deal(state, &deal).await?;
+            }
+        }
+        Err(error) => {
+            // Transient (phoenixd unreachable, or 404 before the invoice is
+            // registered): log and retry on the next pass.
+            tracing::warn!(
+                deal_id = %deal.deal_id,
+                "prepaid invoice lookup failed; will retry: {error}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Promote a paid prepaid deal from `payment_pending` to `accepted` and spawn
+/// its execution.  Mirrors [`promote_lightning_deal_if_funded`] but without a
+/// bundle.  If execution capacity is exhausted, the deal stays `payment_pending`
+/// and is retried on the next pass (the buyer has already paid, so we never
+/// reject it).
+async fn promote_prepaid_deal_if_paid(
+    state: Arc<AppState>,
+    deal: &deals::StoredDeal,
+) -> Result<bool, String> {
+    if deal.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+        return Ok(false);
+    }
+
+    let reserved_execution_permit = if deal.spec.runtime() == Some("wasm") {
+        match state.wasm_sandbox.try_acquire_execution_permit() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                // No capacity now; retry next pass rather than rejecting a
+                // deal the buyer has already paid for.
+                return Ok(false);
+            }
+        }
+    } else {
+        None
+    };
+
+    let deal_id = deal.deal_id.clone();
+    let promoted = state
+        .db
+        .with_write_conn(move |conn| {
+            deals::try_mark_deal_accepted_from_payment_pending(
+                conn,
+                &deal_id,
+                settlement::current_unix_timestamp(),
+            )
+        })
+        .await?;
+
+    if promoted {
+        tokio::spawn(process_deal_with_reserved_permit(
+            state,
+            deal.deal_id.clone(),
+            reserved_execution_permit,
+        ));
+    }
+
+    Ok(promoted)
+}
+
+/// Fail a prepaid deal whose invoice expired before payment.  No funds moved,
+/// so the receipt is `settlement_state=canceled` with `deal_state=failed`.
+async fn fail_unpaid_prepaid_deal(
+    state: Arc<AppState>,
+    deal: &deals::StoredDeal,
+) -> Result<(), String> {
+    let completed_at = settlement::current_unix_timestamp();
+    let failure = receipt_failure(
+        "payment_expired",
+        "prepaid Lightning invoice expired before payment",
+    );
+    let prepaid_settlement = PrepaidSettlementInfo {
+        payment_hash: deal.payment_token_hash.clone().unwrap_or_default(),
+        preimage_hex: String::new(),
+        charged_msat: 0,
+        paid: false,
+    };
+    let receipt = sign_deal_receipt(
+        state.as_ref(),
+        deal,
+        completed_at,
+        ReceiptSignSpec {
+            deal_state: "failed",
+            execution_state: "failed",
+            bundle: None,
+            stripe_settlement: None,
+            prepaid_settlement: Some(prepaid_settlement),
+            result_hash: None,
+            result_format: None,
+            result_envelope_hash: None,
+            failure: Some(failure.clone()),
+        },
+    )?;
+    let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+    let deal_id = deal.deal_id.clone();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| e.to_string())?;
+            let operation = (|| -> Result<(), String> {
+                let failure_evidence_hash = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "execution_failure",
+                    &failure,
+                    completed_at,
+                )?;
+                db::insert_artifact_document(
+                    conn,
+                    &receipt.hash,
+                    &receipt.payload_hash,
+                    ARTIFACT_KIND_RECEIPT,
+                    &receipt.signer,
+                    receipt.created_at,
+                    &receipt_json,
+                )?;
+                let _ = deals::complete_deal_failure_if_status(
+                    conn,
+                    deals::DealTerminalTransition {
+                        deal_id: &deal_id,
+                        expected_status: deals::DEAL_STATUS_PAYMENT_PENDING,
+                        error: "payment_expired",
+                        receipt: &receipt,
+                        failure_evidence_hash: Some(&failure_evidence_hash),
+                        receipt_artifact_hash: Some(&receipt.hash),
+                        now: completed_at,
+                    },
+                )?;
+                Ok(())
+            })();
+            if let Err(error) = operation {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn reconcile_lightning_settlement_once(state: Arc<AppState>) -> Result<(), String> {
     if !state
         .config
@@ -8516,6 +8831,27 @@ pub async fn reconcile_lightning_settlement_once(state: Arc<AppState>) -> Result
             }
         })
         .await;
+
+    // phoenixd (prepaid) deals are watched separately: poll each pending
+    // invoice and promote the deal to execution once the buyer's payment is
+    // confirmed.
+    if state.config.lightning.mode == LightningMode::Phoenixd {
+        let prepaid_deals = state
+            .db
+            .with_read_conn(deals::list_prepaid_watch_deals)
+            .await?;
+        stream::iter(prepaid_deals)
+            .for_each_concurrent(8, |deal| {
+                let state = state.clone();
+                async move {
+                    if let Err(error) = reconcile_prepaid_deal(state, deal).await {
+                        tracing::error!("Failed to reconcile prepaid deal: {error}");
+                    }
+                }
+            })
+            .await;
+    }
+
     tracing::info!(
         duration_ms = started_at.elapsed().as_millis() as u64,
         "Completed Lightning settlement reconciliation pass"
@@ -9025,6 +9361,38 @@ fn settlement_refs_from_stripe(stripe: &StripeSettlementInfo) -> ReceiptSettleme
     }
 }
 
+/// Build ReceiptSettlement for a prepaid (`lightning.prepaid.v1`) deal.
+///
+/// phoenixd has no hold invoices, so there is no bundle: `bundle_hash` is None
+/// and `destination_identity` is empty.  The base_fee leg carries the payment
+/// hash and — when paid — the **preimage** in `invoice_hash`, which is the
+/// cryptographic proof of payment the kernel verifies
+/// (`sha256(preimage) == payment_hash`).  The success_fee leg is an
+/// empty-canceled placeholder.
+fn settlement_refs_from_prepaid(prepaid: &PrepaidSettlementInfo) -> ReceiptSettlement {
+    let (base_state, invoice_hash) = if prepaid.paid {
+        (ReceiptLegState::Settled, prepaid.preimage_hex.clone())
+    } else {
+        (ReceiptLegState::Canceled, String::new())
+    };
+    ReceiptSettlement {
+        method: "lightning.prepaid.v1".to_string(),
+        bundle_hash: None,
+        destination_identity: String::new(),
+        base_fee: ReceiptSettlementLeg {
+            amount_msat: prepaid.charged_msat,
+            invoice_hash,
+            payment_hash: if prepaid.paid {
+                prepaid.payment_hash.clone()
+            } else {
+                String::new()
+            },
+            state: base_state,
+        },
+        success_fee: empty_receipt_leg(),
+    }
+}
+
 fn settlement_state_from_bundle(
     bundle: Option<&settlement::LightningInvoiceBundleSession>,
 ) -> String {
@@ -9109,6 +9477,7 @@ fn build_recovered_deal_failure(
             execution_state: recovery_execution_state(&deal),
             bundle: bundle.as_ref(),
             stripe_settlement: None,
+            prepaid_settlement: None,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -10630,6 +10999,10 @@ struct ReceiptSignSpec<'a> {
     /// For Stripe deals: the PaymentIntent ID and whether it was captured.
     /// When `Some`, overrides the Lightning-bundle settlement path.
     stripe_settlement: Option<StripeSettlementInfo>,
+    /// For prepaid (`lightning.prepaid.v1`) deals: the payment hash and
+    /// preimage proof.  When `Some`, overrides both the Stripe and
+    /// Lightning-bundle settlement paths.
+    prepaid_settlement: Option<PrepaidSettlementInfo>,
     result_hash: Option<String>,
     result_format: Option<String>,
     result_envelope_hash: Option<String>,
@@ -10646,6 +11019,54 @@ struct StripeSettlementInfo {
     captured: bool,
 }
 
+/// Carries the prepaid (phoenixd) data needed to build ReceiptSettlementRefs.
+#[derive(Clone)]
+struct PrepaidSettlementInfo {
+    /// The Lightning payment hash (hex; stored in deal.payment_token_hash).
+    payment_hash: String,
+    /// The payment preimage (hex) revealed by phoenixd on receipt.  Empty when
+    /// `paid` is false.  `sha256(preimage_hex) == payment_hash`.
+    preimage_hex: String,
+    /// Amount charged, in milli-satoshis.
+    charged_msat: u64,
+    /// Whether the invoice was paid (settled) or not (canceled).
+    paid: bool,
+}
+
+/// Query the provider's phoenixd for the preimage proof of a prepaid deal's
+/// payment, so the signed receipt can carry it.  Returns an error when phoenixd
+/// is unreachable or the invoice is not (yet) paid; callers leave the deal in
+/// its current state so reconciliation can retry rather than emitting an
+/// unprovable receipt.
+async fn prepaid_settlement_for_deal(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+) -> Result<PrepaidSettlementInfo, String> {
+    let client = state
+        .phoenixd_client
+        .as_ref()
+        .ok_or_else(|| "phoenixd client not configured for prepaid deal".to_string())?;
+    let payment_hash = deal
+        .payment_token_hash
+        .as_deref()
+        .ok_or_else(|| "prepaid deal is missing its payment hash".to_string())?;
+    let payment = client
+        .get_incoming_payment(payment_hash)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !payment.is_paid {
+        return Err(format!(
+            "prepaid invoice {payment_hash} is not yet paid at receipt time"
+        ));
+    }
+    Ok(PrepaidSettlementInfo {
+        payment_hash: payment_hash.to_string(),
+        preimage_hex: payment.preimage_hex,
+        charged_msat: deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000),
+        paid: true,
+    })
+}
+
 fn sign_deal_receipt(
     state: &AppState,
     deal: &deals::StoredDeal,
@@ -10657,7 +11078,16 @@ fn sign_deal_receipt(
             .as_ref()
             .map(|_| wasm::JCS_JSON_FORMAT.to_string())
     });
-    let (settlement_refs, settlement_state) = if let Some(stripe) = &spec.stripe_settlement {
+    let (settlement_refs, settlement_state) = if let Some(prepaid) = &spec.prepaid_settlement {
+        (
+            settlement_refs_from_prepaid(prepaid),
+            if prepaid.paid {
+                "settled".to_string()
+            } else {
+                "canceled".to_string()
+            },
+        )
+    } else if let Some(stripe) = &spec.stripe_settlement {
         (
             settlement_refs_from_stripe(stripe),
             if stripe.captured {
@@ -10740,6 +11170,7 @@ async fn reject_deal_before_execution(
             execution_state: "not_started",
             bundle: bundle.as_ref(),
             stripe_settlement: None,
+            prepaid_settlement: None,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -11089,9 +11520,32 @@ async fn process_deal_with_reserved_permit(
                         Err((pi_id, charged_msat, last_capture_err.unwrap_or_default()))
                     }
                 } else {
-                    // Non-Stripe path: no capture needed.
+                    // Non-Stripe path (prepaid / free): no capture needed.
                     Ok(None)
                 };
+
+                // For prepaid (phoenixd) deals, read the payment preimage from
+                // our own phoenixd so the receipt carries the cryptographic
+                // proof of payment.  The deal was promoted only after the
+                // invoice was observed paid, so this should succeed; if it
+                // doesn't, leave the deal running for reconciliation to retry
+                // rather than emit an unprovable receipt.
+                let prepaid_settlement =
+                    if deal.payment_method.as_deref() == Some("lightning_prepaid") {
+                        match prepaid_settlement_for_deal(state.as_ref(), &deal).await {
+                            Ok(info) => Some(info),
+                            Err(error) => {
+                                tracing::error!(
+                                    deal_id = %deal.deal_id,
+                                    "prepaid settlement lookup failed at success receipt; \
+                                     leaving deal running for retry: {error}"
+                                );
+                                return;
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                 match capture_outcome {
                     Ok(stripe_settlement) => {
@@ -11105,6 +11559,7 @@ async fn process_deal_with_reserved_permit(
                                 execution_state: "succeeded",
                                 bundle: None,
                                 stripe_settlement,
+                                prepaid_settlement: prepaid_settlement.clone(),
                                 result_hash: Some(output.result_hash.clone()),
                                 result_format: Some(output.result_format.clone()),
                                 result_envelope_hash: output.result_envelope_hash.clone(),
@@ -11283,6 +11738,7 @@ async fn process_deal_with_reserved_permit(
                                 execution_state: "failed",
                                 bundle: None,
                                 stripe_settlement,
+                                prepaid_settlement: None,
                                 result_hash: None,
                                 result_format: None,
                                 result_envelope_hash: None,
@@ -11427,6 +11883,29 @@ async fn process_deal_with_reserved_permit(
                 None
             };
 
+            // For prepaid (phoenixd) deals, the buyer already paid upfront, so
+            // execution failure does NOT refund (MVP): the receipt is still
+            // settlement_state=settled (funds moved) with execution_state=failed
+            // and carries the preimage proof.  This signed failed receipt is the
+            // buyer's evidence.  If the preimage lookup fails we leave the deal
+            // running for reconciliation rather than emit an unprovable receipt.
+            let prepaid_settlement = if deal.payment_method.as_deref() == Some("lightning_prepaid")
+            {
+                match prepaid_settlement_for_deal(state.as_ref(), &deal).await {
+                    Ok(info) => Some(info),
+                    Err(error) => {
+                        tracing::error!(
+                            deal_id = %deal.deal_id,
+                            "prepaid settlement lookup failed at failure receipt; \
+                             leaving deal running for retry: {error}"
+                        );
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
             let receipt = match sign_deal_receipt(
                 state.as_ref(),
                 &deal,
@@ -11436,6 +11915,7 @@ async fn process_deal_with_reserved_permit(
                     execution_state: "failed",
                     bundle: bundle.as_ref(),
                     stripe_settlement,
+                    prepaid_settlement,
                     result_hash: None,
                     result_format: None,
                     result_envelope_hash: None,
@@ -11647,10 +12127,12 @@ mod tests {
                 min_final_cltv_expiry: 18,
                 sync_interval_ms: 100,
                 lnd_rest: None,
+                phoenixd: None,
             },
             x402: None,
             stripe: None,
             buyer_stripe: None,
+            buyer_phoenixd: None,
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: db_path.clone(),
@@ -11712,6 +12194,7 @@ mod tests {
                 .clone(),
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
             lnd_rest_client: None,
+            phoenixd_client: None,
             lightning_wallet: None,
             lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
             event_batch_writer: None,
@@ -16253,6 +16736,7 @@ mod tests {
                     charged_msat: 30_000,
                     captured: true,
                 }),
+                prepaid_settlement: None,
                 result_hash: Some("aa".repeat(32)),
                 result_format: Some("application/json+jcs".to_string()),
                 result_envelope_hash: None,
@@ -16287,6 +16771,7 @@ mod tests {
                     charged_msat: 30_000,
                     captured: false,
                 }),
+                prepaid_settlement: None,
                 result_hash: None,
                 result_format: None,
                 result_envelope_hash: None,
@@ -16329,6 +16814,7 @@ mod tests {
                     charged_msat: 30_000,
                     captured: false, // the old buggy path: succeeded deal, uncaptured PI
                 }),
+                prepaid_settlement: None,
                 result_hash: Some("aa".repeat(32)),
                 result_format: Some("application/json+jcs".to_string()),
                 result_envelope_hash: None,

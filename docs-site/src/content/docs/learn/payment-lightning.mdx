@@ -51,13 +51,54 @@ docker run ...
 The container decodes those values into private files and sets the matching
 `*_PATH` variables before starting `froglet-node`.
 
+## phoenixd mode (self-custodial, prepaid)
+
+[phoenixd](https://phoenix.acinq.co/server) is ACINQ's self-custodial Lightning
+daemon: a single binary with **automatic liquidity** (pay-to-open / splicing —
+no channel management, no inbound-liquidity setup) and a small HTTP Basic-auth
+API. It is the easiest self-custodial Lightning path.
+
+```bash
+# 1. Run phoenixd once; it generates a BIP39 seed and an http-password.
+phoenixd
+# 2. Read the http-password it wrote:
+cat ~/.phoenix/phoenix.conf   # look for http-password=...
+# 3. Point Froglet at it:
+FROGLET_LIGHTNING_MODE=phoenixd \
+FROGLET_LIGHTNING_PHOENIXD_URL=http://127.0.0.1:9740 \
+FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD=<http-password> \
+  ./scripts/setup-payment.sh lightning --mode phoenixd
+```
+
+The verification probe calls `GET /getinfo` (HTTP Basic auth) and checks for a
+`nodeId`.
+
+**Trade-off — prepaid, no escrow.** Unlike LND mode, phoenixd cannot do
+hold-invoice escrow, so it uses the **`lightning.prepaid.v1`** method: the buyer
+pays the full price *upfront*, before execution. On failure there is no
+automatic refund — the signed `failed` receipt is the buyer's cryptographic
+evidence. In return you get dead-simple self-custodial Lightning, and the
+receipt still carries the payment **preimage** as a cryptographic proof of
+payment (`sha256(preimage) == payment_hash`) — stronger than Stripe's attested
+model. To buy services this way, configure
+`FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` + `_HTTP_PASSWORD` so your node can pay
+the provider's invoice.
+
+Non-loopback (remote, real-funds) phoenixd URLs require an explicit
+`FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=1` opt-in.
+
+Choose **LND mode** instead if you need pay-on-success escrow.
+
 ## Runtime behavior
 
-Lightning is the reference rail for Froglet's explicit two-leg settlement flow:
+Lightning offers two self-hostable settlement tiers:
 
-- descriptor exposes `lightning`
-- prepare reserves the deal through the invoice bundle flow
-- commit settles the success leg
-- release cancels or expires the pending hold
+- **LND (`lnd_rest`) — hold-invoice escrow** (`lightning.base_fee_plus_success_fee.v1`):
+  prepare reserves the deal through the invoice-bundle flow, commit settles the
+  success leg, release cancels or expires the pending hold. The success fee is
+  captured only when the work succeeds.
+- **phoenixd — prepaid** (`lightning.prepaid.v1`): the provider mints an ordinary
+  invoice at deal creation, the buyer pays it, and the provider confirms payment
+  before executing. No escrow; the preimage is the proof of payment.
 
 More on the artifact model: [Settlement (Lightning)](/learn/settlement/)

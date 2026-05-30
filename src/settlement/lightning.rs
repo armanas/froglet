@@ -22,6 +22,14 @@ use super::{
 
 pub const LIGHTNING_MOCK_MODE: &str = "mock_hold_invoice";
 pub const LIGHTNING_LND_REST_MODE: &str = "lnd_rest";
+pub const LIGHTNING_PHOENIXD_MODE: &str = "phoenixd_prepaid";
+
+/// Error returned whenever the hold-invoice escrow machinery is reached while
+/// the active Lightning backend is phoenixd.  phoenixd has no hold invoices, so
+/// it drives the prepaid (`lightning.prepaid.v1`) path instead and must never
+/// enter the escrow functions below.
+pub const PHOENIXD_NO_ESCROW: &str =
+    "phoenixd backend does not support hold-invoice escrow; it uses lightning.prepaid.v1";
 const LND_INVOICE_EXPIRY_GUARD_SECS: u64 = 5;
 
 // ─── Public lightning-specific types ─────────────────────────────────────────
@@ -539,6 +547,7 @@ pub async fn issue_lightning_invoice_bundle(
     match state.config.lightning.mode {
         LightningMode::Mock => build_lightning_invoice_bundle(state, request),
         LightningMode::LndRest => issue_lnd_rest_invoice_bundle(state, request).await,
+        LightningMode::Phoenixd => Err(PHOENIXD_NO_ESCROW.to_string()),
     }
 }
 
@@ -548,6 +557,7 @@ pub async fn sync_lightning_invoice_bundle_session(
 ) -> Result<LightningInvoiceBundleSession, String> {
     let session = match state.config.lightning.mode {
         LightningMode::Mock => session,
+        LightningMode::Phoenixd => return Err(PHOENIXD_NO_ESCROW.to_string()),
         LightningMode::LndRest => {
             let client = lightning_wallet(state)?;
             let mut base_state = if session.bundle.payload.base_fee.amount_msat == 0 {
@@ -636,6 +646,7 @@ pub async fn settle_lightning_success_hold_invoice(
     success_preimage_hex: &str,
 ) -> Result<LightningInvoiceBundleSession, String> {
     match state.config.lightning.mode {
+        LightningMode::Phoenixd => Err(PHOENIXD_NO_ESCROW.to_string()),
         LightningMode::Mock => {
             let Some(updated) = update_lightning_invoice_bundle_states(
                 state,
@@ -670,6 +681,7 @@ pub async fn cancel_lightning_invoice_bundle(
 ) -> Result<(), String> {
     match state.config.lightning.mode {
         LightningMode::Mock => Ok(()),
+        LightningMode::Phoenixd => Err(PHOENIXD_NO_ESCROW.to_string()),
         LightningMode::LndRest => {
             let client = lightning_wallet(state)?;
             let mut payment_hashes = Vec::new();
@@ -698,6 +710,7 @@ pub async fn cancel_pending_lightning_materialization_request(
 ) -> Result<(), String> {
     match state.config.lightning.mode {
         LightningMode::Mock => Ok(()),
+        LightningMode::Phoenixd => Err(PHOENIXD_NO_ESCROW.to_string()),
         LightningMode::LndRest => {
             let client = lightning_wallet(state)?;
             let mut payment_hashes = Vec::new();
@@ -721,7 +734,9 @@ pub async fn resolve_lightning_destination_identity(state: &AppState) -> Result<
 
     match state.config.lightning.mode {
         LightningMode::Mock => Ok(configured_lightning_destination_identity(state)),
-        LightningMode::LndRest => state
+        // Both real backends resolve the destination identity from the node's
+        // own pubkey via get_info (phoenixd: nodeId, LND: identity_pubkey).
+        LightningMode::LndRest | LightningMode::Phoenixd => state
             .lightning_destination_identity
             .get_or_try_init(|| async {
                 let client = lightning_wallet(state)?;
@@ -741,6 +756,7 @@ pub async fn cancel_and_sync_lightning_invoice_bundle(
     session: &LightningInvoiceBundleSession,
 ) -> Result<LightningInvoiceBundleSession, String> {
     match state.config.lightning.mode {
+        LightningMode::Phoenixd => Err(PHOENIXD_NO_ESCROW.to_string()),
         LightningMode::Mock => {
             let mut base_state = session.base_state.clone();
             let mut success_state = session.success_state.clone();
@@ -791,6 +807,21 @@ pub async fn quoted_lightning_settlement_terms(
         || price_sats == 0
     {
         return Ok(None);
+    }
+
+    // phoenixd backend → prepaid (non-escrow) terms.  The full price is a single
+    // upfront base fee; there is no success-fee hold, so the hold/CLTV fields are
+    // zeroed (as for Stripe).  destination_identity is still the node's pubkey.
+    if state.config.lightning.mode == LightningMode::Phoenixd {
+        return Ok(Some(QuoteSettlementTerms {
+            method: "lightning.prepaid.v1".to_string(),
+            destination_identity: resolve_lightning_destination_identity(state).await?,
+            base_fee_msat: price_sats.saturating_mul(1_000),
+            success_fee_msat: 0,
+            max_base_invoice_expiry_secs: state.config.lightning.base_invoice_expiry_secs,
+            max_success_hold_expiry_secs: 0,
+            min_final_cltv_expiry: 0,
+        }));
     }
 
     Ok(Some(QuoteSettlementTerms {
@@ -892,6 +923,7 @@ pub fn build_lightning_wallet_intent(
         mode: match state.config.lightning.mode {
             LightningMode::Mock => LIGHTNING_MOCK_MODE.to_string(),
             LightningMode::LndRest => LIGHTNING_LND_REST_MODE.to_string(),
+            LightningMode::Phoenixd => LIGHTNING_PHOENIXD_MODE.to_string(),
         },
         session_id: session.session_id.clone(),
         bundle_hash: session.bundle.hash.clone(),
@@ -1449,12 +1481,28 @@ impl LightningDriver {
         let mode = match state.config.lightning.mode {
             LightningMode::Mock => LIGHTNING_MOCK_MODE,
             LightningMode::LndRest => LIGHTNING_LND_REST_MODE,
+            LightningMode::Phoenixd => LIGHTNING_PHOENIXD_MODE,
         };
-        let mut capabilities = vec!["invoice_bundles".to_string(), "hold_invoices".to_string()];
+        // phoenixd is prepaid (no hold invoices / no escrow bundles); the other
+        // backends are hold-invoice escrow.  Advertise capabilities accordingly.
+        let mut capabilities = match state.config.lightning.mode {
+            LightningMode::Phoenixd => {
+                vec!["prepaid".to_string(), "preimage_proof".to_string()]
+            }
+            LightningMode::Mock | LightningMode::LndRest => {
+                vec!["invoice_bundles".to_string(), "hold_invoices".to_string()]
+            }
+        };
         match state.config.lightning.mode {
             LightningMode::Mock => capabilities.push("mock_mode".to_string()),
             LightningMode::LndRest => {
                 capabilities.push("lnd_rest".to_string());
+                capabilities.push("node_getinfo".to_string());
+            }
+            LightningMode::Phoenixd => {
+                capabilities.push("phoenixd".to_string());
+                capabilities.push("self_custodial".to_string());
+                capabilities.push("auto_liquidity".to_string());
                 capabilities.push("node_getinfo".to_string());
             }
         }

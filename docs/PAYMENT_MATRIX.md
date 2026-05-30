@@ -38,13 +38,27 @@ Four payment backends live in [src/config.rs](../src/config.rs)'s
 | Backend | Driver | Modes | Purpose |
 | --- | --- | --- | --- |
 | `None` | [none.rs](../src/settlement/none.rs) | — | Free-only deals. Used in local compose smoke, conformance tests, and the public `try.froglet.dev` demo catalog. |
-| `Lightning` | [lightning.rs](../src/settlement/lightning.rs) | `Mock`, `LndRest` | BOLT11 invoices for local/self-hosted nodes. `Mock` is deterministic + in-memory for unit tests; `LndRest` talks to any LND REST endpoint (regtest, signet, or mainnet). |
+| `Lightning` | [lightning.rs](../src/settlement/lightning.rs) + [phoenixd.rs](../src/settlement/phoenixd.rs) | `Mock`, `LndRest`, `Phoenixd` | BOLT11 invoices for local/self-hosted nodes. `Mock` is deterministic + in-memory for unit tests; `LndRest` talks to any LND REST endpoint and uses **hold-invoice escrow** (`lightning.base_fee_plus_success_fee.v1`, pay-on-success); `Phoenixd` is the self-custodial ACINQ daemon and uses **prepaid** settlement (`lightning.prepaid.v1`, pay-upfront, no escrow). |
 | `X402` | [x402.rs](../src/settlement/x402.rs) | — | Local/self-hosted HTTP 402 challenge/response; a lightweight cryptographic settlement rail suitable for agent-to-agent calls. |
 | `Stripe` | [stripe.rs](../src/settlement/stripe.rs) | — | Local/self-hosted fiat via Stripe PaymentIntents (Multi-Party Payments / Stripe Connect). |
 
 "Modes" are a property of the Lightning backend; the other backends are
-single-mode. The `Mock` Lightning mode is **for tests only** — production
-operators set `LightningMode::LndRest`.
+single-mode. The `Mock` Lightning mode is **for tests only**. Production
+operators choose between two self-hostable Lightning tiers, each with an
+explicit trade-off:
+
+- **`LndRest` — hold-invoice escrow** (`lightning.base_fee_plus_success_fee.v1`):
+  the success fee is captured only when the work succeeds (pay-on-success).
+  Requires running LND and managing inbound liquidity.
+- **`Phoenixd` — prepaid, no escrow** (`lightning.prepaid.v1`): the buyer pays
+  the full price upfront before execution; on failure there is no automatic
+  refund (the signed `failed` receipt is the buyer's cryptographic evidence).
+  In exchange it is the easiest self-custodial Lightning path — a single binary
+  with automatic liquidity (pay-to-open / splicing), HTTP Basic auth, no channel
+  management. The receipt still carries the payment **preimage** as a
+  cryptographic proof of payment (`sha256(preimage) == payment_hash`), so it is
+  strictly stronger than Stripe (attested, not cryptographic). Both buyer and
+  seller can run phoenixd for a fully self-custodial agent-to-agent exchange.
 
 ## 2. Verification matrix
 

@@ -299,10 +299,12 @@ mod tests {
                 min_final_cltv_expiry: 18,
                 sync_interval_ms: 1_000,
                 lnd_rest: None,
+                phoenixd: None,
             },
             x402: None,
             stripe: None,
             buyer_stripe: None,
+            buyer_phoenixd: None,
             storage: StorageConfig {
                 data_dir: temp_dir.to_path_buf(),
                 db_path: temp_dir.join("node.db"),

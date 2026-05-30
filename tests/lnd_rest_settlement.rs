@@ -478,10 +478,12 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
             min_final_cltv_expiry: 18,
             sync_interval_ms: 100,
             lnd_rest: Some(fake_lnd.config()),
+            phoenixd: None,
         },
         x402: None,
         stripe: None,
         buyer_stripe: None,
+        buyer_phoenixd: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -545,6 +547,7 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: Some(Arc::clone(&lnd_rest_client)),
+        phoenixd_client: None,
         lightning_wallet: Some(
             Arc::clone(&lnd_rest_client) as froglet::settlement::wallet::ArcLightningWallet
         ),

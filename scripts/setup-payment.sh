@@ -12,9 +12,15 @@ lightning_mode="${FROGLET_LIGHTNING_MODE:-mock}"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/setup-payment.sh lightning|stripe|x402 [--out PATH] [--mode mock|lnd_rest] [--no-verify]
+  scripts/setup-payment.sh lightning|stripe|x402 [--out PATH] [--mode mock|lnd_rest|phoenixd] [--no-verify]
 
 Writes an env snippet for one launch payment rail and runs a verification probe.
+
+Lightning modes:
+  mock      local stub, no wallet (development)
+  lnd_rest  external LND node — hold-invoice escrow (pay-on-success)
+  phoenixd  self-custodial ACINQ phoenixd — prepaid (lightning.prepaid.v1),
+            no escrow, dead-simple setup with automatic liquidity
 EOF
 }
 
@@ -114,6 +120,29 @@ probe_lightning_lnd_rest() {
       "$rest_url/v1/getinfo" >/dev/null
   fi
   printf 'Verification: LND REST endpoint responded to /v1/getinfo.\n'
+}
+
+probe_lightning_phoenixd() {
+  local url="${FROGLET_LIGHTNING_PHOENIXD_URL:-}"
+  local password="${FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD:-}"
+  local response
+  need_cmd curl
+  need_cmd python3
+  # phoenixd uses HTTP Basic auth with an empty username.
+  response="$(
+    curl --fail --silent --show-error \
+      -u ":$password" \
+      "$url/getinfo"
+  )" || fail "phoenixd /getinfo probe failed"
+  printf '%s' "$response" | python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+if not payload.get("nodeId"):
+    raise SystemExit("phoenixd /getinfo response missing nodeId")
+' || fail "phoenixd /getinfo response missing nodeId"
+  printf 'Verification: phoenixd /getinfo responded with a nodeId.\n'
 }
 
 probe_stripe() {
@@ -254,6 +283,27 @@ case "$rail" in
       printf '  - FROGLET_LIGHTNING_TLS_CERT_PATH when the endpoint uses https\n'
       if [[ "$verify" -eq 1 ]]; then
         probe_lightning_lnd_rest
+      fi
+    elif [[ "$lightning_mode" == "phoenixd" ]]; then
+      require_env FROGLET_LIGHTNING_PHOENIXD_URL
+      require_env FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD
+      require_http_url FROGLET_LIGHTNING_PHOENIXD_URL "${FROGLET_LIGHTNING_PHOENIXD_URL}"
+      write_snippet \
+        "FROGLET_PAYMENT_BACKEND=lightning" \
+        "FROGLET_LIGHTNING_MODE=phoenixd" \
+        "FROGLET_LIGHTNING_PHOENIXD_URL=${FROGLET_LIGHTNING_PHOENIXD_URL}" \
+        "FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD=${FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD}" \
+        "FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS=${FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS:-15}" \
+        "${FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM:+FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=${FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM}}"
+      printf 'Required inputs:\n'
+      printf '  - FROGLET_LIGHTNING_PHOENIXD_URL (default http://127.0.0.1:9740)\n'
+      printf '  - FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD (the http-password from ~/.phoenix/phoenix.conf)\n'
+      printf '  - FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=1 for non-loopback (real-funds) URLs\n'
+      printf 'Note: phoenixd is PREPAID (no escrow): the buyer pays upfront and the\n'
+      printf '      receipt carries a cryptographic preimage proof. For pay-on-success\n'
+      printf '      escrow, use --mode lnd_rest instead.\n'
+      if [[ "$verify" -eq 1 ]]; then
+        probe_lightning_phoenixd
       fi
     else
       fail "unsupported lightning mode: $lightning_mode"

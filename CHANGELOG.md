@@ -8,6 +8,43 @@ top of the `0.1.x` protocol core.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-30
+
+### Added
+
+- **phoenixd Lightning backend — the easy self-custodial rail.**
+  `FROGLET_LIGHTNING_MODE=phoenixd` points Froglet at an ACINQ
+  [phoenixd](https://phoenix.acinq.co/server) node: a single self-custodial
+  binary with automatic liquidity (pay-to-open / splicing), HTTP Basic auth,
+  and no channel management. Run it, paste a URL + password, start earning.
+- **New settlement method `lightning.prepaid.v1`** (additive; existing methods
+  and signing bytes unchanged). phoenixd cannot do hold-invoice escrow, so the
+  prepaid model is used: the provider mints an ordinary invoice at deal
+  creation, the buyer pays it upfront, and the provider confirms payment before
+  executing. The signed receipt carries the payment **preimage** as a
+  cryptographic proof of payment (`sha256(preimage) == payment_hash`) — strictly
+  stronger than Stripe's attested model.
+  - Trade-off vs the LND hold-invoice tier: **no escrow**. The buyer pays
+    upfront; on execution failure there is no automatic refund — the signed
+    `failed` receipt (`settlement_state=settled`, `execution_state=failed`) is
+    the buyer's cryptographic evidence. Use `FROGLET_LIGHTNING_MODE=lnd_rest`
+    for pay-on-success escrow.
+- Buyer-side prepaid payments: set `FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` +
+  `FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD` so a node can pay providers'
+  prepaid invoices from its own phoenixd. Both sides running phoenixd is a fully
+  self-custodial, agent-to-agent Lightning exchange.
+- `scripts/setup-payment.sh lightning --mode phoenixd` writes the env snippet
+  and probes `GET /getinfo`. Non-loopback (real-funds) phoenixd URLs require an
+  explicit `FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=1` opt-in.
+
+### Verification
+
+- New end-to-end test `phoenixd_prepaid_full_paid_deal_produces_settled_receipt`
+  drives the full HTTP provider+buyer flow against a mock phoenixd and asserts a
+  kernel-valid `lightning.prepaid.v1` receipt whose preimage hashes to the
+  payment hash. Nine new kernel tests cover the method, including the
+  mismatched-preimage rejection and the failed-but-paid (settled) receipt.
+
 ## [0.3.0] - 2026-05-30
 
 ### Added

@@ -8,6 +8,7 @@ use thiserror::Error;
 
 pub mod lightning;
 pub mod none;
+pub mod phoenixd;
 pub mod stripe;
 pub mod wallet;
 pub mod x402;
@@ -533,6 +534,32 @@ pub async fn mint_buyer_spt(
         .mint_spt(amount_cents, expires_at, &funding_source)
         .await?;
     Ok(minted.spt_id)
+}
+
+/// Pay a prepaid (`lightning.prepaid.v1`) BOLT11 invoice from the buyer's own
+/// phoenixd node.  Returns the sent payment (including the preimage the payee
+/// revealed) so the caller can locally verify `sha256(preimage) == payment_hash`
+/// before trusting it.
+pub async fn pay_buyer_prepaid_invoice(
+    buyer_config: &crate::config::BuyerPhoenixdConfig,
+    bolt11: &str,
+) -> Result<phoenixd::SentPayment, String> {
+    // `api_base_url` redirects to a mock phoenixd in tests; otherwise use the
+    // configured buyer phoenixd URL.
+    let url = buyer_config
+        .api_base_url
+        .clone()
+        .unwrap_or_else(|| buyer_config.url.clone());
+    let client = phoenixd::PhoenixdClient::from_config(&crate::config::LightningPhoenixdConfig {
+        url,
+        http_password: buyer_config.http_password.clone(),
+        request_timeout_secs: 15,
+    })
+    .map_err(|error| error.to_string())?;
+    client
+        .pay_invoice(bolt11, None)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 // Re-export buyer-mint types so tests can use them directly.

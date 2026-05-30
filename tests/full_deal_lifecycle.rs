@@ -276,10 +276,12 @@ fn lightning_app_state() -> Arc<AppState> {
             min_final_cltv_expiry: 18,
             sync_interval_ms: 100,
             lnd_rest: None,
+            phoenixd: None,
         },
         x402: None,
         stripe: None,
         buyer_stripe: None,
+        buyer_phoenixd: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -338,6 +340,7 @@ fn lightning_app_state() -> Arc<AppState> {
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
+        phoenixd_client: None,
         lightning_wallet: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
@@ -383,6 +386,7 @@ fn stripe_app_state_with_mock(
             min_final_cltv_expiry: 18,
             sync_interval_ms: 100,
             lnd_rest: None,
+            phoenixd: None,
         },
         x402: None,
         stripe: Some(StripeConfig {
@@ -390,6 +394,7 @@ fn stripe_app_state_with_mock(
             webhook_secret: None,
         }),
         buyer_stripe: Some(buyer_config),
+        buyer_phoenixd: None,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -465,6 +470,7 @@ fn stripe_app_state_with_mock(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         lnd_rest_client: None,
+        phoenixd_client: None,
         lightning_wallet: None,
         lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
         event_batch_writer: None,
@@ -908,4 +914,384 @@ async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
         receipt.payload.settlement_refs.method, "stripe_mpp.v1",
         "settlement method must be stripe_mpp.v1"
     );
+}
+
+// ─── Test 3: phoenixd prepaid full paid deal ───────────────────────────────────
+
+/// A fixed preimage and its SHA-256 payment hash, shared by all mock phoenixd
+/// routes so the settled receipt's `sha256(preimage) == payment_hash` proof
+/// holds under kernel validation.
+fn prepaid_preimage_and_hash() -> (String, String) {
+    let preimage_bytes = [0x11u8; 32];
+    let preimage_hex = "11".repeat(32);
+    let payment_hash_hex = froglet::crypto::sha256_hex(preimage_bytes);
+    (preimage_hex, payment_hash_hex)
+}
+
+struct MockPhoenixdState {
+    calls: std::sync::Mutex<Vec<String>>,
+    paid: std::sync::atomic::AtomicBool,
+    preimage_hex: String,
+    payment_hash_hex: String,
+    bolt11: String,
+}
+
+/// Mock phoenixd HTTP server.  Models the prepaid lifecycle: an invoice is
+/// minted (`/createinvoice`), the buyer pays it (`/payinvoice`, which flips the
+/// invoice to paid), and the provider polls (`/payments/incoming/{hash}`),
+/// observing the unpaid→paid transition and reading the preimage once paid.
+async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::JoinHandle<()>) {
+    let (preimage_hex, payment_hash_hex) = prepaid_preimage_and_hash();
+    let state = Arc::new(MockPhoenixdState {
+        calls: std::sync::Mutex::new(Vec::new()),
+        paid: std::sync::atomic::AtomicBool::new(false),
+        preimage_hex,
+        payment_hash_hex,
+        bolt11: "lnbc300n1pprepaidmockinvoice".to_string(),
+    });
+
+    async fn getinfo() -> AxumJson<Value> {
+        AxumJson(json!({ "nodeId": format!("03{}", "ab".repeat(32)) }))
+    }
+
+    async fn createinvoice(
+        AxumState(state): AxumState<Arc<MockPhoenixdState>>,
+        body: String,
+    ) -> AxumJson<Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("createinvoice:{body}"));
+        AxumJson(json!({
+            "amountSat": 30,
+            "paymentHash": state.payment_hash_hex,
+            "serialized": state.bolt11,
+        }))
+    }
+
+    async fn payinvoice(
+        AxumState(state): AxumState<Arc<MockPhoenixdState>>,
+        body: String,
+    ) -> AxumJson<Value> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("payinvoice:{body}"));
+        state.paid.store(true, std::sync::atomic::Ordering::SeqCst);
+        AxumJson(json!({
+            "paymentHash": state.payment_hash_hex,
+            "paymentPreimage": state.preimage_hex,
+            "routingFeeSat": 0,
+        }))
+    }
+
+    async fn incoming(
+        AxumState(state): AxumState<Arc<MockPhoenixdState>>,
+        AxumPath(hash): AxumPath<String>,
+    ) -> AxumJson<Value> {
+        let paid = state.paid.load(std::sync::atomic::Ordering::SeqCst);
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("incoming/{hash}:paid={paid}"));
+        AxumJson(json!({
+            "paymentHash": hash,
+            "isPaid": paid,
+            "preimage": if paid { state.preimage_hex.clone() } else { String::new() },
+            "receivedSat": if paid { 30 } else { 0 },
+        }))
+    }
+
+    let app = Router::new()
+        .route("/getinfo", axum_get(getinfo))
+        .route("/createinvoice", axum_post(createinvoice))
+        .route("/payinvoice", axum_post(payinvoice))
+        .route("/payments/incoming/:hash", axum_get(incoming))
+        .with_state(state.clone());
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock phoenixd");
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("mock phoenixd serve");
+    });
+    (format!("http://{addr}"), state, handle)
+}
+
+fn phoenixd_app_state_with_mock(mock_base_url: &str) -> Arc<AppState> {
+    use froglet::config::{BuyerPhoenixdConfig, LightningPhoenixdConfig};
+    use zeroize::Zeroizing;
+
+    let temp_dir = unique_temp_dir("phoenixd");
+    let db_path = temp_dir.join("node.db");
+
+    let node_config = NodeConfig {
+        network_mode: NetworkMode::Clearnet,
+        listen_addr: "127.0.0.1:0".to_string(),
+        public_base_url: None,
+        runtime_listen_addr: "127.0.0.1:0".to_string(),
+        runtime_allow_non_loopback: false,
+        http_ca_cert_path: None,
+        tor: froglet::config::TorSidecarConfig {
+            binary_path: "tor".to_string(),
+            backend_listen_addr: "127.0.0.1:0".to_string(),
+            startup_timeout_secs: 90,
+        },
+        identity: IdentityConfig {
+            auto_generate: true,
+        },
+        pricing: PricingConfig {
+            events_query: 0,
+            execute_wasm: 30,
+        },
+        payment_backends: vec![PaymentBackend::Lightning],
+        execution_timeout_secs: 10,
+        lightning: LightningConfig {
+            mode: LightningMode::Phoenixd,
+            destination_identity: None,
+            base_invoice_expiry_secs: 300,
+            success_hold_expiry_secs: 300,
+            min_final_cltv_expiry: 18,
+            sync_interval_ms: 100,
+            lnd_rest: None,
+            phoenixd: Some(LightningPhoenixdConfig {
+                url: mock_base_url.to_string(),
+                http_password: Zeroizing::new("test-phoenixd-pw".to_string()),
+                request_timeout_secs: 15,
+            }),
+        },
+        x402: None,
+        stripe: None,
+        buyer_stripe: None,
+        buyer_phoenixd: Some(BuyerPhoenixdConfig {
+            url: mock_base_url.to_string(),
+            http_password: Zeroizing::new("test-phoenixd-pw".to_string()),
+            api_base_url: Some(mock_base_url.to_string()),
+        }),
+        storage: StorageConfig {
+            data_dir: temp_dir.clone(),
+            db_path: db_path.clone(),
+            identity_dir: temp_dir.join("identity"),
+            identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+            runtime_dir: temp_dir.join("runtime"),
+            runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+            tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: false,
+        },
+        wasm: WasmConfig {
+            policy_path: None,
+            policy: None,
+        },
+        gpu: Default::default(),
+        confidential: ConfidentialConfig {
+            policy_path: None,
+            policy: None,
+            session_ttl_secs: 300,
+        },
+        marketplace_url: None,
+        postgres_mounts: std::collections::BTreeMap::new(),
+        session_pool: Default::default(),
+        hosted_trial_origin_secret: None,
+    };
+
+    let db = DbPool::open(&db_path).expect("db pool");
+    let events_query_capacity = db.read_connection_count().max(1);
+    let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
+    let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
+    let settlement_registry = SettlementRegistry::new(&node_config);
+
+    // Build the phoenixd client pointed at the mock and use it as both the
+    // concrete prepaid client and the backend-neutral lightning wallet.
+    let phoenixd_client = Arc::new(
+        froglet::settlement::phoenixd::PhoenixdClient::from_config(&LightningPhoenixdConfig {
+            url: mock_base_url.to_string(),
+            http_password: Zeroizing::new("test-phoenixd-pw".to_string()),
+            request_timeout_secs: 15,
+        })
+        .expect("phoenixd client"),
+    );
+    let lightning_wallet: froglet::settlement::wallet::ArcLightningWallet = phoenixd_client.clone();
+
+    Arc::new(AppState {
+        db,
+        transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
+            &node_config,
+        ))),
+        wasm_sandbox: Arc::new(froglet::sandbox::WasmSandbox::new(4).expect("sandbox")),
+        config: node_config,
+        identity: Arc::new(identity),
+        pricing,
+        http_client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client"),
+        wasm_host: None,
+        confidential_policy: None,
+        runtime_auth_token: "test-runtime-token".to_string(),
+        runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+        consumer_control_auth_token: "test-consumer-token".to_string(),
+        consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+        provider_control_auth_token: "test-provider-control-token".to_string(),
+        provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+        events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        lnd_rest_client: None,
+        phoenixd_client: Some(phoenixd_client),
+        lightning_wallet: Some(lightning_wallet),
+        lightning_destination_identity: Arc::new(tokio::sync::OnceCell::new()),
+        event_batch_writer: None,
+        builtin_services: std::collections::HashMap::new(),
+        settlement_registry,
+        session_pool: None,
+    })
+}
+
+/// Full prepaid (phoenixd) paid deal from creation through settlement.
+///
+/// Architecture: provider + runtime are the same node (separate ports), with a
+/// mock phoenixd standing in for the self-custodial Lightning daemon.
+///
+/// Lifecycle:
+///   1. Runtime POST /v1/runtime/deals → quote (lightning.prepaid.v1) + deal.
+///   2. Provider mints an invoice (mock /createinvoice) and returns its BOLT11.
+///   3. Buyer auto-pays via its phoenixd (mock /payinvoice) → invoice flips paid.
+///   4. The Lightning reconcile loop observes isPaid, promotes the deal, and the
+///      provider executes the wasm workload.
+///   5. Provider signs a `lightning.prepaid.v1` receipt carrying the preimage.
+///   6. Assert: deal succeeded, settlement settled, method lightning.prepaid.v1,
+///      kernel validation passes, and sha256(invoice_hash) == payment_hash.
+#[tokio::test]
+async fn phoenixd_prepaid_full_paid_deal_produces_settled_receipt() {
+    let (mock_base_url, mock_phoenixd, _mock_handle) = start_mock_phoenixd().await;
+    let state = phoenixd_app_state_with_mock(&mock_base_url);
+
+    // Drive the Lightning settlement reconcile loop so paid prepaid deals are
+    // promoted and executed (no separate server task starts it in tests).
+    let loop_state = state.clone();
+    let _loop_handle =
+        tokio::spawn(async move { froglet::api::run_lightning_settlement_loop(loop_state).await });
+
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+
+    let provider_id = state.identity.node_id().to_string();
+
+    // ── Step 1: POST /v1/runtime/deals ──────────────────────────────────────
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let create_body = json!({
+        "provider": {
+            "provider_id": provider_id,
+            "provider_url": provider.base_url,
+        },
+        "offer_id": "execute.compute",
+        "kind": "wasm",
+        "submission": test_wasm_submission(),
+    });
+    let (create_status, create_resp): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &create_body,
+    )
+    .await;
+    drop(_env);
+    drop(_env_guard);
+    assert_eq!(
+        create_status,
+        StatusCode::OK,
+        "phoenixd runtime create deal failed: {create_resp}"
+    );
+
+    let deal_id = create_resp["deal"]["deal_id"]
+        .as_str()
+        .expect("deal_id in response")
+        .to_string();
+
+    // ── Step 2: the reconcile loop promotes + executes after payment ────────
+    wait_for_deal_status(&state, &deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
+
+    // ── Step 3: the mock saw the prepaid invoice minted + paid ──────────────
+    {
+        let calls = mock_phoenixd.calls.lock().unwrap().clone();
+        assert!(
+            calls.iter().any(|c| c.starts_with("createinvoice:")),
+            "provider must mint a prepaid invoice; calls: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.starts_with("payinvoice:")),
+            "buyer must pay the prepaid invoice; calls: {calls:?}"
+        );
+    }
+
+    // ── Step 4: retrieve + verify the receipt ───────────────────────────────
+    let (get_status, get_resp): (StatusCode, Value) = http_get_json(
+        &client,
+        &format!("{}/v1/runtime/deals/{deal_id}", runtime.base_url),
+        Some("test-runtime-token"),
+    )
+    .await;
+    assert_eq!(get_status, StatusCode::OK, "get deal failed: {get_resp}");
+
+    let receipt_value = &get_resp["deal"]["receipt"];
+    assert!(
+        !receipt_value.is_null(),
+        "expected a receipt after succeeded; got: {get_resp}"
+    );
+    let receipt: froglet::protocol::SignedArtifact<froglet::protocol::ReceiptPayload> =
+        serde_json::from_value(receipt_value.clone()).expect("deserialize prepaid receipt");
+
+    assert!(
+        verify_artifact(&receipt),
+        "prepaid receipt signature must verify"
+    );
+    assert!(
+        validate_receipt_artifact(&receipt).is_ok(),
+        "prepaid receipt must pass kernel validation: {:?}",
+        validate_receipt_artifact(&receipt)
+    );
+    assert_eq!(receipt.payload.deal_state, "succeeded");
+    assert_eq!(receipt.payload.settlement_state, "settled");
+    assert_eq!(
+        receipt.payload.settlement_refs.method, "lightning.prepaid.v1",
+        "settlement method must be lightning.prepaid.v1"
+    );
+
+    // The cryptographic proof of payment: invoice_hash (preimage) hashes to the
+    // payment_hash.
+    let preimage_hex = &receipt.payload.settlement_refs.base_fee.invoice_hash;
+    let payment_hash = &receipt.payload.settlement_refs.base_fee.payment_hash;
+    let preimage_bytes = decode_hex32(preimage_hex).expect("preimage is 32-byte hex");
+    assert_eq!(
+        froglet::crypto::sha256_hex(preimage_bytes),
+        payment_hash.to_lowercase(),
+        "receipt preimage must hash to the payment_hash"
+    );
+}
+
+/// Decode a 32-byte hex string without pulling in the `hex` crate (not a
+/// dev-dependency).  Returns `None` on invalid hex or wrong length.
+fn decode_hex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
