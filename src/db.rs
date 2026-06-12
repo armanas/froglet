@@ -325,7 +325,19 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             quarantined_at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_deal_quarantine_quarantined_at
-            ON deal_quarantine (quarantined_at DESC);",
+            ON deal_quarantine (quarantined_at DESC);
+         CREATE TABLE IF NOT EXISTS requester_spend_ledger (
+            deal_hash TEXT PRIMARY KEY,
+            deal_id TEXT,
+            provider_id TEXT NOT NULL,
+            amount_msat INTEGER NOT NULL,
+            settlement_method TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_requester_spend_ledger_state
+            ON requester_spend_ledger (state);",
     )?;
     apply_migration_once(conn, LEGACY_ARTIFACTS_MIGRATION, migrate_legacy_artifacts)?;
     apply_migration_once(

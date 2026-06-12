@@ -183,6 +183,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),

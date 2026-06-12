@@ -1084,3 +1084,83 @@ test("getDealInvoiceBundle hits the provider invoice-bundle endpoint", async () 
     }
   })
 })
+
+test("invokeService surfaces requester spend-policy refusals as actionable errors", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    global.fetch = async (url) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/prov-1") {
+        return new Response(
+          JSON.stringify({
+            provider: {
+              provider_id: "prov-1",
+              transport_endpoints: [
+                { uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 1 }
+              ]
+            }
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr === `${PUBLIC_PROVIDER_URL}/v1/provider/services/svc-1`) {
+        return new Response(
+          JSON.stringify({
+            service: {
+              service_id: "svc-1",
+              offer_id: "svc-1",
+              provider_id: "prov-1",
+              runtime: "python",
+              package_kind: "inline_source",
+              entrypoint_kind: "handler",
+              entrypoint: "ignored/path.py",
+              contract_version: "froglet.python.handler_json.v1",
+              binding_hash: "feedface",
+              mounts: []
+            }
+          }),
+          { status: 200 }
+        )
+      }
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
+        return new Response(
+          JSON.stringify({
+            error:
+              "cumulative spend budget exhausted: 950000 of 1000000 msat committed; this deal needs 250000 msat. Raise FROGLET_REQUESTER_SPEND_BUDGET_MSAT or POST /v1/runtime/spend/reset.",
+            code: "spend_budget_exceeded",
+            quoted_total_msat: 250000,
+            spend_budget_msat: 1000000,
+            spent_msat: 950000,
+            remaining_msat: 50000
+          }),
+          { status: 402 }
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    }
+    try {
+      await assert.rejects(
+        invokeService({
+          runtimeUrl: "http://127.0.0.1:8081",
+          runtimeAuthTokenPath: tokenPath,
+          requestTimeoutMs: 1000,
+          request: {
+            provider_id: "prov-1",
+            service_id: "svc-1",
+            input: { ping: true }
+          },
+          _deps: clientDeps()
+        }),
+        (error) => {
+          assert.equal(error.code, "spend_budget_exceeded")
+          assert.match(error.message, /spend_budget_exceeded/)
+          assert.match(error.message, /FROGLET_REQUESTER_SPEND_BUDGET_MSAT/)
+          assert.match(error.message, /remaining_msat=50000/)
+          return true
+        }
+      )
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})

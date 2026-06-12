@@ -307,6 +307,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: temp_dir.to_path_buf(),
                 db_path: temp_dir.join("node.db"),

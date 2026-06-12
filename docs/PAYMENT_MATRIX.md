@@ -60,6 +60,13 @@ explicit trade-off:
   strictly stronger than Stripe (attested, not cryptographic). Both buyer and
   seller can run phoenixd for a fully self-custodial agent-to-agent exchange.
 
+**Buyer-side spend policy (all rails):** every paid deal a node creates as a
+buyer is gated by the requester spend policy *before* any money moves —
+`FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative, persistently tracked) and
+`FROGLET_REQUESTER_MAX_DEAL_MSAT` (per-deal). Fail-closed: with no budget set,
+paid deals are refused with `402 spend_budget_unconfigured`. See
+`CONFIGURATION.md` and `API_ERRORS.md`.
+
 ## 2. Verification matrix
 
 Columns are verification modes; rows are rails. Each cell states the current

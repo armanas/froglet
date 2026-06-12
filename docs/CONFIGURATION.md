@@ -57,6 +57,8 @@ conversion from sats into backend-native fiat or token units.
 | `FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM` | *(none)* | Set to `1` to allow a non-loopback `phoenixd` URL (a real-funds node); loopback URLs do not require it |
 | `FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` | *(none)* | Buyer-side phoenixd URL used to pay prepaid invoices when this node buys services |
 | `FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD` | *(none)* | Buyer-side phoenixd `http-password`. Required when `FROGLET_LIGHTNING_BUYER_PHOENIXD_URL` is set |
+| `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` | *(none)* | Cumulative spend budget (msat) across all paid deals this node creates as a buyer. **Required for paid deals — when unset, paid deals are refused (fail-closed)**; free deals are unaffected. Tracked in a persistent ledger; inspect with `GET /v1/runtime/spend`, archive committed spend with `POST /v1/runtime/spend/reset` |
+| `FROGLET_REQUESTER_MAX_DEAL_MSAT` | *(none)* | Hard cap (msat) on any single deal's quoted total (base + success fee). Optional extra guard on top of the cumulative budget |
 | `FROGLET_LIGHTNING_REST_URL` | *(none)* | LND REST API URL. Required when mode is `lnd_rest` |
 | `FROGLET_LIGHTNING_TLS_CERT_PATH` | *(none)* | Path to the LND TLS certificate. Required for `https://` REST URLs |
 | `FROGLET_LIGHTNING_TLS_CERT_B64` | *(none)* | Docker-only convenience input. Base64 PEM decoded by `docker-entrypoint.sh` into `FROGLET_LIGHTNING_TLS_CERT_PATH` when the path is unset |

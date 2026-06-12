@@ -1608,6 +1608,50 @@ export async function getService({ runtimeUrl, runtimeAuthTokenPath, requestTime
 }
 
 /**
+ * POST /v1/runtime/deals with requester-spend-policy awareness.
+ *
+ * The daemon refuses paid deals that violate the node's spend policy with a
+ * 402 carrying a stable `code` (`spend_budget_unconfigured`,
+ * `spend_cap_exceeded`, `spend_budget_exceeded`). Surface those as actionable
+ * errors so the calling agent learns the remediation (env var to set, or the
+ * reset endpoint) instead of a generic HTTP failure. Any other unexpected
+ * status keeps the original generic error shape.
+ *
+ * @param {string} runtimeUrl
+ * @param {string} runtimeAuthTokenPath
+ * @param {number} requestTimeoutMs
+ * @param {unknown} jsonBody
+ */
+async function createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, jsonBody) {
+  const { status, payload } = await frogletRequestWithStatus(
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    requestTimeoutMs,
+    "POST",
+    "/v1/runtime/deals",
+    {
+      jsonBody,
+      expectedStatuses: [200, 201, 402],
+    }
+  )
+  if (status === 402) {
+    const code = typeof payload?.code === "string" ? payload.code : null
+    if (code && code.startsWith("spend_")) {
+      const detail = typeof payload?.error === "string" ? payload.error : JSON.stringify(payload)
+      const remaining =
+        typeof payload?.remaining_msat === "number" ? ` remaining_msat=${payload.remaining_msat}.` : ""
+      const error = new Error(`Deal refused by the requester spend policy (${code}): ${detail}.${remaining}`)
+      error.code = code
+      error.payload = payload
+      throw error
+    }
+    // Non-spend 402s (e.g. missing buyer wallet) keep the legacy error shape.
+    throw new Error(`Request to ${runtimeUrl}/v1/runtime/deals failed with 402: ${JSON.stringify(payload)}`)
+  }
+  return payload
+}
+
+/**
  * Invoke a named service by building a canonical service-addressed execution
  * workload and submitting it through the runtime deal flow.
  *
@@ -1631,25 +1675,15 @@ export async function invokeService({
     trustedProviderUrl,
     _deps,
   })
-  const response = await frogletRequest(
-    runtimeUrl,
-    runtimeAuthTokenPath,
-    requestTimeoutMs,
-    "POST",
-    "/v1/runtime/deals",
-    {
-      jsonBody: {
-        provider: {
-          provider_id: resolved.providerId,
-          provider_url: resolved.providerUrl,
-        },
-        offer_id: resolved.service.offer_id,
-        kind: "execution",
-        execution: buildServiceAddressedExecution(resolved.service, request?.input),
-      },
-      expectedStatuses: [200, 201],
-    }
-  )
+  const response = await createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, {
+    provider: {
+      provider_id: resolved.providerId,
+      provider_url: resolved.providerUrl,
+    },
+    offer_id: resolved.service.offer_id,
+    kind: "execution",
+    execution: buildServiceAddressedExecution(resolved.service, request?.input),
+  })
   return normalizeRuntimeDealCreation(response)
 }
 
@@ -1718,24 +1752,14 @@ export async function runCompute({
     }
   }
   const offerId = spec.kind === "execution" ? "execute.compute.generic" : "execute.compute"
-  const response = await frogletRequest(
-    runtimeUrl,
-    runtimeAuthTokenPath,
-    requestTimeoutMs,
-    "POST",
-    "/v1/runtime/deals",
-    {
-      jsonBody: {
-        provider: {
-          ...(provider.providerId ? { provider_id: provider.providerId } : {}),
-          provider_url: provider.providerUrl,
-        },
-        offer_id: offerId,
-        ...spec,
-      },
-      expectedStatuses: [200, 201],
-    }
-  )
+  const response = await createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, {
+    provider: {
+      ...(provider.providerId ? { provider_id: provider.providerId } : {}),
+      provider_url: provider.providerUrl,
+    },
+    offer_id: offerId,
+    ...spec,
+  })
   return normalizeRuntimeDealCreation(response)
 }
 

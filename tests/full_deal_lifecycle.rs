@@ -241,7 +241,23 @@ async fn wait_for_deal_status(
 // ─── AppState builders ────────────────────────────────────────────────────────
 
 fn lightning_app_state() -> Arc<AppState> {
-    let temp_dir = unique_temp_dir("lightning");
+    lightning_app_state_custom(
+        froglet::config::RequesterSpendConfig {
+            max_deal_msat: None,
+            spend_budget_msat: Some(1_000_000_000),
+        },
+        None,
+    )
+    .0
+}
+
+/// Lightning-mock fixture with an explicit requester spend policy and an
+/// optional pre-existing data dir (reused for restart-persistence tests).
+fn lightning_app_state_custom(
+    requester_spend: froglet::config::RequesterSpendConfig,
+    reuse_dir: Option<std::path::PathBuf>,
+) -> (Arc<AppState>, std::path::PathBuf) {
+    let temp_dir = reuse_dir.unwrap_or_else(|| unique_temp_dir("lightning"));
     let db_path = temp_dir.join("node.db");
 
     let node_config = NodeConfig {
@@ -284,6 +300,7 @@ fn lightning_app_state() -> Arc<AppState> {
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        requester_spend,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -319,7 +336,7 @@ fn lightning_app_state() -> Arc<AppState> {
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
     let settlement_registry = SettlementRegistry::new(&node_config);
 
-    Arc::new(AppState {
+    let state = Arc::new(AppState {
         db,
         transport_status: Arc::new(tokio::sync::Mutex::new(TransportStatus::from_config(
             &node_config,
@@ -367,12 +384,28 @@ fn lightning_app_state() -> Arc<AppState> {
         builtin_services: std::collections::HashMap::new(),
         settlement_registry,
         session_pool: None,
-    })
+    });
+    (state, temp_dir)
 }
 
 fn stripe_app_state_with_mock(
     mock_base_url: &str,
     buyer_config: BuyerStripeConfig,
+) -> Arc<AppState> {
+    stripe_app_state_with_mock_spend(
+        mock_base_url,
+        buyer_config,
+        froglet::config::RequesterSpendConfig {
+            max_deal_msat: None,
+            spend_budget_msat: Some(1_000_000_000),
+        },
+    )
+}
+
+fn stripe_app_state_with_mock_spend(
+    mock_base_url: &str,
+    buyer_config: BuyerStripeConfig,
+    requester_spend: froglet::config::RequesterSpendConfig,
 ) -> Arc<AppState> {
     let temp_dir = unique_temp_dir("stripe");
     let db_path = temp_dir.join("node.db");
@@ -417,6 +450,7 @@ fn stripe_app_state_with_mock(
         }),
         buyer_stripe: Some(buyer_config),
         buyer_phoenixd: None,
+        requester_spend,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -1060,6 +1094,19 @@ async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::
 }
 
 fn phoenixd_app_state_with_mock(mock_base_url: &str) -> Arc<AppState> {
+    phoenixd_app_state_with_mock_spend(
+        mock_base_url,
+        froglet::config::RequesterSpendConfig {
+            max_deal_msat: None,
+            spend_budget_msat: Some(1_000_000_000),
+        },
+    )
+}
+
+fn phoenixd_app_state_with_mock_spend(
+    mock_base_url: &str,
+    requester_spend: froglet::config::RequesterSpendConfig,
+) -> Arc<AppState> {
     use froglet::config::{BuyerPhoenixdConfig, LightningPhoenixdConfig};
     use zeroize::Zeroizing;
 
@@ -1111,6 +1158,7 @@ fn phoenixd_app_state_with_mock(mock_base_url: &str) -> Arc<AppState> {
             http_password: Zeroizing::new("test-phoenixd-pw".to_string()),
             api_base_url: Some(mock_base_url.to_string()),
         }),
+        requester_spend,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -1347,4 +1395,291 @@ fn decode_hex32(s: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+// ─── Requester spend policy tests ─────────────────────────────────────────────
+//
+// The spend policy is enforced in `runtime_create_deal_inner` after quote
+// verification and before ANY side effect, so a refusal must leave no deal,
+// no ledger entry, and no traffic on the buyer's wallet backends.
+
+fn spend_policy(
+    max_deal_msat: Option<u64>,
+    spend_budget_msat: Option<u64>,
+) -> froglet::config::RequesterSpendConfig {
+    froglet::config::RequesterSpendConfig {
+        max_deal_msat,
+        spend_budget_msat,
+    }
+}
+
+fn paid_create_body(provider_id: &str, provider_url: &str) -> Value {
+    json!({
+        "provider": {
+            "provider_id": provider_id,
+            "provider_url": provider_url,
+        },
+        "offer_id": "execute.compute",
+        "kind": "wasm",
+        "submission": test_wasm_submission(),
+    })
+}
+
+#[tokio::test]
+async fn spend_cap_refuses_overpriced_lightning_deal() {
+    // Offer price is 30 sats = 30_000 msat; cap below it.
+    let (state, _dir) =
+        lightning_app_state_custom(spend_policy(Some(29_000), Some(1_000_000)), None);
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = reqwest::Client::new();
+    let provider_id = state.identity.node_id().to_string();
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let (status, resp): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id, &provider.base_url),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "expected 402: {resp}");
+    assert_eq!(resp["code"], "spend_cap_exceeded", "body: {resp}");
+    assert_eq!(resp["quoted_total_msat"], 30_000);
+    assert_eq!(resp["max_deal_msat"], 29_000);
+
+    // No ledger entry survives the refusal.
+    let (spend_status, spend): (StatusCode, Value) = http_get_json(
+        &client,
+        &format!("{}/v1/runtime/spend", runtime.base_url),
+        Some("test-runtime-token"),
+    )
+    .await;
+    assert_eq!(spend_status, StatusCode::OK);
+    assert_eq!(spend["reserved_msat"], 0, "spend: {spend}");
+    assert_eq!(spend["committed_msat"], 0, "spend: {spend}");
+}
+
+#[tokio::test]
+async fn spend_budget_unconfigured_refuses_paid_deal() {
+    let (state, _dir) = lightning_app_state_custom(spend_policy(None, None), None);
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = reqwest::Client::new();
+    let provider_id = state.identity.node_id().to_string();
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let (status, resp): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id, &provider.base_url),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "expected 402: {resp}");
+    assert_eq!(resp["code"], "spend_budget_unconfigured", "body: {resp}");
+    let error_text = resp["error"].as_str().expect("error text");
+    assert!(
+        error_text.contains("FROGLET_REQUESTER_SPEND_BUDGET_MSAT"),
+        "remediation must name the env var: {error_text}"
+    );
+}
+
+#[tokio::test]
+async fn spend_budget_exhaustion_then_reset_restores_headroom() {
+    // Budget fits one 30_000 msat deal but not two.
+    let (state, _dir) = lightning_app_state_custom(spend_policy(None, Some(45_000)), None);
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let provider_id = state.identity.node_id().to_string();
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let deals_url = format!("{}/v1/runtime/deals", runtime.base_url);
+    let body = paid_create_body(&provider_id, &provider.base_url);
+
+    let (status1, resp1): (StatusCode, Value) =
+        http_post_json(&client, &deals_url, Some("test-runtime-token"), &body).await;
+    assert_eq!(status1, StatusCode::OK, "first deal must pass: {resp1}");
+
+    let (spend_status, spend): (StatusCode, Value) = http_get_json(
+        &client,
+        &format!("{}/v1/runtime/spend", runtime.base_url),
+        Some("test-runtime-token"),
+    )
+    .await;
+    assert_eq!(spend_status, StatusCode::OK);
+    assert_eq!(spend["committed_msat"], 30_000, "spend: {spend}");
+    assert_eq!(spend["remaining_msat"], 15_000, "spend: {spend}");
+
+    let (status2, resp2): (StatusCode, Value) =
+        http_post_json(&client, &deals_url, Some("test-runtime-token"), &body).await;
+    assert_eq!(
+        status2,
+        StatusCode::PAYMENT_REQUIRED,
+        "expected 402: {resp2}"
+    );
+    assert_eq!(resp2["code"], "spend_budget_exceeded", "body: {resp2}");
+    assert_eq!(resp2["remaining_msat"], 15_000, "body: {resp2}");
+
+    let (reset_status, reset): (StatusCode, Value) = http_post_empty_json(
+        &client,
+        &format!("{}/v1/runtime/spend/reset", runtime.base_url),
+        Some("test-runtime-token"),
+    )
+    .await;
+    assert_eq!(reset_status, StatusCode::OK);
+    assert_eq!(reset["archived_deals"], 1, "reset: {reset}");
+
+    let (status3, resp3): (StatusCode, Value) =
+        http_post_json(&client, &deals_url, Some("test-runtime-token"), &body).await;
+    assert_eq!(
+        status3,
+        StatusCode::OK,
+        "post-reset deal must pass: {resp3}"
+    );
+}
+
+#[tokio::test]
+async fn spend_ledger_survives_restart() {
+    let policy = spend_policy(None, Some(45_000));
+    let (state, dir) = lightning_app_state_custom(policy, None);
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let provider_id = state.identity.node_id().to_string();
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let (status, resp): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id, &provider.base_url),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first deal must pass: {resp}");
+
+    // Simulate a restart: drop the servers and the state, then rebuild over
+    // the same data dir and database.
+    drop(provider);
+    drop(runtime);
+    drop(state);
+
+    let (state2, _dir2) = lightning_app_state_custom(policy, Some(dir));
+    let provider2 = spawn_server(public_router(state2.clone())).await;
+    let runtime2 = spawn_server(runtime_router(state2.clone())).await;
+    let provider_id2 = state2.identity.node_id().to_string();
+    let _env2 = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider2.base_url);
+
+    let (spend_status, spend): (StatusCode, Value) = http_get_json(
+        &client,
+        &format!("{}/v1/runtime/spend", runtime2.base_url),
+        Some("test-runtime-token"),
+    )
+    .await;
+    assert_eq!(spend_status, StatusCode::OK);
+    assert_eq!(
+        spend["committed_msat"], 30_000,
+        "committed spend must survive restart: {spend}"
+    );
+
+    let (status2, resp2): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime2.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id2, &provider2.base_url),
+    )
+    .await;
+    assert_eq!(
+        status2,
+        StatusCode::PAYMENT_REQUIRED,
+        "expected 402: {resp2}"
+    );
+    assert_eq!(resp2["code"], "spend_budget_exceeded", "body: {resp2}");
+}
+
+#[tokio::test]
+async fn spend_refusal_precedes_phoenixd_payment() {
+    let (mock_base_url, mock_phoenixd, _mock_handle) = start_mock_phoenixd().await;
+    let state = phoenixd_app_state_with_mock_spend(
+        &mock_base_url,
+        spend_policy(Some(29_000), Some(1_000_000)),
+    );
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = reqwest::Client::new();
+    let provider_id = state.identity.node_id().to_string();
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let (status, resp): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id, &provider.base_url),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "expected 402: {resp}");
+    assert_eq!(resp["code"], "spend_cap_exceeded", "body: {resp}");
+
+    let calls = mock_phoenixd.calls.lock().unwrap();
+    assert!(
+        calls.is_empty(),
+        "refusal must precede any phoenixd traffic; saw: {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn spend_refusal_precedes_stripe_spt_mint() {
+    let (mock_base_url, mock_stripe, _mock_handle) = start_mock_stripe().await;
+    let buyer_config = BuyerStripeConfig {
+        secret_key: "sk_test_buyer_spend_cap".to_string(),
+        api_version: "2026-04-22.preview".to_string(),
+        payment_method: Some("pm_test_spend_cap".to_string()),
+        customer: None,
+        api_base_url: Some(mock_base_url.clone()),
+    };
+    let state = stripe_app_state_with_mock_spend(
+        &mock_base_url,
+        buyer_config,
+        spend_policy(Some(29_000), Some(1_000_000)),
+    );
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = reqwest::Client::new();
+    let provider_id = state.identity.node_id().to_string();
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+
+    let (status, resp): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id, &provider.base_url),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "expected 402: {resp}");
+    assert_eq!(resp["code"], "spend_cap_exceeded", "body: {resp}");
+
+    let calls = mock_stripe.calls.lock().unwrap();
+    assert!(
+        calls.is_empty(),
+        "refusal must precede any Stripe traffic; saw: {calls:?}"
+    );
 }

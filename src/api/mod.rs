@@ -432,6 +432,72 @@ pub async fn node_identity(State(state): State<Arc<AppState>>) -> impl IntoRespo
     )
 }
 
+/// `GET /v1/runtime/spend` — requester spend policy and ledger totals.
+pub async fn runtime_spend_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+    let totals = match state
+        .db
+        .with_write_conn(crate::requester_budget::spend_totals)
+        .await
+    {
+        Ok(totals) => totals,
+        Err(error) => {
+            tracing::error!("spend ledger totals failed: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "internal error" }),
+            );
+        }
+    };
+    let policy = state.config.requester_spend;
+    let outstanding = totals.reserved_msat + totals.committed_msat;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "max_deal_msat": policy.max_deal_msat,
+            "spend_budget_msat": policy.spend_budget_msat,
+            "reserved_msat": totals.reserved_msat,
+            "committed_msat": totals.committed_msat,
+            "remaining_msat": policy
+                .spend_budget_msat
+                .map(|budget| budget.saturating_sub(outstanding)),
+        })),
+    )
+}
+
+/// `POST /v1/runtime/spend/reset` — archive committed spend, restoring
+/// cumulative budget headroom. In-flight reservations are left untouched.
+pub async fn runtime_spend_reset(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1);
+    }
+    let archived = match state
+        .db
+        .with_write_conn(|conn| {
+            crate::requester_budget::reset_spend(conn, settlement::current_unix_timestamp())
+        })
+        .await
+    {
+        Ok(archived) => archived,
+        Err(error) => {
+            tracing::error!("spend ledger reset failed: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "internal error" }),
+            );
+        }
+    };
+    (StatusCode::OK, Json(json!({ "archived_deals": archived })))
+}
+
 pub async fn runtime_wallet_balance(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1458,6 +1524,72 @@ pub async fn runtime_create_deal(
     runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::Full).await
 }
 
+/// Holds a `reserved` row in the requester spend ledger for the lifetime of
+/// one deal-creation attempt. Any early error return drops the guard, which
+/// releases the reservation in the background (the startup stale-reservation
+/// sweep is the backstop if that best-effort release is lost to a crash).
+/// The success path calls [`SpendReservationGuard::commit`], which flips the
+/// row to `committed` and disarms the drop hook.
+struct SpendReservationGuard {
+    state: Arc<AppState>,
+    deal_hash: String,
+    armed: bool,
+}
+
+impl SpendReservationGuard {
+    fn new(state: Arc<AppState>, deal_hash: String) -> Self {
+        Self {
+            state,
+            deal_hash,
+            armed: true,
+        }
+    }
+
+    async fn commit(mut self, deal_id: &str) {
+        self.armed = false;
+        let deal_hash = self.deal_hash.clone();
+        let deal_id = deal_id.to_string();
+        if let Err(error) = self
+            .state
+            .db
+            .with_write_conn(move |conn| {
+                crate::requester_budget::commit_spend(
+                    conn,
+                    &deal_hash,
+                    &deal_id,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await
+        {
+            // The reservation stays in place (still counted against the
+            // budget), so failing to mark it committed is never fail-open.
+            tracing::error!("failed to commit spend ledger reservation: {error}");
+        }
+    }
+}
+
+impl Drop for SpendReservationGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let state = self.state.clone();
+        let deal_hash = std::mem::take(&mut self.deal_hash);
+        tokio::spawn(async move {
+            if let Err(error) = state
+                .db
+                .with_write_conn(move |conn| {
+                    crate::requester_budget::release_spend(conn, &deal_hash)
+                })
+                .await
+            {
+                tracing::error!("failed to release spend ledger reservation: {error}");
+            }
+        });
+    }
+}
+
 async fn runtime_create_deal_inner(
     state: Arc<AppState>,
     payload: RuntimeCreateDealRequest,
@@ -1599,6 +1731,129 @@ async fn runtime_create_deal_inner(
             return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
         }
     };
+
+    // ── Requester spend policy ─────────────────────────────────────────────
+    //
+    // Enforced here — after quote verification, before any side effect — so
+    // no settlement rail (SPT mint, deal contract, prepaid payment, bundle
+    // invoices) can commit funds past the configured caps. The full quoted
+    // total is reserved atomically against the cumulative budget; free deals
+    // (total 0) skip the policy entirely. Fail-closed: paid deals are refused
+    // when no budget is configured.
+    let quoted_total_msat = quote.payload.settlement_terms.base_fee_msat
+        + quote.payload.settlement_terms.success_fee_msat;
+    let mut spend_guard: Option<SpendReservationGuard> = None;
+    if quoted_total_msat > 0 {
+        // The provider also enforces the caller's max_price_sats, but a
+        // misbehaving provider could ignore it — re-check the signed quote
+        // locally before trusting its price.
+        if let Some(max_price_sats) = payload.max_price_sats
+            && quoted_total_msat > max_price_sats.saturating_mul(1_000)
+        {
+            return error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": "provider quote exceeds the requested max_price_sats",
+                    "quoted_total_msat": quoted_total_msat,
+                    "max_price_msat": max_price_sats.saturating_mul(1_000),
+                }),
+            )
+            .into_response();
+        }
+
+        let policy = state.config.requester_spend;
+        let ledger_deal_hash = deal_artifact.hash.clone();
+        let ledger_provider_id = provider.provider_id.clone();
+        let ledger_method = quote.payload.settlement_terms.method.clone();
+        let decision = match state
+            .db
+            .with_write_conn(move |conn| {
+                crate::requester_budget::try_reserve_spend(
+                    conn,
+                    &policy,
+                    &ledger_deal_hash,
+                    &ledger_provider_id,
+                    quoted_total_msat,
+                    &ledger_method,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await
+        {
+            Ok(decision) => decision,
+            Err(error) => {
+                tracing::error!("spend ledger reservation failed: {error}");
+                return error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "internal error" }),
+                )
+                .into_response();
+            }
+        };
+        match decision {
+            crate::requester_budget::SpendDecision::Reserved => {
+                spend_guard = Some(SpendReservationGuard::new(
+                    state.clone(),
+                    deal_artifact.hash.clone(),
+                ));
+            }
+            crate::requester_budget::SpendDecision::Unconfigured => {
+                return error_json(
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({
+                        "error": "paid deals are disabled: no requester spend budget is \
+                                  configured; set FROGLET_REQUESTER_SPEND_BUDGET_MSAT (and \
+                                  optionally FROGLET_REQUESTER_MAX_DEAL_MSAT) to enable paid \
+                                  deals on this node",
+                        "code": "spend_budget_unconfigured",
+                        "quoted_total_msat": quoted_total_msat,
+                    }),
+                )
+                .into_response();
+            }
+            crate::requester_budget::SpendDecision::CapExceeded { max_deal_msat } => {
+                return error_json(
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({
+                        "error": format!(
+                            "deal price {quoted_total_msat} msat exceeds the per-deal spend \
+                             cap (FROGLET_REQUESTER_MAX_DEAL_MSAT={max_deal_msat})"
+                        ),
+                        "code": "spend_cap_exceeded",
+                        "quoted_total_msat": quoted_total_msat,
+                        "max_deal_msat": max_deal_msat,
+                        "provider_id": provider.provider_id,
+                    }),
+                )
+                .into_response();
+            }
+            crate::requester_budget::SpendDecision::BudgetExceeded {
+                spend_budget_msat,
+                spent_msat,
+                remaining_msat,
+            } => {
+                return error_json(
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({
+                        "error": format!(
+                            "cumulative spend budget exhausted: {spent_msat} of \
+                             {spend_budget_msat} msat committed; this deal needs \
+                             {quoted_total_msat} msat. Raise \
+                             FROGLET_REQUESTER_SPEND_BUDGET_MSAT or POST \
+                             /v1/runtime/spend/reset."
+                        ),
+                        "code": "spend_budget_exceeded",
+                        "quoted_total_msat": quoted_total_msat,
+                        "spend_budget_msat": spend_budget_msat,
+                        "spent_msat": spent_msat,
+                        "remaining_msat": remaining_msat,
+                    }),
+                )
+                .into_response();
+            }
+        }
+    }
+    // ── end requester spend policy ─────────────────────────────────────────
 
     // ── Buyer-side Stripe SPT minting ──────────────────────────────────────
     //
@@ -1829,6 +2084,13 @@ async fn runtime_create_deal_inner(
             .into_response();
         }
     };
+
+    // The deal is contractually committed and persisted — convert the spend
+    // reservation into committed budget. (Money may already have moved on the
+    // SPT/prepaid rails above; everything from the reservation onward counts.)
+    if let Some(guard) = spend_guard.take() {
+        guard.commit(&stored.deal_id).await;
+    }
 
     let stored = match sync_requester_deal_from_provider(state.clone(), &stored.deal_id).await {
         Ok(stored) => stored,
@@ -12557,6 +12819,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
                 db_path: db_path.clone(),

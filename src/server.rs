@@ -130,6 +130,38 @@ async fn run(
             .ok_or("unexpected Arc clone before event batch writer init")?
             .event_batch_writer = Some(db::EventBatchWriter::spawn(db_clone));
 
+        // Requester spend policy startup hygiene: release reservations leaked
+        // by a crash mid-deal-creation (they are fail-closed until swept), and
+        // warn loudly when a buyer wallet is configured with no spend budget —
+        // paid deals will be refused until FROGLET_REQUESTER_SPEND_BUDGET_MSAT
+        // is set.
+        match state
+            .db
+            .with_write_conn(|conn| {
+                crate::requester_budget::sweep_stale_reservations(
+                    conn,
+                    3_600,
+                    crate::settlement::current_unix_timestamp(),
+                )
+            })
+            .await
+        {
+            Ok(0) => {}
+            Ok(released) => {
+                info!("Released {released} stale spend reservation(s) left by a previous run")
+            }
+            Err(error) => error!("spend ledger startup sweep failed: {error}"),
+        }
+        if (node_config.buyer_stripe.is_some() || node_config.buyer_phoenixd.is_some())
+            && node_config.requester_spend.spend_budget_msat.is_none()
+        {
+            warn!(
+                "A buyer wallet is configured but FROGLET_REQUESTER_SPEND_BUDGET_MSAT is not \
+                 set — paid deals will be refused (fail-closed) until a spend budget is \
+                 configured"
+            );
+        }
+
         // Demo services (opt-in via FROGLET_PUBLISH_DEMO_SERVICES=1). These
         // are published by the hosted reference node at `ai.froglet.dev` but
         // NOT by a normal self-host install — so a self-host doesn't

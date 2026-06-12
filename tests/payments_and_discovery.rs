@@ -99,6 +99,7 @@ fn in_memory_state() -> AppState {
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),
@@ -897,6 +898,7 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
         }),
         buyer_stripe: None,
         buyer_phoenixd: None,
+        requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
             db_path: db_path.clone(),

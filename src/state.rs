@@ -316,6 +316,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: PathBuf::from("./data"),
                 db_path: PathBuf::from("./data/node.db"),

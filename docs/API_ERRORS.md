@@ -45,6 +45,33 @@ in the `Authorization: Bearer <token>` header.
 The provider charges for this service. Create a deal through the
 `/v1/provider/quotes` and `/v1/provider/deals` flow first.
 
+### Requester Spend Policy Refusals (402)
+
+`POST /v1/runtime/deals` refuses paid deals that violate the node's local
+spend policy. These carry a stable `code` field:
+
+```json
+{ "error": "paid deals are disabled: no requester spend budget is configured; …",
+  "code": "spend_budget_unconfigured", "quoted_total_msat": 30000 }
+```
+
+```json
+{ "error": "deal price 30000 msat exceeds the per-deal spend cap (FROGLET_REQUESTER_MAX_DEAL_MSAT=29000)",
+  "code": "spend_cap_exceeded", "quoted_total_msat": 30000, "max_deal_msat": 29000,
+  "provider_id": "…" }
+```
+
+```json
+{ "error": "cumulative spend budget exhausted: 950000 of 1000000 msat committed; this deal needs 250000 msat. Raise FROGLET_REQUESTER_SPEND_BUDGET_MSAT or POST /v1/runtime/spend/reset.",
+  "code": "spend_budget_exceeded", "quoted_total_msat": 250000,
+  "spend_budget_msat": 1000000, "spent_msat": 950000, "remaining_msat": 50000 }
+```
+
+Fail-closed by design: paid deals require `FROGLET_REQUESTER_SPEND_BUDGET_MSAT`
+to be set. Free deals are unaffected. Inspect current totals with
+`GET /v1/runtime/spend`; archive committed spend (restoring headroom) with
+`POST /v1/runtime/spend/reset`. See `CONFIGURATION.md`.
+
 ### Invalid Submission (400)
 
 ```json

@@ -28,6 +28,8 @@ pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
             "/v1/runtime/wallet/balance",
             get(super::runtime_wallet_balance),
         )
+        .route("/v1/runtime/spend", get(super::runtime_spend_status))
+        .route("/v1/runtime/spend/reset", post(super::runtime_spend_reset))
         .route(
             "/v1/runtime/settlement/activity",
             get(super::runtime_settlement_activity),

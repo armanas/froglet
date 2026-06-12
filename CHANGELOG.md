@@ -8,6 +8,27 @@ top of the `0.1.x` protocol core.
 
 ## [Unreleased]
 
+### Added
+
+- **Requester spend caps (buyer safety).** New node-local spend policy bounds
+  what a node will pay when it creates deals as a buyer, across every
+  settlement rail: `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative budget,
+  persistently tracked in a spend ledger) and `FROGLET_REQUESTER_MAX_DEAL_MSAT`
+  (per-deal cap). Enforcement happens before any money moves; refusals are
+  402s with stable codes (`spend_budget_unconfigured`, `spend_cap_exceeded`,
+  `spend_budget_exceeded`). New endpoints: `GET /v1/runtime/spend`,
+  `POST /v1/runtime/spend/reset`. The runtime now also re-checks the signed
+  quote against the caller's `max_price_sats` locally instead of trusting the
+  provider to enforce it.
+
+### Changed
+
+- **BREAKING (behavioral, fail-closed): paid deals are refused until
+  `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` is configured.** Buyer nodes that pay
+  for services must now set an explicit budget; the node logs a startup
+  warning when a buyer wallet is configured without one. Free deals are
+  unaffected.
+
 ## [0.4.0] - 2026-05-30
 
 ### Added

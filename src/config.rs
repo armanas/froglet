@@ -263,6 +263,33 @@ impl BuyerPhoenixdConfig {
     }
 }
 
+/// Requester-side spend policy. Bounds what this node will commit to paying
+/// when it creates deals against remote providers, across every settlement
+/// rail. This is node-local policy — it never appears in signed artifacts.
+///
+/// Fail-closed: when `spend_budget_msat` is unset, paid deals are refused
+/// with a `spend_budget_unconfigured` error. Free deals are unaffected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequesterSpendConfig {
+    /// Hard cap on a single deal's quoted total (base + success fee), msat.
+    /// `None` = no per-deal cap beyond the cumulative budget.
+    pub max_deal_msat: Option<u64>,
+    /// Cumulative lifetime budget across all paid deals, msat. Tracked in the
+    /// requester spend ledger and reset only via the explicit reset endpoint.
+    /// `None` = unconfigured → paid deals are refused.
+    pub spend_budget_msat: Option<u64>,
+}
+
+impl RequesterSpendConfig {
+    /// Parse requester spend policy from the process environment.
+    pub fn from_env() -> Result<Self, String> {
+        Ok(RequesterSpendConfig {
+            max_deal_msat: env_opt_u64("FROGLET_REQUESTER_MAX_DEAL_MSAT")?,
+            spend_budget_msat: env_opt_u64("FROGLET_REQUESTER_SPEND_BUDGET_MSAT")?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LightningMode {
@@ -625,6 +652,7 @@ pub struct NodeConfig {
     pub stripe: Option<StripeConfig>,
     pub buyer_stripe: Option<BuyerStripeConfig>,
     pub buyer_phoenixd: Option<BuyerPhoenixdConfig>,
+    pub requester_spend: RequesterSpendConfig,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
     pub gpu: GpuConfig,
@@ -1031,6 +1059,7 @@ impl NodeConfig {
             stripe,
             buyer_stripe: BuyerStripeConfig::from_env()?,
             buyer_phoenixd: BuyerPhoenixdConfig::from_env()?,
+            requester_spend: RequesterSpendConfig::from_env()?,
             storage: StorageConfig {
                 data_dir,
                 db_path,
@@ -1135,6 +1164,19 @@ fn env_u64(name: &str, default: u64) -> Result<u64, String> {
             .parse::<u64>()
             .map_err(|_| format!("Invalid {name} value: '{value}'. Expected unsigned integer")),
         Err(_) => Ok(default),
+    }
+}
+
+/// Like [`env_u64`] but with no default: absent (or blank) → `None`.
+fn env_opt_u64(name: &str) -> Result<Option<u64>, String> {
+    match env::var(name) {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => value
+            .trim()
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("Invalid {name} value: '{value}'. Expected unsigned integer")),
+        Err(_) => Ok(None),
     }
 }
 
