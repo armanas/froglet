@@ -10,10 +10,12 @@
 // one bug, one fix. The shelling-out is intentional, not a shortcut.
 
 import { execFile } from "node:child_process"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { promisify } from "node:util"
+
+import { validateProviderUrl } from "./url-safety.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -23,13 +25,67 @@ const VALID_RUNTIMES = new Set(["python"])
 const VALID_PACKAGE_KINDS = new Set(["inline_source"])
 const VALID_HOSTING = new Set(["local", "tor", "self"])
 const VALID_SETTLEMENT = new Set(["none", "lightning", "stripe"])
+const VALID_ENTRYPOINT = /^[A-Za-z0-9._/-]+$/
+
+function tomlString(value) {
+  return JSON.stringify(String(value))
+}
+
+function normalizeEntrypoint(value) {
+  const raw = typeof value === "string" ? value.trim() : "handler.py"
+  if (raw.length === 0) {
+    throw new Error("marketplace_publish: entrypoint must be a non-empty relative path")
+  }
+  if (isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)) {
+    throw new Error("marketplace_publish: entrypoint must be a relative path")
+  }
+  if (!VALID_ENTRYPOINT.test(raw)) {
+    throw new Error("marketplace_publish: entrypoint contains unsupported characters")
+  }
+  const segments = raw.split(/[\\/]+/)
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    throw new Error("marketplace_publish: entrypoint must not contain path traversal")
+  }
+  return segments.join("/")
+}
+
+function normalizeHttpUrlSyntax(value, label) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`marketplace_publish: ${label} must be a non-empty https:// URL`)
+  }
+  const raw = value.trim()
+  if (/\s/.test(raw)) {
+    throw new Error(`marketplace_publish: ${label} is not a valid URL: contains whitespace`)
+  }
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch (error) {
+    throw new Error(`marketplace_publish: ${label} is not a valid URL: ${error.message}`)
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`marketplace_publish: ${label} must use https://`)
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error(`marketplace_publish: ${label} must not contain credentials`)
+  }
+  return parsed.toString().replace(/\/$/, "")
+}
+
+async function validatePublicHttpsUrl(value, label, deps) {
+  try {
+    return (await validateProviderUrl(value, label, deps ? { _deps: deps } : {})).normalizedUrl
+  } catch (error) {
+    throw new Error(`marketplace_publish: ${label} must be a public https:// URL: ${error.message}`)
+  }
+}
 
 /**
  * Validate the MCP-shaped publish input. Throws on the first problem with a
  * message the LLM can act on directly ("set X to Y") rather than a generic
  * "invalid input".
  */
-export function validatePublishInput(args) {
+function validatePublishInputShape(args) {
   const name = (args.name ?? "").trim()
   if (!VALID_NAME.test(name)) {
     throw new Error(
@@ -95,18 +151,42 @@ export function validatePublishInput(args) {
     summary: typeof args.summary === "string" ? args.summary : `Froglet service ${name}`,
     runtime,
     packageKind,
-    entrypoint: args.entrypoint ?? "handler.py",
+    entrypoint: normalizeEntrypoint(args.entrypoint),
     sourceInline: args.source_inline,
     hosting: {
       kind: hostingKind,
-      url: args.hosting?.url,
+      url: hostingKind === "self" ? normalizeHttpUrlSyntax(args.hosting?.url, "hosting.url") : undefined,
     },
     settlement: { method: settlementMethod },
     priceSats,
     currency,
-    marketplaceUrl: typeof args.marketplace_url === "string"
-      ? args.marketplace_url
-      : "https://marketplace.froglet.dev",
+    marketplaceUrl: normalizeHttpUrlSyntax(
+      typeof args.marketplace_url === "string"
+        ? args.marketplace_url
+        : "https://marketplace.froglet.dev",
+      "marketplace_url"
+    ),
+  }
+}
+
+export async function validatePublishInput(args, opts = {}) {
+  const input = validatePublishInputShape(args)
+  const deps = opts?._deps ?? {}
+  const marketplaceUrl = await validatePublicHttpsUrl(
+    input.marketplaceUrl,
+    "marketplace_url",
+    deps.marketplaceUrl
+  )
+  const selfUrl = input.hosting.kind === "self"
+    ? await validatePublicHttpsUrl(input.hosting.url, "hosting.url", deps.selfUrl)
+    : undefined
+  return {
+    ...input,
+    marketplaceUrl,
+    hosting: {
+      ...input.hosting,
+      url: selfUrl,
+    },
   }
 }
 
@@ -115,10 +195,10 @@ function projectToml({ name, marketplaceUrl }) {
     `schema_version = "froglet/v1"`,
     ``,
     `[project]`,
-    `name = "${name}"`,
+    `name = ${tomlString(name)}`,
     ``,
     `[project.marketplace]`,
-    `url = "${marketplaceUrl}"`,
+    `url = ${tomlString(marketplaceUrl)}`,
     ``,
     `[project.defaults]`,
     `runtime = "python"`,
@@ -133,25 +213,25 @@ export function serviceToml(input) {
   const lines = [
     `schema_version = "froglet-service/v3"`,
     ``,
-    `project_id = "${name}"`,
-    `service_id = "${name}"`,
-    `summary = ${JSON.stringify(summary)}`,
+    `project_id = ${tomlString(name)}`,
+    `service_id = ${tomlString(name)}`,
+    `summary = ${tomlString(summary)}`,
     ``,
-    `runtime = "${runtime}"`,
-    `package_kind = "${packageKind}"`,
+    `runtime = ${tomlString(runtime)}`,
+    `package_kind = ${tomlString(packageKind)}`,
     `entrypoint_kind = "script"`,
-    `entrypoint = "${entrypoint}"`,
+    `entrypoint = ${tomlString(entrypoint)}`,
     `contract_version = "froglet.python.handler_json.v1"`,
     ``,
     `[hosting]`,
-    `default = "${hosting.kind}"`,
+    `default = ${tomlString(hosting.kind)}`,
   ]
   if (hosting.kind === "self") {
-    lines.push(``, `[hosting.self]`, `url = "${hosting.url}"`)
+    lines.push(``, `[hosting.self]`, `url = ${tomlString(hosting.url)}`)
   }
-  lines.push(``, `[settlement]`, `method = "${settlement.method}"`)
-  lines.push(``, `[marketplace]`, `url = "${marketplaceUrl}"`)
-  lines.push(``, `[price]`, `sats = ${priceSats ?? 0}`, `currency = "${currency ?? "sat"}"`, ``)
+  lines.push(``, `[settlement]`, `method = ${tomlString(settlement.method)}`)
+  lines.push(``, `[marketplace]`, `url = ${tomlString(marketplaceUrl)}`)
+  lines.push(``, `[price]`, `sats = ${priceSats ?? 0}`, `currency = ${tomlString(currency ?? "sat")}`, ``)
   return lines.join("\n")
 }
 
@@ -165,14 +245,20 @@ export function serviceToml(input) {
  * Override via the FROGLET_NODE_BIN env var for tests / non-PATH installs.
  */
 export async function runMarketplacePublish(args, options = {}) {
-  const input = validatePublishInput(args)
+  const input = await validatePublishInput(args, { _deps: options._deps })
   const binary = options.frogletNodeBinary || process.env.FROGLET_NODE_BIN || "froglet-node"
 
   const workDir = await mkdtemp(join(tmpdir(), "froglet-publish-"))
   try {
     await writeFile(join(workDir, "froglet.toml"), projectToml(input))
     await writeFile(join(workDir, "froglet-service.toml"), serviceToml(input))
-    await writeFile(join(workDir, input.entrypoint), input.sourceInline)
+    const workDirRoot = `${resolve(workDir)}${sep}`
+    const entrypointPath = resolve(workDir, input.entrypoint)
+    if (!entrypointPath.startsWith(workDirRoot)) {
+      throw new Error("marketplace_publish: entrypoint resolved outside the temporary service directory")
+    }
+    await mkdir(dirname(entrypointPath), { recursive: true })
+    await writeFile(entrypointPath, input.sourceInline)
 
     const flags = ["publish", "--json"]
     if (input.hosting.kind !== "local") {

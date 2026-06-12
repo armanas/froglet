@@ -34,6 +34,8 @@ import { promises as dnsPromises } from "node:dns"
 import { request as httpsRequest } from "node:https"
 import { request as httpRequest } from "node:http"
 
+export const DEFAULT_MAX_JSON_RESPONSE_BYTES = 1024 * 1024
+
 const LOOPBACK_HOSTS = new Set([
   "localhost",
   "localhost.",
@@ -52,24 +54,102 @@ function ipV4TargetsLocalNetwork(ip) {
   if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) {
     return false
   }
-  const [a, b, c, d] = parts
-  // Private (RFC1918)
-  if (a === 10) return true
-  if (a === 172 && b >= 16 && b <= 31) return true
-  if (a === 192 && b === 168) return true
-  // Loopback
-  if (a === 127) return true
-  // Link-local (RFC3927); includes the AWS/GCP metadata 169.254.169.254
-  if (a === 169 && b === 254) return true
-  // Broadcast
-  if (a === 255 && b === 255 && c === 255 && d === 255) return true
-  // Documentation (RFC5737)
-  if (a === 192 && b === 0 && c === 2) return true
-  if (a === 198 && b === 51 && c === 100) return true
-  if (a === 203 && b === 0 && c === 113) return true
-  // Unspecified
-  if (a === 0 && b === 0 && c === 0 && d === 0) return true
-  return false
+  const [a, b, c] = parts
+  switch (a) {
+    case 0:
+      return true // 0.0.0.0/8 (Local identification, RFC 1122)
+    case 10:
+      return true // 10.0.0.0/8 (Private-Use, RFC 1918)
+    case 100:
+      return (b & 0xc0) === 64 // 100.64.0.0/10 (Shared Address Space / CGNAT, RFC 6598)
+    case 127:
+      return true // 127.0.0.0/8 (Loopback, RFC 1122)
+    case 169:
+      return b === 254 // 169.254.0.0/16 (Link-Local, RFC 3927)
+    case 172:
+      return (b & 0xf0) === 16 // 172.16.0.0/12 (Private-Use, RFC 1918)
+    case 192:
+      return (b === 0 && (c === 0 || c === 2)) || b === 168
+    case 198:
+      return b === 18 || b === 19 || (b === 51 && c === 100)
+    case 203:
+      return b === 0 && c === 113
+    default:
+      return a >= 224 && a <= 255
+  }
+}
+
+function embeddedDottedIpv4ToGroups(ip) {
+  const lastColon = ip.lastIndexOf(":")
+  if (lastColon === -1) {
+    return ip
+  }
+  const candidate = ip.slice(lastColon + 1)
+  if (!candidate.includes(".")) {
+    return ip
+  }
+  const octets = candidate.split(".").map((octet) => Number.parseInt(octet, 10))
+  if (octets.length !== 4 || octets.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) {
+    return ip
+  }
+  const high = ((octets[0] << 8) | octets[1]).toString(16)
+  const low = ((octets[2] << 8) | octets[3]).toString(16)
+  return `${ip.slice(0, lastColon)}:${high}:${low}`
+}
+
+function parseIpv6Groups(ip) {
+  const normalized = embeddedDottedIpv4ToGroups(ip.toLowerCase())
+  const pieces = normalized.split("::")
+  if (pieces.length > 2) {
+    return null
+  }
+  const left = pieces[0] ? pieces[0].split(":") : []
+  const right = pieces.length === 2 && pieces[1] ? pieces[1].split(":") : []
+  const parseGroup = (group) => {
+    if (!/^[0-9a-f]{1,4}$/i.test(group)) {
+      return null
+    }
+    const value = Number.parseInt(group, 16)
+    return Number.isFinite(value) && value >= 0 && value <= 0xffff ? value : null
+  }
+  const leftValues = left.map(parseGroup)
+  const rightValues = right.map(parseGroup)
+  if (leftValues.some((value) => value === null) || rightValues.some((value) => value === null)) {
+    return null
+  }
+  if (pieces.length === 1) {
+    return leftValues.length === 8 ? leftValues : null
+  }
+  const missing = 8 - leftValues.length - rightValues.length
+  if (missing < 1) {
+    return null
+  }
+  return [...leftValues, ...Array(missing).fill(0), ...rightValues]
+}
+
+function ipv4StringFromGroups(high, low) {
+  return [
+    (high >> 8) & 0xff,
+    high & 0xff,
+    (low >> 8) & 0xff,
+    low & 0xff,
+  ].join(".")
+}
+
+function ipv4EmbeddedInIpv6(ip) {
+  const groups = parseIpv6Groups(ip)
+  if (!groups) {
+    return null
+  }
+  const firstFiveZero = groups.slice(0, 5).every((group) => group === 0)
+  if (firstFiveZero && groups[5] === 0xffff) {
+    return ipv4StringFromGroups(groups[6], groups[7])
+  }
+  const firstSixZero = groups.slice(0, 6).every((group) => group === 0)
+  if (firstSixZero) {
+    return ipv4StringFromGroups(groups[6], groups[7])
+  }
+  return null
 }
 
 /**
@@ -82,12 +162,12 @@ function ipV6TargetsLocalNetwork(ip) {
   if (lower === "::1") return true
   // Unspecified
   if (lower === "::") return true
-  // IPv4-mapped (::ffff:x.x.x.x) — classify the embedded v4
-  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
-  if (mapped) return ipV4TargetsLocalNetwork(mapped[1])
+  // IPv4-mapped / IPv4-compatible addresses — classify the embedded v4.
+  const embedded = ipv4EmbeddedInIpv6(lower)
+  if (embedded) return ipV4TargetsLocalNetwork(embedded)
   // Collapse leading zeros in the first group for range checks
-  const firstGroup = lower.split(":")[0]
-  const firstNum = Number.parseInt(firstGroup, 16)
+  const groups = parseIpv6Groups(lower)
+  const firstNum = groups?.[0]
   if (Number.isFinite(firstNum)) {
     // Unique Local Address (ULA) fc00::/7
     if ((firstNum & 0xfe00) === 0xfc00) return true
@@ -253,6 +333,7 @@ export async function pinnedJsonRequest(url, {
   expectedStatuses = [200],
   pinnedAddress,
   family,
+  maxResponseBytes = DEFAULT_MAX_JSON_RESPONSE_BYTES,
 }) {
   if (typeof pinnedAddress !== "string" || pinnedAddress.length === 0) {
     throw new Error("pinnedJsonRequest requires pinnedAddress")
@@ -295,7 +376,16 @@ export async function pinnedJsonRequest(url, {
 
   return new Promise((resolve, reject) => {
     let timer = null
+    let settled = false
     const req = requestFn(requestOptions)
+    const fail = (error) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      if (timer) clearTimeout(timer)
+      reject(error)
+    }
 
     if (timeoutMs) {
       timer = setTimeout(() => {
@@ -304,14 +394,31 @@ export async function pinnedJsonRequest(url, {
     }
 
     req.on("error", (err) => {
-      if (timer) clearTimeout(timer)
-      reject(err)
+      fail(err)
     })
 
     req.on("response", (response) => {
       const chunks = []
-      response.on("data", (chunk) => chunks.push(chunk))
+      let totalBytes = 0
+      const contentLength = Number.parseInt(String(response.headers?.["content-length"] ?? ""), 10)
+      if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+        response.destroy()
+        fail(new Error(`Response from ${url} exceeded maximum JSON body size of ${maxResponseBytes} bytes`))
+        return
+      }
+      response.on("data", (chunk) => {
+        totalBytes += chunk.length
+        if (totalBytes > maxResponseBytes) {
+          response.destroy()
+          fail(new Error(`Response from ${url} exceeded maximum JSON body size of ${maxResponseBytes} bytes`))
+          return
+        }
+        chunks.push(chunk)
+      })
       response.on("end", () => {
+        if (settled) {
+          return
+        }
         if (timer) clearTimeout(timer)
         const body = Buffer.concat(chunks).toString("utf8")
         let payload = null
@@ -320,6 +427,7 @@ export async function pinnedJsonRequest(url, {
             payload = JSON.parse(body)
           } catch (error) {
             const preview = body.slice(0, 200)
+            settled = true
             reject(new Error(
               `Expected JSON from ${url}, got invalid payload: ${error.message}; body=${JSON.stringify(preview)}`
             ))
@@ -327,16 +435,17 @@ export async function pinnedJsonRequest(url, {
           }
         }
         if (!expectedStatuses.includes(response.statusCode)) {
+          settled = true
           reject(new Error(
             `Request to ${url} failed with ${response.statusCode}: ${JSON.stringify(payload)}`
           ))
           return
         }
+        settled = true
         resolve({ status: response.statusCode, payload })
       })
       response.on("error", (err) => {
-        if (timer) clearTimeout(timer)
-        reject(err)
+        fail(err)
       })
     })
 

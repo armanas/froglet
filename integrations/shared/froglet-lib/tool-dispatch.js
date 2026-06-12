@@ -56,6 +56,20 @@ function runtimeCtx(config) {
   }
 }
 
+function marketplaceDeps(config) {
+  return config?._deps?.marketplace
+}
+
+function clientDeps(config) {
+  return config?._deps?.client
+}
+
+function marketplacePublishDeps(config) {
+  return config?._deps?.marketplacePublish
+    ?? config?._deps?.marketplace
+    ?? config?._deps?.client
+}
+
 function renderResult(lines, response, includeRaw) {
   return toolTextResult(appendRaw(lines, response, includeRaw).join("\n"))
 }
@@ -207,6 +221,7 @@ async function handleGetService(args, config, includeRaw) {
   const response = await getService({
     ...runtimeCtx(config),
     searchLimit: args.limit ?? config.defaultSearchLimit,
+    _deps: clientDeps(config),
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
@@ -226,6 +241,7 @@ async function handleInvoke(args, config, includeRaw) {
     searchLimit: args.limit ?? config.defaultSearchLimit,
     trustedProviderUrl:
       resolvedProviderUrl(args) == null && resolvedProviderId(args) != null ? config.providerUrl : null,
+    _deps: clientDeps(config),
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
@@ -333,6 +349,7 @@ async function handleCompute(args, config, includeRaw) {
     searchLimit: args.limit ?? config.defaultSearchLimit,
     trustedProviderUrl:
       resolvedProviderUrl(args) == null && resolvedProviderId(args) != null ? config.providerUrl : null,
+    _deps: clientDeps(config),
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
@@ -1038,6 +1055,7 @@ async function handleMarketplaceInvoke(args, config, includeRaw, { serviceId, in
   const response = await invokeService({
     ...runtimeCtx(config),
     searchLimit: args.limit ?? config.defaultSearchLimit,
+    _deps: clientDeps(config),
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
@@ -1086,7 +1104,8 @@ async function handleMarketplaceRegister(args, config, includeRaw) {
     request: {
       provider_url: resolvedProviderUrl(args),
       registration_transport: args.registration_transport
-    }
+    },
+    _deps: marketplaceDeps(config)
   })
   const lines = [
     `status: ${response.status ?? "unknown"}`,
@@ -1117,7 +1136,8 @@ async function handleMarketplaceDomainClaim(args, config, includeRaw) {
       ...(typeof args.requested_slug === "string" && args.requested_slug.trim().length > 0
         ? { requested_slug: args.requested_slug.trim() }
         : {})
-    }
+    },
+    _deps: marketplaceDeps(config)
   })
   const lines = [
     `status: ${response.status ?? "unknown"}`,
@@ -1146,6 +1166,7 @@ async function handleMarketplaceDomainComplete(args, config, includeRaw) {
     ...providerCtx(config),
     claimId,
     signingMessage,
+    _deps: marketplaceDeps(config)
   })
   const lines = [
     `status: ${response.status ?? "unknown"}`,
@@ -1260,7 +1281,8 @@ async function handleMarketplaceFileComplaint(args, config, includeRaw) {
         ? { complainant_id: args.complainant_id.trim() }
         : {}),
       ...(args.evidence !== undefined ? { evidence: args.evidence } : {})
-    }
+    },
+    _deps: marketplaceDeps(config)
   })
   const lines = [
     `complaint_id: ${response.complaint_id ?? "unknown"}`,
@@ -1281,6 +1303,7 @@ async function handleMarketplaceGetComplaint(args, config, includeRaw) {
     arbiterUrl: firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl),
     requestTimeoutMs: config.requestTimeoutMs,
     complaintId,
+    _deps: marketplaceDeps(config)
   })
   const complaint = response.complaint ?? {}
   const verdicts = Array.isArray(response.verdicts) ? response.verdicts : []
@@ -1299,12 +1322,14 @@ async function handleMarketplaceGetComplaint(args, config, includeRaw) {
   return renderResult(lines, response, includeRaw)
 }
 
-async function handleMarketplacePublish(args, _config, includeRaw) {
+async function handleMarketplacePublish(args, config, includeRaw) {
   // Delegates to `froglet-node publish --json` via the publish engine. The
   // engine handles the full build → host → sign → register pipeline; the
   // MCP tool's job is just to materialise the manifests + handler.py from
   // structured input and parse the JSON the CLI emits.
-  const response = await runMarketplacePublish(args)
+  const response = await runMarketplacePublish(args, {
+    _deps: marketplacePublishDeps(config),
+  })
   const lines = [
     `status: ${response?.warnings?.length ? "published with warnings" : "published"}`,
     `provider_id: ${response.provider_id}`,

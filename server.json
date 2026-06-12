@@ -3,7 +3,7 @@
   "name": "io.github.armanas/froglet",
   "title": "Froglet",
   "description": "Run local Froglet verifiable compute, signed receipts, settlement, and service publication.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "websiteUrl": "https://froglet.dev",
   "repository": {
     "url": "https://github.com/armanas/froglet",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "froglet-mcp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       }

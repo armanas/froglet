@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { execFile as execFileCb } from "node:child_process"
 import { join, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -24,6 +24,45 @@ function mockFetch(handler) {
   return () => {
     globalThis.fetch = original
   }
+}
+
+async function mockMarketplaceJsonRequest(url, options = {}) {
+  const fetchOptions = {
+    method: options.method ?? "GET",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  }
+  if (options.jsonBody !== undefined) {
+    fetchOptions.body = JSON.stringify(options.jsonBody)
+  }
+  const response = await fetch(url, fetchOptions)
+  const payload = await response.json()
+  const expectedStatuses = options.expectedStatuses ?? [200]
+  if (!expectedStatuses.includes(response.status)) {
+    throw new Error(`${url} failed with ${response.status}: ${JSON.stringify(payload)}`)
+  }
+  return { status: response.status, payload }
+}
+
+async function mockProviderJsonRequest(url, options = {}) {
+  assert.equal(options.pin?.pinnedAddress, "93.184.216.34")
+  const fetchOptions = {
+    method: options.method ?? "GET",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  }
+  if (options.jsonBody !== undefined) {
+    fetchOptions.body = JSON.stringify(options.jsonBody)
+  }
+  const response = await fetch(url, fetchOptions)
+  const payload = await response.json()
+  const expectedStatuses = options.expectedStatuses ?? [200]
+  if (!expectedStatuses.includes(response.status)) {
+    throw new Error(`${url} failed with ${response.status}: ${JSON.stringify(payload)}`)
+  }
+  return { status: response.status, payload }
 }
 
 function providerSearchResponse() {
@@ -74,7 +113,21 @@ before(async () => {
     marketplaceArbiterUrl: "https://arbiter.example",
     requestTimeoutMs: 5000,
     defaultSearchLimit: 10,
-    maxSearchLimit: 50
+    maxSearchLimit: 50,
+    _deps: {
+      client: {
+        providerUrl: {
+          lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+        },
+        providerJsonRequest: mockProviderJsonRequest
+      },
+      marketplace: {
+        marketplaceUrl: {
+          lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+        },
+        marketplaceJsonRequest: mockMarketplaceJsonRequest
+      }
+    }
   }
 })
 
@@ -620,6 +673,45 @@ describe("froglet MCP actions", () => {
       }
       throw error
     }
+  })
+
+  it("setup-payment writes private env snippets and rejects control characters", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "froglet-payment-env-"))
+    const goodOut = join(dir, "stripe.env")
+    await execFile(
+      "bash",
+      ["scripts/setup-payment.sh", "stripe", "--out", goodOut, "--no-verify"],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          FROGLET_STRIPE_SECRET_KEY: "sk_test_"
+        }
+      }
+    )
+
+    const fileMode = (await stat(goodOut)).mode & 0o777
+    assert.equal(fileMode, 0o600)
+    const paymentEnv = await readFile(goodOut, "utf8")
+    assert.match(paymentEnv, /FROGLET_STRIPE_SECRET_KEY=sk_test_/)
+
+    const badOut = join(dir, "bad.env")
+    await assert.rejects(
+      () =>
+        execFile(
+          "bash",
+          ["scripts/setup-payment.sh", "stripe", "--out", badOut, "--no-verify"],
+          {
+            cwd: REPO_ROOT,
+            env: {
+              ...process.env,
+              FROGLET_STRIPE_SECRET_KEY: "sk_test_",
+              FROGLET_STRIPE_API_VERSION: "2026-preview\nFROGLET_PAYMENT_BACKEND=none"
+            }
+          }
+        ),
+      /control characters/
+    )
   })
 
   it("marketplace_search routes through invoke_service with marketplace.search", async () => {
@@ -1228,6 +1320,40 @@ describe("froglet MCP actions", () => {
       assert.equal(runtimeDealBody.offer_id, "svc-1")
       assert.equal(runtimeDealBody.kind, "execution")
       assert.equal(runtimeDealBody.execution.security.service_id, "svc-1")
+    } finally {
+      restore()
+    }
+  })
+
+  it("rejects invoke_service when provider_id discovery advertises a private URL", async () => {
+    const restore = mockFetch(async (url) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/prov-private") {
+        return new Response(
+          JSON.stringify({
+            provider: {
+              provider_id: "prov-private",
+              transport_endpoints: [
+                { uri: "https://[::ffff:7f00:1]", features: ["quote_http"], priority: 1 }
+              ]
+            }
+          })
+        )
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "invoke_service",
+          provider_id: "prov-private",
+          service_id: "svc-private"
+        },
+        config
+      )
+      assert.equal(result.isError, true)
+      assert.match(result.content[0].text, /local or private address/)
     } finally {
       restore()
     }

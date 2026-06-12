@@ -35,8 +35,13 @@ import {
   canonicalJsonBytes,
   flattenMarketplaceProviders,
   selectTransportEndpoint,
-  sha256Hex
+  sha256Hex,
+  validateMarketplaceUrl
 } from "../../../shared/froglet-lib/froglet-client.js"
+
+const PUBLIC_PROVIDER_HOST = "provider.example"
+const PUBLIC_PROVIDER_URL = `https://${PUBLIC_PROVIDER_HOST}`
+const PUBLIC_PROVIDER_IP = "93.184.216.34"
 
 async function withTokenPath(fn) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "froglet-client-"))
@@ -56,7 +61,7 @@ function providerSearchResponse() {
         provider_id: "prov-1",
         descriptor_hash: "desc-1",
         transport_endpoints: [
-          { uri: "https://93.184.216.34", features: ["quote_http"], priority: 10 },
+          { uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 10 },
           { uri: "http://127.0.0.1:8080", features: ["quote_http"], priority: 20 }
         ],
         offers: [
@@ -81,6 +86,38 @@ function providerSearchResponse() {
     ],
     cursor: null,
     has_more: false
+  }
+}
+
+async function providerJsonRequest(url, options = {}) {
+  assert.equal(options.pin?.pinnedAddress, PUBLIC_PROVIDER_IP)
+  const fetchOptions = {
+    method: options.method ?? "GET",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  }
+  if (options.jsonBody !== undefined) {
+    fetchOptions.body = JSON.stringify(options.jsonBody)
+  }
+  const response = await fetch(url, fetchOptions)
+  const payload = await response.json()
+  const expectedStatuses = options.expectedStatuses ?? [200]
+  if (!expectedStatuses.includes(response.status)) {
+    throw new Error(`${url} failed with ${response.status}: ${JSON.stringify(payload)}`)
+  }
+  return { status: response.status, payload }
+}
+
+function clientDeps() {
+  return {
+    providerUrl: {
+      lookup: async (hostname) => {
+        assert.equal(hostname, PUBLIC_PROVIDER_HOST)
+        return [{ address: PUBLIC_PROVIDER_IP, family: 4 }]
+      }
+    },
+    providerJsonRequest
   }
 }
 
@@ -113,11 +150,11 @@ test("project authoring helpers throw removal errors", async () => {
 
 test("selectTransportEndpoint prefers lowest-priority quote_http https endpoint", () => {
   const endpoint = selectTransportEndpoint([
-    { uri: "http://93.184.216.34", features: ["quote_http"], priority: 20 },
-    { uri: "https://93.184.216.34", features: ["quote_http"], priority: 10 },
-    { uri: "https://93.184.216.34/no-quote", features: [], priority: 1 }
+    { uri: `http://${PUBLIC_PROVIDER_HOST}`, features: ["quote_http"], priority: 20 },
+    { uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 10 },
+    { uri: `${PUBLIC_PROVIDER_URL}/no-quote`, features: [], priority: 1 }
   ])
-  assert.equal(endpoint?.uri, "https://93.184.216.34")
+  assert.equal(endpoint?.uri, PUBLIC_PROVIDER_URL)
 })
 
 test("flattenMarketplaceProviders preserves providers and flattens offers into compatibility services", () => {
@@ -137,7 +174,7 @@ test("flattenMarketplaceProviders preserves providers and flattens offers into c
     price_sats: 3,
     publication_state: "unknown",
     provider_id: "prov-1",
-    provider_url: "https://93.184.216.34",
+    provider_url: PUBLIC_PROVIDER_URL,
     descriptor_hash: "desc-1",
     settlement_method: "none"
   })
@@ -328,7 +365,7 @@ test("discoverServices reads marketplace providers and flattens compatibility se
       assert.deepEqual(capturedBody, { limit: 5, include_inactive: false })
       assert.equal(response.providers.length, 1)
       assert.equal(response.services.length, 1)
-      assert.equal(response.services[0].provider_url, "https://93.184.216.34")
+      assert.equal(response.services[0].provider_url, PUBLIC_PROVIDER_URL)
     } finally {
       global.fetch = previousFetch
     }
@@ -336,37 +373,48 @@ test("discoverServices reads marketplace providers and flattens compatibility se
 })
 
 test("registerProviderOnMarketplace posts explicit public provider URL", async () => {
-  const previousFetch = global.fetch
   let capturedBody = null
-  global.fetch = async (url, options = {}) => {
-    assert.equal(String(url), "https://marketplace.froglet.dev/v1/registrations")
-    capturedBody = JSON.parse(options.body)
-    return new Response(
-      JSON.stringify({
+  const marketplaceJsonRequest = async (url, options = {}) => {
+    assert.equal(String(url), "https://marketplace.example/v1/registrations")
+    assert.equal(options.pin?.pinnedAddress, "93.184.216.34")
+    capturedBody = options.jsonBody
+    return {
+      status: 201,
+      payload: {
         status: "active",
         provider_id: "prov-registered",
         provider_url: "https://1.1.1.1",
         descriptor_hash: "desc-registered",
         offers_seen: 1,
         already_registered: false
-      }),
-      { status: 201, headers: { "Content-Type": "application/json" } }
-    )
+      }
+    }
   }
-  try {
-    const response = await registerProviderOnMarketplace({
-      marketplaceUrl: "https://marketplace.froglet.dev",
-      providerUrl: "http://127.0.0.1:8080",
-      requestTimeoutMs: 1000,
-      request: { provider_url: "https://1.1.1.1" }
-    })
+
+  const response = await registerProviderOnMarketplace({
+    marketplaceUrl: "https://marketplace.example",
+    providerUrl: "http://127.0.0.1:8080",
+    requestTimeoutMs: 1000,
+    request: { provider_url: "https://1.1.1.1" },
+    _deps: {
+      marketplaceUrl: {
+        lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+      },
+      marketplaceJsonRequest
+    }
+  })
+
   assert.deepEqual(capturedBody, { provider_url: "https://1.1.1.1", transport: "clearnet" })
-    assert.equal(response.status, "active")
-    assert.equal(response.http_status, 201)
-    assert.equal(response.provider_id, "prov-registered")
-  } finally {
-    global.fetch = previousFetch
-  }
+  assert.equal(response.status, "active")
+  assert.equal(response.http_status, 201)
+  assert.equal(response.provider_id, "prov-registered")
+})
+
+test("validateMarketplaceUrl rejects loopback marketplace URLs", async () => {
+  await assert.rejects(
+    () => validateMarketplaceUrl("http://127.0.0.1:8080", "marketplace_url"),
+    /safe public HTTPS URL/
+  )
 })
 
 test("registerProviderOnMarketplace explains local advertised provider URL", async () => {
@@ -406,7 +454,7 @@ test("getService resolves provider from runtime search and fetches provider publ
       if (urlStr.endsWith("/v1/runtime/search")) {
         return new Response(JSON.stringify(providerSearchResponse()), { status: 200 })
       }
-      if (urlStr === "https://93.184.216.34/v1/provider/services/svc-1") {
+      if (urlStr === `${PUBLIC_PROVIDER_URL}/v1/provider/services/svc-1`) {
         return new Response(
           JSON.stringify({
             service: {
@@ -427,12 +475,87 @@ test("getService resolves provider from runtime search and fetches provider publ
         runtimeUrl: "http://127.0.0.1:8081",
         runtimeAuthTokenPath: tokenPath,
         requestTimeoutMs: 1000,
-        request: { service_id: "svc-1" }
+          request: { service_id: "svc-1" },
+          _deps: clientDeps()
       })
       assert.equal(response.service.service_id, "svc-1")
-      assert.equal(response.service.provider_url, "https://93.184.216.34")
+      assert.equal(response.service.provider_url, PUBLIC_PROVIDER_URL)
       assert.ok(hitUrls.some((url) => url.endsWith("/v1/runtime/search")))
       assert.ok(hitUrls.some((url) => url.endsWith("/v1/provider/services/svc-1")))
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("getService rejects private provider URLs discovered through service_id", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    global.fetch = async (url) => {
+      assert.equal(String(url), "http://127.0.0.1:8081/v1/runtime/search")
+      return new Response(
+        JSON.stringify({
+          providers: [
+            {
+              provider_id: "prov-private",
+              transport_endpoints: [
+                { uri: "https://[::ffff:7f00:1]", features: ["quote_http"], priority: 1 }
+              ],
+              offers: [{ offer_id: "svc-private", offer_kind: "execution" }]
+            }
+          ]
+        }),
+        { status: 200 }
+      )
+    }
+    try {
+      await assert.rejects(
+        () =>
+          getService({
+            runtimeUrl: "http://127.0.0.1:8081",
+            runtimeAuthTokenPath: tokenPath,
+            requestTimeoutMs: 1000,
+            request: { service_id: "svc-private" }
+          }),
+        /local or private address/
+      )
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("invokeService rejects private provider URLs discovered through provider_id", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    global.fetch = async (url) => {
+      assert.equal(String(url), "http://127.0.0.1:8081/v1/runtime/providers/prov-private")
+      return new Response(
+        JSON.stringify({
+          provider: {
+            provider_id: "prov-private",
+            transport_endpoints: [
+              { uri: "https://[::ffff:7f00:1]", features: ["quote_http"], priority: 1 }
+            ]
+          }
+        }),
+        { status: 200 }
+      )
+    }
+    try {
+      await assert.rejects(
+        () =>
+          invokeService({
+            runtimeUrl: "http://127.0.0.1:8081",
+            runtimeAuthTokenPath: tokenPath,
+            requestTimeoutMs: 1000,
+            request: {
+              provider_id: "prov-private",
+              service_id: "svc-private"
+            }
+          }),
+        /local or private address/
+      )
     } finally {
       global.fetch = previousFetch
     }
@@ -451,14 +574,14 @@ test("invokeService resolves provider details, fetches canonical service record,
             provider: {
               provider_id: "prov-1",
               transport_endpoints: [
-                { uri: "https://93.184.216.34", features: ["quote_http"], priority: 1 }
+                { uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 1 }
               ]
             }
           }),
           { status: 200 }
         )
       }
-      if (urlStr === "https://93.184.216.34/v1/provider/services/svc-1") {
+      if (urlStr === `${PUBLIC_PROVIDER_URL}/v1/provider/services/svc-1`) {
         return new Response(
           JSON.stringify({
             service: {
@@ -482,7 +605,7 @@ test("invokeService resolves provider details, fetches canonical service record,
         return new Response(
           JSON.stringify({
             provider_id: "prov-1",
-            provider_url: "https://93.184.216.34",
+            provider_url: PUBLIC_PROVIDER_URL,
             quote: { hash: "quote-hash" },
             deal: { deal_id: "deal-1", status: "succeeded", result: { pong: true } }
           }),
@@ -500,14 +623,15 @@ test("invokeService resolves provider details, fetches canonical service record,
           provider_id: "prov-1",
           service_id: "svc-1",
           input: { ping: true }
-        }
+        },
+        _deps: clientDeps()
       })
       assert.equal(response.terminal, true)
       assert.equal(response.status, "succeeded")
       assert.deepEqual(response.result, { pong: true })
       assert.deepEqual(runtimeDealBody.provider, {
         provider_id: "prov-1",
-        provider_url: "https://93.184.216.34"
+        provider_url: PUBLIC_PROVIDER_URL
       })
       assert.equal(runtimeDealBody.offer_id, "svc-1")
       assert.equal(runtimeDealBody.kind, "execution")
@@ -834,6 +958,27 @@ test("getWalletBalance fetches the runtime wallet snapshot with bearer auth", as
       assert.equal(capturedUrl, "http://127.0.0.1:8081/v1/runtime/wallet/balance")
       assert.equal(capturedAuth, "Bearer froglet-test-token")
       assert.equal(response.balance_sats, 21)
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("client JSON requests reject oversized response bodies", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    global.fetch = async () =>
+      new Response(JSON.stringify({ data: "x".repeat(1024 * 1024) }), { status: 200 })
+    try {
+      await assert.rejects(
+        () =>
+          getWalletBalance({
+            runtimeUrl: "http://127.0.0.1:8081",
+            runtimeAuthTokenPath: tokenPath,
+            requestTimeoutMs: 1000
+          }),
+        /maximum JSON body size/
+      )
     } finally {
       global.fetch = previousFetch
     }

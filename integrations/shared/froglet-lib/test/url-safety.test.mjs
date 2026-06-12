@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { createServer } from "node:http"
 import test from "node:test"
 
 import {
   ipTargetsLocalNetwork,
+  pinnedJsonRequest,
   validateProviderUrl,
 } from "../url-safety.js"
 
@@ -21,6 +23,25 @@ test("ipTargetsLocalNetwork classifies RFC1918 and loopback IPv4", () => {
   assert.equal(ipTargetsLocalNetwork("169.254.1.1"), true)
   assert.equal(ipTargetsLocalNetwork("0.0.0.0"), true)
   assert.equal(ipTargetsLocalNetwork("255.255.255.255"), true)
+})
+
+test("ipTargetsLocalNetwork mirrors Rust expanded reserved IPv4 policy", () => {
+  for (const ip of [
+    "100.64.0.1",
+    "100.127.255.254",
+    "192.0.0.1",
+    "198.18.0.1",
+    "198.19.255.254",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.0.0.1",
+  ]) {
+    assert.equal(ipTargetsLocalNetwork(ip), true, `expected ${ip} to be blocked`)
+  }
+  assert.equal(ipTargetsLocalNetwork("100.63.255.255"), false)
+  assert.equal(ipTargetsLocalNetwork("100.128.0.1"), false)
+  assert.equal(ipTargetsLocalNetwork("192.0.1.1"), false)
+  assert.equal(ipTargetsLocalNetwork("198.20.0.1"), false)
 })
 
 test("ipTargetsLocalNetwork classifies documentation IPv4", () => {
@@ -48,6 +69,9 @@ test("ipTargetsLocalNetwork classifies IPv6 loopback, ULA, link-local, multicast
   // IPv4-mapped to a private v4 address
   assert.equal(ipTargetsLocalNetwork("::ffff:10.0.0.1"), true)
   assert.equal(ipTargetsLocalNetwork("::ffff:169.254.169.254"), true)
+  assert.equal(ipTargetsLocalNetwork("::ffff:7f00:1"), true)
+  assert.equal(ipTargetsLocalNetwork("::ffff:a9fe:a9fe"), true)
+  assert.equal(ipTargetsLocalNetwork("::7f00:1"), true)
 })
 
 test("ipTargetsLocalNetwork allows public IPv6", () => {
@@ -55,6 +79,8 @@ test("ipTargetsLocalNetwork allows public IPv6", () => {
   assert.equal(ipTargetsLocalNetwork("2001:db8::1"), false)
   // IPv4-mapped to a public v4 address
   assert.equal(ipTargetsLocalNetwork("::ffff:8.8.8.8"), false)
+  assert.equal(ipTargetsLocalNetwork("::ffff:808:808"), false)
+  assert.equal(ipTargetsLocalNetwork("::808:808"), false)
 })
 
 test("validateProviderUrl rejects empty, non-string, malformed input", async () => {
@@ -121,6 +147,9 @@ test("validateProviderUrl rejects private IPv4 literals", async () => {
     "https://172.16.0.1",
     "https://169.254.169.254",
     "https://169.254.1.1:80",
+    "https://100.64.0.1",
+    "https://198.18.0.1",
+    "https://224.0.0.1",
   ]) {
     await assert.rejects(
       () => validateProviderUrl(url, "provider_url"),
@@ -136,6 +165,8 @@ test("validateProviderUrl rejects private IPv6 literals", async () => {
     "https://[fc00::1]",
     "https://[fe80::1]",
     "https://[ff02::1]",
+    "https://[::ffff:7f00:1]",
+    "https://[::ffff:a9fe:a9fe]",
   ]) {
     await assert.rejects(
       () => validateProviderUrl(url, "provider_url"),
@@ -255,4 +286,26 @@ test("validateProviderUrl strips trailing slash in normalizedUrl", async () => {
     }
   )
   assert.equal(result.normalizedUrl, "https://public.example.com")
+})
+
+test("pinnedJsonRequest rejects oversized JSON response bodies", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/json")
+    response.end(JSON.stringify({ data: "x".repeat(64) }))
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const { port } = server.address()
+  try {
+    await assert.rejects(
+      () =>
+        pinnedJsonRequest(`http://127.0.0.1:${port}/big`, {
+          pinnedAddress: "127.0.0.1",
+          family: 4,
+          maxResponseBytes: 16,
+        }),
+      /maximum JSON body size/
+    )
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
 })

@@ -29,6 +29,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 let stubDir
 let stubBinary
+const publicUrlDeps = {
+  marketplaceUrl: {
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+  },
+  selfUrl: {
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+  }
+}
 
 // Build a stub `froglet-node` script that, when invoked, writes its
 // argv + cwd + cwd file contents to a file at $FROGLET_STUB_LOG and
@@ -95,13 +103,16 @@ describe("marketplace_publish: stub-binary integration", () => {
     process.env.FROGLET_STUB_EXIT = "0"
     delete process.env.FROGLET_STUB_STDERR
 
-    const result = await runMarketplacePublish({
-      name: "translator",
-      summary: "EN→ES translator",
-      source_inline: "def handle(p):\n    return p\n",
-      hosting: { kind: "tor" },
-      marketplace_url: "https://marketplace.froglet.dev"
-    })
+    const result = await runMarketplacePublish(
+      {
+        name: "translator",
+        summary: "EN→ES translator",
+        source_inline: "def handle(p):\n    return p\n",
+        hosting: { kind: "tor" },
+        marketplace_url: "https://marketplace.froglet.dev"
+      },
+      { _deps: publicUrlDeps }
+    )
 
     assert.deepEqual(result, canned)
 
@@ -133,11 +144,14 @@ describe("marketplace_publish: stub-binary integration", () => {
     })
     process.env.FROGLET_STUB_EXIT = "0"
 
-    await runMarketplacePublish({
-      name: "local-svc",
-      source_inline: "x = 1\n",
-      hosting: { kind: "local" }
-    })
+    await runMarketplacePublish(
+      {
+        name: "local-svc",
+        source_inline: "x = 1\n",
+        hosting: { kind: "local" }
+      },
+      { _deps: publicUrlDeps }
+    )
 
     const log = await readFile(logFile, "utf8")
     assert.match(log, /argv: publish --json --host local --marketplace/)
@@ -156,11 +170,14 @@ describe("marketplace_publish: stub-binary integration", () => {
     })
     process.env.FROGLET_STUB_EXIT = "0"
 
-    await runMarketplacePublish({
-      name: "self-svc",
-      source_inline: "x = 1\n",
-      hosting: { kind: "self", url: "https://my-host.fly.dev" }
-    })
+    await runMarketplacePublish(
+      {
+        name: "self-svc",
+        source_inline: "x = 1\n",
+        hosting: { kind: "self", url: "https://my-host.fly.dev" }
+      },
+      { _deps: publicUrlDeps }
+    )
 
     const log = await readFile(logFile, "utf8")
     assert.match(log, /argv: publish --json --host self --marketplace/)
@@ -175,11 +192,14 @@ describe("marketplace_publish: stub-binary integration", () => {
     process.env.FROGLET_STUB_EXIT = "3"
 
     await assert.rejects(
-      runMarketplacePublish({
-        name: "broken",
-        source_inline: "x = 1\n",
-        hosting: { kind: "tor" }
-      }),
+      runMarketplacePublish(
+        {
+          name: "broken",
+          source_inline: "x = 1\n",
+          hosting: { kind: "tor" }
+        },
+        { _deps: publicUrlDeps }
+      ),
       (e) => {
         assert.match(e.message, /froglet-node publish failed/)
         assert.match(e.message, /manifest: bad entrypoint/)
@@ -201,11 +221,14 @@ describe("marketplace_publish: stub-binary integration", () => {
     process.env.FROGLET_STUB_STDERR = "boom"
 
     await assert.rejects(
-      runMarketplacePublish({
-        name: "cleanup-test",
-        source_inline: "x = 1\n",
-        hosting: { kind: "tor" }
-      })
+      runMarketplacePublish(
+        {
+          name: "cleanup-test",
+          source_inline: "x = 1\n",
+          hosting: { kind: "tor" }
+        },
+        { _deps: publicUrlDeps }
+      )
     )
     const after = (await readdir(tmpdir())).filter((n) => n.startsWith("froglet-publish-"))
     assert.deepEqual(

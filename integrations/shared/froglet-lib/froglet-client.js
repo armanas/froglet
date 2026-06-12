@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 
-import { pinnedJsonRequest, validateProviderUrl } from "./url-safety.js"
+import {
+  DEFAULT_MAX_JSON_RESPONSE_BYTES,
+  pinnedJsonRequest,
+  validateProviderUrl
+} from "./url-safety.js"
 
 const FROGLET_SCHEMA_V1 = "froglet/v1"
 const WORKLOAD_KIND_EXECUTION_V1 = "compute.execution.v1"
@@ -175,21 +179,70 @@ function sameApiBaseUrl(left, right) {
   return normalizedLeft !== null && normalizedLeft === normalizedRight
 }
 
-function normalizeMarketplaceUrl(value) {
-  const normalized = normalizeUrl(value)
-  if (!normalized) {
-    throw new Error("marketplace_url must be a non-empty URL")
-  }
-  let parsed
+export async function validateMarketplaceUrl(value, label = "marketplace_url", opts = {}) {
   try {
-    parsed = new URL(normalized)
+    return await validateProviderUrl(value, label, opts)
   } catch (error) {
-    throw new Error(`marketplace_url is not a valid URL: ${error.message}`)
+    throw new Error(`${label} is not a safe public HTTPS URL: ${error.message}`)
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error(`marketplace_url must use http:// or https:// (got ${parsed.protocol})`)
+}
+
+async function marketplaceJsonRequest(validatedBaseUrl, path, requestOptions, deps = {}) {
+  const requestFn = deps.marketplaceJsonRequest ?? jsonRequest
+  return requestFn(`${validatedBaseUrl.normalizedUrl}${path}`, {
+    ...requestOptions,
+    pin: validatedBaseUrl,
+  })
+}
+
+function providerUrlLookupDeps(deps) {
+  return deps?.providerUrl ? { _deps: deps.providerUrl } : {}
+}
+
+function pinFromValidatedUrl(validated) {
+  return {
+    pinnedAddress: validated.pinnedAddress,
+    family: validated.family,
   }
-  return parsed.toString().replace(/\/$/, "")
+}
+
+async function validateRemoteProviderUrl(value, label, deps = {}) {
+  const validated = await validateProviderUrl(value, label, providerUrlLookupDeps(deps))
+  return {
+    providerUrl: validated.normalizedUrl,
+    pin: pinFromValidatedUrl(validated),
+  }
+}
+
+async function readJsonResponseTextBounded(response, url, maxBytes = DEFAULT_MAX_JSON_RESPONSE_BYTES) {
+  const contentLength = Number.parseInt(String(response.headers?.get?.("content-length") ?? ""), 10)
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`Response from ${url} exceeded maximum JSON body size of ${maxBytes} bytes`)
+  }
+  if (!response.body) {
+    return ""
+  }
+  const reader = response.body.getReader()
+  const chunks = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+      const chunk = Buffer.from(value)
+      totalBytes += chunk.length
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new Error(`Response from ${url} exceeded maximum JSON body size of ${maxBytes} bytes`)
+      }
+      chunks.push(chunk)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks, totalBytes).toString("utf8")
 }
 
 function missingTaskMessage(payload) {
@@ -241,6 +294,7 @@ async function jsonRequest(
     jsonBody,
     expectedStatuses = [200],
     pin,
+    maxResponseBytes = DEFAULT_MAX_JSON_RESPONSE_BYTES,
   } = {}
 ) {
   // `pin` is produced by `validateProviderUrl`. When present, route through a
@@ -255,6 +309,7 @@ async function jsonRequest(
       expectedStatuses,
       pinnedAddress: pin.pinnedAddress,
       family: pin.family,
+      maxResponseBytes,
     })
   }
   const controller = new AbortController()
@@ -270,7 +325,7 @@ async function jsonRequest(
       ...(jsonBody !== undefined ? { body: JSON.stringify(jsonBody) } : {}),
       signal: controller.signal,
     })
-    const body = await response.text()
+    const body = await readJsonResponseTextBounded(response, url, maxResponseBytes)
     let payload = null
     if (body.length > 0) {
       try {
@@ -814,7 +869,19 @@ async function runtimeProviderDetails({
   )
 }
 
-async function fetchPublicProviderService({ providerUrl, requestTimeoutMs, serviceId, pin }) {
+async function fetchPublicProviderService({ providerUrl, requestTimeoutMs, serviceId, pin, _deps = {} }) {
+  if (pin && typeof _deps.providerJsonRequest === "function") {
+    const { payload } = await _deps.providerJsonRequest(
+      `${providerUrl}/v1/provider/services/${encodeURIComponent(serviceId)}`,
+      {
+        method: "GET",
+        timeoutMs: requestTimeoutMs,
+        expectedStatuses: [200],
+        pin,
+      }
+    )
+    return payload
+  }
   return frogletPublicRequest(
     providerUrl,
     requestTimeoutMs,
@@ -840,6 +907,7 @@ async function resolveProviderReference({
   searchLimit = 100,
   trustedProviderUrl = null,
   preferTrustedProviderUrl = false,
+  _deps = {},
 }) {
   // The operator-configured `runtimeUrl` goes through the strict
   // `normalizeBaseUrl` helper at config-load time and is trusted thereafter.
@@ -851,13 +919,11 @@ async function resolveProviderReference({
   if (typeof request?.provider_url === "string" && request.provider_url.trim().length > 0) {
     const validated = await validateProviderUrl(
       request.provider_url,
-      "request.provider_url"
+      "request.provider_url",
+      providerUrlLookupDeps(_deps)
     )
     explicitProviderUrl = validated.normalizedUrl
-    explicitPin = {
-      pinnedAddress: validated.pinnedAddress,
-      family: validated.family,
-    }
+    explicitPin = pinFromValidatedUrl(validated)
   }
   const explicitProviderId =
     typeof request?.provider_id === "string" && request.provider_id.trim().length > 0
@@ -887,23 +953,14 @@ async function resolveProviderReference({
         matchSource: "trusted_provider_url",
       }
     }
+    let providerResponse
     try {
-      const providerResponse = await runtimeProviderDetails({
+      providerResponse = await runtimeProviderDetails({
         runtimeUrl,
         runtimeAuthTokenPath,
         requestTimeoutMs,
         providerId: explicitProviderId,
       })
-      const detail = providerResponse?.provider
-      if (!detail) {
-        throw new Error(`provider ${explicitProviderId} not found`)
-      }
-      return {
-        providerId: explicitProviderId,
-        providerUrl: providerUrlFromRuntimeDetail(detail, explicitProviderId),
-        providerDetail: detail,
-        matchSource: "provider_id",
-      }
     } catch (error) {
       if (hasTrustedProviderUrl) {
         return {
@@ -913,6 +970,29 @@ async function resolveProviderReference({
         }
       }
       throw error
+    }
+    const detail = providerResponse?.provider
+    if (!detail) {
+      if (hasTrustedProviderUrl) {
+        return {
+          providerId: explicitProviderId,
+          providerUrl: trustedProviderUrl.trim(),
+          matchSource: "trusted_provider_url_fallback",
+        }
+      }
+      throw new Error(`provider ${explicitProviderId} not found`)
+    }
+    const validated = await validateRemoteProviderUrl(
+      providerUrlFromRuntimeDetail(detail, explicitProviderId),
+      `provider ${explicitProviderId} provider_url`,
+      _deps
+    )
+    return {
+      providerId: explicitProviderId,
+      providerUrl: validated.providerUrl,
+      pin: validated.pin,
+      providerDetail: detail,
+      matchSource: "provider_id",
     }
   }
 
@@ -944,9 +1024,15 @@ async function resolveProviderReference({
   if (!match.provider_url) {
     throw new Error(`service ${serviceId} did not expose a usable provider_url`)
   }
+  const validated = await validateRemoteProviderUrl(
+    match.provider_url,
+    `service ${serviceId} provider_url`,
+    _deps
+  )
   return {
     providerId: match.provider_id,
-    providerUrl: match.provider_url,
+    providerUrl: validated.providerUrl,
+    pin: validated.pin,
     discoveryService: match,
     matchSource: "service_id",
   }
@@ -959,6 +1045,7 @@ async function resolveRemoteService({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  _deps = {},
 }) {
   const serviceId =
     typeof request?.service_id === "string" && request.service_id.trim().length > 0
@@ -974,12 +1061,14 @@ async function resolveRemoteService({
     request,
     searchLimit,
     trustedProviderUrl,
+    _deps,
   })
   const serviceResponse = await fetchPublicProviderService({
     providerUrl: provider.providerUrl,
     requestTimeoutMs,
     serviceId,
     pin: provider.pin,
+    _deps,
   })
   const service = serviceResponse?.service
   if (!service) {
@@ -1282,6 +1371,7 @@ export async function registerProviderOnMarketplace({
   providerUrl,
   requestTimeoutMs,
   request = {},
+  _deps = {},
 }) {
   let candidateProviderUrl = normalizeUrl(request.provider_url)
   let transport =
@@ -1331,16 +1421,23 @@ export async function registerProviderOnMarketplace({
     }
   }
 
-  const marketplace = normalizeMarketplaceUrl(marketplaceUrl)
-  const { status, payload } = await jsonRequest(`${marketplace}/v1/registrations`, {
-    method: "POST",
-    timeoutMs: requestTimeoutMs,
-    jsonBody: {
-      provider_url: normalizedProviderUrl,
-      transport,
-    },
-    expectedStatuses: [200, 201],
+  const marketplace = await validateMarketplaceUrl(marketplaceUrl, "marketplace_url", {
+    _deps: _deps.marketplaceUrl,
   })
+  const { status, payload } = await marketplaceJsonRequest(
+    marketplace,
+    "/v1/registrations",
+    {
+      method: "POST",
+      timeoutMs: requestTimeoutMs,
+      jsonBody: {
+        provider_url: normalizedProviderUrl,
+        transport,
+      },
+      expectedStatuses: [200, 201],
+    },
+    _deps
+  )
 
   return {
     ...payload,
@@ -1358,14 +1455,22 @@ export async function createProviderDomainClaim({
   marketplaceUrl,
   requestTimeoutMs,
   request,
+  _deps = {},
 }) {
-  const marketplace = normalizeMarketplaceUrl(marketplaceUrl)
-  const { status, payload } = await jsonRequest(`${marketplace}/v1/provider-domains/claims`, {
-    method: "POST",
-    timeoutMs: requestTimeoutMs,
-    jsonBody: request,
-    expectedStatuses: [200],
+  const marketplace = await validateMarketplaceUrl(marketplaceUrl, "marketplace_url", {
+    _deps: _deps.marketplaceUrl,
   })
+  const { status, payload } = await marketplaceJsonRequest(
+    marketplace,
+    "/v1/provider-domains/claims",
+    {
+      method: "POST",
+      timeoutMs: requestTimeoutMs,
+      jsonBody: request,
+      expectedStatuses: [200],
+    },
+    _deps
+  )
   return { ...payload, http_status: status }
 }
 
@@ -1381,6 +1486,7 @@ export async function completeProviderDomainClaim({
   requestTimeoutMs,
   claimId,
   signingMessage,
+  _deps = {},
 }) {
   const signResponse = await frogletRequest(
     providerUrl,
@@ -1393,9 +1499,12 @@ export async function completeProviderDomainClaim({
       expectedStatuses: [200],
     }
   )
-  const marketplace = normalizeMarketplaceUrl(marketplaceUrl)
-  const { status, payload } = await jsonRequest(
-    `${marketplace}/v1/provider-domains/claims/${encodeURIComponent(claimId)}/complete`,
+  const marketplace = await validateMarketplaceUrl(marketplaceUrl, "marketplace_url", {
+    _deps: _deps.marketplaceUrl,
+  })
+  const { status, payload } = await marketplaceJsonRequest(
+    marketplace,
+    `/v1/provider-domains/claims/${encodeURIComponent(claimId)}/complete`,
     {
       method: "POST",
       timeoutMs: requestTimeoutMs,
@@ -1403,7 +1512,8 @@ export async function completeProviderDomainClaim({
         signature: signResponse.signature,
       },
       expectedStatuses: [200],
-    }
+    },
+    _deps
   )
   return {
     ...payload,
@@ -1421,14 +1531,22 @@ export async function fileMarketplaceComplaint({
   arbiterUrl,
   requestTimeoutMs,
   request,
+  _deps = {},
 }) {
-  const arbiter = normalizeMarketplaceUrl(arbiterUrl)
-  const { status, payload } = await jsonRequest(`${arbiter}/v1/complaints`, {
-    method: "POST",
-    timeoutMs: requestTimeoutMs,
-    jsonBody: request,
-    expectedStatuses: [201],
+  const arbiter = await validateMarketplaceUrl(arbiterUrl, "marketplace_arbiter_url", {
+    _deps: _deps.marketplaceUrl,
   })
+  const { status, payload } = await marketplaceJsonRequest(
+    arbiter,
+    "/v1/complaints",
+    {
+      method: "POST",
+      timeoutMs: requestTimeoutMs,
+      jsonBody: request,
+      expectedStatuses: [201],
+    },
+    _deps
+  )
   return {
     ...payload,
     http_status: status,
@@ -1444,14 +1562,22 @@ export async function getMarketplaceComplaint({
   arbiterUrl,
   requestTimeoutMs,
   complaintId,
+  _deps = {},
 }) {
-  const arbiter = normalizeMarketplaceUrl(arbiterUrl)
-  const encoded = encodeURIComponent(complaintId)
-  const { status, payload } = await jsonRequest(`${arbiter}/v1/complaints/${encoded}`, {
-    method: "GET",
-    timeoutMs: requestTimeoutMs,
-    expectedStatuses: [200],
+  const arbiter = await validateMarketplaceUrl(arbiterUrl, "marketplace_arbiter_url", {
+    _deps: _deps.marketplaceUrl,
   })
+  const encoded = encodeURIComponent(complaintId)
+  const { status, payload } = await marketplaceJsonRequest(
+    arbiter,
+    `/v1/complaints/${encoded}`,
+    {
+      method: "GET",
+      timeoutMs: requestTimeoutMs,
+      expectedStatuses: [200],
+    },
+    _deps
+  )
   return {
     ...payload,
     http_status: status,
@@ -1464,13 +1590,14 @@ export async function getMarketplaceComplaint({
  *
  * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, service_id?: string }, searchLimit?: number }} config
  */
-export async function getService({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, request, searchLimit = 100 }) {
+export async function getService({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, request, searchLimit = 100, _deps = {} }) {
   const resolved = await resolveRemoteService({
     runtimeUrl,
     runtimeAuthTokenPath,
     requestTimeoutMs,
     request,
     searchLimit,
+    _deps,
   })
   return {
     service: {
@@ -1493,6 +1620,7 @@ export async function invokeService({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  _deps = {},
 }) {
   const resolved = await resolveRemoteService({
     runtimeUrl,
@@ -1501,6 +1629,7 @@ export async function invokeService({
     request,
     searchLimit,
     trustedProviderUrl,
+    _deps,
   })
   const response = await frogletRequest(
     runtimeUrl,
@@ -1536,6 +1665,7 @@ export async function runCompute({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  _deps = {},
 }) {
   if (typeof request?.artifact_path === "string" && request.artifact_path.trim().length > 0) {
     throw new Error("run_compute via runtime deals does not support artifact_path; provide inline bytes/source or OCI coordinates")
@@ -1548,6 +1678,7 @@ export async function runCompute({
     searchLimit,
     trustedProviderUrl,
     preferTrustedProviderUrl: true,
+    _deps,
   })
   let spec
   if (typeof request?.wasm_module_hex === "string" && request.wasm_module_hex.trim().length > 0) {
