@@ -76,8 +76,8 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
 
 The **Deal** is the only artifact signed by the requester — it's their cryptographic commitment to pay. Everything else is signed by the provider.
 
-:::tip[The receipt is proof]
-Anyone holding the receipt can verify: the provider signed it, the result hash matches, the settlement is correct, the chain is unbroken. No dispute resolution — the math is the arbiter.
+:::tip[The receipt is proof — of exactly this]
+Anyone holding the receipt can verify: the provider signed it, the result hash matches what the provider committed to, the recorded settlement state is internally consistent (on Lightning, attested by the payment preimage), and the chain is unbroken. What it does **not** prove is that the result is *correct* — a receipt makes outcomes attributable, not infallible. Disputes on the hosted marketplace go through an operator-adjudicated [arbiter](/learn/economics/#disputes-today-the-arbiter); the math fixes the evidence, not the verdict.
 :::
 
 ## The signed artifact envelope

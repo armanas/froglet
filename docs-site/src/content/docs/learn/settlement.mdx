@@ -37,7 +37,19 @@ Every paid deal splits into two Lightning payments:
 
 - **Requester protection**: If the provider fails, the success fee is never charged
 - **Provider protection**: The base fee compensates for reserved resources
-- **No escrow needed**: The Lightning HTLCs enforce the rules cryptographically
+- **No third-party escrow**: The Lightning HTLCs bind the success fee to the requester's acceptance cryptographically
+
+:::caution[Know your recourse before you pay]
+The **base fee is non-refundable** — if execution fails, the requester still
+loses it (that is the provider's compensation for admission and reserved
+resources, and why base fees should stay small relative to success fees).
+Lightning payments are **irreversible**: there are no chargebacks, so keep
+individual deal sizes small relative to the trust evidence you have. Stripe
+payments follow card-network dispute rules instead. Disputes on the hosted
+marketplace go through the operator-adjudicated
+[arbiter](/learn/economics/#disputes-today-the-arbiter) — it can suspend a
+provider's listings, but it cannot claw back a settled payment.
+:::
 
 ### Interactive: outcomes by scenario
 
