@@ -33,8 +33,29 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
+reject_control_chars() {
+  name="$1"
+  value="$2"
+  newline='
+'
+  case "$value" in
+    *"$newline"*)
+      fail "$name must not contain control characters"
+      ;;
+  esac
+  if printf '%s' "$value" | grep '[[:cntrl:]]' >/dev/null 2>&1; then
+    fail "$name must not contain control characters"
+  fi
+}
+
 json_escape() {
+  reject_control_chars "json value" "$1"
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+yaml_quote() {
+  reject_control_chars "$1" "$2"
+  printf '"%s"' "$(printf '%s' "$2" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 }
 
 docker_compose() {
@@ -62,18 +83,30 @@ resolve_latest_image_tag() {
 configure_payment() {
   local payment_backend="${FROGLET_PAYMENT_BACKEND:-none}"
   local tmp_payment_script="$BOOTSTRAP_DIR/setup-payment.sh"
+  case "$payment_backend" in
+    none|lightning|stripe|x402) ;;
+    *)
+      fail "FROGLET_PAYMENT_BACKEND must be none, lightning, stripe, or x402"
+      ;;
+  esac
 
   if [ "$payment_backend" != "none" ]; then
     log "Configuring and verifying payment rail: $payment_backend..."
     curl -fsSL "$RAW_BASE/scripts/setup-payment.sh" -o "$tmp_payment_script"
     chmod 0755 "$tmp_payment_script"
 
-    local setup_args=""
     if [ "$payment_backend" = "lightning" ]; then
-      setup_args="--mode ${FROGLET_LIGHTNING_MODE:-mock}"
-    fi
-
-    if ! "$tmp_payment_script" "$payment_backend" $setup_args --out "$BOOTSTRAP_DIR/payment.env"; then
+      lightning_mode="${FROGLET_LIGHTNING_MODE:-mock}"
+      case "$lightning_mode" in
+        mock|lnd_rest|phoenixd) ;;
+        *)
+          fail "FROGLET_LIGHTNING_MODE must be mock, lnd_rest, or phoenixd"
+          ;;
+      esac
+      if ! "$tmp_payment_script" "$payment_backend" --mode "$lightning_mode" --out "$BOOTSTRAP_DIR/payment.env"; then
+        fail "Payment rail verification failed. Please check your credentials."
+      fi
+    elif ! "$tmp_payment_script" "$payment_backend" --out "$BOOTSTRAP_DIR/payment.env"; then
       fail "Payment rail verification failed. Please check your credentials."
     fi
   else
@@ -87,19 +120,19 @@ write_compose() {
   cat >"$BOOTSTRAP_DIR/compose.yaml" <<EOF
 services:
   provider:
-    image: ${PROVIDER_IMAGE}
+    image: $(yaml_quote FROGLET_PROVIDER_IMAGE "$PROVIDER_IMAGE")
     env_file:
       - payment.env
     environment:
       FROGLET_DATA_ROOT: /data
       FROGLET_DB_PATH: /data/provider.node.db
-      FROGLET_NETWORK_MODE: ${NETWORK_MODE}
+      FROGLET_NETWORK_MODE: $(yaml_quote FROGLET_NETWORK_MODE "$NETWORK_MODE")
       FROGLET_PUBLIC_BASE_URL: http://provider:8080
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ${DATA_DIR}:/data
+      - $(yaml_quote FROGLET_DATA_DIR "$DATA_DIR:/data")
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 10s
@@ -108,7 +141,7 @@ services:
       start_period: 5s
 
   runtime:
-    image: ${RUNTIME_IMAGE}
+    image: $(yaml_quote FROGLET_RUNTIME_IMAGE "$RUNTIME_IMAGE")
     depends_on:
       provider:
         condition: service_healthy
@@ -118,13 +151,13 @@ services:
       FROGLET_DATA_ROOT: /data
       FROGLET_DB_PATH: /data/runtime.node.db
       FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
-      FROGLET_MARKETPLACE_URL: ${MARKETPLACE_URL}
-      FROGLET_NETWORK_MODE: ${NETWORK_MODE}
+      FROGLET_MARKETPLACE_URL: $(yaml_quote FROGLET_MARKETPLACE_URL "$MARKETPLACE_URL")
+      FROGLET_NETWORK_MODE: $(yaml_quote FROGLET_NETWORK_MODE "$NETWORK_MODE")
       FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
     ports:
       - "127.0.0.1:8081:8081"
     volumes:
-      - ${DATA_DIR}:/data
+      - $(yaml_quote FROGLET_DATA_DIR "$DATA_DIR:/data")
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health >/dev/null"]
       interval: 10s

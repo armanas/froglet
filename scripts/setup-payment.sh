@@ -83,14 +83,68 @@ require_x402_wallet_address() {
   [[ "$wallet_address" =~ ^0x[0-9A-Fa-f]{40}$ ]] || fail "FROGLET_X402_WALLET_ADDRESS must be a 0x-prefixed 20-byte Base address"
 }
 
+validate_no_control_chars() {
+  local label="$1"
+  local value="$2"
+  case "$value" in
+    *[[:cntrl:]]*)
+      fail "$label must not contain newline or control characters"
+      ;;
+  esac
+}
+
+env_line() {
+  local name="$1"
+  local value="$2"
+  [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fail "invalid environment variable name: $name"
+  validate_no_control_chars "$name" "$value"
+  printf '%s=%q' "$name" "$value"
+}
+
+snippet_lines=()
+
+begin_snippet() {
+  snippet_lines=()
+}
+
+add_env_line() {
+  local name="$1"
+  local value="$2"
+  local line
+  line="$(env_line "$name" "$value")"
+  snippet_lines+=("$line")
+}
+
+add_optional_env_line() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -n "$value" ]]; then
+    add_env_line "$name" "$value"
+  fi
+}
+
+write_current_snippet() {
+  write_snippet "${snippet_lines[@]}"
+  snippet_lines=()
+}
+
 write_snippet() {
+  validate_no_control_chars "output path" "$out_path"
   mkdir -p "$(dirname "$out_path")"
-  printf '%s\n' "$@" >"$out_path"
+  : >"$out_path"
+  chmod 0600 "$out_path"
+  local line
+  for line in "$@"; do
+    if [[ -n "$line" ]]; then
+      printf '%s\n' "$line" >>"$out_path"
+    fi
+  done
+  chmod 0600 "$out_path"
 }
 
 print_common_footer() {
   printf 'Wrote payment env snippet to %s\n' "$out_path"
-  printf 'Load it with: set -a; . %s; set +a\n' "$out_path"
+  printf 'Load it with: set -a; . %q; set +a\n' "$out_path"
 }
 
 probe_lightning_mock() {
@@ -258,9 +312,10 @@ case "$rail" in
   lightning)
     out_path="${out_path:-$repo_root/.froglet/payment/lightning.env}"
     if [[ "$lightning_mode" == "mock" ]]; then
-      write_snippet \
-        "FROGLET_PAYMENT_BACKEND=lightning" \
-        "FROGLET_LIGHTNING_MODE=mock"
+      begin_snippet
+      add_env_line FROGLET_PAYMENT_BACKEND lightning
+      add_env_line FROGLET_LIGHTNING_MODE mock
+      write_current_snippet
       printf 'Required inputs:\n'
       printf '  - none for local lightning mock mode\n'
       if [[ "$verify" -eq 1 ]]; then
@@ -270,13 +325,14 @@ case "$rail" in
       require_env FROGLET_LIGHTNING_REST_URL
       require_env FROGLET_LIGHTNING_MACAROON_PATH
       require_http_url FROGLET_LIGHTNING_REST_URL "${FROGLET_LIGHTNING_REST_URL}"
-      write_snippet \
-        "FROGLET_PAYMENT_BACKEND=lightning" \
-        "FROGLET_LIGHTNING_MODE=lnd_rest" \
-        "FROGLET_LIGHTNING_REST_URL=${FROGLET_LIGHTNING_REST_URL}" \
-        "FROGLET_LIGHTNING_MACAROON_PATH=${FROGLET_LIGHTNING_MACAROON_PATH}" \
-        "FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS=${FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS:-5}" \
-        "${FROGLET_LIGHTNING_TLS_CERT_PATH:+FROGLET_LIGHTNING_TLS_CERT_PATH=${FROGLET_LIGHTNING_TLS_CERT_PATH}}"
+      begin_snippet
+      add_env_line FROGLET_PAYMENT_BACKEND lightning
+      add_env_line FROGLET_LIGHTNING_MODE lnd_rest
+      add_env_line FROGLET_LIGHTNING_REST_URL "${FROGLET_LIGHTNING_REST_URL}"
+      add_env_line FROGLET_LIGHTNING_MACAROON_PATH "${FROGLET_LIGHTNING_MACAROON_PATH}"
+      add_env_line FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS "${FROGLET_LIGHTNING_REQUEST_TIMEOUT_SECS:-5}"
+      add_optional_env_line FROGLET_LIGHTNING_TLS_CERT_PATH
+      write_current_snippet
       printf 'Required inputs:\n'
       printf '  - FROGLET_LIGHTNING_REST_URL\n'
       printf '  - FROGLET_LIGHTNING_MACAROON_PATH\n'
@@ -288,13 +344,14 @@ case "$rail" in
       require_env FROGLET_LIGHTNING_PHOENIXD_URL
       require_env FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD
       require_http_url FROGLET_LIGHTNING_PHOENIXD_URL "${FROGLET_LIGHTNING_PHOENIXD_URL}"
-      write_snippet \
-        "FROGLET_PAYMENT_BACKEND=lightning" \
-        "FROGLET_LIGHTNING_MODE=phoenixd" \
-        "FROGLET_LIGHTNING_PHOENIXD_URL=${FROGLET_LIGHTNING_PHOENIXD_URL}" \
-        "FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD=${FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD}" \
-        "FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS=${FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS:-15}" \
-        "${FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM:+FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=${FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM}}"
+      begin_snippet
+      add_env_line FROGLET_PAYMENT_BACKEND lightning
+      add_env_line FROGLET_LIGHTNING_MODE phoenixd
+      add_env_line FROGLET_LIGHTNING_PHOENIXD_URL "${FROGLET_LIGHTNING_PHOENIXD_URL}"
+      add_env_line FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD "${FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD}"
+      add_env_line FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS "${FROGLET_LIGHTNING_PHOENIXD_REQUEST_TIMEOUT_SECS:-15}"
+      add_optional_env_line FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM
+      write_current_snippet
       printf 'Required inputs:\n'
       printf '  - FROGLET_LIGHTNING_PHOENIXD_URL (default http://127.0.0.1:9740)\n'
       printf '  - FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD (the http-password from ~/.phoenix/phoenix.conf)\n'
@@ -314,11 +371,12 @@ case "$rail" in
     require_env FROGLET_STRIPE_SECRET_KEY
     require_stripe_secret_key
     validate_stripe_webhook_secret
-    write_snippet \
-      "FROGLET_PAYMENT_BACKEND=stripe" \
-      "FROGLET_STRIPE_SECRET_KEY=${FROGLET_STRIPE_SECRET_KEY}" \
-      "FROGLET_STRIPE_API_VERSION=${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}" \
-      "${FROGLET_STRIPE_WEBHOOK_SECRET:+FROGLET_STRIPE_WEBHOOK_SECRET=${FROGLET_STRIPE_WEBHOOK_SECRET}}"
+    begin_snippet
+    add_env_line FROGLET_PAYMENT_BACKEND stripe
+    add_env_line FROGLET_STRIPE_SECRET_KEY "${FROGLET_STRIPE_SECRET_KEY}"
+    add_env_line FROGLET_STRIPE_API_VERSION "${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}"
+    add_optional_env_line FROGLET_STRIPE_WEBHOOK_SECRET
+    write_current_snippet
     printf 'Required inputs:\n'
     printf '  - FROGLET_STRIPE_SECRET_KEY (sk_test_... by default; sk_live_... only with FROGLET_STRIPE_LIVE_CONFIRM=fresh)\n'
     printf '  - optional FROGLET_STRIPE_API_VERSION\n'
@@ -335,11 +393,12 @@ case "$rail" in
     require_http_url \
       FROGLET_X402_FACILITATOR_URL \
       "${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}"
-    write_snippet \
-      "FROGLET_PAYMENT_BACKEND=x402" \
-      "FROGLET_X402_WALLET_ADDRESS=${FROGLET_X402_WALLET_ADDRESS}" \
-      "FROGLET_X402_NETWORK=${x402_network}" \
-      "FROGLET_X402_FACILITATOR_URL=${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}"
+    begin_snippet
+    add_env_line FROGLET_PAYMENT_BACKEND x402
+    add_env_line FROGLET_X402_WALLET_ADDRESS "${FROGLET_X402_WALLET_ADDRESS}"
+    add_env_line FROGLET_X402_NETWORK "${x402_network}"
+    add_env_line FROGLET_X402_FACILITATOR_URL "${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}"
+    write_current_snippet
     printf 'Required inputs:\n'
     printf '  - FROGLET_X402_WALLET_ADDRESS (0x-prefixed Base address)\n'
     printf '  - optional FROGLET_X402_NETWORK=base\n'

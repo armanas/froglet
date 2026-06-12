@@ -1,6 +1,10 @@
 .git
 .gitignore
 target
+node_modules
+**/node_modules
+docs-site/dist
+docs-site/.astro
 data
 node.db
 node.db-*
@@ -24,4 +28,4 @@ __pycache__
 htmlcov
 .DS_Store
 Thumbs.db
-_tmp/testing
+_tmp

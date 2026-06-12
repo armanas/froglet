@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 remote_root="${FROGLET_GCP_REMOTE_ROOT:-~/froglet}"
+remote_data_root="${FROGLET_GCP_REMOTE_DATA_ROOT:-~/froglet-data}"
 
 usage() {
   cat <<'EOF'
@@ -20,6 +21,8 @@ Optional environment:
   FROGLET_GCP_IMAGE_PROJECT   default: debian-cloud
   FROGLET_GCP_BOOT_DISK_SIZE  default: 50GB
   FROGLET_GCP_REMOTE_USER     default: current local user
+  FROGLET_GCP_REMOTE_ROOT     default: ~/froglet
+  FROGLET_GCP_REMOTE_DATA_ROOT default: ~/froglet-data (outside checkout sync path)
 EOF
 }
 
@@ -68,7 +71,7 @@ retry_cmd() {
   local attempt=1
   local max_attempts=30
   while true; do
-    if "$@"; then
+    if "\$@"; then
       return 0
     fi
     if [[ "\$attempt" -ge "\$max_attempts" ]]; then
@@ -141,7 +144,19 @@ wait_ready() {
 
 sync_repo() {
   local sync_cmd
-  sync_cmd="set -euo pipefail; mkdir -p $remote_root; find $remote_root -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar -xzf - -C $remote_root"
+  local remote_root_q
+  printf -v remote_root_q '%q' "$remote_root"
+  sync_cmd="
+    set -euo pipefail
+    remote_root=$remote_root_q
+    case \"\$remote_root\" in
+      '~') remote_root=\"\$HOME\" ;;
+      '~/'*) remote_root=\"\$HOME/\${remote_root#~/}\" ;;
+    esac
+    mkdir -p \"\$remote_root\"
+    find \"\$remote_root\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    tar -xzf - -C \"\$remote_root\"
+  "
   printf 'Syncing local checkout to %s:%s...\n' "$instance_name" "$remote_root"
   COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar -C "$repo_root" \
     --exclude='.git' \
@@ -164,16 +179,69 @@ sync_repo() {
     }
 }
 
+prepare_remote_data_root() {
+  local remote_root_q remote_data_root_q
+  printf -v remote_root_q '%q' "$remote_root"
+  printf -v remote_data_root_q '%q' "$remote_data_root"
+  printf 'Preparing preserved remote data root %s:%s...\n' "$instance_name" "$remote_data_root"
+  ssh_cmd "
+    set -euo pipefail
+    remote_root=$remote_root_q
+    remote_data_root=$remote_data_root_q
+    case \"\$remote_root\" in
+      '~') remote_root=\"\$HOME\" ;;
+      '~/'*) remote_root=\"\$HOME/\${remote_root#~/}\" ;;
+    esac
+    case \"\$remote_data_root\" in
+      '~') remote_data_root=\"\$HOME\" ;;
+      '~/'*) remote_data_root=\"\$HOME/\${remote_data_root#~/}\" ;;
+    esac
+    mkdir -p \"\$remote_root\"
+    remote_root_abs=\"\$(cd \"\$remote_root\" && pwd -P)\"
+    case \"\$remote_data_root\" in
+      /*) ;;
+      *) remote_data_root=\"\$PWD/\$remote_data_root\" ;;
+    esac
+    case \"\$remote_data_root\" in
+      \"\$remote_root_abs\"|\"\$remote_root_abs\"/*)
+        printf 'error: FROGLET_GCP_REMOTE_DATA_ROOT (%s) must be outside FROGLET_GCP_REMOTE_ROOT (%s) so sync cannot delete runtime/provider data\n' \"\$remote_data_root\" \"\$remote_root_abs\" >&2
+        exit 1
+        ;;
+    esac
+    mkdir -p \"\$remote_data_root\"
+    remote_data_root_abs=\"\$(cd \"\$remote_data_root\" && pwd -P)\"
+    if [ -d \"\$remote_root_abs/data\" ] && [ ! -e \"\$remote_data_root_abs/.froglet-migrated-from-checkout-data\" ]; then
+      printf 'Migrating legacy checkout data from %s/data to %s...\n' \"\$remote_root_abs\" \"\$remote_data_root_abs\"
+      cp -a \"\$remote_root_abs/data/.\" \"\$remote_data_root_abs/\" 2>/dev/null || true
+      touch \"\$remote_data_root_abs/.froglet-migrated-from-checkout-data\"
+    fi
+  "
+}
+
 deploy_stack() {
   need_gcp
   instance_exists || fail "instance $instance_name does not exist; run create first"
   wait_ready
+  prepare_remote_data_root
   sync_repo
   printf 'Starting Froglet stack on %s...\n' "$instance_name"
+  local remote_root_q remote_data_root_q
+  printf -v remote_root_q '%q' "$remote_root"
+  printf -v remote_data_root_q '%q' "$remote_data_root"
   ssh_cmd "
     set -euo pipefail
-    cd $remote_root
-    docker compose up --build -d --wait
+    remote_root=$remote_root_q
+    remote_data_root=$remote_data_root_q
+    case \"\$remote_root\" in
+      '~') remote_root=\"\$HOME\" ;;
+      '~/'*) remote_root=\"\$HOME/\${remote_root#~/}\" ;;
+    esac
+    case \"\$remote_data_root\" in
+      '~') remote_data_root=\"\$HOME\" ;;
+      '~/'*) remote_data_root=\"\$HOME/\${remote_data_root#~/}\" ;;
+    esac
+    cd \"\$remote_root\"
+    FROGLET_DATA_ROOT=\"\$remote_data_root\" docker compose up --build -d --wait
     curl --fail --silent --show-error http://127.0.0.1:8080/health >/dev/null
     curl --fail --silent --show-error http://127.0.0.1:8081/health >/dev/null
   "
@@ -189,9 +257,19 @@ status_instance() {
     --format='value(name,status,networkInterfaces[0].accessConfigs[0].natIP)'
   ssh_cmd "
     set -euo pipefail
-    if [ -d $remote_root ]; then
-      cd $remote_root
-      docker compose ps
+    remote_root=$(printf '%q' "$remote_root")
+    remote_data_root=$(printf '%q' "$remote_data_root")
+    case \"\$remote_root\" in
+      '~') remote_root=\"\$HOME\" ;;
+      '~/'*) remote_root=\"\$HOME/\${remote_root#~/}\" ;;
+    esac
+    case \"\$remote_data_root\" in
+      '~') remote_data_root=\"\$HOME\" ;;
+      '~/'*) remote_data_root=\"\$HOME/\${remote_data_root#~/}\" ;;
+    esac
+    if [ -d \"\$remote_root\" ]; then
+      cd \"\$remote_root\"
+      FROGLET_DATA_ROOT=\"\$remote_data_root\" docker compose ps
     fi
   "
 }

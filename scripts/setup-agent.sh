@@ -55,6 +55,32 @@ fail() {
   exit 1
 }
 
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+json_string() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+value = sys.argv[1]
+if any(ord(ch) < 32 for ch in value):
+    raise SystemExit("control characters are not allowed in generated config values")
+sys.stdout.write(json.dumps(value, ensure_ascii=False))
+PY
+}
+
+toml_string() {
+  json_string "$1"
+}
+
+require_uint() {
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be an unsigned integer"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
@@ -78,6 +104,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$target" ]] || fail "--target is required"
+need_cmd python3
+require_uint FROGLET_REQUEST_TIMEOUT_MS "$request_timeout_ms"
+require_uint FROGLET_DEFAULT_SEARCH_LIMIT "$default_search_limit"
+require_uint FROGLET_MAX_SEARCH_LIMIT "$max_search_limit"
 
 # Output path defaults to the current working directory when not in a repo.
 # Repo mode keeps the original repo-root anchoring so existing contributors
@@ -101,12 +131,37 @@ if [[ -z "$repo_root" && "$provider_token_dir" != "$runtime_token_dir" ]]; then
   fail "Docker MCP mode requires provider/runtime token files in the same directory"
 fi
 
+server_path_json="$(json_string "$server_path")"
+server_path_toml="$(toml_string "$server_path")"
+openclaw_plugin_path_json="$(json_string "$openclaw_plugin_path")"
+provider_url_json="$(json_string "$provider_url")"
+provider_url_toml="$(toml_string "$provider_url")"
+runtime_url_json="$(json_string "$runtime_url")"
+runtime_url_toml="$(toml_string "$runtime_url")"
+provider_token_path_json="$(json_string "$provider_token_path")"
+provider_token_path_toml="$(toml_string "$provider_token_path")"
+runtime_token_path_json="$(json_string "$runtime_token_path")"
+runtime_token_path_toml="$(toml_string "$runtime_token_path")"
+request_timeout_ms_json="$(json_string "$request_timeout_ms")"
+default_search_limit_json="$(json_string "$default_search_limit")"
+max_search_limit_json="$(json_string "$max_search_limit")"
+provider_token_dir_json="$(json_string "$provider_token_dir:$docker_token_mount:ro")"
+provider_token_dir_toml="$(toml_string "$provider_token_dir:$docker_token_mount:ro")"
+docker_provider_token_path_json="$(json_string "$docker_provider_token_path")"
+docker_provider_token_path_toml="$(toml_string "$docker_provider_token_path")"
+docker_runtime_token_path_json="$(json_string "$docker_runtime_token_path")"
+docker_runtime_token_path_toml="$(toml_string "$docker_runtime_token_path")"
+mcp_image_json="$(json_string "$mcp_image")"
+mcp_image_toml="$(toml_string "$mcp_image")"
+
 docker_network_json_args=""
 docker_network_toml_args=""
 if [[ -n "$mcp_docker_network" ]]; then
-  docker_network_json_args="        \"--network\", \"$mcp_docker_network\",
+  mcp_docker_network_json="$(json_string "$mcp_docker_network")"
+  mcp_docker_network_toml="$(toml_string "$mcp_docker_network")"
+  docker_network_json_args="        \"--network\", ${mcp_docker_network_json},
 "
-  docker_network_toml_args="\"--network\", \"$mcp_docker_network\", "
+  docker_network_toml_args="\"--network\", ${mcp_docker_network_toml}, "
 fi
 
 case "$target" in
@@ -121,15 +176,15 @@ case "$target" in
     "froglet": {
       "type": "stdio",
       "command": "node",
-      "args": ["$server_path"],
+      "args": [${server_path_json}],
       "env": {
-        "FROGLET_PROVIDER_URL": "$provider_url",
-        "FROGLET_RUNTIME_URL": "$runtime_url",
-        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "$provider_token_path",
-        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "$runtime_token_path",
-        "FROGLET_REQUEST_TIMEOUT_MS": "$request_timeout_ms",
-        "FROGLET_DEFAULT_SEARCH_LIMIT": "$default_search_limit",
-        "FROGLET_MAX_SEARCH_LIMIT": "$max_search_limit"
+        "FROGLET_PROVIDER_URL": ${provider_url_json},
+        "FROGLET_RUNTIME_URL": ${runtime_url_json},
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": ${provider_token_path_json},
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": ${runtime_token_path_json},
+        "FROGLET_REQUEST_TIMEOUT_MS": ${request_timeout_ms_json},
+        "FROGLET_DEFAULT_SEARCH_LIMIT": ${default_search_limit_json},
+        "FROGLET_MAX_SEARCH_LIMIT": ${max_search_limit_json}
       }
     }
   }
@@ -154,6 +209,8 @@ EOF
           http://127.0.0.1:8081|http://localhost:8081) docker_runtime_url="http://runtime:8081" ;;
         esac
       fi
+      docker_provider_url_json="$(json_string "$docker_provider_url")"
+      docker_runtime_url_json="$(json_string "$docker_runtime_url")"
       cat >"$out_path" <<EOF
 {
   "mcpServers": {
@@ -164,7 +221,7 @@ EOF
         "run", "--rm", "-i",
 ${docker_network_json_args}
         "--add-host", "host.docker.internal:host-gateway",
-        "-v", "$provider_token_dir:$docker_token_mount:ro",
+        "-v", ${provider_token_dir_json},
         "-e", "FROGLET_PROVIDER_URL",
         "-e", "FROGLET_RUNTIME_URL",
         "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH",
@@ -172,16 +229,16 @@ ${docker_network_json_args}
         "-e", "FROGLET_REQUEST_TIMEOUT_MS",
         "-e", "FROGLET_DEFAULT_SEARCH_LIMIT",
         "-e", "FROGLET_MAX_SEARCH_LIMIT",
-        "$mcp_image"
+        ${mcp_image_json}
       ],
       "env": {
-        "FROGLET_PROVIDER_URL": "$docker_provider_url",
-        "FROGLET_RUNTIME_URL": "$docker_runtime_url",
-        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": "$docker_provider_token_path",
-        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": "$docker_runtime_token_path",
-        "FROGLET_REQUEST_TIMEOUT_MS": "$request_timeout_ms",
-        "FROGLET_DEFAULT_SEARCH_LIMIT": "$default_search_limit",
-        "FROGLET_MAX_SEARCH_LIMIT": "$max_search_limit"
+        "FROGLET_PROVIDER_URL": ${docker_provider_url_json},
+        "FROGLET_RUNTIME_URL": ${docker_runtime_url_json},
+        "FROGLET_PROVIDER_AUTH_TOKEN_PATH": ${docker_provider_token_path_json},
+        "FROGLET_RUNTIME_AUTH_TOKEN_PATH": ${docker_runtime_token_path_json},
+        "FROGLET_REQUEST_TIMEOUT_MS": ${request_timeout_ms_json},
+        "FROGLET_DEFAULT_SEARCH_LIMIT": ${default_search_limit_json},
+        "FROGLET_MAX_SEARCH_LIMIT": ${max_search_limit_json}
       }
     }
   }
@@ -203,8 +260,8 @@ EOF
       cat >"$out_path" <<EOF
 [mcp_servers.froglet]
 command = "node"
-args = ["$server_path"]
-env = { FROGLET_PROVIDER_URL = "$provider_url", FROGLET_RUNTIME_URL = "$runtime_url", FROGLET_PROVIDER_AUTH_TOKEN_PATH = "$provider_token_path", FROGLET_RUNTIME_AUTH_TOKEN_PATH = "$runtime_token_path", FROGLET_REQUEST_TIMEOUT_MS = "$request_timeout_ms", FROGLET_DEFAULT_SEARCH_LIMIT = "$default_search_limit", FROGLET_MAX_SEARCH_LIMIT = "$max_search_limit" }
+args = [${server_path_toml}]
+env = { FROGLET_PROVIDER_URL = ${provider_url_toml}, FROGLET_RUNTIME_URL = ${runtime_url_toml}, FROGLET_PROVIDER_AUTH_TOKEN_PATH = ${provider_token_path_toml}, FROGLET_RUNTIME_AUTH_TOKEN_PATH = ${runtime_token_path_toml}, FROGLET_REQUEST_TIMEOUT_MS = "${request_timeout_ms}", FROGLET_DEFAULT_SEARCH_LIMIT = "${default_search_limit}", FROGLET_MAX_SEARCH_LIMIT = "${max_search_limit}" }
 EOF
     else
       docker_provider_url="${provider_url/127.0.0.1/host.docker.internal}"
@@ -219,11 +276,13 @@ EOF
           http://127.0.0.1:8081|http://localhost:8081) docker_runtime_url="http://runtime:8081" ;;
         esac
       fi
+      docker_provider_url_toml="$(toml_string "$docker_provider_url")"
+      docker_runtime_url_toml="$(toml_string "$docker_runtime_url")"
       cat >"$out_path" <<EOF
 [mcp_servers.froglet]
 command = "docker"
-args = ["run", "--rm", "-i", ${docker_network_toml_args}"--add-host", "host.docker.internal:host-gateway", "-v", "$provider_token_dir:$docker_token_mount:ro", "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", "$mcp_image"]
-env = { FROGLET_PROVIDER_URL = "$docker_provider_url", FROGLET_RUNTIME_URL = "$docker_runtime_url", FROGLET_PROVIDER_AUTH_TOKEN_PATH = "$docker_provider_token_path", FROGLET_RUNTIME_AUTH_TOKEN_PATH = "$docker_runtime_token_path", FROGLET_REQUEST_TIMEOUT_MS = "$request_timeout_ms", FROGLET_DEFAULT_SEARCH_LIMIT = "$default_search_limit", FROGLET_MAX_SEARCH_LIMIT = "$max_search_limit" }
+args = ["run", "--rm", "-i", ${docker_network_toml_args}"--add-host", "host.docker.internal:host-gateway", "-v", ${provider_token_dir_toml}, "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", ${mcp_image_toml}]
+env = { FROGLET_PROVIDER_URL = ${docker_provider_url_toml}, FROGLET_RUNTIME_URL = ${docker_runtime_url_toml}, FROGLET_PROVIDER_AUTH_TOKEN_PATH = ${docker_provider_token_path_toml}, FROGLET_RUNTIME_AUTH_TOKEN_PATH = ${docker_runtime_token_path_toml}, FROGLET_REQUEST_TIMEOUT_MS = "${request_timeout_ms}", FROGLET_DEFAULT_SEARCH_LIMIT = "${default_search_limit}", FROGLET_MAX_SEARCH_LIMIT = "${max_search_limit}" }
 EOF
     fi
     printf 'Wrote Codex MCP config to %s\n' "$out_path"
@@ -244,7 +303,7 @@ EOF
   "plugins": {
     "load": {
       "paths": [
-        "$openclaw_plugin_path"
+        ${openclaw_plugin_path_json}
       ]
     },
     "entries": {
@@ -252,10 +311,10 @@ EOF
         "enabled": true,
         "config": {
           "hostProduct": "openclaw",
-          "providerUrl": "$provider_url",
-          "runtimeUrl": "$runtime_url",
-          "providerAuthTokenPath": "$provider_token_path",
-          "runtimeAuthTokenPath": "$runtime_token_path",
+          "providerUrl": ${provider_url_json},
+          "runtimeUrl": ${runtime_url_json},
+          "providerAuthTokenPath": ${provider_token_path_json},
+          "runtimeAuthTokenPath": ${runtime_token_path_json},
           "requestTimeoutMs": $request_timeout_ms,
           "defaultSearchLimit": $default_search_limit,
           "maxSearchLimit": $max_search_limit

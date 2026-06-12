@@ -85,9 +85,9 @@ if command -v node >/dev/null 2>&1; then
       fi
 
       echo "[strict] compose-backed bot-surface smoke"
-      docker compose down --remove-orphans
-      docker compose up --build -d
-      trap 'docker compose down --remove-orphans' EXIT
+      docker compose -f compose.yaml -f compose.ci.yaml down --remove-orphans
+      docker compose -f compose.yaml -f compose.ci.yaml up --build -d --wait
+      trap 'docker compose -f compose.yaml -f compose.ci.yaml down --remove-orphans' EXIT
 
       node integrations/openclaw/froglet/test/compose-smoke.mjs
       node integrations/mcp/froglet/test/compose-smoke.mjs
