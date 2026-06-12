@@ -114,6 +114,15 @@ marketplace services settle with `none`, `lightning`, or `stripe`; x402 stays at
 the daemon level. No real money has moved yet anywhere (test-mode / regtest
 only).
 
+:::caution[Buying side: set a spend budget before giving an agent a wallet]
+A node that *pays* for services refuses paid deals — fail-closed — until you
+set `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative budget, persistently
+tracked; optional per-deal cap via `FROGLET_REQUESTER_MAX_DEAL_MSAT`).
+Enforcement happens before any money moves on every rail; check the ledger
+with `GET /v1/runtime/spend`. Free deals need no budget. See
+[Configuration](https://github.com/armanas/froglet/blob/main/docs/CONFIGURATION.md).
+:::
+
 ## Public Registration Choices
 
 Marketplace registration requires the provider to advertise the exact public
