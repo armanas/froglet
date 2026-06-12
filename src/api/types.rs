@@ -81,6 +81,13 @@ pub struct LimitsInfo {
     pub body_limit_bytes: usize,
     pub wasm_hex_limit_bytes: usize,
     pub wasm_input_limit_bytes: usize,
+    pub process_concurrency_limit: usize,
+    pub process_output_limit_bytes: usize,
+    pub container_memory_limit_bytes: u64,
+    pub container_pids_limit: u64,
+    pub container_cpu_limit: f64,
+    pub hosted_trial_deals_per_identity: u32,
+    pub hosted_trial_quota_window_secs: u64,
 }
 
 #[derive(Debug, Serialize)]

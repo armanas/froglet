@@ -20,7 +20,7 @@ use tokio::{
 };
 
 use crate::{
-    config::WasmHttpPolicy,
+    config::{WasmHttpAuthProfile, WasmHttpPolicy},
     wasm::{WASM_CAPABILITY_HTTP_FETCH, WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX},
 };
 
@@ -58,31 +58,7 @@ pub fn fetch(
 
     let parsed_url =
         Url::parse(&request.url).map_err(|error| format!("invalid http url: {error}"))?;
-    match parsed_url.scheme() {
-        "http" | "https" => {}
-        scheme => {
-            return Err(format!(
-                "unsupported http url scheme '{scheme}'; allowed schemes are http and https"
-            ));
-        }
-    }
-
-    let host = parsed_url
-        .host_str()
-        .ok_or_else(|| "http url must include a host".to_string())?
-        .to_ascii_lowercase();
-    if !policy
-        .allowed_hosts
-        .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(&host))
-    {
-        return Err(format!(
-            "http host '{host}' is not allowed by provider policy"
-        ));
-    }
-    let host_port = parsed_url
-        .port_or_known_default()
-        .ok_or_else(|| "http url must include a known port".to_string())?;
+    validate_http_url_for_policy(&policy.allowed_hosts, &parsed_url, None)?;
 
     let timeout_ms = request
         .timeout_ms
@@ -96,12 +72,14 @@ pub fn fetch(
         .map_err(|error| format!("invalid http method: {error}"))?;
     let mut header_map = build_header_map(&request.headers)?;
 
+    let mut auth_profile = None;
     if let Some(profile_name) = request.auth_profile.as_ref() {
         let capability = format!("{WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX}{profile_name}");
         require_capability(granted_capabilities, &capability)?;
         let profile = policy.auth_profiles.get(profile_name).ok_or_else(|| {
             format!("http auth profile '{profile_name}' is not configured on this provider")
         })?;
+        validate_http_url_for_policy(&policy.allowed_hosts, &parsed_url, Some(profile))?;
         let profile_header_name = HeaderName::from_str(&profile.header_name).map_err(|error| {
             format!(
                 "invalid http auth profile header name '{}': {error}",
@@ -116,6 +94,7 @@ pub fn fetch(
                 )
             })?;
         header_map.insert(profile_header_name, profile_header_value);
+        auth_profile = Some(profile.clone());
     }
 
     let body = request_body_bytes(&request)?;
@@ -125,28 +104,27 @@ pub fn fetch(
 
     let request_timeout = Duration::from_millis(timeout_ms);
     let allow_private_networks = policy.allow_private_networks;
-    let host_for_resolution = host.clone();
+    let allowed_hosts = policy.allowed_hosts.clone();
     let max_response_body_bytes = policy.max_response_body_bytes;
+    let max_redirects = policy.max_redirects;
     let default_client = client.clone();
     run_abortable_http_task(
         async move {
-            let request_client = if allow_private_networks {
-                default_client
-            } else {
-                let vetted_addresses =
-                    resolve_public_http_host_addresses(&host_for_resolution, host_port, deadline)
-                        .await?;
-                build_resolved_http_client(&host_for_resolution, host_port, &vetted_addresses)?
-            };
-            let mut builder = request_client
-                .request(method, parsed_url)
-                .headers(header_map)
-                .timeout(request_timeout);
-            if !body.is_empty() {
-                builder = builder.body(body);
-            }
-            fetch_streamed_response(builder, request_timeout, max_response_body_bytes, deadline)
-                .await
+            fetch_following_validated_redirects(
+                default_client,
+                allowed_hosts,
+                allow_private_networks,
+                max_redirects,
+                auth_profile,
+                method,
+                parsed_url,
+                header_map,
+                body,
+                request_timeout,
+                max_response_body_bytes,
+                deadline,
+            )
+            .await
         },
         deadline,
     )
@@ -192,19 +170,164 @@ fn require_capability(granted_capabilities: &[String], capability: &str) -> Resu
     }
 }
 
-async fn fetch_streamed_response(
-    builder: reqwest::RequestBuilder,
+fn validate_http_url_for_policy(
+    allowed_hosts: &[String],
+    parsed_url: &Url,
+    auth_profile: Option<&WasmHttpAuthProfile>,
+) -> Result<(String, u16), String> {
+    match parsed_url.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(format!(
+                "unsupported http url scheme '{scheme}'; allowed schemes are http and https"
+            ));
+        }
+    }
+    let host = parsed_url
+        .host_str()
+        .ok_or_else(|| "http url must include a host".to_string())?
+        .to_ascii_lowercase();
+    if !allowed_hosts
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(&host))
+    {
+        return Err(format!(
+            "http host '{host}' is not allowed by provider policy"
+        ));
+    }
+    let port = parsed_url
+        .port_or_known_default()
+        .ok_or_else(|| "http url must include a known port".to_string())?;
+    if let Some(profile) = auth_profile {
+        validate_auth_profile_endpoint(profile, parsed_url, &host, port)?;
+    }
+    Ok((host, port))
+}
+
+fn validate_auth_profile_endpoint(
+    profile: &WasmHttpAuthProfile,
+    parsed_url: &Url,
+    host: &str,
+    port: u16,
+) -> Result<(), String> {
+    if profile.scheme != "https" {
+        return Err("http auth profile scheme must be https".to_string());
+    }
+    if parsed_url.scheme() != profile.scheme {
+        return Err(format!(
+            "http auth profile requires {} endpoints",
+            profile.scheme
+        ));
+    }
+    if !host.eq_ignore_ascii_case(&profile.host) {
+        return Err("http auth profile host constraint does not match request".to_string());
+    }
+    if port != profile.port {
+        return Err("http auth profile port constraint does not match request".to_string());
+    }
+    if !parsed_url.path().starts_with(&profile.path_prefix) {
+        return Err("http auth profile path constraint does not match request".to_string());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_following_validated_redirects(
+    default_client: Client,
+    allowed_hosts: Vec<String>,
+    allow_private_networks: bool,
+    max_redirects: usize,
+    auth_profile: Option<WasmHttpAuthProfile>,
+    mut method: Method,
+    mut current_url: Url,
+    header_map: HeaderMap,
+    mut body: Vec<u8>,
     request_timeout: Duration,
     max_response_body_bytes: usize,
     deadline: Option<Instant>,
 ) -> Result<Value, String> {
-    let response = await_reqwest_with_deadline(
-        deadline,
-        builder.timeout(request_timeout).send(),
-        "http request failed",
-        "http request deadline exceeded",
-    )
-    .await?;
+    let mut redirects_used = 0usize;
+
+    loop {
+        let (host, port) =
+            validate_http_url_for_policy(&allowed_hosts, &current_url, auth_profile.as_ref())?;
+        let request_client = if allow_private_networks {
+            default_client.clone()
+        } else {
+            let vetted_addresses =
+                resolve_public_http_host_addresses(&host, port, deadline).await?;
+            build_resolved_http_client(&host, port, &vetted_addresses)?
+        };
+        let request_headers = if redirects_used == 0 {
+            header_map.clone()
+        } else if auth_profile.is_some() {
+            headers_without_auth(&header_map)
+        } else {
+            header_map.clone()
+        };
+        let mut builder = request_client
+            .request(method.clone(), current_url.clone())
+            .headers(request_headers)
+            .timeout(request_timeout);
+        if !body.is_empty() {
+            builder = builder.body(body.clone());
+        }
+
+        let response = await_reqwest_with_deadline(
+            deadline,
+            builder.send(),
+            "http request failed",
+            "http request deadline exceeded",
+        )
+        .await?;
+        if !is_redirect_status(response.status()) {
+            return fetch_streamed_response(response, max_response_body_bytes, deadline).await;
+        }
+        if redirects_used >= max_redirects {
+            return Err("http redirect limit exceeded".to_string());
+        }
+        let next_url = redirected_url(&current_url, response.headers())?;
+        validate_http_url_for_policy(&allowed_hosts, &next_url, auth_profile.as_ref())?;
+        if redirect_switches_to_get(response.status(), &method) {
+            method = Method::GET;
+            body.clear();
+        }
+        current_url = next_url;
+        redirects_used = redirects_used.saturating_add(1);
+    }
+}
+
+fn is_redirect_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
+}
+
+fn redirect_switches_to_get(status: reqwest::StatusCode, method: &Method) -> bool {
+    matches!(status.as_u16(), 301..=303) && *method != Method::GET && *method != Method::HEAD
+}
+
+fn redirected_url(current_url: &Url, headers: &HeaderMap) -> Result<Url, String> {
+    let location = headers
+        .get(reqwest::header::LOCATION)
+        .ok_or_else(|| "http redirect response missing Location header".to_string())?
+        .to_str()
+        .map_err(|error| format!("invalid http redirect Location header: {error}"))?;
+    current_url
+        .join(location)
+        .map_err(|error| format!("invalid http redirect URL: {error}"))
+}
+
+fn headers_without_auth(headers: &HeaderMap) -> HeaderMap {
+    let mut filtered = headers.clone();
+    filtered.remove(reqwest::header::AUTHORIZATION);
+    filtered.remove(reqwest::header::PROXY_AUTHORIZATION);
+    filtered
+}
+
+async fn fetch_streamed_response(
+    mut response: reqwest::Response,
+    max_response_body_bytes: usize,
+    deadline: Option<Instant>,
+) -> Result<Value, String> {
     let status = response.status();
     let mut response_headers = BTreeMap::new();
     for (name, value) in response.headers() {
@@ -213,7 +336,6 @@ async fn fetch_streamed_response(
         }
     }
 
-    let mut response = response;
     let mut response_bytes = Vec::new();
     while let Some(chunk) = await_reqwest_with_deadline(
         deadline,
@@ -448,6 +570,10 @@ mod tests {
             auth_profiles: BTreeMap::from([(
                 "github".to_string(),
                 WasmHttpAuthProfile {
+                    scheme: "https".to_string(),
+                    host: "example.com".to_string(),
+                    port: 443,
+                    path_prefix: "/api/".to_string(),
                     header_name: "authorization".to_string(),
                     header_value: "Bearer token".to_string(),
                 },
@@ -533,6 +659,105 @@ mod tests {
         assert!(
             error.contains("missing granted capability"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn auth_profile_requires_https_endpoint() {
+        let mut http_calls_used = 0;
+        let error = fetch(
+            &test_policy(),
+            &Client::builder().build().unwrap(),
+            &[
+                WASM_CAPABILITY_HTTP_FETCH.to_string(),
+                format!("{WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX}github"),
+            ],
+            &mut http_calls_used,
+            HttpFetchRequest {
+                method: "GET".to_string(),
+                url: "http://example.com".to_string(),
+                headers: BTreeMap::new(),
+                body_text: None,
+                body_base64: None,
+                timeout_ms: None,
+                auth_profile: Some("github".to_string()),
+            },
+            None,
+        )
+        .expect_err("expected auth profile https requirement");
+
+        assert!(
+            error.contains("requires https"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn auth_profile_requires_configured_path_scope() {
+        let mut http_calls_used = 0;
+        let error = fetch(
+            &test_policy(),
+            &Client::builder().build().unwrap(),
+            &[
+                WASM_CAPABILITY_HTTP_FETCH.to_string(),
+                format!("{WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX}github"),
+            ],
+            &mut http_calls_used,
+            HttpFetchRequest {
+                method: "GET".to_string(),
+                url: "https://example.com/public".to_string(),
+                headers: BTreeMap::new(),
+                body_text: None,
+                body_base64: None,
+                timeout_ms: None,
+                auth_profile: Some("github".to_string()),
+            },
+            None,
+        )
+        .expect_err("expected auth profile path constraint");
+
+        assert!(
+            error.contains("path constraint"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn redirect_validation_rejects_disallowed_hosts() {
+        let policy = test_policy();
+        let next_url = Url::parse("https://attacker.example").expect("valid redirect destination");
+
+        let error = validate_http_url_for_policy(&policy.allowed_hosts, &next_url, None)
+            .expect_err("redirect target should be rejected");
+
+        assert!(
+            error.contains("not allowed by provider policy"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn auth_headers_are_removed_from_redirect_requests() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        headers.insert(
+            reqwest::header::PROXY_AUTHORIZATION,
+            HeaderValue::from_static("Bearer proxy-secret"),
+        );
+        headers.insert("x-public", HeaderValue::from_static("ok"));
+
+        let filtered = headers_without_auth(&headers);
+
+        assert!(filtered.get(reqwest::header::AUTHORIZATION).is_none());
+        assert!(filtered.get(reqwest::header::PROXY_AUTHORIZATION).is_none());
+        assert_eq!(
+            filtered
+                .get("x-public")
+                .and_then(|value| value.to_str().ok()),
+            Some("ok")
         );
     }
 

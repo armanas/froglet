@@ -36,10 +36,13 @@ pub mod confidential;
 pub mod config;
 pub mod db;
 pub mod execution;
+pub(crate) mod http_body;
 pub mod identity;
 pub mod lnd;
 pub mod pricing;
+pub mod process_runtime;
 pub mod protocol;
+pub mod public_quota;
 pub mod python_sandbox;
 pub mod requester_deals;
 pub mod runtime_auth;
@@ -54,11 +57,9 @@ pub mod wasm;
 pub mod deals;
 
 // Internal modules — not part of the public library API
+pub(crate) mod data_mounts;
 pub(crate) mod jobs;
 pub(crate) mod nostr;
-#[allow(dead_code)]
-pub(crate) mod provider_catalog;
-#[allow(dead_code)]
 pub(crate) mod provider_resolution;
 pub(crate) mod tor;
 pub(crate) mod wasm_db;

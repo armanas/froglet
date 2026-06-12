@@ -413,6 +413,11 @@ impl ExecutionWorkload {
         if input_hash != self.input_hash {
             return Err("input hash does not match canonical input".to_string());
         }
+        if self.mounts.iter().any(|mount| mount.binding.is_some()) {
+            return Err(
+                "execution requests must not include provider host mount bindings".to_string(),
+            );
+        }
         if self.is_service_addressed() {
             return self.validate_service_addressed_shape();
         }
@@ -901,7 +906,7 @@ impl ExecutionWorkload {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutionEntrypointKind, ExecutionRuntime, ExecutionWorkload,
+        ExecutionEntrypointKind, ExecutionMount, ExecutionRuntime, ExecutionWorkload,
         digest_pinned_oci_image_reference,
     };
     use serde_json::Value;
@@ -945,5 +950,29 @@ mod tests {
             .validate_basic()
             .expect_err("mismatched hash should fail");
         assert!(error.contains("module hash"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn execution_validation_rejects_embedded_mount_bindings() {
+        let mut workload = ExecutionWorkload::python_inline_handler(
+            "def handler(event, ctx):\n    return event\n".to_string(),
+            "handler".to_string(),
+            Value::Null,
+        )
+        .expect("python workload");
+        workload.mounts.push(ExecutionMount {
+            handle: "host".to_string(),
+            kind: "fs".to_string(),
+            read_only: true,
+            binding: Some("/etc".to_string()),
+        });
+
+        let error = workload
+            .validate_basic()
+            .expect_err("embedded host binding must be rejected");
+        assert!(
+            error.contains("mount bindings"),
+            "unexpected error: {error}"
+        );
     }
 }

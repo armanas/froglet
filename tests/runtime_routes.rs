@@ -167,6 +167,8 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         },
         payment_backends: vec![PaymentBackend::None],
         execution_timeout_secs: 10,
+        process_limits: Default::default(),
+        public_quota: Default::default(),
         lightning: LightningConfig {
             mode: LightningMode::Mock,
             destination_identity: None,
@@ -245,6 +247,24 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         provider_control_auth_token: "test-provider-token".to_string(),
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        hosted_trial_deal_quota: None,
+        hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        confidential_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
         lnd_rest_client: None,
         phoenixd_client: None,
         lightning_wallet: None,
@@ -906,11 +926,29 @@ async fn build_provider_fixture_with_delay(
     (server, state)
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct MarketplaceFixtureState {
+    provider_key: Arc<crypto::NodeSigningKey>,
+    provider_id: String,
     quote_requests: Arc<Mutex<Vec<Value>>>,
     deal_requests: Arc<Mutex<Vec<Value>>>,
     deal_statuses: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    quote_offers: Arc<Mutex<std::collections::HashMap<String, String>>>,
+}
+
+impl MarketplaceFixtureState {
+    fn new() -> Self {
+        let provider_key = Arc::new(crypto::generate_signing_key());
+        let provider_id = crypto::public_key_hex(&provider_key);
+        Self {
+            provider_key,
+            provider_id,
+            quote_requests: Arc::new(Mutex::new(Vec::new())),
+            deal_requests: Arc::new(Mutex::new(Vec::new())),
+            deal_statuses: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            quote_offers: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
+    }
 }
 
 fn marketplace_router(state: Arc<MarketplaceFixtureState>) -> Router {
@@ -929,22 +967,53 @@ async fn marketplace_quote_handler(
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
     state.quote_requests.lock().await.push(payload.clone());
-    let offer_id = payload
-        .get("offer_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "hash": "aa".repeat(32),
-            "payload": {
-                "provider_id": "marketplace-provider",
-                "offer_id": offer_id,
-                "workload_hash": "bb".repeat(32),
-            }
-        })),
+    let request: CreateQuoteRequest =
+        serde_json::from_value(payload).expect("marketplace quote request");
+    let workload_hash = request.spec.request_hash().expect("quote workload hash");
+    let offer_hash = crypto::sha256_hex(request.offer_id.as_bytes());
+    let quote = protocol::sign_artifact(
+        &state.provider_id,
+        |message| crypto::sign_message_hex(&state.provider_key, message),
+        protocol::ARTIFACT_TYPE_QUOTE,
+        1_700_000_100,
+        QuotePayload {
+            provider_id: state.provider_id.clone(),
+            requester_id: request.requester_id,
+            descriptor_hash: "11".repeat(32),
+            offer_hash,
+            expires_at: 1_700_001_000,
+            workload_kind: request.spec.workload_kind().to_string(),
+            workload_hash,
+            confidential_session_hash: None,
+            capabilities_granted: Vec::new(),
+            extension_refs: Vec::new(),
+            quote_use: None,
+            settlement_terms: QuoteSettlementTerms {
+                method: "none".to_string(),
+                destination_identity: String::new(),
+                base_fee_msat: 0,
+                success_fee_msat: 0,
+                max_base_invoice_expiry_secs: 30,
+                max_success_hold_expiry_secs: 30,
+                min_final_cltv_expiry: 18,
+            },
+            execution_limits: ExecutionLimits {
+                max_input_bytes: 1024 * 1024,
+                max_runtime_ms: 5_000,
+                max_memory_bytes: 64 * 1024 * 1024,
+                max_output_bytes: 1024 * 1024,
+                fuel_limit: 10_000_000,
+            },
+        },
     )
+    .expect("sign marketplace quote");
+    state
+        .quote_offers
+        .lock()
+        .await
+        .insert(quote.hash.clone(), request.offer_id);
+
+    (StatusCode::OK, Json(quote))
 }
 
 async fn marketplace_deal_handler(
@@ -952,18 +1021,25 @@ async fn marketplace_deal_handler(
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
     state.deal_requests.lock().await.push(payload.clone());
-    let offer_id = payload
+    let quote_hash = payload
         .get("quote")
-        .and_then(|quote| quote.get("payload"))
-        .and_then(|quote| quote.get("offer_id"))
+        .and_then(|quote| quote.get("hash"))
         .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+        .unwrap_or_default()
+        .to_string();
+    let offer_id = state
+        .quote_offers
+        .lock()
+        .await
+        .get(&quote_hash)
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
 
-    let result = match offer_id {
+    let result = match offer_id.as_str() {
         "marketplace.search" => json!({
             "providers": [
                 {
-                    "provider_id": "marketplace-provider",
+                    "provider_id": state.provider_id.clone(),
                     "descriptor_hash": "",
                     "transport_endpoints": [],
                     "offers": [],
@@ -975,7 +1051,7 @@ async fn marketplace_deal_handler(
         }),
         "marketplace.provider" => json!({
             "provider": {
-                "provider_id": "marketplace-provider",
+                "provider_id": state.provider_id.clone(),
                 "descriptor_hash": "",
                 "descriptor_seq": 1,
                 "protocol_version": "froglet/v1",
@@ -1052,7 +1128,7 @@ async fn marketplace_deal_status_handler(
 }
 
 async fn build_marketplace_fixture() -> (TestServer, Arc<MarketplaceFixtureState>) {
-    let state = Arc::new(MarketplaceFixtureState::default());
+    let state = Arc::new(MarketplaceFixtureState::new());
     let server = spawn_server(marketplace_router(state.clone())).await;
     (server, state)
 }
@@ -1316,7 +1392,7 @@ async fn runtime_search_proxies_through_marketplace_builtin_service() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         response["providers"][0]["provider_id"],
-        "marketplace-provider"
+        marketplace_state.provider_id
     );
 
     let quote_requests = marketplace_state.quote_requests.lock().await;
@@ -1326,9 +1402,13 @@ async fn runtime_search_proxies_through_marketplace_builtin_service() {
 
     let deal_requests = marketplace_state.deal_requests.lock().await;
     assert_eq!(deal_requests.len(), 1);
+    let quote_hash = deal_requests[0]["quote"]["hash"]
+        .as_str()
+        .expect("marketplace search quote hash");
+    let quote_offers = marketplace_state.quote_offers.lock().await;
     assert_eq!(
-        deal_requests[0]["quote"]["payload"]["offer_id"],
-        "marketplace.search"
+        quote_offers.get(quote_hash).map(String::as_str),
+        Some("marketplace.search")
     );
 }
 
@@ -1369,7 +1449,10 @@ async fn runtime_provider_details_proxies_through_marketplace_builtin_service() 
     );
     let (status, response): (StatusCode, Value) = call_json(app, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(response["provider"]["provider_id"], "marketplace-provider");
+    assert_eq!(
+        response["provider"]["provider_id"],
+        marketplace_state.provider_id
+    );
     assert_eq!(
         response["provider"]["offers"][0]["offer_id"],
         "execute.compute"
@@ -1386,9 +1469,13 @@ async fn runtime_provider_details_proxies_through_marketplace_builtin_service() 
 
     let deal_requests = marketplace_state.deal_requests.lock().await;
     assert_eq!(deal_requests.len(), 1);
+    let quote_hash = deal_requests[0]["quote"]["hash"]
+        .as_str()
+        .expect("marketplace provider quote hash");
+    let quote_offers = marketplace_state.quote_offers.lock().await;
     assert_eq!(
-        deal_requests[0]["quote"]["payload"]["offer_id"],
-        "marketplace.provider"
+        quote_offers.get(quote_hash).map(String::as_str),
+        Some("marketplace.provider")
     );
 }
 

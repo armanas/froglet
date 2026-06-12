@@ -978,7 +978,6 @@ dependencies = [
  "libc",
  "lightning-invoice",
  "oci-registry-client",
- "once_cell",
  "proptest",
  "rand 0.8.5",
  "rcgen",
@@ -988,7 +987,6 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
- "serde_json_canonicalizer",
  "sha2 0.10.9",
  "subtle",
  "tempfile",
@@ -1027,7 +1025,6 @@ dependencies = [
 name = "froglet-publish-engine"
 version = "0.4.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "froglet-protocol",
  "hex",

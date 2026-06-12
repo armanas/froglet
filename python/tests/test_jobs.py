@@ -23,9 +23,17 @@ class JobApiTests(FrogletAsyncTestCase):
         request["idempotency_key"] = "wasm-hello-jobs"
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(runtime.url("/v1/node/jobs"), json=request) as resp:
+            async with session.post(
+                runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
+                json=request,
+            ) as resp:
                 first_payload = await resp.json()
-            async with session.post(runtime.url("/v1/node/jobs"), json=request) as resp:
+            async with session.post(
+                runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
+                json=request,
+            ) as resp:
                 second_payload = await resp.json()
 
         self.assertEqual(first_payload["job_id"], second_payload["job_id"])
@@ -43,9 +51,17 @@ class JobApiTests(FrogletAsyncTestCase):
         second_request["submission"]["workload"] = first_request["submission"]["workload"]
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(runtime.url("/v1/node/jobs"), json=first_request) as resp:
+            async with session.post(
+                runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
+                json=first_request,
+            ) as resp:
                 first_payload = await resp.json()
-            async with session.post(runtime.url("/v1/node/jobs"), json=second_request) as resp:
+            async with session.post(
+                runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
+                json=second_request,
+            ) as resp:
                 second_payload = await resp.json()
 
         self.assertEqual(first_payload["job_id"], second_payload["job_id"])
@@ -59,6 +75,7 @@ class JobApiTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
                 json={
                     "kind": "wasm",
                     "submission": submission,
@@ -99,7 +116,11 @@ class JobApiTests(FrogletAsyncTestCase):
         request = build_wasm_request(VALID_WASM_HEX, input={"task": "cache-corruption"})
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(runtime.url("/v1/node/jobs"), json=request) as resp:
+            async with session.post(
+                runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
+                json=request,
+            ) as resp:
                 created = await resp.json()
 
         completed = await self.wait_for_runtime_job(runtime, created["job_id"])
@@ -112,7 +133,10 @@ class JobApiTests(FrogletAsyncTestCase):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(runtime.url(f"/v1/node/jobs/{created['job_id']}")) as resp:
+            async with session.get(
+                runtime.url(f"/v1/node/jobs/{created['job_id']}"),
+                headers=runtime.auth_headers(),
+            ) as resp:
                 reread = await resp.json()
 
         self.assertEqual(resp.status, 200)
@@ -128,6 +152,7 @@ class JobApiTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
                 json={"kind": "wasm", "submission": submission},
             ) as resp:
                 payload = await resp.json()

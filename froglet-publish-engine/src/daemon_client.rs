@@ -16,7 +16,7 @@
 use crate::error::PublishError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
 
@@ -272,13 +272,9 @@ impl DaemonClient {
     }
 }
 
-#[allow(dead_code)]
 fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
-
-#[allow(dead_code)]
-fn _silence_path_unused(_p: &Path) {}
 
 #[cfg(test)]
 mod tests {

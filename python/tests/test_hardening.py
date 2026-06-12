@@ -68,6 +68,7 @@ class HardeningTests(FrogletAsyncTestCase):
 
             async with session.post(
                 node.runtime.url("/v1/node/execute/wasm"),
+                headers=node.runtime_auth_headers(),
                 json={"submission": build_wasm_submission(LONG_RUNNING_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
@@ -170,6 +171,7 @@ class HardeningTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/execute/wasm"),
+                headers=runtime.auth_headers(),
                 json={"submission": submission},
             ) as resp:
                 payload = await resp.json()

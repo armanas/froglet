@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -130,6 +131,38 @@ fi
             config["providerAuthTokenPath"].endswith("/data/runtime/froglet-control.token")
         )
 
+    def test_setup_agent_escapes_json_and_toml_values(self):
+        json_out = self.root / "escaped.mcp.json"
+        provider_url = 'http://127.0.0.1:8080/path"quoted\\slash'
+        result = self._run(
+            [str(SETUP_AGENT), "--target", "claude-code", "--out", str(json_out)],
+            extra_env={"FROGLET_PROVIDER_URL": provider_url},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        server = json.loads(json_out.read_text(encoding="utf-8"))["mcpServers"]["froglet"]
+        self.assertEqual(server["env"]["FROGLET_PROVIDER_URL"], provider_url)
+
+        toml_out = self.root / "escaped.config.toml"
+        runtime_url = 'http://127.0.0.1:8081/path"quoted\\slash'
+        result = self._run(
+            [str(SETUP_AGENT), "--target", "codex", "--out", str(toml_out)],
+            extra_env={"FROGLET_RUNTIME_URL": runtime_url},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = tomllib.loads(toml_out.read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload["mcp_servers"]["froglet"]["env"]["FROGLET_RUNTIME_URL"],
+            runtime_url,
+        )
+
+    def test_setup_agent_rejects_control_characters(self):
+        result = self._run(
+            [str(SETUP_AGENT), "--target", "claude-code", "--out", str(self.root / "bad.json")],
+            extra_env={"FROGLET_PROVIDER_URL": "http://127.0.0.1:8080\nbad"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("control characters", result.stderr)
+
     def test_setup_agent_binary_mode_adds_linux_host_gateway(self):
         script = self.root / "setup-agent.sh"
         script.write_text(SETUP_AGENT.read_text(encoding="utf-8"), encoding="utf-8")
@@ -165,6 +198,39 @@ fi
         self.assertIn("FROGLET_PAYMENT_BACKEND=lightning", content)
         self.assertIn("FROGLET_LIGHTNING_MODE=mock", content)
         self.assertIn("lightning mock mode", result.stdout)
+
+    def test_setup_payment_writes_private_env_file(self):
+        out_path = self.root / "lightning-private.env"
+        result = self._run([str(SETUP_PAYMENT), "lightning", "--out", str(out_path)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(out_path.stat().st_mode), 0o600)
+
+    def test_setup_payment_shell_quotes_values_when_sourced(self):
+        out_path = self.root / "stripe-quoted.env"
+        secret_key = "sk_test_secret with spaces"
+        webhook_secret = "whsec_secret with spaces"
+        result = self._run(
+            [str(SETUP_PAYMENT), "stripe", "--out", str(out_path), "--no-verify"],
+            extra_env={
+                "FROGLET_STRIPE_SECRET_KEY": secret_key,
+                "FROGLET_STRIPE_WEBHOOK_SECRET": webhook_secret,
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sourced = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    f"set -a; . {shlex.quote(str(out_path))}; set +a; "
+                    'printf "%s\\n%s\\n" "$FROGLET_STRIPE_SECRET_KEY" "$FROGLET_STRIPE_WEBHOOK_SECRET"'
+                ),
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(sourced.returncode, 0, sourced.stderr)
+        self.assertEqual(sourced.stdout.splitlines(), [secret_key, webhook_secret])
 
     def test_setup_payment_generates_stripe_env_and_verifies(self):
         out_path = self.root / "stripe.env"

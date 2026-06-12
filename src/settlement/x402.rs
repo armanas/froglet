@@ -22,6 +22,8 @@ use super::{
     SettlementDriverDescriptor, WalletBalanceSnapshot, new_request_id,
 };
 
+const MAX_FACILITATOR_RESPONSE_BYTES: usize = 256 * 1024;
+
 // ─── Driver ───────────────────────────────────────────────────────────────────
 
 pub(crate) struct X402Driver {
@@ -103,7 +105,7 @@ impl SettlementDriver for X402Driver {
             }
 
             let payment = match request.payment {
-                Some(p) => p,
+                Some(ref p) => p,
                 None => {
                     return Err(PaymentError::PaymentRequired {
                         service_id: request.service_id.as_str().to_string(),
@@ -117,7 +119,7 @@ impl SettlementDriver for X402Driver {
                 return Err(PaymentError::UnsupportedKind {
                     service_id: request.service_id.as_str().to_string(),
                     price_sats: request.price_sats,
-                    kind: payment.kind,
+                    kind: payment.kind.clone(),
                     accepted_payment_methods: vec!["x402_usdc".to_string()],
                 });
             }
@@ -133,41 +135,14 @@ impl SettlementDriver for X402Driver {
                 }
             })?;
 
-            let token_amount = parse_x402_amount(&payload).map_err(|err| {
-                tracing::warn!("x402 token amount parse error: {err}");
+            validate_x402_payment_binding(&payload, &self.config, &request).map_err(|err| {
+                tracing::warn!("x402 token binding validation failed: {err}");
                 PaymentError::BackendUnavailable {
                     service_id: request.service_id.as_str().to_string(),
                     price_sats: request.price_sats,
                     backend: "x402".to_string(),
                 }
             })?;
-            if token_amount != request.price_sats {
-                tracing::warn!(
-                    token_amount = %token_amount,
-                    required_amount = %request.price_sats,
-                    "x402 token amount does not match the requested price"
-                );
-                return Err(PaymentError::BackendUnavailable {
-                    service_id: request.service_id.as_str().to_string(),
-                    price_sats: request.price_sats,
-                    backend: "x402".to_string(),
-                });
-            }
-
-            if let Some(token_network) = parse_x402_network(&payload)
-                && token_network != self.config.network
-            {
-                tracing::warn!(
-                    token_network = %token_network,
-                    configured_network = %self.config.network,
-                    "x402 token network does not match the configured network"
-                );
-                return Err(PaymentError::BackendUnavailable {
-                    service_id: request.service_id.as_str().to_string(),
-                    price_sats: request.price_sats,
-                    backend: "x402".to_string(),
-                });
-            }
 
             let verify_url = format!("{}/verify", self.config.facilitator_url);
             let body = FacilitatorRequest {
@@ -202,7 +177,13 @@ impl SettlementDriver for X402Driver {
             }
 
             let verify_response: FacilitatorVerifyResponse =
-                response.json().await.map_err(|err| {
+                crate::http_body::read_json_response_limited(
+                    response,
+                    MAX_FACILITATOR_RESPONSE_BYTES,
+                    "x402 facilitator /verify response",
+                )
+                .await
+                .map_err(|err| {
                     tracing::error!("x402 facilitator /verify response decode failed: {err}");
                     PaymentError::BackendUnavailable {
                         service_id: request.service_id.as_str().to_string(),
@@ -233,7 +214,7 @@ impl SettlementDriver for X402Driver {
                 method: "x402_usdc".to_string(),
                 service_id: request.service_id,
                 amount_sats: request.price_sats,
-                token_hash: payment.token,
+                token_hash: payment.token.clone(),
             }))
         })
     }
@@ -287,7 +268,13 @@ impl SettlementDriver for X402Driver {
             }
 
             let settle_response: FacilitatorSettleResponse =
-                response.json().await.map_err(|err| {
+                crate::http_body::read_json_response_limited(
+                    response,
+                    MAX_FACILITATOR_RESPONSE_BYTES,
+                    "x402 facilitator /settle response",
+                )
+                .await
+                .map_err(|err| {
                     tracing::error!("x402 facilitator /settle response decode failed: {err}");
                     PaymentError::BackendUnavailable {
                         service_id: reservation.service_id.as_str().to_string(),
@@ -355,9 +342,16 @@ fn parse_x402_token(token: &str) -> Result<serde_json::Value, String> {
 }
 
 fn parse_x402_amount(payload: &serde_json::Value) -> Result<u64, String> {
-    let amount = payload
-        .get("amount")
-        .ok_or_else(|| "missing amount".to_string())?;
+    let amount = find_x402_field(
+        payload,
+        &[
+            "amount",
+            "maxAmountRequired",
+            "max_amount_required",
+            "value",
+        ],
+    )
+    .ok_or_else(|| "missing amount".to_string())?;
 
     if let Some(amount) = amount.as_u64() {
         return Ok(amount);
@@ -372,8 +366,97 @@ fn parse_x402_amount(payload: &serde_json::Value) -> Result<u64, String> {
     Err("amount must be a string or integer".to_string())
 }
 
-fn parse_x402_network(payload: &serde_json::Value) -> Option<&str> {
-    payload.get("network").and_then(|value| value.as_str())
+fn parse_x402_network(payload: &serde_json::Value) -> Result<&str, String> {
+    find_x402_field(payload, &["network"])
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "missing network".to_string())
+}
+
+fn parse_x402_wallet(payload: &serde_json::Value) -> Result<&str, String> {
+    find_x402_field(
+        payload,
+        &[
+            "payTo",
+            "pay_to",
+            "providerWallet",
+            "provider_wallet",
+            "wallet",
+            "recipient",
+            "to",
+        ],
+    )
+    .and_then(|value| value.as_str())
+    .ok_or_else(|| "missing provider wallet".to_string())
+}
+
+fn parse_x402_resource(payload: &serde_json::Value) -> Result<&str, String> {
+    find_x402_field(payload, &["resource"])
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "missing resource".to_string())
+}
+
+fn validate_x402_payment_binding(
+    payload: &serde_json::Value,
+    config: &X402Config,
+    request: &PreparePaymentRequest,
+) -> Result<(), String> {
+    let token_amount = parse_x402_amount(payload)?;
+    if token_amount != request.price_sats {
+        return Err(format!(
+            "amount {token_amount} does not match required amount {}",
+            request.price_sats
+        ));
+    }
+
+    let token_network = parse_x402_network(payload)?;
+    if token_network != config.network {
+        return Err(format!(
+            "network {token_network} does not match configured network {}",
+            config.network
+        ));
+    }
+
+    let token_wallet = parse_x402_wallet(payload)?;
+    if !token_wallet.eq_ignore_ascii_case(&config.wallet_address) {
+        return Err("provider wallet does not match configured wallet".to_string());
+    }
+
+    let token_resource = parse_x402_resource(payload)?;
+    if token_resource != request.service_id.as_str() {
+        return Err(format!(
+            "resource {token_resource} does not match service {}",
+            request.service_id.as_str()
+        ));
+    }
+
+    Ok(())
+}
+
+fn find_x402_field<'a>(
+    value: &'a serde_json::Value,
+    names: &[&str],
+) -> Option<&'a serde_json::Value> {
+    if let serde_json::Value::Object(object) = value {
+        for name in names {
+            if let Some(found) = object.get(*name) {
+                return Some(found);
+            }
+        }
+        for nested_name in [
+            "paymentRequirements",
+            "payment_requirements",
+            "requirements",
+            "payload",
+            "authorization",
+        ] {
+            if let Some(nested) = object.get(nested_name)
+                && let Some(found) = find_x402_field(nested, names)
+            {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -392,12 +475,12 @@ mod tests {
         settlement::{PreparePaymentRequest, ProvidedPayment, SettlementRegistry},
         state::{AppState, TransportStatus},
     };
-    use axum::{Json, Router, extract::State, routing::post};
+    use axum::{Json, Router, extract::State, response::IntoResponse, routing::post};
     use std::{
         collections::HashMap,
         sync::{
             Arc,
-            atomic::{AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
         },
     };
     use tokio::net::TcpListener;
@@ -439,6 +522,8 @@ mod tests {
             },
             payment_backends: vec![PaymentBackend::None],
             execution_timeout_secs: 10,
+            process_limits: Default::default(),
+            public_quota: Default::default(),
             lightning: LightningConfig {
                 mode: LightningMode::Mock,
                 destination_identity: None,
@@ -507,6 +592,24 @@ mod tests {
             provider_control_auth_token: "test-provider-token".to_string(),
             provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
             events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
+            process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            hosted_trial_deal_quota: None,
+            hosted_trial_session_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
+            event_publish_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
+            quote_create_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
+            confidential_session_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
             lnd_rest_client: None,
             phoenixd_client: None,
             lightning_wallet: None,
@@ -521,15 +624,21 @@ mod tests {
     #[derive(Debug, Default)]
     struct MockX402State {
         calls: TokioMutex<Vec<String>>,
+        oversized_verify: AtomicBool,
     }
 
     async fn start_mock_x402() -> (String, Arc<MockX402State>, tokio::task::JoinHandle<()>) {
         async fn verify(
             State(state): State<Arc<MockX402State>>,
             Json(payload): Json<serde_json::Value>,
-        ) -> Json<serde_json::Value> {
+        ) -> axum::response::Response {
             state.calls.lock().await.push(format!("verify:{payload}"));
-            Json(serde_json::json!({ "valid": true }))
+            if state.oversized_verify.load(Ordering::Relaxed) {
+                return "x"
+                    .repeat(MAX_FACILITATOR_RESPONSE_BYTES + 1)
+                    .into_response();
+            }
+            Json(serde_json::json!({ "valid": true })).into_response()
         }
 
         async fn settle(
@@ -556,6 +665,19 @@ mod tests {
             axum::serve(listener, app).await.expect("serve mock x402");
         });
         (format!("http://{address}"), state, handle)
+    }
+
+    fn bound_token(amount: u64, network: &str, wallet: &str, resource: &str) -> String {
+        serde_json::json!({
+            "amount": amount.to_string(),
+            "network": network,
+            "payTo": wallet,
+            "resource": resource,
+            "authorization": {
+                "signature": "signed"
+            }
+        })
+        .to_string()
     }
 
     #[test]
@@ -627,7 +749,7 @@ mod tests {
             network: "base".to_string(),
         });
         let state = make_state();
-        let token = r#"{"amount":"100","network":"base","authorization":"signed"}"#.to_string();
+        let token = bound_token(100, "base", "0xabc123", ServiceId::EventsQuery.as_str());
 
         let reservation = driver
             .prepare(
@@ -686,7 +808,7 @@ mod tests {
             network: "base".to_string(),
         });
         let state = make_state();
-        let token = r#"{"amount":"99","network":"base","authorization":"signed"}"#.to_string();
+        let token = bound_token(99, "base", "0xabc123", ServiceId::EventsQuery.as_str());
 
         let result = driver
             .prepare(
@@ -719,8 +841,12 @@ mod tests {
             network: "base".to_string(),
         });
         let state = make_state();
-        let token =
-            r#"{"amount":"100","network":"base-sepolia","authorization":"signed"}"#.to_string();
+        let token = bound_token(
+            100,
+            "base-sepolia",
+            "0xabc123",
+            ServiceId::EventsQuery.as_str(),
+        );
 
         let result = driver
             .prepare(
@@ -740,6 +866,106 @@ mod tests {
         assert!(
             result.is_err(),
             "prepare should reject a mismatched network"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn x402_driver_prepare_rejects_wallet_mismatch() {
+        let (base_url, _mock_state, handle) = start_mock_x402().await;
+        let driver = X402Driver::new(X402Config {
+            facilitator_url: base_url,
+            wallet_address: "0xabc123".to_string(),
+            network: "base".to_string(),
+        });
+        let state = make_state();
+        let token = bound_token(100, "base", "0xdeadbeef", ServiceId::EventsQuery.as_str());
+
+        let result = driver
+            .prepare(
+                &state,
+                PreparePaymentRequest {
+                    service_id: ServiceId::EventsQuery,
+                    price_sats: 100,
+                    payment: Some(ProvidedPayment {
+                        kind: "x402_usdc".to_string(),
+                        token,
+                    }),
+                    request_id: Some("x402-wallet-mismatch".to_string()),
+                },
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "prepare should reject a mismatched provider wallet"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn x402_driver_prepare_rejects_resource_mismatch() {
+        let (base_url, _mock_state, handle) = start_mock_x402().await;
+        let driver = X402Driver::new(X402Config {
+            facilitator_url: base_url,
+            wallet_address: "0xabc123".to_string(),
+            network: "base".to_string(),
+        });
+        let state = make_state();
+        let token = bound_token(100, "base", "0xabc123", ServiceId::ExecuteWasm.as_str());
+
+        let result = driver
+            .prepare(
+                &state,
+                PreparePaymentRequest {
+                    service_id: ServiceId::EventsQuery,
+                    price_sats: 100,
+                    payment: Some(ProvidedPayment {
+                        kind: "x402_usdc".to_string(),
+                        token,
+                    }),
+                    request_id: Some("x402-resource-mismatch".to_string()),
+                },
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "prepare should reject a mismatched resource"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn x402_driver_prepare_caps_facilitator_verify_response() {
+        let (base_url, mock_state, handle) = start_mock_x402().await;
+        mock_state.oversized_verify.store(true, Ordering::Relaxed);
+        let driver = X402Driver::new(X402Config {
+            facilitator_url: base_url,
+            wallet_address: "0xabc123".to_string(),
+            network: "base".to_string(),
+        });
+        let state = make_state();
+        let token = bound_token(100, "base", "0xabc123", ServiceId::EventsQuery.as_str());
+
+        let result = driver
+            .prepare(
+                &state,
+                PreparePaymentRequest {
+                    service_id: ServiceId::EventsQuery,
+                    price_sats: 100,
+                    payment: Some(ProvidedPayment {
+                        kind: "x402_usdc".to_string(),
+                        token,
+                    }),
+                    request_id: Some("x402-oversized-facilitator".to_string()),
+                },
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "prepare should reject an oversized facilitator response"
         );
         handle.abort();
     }

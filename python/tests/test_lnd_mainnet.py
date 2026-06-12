@@ -36,8 +36,9 @@ Operator runbook:
      ``ops/voltage_lnd.sh materialize``
   3. Confirm channel liquidity:
      ``ops/voltage_lnd.sh balance``
-     Look for ``channel_remote_sats > 50000`` — anything below 50k is
-     too tight for a comfortable test.
+     Look for an active channel with inbound receive capacity. For a
+     comfortable test, target ``channel_remote_sats > 50000``; this is not
+     a requirement to fund the node with 1M sats.
   4. Have a separate Lightning wallet ready with ~5,000 sats.
   5. From the ``froglet`` repo:
        ``FROGLET_RUN_LND_MAINNET=1 python3 -m unittest -v python.tests.test_lnd_mainnet``
@@ -234,10 +235,12 @@ class LndMainnetIntegrationTests(FrogletAsyncTestCase):
         if num_active == 0:
             raise RuntimeError(
                 "Voltage node has 0 active channels. The provider needs "
-                "inbound liquidity to receive a Lightning payment. Open "
-                "an inbound channel (Magma / Voltage Inbound / etc.) and "
-                "rerun. Confirm with `ops/voltage_lnd.sh balance` that "
-                "channel_remote_sats > 50000 before retrying."
+                "inbound liquidity to receive a Lightning payment. Source "
+                "inbound capacity through a liquidity marketplace, LSP, "
+                "peer-opened channel, or swap/rebalance flow, then rerun. "
+                "Confirm with `ops/voltage_lnd.sh balance` that "
+                "channel_remote_sats is comfortably above the tiny test "
+                "invoice amount; >50000 sats is the conservative test target."
             )
 
     async def test_lnd_mainnet_hold_invoice_flow(self) -> None:

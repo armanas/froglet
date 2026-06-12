@@ -1,8 +1,8 @@
 use crate::{
     confidential::ConfidentialPolicy, config::NodeConfig, db, db::DbPool,
     execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
-    pricing::PricingTable, runtime_auth, sandbox::WasmSandbox, settlement::SettlementRegistry, tls,
-    wasm_host::WasmHostEnvironment,
+    pricing::PricingTable, public_quota::IdentityQuota, runtime_auth, sandbox::WasmSandbox,
+    settlement::SettlementRegistry, tls, wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -92,6 +92,12 @@ pub struct AppState {
     pub provider_control_auth_token: String,
     pub provider_control_auth_token_path: PathBuf,
     pub events_query_semaphore: Arc<Semaphore>,
+    pub process_execution_semaphore: Arc<Semaphore>,
+    pub hosted_trial_deal_quota: Option<Arc<IdentityQuota>>,
+    pub hosted_trial_session_quota: Arc<IdentityQuota>,
+    pub event_publish_quota: Arc<IdentityQuota>,
+    pub quote_create_quota: Arc<IdentityQuota>,
+    pub confidential_session_quota: Arc<IdentityQuota>,
     pub lnd_rest_client: Option<Arc<LndRestClient>>,
     /// Concrete phoenixd client used by the prepaid (`lightning.prepaid.v1`)
     /// settlement flow.  `Some` only when `LightningMode::Phoenixd` is
@@ -204,6 +210,30 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
     } else {
         None
     };
+    let hosted_trial_deal_quota = config.session_pool.enabled.then(|| {
+        Arc::new(IdentityQuota::new(
+            config.public_quota.hosted_trial_deals_per_identity,
+            std::time::Duration::from_secs(config.public_quota.hosted_trial_window_secs),
+        ))
+    });
+    let hosted_trial_session_quota = Arc::new(IdentityQuota::new(
+        config.public_quota.hosted_trial_sessions_per_identity,
+        std::time::Duration::from_secs(config.public_quota.hosted_trial_window_secs),
+    ));
+    let public_write_quota_window =
+        std::time::Duration::from_secs(config.public_quota.public_write_window_secs);
+    let event_publish_quota = Arc::new(IdentityQuota::new(
+        config.public_quota.event_publishes_per_identity,
+        public_write_quota_window,
+    ));
+    let quote_create_quota = Arc::new(IdentityQuota::new(
+        config.public_quota.quotes_per_identity,
+        public_write_quota_window,
+    ));
+    let confidential_session_quota = Arc::new(IdentityQuota::new(
+        config.public_quota.confidential_sessions_per_identity,
+        public_write_quota_window,
+    ));
 
     Ok(Arc::new(AppState {
         db: db_pool,
@@ -222,6 +252,12 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         provider_control_auth_token,
         provider_control_auth_token_path: config.storage.provider_control_auth_token_path.clone(),
         events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
+        process_execution_semaphore: Arc::new(Semaphore::new(config.process_limits.concurrency)),
+        hosted_trial_deal_quota,
+        hosted_trial_session_quota,
+        event_publish_quota,
+        quote_create_quota,
+        confidential_session_quota,
         lnd_rest_client,
         phoenixd_client,
         lightning_wallet,
@@ -264,6 +300,8 @@ mod tests {
             },
             payment_backends: vec![PaymentBackend::None],
             execution_timeout_secs: 10,
+            process_limits: Default::default(),
+            public_quota: Default::default(),
             lightning: LightningConfig {
                 mode: LightningMode::Mock,
                 destination_identity: None,

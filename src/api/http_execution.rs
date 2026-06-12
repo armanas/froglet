@@ -9,6 +9,10 @@ pub(crate) fn execute_wasm_routes(state: &Arc<AppState>) -> Router<Arc<AppState>
     let concurrency_limit = sandbox::wasm_concurrency_limit();
     Router::new()
         .route("/v1/node/execute/wasm", post(super::execute_wasm))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            super::require_runtime_auth_middleware,
+        ))
         .route_layer(ConcurrencyLimitLayer::new(concurrency_limit))
         .layer(
             ServiceBuilder::new()
@@ -17,10 +21,14 @@ pub(crate) fn execute_wasm_routes(state: &Arc<AppState>) -> Router<Arc<AppState>
         )
 }
 
-pub(crate) fn jobs_routes() -> Router<Arc<AppState>> {
+pub(crate) fn jobs_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/node/jobs", post(super::create_job))
         .route("/v1/node/jobs/:job_id", get(super::get_job_status))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            super::require_runtime_auth_middleware,
+        ))
         .route_layer(ConcurrencyLimitLayer::new(16))
         .layer(
             ServiceBuilder::new()

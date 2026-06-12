@@ -18,6 +18,7 @@ use std::{
     error::Error as StdError,
     fs,
     io::Write,
+    net::{IpAddr, SocketAddr},
     process::Stdio,
     sync::Arc,
     time::Duration,
@@ -35,7 +36,9 @@ use crate::{
         PolicyConfidentialExecutor, SessionPrivateMaterial,
     },
     config::{LightningMode, PaymentBackend},
-    crypto, db,
+    crypto,
+    data_mounts::{collect_data_mount_plan, execution_mount_context},
+    db,
     deals::{self, NewDeal},
     execution::{
         CONTRACT_BUILTIN_EVENTS_QUERY_V1, CONTRACT_CONTAINER_JSON_V1,
@@ -47,6 +50,7 @@ use crate::{
     jobs::{self, JobSpec, NewJob},
     nostr,
     pricing::{PricingInfo, ServiceId},
+    process_runtime::{ProcessRuntimeConfig, read_child_output_bounded, stream_limit_error},
     protocol::{
         self, ARTIFACT_KIND_CONFIDENTIAL_PROFILE, ARTIFACT_KIND_CONFIDENTIAL_SESSION,
         ARTIFACT_KIND_DEAL, ARTIFACT_KIND_DESCRIPTOR, ARTIFACT_KIND_OFFER, ARTIFACT_KIND_QUOTE,
@@ -57,6 +61,7 @@ use crate::{
         SignedArtifact, WorkloadSpec,
     },
     provider_resolution,
+    public_quota::QuotaDecision,
     requester_deals::{self, NewRequesterDeal},
     runtime_auth, sandbox,
     settlement::{self, PaymentReceipt, PaymentReservation, ProvidedPayment},
@@ -74,8 +79,6 @@ mod http_settlement;
 mod sessions;
 pub(crate) mod types;
 pub use types::*;
-#[cfg(test)]
-mod test_support;
 
 #[derive(Debug, Deserialize)]
 pub struct FeedQuery {
@@ -98,6 +101,7 @@ pub struct FeedResponse {
 }
 
 const MAX_BODY_BYTES: usize = 1_048_576;
+const MAX_UPSTREAM_JSON_BYTES: usize = 1_048_576;
 const MAX_EVENT_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_WASM_HEX_BYTES: usize = 512 * 1024;
 const MAX_WASM_INPUT_BYTES: usize = 128 * 1024;
@@ -136,12 +140,25 @@ fn private_runtime_tempdir(prefix: &str) -> Result<std::path::PathBuf, String> {
     Ok(tempdir)
 }
 
+#[cfg(test)]
 async fn runtime_accessible_provider_url(
     state: &AppState,
     raw_url: &str,
     provider_id: Option<&str>,
 ) -> Result<String, ApiFailure> {
-    provider_resolution::runtime_accessible_provider_url(state, raw_url, provider_id).await
+    Ok(
+        provider_resolution::runtime_accessible_provider_endpoint(state, raw_url, provider_id)
+            .await?
+            .url,
+    )
+}
+
+async fn runtime_accessible_provider_endpoint(
+    state: &AppState,
+    raw_url: &str,
+    provider_id: Option<&str>,
+) -> Result<provider_resolution::RuntimeProviderEndpoint, ApiFailure> {
+    provider_resolution::runtime_accessible_provider_endpoint(state, raw_url, provider_id).await
 }
 
 fn default_offer_publication_state() -> String {
@@ -185,8 +202,8 @@ fn execute_wasm_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     http_execution::execute_wasm_routes(state)
 }
 
-fn jobs_routes() -> Router<Arc<AppState>> {
-    http_execution::jobs_routes()
+fn jobs_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    http_execution::jobs_routes(state)
 }
 
 fn events_query_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
@@ -288,14 +305,13 @@ pub fn runtime_router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(runtime_routes())
         .merge(execute_wasm_routes(&state))
-        .merge(jobs_routes())
+        .merge(jobs_routes(&state))
         .with_state(state)
 }
 
 /// Combined router with all routes (public + runtime). Used only in dual-mode
-/// and in tests. **Do not use for internet-facing deployments** — execute_wasm
-/// and jobs endpoints are included without authentication. Use `public_router`
-/// and `runtime_router` separately for production.
+/// and in tests. **Do not use for internet-facing deployments**; use
+/// `public_router` and `runtime_router` separately for production.
 #[cfg_attr(
     not(test),
     deprecated(note = "use public_router + runtime_router for production")
@@ -307,7 +323,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(provider_routes())
         .merge(publish_routes())
         .merge(execute_wasm_routes(&state))
-        .merge(jobs_routes())
+        .merge(jobs_routes(&state))
         .with_state(state)
 }
 
@@ -375,6 +391,16 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
             body_limit_bytes: MAX_BODY_BYTES,
             wasm_hex_limit_bytes: MAX_WASM_HEX_BYTES,
             wasm_input_limit_bytes: MAX_WASM_INPUT_BYTES,
+            process_concurrency_limit: state.config.process_limits.concurrency,
+            process_output_limit_bytes: state.config.process_limits.output_max_bytes,
+            container_memory_limit_bytes: state.config.process_limits.memory_max_bytes,
+            container_pids_limit: state.config.process_limits.pids_limit,
+            container_cpu_limit: state.config.process_limits.cpu_limit,
+            hosted_trial_deals_per_identity: state
+                .config
+                .public_quota
+                .hosted_trial_deals_per_identity,
+            hosted_trial_quota_window_secs: state.config.public_quota.hosted_trial_window_secs,
         },
         pricing: state.pricing.info().clone(),
         payments: PaymentsInfo {
@@ -525,6 +551,20 @@ where
     remote_json_request_with_client_error_passthrough(state, method, url, body, false).await
 }
 
+async fn remote_json_request_with_pinned_addresses<T, B>(
+    state: &AppState,
+    method: reqwest::Method,
+    url: String,
+    body: Option<&B>,
+    pinned_addresses: &[IpAddr],
+) -> Result<T, ApiFailure>
+where
+    T: DeserializeOwned,
+    B: Serialize + ?Sized,
+{
+    remote_json_request_inner(state, method, url, body, false, pinned_addresses).await
+}
+
 async fn remote_json_request_with_client_error_passthrough<T, B>(
     state: &AppState,
     method: reqwest::Method,
@@ -536,7 +576,32 @@ where
     T: DeserializeOwned,
     B: Serialize + ?Sized,
 {
-    let mut request = state.http_client.request(method, &url);
+    remote_json_request_inner(state, method, url, body, preserve_client_errors, &[]).await
+}
+
+async fn remote_json_request_inner<T, B>(
+    state: &AppState,
+    method: reqwest::Method,
+    url: String,
+    body: Option<&B>,
+    preserve_client_errors: bool,
+    pinned_addresses: &[IpAddr],
+) -> Result<T, ApiFailure>
+where
+    T: DeserializeOwned,
+    B: Serialize + ?Sized,
+{
+    let client = if pinned_addresses.is_empty() {
+        state.http_client.clone()
+    } else {
+        pinned_json_client(&url, pinned_addresses).map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": "failed to pin upstream provider address", "details": error, "url": url }),
+            )
+        })?
+    };
+    let mut request = client.request(method, &url);
     if let Some(body) = body {
         request = request.json(body);
     }
@@ -548,15 +613,22 @@ where
         )
     })?;
     let status = response.status();
-    let body_text = response.text().await.map_err(|error| {
+    let body = crate::http_body::read_response_bytes_limited(
+        response,
+        MAX_UPSTREAM_JSON_BYTES,
+        "upstream JSON response",
+    )
+    .await
+    .map_err(|error| {
         (
             StatusCode::BAD_GATEWAY,
-            json!({ "error": "failed to read upstream response", "details": error.to_string(), "url": url }),
+            json!({ "error": "failed to read upstream response", "details": error, "url": url }),
         )
     })?;
+    let body_text = String::from_utf8_lossy(&body).into_owned();
     if !status.is_success() {
         if preserve_client_errors && status.is_client_error() {
-            if let Ok(payload) = serde_json::from_str::<Value>(&body_text) {
+            if let Ok(payload) = serde_json::from_slice::<Value>(&body) {
                 return Err((status, payload));
             }
             return Err((
@@ -578,7 +650,7 @@ where
             }),
         ));
     }
-    serde_json::from_str(&body_text).map_err(|error| {
+    serde_json::from_slice(&body).map_err(|error| {
         (
             StatusCode::BAD_GATEWAY,
             json!({ "error": "invalid upstream json", "details": error.to_string(), "url": url }),
@@ -586,15 +658,36 @@ where
     })
 }
 
+fn pinned_json_client(url: &str, pinned_addresses: &[IpAddr]) -> Result<reqwest::Client, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL must include a host".to_string())?;
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "URL must include a known port".to_string())?;
+    let socket_addresses: Vec<SocketAddr> = pinned_addresses
+        .iter()
+        .copied()
+        .map(|address| SocketAddr::new(address, port))
+        .collect();
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(host, &socket_addresses)
+        .build()
+        .map_err(|error| format!("failed to build pinned client: {error}"))
+}
+
 async fn fetch_provider_descriptor(
     state: &AppState,
-    provider_url: &str,
+    provider: &provider_resolution::RuntimeProviderEndpoint,
 ) -> Result<SignedArtifact<DescriptorPayload>, ApiFailure> {
-    remote_json_request(
+    remote_json_request_with_pinned_addresses(
         state,
         reqwest::Method::GET,
-        format!("{provider_url}/v1/provider/descriptor"),
+        format!("{}/v1/provider/descriptor", provider.url),
         Option::<&()>::None,
+        &provider.pinned_public_addresses,
     )
     .await
 }
@@ -617,6 +710,29 @@ fn verify_provider_descriptor_artifact(
         )));
     }
     Ok(())
+}
+
+fn verify_marketplace_quote_artifact(
+    quote: SignedArtifact<QuotePayload>,
+) -> Result<SignedArtifact<QuotePayload>, String> {
+    if quote.artifact_type != ARTIFACT_KIND_QUOTE {
+        return Err(format!(
+            "marketplace quote artifact_type must be {ARTIFACT_KIND_QUOTE}"
+        ));
+    }
+    if !protocol::verify_artifact(&quote) {
+        return Err("marketplace quote signature verification failed".to_string());
+    }
+    if quote.signer != quote.payload.provider_id {
+        return Err("marketplace quote signer does not match provider_id".to_string());
+    }
+    if quote.payload.provider_id.trim().is_empty() {
+        return Err("marketplace quote provider_id must be non-empty".to_string());
+    }
+    if quote.payload.workload_hash.trim().is_empty() {
+        return Err("marketplace quote workload_hash must be non-empty".to_string());
+    }
+    Ok(quote)
 }
 
 fn verify_provider_receipt_artifact(
@@ -685,12 +801,36 @@ struct ResolvedProvider {
     provider_id: String,
     provider_public_url: String,
     provider_sync_url: String,
+    pinned_public_addresses: Vec<IpAddr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RuntimeCreateDealScope {
     Full,
-    HostedTrial,
+    HostedTrial { quota_identity: String },
+}
+
+impl RuntimeCreateDealScope {
+    fn is_hosted_trial(&self) -> bool {
+        matches!(self, Self::HostedTrial { .. })
+    }
+
+    fn quota_identity(&self) -> Option<&str> {
+        match self {
+            Self::HostedTrial { quota_identity } => Some(quota_identity.as_str()),
+            Self::Full => None,
+        }
+    }
+}
+
+struct HostedTrialSession {
+    slot_id: usize,
+}
+
+impl HostedTrialSession {
+    fn quota_identity(&self) -> String {
+        format!("hosted-trial-session:{}", self.slot_id)
+    }
 }
 
 async fn resolve_runtime_provider(
@@ -699,10 +839,13 @@ async fn resolve_runtime_provider(
 ) -> Result<ResolvedProvider, ApiFailure> {
     let explicit_provider_id = provider.provider_id.clone();
     if let Some(provider_url) = provider.provider_url.clone() {
-        let provider_sync_url =
-            runtime_accessible_provider_url(state, &provider_url, explicit_provider_id.as_deref())
-                .await?;
-        let descriptor = fetch_provider_descriptor(state, &provider_sync_url).await?;
+        let provider_endpoint = runtime_accessible_provider_endpoint(
+            state,
+            &provider_url,
+            explicit_provider_id.as_deref(),
+        )
+        .await?;
+        let descriptor = fetch_provider_descriptor(state, &provider_endpoint).await?;
         verify_provider_descriptor_artifact(&descriptor)?;
         if let Some(expected_provider_id) = explicit_provider_id.as_deref()
             && descriptor.payload.provider_id != expected_provider_id
@@ -719,7 +862,8 @@ async fn resolve_runtime_provider(
         return Ok(ResolvedProvider {
             provider_id: descriptor.payload.provider_id.clone(),
             provider_public_url: provider_url,
-            provider_sync_url,
+            provider_sync_url: provider_endpoint.url,
+            pinned_public_addresses: provider_endpoint.pinned_public_addresses,
         });
     }
 
@@ -742,6 +886,80 @@ async fn resolve_runtime_provider(
 
 fn hosted_trial_policy_error(message: &str) -> ApiFailure {
     (StatusCode::FORBIDDEN, json!({ "error": message }))
+}
+
+fn enforce_hosted_trial_create_deal_quota(
+    state: &AppState,
+    scope: &RuntimeCreateDealScope,
+) -> Result<(), ApiFailure> {
+    let Some(identity) = scope.quota_identity() else {
+        return Ok(());
+    };
+    let Some(quota) = state.hosted_trial_deal_quota.as_ref() else {
+        return Ok(());
+    };
+    match quota.check_and_increment(identity) {
+        QuotaDecision::Allowed { .. } => Ok(()),
+        QuotaDecision::Rejected { retry_after_secs } => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({
+                "error": "hosted trial create-deal quota exceeded",
+                "retry_after_secs": retry_after_secs,
+            }),
+        )),
+    }
+}
+
+pub(crate) fn public_quota_identity_from_headers(headers: &HeaderMap) -> String {
+    fn first_header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
+    if let Some(forwarded_for) = first_header_value(headers, "x-forwarded-for")
+        && let Some(first) = forwarded_for.split(',').next().map(str::trim)
+        && !first.is_empty()
+    {
+        return format!("origin:{first}");
+    }
+    for header_name in ["cf-connecting-ip", "x-real-ip"] {
+        if let Some(value) = first_header_value(headers, header_name) {
+            return format!("origin:{value}");
+        }
+    }
+    if let Some(forwarded) = first_header_value(headers, "forwarded") {
+        for part in forwarded.split(';') {
+            let part = part.trim();
+            if let Some(value) = part.strip_prefix("for=") {
+                let value = value.trim_matches('"');
+                if !value.is_empty() {
+                    return format!("origin:{value}");
+                }
+            }
+        }
+    }
+    "origin:anonymous".to_string()
+}
+
+pub(crate) fn enforce_identity_quota(
+    quota: &crate::public_quota::IdentityQuota,
+    identity: &str,
+    label: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    match quota.check_and_increment(identity) {
+        QuotaDecision::Allowed { .. } => Ok(()),
+        QuotaDecision::Rejected { retry_after_secs } => Err(error_json(
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({
+                "error": format!("{label} quota exceeded"),
+                "retry_after_secs": retry_after_secs,
+            }),
+        )),
+    }
 }
 
 async fn validate_hosted_trial_raw_create_deal_request(
@@ -1121,15 +1339,23 @@ async fn sync_requester_deal_from_provider(
             )
         })?;
 
-    let remote: deals::DealRecord = remote_json_request(
+    let provider_endpoint = runtime_accessible_provider_endpoint(
+        state.as_ref(),
+        stored.sync_provider_url(),
+        Some(&stored.provider_id),
+    )
+    .await?;
+
+    let remote: deals::DealRecord = remote_json_request_with_pinned_addresses(
         state.as_ref(),
         reqwest::Method::GET,
         format!(
             "{}/v1/provider/deals/{}",
-            stored.sync_provider_url(),
+            provider_endpoint.url,
             urlencoding::encode(deal_id)
         ),
         Option::<&()>::None,
+        &provider_endpoint.pinned_public_addresses,
     )
     .await?;
 
@@ -1207,10 +1433,18 @@ pub async fn hosted_trial_runtime_create_deal(
     headers: HeaderMap,
     Json(payload): Json<RuntimeCreateDealRequest>,
 ) -> Response {
-    if let Err(error) = require_hosted_trial_session_auth(&headers, state.as_ref()) {
-        return error_json(error.0, error.1).into_response();
-    }
-    runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::HostedTrial).await
+    let session = match require_hosted_trial_session_auth(&headers, state.as_ref()) {
+        Ok(session) => session,
+        Err(error) => return error_json(error.0, error.1).into_response(),
+    };
+    runtime_create_deal_inner(
+        state,
+        payload,
+        RuntimeCreateDealScope::HostedTrial {
+            quota_identity: session.quota_identity(),
+        },
+    )
+    .await
 }
 
 pub async fn runtime_create_deal(
@@ -1232,10 +1466,13 @@ async fn runtime_create_deal_inner(
     if let Err(response) = validate_workload_spec(&payload.spec) {
         return response.into_response();
     }
-    if scope == RuntimeCreateDealScope::HostedTrial
+    if scope.is_hosted_trial()
         && let Err(error) =
             validate_hosted_trial_raw_create_deal_request(state.as_ref(), &payload).await
     {
+        return error_json(error.0, error.1).into_response();
+    }
+    if let Err(error) = enforce_hosted_trial_create_deal_quota(state.as_ref(), &scope) {
         return error_json(error.0, error.1).into_response();
     }
 
@@ -1243,7 +1480,7 @@ async fn runtime_create_deal_inner(
         Ok(provider) => provider,
         Err(error) => return error_json(error.0, error.1).into_response(),
     };
-    if scope == RuntimeCreateDealScope::HostedTrial
+    if scope.is_hosted_trial()
         && let Err(error) =
             validate_hosted_trial_free_local_offer(state.as_ref(), &payload, &provider).await
     {
@@ -1263,7 +1500,7 @@ async fn runtime_create_deal_inner(
     let expected_confidential_session_hash =
         payload.spec.confidential_session_hash().map(str::to_string);
 
-    let quote = match remote_json_request::<SignedArtifact<QuotePayload>, _>(
+    let quote = match remote_json_request_with_pinned_addresses::<SignedArtifact<QuotePayload>, _>(
         state.as_ref(),
         reqwest::Method::POST,
         format!("{}/v1/provider/quotes", provider.provider_sync_url),
@@ -1271,12 +1508,13 @@ async fn runtime_create_deal_inner(
             offer_id: payload.offer_id.clone(),
             requester_id: state.identity.node_id().to_string(),
             spec: payload.spec.clone(),
-            max_price_sats: if scope == RuntimeCreateDealScope::HostedTrial {
+            max_price_sats: if scope.is_hosted_trial() {
                 Some(0)
             } else {
                 payload.max_price_sats
             },
         }),
+        &provider.pinned_public_addresses,
     )
     .await
     {
@@ -1338,7 +1576,7 @@ async fn runtime_create_deal_inner(
         )
         .into_response();
     }
-    if scope == RuntimeCreateDealScope::HostedTrial
+    if scope.is_hosted_trial()
         && let Err(error) = validate_hosted_trial_quote_terms(&quote)
     {
         return error_json(error.0, error.1).into_response();
@@ -1431,7 +1669,7 @@ async fn runtime_create_deal_inner(
         };
     // ── end buyer-side SPT minting ─────────────────────────────────────────
 
-    let remote_deal = match remote_json_request::<deals::DealRecord, _>(
+    let remote_deal = match remote_json_request_with_pinned_addresses::<deals::DealRecord, _>(
         state.as_ref(),
         reqwest::Method::POST,
         format!("{}/v1/provider/deals", provider.provider_sync_url),
@@ -1442,6 +1680,7 @@ async fn runtime_create_deal_inner(
             idempotency_key: payload.idempotency_key.clone(),
             payment: payment_for_deal,
         }),
+        &provider.pinned_public_addresses,
     )
     .await
     {
@@ -2415,13 +2654,30 @@ pub async fn get_artifact(
         );
     }
 
+    let current_public_feed = match current_public_feed_artifacts(state.as_ref()).await {
+        Ok(current_public_feed) => current_public_feed,
+        Err(error) => {
+            tracing::error!("Failed to build public feed snapshot: {error}");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to build protocol artifacts" }),
+            );
+        }
+    };
+
     let lookup_hash = artifact_hash.clone();
     match state
         .db
         .with_read_conn(move |conn| db::get_artifact_by_hash(conn, &lookup_hash))
         .await
     {
-        Ok(Some(artifact)) => (StatusCode::OK, Json(json!(artifact))),
+        Ok(Some(artifact)) if current_public_feed.contains(&artifact) => {
+            (StatusCode::OK, Json(json!(artifact)))
+        }
+        Ok(Some(_)) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "artifact not found", "artifact_hash": artifact_hash }),
+        ),
         Ok(None) => error_json(
             StatusCode::NOT_FOUND,
             json!({ "error": "artifact not found", "artifact_hash": artifact_hash }),
@@ -2438,8 +2694,23 @@ pub async fn get_artifact(
 
 pub async fn create_quote(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<CreateQuoteRequest>,
 ) -> impl IntoResponse {
+    let quota_identity = if payload.requester_id.trim().is_empty() {
+        public_quota_identity_from_headers(&headers)
+    } else {
+        format!(
+            "requester:{}",
+            payload.requester_id.trim().to_ascii_lowercase()
+        )
+    };
+    if let Err(response) =
+        enforce_identity_quota(&state.quote_create_quota, &quota_identity, "quote creation")
+    {
+        return response;
+    }
+
     match create_quote_record(state.clone(), payload).await {
         Ok(quote) => (StatusCode::CREATED, Json(json!(quote))),
         Err(error) => error_json(error.0, error.1),
@@ -3116,6 +3387,13 @@ pub async fn publish_event(
         );
     }
 
+    let quota_identity = format!("event-pubkey:{}", event.pubkey.to_ascii_lowercase());
+    if let Err(response) =
+        enforce_identity_quota(&state.event_publish_quota, &quota_identity, "event publish")
+    {
+        return response;
+    }
+
     match insert_event_db(state.as_ref(), event).await {
         Ok(true) => {}
         Ok(false) => {
@@ -3208,27 +3486,24 @@ pub async fn query_events(
 
 pub async fn execute_wasm(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<ExecuteWasmRequest>,
 ) -> impl IntoResponse {
+    if let Err((status, body)) = require_runtime_auth(&headers, state.as_ref()) {
+        return (status, Json(json!(body)));
+    }
+
     tracing::info!("Received Wasm Execution Request");
 
     if let Err(response) = validate_wasm_submission(&payload.submission) {
         return response;
     }
 
-    if payload.submission.workload.abi_version == wasm::WASM_HOST_JSON_ABI_V1 {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            json!({
-                "error": format!(
-                    "{} requires the /v1/provider/quotes and /v1/provider/deals protocol flow",
-                    wasm::WASM_HOST_JSON_ABI_V1
-                ),
-                "abi_version": wasm::WASM_HOST_JSON_ABI_V1,
-                "quote_path": "/v1/provider/quotes",
-                "deal_path": "/v1/provider/deals",
-            }),
-        );
+    if let Err(response) = validate_direct_wasm_capability_policy(
+        &payload.submission.workload.abi_version,
+        &payload.submission.workload.requested_capabilities,
+    ) {
+        return response;
     }
 
     if let Some(response) = legacy_paid_endpoint_requires_protocol_deal(
@@ -3284,9 +3559,17 @@ pub async fn execute_wasm(
 
 pub async fn create_job(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<CreateJobRequest>,
 ) -> impl IntoResponse {
+    if let Err((status, body)) = require_runtime_auth(&headers, state.as_ref()) {
+        return (status, Json(json!(body)));
+    }
+
     if let Err(response) = validate_job_spec(&payload.spec) {
+        return response;
+    }
+    if let Err(response) = validate_direct_job_policy(&payload.spec) {
         return response;
     }
 
@@ -3424,8 +3707,13 @@ pub async fn create_job(
 
 pub async fn get_job_status(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err((status, body)) = require_runtime_auth(&headers, state.as_ref()) {
+        return (status, Json(json!(body)));
+    }
+
     let lookup_job_id = job_id.clone();
     match state
         .db
@@ -3898,6 +4186,7 @@ pub async fn get_confidential_profile(
 
 pub async fn open_confidential_session(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<ConfidentialSessionOpenRequest>,
 ) -> impl IntoResponse {
     let Some(policy) = state.confidential_policy.as_ref() else {
@@ -3910,6 +4199,21 @@ pub async fn open_confidential_session(
         Ok(value) => value,
         Err(response) => return response,
     };
+    let quota_identity = if requester_id.is_empty() {
+        public_quota_identity_from_headers(&headers)
+    } else {
+        format!(
+            "confidential-requester:{}",
+            requester_id.to_ascii_lowercase()
+        )
+    };
+    if let Err(response) = enforce_identity_quota(
+        &state.confidential_session_quota,
+        &quota_identity,
+        "confidential session",
+    ) {
+        return response;
+    }
     let requester_public_key =
         match confidential::validate_public_key_hex(payload.requester_public_key.as_str()) {
             Ok(value) => value,
@@ -4633,15 +4937,26 @@ fn require_runtime_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Api
     require_bearer_token(headers, &state.runtime_auth_token, "runtime")
 }
 
+async fn require_runtime_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err((status, body)) = require_runtime_auth(request.headers(), state.as_ref()) {
+        return (status, Json(json!(body))).into_response();
+    }
+    next.run(request).await
+}
+
 fn require_hosted_trial_session_auth(
     headers: &HeaderMap,
     state: &AppState,
-) -> Result<(), ApiFailure> {
+) -> Result<HostedTrialSession, ApiFailure> {
     if let Some(pool) = state.session_pool.as_ref()
         && let Some(token) = extract_bearer_token(headers)
-        && pool.validate(&token).is_some()
+        && let Some(slot_id) = pool.validate(&token)
     {
-        return Ok(());
+        return Ok(HostedTrialSession { slot_id });
     }
     Err((
         StatusCode::UNAUTHORIZED,
@@ -5317,7 +5632,7 @@ fn provider_service_from_definition(
         entrypoint_kind: definition.entrypoint_kind.clone(),
         entrypoint: definition.entrypoint.clone(),
         contract_version: definition.contract_version.clone(),
-        mounts: definition.mounts.clone(),
+        mounts: service_record_mounts(definition, include_binding),
         capabilities: definition.capabilities.clone(),
         mode: definition.mode.clone(),
         price_sats: definition.price_sats,
@@ -5349,6 +5664,27 @@ fn provider_service_from_definition(
             None
         },
     }))
+}
+
+fn service_record_mounts(
+    definition: &ProviderManagedOfferDefinition,
+    include_binding: bool,
+) -> Vec<ExecutionMount> {
+    if include_binding {
+        return definition.mounts.clone();
+    }
+    mounts_without_bindings(&definition.mounts)
+}
+
+fn mounts_without_bindings(mounts: &[ExecutionMount]) -> Vec<ExecutionMount> {
+    mounts
+        .iter()
+        .cloned()
+        .map(|mut mount| {
+            mount.binding = None;
+            mount
+        })
+        .collect()
 }
 
 fn provider_service_resource_kind(definition: &ProviderManagedOfferDefinition) -> &'static str {
@@ -7020,6 +7356,69 @@ fn validate_job_spec(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json:
     }
 }
 
+fn direct_job_policy_error(reason: &str) -> (StatusCode, Json<serde_json::Value>) {
+    error_json(
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": "direct /v1/node/jobs only accepts unprivileged compute workloads",
+            "reason": reason,
+            "required_flow": "/v1/provider/quotes + /v1/provider/deals",
+        }),
+    )
+}
+
+fn validate_direct_job_policy(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    match spec {
+        JobSpec::Execution { execution } => {
+            if !execution.requested_access.is_empty() {
+                return Err(direct_job_policy_error(
+                    "requested_access must be empty for direct jobs",
+                ));
+            }
+            if !execution.mounts.is_empty() {
+                return Err(direct_job_policy_error(
+                    "mounts require the signed quote/deal capability flow",
+                ));
+            }
+            if execution.contract_version == wasm::WASM_HOST_JSON_ABI_V1 {
+                return Err(direct_job_policy_error(
+                    "Wasm host ABI requires the signed quote/deal capability flow",
+                ));
+            }
+        }
+        JobSpec::Wasm { submission } => {
+            validate_direct_wasm_capability_policy(
+                &submission.workload.abi_version,
+                &submission.workload.requested_capabilities,
+            )?;
+        }
+        JobSpec::OciWasm { submission } => {
+            validate_direct_wasm_capability_policy(
+                &submission.workload.abi_version,
+                &submission.workload.requested_capabilities,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_direct_wasm_capability_policy(
+    abi_version: &str,
+    requested_capabilities: &[String],
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if abi_version == wasm::WASM_HOST_JSON_ABI_V1 {
+        return Err(direct_job_policy_error(
+            "Wasm host ABI requires the signed quote/deal capability flow",
+        ));
+    }
+    if !requested_capabilities.is_empty() {
+        return Err(direct_job_policy_error(
+            "requested Wasm capabilities require the signed quote/deal capability flow",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_wasm_submission(
     submission: &WasmSubmission,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
@@ -7051,6 +7450,13 @@ fn validate_oci_wasm_submission(
     }
 
     if let Err(error) = submission.verify() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error }),
+        ));
+    }
+
+    if let Err(error) = validate_direct_oci_reference(&submission.workload.oci_reference) {
         return Err(error_json(
             StatusCode::BAD_REQUEST,
             json!({ "error": error }),
@@ -7194,132 +7600,11 @@ fn validate_execution_workload(
     }
 }
 
-/// Plan for how granted data-source mounts should reshape a workload's
-/// sandbox + env. Produced by [`collect_data_mount_plan`] from the
-/// intersection of (workload's declared mounts, granted capabilities,
-/// operator-configured bindings).
-#[derive(Debug, Default, Clone)]
-struct DataMountPlan {
-    /// `(env_name, value)` pairs to inject into the workload's environment.
-    env: Vec<(String, String)>,
-    /// Filesystem paths the sandbox must grant write access to. Used for
-    /// file-based mounts (SQLite). Each path is either the DB file itself or
-    /// its parent directory, depending on what landlock allows cleanly.
-    writable_paths: Vec<std::path::PathBuf>,
-    /// True when any granted mount requires outbound network. Flips the
-    /// Python sandbox's `allow_network` flag.
-    needs_network: bool,
-}
-
-/// Return the [`DataMountPlan`] for the given workload + granted capabilities.
-///
-/// A mount is included only when the workload declared it with a supported
-/// `kind`, the capability string `mount.<kind>.<read|write>.<handle>` is in
-/// `granted_access` (or `granted_access` is empty), and the operator
-/// configured a binding via `FROGLET_MOUNT_<kind>_<handle>`. Handles are
-/// matched case-insensitively.
-///
-/// Every kind injects:
-/// - `FROGLET_MOUNT_<HANDLE>_URL` — operator-configured binding string
-/// - `FROGLET_MOUNT_<HANDLE>_READ_ONLY` — `"true"` or `"false"`
-///
-/// Kind-specific behavior:
-/// - `postgres`, `s3`, `redis`: `needs_network = true` (workload will open
-///   outbound TCP to the backing service).
-/// - `sqlite`: extends `writable_paths` with the DB file's parent directory
-///   so the sandbox grants access to the `.db`, `.db-journal`, and `.db-wal`
-///   files SQLite creates. No network needed.
-fn collect_data_mount_plan(
-    execution: &ExecutionWorkload,
-    granted_access: &[String],
-) -> DataMountPlan {
-    const NETWORK_KINDS: &[&str] = &["postgres", "s3", "redis"];
-    const FILE_KINDS: &[&str] = &["sqlite"];
-    let mut plan = DataMountPlan::default();
-
-    for mount in &execution.mounts {
-        let kind = mount.kind.to_ascii_lowercase();
-        let is_network = NETWORK_KINDS.iter().any(|k| k == &kind);
-        let is_file = FILE_KINDS.iter().any(|k| k == &kind);
-        if !is_network && !is_file {
-            continue;
-        }
-        let capability = format!(
-            "mount.{}.{}.{}",
-            mount.kind,
-            if mount.read_only { "read" } else { "write" },
-            mount.handle
-        );
-        if !granted_access.is_empty() && !granted_access.iter().any(|c| c == &capability) {
-            continue;
-        }
-        let env_key = format!("FROGLET_MOUNT_{kind}_{}", mount.handle);
-        let Ok(binding) = std::env::var(&env_key) else {
-            continue;
-        };
-        if binding.is_empty() {
-            continue;
-        }
-        let safe_handle = mount.handle.to_ascii_uppercase();
-        plan.env
-            .push((format!("FROGLET_MOUNT_{safe_handle}_URL"), binding.clone()));
-        plan.env.push((
-            format!("FROGLET_MOUNT_{safe_handle}_READ_ONLY"),
-            if mount.read_only { "true" } else { "false" }.to_string(),
-        ));
-        if is_network {
-            plan.needs_network = true;
-        }
-        if is_file && kind == "sqlite" {
-            // SQLite creates `-journal` and `-wal` files adjacent to the DB.
-            // Grant the parent directory so all three are reachable. Operators
-            // who want tighter isolation should give each mount its own
-            // directory.
-            let db_path = std::path::PathBuf::from(&binding);
-            if let Some(parent) = db_path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                plan.writable_paths.push(parent.to_path_buf());
-            } else {
-                // Bare filename — fall back to the file itself.
-                plan.writable_paths.push(db_path);
-            }
-        }
-    }
-    plan
-}
-
-fn execution_mount_context(execution: &ExecutionWorkload, granted_access: &[String]) -> Value {
-    let mounts = execution
-        .mounts
-        .iter()
-        .filter(|mount| {
-            let handle = format!(
-                "mount.{}.{}.{}",
-                mount.kind,
-                if mount.read_only { "read" } else { "write" },
-                mount.handle
-            );
-            granted_access.is_empty() || granted_access.iter().any(|value| value == &handle)
-        })
-        .map(|mount| {
-            (
-                mount.handle.clone(),
-                json!({
-                    "kind": mount.kind,
-                    "read_only": mount.read_only,
-                    "binding": mount.binding,
-                }),
-            )
-        })
-        .collect::<serde_json::Map<String, Value>>();
-    Value::Object(mounts)
-}
-
 async fn run_python_execution(
     execution: &ExecutionWorkload,
     granted_access: &[String],
     timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
 ) -> Result<Value, String> {
     let source = execution
         .inline_source
@@ -7374,21 +7659,23 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     // mount with a supported kind for this handle, (b) the capability list
     // granted access to it, and (c) the operator configured a binding for
     // the handle via FROGLET_MOUNT_<kind>_<handle>. See docs/MOUNTS.md.
-    let mount_plan = collect_data_mount_plan(execution, granted_access);
+    let mount_plan = collect_data_mount_plan(execution, granted_access)?;
+    if mount_plan.needs_network {
+        return Err("network-backed data mounts require endpoint-scoped proxying".to_string());
+    }
     // Per-invocation sandbox policy: read Python stdlib + CA certs, write
     // only to the invocation tempdir, no outbound network by default. Data
-    // mounts extend this — a network-backed mount (postgres / s3 / redis)
-    // flips allow_network=true, and a file-backed mount (sqlite) adds the
-    // DB parent directory to the sandbox's writable_paths. Both are
-    // coarse-grained for v1; tightening is tracked as a hardening follow-up.
+    // mounts can add exact SQLite database files as read-only or writable
+    // paths; network-backed mounts fail closed above.
     let mut sandbox_config = crate::python_sandbox::SandboxConfig::for_python(&tempdir);
-    if mount_plan.needs_network {
-        sandbox_config.allow_network = true;
-    }
+    sandbox_config
+        .readonly_paths
+        .extend(mount_plan.readonly_paths.clone());
     sandbox_config
         .writable_paths
         .extend(mount_plan.writable_paths.clone());
     let mount_env = mount_plan.env.clone();
+    let process_runtime_config = ProcessRuntimeConfig::from_process_limits(process_limits);
     let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let python3 = crate::python_sandbox::resolve_python3_executable();
         let mut command = std::process::Command::new(&python3);
@@ -7422,20 +7709,15 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         *kill_handle_clone
             .lock()
             .map_err(|_| "python kill handle lock poisoned".to_string())? = Some(child);
-        // Read stdout and stderr concurrently to avoid pipe-backpressure deadlock.
-        let stderr_thread = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut pipe) = stderr_pipe {
-                let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-            }
-            buf
-        });
-        let mut stdout_buf = Vec::new();
-        if let Some(mut pipe) = stdout_pipe {
-            std::io::Read::read_to_end(&mut pipe, &mut stdout_buf)
-                .map_err(|error| format!("failed to read python stdout: {error}"))?;
+        let output = read_child_output_bounded(stdout_pipe, stderr_pipe, &process_runtime_config)?;
+        if output.stdout.truncated {
+            kill_child_process(&kill_handle_clone);
+            return Err(stream_limit_error("python stdout", &output.stdout).into());
         }
-        let stderr_buf = stderr_thread.join().unwrap_or_default();
+        if output.stderr.truncated {
+            kill_child_process(&kill_handle_clone);
+            return Err(stream_limit_error("python stderr", &output.stderr).into());
+        }
         // Wait for child to exit; kill handle can kill it on timeout.
         let status = kill_handle_clone
             .lock()
@@ -7447,10 +7729,12 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         if let Some(status) = status
             && !status.success()
         {
-            let stderr = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr.bytes)
+                .trim()
+                .to_string();
             return Err(format!("python execution failed: {stderr}").into());
         }
-        serde_json::from_slice::<Value>(&stdout_buf)
+        serde_json::from_slice::<Value>(&output.stdout.bytes)
             .map_err(|error| format!("python execution returned invalid JSON: {error}").into())
     })
     .await;
@@ -7479,6 +7763,7 @@ async fn run_container_execution(
     granted_access: &[String],
     gpu_config: &crate::config::GpuConfig,
     timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
 ) -> Result<Value, String> {
     let runner = detect_container_runner().ok_or_else(|| {
         "no supported OCI/container runtime found (expected docker or podman)".to_string()
@@ -7503,6 +7788,7 @@ async fn run_container_execution(
         .iter()
         .any(|capability| capability_requires_gpu(capability));
     let gpu_config = gpu_config.clone();
+    let process_runtime_config = ProcessRuntimeConfig::from_process_limits(process_limits);
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
     let kill_handle_clone = Arc::clone(&kill_handle);
     run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
@@ -7530,6 +7816,7 @@ async fn run_container_execution(
             .arg("-e")
             .arg("FROGLET_CONTEXT")
             .env("FROGLET_CONTEXT", &context_json);
+        process_runtime_config.apply_container_limits(&mut command);
         if gpu_requested {
             let gpu_capabilities = serde_json::to_string(
                 &granted_access_clone
@@ -7561,9 +7848,7 @@ async fn run_container_execution(
                 if mount.read_only { "read" } else { "write" },
                 mount.handle
             );
-            if !granted_access_clone.is_empty()
-                && !granted_access_clone.iter().any(|v| v == &capability)
-            {
+            if !granted_access_clone.iter().any(|v| v == &capability) {
                 continue;
             }
             let target = format!("/froglet-mounts/{}", mount.handle);
@@ -7591,20 +7876,15 @@ async fn run_container_execution(
         *kill_handle_clone
             .lock()
             .map_err(|_| "container kill handle lock poisoned".to_string())? = Some(child);
-        // Read stdout and stderr concurrently to avoid pipe-backpressure deadlock.
-        let stderr_thread = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut pipe) = stderr_pipe {
-                let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-            }
-            buf
-        });
-        let mut stdout_buf = Vec::new();
-        if let Some(mut pipe) = stdout_pipe {
-            std::io::Read::read_to_end(&mut pipe, &mut stdout_buf)
-                .map_err(|error| format!("failed to read container stdout: {error}"))?;
+        let output = read_child_output_bounded(stdout_pipe, stderr_pipe, &process_runtime_config)?;
+        if output.stdout.truncated {
+            kill_child_process(&kill_handle_clone);
+            return Err(stream_limit_error("container stdout", &output.stdout).into());
         }
-        let stderr_buf = stderr_thread.join().unwrap_or_default();
+        if output.stderr.truncated {
+            kill_child_process(&kill_handle_clone);
+            return Err(stream_limit_error("container stderr", &output.stderr).into());
+        }
         let status = kill_handle_clone
             .lock()
             .map_err(|_| "container kill handle lock poisoned".to_string())?
@@ -7615,10 +7895,12 @@ async fn run_container_execution(
         if let Some(status) = status
             && !status.success()
         {
-            let stderr = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr.bytes)
+                .trim()
+                .to_string();
             return Err(format!("container execution failed: {stderr}").into());
         }
-        serde_json::from_slice::<Value>(&stdout_buf)
+        serde_json::from_slice::<Value>(&output.stdout.bytes)
             .map_err(|error| format!("container execution returned invalid JSON: {error}").into())
     })
     .await
@@ -7712,7 +7994,7 @@ fn validate_service_addressed_execution_against_service(
             "service-addressed execution contract_version does not match local service".to_string(),
         );
     }
-    if execution.mounts != service.mounts {
+    if mounts_without_bindings(&execution.mounts) != mounts_without_bindings(&service.mounts) {
         return Err("service-addressed execution mounts do not match local service".to_string());
     }
     let allowed_access = service_access_capabilities(service);
@@ -8204,17 +8486,25 @@ async fn load_runtime_requester_deal_and_payment_intent(
         return Ok((stored.public_record(), None));
     }
 
-    let bundle: settlement::LightningInvoiceBundleSession = remote_json_request(
+    let provider_endpoint = runtime_accessible_provider_endpoint(
         state.as_ref(),
-        reqwest::Method::GET,
-        format!(
-            "{}/v1/provider/deals/{}/invoice-bundle",
-            stored.sync_provider_url(),
-            urlencoding::encode(deal_id)
-        ),
-        Option::<&()>::None,
+        stored.sync_provider_url(),
+        Some(&stored.provider_id),
     )
     .await?;
+    let bundle: settlement::LightningInvoiceBundleSession =
+        remote_json_request_with_pinned_addresses(
+            state.as_ref(),
+            reqwest::Method::GET,
+            format!(
+                "{}/v1/provider/deals/{}/invoice-bundle",
+                provider_endpoint.url,
+                urlencoding::encode(deal_id)
+            ),
+            Option::<&()>::None,
+            &provider_endpoint.pinned_public_addresses,
+        )
+        .await?;
     let report = settlement::validate_lightning_invoice_bundle(
         &bundle.bundle,
         &stored.quote,
@@ -9929,7 +10219,7 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
 
     // Call the marketplace's quote endpoint
     let quote_url = format!("{marketplace_url}/v1/provider/quotes");
-    let quote_response: serde_json::Value = remote_json_request(
+    let quote_response: SignedArtifact<QuotePayload> = remote_json_request(
         state.as_ref(),
         reqwest::Method::POST,
         quote_url,
@@ -9942,36 +10232,16 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
     )
     .await
     .map_err(|(status, body)| format!("marketplace quote failed ({status}): {body}"))?;
-
-    let quote_hash = quote_response
-        .get("hash")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "marketplace quote response missing 'hash' field".to_string())?
-        .to_string();
+    let quote_response = verify_marketplace_quote_artifact(quote_response)
+        .map_err(|error| format!("marketplace quote verification failed: {error}"))?;
 
     // Create and sign a deal referencing the quote
     let created_at = settlement::current_unix_timestamp();
-    let workload_hash = quote_response
-        .get("payload")
-        .and_then(|p| p.get("workload_hash"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            "marketplace quote response missing 'payload.workload_hash' field".to_string()
-        })?
-        .to_string();
-    let provider_id = quote_response
-        .get("payload")
-        .and_then(|p| p.get("provider_id"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            "marketplace quote response missing 'payload.provider_id' field".to_string()
-        })?
-        .to_string();
     let deal_payload = protocol::DealPayload {
-        provider_id,
+        provider_id: quote_response.payload.provider_id.clone(),
         requester_id: state.identity.node_id().to_string(),
-        quote_hash: quote_hash.clone(),
-        workload_hash,
+        quote_hash: quote_response.hash.clone(),
+        workload_hash: quote_response.payload.workload_hash.clone(),
         confidential_session_hash: None,
         extension_refs: Vec::new(),
         authority_ref: None,
@@ -10107,6 +10377,24 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
 /// Shared slot for a child process, allowing timeout-based kill.
 type ChildKillHandle = Arc<std::sync::Mutex<Option<std::process::Child>>>;
 
+fn try_acquire_process_execution_permit(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    state
+        .process_execution_semaphore
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "process execution concurrency limit exhausted".to_string())
+}
+
+fn kill_child_process(kill_handle: &ChildKillHandle) {
+    if let Ok(mut guard) = kill_handle.lock()
+        && let Some(child) = guard.as_mut()
+    {
+        let _ = child.kill();
+    }
+}
+
 async fn run_wasm_with_timeout<F>(timeout: Duration, operation: F) -> Result<Value, String>
 where
     F: FnOnce() -> Result<Value, Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
@@ -10150,6 +10438,78 @@ where
     }
 }
 
+const ALLOWED_DIRECT_OCI_REGISTRY_HOSTS: &[&str] = &[
+    "ghcr.io",
+    "docker.io",
+    "registry-1.docker.io",
+    "registry.hub.docker.com",
+];
+
+fn parse_oci_registry_host(oci_ref: &str) -> Result<(Option<&str>, &str), String> {
+    let oci_ref = oci_ref.trim();
+    let (explicit_scheme, remainder) = if let Some(rest) = oci_ref.strip_prefix("https://") {
+        (Some("https"), rest)
+    } else if let Some(rest) = oci_ref.strip_prefix("http://") {
+        (Some("http"), rest)
+    } else {
+        (None, oci_ref)
+    };
+    let parts: Vec<&str> = remainder.split('/').collect();
+    if parts.len() < 2 {
+        return Err("invalid oci_reference format, expected at least host/image".to_string());
+    }
+    Ok((explicit_scheme, parts[0]))
+}
+
+fn validate_direct_oci_reference(oci_reference: &str) -> Result<(), String> {
+    let (explicit_scheme, host) = parse_oci_registry_host(oci_reference)?;
+    validate_direct_oci_registry_host(host, explicit_scheme)?;
+    Ok(())
+}
+
+fn validate_direct_oci_registry_host(
+    host: &str,
+    explicit_scheme: Option<&str>,
+) -> Result<String, String> {
+    match explicit_scheme {
+        Some("http") => {
+            return Err(
+                "oci_reference registry must use https; http registries are not allowed"
+                    .to_string(),
+            );
+        }
+        Some("https") | None => {}
+        Some(scheme) => {
+            return Err(format!(
+                "oci_reference registry must use https; got {scheme}"
+            ));
+        }
+    }
+
+    let registry_url = format!("https://{host}");
+    let parsed = reqwest::Url::parse(&registry_url)
+        .map_err(|error| format!("invalid oci_reference registry host: {error}"))?;
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err("oci_reference registry host must not include credentials".to_string());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("oci_reference registry host must not include query or fragment".to_string());
+    }
+    let hostname = parsed
+        .host_str()
+        .ok_or_else(|| "oci_reference registry host is missing".to_string())?
+        .to_ascii_lowercase();
+    if !ALLOWED_DIRECT_OCI_REGISTRY_HOSTS
+        .iter()
+        .any(|allowed| *allowed == hostname)
+    {
+        return Err(format!(
+            "oci_reference registry host {hostname} is not allowed for direct Wasm execution"
+        ));
+    }
+    Ok(hostname)
+}
+
 /// Parse an OCI reference, pull the Wasm layer from the registry, and verify its digest.
 /// Returns the raw Wasm module bytes on success.
 async fn fetch_oci_wasm_module(
@@ -10158,7 +10518,6 @@ async fn fetch_oci_wasm_module(
     // Parse OCI references such as:
     // - "ghcr.io/org/module:tag"
     // - "ghcr.io/org/module@sha256:abc123"
-    // - "http://127.0.0.1:5000/module:tag" for explicit local/test registries
     let oci_ref = submission.workload.oci_reference.trim();
     let (explicit_scheme, remainder) = if let Some(rest) = oci_ref.strip_prefix("https://") {
         (Some("https"), rest)
@@ -10329,15 +10688,24 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                 .await
             }
             (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
-                run_python_execution(&execution, &execution.requested_access, timeout).await
+                let _permit = try_acquire_process_execution_permit(state)?;
+                run_python_execution(
+                    &execution,
+                    &execution.requested_access,
+                    timeout,
+                    &state.config.process_limits,
+                )
+                .await
             }
             (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
             | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
+                let _permit = try_acquire_process_execution_permit(state)?;
                 run_container_execution(
                     &execution,
                     &execution.requested_access,
                     &state.config.gpu,
                     timeout,
+                    &state.config.process_limits,
                 )
                 .await
             }
@@ -10671,18 +11039,25 @@ async fn run_workload_spec_with_admission(
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _) => {
-                    let result =
-                        run_python_execution(execution.as_ref(), &capabilities_granted, timeout)
-                            .await?;
+                    let _process_permit = try_acquire_process_execution_permit(state)?;
+                    let result = run_python_execution(
+                        execution.as_ref(),
+                        &capabilities_granted,
+                        timeout,
+                        &state.config.process_limits,
+                    )
+                    .await?;
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Python, ExecutionPackageKind::OciImage, _)
                 | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage, _) => {
+                    let _process_permit = try_acquire_process_execution_permit(state)?;
                     let result = run_container_execution(
                         execution.as_ref(),
                         &capabilities_granted,
                         &state.config.gpu,
                         timeout,
+                        &state.config.process_limits,
                     )
                     .await?;
                     Ok(run_output_for_plain_result(result))
@@ -10871,6 +11246,52 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
             return;
         }
     };
+
+    if let Err((_, body)) = validate_direct_job_policy(&job.spec) {
+        let error_message = body
+            .0
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("direct job policy rejected workload")
+            .to_string();
+        let job_id = job.job_id.clone();
+        let persisted = state
+            .db
+            .with_write_conn(move |conn| {
+                conn.execute_batch("BEGIN IMMEDIATE")
+                    .map_err(|e| e.to_string())?;
+                let operation = (|| -> Result<(), String> {
+                    let failed_at = settlement::current_unix_timestamp();
+                    let failure_evidence_hash = db::insert_execution_evidence(
+                        conn,
+                        "job",
+                        &job_id,
+                        "execution_failure",
+                        &json!({ "message": error_message }),
+                        failed_at,
+                    )?;
+                    jobs::complete_job_failure(
+                        conn,
+                        &job_id,
+                        &error_message,
+                        Some(&failure_evidence_hash),
+                        failed_at,
+                    )?;
+                    Ok(())
+                })();
+                if let Err(error) = operation {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(error);
+                }
+                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .await;
+        if let Err(error) = persisted {
+            tracing::error!("Failed to persist rejected direct job: {error}");
+        }
+        return;
+    }
 
     match run_job_spec_now(state.as_ref(), job.spec.clone()).await {
         Ok(result) => {
@@ -12009,6 +12430,7 @@ mod tests {
             PaymentBackend, PricingConfig, StorageConfig, WasmConfig,
         },
         crypto,
+        data_mounts::{collect_data_mount_plan, execution_mount_context},
         db::DbPool,
         identity::NodeIdentity,
         pricing::PricingTable,
@@ -12118,6 +12540,8 @@ mod tests {
             },
             payment_backends: vec![payment_backend],
             execution_timeout_secs: 5,
+            process_limits: Default::default(),
+            public_quota: Default::default(),
             lightning: LightningConfig {
                 mode: lightning_mode,
                 destination_identity: matches!(lightning_mode, LightningMode::LndRest)
@@ -12193,6 +12617,24 @@ mod tests {
                 .provider_control_auth_token_path
                 .clone(),
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+            process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            hosted_trial_deal_quota: None,
+            hosted_trial_session_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
+            event_publish_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
+            quote_create_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
+            confidential_session_quota: Arc::new(crate::public_quota::IdentityQuota::new(
+                1000,
+                std::time::Duration::from_secs(60),
+            )),
             lnd_rest_client: None,
             phoenixd_client: None,
             lightning_wallet: None,
@@ -12254,6 +12696,14 @@ mod tests {
             4,
             Duration::from_secs(300),
         ));
+        state_mut.hosted_trial_deal_quota =
+            Some(Arc::new(crate::public_quota::IdentityQuota::new(
+                state_mut
+                    .config
+                    .public_quota
+                    .hosted_trial_deals_per_identity,
+                Duration::from_secs(state_mut.config.public_quota.hosted_trial_window_secs),
+            )));
         state
     }
 
@@ -12662,10 +13112,19 @@ mod tests {
             .await
             .expect("service record")
             .expect("published service");
+        assert_eq!(service.mounts.len(), 1);
+        assert_eq!(service.mounts[0].binding, None);
         assert_eq!(
             service.capabilities,
             vec!["custom.vector-index".to_string()]
         );
+
+        let private_service = provider_service_record(state.as_ref(), "cap-python", false, true)
+            .await
+            .expect("private service record")
+            .expect("published service");
+        assert_eq!(private_service.mounts.len(), 1);
+        assert_eq!(private_service.mounts[0].binding.as_deref(), Some("/tmp"));
 
         let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
             .await
@@ -12681,6 +13140,8 @@ mod tests {
         );
 
         let execution = service_addressed_execution_from_record(&service, Value::Null);
+        assert_eq!(execution.mounts.len(), 1);
+        assert_eq!(execution.mounts[0].binding, None);
         assert_eq!(
             execution.requested_access,
             vec![
@@ -12927,6 +13388,44 @@ mod tests {
             / 1_000
     }
 
+    #[test]
+    fn marketplace_quote_verifier_accepts_valid_signed_quote() {
+        let quote = signed_quote(
+            "requester".to_string(),
+            1_700_000_000,
+            1_700_000_060,
+            1_000,
+            30,
+            30,
+        );
+
+        let verified =
+            verify_marketplace_quote_artifact(quote.clone()).expect("quote should verify");
+
+        assert_eq!(verified.hash, quote.hash);
+    }
+
+    #[test]
+    fn marketplace_quote_verifier_rejects_tampered_quote() {
+        let mut quote = signed_quote(
+            "requester".to_string(),
+            1_700_000_000,
+            1_700_000_060,
+            1_000,
+            30,
+            30,
+        );
+        quote.payload.workload_hash = "dd".repeat(32);
+
+        let error =
+            verify_marketplace_quote_artifact(quote).expect_err("tampered quote must be rejected");
+
+        assert!(
+            error.contains("signature verification failed"),
+            "unexpected error: {error}"
+        );
+    }
+
     fn test_lightning_bundle(
         state: &AppState,
         quote: &SignedArtifact<QuotePayload>,
@@ -13168,6 +13667,25 @@ mod tests {
         builder.body(body).expect("build runtime request")
     }
 
+    fn signed_test_event(
+        signing_key: &crypto::NodeSigningKey,
+        kind: &str,
+        content: &str,
+    ) -> NodeEventEnvelope {
+        let mut event = NodeEventEnvelope {
+            id: String::new(),
+            pubkey: crypto::public_key_hex(signing_key),
+            created_at: settlement::current_unix_timestamp(),
+            kind: kind.to_string(),
+            tags: vec![vec!["t".to_string(), "froglet-test".to_string()]],
+            content: content.to_string(),
+            sig: String::new(),
+        };
+        event.id = expected_node_event_id(&event);
+        event.sig = crypto::sign_message_hex(signing_key, &event.canonical_signing_bytes());
+        event
+    }
+
     fn hosted_trial_runtime_request(
         method: Method,
         uri: &str,
@@ -13315,7 +13833,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oci_wasm_fetch_supports_explicit_http_registry_refs() {
+    async fn oci_wasm_fetch_can_pull_provider_internal_fixture_registry_refs() {
         let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
         let fixture = spawn_oci_registry_fixture(module_bytes.clone()).await;
         let submission = test_oci_wasm_submission(&fixture.oci_reference, &fixture.oci_digest);
@@ -13325,6 +13843,42 @@ mod tests {
             .expect("fetch OCI wasm module");
 
         assert_eq!(fetched, fixture.module_bytes);
+    }
+
+    #[test]
+    fn oci_wasm_submission_validation_rejects_explicit_http_registry_refs() {
+        let submission =
+            test_oci_wasm_submission("http://127.0.0.1:5000/module:tag", &"ab".repeat(32));
+
+        let (status, Json(payload)) = validate_oci_wasm_submission(&submission)
+            .expect_err("direct http registry must be rejected before fetch");
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("http registries are not allowed")),
+            "unexpected payload: {}",
+            payload
+        );
+    }
+
+    #[test]
+    fn oci_wasm_submission_validation_rejects_custom_registry_hosts() {
+        let submission =
+            test_oci_wasm_submission("https://registry.example.test/module:tag", &"ab".repeat(32));
+
+        let (status, Json(payload)) = validate_oci_wasm_submission(&submission)
+            .expect_err("custom registry host must be rejected before fetch");
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("not allowed")),
+            "unexpected payload: {}",
+            payload
+        );
     }
 
     #[tokio::test]
@@ -13536,7 +14090,7 @@ mod tests {
         )
         .await;
 
-        let response = public_router(state)
+        let response = public_router(state.clone())
             .oneshot(runtime_request(
                 Method::GET,
                 "/v1/feed?limit=100",
@@ -13561,6 +14115,40 @@ mod tests {
             offers.is_empty(),
             "hidden service offer leaked into public feed: {offers:?}"
         );
+
+        let hidden_offer_hash = state
+            .db
+            .with_read_conn({
+                let service_id = service_id.to_string();
+                move |conn| {
+                    let (artifacts, _) = db::list_artifacts(conn, Some(0), 100)?;
+                    artifacts
+                        .into_iter()
+                        .find(|artifact| {
+                            artifact.kind == ARTIFACT_KIND_OFFER
+                                && artifact.document["payload"]["offer_id"].as_str()
+                                    == Some(service_id.as_str())
+                        })
+                        .map(|artifact| artifact.hash)
+                        .ok_or_else(|| "expected hidden offer artifact".to_string())
+                }
+            })
+            .await
+            .expect("hidden offer artifact hash");
+
+        let direct_response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                &format!("/v1/artifacts/{hidden_offer_hash}"),
+                None,
+                None,
+            ))
+            .await
+            .expect("direct hidden artifact response");
+        let (direct_status, direct_payload): (StatusCode, Value) =
+            response_json(direct_response).await;
+        assert_eq!(direct_status, StatusCode::NOT_FOUND);
+        assert_eq!(direct_payload["artifact_hash"], hidden_offer_hash);
     }
 
     #[tokio::test]
@@ -14196,7 +14784,7 @@ mod tests {
             .oneshot(runtime_request(
                 Method::POST,
                 "/v1/node/jobs",
-                None,
+                Some("test-runtime-token"),
                 Some(json!({
                     "kind": "wasm",
                     "submission": first_submission,
@@ -14217,7 +14805,7 @@ mod tests {
             .oneshot(runtime_request(
                 Method::POST,
                 "/v1/node/jobs",
-                None,
+                Some("test-runtime-token"),
                 Some(json!({
                     "kind": "wasm",
                     "submission": second_submission,
@@ -14242,6 +14830,123 @@ mod tests {
         let completed = wait_for_job_status(&state, &job_id, jobs::JOB_STATUS_SUCCEEDED).await;
         assert_eq!(completed.request_hash, first_request_hash);
         assert_eq!(completed.result, Some(json!(42)));
+    }
+
+    #[tokio::test]
+    async fn direct_jobs_reject_privileged_execution_shapes() {
+        let state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let app = router(state);
+
+        let mut with_requested_access =
+            ExecutionWorkload::python_inline_script("result = 1".to_string(), Value::Null)
+                .expect("python inline script");
+        with_requested_access.requested_access = vec!["compute.gpu".to_string()];
+
+        let mut with_mount =
+            ExecutionWorkload::python_inline_script("result = 1".to_string(), Value::Null)
+                .expect("python inline script");
+        with_mount.mounts = vec![crate::execution::ExecutionMount {
+            handle: "cache".to_string(),
+            kind: "sqlite".to_string(),
+            read_only: false,
+            binding: None,
+        }];
+
+        for (case_name, execution, expected_reason) in [
+            (
+                "requested_access",
+                with_requested_access,
+                "requested_access must be empty",
+            ),
+            (
+                "mounts",
+                with_mount,
+                "mounts require the signed quote/deal capability flow",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/node/jobs",
+                    Some("test-runtime-token"),
+                    Some(json!({
+                        "kind": "execution",
+                        "execution": execution,
+                        "idempotency_key": format!("direct-job-reject-{case_name}"),
+                    })),
+                ))
+                .await
+                .unwrap_or_else(|error| panic!("{case_name} response failed: {error}"));
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "unexpected {case_name} payload: {payload}"
+            );
+            assert_eq!(
+                payload["error"],
+                "direct /v1/node/jobs only accepts unprivileged compute workloads"
+            );
+            assert!(
+                payload["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains(expected_reason)),
+                "unexpected {case_name} reason: {payload}"
+            );
+            assert_eq!(
+                payload["required_flow"],
+                "/v1/provider/quotes + /v1/provider/deals"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_wasm_jobs_reject_host_capabilities() {
+        let state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let app = router(state);
+
+        let mut host_abi_submission = test_wasm_submission();
+        host_abi_submission.workload.abi_version = wasm::WASM_HOST_JSON_ABI_V1.to_string();
+
+        let mut requested_capability_submission = test_wasm_submission();
+        requested_capability_submission
+            .workload
+            .requested_capabilities = vec![wasm::WASM_CAPABILITY_HTTP_FETCH.to_string()];
+
+        for (case_name, submission) in [
+            ("host-abi", host_abi_submission),
+            ("requested-capability", requested_capability_submission),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/node/jobs",
+                    Some("test-runtime-token"),
+                    Some(json!({
+                        "kind": "wasm",
+                        "submission": submission,
+                        "idempotency_key": format!("direct-wasm-reject-{case_name}"),
+                    })),
+                ))
+                .await
+                .unwrap_or_else(|error| panic!("{case_name} response failed: {error}"));
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "unexpected {case_name} payload: {payload}"
+            );
+            let payload_text = payload.to_string();
+            assert!(
+                payload_text.contains("host ABI")
+                    || payload_text.contains("host_json")
+                    || payload_text.contains("requested_capabilities")
+                    || payload_text.contains("requested Wasm capabilities"),
+                "unexpected {case_name} payload: {payload}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -14274,7 +14979,7 @@ mod tests {
             .oneshot(runtime_request(
                 Method::POST,
                 "/v1/node/jobs",
-                None,
+                Some("test-runtime-token"),
                 Some(json!({
                     "kind": "execution",
                     "execution": execution,
@@ -14404,7 +15109,7 @@ mod tests {
     }
 
     #[test]
-    fn postgres_mount_injects_env_when_capability_granted_and_dsn_configured() {
+    fn postgres_mount_fails_closed_when_capability_granted_and_dsn_configured() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
         // SAFETY: test-only env mutation; Rust 2024 marks set_var unsafe.
         unsafe {
@@ -14422,19 +15127,10 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan =
-            collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()]);
-        assert_eq!(plan.env.len(), 2);
-        assert!(plan.needs_network, "postgres mount must enable network");
-        assert!(plan.writable_paths.is_empty());
-        assert!(plan.env.contains(&(
-            "FROGLET_MOUNT_ANALYTICS_URL".to_string(),
-            "postgres://user:pass@db.local:5432/analytics".to_string()
-        )));
-        assert!(plan.env.contains(&(
-            "FROGLET_MOUNT_ANALYTICS_READ_ONLY".to_string(),
-            "true".to_string()
-        )));
+        let error =
+            collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()])
+                .expect_err("network-backed mounts must fail closed");
+        assert!(error.contains("network-backed"));
         // SAFETY: test-only env cleanup.
         unsafe {
             std::env::remove_var("FROGLET_MOUNT_postgres_analytics");
@@ -14445,11 +15141,14 @@ mod tests {
     fn postgres_mount_omits_env_when_capability_not_granted() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
         unsafe {
-            std::env::set_var("FROGLET_MOUNT_postgres_finance", "postgres://nope");
+            std::env::set_var(
+                "FROGLET_MOUNT_postgres_finance_ungranted",
+                "postgres://nope",
+            );
         }
         let execution = ExecutionWorkload {
             mounts: vec![ExecutionMount {
-                handle: "finance".to_string(),
+                handle: "finance_ungranted".to_string(),
                 kind: "postgres".to_string(),
                 read_only: true,
                 binding: None,
@@ -14457,12 +15156,62 @@ mod tests {
             ..execution_for_mount_tests()
         };
         let plan =
-            collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()]);
+            collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()])
+                .expect("ungranted mount should be ignored");
         assert!(plan.env.is_empty());
         assert!(!plan.needs_network);
         unsafe {
-            std::env::remove_var("FROGLET_MOUNT_postgres_finance");
+            std::env::remove_var("FROGLET_MOUNT_postgres_finance_ungranted");
         }
+    }
+
+    #[test]
+    fn postgres_mount_omits_env_when_no_capabilities_granted() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        unsafe {
+            std::env::set_var("FROGLET_MOUNT_postgres_finance_none", "postgres://nope");
+        }
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "finance_none".to_string(),
+                kind: "postgres".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+        let plan = collect_data_mount_plan(&execution, &[]).expect("ungranted mount");
+        assert!(plan.env.is_empty());
+        assert!(!plan.needs_network);
+        unsafe {
+            std::env::remove_var("FROGLET_MOUNT_postgres_finance_none");
+        }
+    }
+
+    #[test]
+    fn execution_mount_context_omits_ungranted_mounts() {
+        use crate::execution::{ExecutionMount, ExecutionWorkload};
+        let execution = ExecutionWorkload {
+            mounts: vec![ExecutionMount {
+                handle: "host".to_string(),
+                kind: "fs".to_string(),
+                read_only: true,
+                binding: Some("/tmp".to_string()),
+            }],
+            ..execution_for_mount_tests()
+        };
+
+        assert_eq!(execution_mount_context(&execution, &[]), json!({}));
+        assert_eq!(
+            execution_mount_context(&execution, &["mount.fs.read.host".to_string()]),
+            json!({
+                "host": {
+                    "kind": "fs",
+                    "read_only": true,
+                    "binding": "/tmp",
+                }
+            })
+        );
     }
 
     #[test]
@@ -14480,51 +15229,57 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(&execution, &["mount.postgres.write.unset".to_string()]);
-        assert!(plan.env.is_empty());
+        let error =
+            collect_data_mount_plan(&execution, &["mount.postgres.write.unset".to_string()])
+                .expect_err("granted network mount without binding must fail closed");
+        assert!(error.contains("FROGLET_MOUNT_postgres_unset"));
     }
 
     #[test]
-    fn sqlite_mount_injects_env_and_grants_parent_dir_write() {
+    fn sqlite_mount_injects_env_and_grants_only_database_file_write() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
+        let tempdir = tempfile::Builder::new()
+            .prefix("froglet-sqlite-api-test-")
+            .tempdir()
+            .expect("tempdir");
+        let db_path = tempdir.path().join("cache.sqlite");
+        std::fs::write(&db_path, b"").expect("sqlite placeholder");
+        let db_path_string = db_path.to_string_lossy().to_string();
         unsafe {
-            std::env::set_var(
-                "FROGLET_MOUNT_sqlite_cache",
-                "/var/lib/froglet/cache.sqlite",
-            );
+            std::env::set_var("FROGLET_MOUNT_sqlite_api_cache", &db_path_string);
         }
         let execution = ExecutionWorkload {
             mounts: vec![ExecutionMount {
-                handle: "cache".to_string(),
+                handle: "api_cache".to_string(),
                 kind: "sqlite".to_string(),
                 read_only: false,
                 binding: None,
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(&execution, &["mount.sqlite.write.cache".to_string()]);
+        let plan =
+            collect_data_mount_plan(&execution, &["mount.sqlite.write.api_cache".to_string()])
+                .expect("sqlite mount plan");
         assert_eq!(plan.env.len(), 2);
         assert!(!plan.needs_network, "sqlite mount must NOT enable network");
         assert_eq!(plan.writable_paths.len(), 1);
-        assert_eq!(
-            plan.writable_paths[0],
-            std::path::PathBuf::from("/var/lib/froglet")
+        assert_eq!(plan.writable_paths[0], db_path);
+        assert!(plan.readonly_paths.is_empty());
+        assert!(
+            plan.env
+                .contains(&("FROGLET_MOUNT_API_CACHE_URL".to_string(), db_path_string))
         );
         assert!(plan.env.contains(&(
-            "FROGLET_MOUNT_CACHE_URL".to_string(),
-            "/var/lib/froglet/cache.sqlite".to_string()
-        )));
-        assert!(plan.env.contains(&(
-            "FROGLET_MOUNT_CACHE_READ_ONLY".to_string(),
+            "FROGLET_MOUNT_API_CACHE_READ_ONLY".to_string(),
             "false".to_string()
         )));
         unsafe {
-            std::env::remove_var("FROGLET_MOUNT_sqlite_cache");
+            std::env::remove_var("FROGLET_MOUNT_sqlite_api_cache");
         }
     }
 
     #[test]
-    fn s3_mount_injects_env_and_enables_network_only() {
+    fn s3_mount_fails_closed_even_when_configured() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
         unsafe {
             std::env::set_var(
@@ -14541,39 +15296,43 @@ mod tests {
             }],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(&execution, &["mount.s3.read.backups".to_string()]);
-        assert_eq!(plan.env.len(), 2);
-        assert!(plan.needs_network);
-        assert!(plan.writable_paths.is_empty());
-        assert!(plan.env.contains(&(
-            "FROGLET_MOUNT_BACKUPS_URL".to_string(),
-            "s3://AKIA:secret@s3.example.com/froglet-backups".to_string()
-        )));
+        let error = collect_data_mount_plan(&execution, &["mount.s3.read.backups".to_string()])
+            .expect_err("network-backed s3 mounts must fail closed");
+        assert!(error.contains("network-backed"));
         unsafe {
             std::env::remove_var("FROGLET_MOUNT_s3_backups");
         }
     }
 
     #[test]
-    fn data_mount_plan_composes_multiple_kinds_in_one_invocation() {
+    fn data_mount_plan_fails_closed_when_any_granted_network_mount_is_present() {
         use crate::execution::{ExecutionMount, ExecutionWorkload};
+        let tempdir = tempfile::Builder::new()
+            .prefix("froglet-sqlite-api-test-")
+            .tempdir()
+            .expect("tempdir");
+        let db_path = tempdir.path().join("local.sqlite");
+        std::fs::write(&db_path, b"").expect("sqlite placeholder");
         unsafe {
             std::env::set_var(
-                "FROGLET_MOUNT_postgres_events",
+                "FROGLET_MOUNT_postgres_api_events",
                 "postgres://u:p@db.example/events",
             );
-            std::env::set_var("FROGLET_MOUNT_sqlite_local", "/opt/froglet/local.sqlite");
+            std::env::set_var(
+                "FROGLET_MOUNT_sqlite_api_local",
+                db_path.to_string_lossy().as_ref(),
+            );
         }
         let execution = ExecutionWorkload {
             mounts: vec![
                 ExecutionMount {
-                    handle: "events".to_string(),
+                    handle: "api_events".to_string(),
                     kind: "postgres".to_string(),
                     read_only: true,
                     binding: None,
                 },
                 ExecutionMount {
-                    handle: "local".to_string(),
+                    handle: "api_local".to_string(),
                     kind: "sqlite".to_string(),
                     read_only: false,
                     binding: None,
@@ -14581,23 +15340,18 @@ mod tests {
             ],
             ..execution_for_mount_tests()
         };
-        let plan = collect_data_mount_plan(
+        let error = collect_data_mount_plan(
             &execution,
             &[
-                "mount.postgres.read.events".to_string(),
-                "mount.sqlite.write.local".to_string(),
+                "mount.postgres.read.api_events".to_string(),
+                "mount.sqlite.write.api_local".to_string(),
             ],
-        );
-        assert_eq!(plan.env.len(), 4);
-        assert!(plan.needs_network, "postgres contribution requires network");
-        assert_eq!(plan.writable_paths.len(), 1);
-        assert_eq!(
-            plan.writable_paths[0],
-            std::path::PathBuf::from("/opt/froglet")
-        );
+        )
+        .expect_err("network mount should fail the plan");
+        assert!(error.contains("network-backed"));
         unsafe {
-            std::env::remove_var("FROGLET_MOUNT_postgres_events");
-            std::env::remove_var("FROGLET_MOUNT_sqlite_local");
+            std::env::remove_var("FROGLET_MOUNT_postgres_api_events");
+            std::env::remove_var("FROGLET_MOUNT_sqlite_api_local");
         }
     }
 
@@ -14869,8 +15623,10 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_mock_pay_rejects_missing_bundle() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
         let state = test_app_state(PaymentBackend::Lightning);
         let provider = spawn_public_test_server(state.clone()).await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
         let seeded = seed_mock_lightning_runtime_deal(&state, &provider.base_url).await;
         state
             .db
@@ -14906,8 +15662,10 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_mock_pay_succeeds_and_is_idempotent() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
         let state = test_app_state(PaymentBackend::Lightning);
         let provider = spawn_public_test_server(state.clone()).await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
         let seeded = seed_mock_lightning_runtime_deal(&state, &provider.base_url).await;
 
         let first = runtime_router(state.clone())
@@ -15645,6 +16403,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hosted_trial_create_deal_quota_is_keyed_by_session_identity() {
+        let mut state = test_app_state_with_session_pool(PaymentBackend::None);
+        {
+            let state_mut = Arc::get_mut(&mut state).expect("unique app state");
+            state_mut
+                .config
+                .public_quota
+                .hosted_trial_deals_per_identity = 1;
+            state_mut.config.public_quota.hosted_trial_window_secs = 300;
+            state_mut.hosted_trial_deal_quota = Some(Arc::new(
+                crate::public_quota::IdentityQuota::new(1, Duration::from_secs(300)),
+            ));
+        }
+        crate::builtins::register_demo_offers(state.as_ref())
+            .await
+            .expect("register demo offers");
+        let provider = spawn_public_test_server(state.clone()).await;
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+        let session_token = issue_test_session_token(&state);
+        let public = public_router(state.clone());
+
+        let first_response = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(test_runtime_demo_add_create_deal_request(
+                    state.identity.node_id(),
+                    &provider.base_url,
+                    "hosted-trial-quota-first",
+                )),
+            ))
+            .await
+            .expect("first hosted-trial create deal response");
+        let (first_status, _first_payload): (StatusCode, Value) =
+            response_json(first_response).await;
+        assert_eq!(first_status, StatusCode::OK);
+
+        let second_response = public
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(test_runtime_demo_add_create_deal_request(
+                    state.identity.node_id(),
+                    &provider.base_url,
+                    "hosted-trial-quota-second",
+                )),
+            ))
+            .await
+            .expect("second hosted-trial create deal response");
+        let (second_status, second_payload): (StatusCode, Value) =
+            response_json(second_response).await;
+        assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            second_payload["error"],
+            "hosted trial create-deal quota exceeded"
+        );
+        assert!(second_payload["retry_after_secs"].is_number());
+    }
+
+    #[tokio::test]
     async fn hosted_trial_create_deal_rejects_remote_provider_scope() {
         let state = test_app_state_with_session_pool(PaymentBackend::None);
         let session_token = issue_test_session_token(&state);
@@ -15998,6 +16820,187 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_persistence_endpoints_enforce_quota_429() {
+        let mut state = test_app_state_with_session_pool(PaymentBackend::None);
+        let state_mut = Arc::get_mut(&mut state).expect("unique session quota state");
+        state_mut.hosted_trial_session_quota = Arc::new(crate::public_quota::IdentityQuota::new(
+            1,
+            Duration::from_secs(60),
+        ));
+        let public = public_router(state);
+
+        let first_session = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/api/sessions",
+                None,
+                None,
+            ))
+            .await
+            .expect("first session response");
+        assert_eq!(first_session.status(), StatusCode::OK);
+
+        let second_session = public
+            .clone()
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/api/sessions",
+                None,
+                None,
+            ))
+            .await
+            .expect("second session response");
+        assert_eq!(second_session.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let mut event_state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut event_state)
+            .expect("unique event quota state")
+            .event_publish_quota = Arc::new(crate::public_quota::IdentityQuota::new(
+            1,
+            Duration::from_secs(60),
+        ));
+        let event_public = public_router(event_state);
+        let event_key = crypto::generate_signing_key();
+        for (content, expected_status) in [
+            ("first event", StatusCode::CREATED),
+            ("second event", StatusCode::TOO_MANY_REQUESTS),
+        ] {
+            let response = event_public
+                .clone()
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/node/events/publish",
+                    None,
+                    Some(json!({
+                        "event": signed_test_event(&event_key, "market.listing", content),
+                    })),
+                ))
+                .await
+                .expect("event publish response");
+            assert_eq!(response.status(), expected_status);
+        }
+
+        let mut quote_state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut quote_state)
+            .expect("unique quote quota state")
+            .quote_create_quota = Arc::new(crate::public_quota::IdentityQuota::new(
+            1,
+            Duration::from_secs(60),
+        ));
+        let quote_public = public_router(quote_state);
+        let quote_spec = WorkloadSpec::Execution {
+            execution: Box::new(
+                crate::execution::ExecutionWorkload::builtin_events_query(
+                    vec!["market.listing".to_string()],
+                    Some(1),
+                )
+                .expect("events query workload"),
+            ),
+        };
+        let quote_body = serde_json::to_value(CreateQuoteRequest {
+            offer_id: "missing-offer".to_string(),
+            requester_id: "11".repeat(32),
+            spec: quote_spec,
+            max_price_sats: None,
+        })
+        .expect("quote request JSON");
+        let first_quote = quote_public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/quotes",
+                None,
+                Some(quote_body.clone()),
+            ))
+            .await
+            .expect("first quote response");
+        assert_ne!(first_quote.status(), StatusCode::TOO_MANY_REQUESTS);
+        let second_quote = quote_public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/quotes",
+                None,
+                Some(quote_body),
+            ))
+            .await
+            .expect("second quote response");
+        assert_eq!(second_quote.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let mut confidential_state = test_app_state_with_confidential_policy(PaymentBackend::None);
+        Arc::get_mut(&mut confidential_state)
+            .expect("unique confidential quota state")
+            .confidential_session_quota = Arc::new(crate::public_quota::IdentityQuota::new(
+            1,
+            Duration::from_secs(60),
+        ));
+        let confidential_public = public_router(confidential_state);
+        let offers_response = confidential_public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/offers",
+                None,
+                None,
+            ))
+            .await
+            .expect("confidential offers response");
+        let (offers_status, offers_payload): (StatusCode, Value) =
+            response_json(offers_response).await;
+        assert_eq!(offers_status, StatusCode::OK);
+        let confidential_profile_hash = offers_payload
+            .get("offers")
+            .and_then(Value::as_array)
+            .and_then(|offers| {
+                offers.iter().find_map(|offer| {
+                    (offer["payload"]["offer_kind"].as_str()
+                        == Some(crate::confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1))
+                    .then(|| {
+                        offer["payload"]["confidential_profile_hash"]
+                            .as_str()
+                            .map(str::to_string)
+                    })
+                    .flatten()
+                })
+            })
+            .expect("confidential profile hash");
+        let requester_key = crypto::generate_signing_key();
+        let (_, requester_public_key) = crate::confidential::generate_keypair();
+        let confidential_body =
+            serde_json::to_value(crate::confidential::ConfidentialSessionOpenRequest {
+                requester_id: crypto::public_key_hex(&requester_key),
+                confidential_profile_hash,
+                allowed_workload_kind: crate::confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1
+                    .to_string(),
+                requester_public_key,
+            })
+            .expect("confidential session request JSON");
+        let first_confidential = confidential_public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/confidential/sessions",
+                None,
+                Some(confidential_body.clone()),
+            ))
+            .await
+            .expect("first confidential response");
+        assert_eq!(first_confidential.status(), StatusCode::CREATED);
+        let second_confidential = confidential_public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/confidential/sessions",
+                None,
+                Some(confidential_body),
+            ))
+            .await
+            .expect("second confidential response");
+        assert_eq!(second_confidential.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
     async fn hosted_trial_runtime_listener_rejects_session_token_on_runtime_routes() {
         let state = test_app_state_with_session_pool(PaymentBackend::None);
         let session_token = issue_test_session_token(&state);
@@ -16053,7 +17056,7 @@ mod tests {
             .expect("public execute-wasm response");
         assert_eq!(public_execute.status(), StatusCode::NOT_FOUND);
 
-        let runtime_execute = runtime
+        let runtime_execute_without_auth = runtime
             .clone()
             .oneshot(runtime_request(
                 Method::POST,
@@ -16063,7 +17066,22 @@ mod tests {
             ))
             .await
             .expect("runtime execute-wasm response");
-        assert_ne!(runtime_execute.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            runtime_execute_without_auth.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let runtime_execute_with_auth = runtime
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/execute/wasm",
+                Some("test-runtime-token"),
+                None,
+            ))
+            .await
+            .expect("runtime execute-wasm authenticated response");
+        assert_ne!(runtime_execute_with_auth.status(), StatusCode::NOT_FOUND);
 
         let public_jobs = public
             .clone()
@@ -16083,11 +17101,38 @@ mod tests {
             .expect("public job-status response");
         assert_eq!(public_job_status.status(), StatusCode::NOT_FOUND);
 
-        let runtime_jobs = runtime
+        let runtime_jobs_without_auth = runtime
+            .clone()
             .oneshot(runtime_request(Method::POST, "/v1/node/jobs", None, None))
             .await
             .expect("runtime create-job response");
-        assert_ne!(runtime_jobs.status(), StatusCode::NOT_FOUND);
+        assert_eq!(runtime_jobs_without_auth.status(), StatusCode::UNAUTHORIZED);
+
+        let runtime_job_status_without_auth = runtime
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/node/jobs/job-1",
+                None,
+                None,
+            ))
+            .await
+            .expect("runtime job-status unauthenticated response");
+        assert_eq!(
+            runtime_job_status_without_auth.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let runtime_jobs_with_auth = runtime
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/jobs",
+                Some("test-runtime-token"),
+                None,
+            ))
+            .await
+            .expect("runtime create-job authenticated response");
+        assert_ne!(runtime_jobs_with_auth.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

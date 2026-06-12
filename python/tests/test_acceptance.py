@@ -44,6 +44,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 node.runtime.url("/v1/node/execute/wasm"),
+                headers=node.runtime_auth_headers(),
                 json=request,
             ) as resp:
                 self.assertIn(resp.status, (200, 202))
@@ -108,6 +109,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
             # Step 1: Raw invoke is rejected with 409
             async with session.post(
                 runtime.url("/v1/node/execute/wasm"),
+                headers=runtime.auth_headers(),
                 json=request,
             ) as resp:
                 self.assertEqual(resp.status, 409)
@@ -158,6 +160,7 @@ class AcceptanceTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 node.runtime.url("/v1/node/execute/wasm"),
+                headers=node.runtime_auth_headers(),
                 json=request,
             ) as resp:
                 result = await resp.json()

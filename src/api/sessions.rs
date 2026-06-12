@@ -107,10 +107,19 @@ async fn preflight(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-async fn create_session(State(state): State<Arc<AppState>>) -> Response {
+async fn create_session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let Some(pool) = state.session_pool.as_ref() else {
         return session_pool_not_enabled_response();
     };
+
+    let quota_identity = super::public_quota_identity_from_headers(&headers);
+    if let Err(response) = super::enforce_identity_quota(
+        state.hosted_trial_session_quota.as_ref(),
+        &quota_identity,
+        "hosted trial session",
+    ) {
+        return response.into_response();
+    }
 
     let Some(info) = pool.assign() else {
         return (

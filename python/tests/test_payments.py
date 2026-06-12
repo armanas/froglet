@@ -59,6 +59,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/execute/wasm"),
+                headers=runtime.auth_headers(),
                 json=build_wasm_request(VALID_WASM_HEX),
             ) as resp:
                 payload = await resp.json()
@@ -80,6 +81,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
                 json={"idempotency_key": "legacy-job-helper", **build_wasm_request(VALID_WASM_HEX)},
             ) as resp:
                 payload = await resp.json()
@@ -104,6 +106,7 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 runtime.url("/v1/node/jobs"),
+                headers=runtime.auth_headers(),
                 json=request,
             ) as resp:
                 payload = await resp.json()

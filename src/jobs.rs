@@ -336,27 +336,6 @@ pub fn complete_job_failure(
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn fail_incomplete_jobs(conn: &Connection, message: &str, now: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE jobs
-         SET status = ?1,
-             error = ?2,
-             updated_at = ?3
-         WHERE status IN (?4, ?5)",
-        params![
-            JOB_STATUS_FAILED,
-            message,
-            now,
-            JOB_STATUS_QUEUED,
-            JOB_STATUS_RUNNING
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
 pub fn list_incomplete_jobs(conn: &Connection) -> Result<Vec<StoredJob>, String> {
     let mut stmt = conn
         .prepare(

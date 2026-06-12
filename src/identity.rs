@@ -291,6 +291,8 @@ mod tests {
             },
             payment_backends: vec![PaymentBackend::None],
             execution_timeout_secs: 10,
+            process_limits: Default::default(),
+            public_quota: Default::default(),
             lightning: LightningConfig {
                 mode: LightningMode::Mock,
                 destination_identity: None,

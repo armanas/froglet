@@ -6,7 +6,6 @@
 
 use crate::{SourceLocator, error::PublishError};
 use sha2::{Digest, Sha256};
-use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct BuiltArtifact {
@@ -82,17 +81,6 @@ pub async fn build_python_inline(
     })
 }
 
-/// Convenience: hash an arbitrary byte slice the same way the builder does.
-#[allow(dead_code)]
-pub fn hash_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
-}
-
-#[allow(dead_code)]
-pub(crate) fn _silence_path_unused(_p: &Path) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,13 +120,5 @@ mod tests {
         };
         let err = build_python_inline(&locator, None).await.unwrap_err();
         assert!(matches!(err, PublishError::Build(_)));
-    }
-
-    #[test]
-    fn hash_bytes_is_deterministic() {
-        let h1 = hash_bytes(b"hello world");
-        let h2 = hash_bytes(b"hello world");
-        assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64); // sha256 hex
     }
 }

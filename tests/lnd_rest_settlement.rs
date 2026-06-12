@@ -470,6 +470,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         },
         payment_backends: vec![PaymentBackend::Lightning],
         execution_timeout_secs: 10,
+        process_limits: Default::default(),
+        public_quota: Default::default(),
         lightning: LightningConfig {
             mode: LightningMode::LndRest,
             destination_identity: None,
@@ -546,6 +548,24 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         provider_control_auth_token: "test-provider-token".to_string(),
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        hosted_trial_deal_quota: None,
+        hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        confidential_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
         lnd_rest_client: Some(Arc::clone(&lnd_rest_client)),
         phoenixd_client: None,
         lightning_wallet: Some(

@@ -26,6 +26,13 @@ pub enum RemoteEndpointReachability {
 pub struct ValidatedRemoteEndpoint {
     pub normalized_url: String,
     pub reachability: RemoteEndpointReachability,
+    pub pinned_public_addresses: Vec<IpAddr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeProviderEndpoint {
+    pub url: String,
+    pub pinned_public_addresses: Vec<IpAddr>,
 }
 
 fn ip_v4_targets_local_network(ip: std::net::Ipv4Addr) -> bool {
@@ -97,19 +104,21 @@ pub async fn classify_remote_endpoint_url(
     let normalized_url = parsed.as_str().trim_end_matches('/').to_string();
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
 
-    let reachability = if host.ends_with(".onion") {
-        RemoteEndpointReachability::Onion
+    let (reachability, pinned_public_addresses) = if host.ends_with(".onion") {
+        (RemoteEndpointReachability::Onion, Vec::new())
     } else if host_targets_local_network_literal(&host) {
-        RemoteEndpointReachability::LocalOnly
+        (RemoteEndpointReachability::LocalOnly, Vec::new())
     } else {
         let port = parsed
             .port_or_known_default()
             .ok_or_else(|| format!("{label} must include a known port"))?;
-        let addresses = resolve_remote_endpoint_addresses(&host, port).await?;
-        if addresses.into_iter().any(ip_targets_local_network) {
-            RemoteEndpointReachability::LocalOnly
+        let mut addresses = resolve_remote_endpoint_addresses(&host, port).await?;
+        if addresses.iter().copied().any(ip_targets_local_network) {
+            (RemoteEndpointReachability::LocalOnly, Vec::new())
         } else {
-            RemoteEndpointReachability::Public
+            addresses.sort();
+            addresses.dedup();
+            (RemoteEndpointReachability::Public, addresses)
         }
     };
 
@@ -122,25 +131,8 @@ pub async fn classify_remote_endpoint_url(
     Ok(ValidatedRemoteEndpoint {
         normalized_url,
         reachability,
+        pinned_public_addresses,
     })
-}
-
-pub(crate) async fn validate_discovery_endpoint_url(raw_url: &str) -> Result<String, String> {
-    let validated = classify_remote_endpoint_url(raw_url, "endpoint URL").await?;
-    if validated.reachability != RemoteEndpointReachability::LocalOnly {
-        return Ok(validated.normalized_url);
-    }
-
-    let parsed = reqwest::Url::parse(&validated.normalized_url)
-        .map_err(|error| format!("invalid endpoint URL: {error}"))?;
-    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    if parsed.scheme() == "http" && LOOPBACK_HOSTS.contains(&host.as_str()) {
-        return Ok(validated.normalized_url);
-    }
-
-    Err(format!(
-        "endpoint URL targets a private or local-network address and cannot be advertised through discovery: {raw_url}"
-    ))
 }
 
 pub fn configured_runtime_provider_base_url() -> Result<Option<String>, ResolutionFailure> {
@@ -170,18 +162,21 @@ pub fn configured_runtime_provider_base_url() -> Result<Option<String>, Resoluti
     Ok(Some(parsed.as_str().trim_end_matches('/').to_string()))
 }
 
-pub async fn runtime_accessible_provider_url(
+pub async fn runtime_accessible_provider_endpoint(
     state: &AppState,
     raw_url: &str,
     provider_id: Option<&str>,
-) -> Result<String, ResolutionFailure> {
+) -> Result<RuntimeProviderEndpoint, ResolutionFailure> {
     let local_provider_base_url = configured_runtime_provider_base_url()?;
     let is_local_provider =
         provider_id.is_some_and(|provider_id| provider_id == state.identity.node_id());
     if is_local_provider && let Some(base_url) = local_provider_base_url.as_deref() {
         let normalized_raw_url = raw_url.trim_end_matches('/');
         if normalized_raw_url == base_url {
-            return Ok(base_url.to_string());
+            return Ok(RuntimeProviderEndpoint {
+                url: base_url.to_string(),
+                pinned_public_addresses: Vec::new(),
+            });
         }
         if state
             .config
@@ -189,14 +184,20 @@ pub async fn runtime_accessible_provider_url(
             .as_deref()
             .is_some_and(|public_url| normalized_raw_url == public_url)
         {
-            return Ok(base_url.to_string());
+            return Ok(RuntimeProviderEndpoint {
+                url: base_url.to_string(),
+                pinned_public_addresses: Vec::new(),
+            });
         }
         let advertised_clearnet_url = state.transport_status.lock().await.clearnet_url.clone();
         if advertised_clearnet_url
             .as_deref()
             .is_some_and(|clearnet_url| normalized_raw_url == clearnet_url)
         {
-            return Ok(base_url.to_string());
+            return Ok(RuntimeProviderEndpoint {
+                url: base_url.to_string(),
+                pinned_public_addresses: Vec::new(),
+            });
         }
     }
 
@@ -210,7 +211,10 @@ pub async fn runtime_accessible_provider_url(
         })?;
     if validated.reachability == RemoteEndpointReachability::LocalOnly {
         if is_local_provider && let Some(base_url) = local_provider_base_url {
-            return Ok(base_url);
+            return Ok(RuntimeProviderEndpoint {
+                url: base_url,
+                pinned_public_addresses: Vec::new(),
+            });
         }
         return Err((
             StatusCode::BAD_REQUEST,
@@ -221,5 +225,36 @@ pub async fn runtime_accessible_provider_url(
         ));
     }
 
-    Ok(validated.normalized_url)
+    Ok(RuntimeProviderEndpoint {
+        url: validated.normalized_url,
+        pinned_public_addresses: validated.pinned_public_addresses,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn public_ip_endpoint_carries_pinned_address() {
+        let endpoint = classify_remote_endpoint_url("https://8.8.8.8/", "provider URL")
+            .await
+            .expect("classified public endpoint");
+
+        assert_eq!(endpoint.reachability, RemoteEndpointReachability::Public);
+        assert_eq!(
+            endpoint.pinned_public_addresses,
+            vec!["8.8.8.8".parse::<IpAddr>().expect("ip")]
+        );
+    }
+
+    #[tokio::test]
+    async fn local_endpoint_has_no_pinned_public_addresses() {
+        let endpoint = classify_remote_endpoint_url("http://127.0.0.1:8080/", "provider URL")
+            .await
+            .expect("classified local endpoint");
+
+        assert_eq!(endpoint.reachability, RemoteEndpointReachability::LocalOnly);
+        assert!(endpoint.pinned_public_addresses.is_empty());
+    }
 }

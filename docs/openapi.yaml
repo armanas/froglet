@@ -2736,7 +2736,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ---------------------------------------------------------------------------
-  # Execution — Runtime port (no per-handler auth; secure at network layer)
+  # Execution — Runtime port (runtime bearer auth required)
   # ---------------------------------------------------------------------------
 
   /v1/node/execute/wasm:
@@ -2747,9 +2747,11 @@ paths:
         Submits an inline WASM module (hex-encoded) with input for immediate
         execution. Blocks until execution completes or the per-node timeout
         elapses. Maximum module size is 512 KiB (hex). Maximum input is 128 KiB
-        (hex). Only available on the runtime port; secure it at the network layer.
+        (hex). Only available on the runtime port and requires runtime bearer
+        authentication.
       tags: [Execution]
-      security: []
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -2825,9 +2827,10 @@ paths:
         Lightning-priced work must use the signed quote/deal flow, and
         Stripe/x402 paid work must use synchronous `/v1/node/events/query` or
         `/v1/node/execute/wasm` until durable async payment reservations are
-        implemented.
+        implemented. Requires runtime bearer authentication.
       tags: [Execution]
-      security: []
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -2883,9 +2886,11 @@ paths:
       description: >
         Returns the current state of an async job. When `status` is `succeeded`,
         the `result` field contains the execution output. When `status` is
-        `failed`, the `error` field is populated.
+        `failed`, the `error` field is populated. Requires runtime bearer
+        authentication.
       tags: [Execution]
-      security: []
+      security:
+        - bearerAuth: []
       parameters:
         - name: job_id
           in: path

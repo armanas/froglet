@@ -268,6 +268,8 @@ fn lightning_app_state() -> Arc<AppState> {
         },
         payment_backends: vec![PaymentBackend::Lightning],
         execution_timeout_secs: 10,
+        process_limits: Default::default(),
+        public_quota: Default::default(),
         lightning: LightningConfig {
             mode: LightningMode::Mock,
             destination_identity: None,
@@ -339,6 +341,24 @@ fn lightning_app_state() -> Arc<AppState> {
         provider_control_auth_token: "test-provider-control-token".to_string(),
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        hosted_trial_deal_quota: None,
+        hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        confidential_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
         lnd_rest_client: None,
         phoenixd_client: None,
         lightning_wallet: None,
@@ -378,6 +398,8 @@ fn stripe_app_state_with_mock(
         },
         payment_backends: vec![PaymentBackend::Stripe],
         execution_timeout_secs: 10,
+        process_limits: Default::default(),
+        public_quota: Default::default(),
         lightning: LightningConfig {
             mode: LightningMode::Mock,
             destination_identity: None,
@@ -469,6 +491,24 @@ fn stripe_app_state_with_mock(
         provider_control_auth_token: "test-provider-control-token".to_string(),
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        hosted_trial_deal_quota: None,
+        hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        confidential_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
         lnd_rest_client: None,
         phoenixd_client: None,
         lightning_wallet: None,
@@ -639,7 +679,8 @@ async fn lightning_mock_full_paid_deal_produces_settled_receipt() {
     let provider_id = state.identity.node_id().to_string();
 
     // ── Step 1: POST /v1/runtime/deals ──────────────────────────────────────
-    // Serialise env-var mutation across parallel integration tests.
+    // Serialise env-var mutation across the full lifecycle because follow-up
+    // runtime calls re-resolve the stored local provider URL.
     let _env_guard = env_lock().lock().await;
     let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
 
@@ -659,10 +700,6 @@ async fn lightning_mock_full_paid_deal_produces_settled_receipt() {
         &create_body,
     )
     .await;
-    // Release the env lock now that the deal is created (provider URL is recorded
-    // in the deal record; subsequent calls don't need the env var).
-    drop(_env);
-    drop(_env_guard);
     assert_eq!(
         create_status,
         StatusCode::OK,
@@ -819,8 +856,6 @@ async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
         &create_body,
     )
     .await;
-    drop(_env);
-    drop(_env_guard);
     assert_eq!(
         create_status,
         StatusCode::OK,
@@ -1052,6 +1087,8 @@ fn phoenixd_app_state_with_mock(mock_base_url: &str) -> Arc<AppState> {
         },
         payment_backends: vec![PaymentBackend::Lightning],
         execution_timeout_secs: 10,
+        process_limits: Default::default(),
+        public_quota: Default::default(),
         lightning: LightningConfig {
             mode: LightningMode::Phoenixd,
             destination_identity: None,
@@ -1143,6 +1180,24 @@ fn phoenixd_app_state_with_mock(mock_base_url: &str) -> Arc<AppState> {
         provider_control_auth_token: "test-provider-control-token".to_string(),
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
+        process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        hosted_trial_deal_quota: None,
+        hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
+        confidential_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
+            1000,
+            std::time::Duration::from_secs(60),
+        )),
         lnd_rest_client: None,
         phoenixd_client: Some(phoenixd_client),
         lightning_wallet: Some(lightning_wallet),
@@ -1209,8 +1264,6 @@ async fn phoenixd_prepaid_full_paid_deal_produces_settled_receipt() {
         &create_body,
     )
     .await;
-    drop(_env);
-    drop(_env_guard);
     assert_eq!(
         create_status,
         StatusCode::OK,

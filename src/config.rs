@@ -1,4 +1,7 @@
-use crate::confidential::{self, ConfidentialConfig, ConfidentialPolicy};
+use crate::{
+    confidential::{self, ConfidentialConfig, ConfidentialPolicy},
+    public_quota::PublicQuotaConfig,
+};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -468,6 +471,10 @@ pub struct WasmHttpPolicy {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WasmHttpAuthProfile {
+    pub scheme: String,
+    pub host: String,
+    pub port: u16,
+    pub path_prefix: String,
     pub header_name: String,
     #[serde(skip_serializing)]
     pub header_value: String,
@@ -476,6 +483,10 @@ pub struct WasmHttpAuthProfile {
 impl fmt::Debug for WasmHttpAuthProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WasmHttpAuthProfile")
+            .field("scheme", &self.scheme)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("path_prefix", &self.path_prefix)
             .field("header_name", &self.header_name)
             .field("header_value", &"[REDACTED]")
             .finish()
@@ -570,6 +581,32 @@ pub struct SessionPoolConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProcessLimitsConfig {
+    /// Maximum simultaneous Python/container process-runtime executions.
+    pub concurrency: usize,
+    /// Maximum captured bytes per stdout or stderr stream.
+    pub output_max_bytes: usize,
+    /// Docker/Podman memory limit in bytes.
+    pub memory_max_bytes: u64,
+    /// Docker/Podman PID limit.
+    pub pids_limit: u64,
+    /// Docker/Podman CPU quota.
+    pub cpu_limit: f64,
+}
+
+impl Default for ProcessLimitsConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: 4,
+            output_max_bytes: 1024 * 1024,
+            memory_max_bytes: 512 * 1024 * 1024,
+            pids_limit: 128,
+            cpu_limit: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub network_mode: NetworkMode,
     pub listen_addr: String,
@@ -582,6 +619,7 @@ pub struct NodeConfig {
     pub pricing: PricingConfig,
     pub payment_backends: Vec<PaymentBackend>,
     pub execution_timeout_secs: u64,
+    pub process_limits: ProcessLimitsConfig,
     pub lightning: LightningConfig,
     pub x402: Option<X402Config>,
     pub stripe: Option<StripeConfig>,
@@ -599,6 +637,7 @@ pub struct NodeConfig {
     /// env vars. See docs/MOUNTS.md.
     pub postgres_mounts: std::collections::BTreeMap<String, String>,
     pub session_pool: SessionPoolConfig,
+    pub public_quota: PublicQuotaConfig,
     /// Shared secret presented by the hosted-trial worker on internal-only
     /// origin routes (`/api/sessions`, `/api/sessions/validate`, and the
     /// hosted demo deal routes). Required whenever the session pool is
@@ -711,6 +750,34 @@ impl NodeConfig {
         };
 
         let execution_timeout_secs = env_u64("FROGLET_EXECUTION_TIMEOUT_SECS", 10)?.clamp(1, 300);
+        let default_process_limits = ProcessLimitsConfig::default();
+        let process_limits = ProcessLimitsConfig {
+            concurrency: env_u64(
+                "FROGLET_PROCESS_CONCURRENCY",
+                default_process_limits.concurrency as u64,
+            )?
+            .clamp(1, 256) as usize,
+            output_max_bytes: env_u64(
+                "FROGLET_PROCESS_OUTPUT_MAX_BYTES",
+                default_process_limits.output_max_bytes as u64,
+            )?
+            .clamp(1024, 64 * 1024 * 1024) as usize,
+            memory_max_bytes: env_u64(
+                "FROGLET_PROCESS_MEMORY_MAX_BYTES",
+                default_process_limits.memory_max_bytes,
+            )?
+            .clamp(16 * 1024 * 1024, 64 * 1024 * 1024 * 1024),
+            pids_limit: env_u64(
+                "FROGLET_PROCESS_PIDS_LIMIT",
+                default_process_limits.pids_limit,
+            )?
+            .clamp(16, 4096),
+            cpu_limit: env_f64(
+                "FROGLET_PROCESS_CPU_LIMIT",
+                default_process_limits.cpu_limit,
+            )?
+            .clamp(0.1, 256.0),
+        };
         let lightning_required = payment_backends.contains(&PaymentBackend::Lightning);
         let lightning_mode = match env::var("FROGLET_LIGHTNING_MODE") {
             Ok(val) => LightningMode::parse(&val)?,
@@ -899,6 +966,44 @@ impl NodeConfig {
             size: env_u64("FROGLET_SESSION_POOL_SIZE", 50)?.clamp(1, 1000) as usize,
             ttl_secs: env_u64("FROGLET_SESSION_TTL_SECS", 900)?.clamp(60, 3600),
         };
+        let default_public_quota = PublicQuotaConfig::default();
+        let public_quota = PublicQuotaConfig {
+            hosted_trial_deals_per_identity: env_u64(
+                "FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY",
+                u64::from(default_public_quota.hosted_trial_deals_per_identity),
+            )?
+            .clamp(1, 1000) as u32,
+            hosted_trial_sessions_per_identity: env_u64(
+                "FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY",
+                u64::from(default_public_quota.hosted_trial_sessions_per_identity),
+            )?
+            .clamp(1, 1000) as u32,
+            event_publishes_per_identity: env_u64(
+                "FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY",
+                u64::from(default_public_quota.event_publishes_per_identity),
+            )?
+            .clamp(1, 100_000) as u32,
+            quotes_per_identity: env_u64(
+                "FROGLET_QUOTE_QUOTA_PER_IDENTITY",
+                u64::from(default_public_quota.quotes_per_identity),
+            )?
+            .clamp(1, 100_000) as u32,
+            confidential_sessions_per_identity: env_u64(
+                "FROGLET_CONFIDENTIAL_SESSION_QUOTA_PER_IDENTITY",
+                u64::from(default_public_quota.confidential_sessions_per_identity),
+            )?
+            .clamp(1, 10_000) as u32,
+            hosted_trial_window_secs: env_u64(
+                "FROGLET_HOSTED_TRIAL_DEAL_QUOTA_WINDOW_SECS",
+                default_public_quota.hosted_trial_window_secs,
+            )?
+            .clamp(1, 86_400),
+            public_write_window_secs: env_u64(
+                "FROGLET_PUBLIC_WRITE_QUOTA_WINDOW_SECS",
+                default_public_quota.public_write_window_secs,
+            )?
+            .clamp(1, 86_400),
+        };
         if session_pool.enabled && hosted_trial_origin_secret.is_none() {
             return Err(
                 "FROGLET_HOSTED_TRIAL_ORIGIN_SECRET is required when FROGLET_SESSION_POOL_ENABLED=1"
@@ -920,6 +1025,7 @@ impl NodeConfig {
             pricing,
             payment_backends,
             execution_timeout_secs,
+            process_limits,
             lightning,
             x402,
             stripe,
@@ -952,6 +1058,7 @@ impl NodeConfig {
             marketplace_url: env::var("FROGLET_MARKETPLACE_URL").ok(),
             postgres_mounts: load_postgres_mounts_from_env(),
             session_pool,
+            public_quota,
             hosted_trial_origin_secret,
         })
     }
@@ -1027,6 +1134,24 @@ fn env_u64(name: &str, default: u64) -> Result<u64, String> {
         Ok(value) => value
             .parse::<u64>()
             .map_err(|_| format!("Invalid {name} value: '{value}'. Expected unsigned integer")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_f64(name: &str, default: f64) -> Result<f64, String> {
+    match env::var(name) {
+        Ok(value) => {
+            let parsed = value
+                .parse::<f64>()
+                .map_err(|_| format!("Invalid {name} value: '{value}'. Expected number"))?;
+            if parsed.is_finite() && parsed > 0.0 {
+                Ok(parsed)
+            } else {
+                Err(format!(
+                    "Invalid {name} value: '{value}'. Expected positive finite number"
+                ))
+            }
+        }
         Err(_) => Ok(default),
     }
 }
@@ -1115,6 +1240,40 @@ fn validate_wasm_policy(policy: &WasmPolicy, internal_db_path: &Path) -> Result<
 
         for (profile, auth_profile) in &http.auth_profiles {
             validate_wasm_policy_name("http auth profile", profile)?;
+            if auth_profile.scheme != "https" {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' scheme must be https"
+                ));
+            }
+            if auth_profile.host.trim().is_empty() {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' host must not be empty"
+                ));
+            }
+            if !http
+                .allowed_hosts
+                .iter()
+                .any(|host| host.eq_ignore_ascii_case(&auth_profile.host))
+            {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' host must appear in allowed_hosts"
+                ));
+            }
+            if auth_profile.port == 0 {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' port must be greater than zero"
+                ));
+            }
+            if !auth_profile.path_prefix.starts_with('/') {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' path_prefix must start with /"
+                ));
+            }
+            if auth_profile.path_prefix.chars().any(char::is_control) {
+                return Err(format!(
+                    "Wasm HTTP auth profile '{profile}' path_prefix must not contain control characters"
+                ));
+            }
             if auth_profile.header_name.trim().is_empty() {
                 return Err(format!(
                     "Wasm HTTP auth profile '{profile}' header_name must not be empty"
@@ -1343,7 +1502,7 @@ mod tests {
         const COMPOSE_YAML: &str = include_str!("../compose.yaml");
         assert!(
             COMPOSE_YAML.contains(
-                "FROGLET_HOST_READABLE_CONTROL_TOKEN: ${FROGLET_HOST_READABLE_CONTROL_TOKEN:-}"
+                "FROGLET_HOST_READABLE_CONTROL_TOKEN: ${FROGLET_HOST_READABLE_CONTROL_TOKEN:-false}"
             ),
             "compose.yaml should pass through the opt-in flag but keep the default empty"
         );
@@ -1376,6 +1535,10 @@ max_response_body_bytes = 2048
 max_redirects = 2
 
 [http.auth_profiles.github]
+scheme = "https"
+host = "api.example.com"
+port = 443
+path_prefix = "/"
 header_name = "authorization"
 header_value = "Bearer token"
 
@@ -1400,6 +1563,37 @@ path = "{}"
                 "net.http.fetch".to_string(),
                 "net.http.fetch.auth.github".to_string(),
             ]
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_load_wasm_policy_rejects_unscoped_http_auth_profile() {
+        let temp_dir = unique_temp_dir("wasm-policy-unscoped-auth");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let internal_db_path = temp_dir.join("node.db");
+        std::fs::write(&internal_db_path, "").unwrap();
+
+        let policy_path = temp_dir.join("wasm-policy.toml");
+        std::fs::write(
+            &policy_path,
+            r#"
+[http]
+allowed_hosts = ["api.example.com"]
+
+[http.auth_profiles.github]
+header_name = "authorization"
+header_value = "Bearer token"
+"#,
+        )
+        .unwrap();
+
+        let error = load_wasm_policy(&policy_path, &internal_db_path)
+            .expect_err("policy should reject auth profiles without endpoint scope");
+        assert!(
+            error.contains("missing field `scheme`") || error.contains("scheme"),
+            "unexpected error: {error}"
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);

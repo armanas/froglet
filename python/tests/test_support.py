@@ -76,6 +76,16 @@ def bearer_auth_headers(token_path: Path) -> dict[str, str]:
     return {"Authorization": f"Bearer {read_bearer_token(token_path)}"}
 
 
+def high_test_quota_env() -> dict[str, str]:
+    return {
+        "FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY": "100000",
+        "FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY": "100000",
+        "FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY": "100000",
+        "FROGLET_QUOTE_QUOTA_PER_IDENTITY": "100000",
+        "FROGLET_CONFIDENTIAL_SESSION_QUOTA_PER_IDENTITY": "100000",
+    }
+
+
 def runtime_auth_token_path(data_dir: Path) -> Path:
     return Path(
         os.environ.get(
@@ -302,6 +312,9 @@ class FrogletRuntime(ManagedProcess):
     def url(self, path: str) -> str:
         return f"{self.runtime_url}{path}"
 
+    def auth_headers(self) -> dict[str, str]:
+        return bearer_auth_headers(self.runtime_auth_token_path)
+
 
 class FrogletNode:
     def __init__(self, provider: FrogletProvider, runtime: FrogletRuntime):
@@ -318,6 +331,9 @@ class FrogletNode:
 
     def url(self, path: str) -> str:
         return self.provider.url(path)
+
+    def runtime_auth_headers(self) -> dict[str, str]:
+        return self.runtime.auth_headers()
 
     def output(self) -> str:
         return self.provider.output()
@@ -378,6 +394,9 @@ class RemoteFrogletRuntime(_RemoteManagedEndpoint):
     def url(self, path: str) -> str:
         return f"{self.runtime_url}{path}"
 
+    def auth_headers(self) -> dict[str, str]:
+        return bearer_auth_headers(self.runtime_auth_token_path)
+
 
 class RemoteFrogletNode:
     def __init__(self, provider: RemoteFrogletProvider, runtime: RemoteFrogletRuntime):
@@ -394,6 +413,9 @@ class RemoteFrogletNode:
 
     def url(self, path: str) -> str:
         return self.provider.url(path)
+
+    def runtime_auth_headers(self) -> dict[str, str]:
+        return self.runtime.auth_headers()
 
     def output(self) -> str:
         return ""
@@ -915,6 +937,7 @@ async def start_provider(
             "FROGLET_DATA_DIR": str(data_dir),
         }
     )
+    env.update(high_test_quota_env())
     if extra_env:
         env.update(extra_env)
     network_mode = env.get("FROGLET_NETWORK_MODE", "clearnet").lower()
@@ -1001,6 +1024,7 @@ async def start_runtime(
             "FROGLET_DATA_DIR": str(data_dir),
         }
     )
+    env.update(high_test_quota_env())
     if extra_env:
         env.update(extra_env)
 
@@ -1522,7 +1546,10 @@ class FrogletAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
         async with aiohttp.ClientSession() as session:
             while time.monotonic() < deadline:
-                async with session.get(runtime.url(f"/v1/node/jobs/{job_id}")) as resp:
+                async with session.get(
+                    runtime.url(f"/v1/node/jobs/{job_id}"),
+                    headers=runtime.auth_headers(),
+                ) as resp:
                     payload = await resp.json()
                 if payload["status"] in {"succeeded", "failed"}:
                     return payload

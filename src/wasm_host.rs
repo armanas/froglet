@@ -110,10 +110,10 @@ enum HostCallRequest {
     DbQuery { request: DbQueryRequest },
 }
 
-fn build_http_client(policy: &WasmHttpPolicy) -> Result<reqwest::Client, String> {
+fn build_http_client(_policy: &WasmHttpPolicy) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .redirect(RedirectPolicy::limited(policy.max_redirects))
+        .redirect(RedirectPolicy::none())
         .build()
         .map_err(|error| format!("failed to build async http client: {error}"))
 }

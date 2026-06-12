@@ -13,27 +13,16 @@ pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
 
 fn build_marketplace_deal(
     state: &AppState,
-    quote: &Value,
+    quote: &SignedArtifact<QuotePayload>,
     nonce: &str,
 ) -> Result<SignedArtifact<protocol::DealPayload>, String> {
     let created_at = settlement::current_unix_timestamp();
-    let provider_id = quote
-        .get("payload")
-        .and_then(|p| p.get("provider_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let quote_hash = quote.get("hash").and_then(|v| v.as_str()).unwrap_or("");
-    let workload_hash = quote
-        .get("payload")
-        .and_then(|p| p.get("workload_hash"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
 
     let payload = protocol::DealPayload {
-        provider_id: provider_id.to_string(),
+        provider_id: quote.payload.provider_id.clone(),
         requester_id: state.identity.node_id().to_string(),
-        quote_hash: quote_hash.to_string(),
-        workload_hash: workload_hash.to_string(),
+        quote_hash: quote.hash.clone(),
+        workload_hash: quote.payload.workload_hash.clone(),
         confidential_session_hash: None,
         extension_refs: Vec::new(),
         authority_ref: None,
@@ -62,7 +51,7 @@ async fn marketplace_deal(
 ) -> Result<Value, (StatusCode, Value)> {
     // Quote
     let quote_url = format!("{marketplace_url}/v1/provider/quotes");
-    let quote: Value = remote_json_request(
+    let quote: SignedArtifact<QuotePayload> = remote_json_request(
         state,
         reqwest::Method::POST,
         quote_url,
@@ -75,6 +64,12 @@ async fn marketplace_deal(
     )
     .await
     .map_err(|(s, b)| (s, json!({"error":"marketplace quote failed","detail":b})))?;
+    let quote = verify_marketplace_quote_artifact(quote).map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "marketplace quote verification failed", "details": error }),
+        )
+    })?;
 
     // Deal
     let deal = build_marketplace_deal(state, &quote, nonce)
