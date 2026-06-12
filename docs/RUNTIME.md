@@ -65,10 +65,9 @@ The sandbox lives in [`src/python_sandbox.rs`](../src/python_sandbox.rs) and
 is applied via `Command::pre_exec` in the fork-before-exec window, so the
 restrictions inherit to the `python3` process across the `execve` boundary.
 
-**Network access.** Network is denied by default. A workload that has been
-granted a mount kind requiring network (for example, a future `postgres`
-mount) may set `SandboxConfig::allow_network = true`, which re-enables the
-`socket`/`connect`/`bind` syscalls for that invocation.
+**Network access.** Network is denied by default. Network-backed data mounts
+(`postgres`, `s3`, `redis`) fail closed until Froglet ships endpoint-scoped
+proxying, so data mounts do not re-enable `socket`/`connect`/`bind` today.
 
 **Non-Linux hosts.** The sandbox is Linux-only. On macOS / other dev hosts
 Python execution is refused by default; operators can set

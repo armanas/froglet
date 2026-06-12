@@ -67,12 +67,12 @@ AI agents need to buy and sell compute from each other without intermediaries. A
   </div>
 </div>
 
-Froglet solves those needs with signed artifacts, explicit execution terms, and verifiable settlement. **Lightning** is the reference rail — proven end-to-end on regtest, with the payment preimage as cryptographic proof. **Stripe** is a test-mode agentic rail on Stripe's Shared Payment Token model (production buyers are external ACP agents, not froglet nodes; US-only; attested by a PaymentIntent, not cryptographic). **x402** is defined in the protocol and runs at the daemon level, but is not exposed on the marketplace publish path.
+Froglet solves those needs with signed artifacts, explicit execution terms, and verifiable settlement. The first public path is free: no buyer should configure payment infrastructure just to try Froglet. **Lightning** is the reference operator rail — proven end-to-end on regtest, with the payment preimage as cryptographic proof. **Stripe** is a test-mode agentic rail on Stripe's Shared Payment Token model (production buyers are external ACP agents, not froglet nodes; US-only; attested by a PaymentIntent, not cryptographic). **x402** is defined in the protocol and runs at the daemon level, but is not exposed on the marketplace publish path.
 
 ## Read next
 
 <div class="chapter-grid">
-  <a class="chapter-card" href="/learn/quickstart/"><strong>Run Locally</strong><small>Start a node, generate agent config, and choose a payment rail.</small></a>
+  <a class="chapter-card" href="/learn/quickstart/"><strong>Run Locally</strong><small>Start a node, generate agent config, and use the free path first.</small></a>
   <a class="chapter-card" href="/learn/deal-flow/"><strong>Deal Flow</strong><small>See the exact descriptor → quote → deal → receipt chain.</small></a>
   <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>Understand the payment model before you wire in a real rail.</small></a>
   <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>See why public stake makes cheating irrational.</small></a>

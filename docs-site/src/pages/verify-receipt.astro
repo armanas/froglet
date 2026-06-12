@@ -1,0 +1,268 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import AgentMeta from '../components/AgentMeta.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify receipt · Froglet</title>
+<meta name="description" content="Inspect pasted Froglet receipt or artifact envelope JSON for expected receipt fields and explicit verification limits." />
+<link rel="canonical" href="https://froglet.dev/verify-receipt/" />
+<meta name="color-scheme" content="dark" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Verify receipt · Froglet" />
+<meta property="og:description" content="Inspect pasted Froglet receipt or artifact envelope JSON for expected receipt fields and explicit verification limits." />
+<meta property="og:url" content="https://froglet.dev/verify-receipt/" />
+<meta property="og:image" content="https://froglet.dev/og/default.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Verify receipt · Froglet" />
+<meta name="twitter:description" content="Inspect pasted Froglet receipt or artifact envelope JSON for expected receipt fields and explicit verification limits." />
+<meta name="twitter:image" content="https://froglet.dev/og/default.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="verifyReceipt" />
+<ThemeProvider />
+</head>
+<body data-screen-label="Receipt verifier">
+<SiteHeader currentPath={Astro.url.pathname} />
+<main class="froglet-home-main verify-page" data-agent-task="receipt-artifact-verify">
+  <section class="hero verify-hero">
+    <span class="eyebrow">Receipt verifier</span>
+    <h1>Inspect a Froglet receipt.</h1>
+    <p class="lede">
+      Paste a receipt or feed artifact envelope and get a structural field report.
+      This browser helper does not verify Schnorr signatures, canonical hashes,
+      provider identity, or payment settlement.
+    </p>
+    <div class="hero-cta">
+      <a class="btn primary" href="/agent-tasks.json">Agent task manifest</a>
+      <a class="btn ghost" href="/spec/kernel/">Kernel spec →</a>
+    </div>
+  </section>
+
+  <section class="verify-grid" aria-label="Receipt structural verifier">
+    <article class="verify-panel">
+      <div class="verify-panel-head">
+        <h2>Receipt JSON</h2>
+        <button type="button" class="verify-secondary" data-receipt-sample>Load sample</button>
+      </div>
+      <textarea
+        class="verify-input"
+        data-receipt-input
+        spellcheck="false"
+        autocomplete="off"
+        aria-label="Receipt or artifact envelope JSON"
+        placeholder='{"artifact_kind":"receipt","payload":{"deal_hash":"...","quote_hash":"..."},"signature":"..."}'
+      ></textarea>
+      <div class="verify-actions">
+        <button type="button" class="btn primary" data-receipt-verify>Verify structure</button>
+        <a class="btn ghost" href="/marketplace/">Marketplace evidence</a>
+      </div>
+    </article>
+
+    <aside class="verify-panel verify-panel--result">
+      <div class="verify-panel-head">
+        <h2>Structural report</h2>
+      </div>
+      <div class="verify-output" data-receipt-output aria-live="polite">
+        <p>No receipt parsed yet.</p>
+      </div>
+    </aside>
+  </section>
+
+  <section class="block verify-boundary">
+    <span class="eyebrow">Verification boundary</span>
+    <h2>What this page can and cannot prove.</h2>
+    <div class="entry-grid">
+      <div class="entry-card">
+        <div class="entry-num">01 · structural</div>
+        <h3>Field presence</h3>
+        <p>Checks whether JSON parses, whether it looks like a Froglet artifact envelope, and whether receipt-like fields such as <code class="inline">deal_hash</code>, <code class="inline">quote_hash</code>, <code class="inline">artifact_hash</code>, and <code class="inline">signature</code> are present.</p>
+      </div>
+      <div class="entry-card">
+        <div class="entry-num">02 · cryptographic</div>
+        <h3>Not a signature verifier</h3>
+        <p>Does not recompute RFC 8785 canonical bytes, verify BIP340/Schnorr signatures, prove provider identity, or validate settlement. Use the kernel verifier or conformance path for that.</p>
+      </div>
+    </div>
+  </section>
+
+  <SiteFooter />
+</main>
+
+<script>
+const sampleReceipt = {
+  artifact_kind: 'receipt',
+  artifact_hash: 'sha256:example-artifact-hash',
+  signature: 'example-signature-not-cryptographically-verified',
+  payload: {
+    schema_version: 'froglet/v1',
+    deal_hash: 'sha256:example-deal-hash',
+    quote_hash: 'sha256:example-quote-hash',
+    provider_id: 'provider-example',
+    status: 'succeeded',
+    result_hash: 'sha256:example-result-hash',
+  },
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringValue(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+function pickString(record: Record<string, unknown> | null, keys: string[]): string | null {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = stringValue(record[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function nestedRecord(record: Record<string, unknown> | null, key: string): Record<string, unknown> | null {
+  return record ? asRecord(record[key]) : null;
+}
+
+function arrayValue(record: Record<string, unknown> | null, key: string): unknown[] | null {
+  const value = record?.[key];
+  return Array.isArray(value) ? value : null;
+}
+
+function collectArtifacts(root: Record<string, unknown>): { artifacts: Record<string, unknown>[]; envelope: string } {
+  const directArtifacts = arrayValue(root, 'artifacts');
+  if (directArtifacts) {
+    return { artifacts: directArtifacts.map((item) => asRecord(item)).filter(Boolean) as Record<string, unknown>[], envelope: 'yes: artifacts[]' };
+  }
+
+  const directEntries = arrayValue(root, 'entries');
+  if (directEntries) {
+    return { artifacts: directEntries.map((item) => asRecord(item)).filter(Boolean) as Record<string, unknown>[], envelope: 'possible: entries[]' };
+  }
+
+  const directItems = arrayValue(root, 'items');
+  if (directItems) {
+    return { artifacts: directItems.map((item) => asRecord(item)).filter(Boolean) as Record<string, unknown>[], envelope: 'unexpected: items[] collection' };
+  }
+
+  const data = nestedRecord(root, 'data');
+  const nestedArtifacts = arrayValue(data, 'artifacts');
+  if (nestedArtifacts) {
+    return { artifacts: nestedArtifacts.map((item) => asRecord(item)).filter(Boolean) as Record<string, unknown>[], envelope: 'yes: data.artifacts[]' };
+  }
+
+  return { artifacts: [root], envelope: 'single artifact' };
+}
+
+function unwrapArtifact(record: Record<string, unknown>): Record<string, unknown> {
+  return nestedRecord(record, 'artifact') ?? record;
+}
+
+function payloadRecord(artifact: Record<string, unknown>): Record<string, unknown> | null {
+  return nestedRecord(artifact, 'payload')
+    ?? nestedRecord(artifact, 'receipt')
+    ?? nestedRecord(nestedRecord(artifact, 'data'), 'payload');
+}
+
+function isReceiptLike(artifact: Record<string, unknown>): boolean {
+  const payload = payloadRecord(artifact);
+  const kind = [
+    pickString(artifact, ['artifact_kind', 'kind', 'type']),
+    pickString(payload, ['artifact_kind', 'kind', 'type']),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return kind.includes('receipt')
+    || Boolean(nestedRecord(artifact, 'receipt'))
+    || Boolean(pickString(payload, ['deal_hash', 'quote_hash', 'result_hash', 'receipt_id']));
+}
+
+function summarizeReceipt(value: unknown): [string, string][] {
+  const root = asRecord(value);
+  if (!root) return [['parsed_json', 'no: root is not an object']];
+
+  const { artifacts, envelope } = collectArtifacts(root);
+  const unwrapped = artifacts.map(unwrapArtifact);
+  const receipt = unwrapped.find(isReceiptLike) ?? unwrapped[0] ?? root;
+  const payload = payloadRecord(receipt);
+  const signature = pickString(receipt, ['signature', 'sig'])
+    ?? pickString(nestedRecord(receipt, 'proof'), ['signature', 'sig']);
+  const artifactHash = pickString(receipt, ['artifact_hash', 'hash', 'payload_hash']);
+  const dealHash = pickString(payload, ['deal_hash', 'dealHash']);
+  const quoteHash = pickString(payload, ['quote_hash', 'quoteHash']);
+  const providerId = pickString(payload, ['provider_id', 'providerId'])
+    ?? pickString(receipt, ['provider_id', 'providerId']);
+
+  return [
+    ['parsed_json', 'yes'],
+    ['artifact_envelope', envelope],
+    ['artifact_count', String(artifacts.length)],
+    ['receipt_like_artifact', isReceiptLike(receipt) ? 'yes' : 'no'],
+    ['artifact_kind', pickString(receipt, ['artifact_kind', 'kind', 'type']) ?? 'missing'],
+    ['signature_present', signature ? 'yes' : 'no'],
+    ['artifact_hash_present', artifactHash ? 'yes' : 'no'],
+    ['deal_hash', dealHash ?? 'missing'],
+    ['quote_hash', quoteHash ?? 'missing'],
+    ['provider_id', providerId ?? 'missing'],
+    ['not_cryptographically_verified', 'signature validity, canonical hash, provider identity, and settlement remain unverified'],
+  ];
+}
+
+function renderRows(output: HTMLElement, rows: [string, string][]): void {
+  output.textContent = '';
+  const list = document.createElement('dl');
+  list.className = 'verify-report';
+
+  for (const [key, value] of rows) {
+    const row = document.createElement('div');
+    const term = document.createElement('dt');
+    const detail = document.createElement('dd');
+    term.textContent = key;
+    detail.textContent = value;
+    row.append(term, detail);
+    list.append(row);
+  }
+
+  output.append(list);
+}
+
+function verifyReceipt(): void {
+  const input = document.querySelector<HTMLTextAreaElement>('[data-receipt-input]');
+  const output = document.querySelector<HTMLElement>('[data-receipt-output]');
+  if (!input || !output) return;
+
+  try {
+    const parsed = JSON.parse(input.value);
+    renderRows(output, summarizeReceipt(parsed));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    renderRows(output, [
+      ['parsed_json', 'no'],
+      ['parse_error', message],
+      ['not_cryptographically_verified', 'no receipt was inspected'],
+    ]);
+  }
+}
+
+document.querySelector<HTMLButtonElement>('[data-receipt-sample]')?.addEventListener('click', () => {
+  const input = document.querySelector<HTMLTextAreaElement>('[data-receipt-input]');
+  if (!input) return;
+  input.value = JSON.stringify(sampleReceipt, null, 2);
+  verifyReceipt();
+});
+
+document.querySelector<HTMLButtonElement>('[data-receipt-verify]')?.addEventListener('click', verifyReceipt);
+</script>
+</body>
+</html>

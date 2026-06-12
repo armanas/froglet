@@ -28,6 +28,8 @@ remote checkout with the current local tree, and starts the default
 - `FROGLET_GCP_IMAGE_PROJECT` (default: `debian-cloud`)
 - `FROGLET_GCP_BOOT_DISK_SIZE` (default: `50GB`)
 - `FROGLET_GCP_REMOTE_USER` (default: current local user)
+- `FROGLET_GCP_REMOTE_ROOT` (default: `~/froglet`)
+- `FROGLET_GCP_REMOTE_DATA_ROOT` (default: `~/froglet-data`)
 
 ## Usage
 
@@ -48,9 +50,15 @@ FROGLET_GCP_PROJECT=your-project \
 ## What `deploy` does
 
 1. waits for SSH and Docker
-2. replaces the remote repo checkout with the current local tree
-3. runs `docker compose up --build -d --wait`
-4. checks the provider and runtime health endpoints
+2. prepares `FROGLET_GCP_REMOTE_DATA_ROOT` outside the checkout sync path
+3. replaces the remote repo checkout with the current local tree
+4. runs `docker compose up --build -d --wait` with `FROGLET_DATA_ROOT` set to the preserved data root
+5. checks the provider and runtime health endpoints
+
+If an older deploy has data under `FROGLET_GCP_REMOTE_ROOT/data`, the deploy
+script copies it once into `FROGLET_GCP_REMOTE_DATA_ROOT` before clearing the
+checkout. The script fails closed if the configured data root is inside the
+checkout, because that would let repo sync delete runtime/provider state.
 
 This wrapper is the supported launch target for self-hosted GCP. Broader cloud
 or hosted-account automation stays outside the current public repo scope.

@@ -141,19 +141,38 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 
 		.site-hdr .inner {
 			gap: 14px;
+			min-width: 0;
 		}
 
 		.site-hdr nav {
+			min-width: 0;
 			gap: 14px;
 		}
 	}
 
 	@media (max-width: 760px) {
+		.site-hdr nav {
+			flex: 1 1 auto;
+			overflow-x: auto;
+			overflow-y: hidden;
+			scrollbar-width: none;
+			-webkit-overflow-scrolling: touch;
+		}
+
+		.site-hdr nav::-webkit-scrollbar {
+			display: none;
+		}
+
+		.site-hdr nav a {
+			flex: 0 0 auto;
+			white-space: nowrap;
+		}
+
 		.site-hdr nav a.mobile-hidden {
 			display: none;
 		}
 
-		.site-hdr .right .ghv {
+		.site-hdr .right {
 			display: none;
 		}
 	}

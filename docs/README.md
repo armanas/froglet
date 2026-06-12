@@ -34,7 +34,9 @@ Public launch entry points:
 ## Companion Docs
 
 - [ADAPTERS.md](ADAPTERS.md): transport and execution adapter boundaries
+- [API_ERRORS.md](API_ERRORS.md): API error reference — status codes and error shapes
 - [CONFIDENTIAL.md](CONFIDENTIAL.md): TEE and encrypted execution extension
+- [MOUNTS.md](MOUNTS.md): capability-gated data mounts for published services
 - [NOSTR.md](NOSTR.md): Nostr linked identity publication
 - [RUNTIME.md](RUNTIME.md): bot-facing localhost runtime surface
 - [STORAGE_PROFILE.md](STORAGE_PROFILE.md): storage and archival profiles

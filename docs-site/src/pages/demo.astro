@@ -1,7 +1,7 @@
 ---
 import '../styles/custom.css';
 import '../styles/demo-page.css';
-import SiteFooter from '../components/SiteFooter.astro';
+import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 ---
@@ -30,35 +30,36 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="demo" />
 <ThemeProvider />
 
 </head>
 <body>
 	<SiteHeader currentPath={Astro.url.pathname} />
-	<div class="demo-shell">
-	<div class="main">
-	  <div id="scene">
-	    <canvas id="net" role="img" aria-label="Animated whiteboard illustrating the current protocol step"></canvas>
-	  </div>
-	  <div id="lesson-wrap">
-	    <div id="lesson-card"></div>
-	    <div id="annotation"></div>
-	  </div>
-	  <div id="term">
-	      <div id="term-bar">
-	        <div class="traffic"><div class="tl tl-close"></div><div class="tl tl-min"></div><div class="tl tl-max"></div></div>
-	        <div id="term-title">froglet &#8212; zsh</div>
-	      </div>
-	      <div id="term-body"></div>
-	    </div>
-</div>
-<div id="nav">
-  <div class="pips" id="pips"></div>
-  <button id="prevBtn">Back</button>
-  <button id="nextBtn">Continue</button>
-</div>
-</div>
-<SiteFooter />
+	<main class="demo-shell" aria-labelledby="demo-title">
+		<h1 id="demo-title" class="demo-heading">Froglet interactive demo</h1>
+		<div class="main">
+			<div id="scene">
+				<canvas id="net" role="img" aria-label="Animated whiteboard illustrating the current protocol step"></canvas>
+			</div>
+			<div id="lesson-wrap">
+				<div id="lesson-card"></div>
+				<div id="annotation"></div>
+			</div>
+			<div id="term">
+				<div id="term-bar">
+					<div class="traffic"><div class="tl tl-close"></div><div class="tl tl-min"></div><div class="tl tl-max"></div></div>
+					<div id="term-title">froglet &#8212; zsh</div>
+				</div>
+				<div id="term-body"></div>
+			</div>
+		</div>
+		<div id="nav">
+			<div class="pips" id="pips"></div>
+			<button id="prevBtn">Back</button>
+			<button id="nextBtn">Continue</button>
+		</div>
+	</main>
 
 <script>
   import { initDemo } from '../scripts/demo/index';

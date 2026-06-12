@@ -6,6 +6,6 @@ export const navLinks = [
 		activePrefixes: ['/docs/', '/learn/', '/architecture/', '/spec/', '/marketplace/overview/'],
 	},
 	{ href: '/marketplace/', label: 'Marketplace' },
-	{ href: '/managed/', label: 'Managed' },
-	{ href: '/open-source/', label: 'Open source' },
+	{ href: '/managed/', label: 'Managed', hideOnMobile: true },
+	{ href: '/open-source/', label: 'Open source', hideOnMobile: true },
 ] as const;

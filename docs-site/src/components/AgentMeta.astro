@@ -1,0 +1,20 @@
+---
+import { routeAgentMetadata } from '../data/agent-metadata';
+import type { AgentRouteMetadata } from '../data/agent-metadata';
+
+interface Props {
+	route: keyof typeof routeAgentMetadata;
+}
+
+const routeMeta: AgentRouteMetadata = routeAgentMetadata[Astro.props.route];
+const metadata = {
+	schema_version: 'froglet.agent-route.v1',
+	...routeMeta,
+};
+---
+
+<meta name="froglet:agent-purpose" content={routeMeta.agent_purpose} />
+<meta name="froglet:agent-primary-task" content={routeMeta.primary_task} />
+<meta name="froglet:agent-evidence-boundary" content={routeMeta.evidence_boundary} />
+<link rel="alternate" type="application/json" href="/agent-tasks.json" title="Froglet agent task manifest" />
+<script type="application/json" data-agent-route-metadata set:html={JSON.stringify(metadata)}></script>

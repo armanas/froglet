@@ -41,6 +41,10 @@ describe('hosted trial docs copy', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
     expect(index).toContain(homepagePrompt);
     expect(index).toContain('live evidence, not a product summary');
+    expect(index).toContain('hosted-proof-with-witness');
+    expect(index).toContain('receipt-feed-check');
+    expect(index).toContain('local-install-proposal');
+    expect(index).toContain('data-prompt-copy');
     expect(index).not.toContain(strongPrompt);
   });
 
@@ -73,6 +77,22 @@ describe('hosted trial docs copy', () => {
     expect(llms).toContain('"offer_id":"demo.fetch-witness"');
     expect(llms).toContain('"input":{"url":"https://example.com/","max_bytes":1048576}');
     expect(llms).toContain('18020a87586eb7e41683ff11bca3fb67398f123b4bbb8786434797cf2a9affbc');
+  });
+
+  it('documents hosted agent task selectors and expected report fields', () => {
+    const llms = readRepoFile('docs/llms/try.froglet.dev.txt');
+    const cloud = readRepoFile('docs-site/src/content/docs/learn/cloud-trial.mdx');
+    for (const text of [llms, cloud]) {
+      expect(text).toContain('hosted-proof');
+      expect(text).toContain('hosted-proof-with-witness');
+      expect(text).toContain('receipt-feed-check');
+      expect(text).toContain('local-install-proposal');
+      expect(text).toContain('chat-only-fallback');
+      expect(text).toContain('preflight_status');
+      expect(text).toContain('receipt_feed_match');
+      expect(text).toContain('docs_live_mismatches');
+      expect(text).toContain('next_experiment');
+    }
   });
 
   it('documents preflight, authorized scope, and demo-only hosted proof boundaries', () => {
@@ -149,6 +169,20 @@ describe('hosted trial docs copy', () => {
     expect(index).not.toContain('500 sats');
     expect(index).not.toContain('600 sats');
     expect(index).not.toContain('paid ·');
+  });
+
+  it('keeps payment rails framed as operator-only, not buyer onboarding', () => {
+    const paymentRails = readRepoFile('docs-site/src/content/docs/learn/payment-rails.mdx');
+    const quickstart = readRepoFile('docs-site/src/content/docs/learn/quickstart.mdx');
+    const index = readRepoFile('docs-site/src/pages/index.astro');
+
+    expect(paymentRails).toContain('End users should not configure Lightning nodes');
+    expect(paymentRails).toMatch(/Do not present it as normal customer\s+onboarding/);
+    expect(quickstart).toContain('Ordinary buyers should not configure LND');
+    expect(quickstart).toMatch(/Pick `none` for the first demo and for normal\s+customer evaluation/);
+    expect(index).toContain('Pick an agent and start free');
+    expect(index).toContain('Normal users should keep this at None');
+    expect(index).not.toContain('Pick an agent and the first payment decision');
   });
 
   it('keeps marketplace metrics from implying hosted paid rails are live', () => {

@@ -30,10 +30,10 @@ the workload.
 
 | Kind | Needs network | Extra sandbox allow-list | Binding shape |
 |---|---|---|---|
-| `postgres` | yes | none | `postgres://user:pass@host:port/db` |
-| `sqlite` | no | parent directory of the DB file | absolute path to the `.sqlite` file |
-| `s3` | yes | none | `s3://access_key:secret@endpoint/bucket` |
-| `redis` | yes | none | `redis://user:pass@host:port/db` |
+| `postgres` | disabled | none | `postgres://user:pass@host:port/db` |
+| `sqlite` | no | exact DB file | absolute path to the `.sqlite` file |
+| `s3` | disabled | none | `s3://access_key:secret@endpoint/bucket` |
+| `redis` | disabled | none | `redis://user:pass@host:port/db` |
 
 All kinds inject the same env-var shape into the workload:
 
@@ -41,16 +41,21 @@ All kinds inject the same env-var shape into the workload:
 - `FROGLET_MOUNT_<HANDLE>_READ_ONLY` — `"true"` or `"false"`
 
 Kind-specific sandbox effects are applied by
-[`collect_data_mount_plan`](../src/api/mod.rs). Network-backed kinds
-(`postgres`, `s3`, `redis`) flip the Python sandbox's `allow_network` flag.
-File-backed kinds (`sqlite`) extend the sandbox's `writable_paths` to include
-the DB file's parent directory so SQLite's `-journal` / `-wal` files work.
+[`collect_data_mount_plan`](../src/data_mounts.rs). Network-backed kinds
+(`postgres`, `s3`, `redis`) fail closed until endpoint-scoped proxying is
+implemented. File-backed `sqlite` mounts grant only the configured database
+file: read mounts are read-only and write mounts are isolated to that exact
+file for the invocation.
 
 ## Postgres mount
 
 The `postgres` mount kind exposes an operator-configured DSN to the workload
 as an environment variable. The workload opens its own connection; Froglet
 does not proxy queries or parse SQL.
+
+Current max-hardening behavior rejects granted Postgres mounts at admission
+time. Operators should not publish services that require Postgres mounts until
+Froglet ships endpoint-scoped proxying for network-backed data sources.
 
 ### Operator configuration
 
@@ -130,10 +135,10 @@ For example:
 FROGLET_MOUNT_sqlite_cache=/var/lib/froglet/cache.sqlite
 ```
 
-The path must be absolute. The sandbox grants write access to the **parent
-directory** of the DB file so SQLite's `-journal` and `-wal` sidecar files
-can be created and updated. Put each SQLite mount in its own directory if
-you want per-mount isolation at the filesystem layer.
+The path must be absolute and must point at an existing file. Read-only mounts
+grant read access to that exact file. Write mounts grant write access to that
+exact file for the invocation instead of granting the database parent
+directory. This avoids exposing sibling files through SQLite sidecar behavior.
 
 ### Service declaration
 
@@ -173,6 +178,10 @@ The `s3` mount kind exposes an operator-configured S3-compatible endpoint
 and credentials to the workload as an environment variable. Like Postgres,
 the workload uses its own S3 client (`boto3`, `aiobotocore`, `s3fs`, etc.)
 to make requests.
+
+Current max-hardening behavior rejects granted S3 mounts at admission time.
+Operators should wait for endpoint-scoped proxying before publishing services
+that require object-store mounts.
 
 ### Operator configuration
 
@@ -228,13 +237,17 @@ def handler(event, ctx):
     return {"keys": [obj["Key"] for obj in resp.get("Contents", [])]}
 ```
 
-S3 mounts enable the sandbox's network flag, same as Postgres.
+Granted S3 mounts currently fail closed, same as Postgres.
 
 ## Redis mount
 
 The `redis` mount kind follows the Postgres pattern exactly — a DSN is
 exposed via `FROGLET_MOUNT_<HANDLE>_URL`, the workload brings its own Redis
 client, and the sandbox enables network syscalls for the invocation.
+
+Current max-hardening behavior rejects granted Redis mounts at admission
+time. Operators should wait for endpoint-scoped proxying before publishing
+services that require Redis mounts.
 
 ### Operator configuration
 
@@ -259,43 +272,29 @@ blocking `redis` client both work.
 
 The Python sandbox (see [RUNTIME.md](RUNTIME.md) `Python sandbox`) blocks
 all outbound network syscalls and all filesystem writes outside the
-invocation tempdir by default. Data mounts extend that default:
+invocation tempdir by default. Data mounts extend that default only for
+local SQLite files:
 
-- **Network-backed kinds** (`postgres`, `s3`, `redis`) flip the sandbox's
-  `allow_network` flag. When a grant of any such mount is active, the
-  `socket` / `connect` / `bind` syscalls are permitted.
-- **File-backed kinds** (`sqlite`) extend the sandbox's `writable_paths`
-  with the DB file's parent directory. Landlock grants that tree read +
-  write; everything else stays denied.
+- **Network-backed kinds** (`postgres`, `s3`, `redis`) fail closed. The
+  sandbox does not enable outbound sockets for data mounts.
+- **File-backed kinds** (`sqlite`) add the configured database file to the
+  sandbox's read-only or writable path set. Parent directories are not
+  over-granted.
 
-Both are intentionally coarse-grained for v1:
+## Read-only enforcement
 
-- Network: a workload granted a Postgres mount can open any outbound TCP
-  connection, not only to the configured DB host. Tightening egress to
-  the exact `host:port` tuple (network namespace + iptables allow-list,
-  or a per-handle BPF socket filter) is tracked as a security hardening
-  follow-up.
-- Filesystem: granting a SQLite mount grants the parent directory rather
-  than only the `.db` file, so the `-journal` and `-wal` sidecars work.
-  Operators who want stricter isolation should give each SQLite mount
-  its own directory.
-
-## Honor-system read-only
-
-`read_only` is passed to the workload as an env var but is **not** enforced
-at the protocol or network layer. A workload that wants to honor the
-constraint must do so itself (e.g., open the Postgres connection in
-read-only mode via `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`).
-Operators who cannot rely on cooperating workloads should grant a DB role
-that has no write privileges to begin with.
+`read_only` is enforced for local SQLite mounts by the sandbox path policy.
+Network-backed mounts fail closed before runtime exposure, so Froglet does
+not currently rely on workload cooperation for network data-source
+read/write separation.
 
 ## Adding a new mount kind
 
 Follow the existing shape in
-[`collect_data_mount_plan`](../src/api/mod.rs):
+[`collect_data_mount_plan`](../src/data_mounts.rs):
 
-1. Add the kind to the `NETWORK_KINDS` slice (if it needs outbound TCP) or
-   the `FILE_KINDS` slice (if it needs a filesystem allow-list extension).
+1. Add the kind to the network-backed fail-closed set or the file-backed
+   branch.
 2. If the kind needs filesystem paths, add a branch that populates
    `plan.writable_paths` from the binding.
 3. Add operator config via `FROGLET_MOUNT_<kind>_<handle>=<binding>`. The
@@ -309,5 +308,5 @@ Planned follow-ups:
 
 - kinds beyond the current postgres + sqlite + s3 + redis set
   (DynamoDB, GCS, a KV snapshot service, etc.)
-- Tightening the network allow-list from coarse-grained "any outbound TCP"
-  to per-handle `host:port` remains a hardening follow-up.
+- endpoint-scoped proxying for network-backed mounts, with per-handle
+  `host:port` or service-specific allow-lists.

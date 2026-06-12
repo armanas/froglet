@@ -93,6 +93,11 @@ conversion from sats into backend-native fiat or token units.
 | `FROGLET_WASM_CONCURRENCY_LIMIT` | `16` | Maximum concurrent WASM executions |
 | `FROGLET_WASM_MODULE_CACHE_CAPACITY` | `128` | Number of compiled WASM modules to cache |
 | `FROGLET_WASM_POLICY_PATH` | *(none)* | Path to a TOML WASM policy file for host capabilities (HTTP, SQLite) |
+| `FROGLET_PROCESS_CONCURRENCY` | `4` | Maximum concurrent Python/container process executions |
+| `FROGLET_PROCESS_OUTPUT_MAX_BYTES` | `1048576` | Maximum captured stdout/stderr bytes per process stream |
+| `FROGLET_PROCESS_MEMORY_MAX_BYTES` | `536870912` | Memory cap applied to Python rlimits and container `--memory` |
+| `FROGLET_PROCESS_PIDS_LIMIT` | `128` | PID/process cap applied to Python rlimits and container `--pids-limit` |
+| `FROGLET_PROCESS_CPU_LIMIT` | `1.0` | CPU limit applied to container `--cpus` |
 
 ### GPU
 
@@ -142,6 +147,18 @@ GPU probe output under its printed evidence directory.
 |----------|---------|-------------|
 | `FROGLET_CONFIDENTIAL_POLICY_PATH` | *(none)* | Path to a TOML confidential policy file |
 | `FROGLET_CONFIDENTIAL_SESSION_TTL_SECS` | `300` | Confidential session time-to-live (30-3600) |
+| `FROGLET_CONFIDENTIAL_SESSION_QUOTA_PER_IDENTITY` | `20` | Confidential session openings allowed per identity/window |
+
+## Public Write Quotas
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY` | `10` | Hosted trial deal creations allowed per identity/window |
+| `FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY` | `20` | Hosted trial session creations allowed per origin identity/window |
+| `FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY` | `60` | Public event publishes allowed per event signer/window |
+| `FROGLET_QUOTE_QUOTA_PER_IDENTITY` | `60` | Provider quote creations allowed per requester/window |
+| `FROGLET_HOSTED_TRIAL_DEAL_QUOTA_WINDOW_SECS` | `900` | Hosted trial quota window in seconds |
+| `FROGLET_PUBLIC_WRITE_QUOTA_WINDOW_SECS` | `900` | Public event/quote/confidential quota window in seconds |
 
 ## Storage
 

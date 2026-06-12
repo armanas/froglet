@@ -1,6 +1,7 @@
 ---
 import '../styles/custom.css';
 import '../styles/index-page.css';
+import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
@@ -28,6 +29,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <meta name="twitter:description" content="Cloud-hosted Froglet nodes — coming soon. Run a node without running infrastructure." />
 <meta name="twitter:image" content="https://froglet.dev/og/managed.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="managed" />
 <ThemeProvider />
 </head>
 <body data-screen-label="Managed · Coming soon">
@@ -37,7 +39,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
     <span class="eyebrow">Managed · coming soon</span>
     <h1>Cloud-hosted Froglet, <em>not yet wired up.</em></h1>
     <p class="lede">
-      Managed is the hosted plane we're building on top of the protocol: multi-node identity, LLM defaults per account, Lightning + Stripe balance, shared receipts, activity feed across your fleet. The backend isn't ready yet, so there's nothing to sign in to today.
+      Managed is the hosted plane we're building on top of the protocol: multi-node identity, LLM defaults per account, managed balances, shared receipts, and activity across your fleet. The backend isn't ready yet, so there's nothing to sign in to today.
     </p>
     <div class="hero-cta">
       <a class="btn primary" href="/learn/cloud-trial/">Try the hosted demo instead</a>
@@ -58,8 +60,8 @@ import ThemeProvider from '../components/ThemeProvider.astro';
       </div>
       <div class="entry-card">
         <div class="entry-num">02 · accounts</div>
-        <h3>Shared balance &amp; rails</h3>
-        <p>One Lightning + Stripe + x402 balance feeds every node in your fleet. Monthly budgets, usage caps, alerts when a node's stake falls under threshold.</p>
+        <h3>Shared balance</h3>
+        <p>One managed account balance feeds every node in your fleet. Monthly budgets, usage caps, and alerts hide rail-specific payment operations from the user.</p>
       </div>
       <div class="entry-card">
         <div class="entry-num">03 · agents</div>

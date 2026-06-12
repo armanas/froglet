@@ -79,7 +79,8 @@ OCI containers remain a supported packaging and deployment path.
 
 > [!NOTE]
 > Marketplace, ranking, incentive, and broker policy live above the protocol.
-> Payment rails are adapter-level surfaces for local or self-hosted nodes.
+> Payment rails are adapter-level surfaces for local or self-hosted operators,
+> not normal buyer onboarding.
 > Lightning, Stripe, and x402 are the launch adapters in this repo. Only
 > Lightning currently extends into the standardized signed
 > quote/deal/invoice-bundle flow; Stripe and x402 are local runtime settlement
@@ -87,7 +88,8 @@ OCI containers remain a supported packaging and deployment path.
 > uses `demo.add` as the canonical proof and exposes optional
 > `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize` follow-ups for
 > stronger evidence. Hosted paid rails must not be claimed live until Lightning
-> and Stripe have public payment transcripts.
+> and Stripe have public payment transcripts, and users should not be asked to
+> manage LND channels or payment secrets just to try Froglet.
 
 <details>
 <summary><strong>Discovery & Compute model</strong></summary>
@@ -391,8 +393,9 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 **In this repo now:**
 
 - Protocol and supporting specifications under `docs/` and `conformance/`
-- Reference Froglet node implementation shipped as separable `runtime`,
-  `provider`, `discovery`, and `operator` binaries
+- Reference Froglet node implementation: a single `froglet-node` binary
+  serving split provider and runtime planes (published as `froglet-provider`
+  and `froglet-runtime` container images)
 - OpenClaw source-plugin integration and shared NemoClaw plugin code, with
   host-specific verification status documented separately
 - MCP server for external agent hosts and automations
@@ -402,8 +405,8 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - Direct artifact publication for prebuilt Wasm and OCI-backed profiles
 - Reference execution profiles for Wasm, Python, container, and confidential
   execution paths
-- Local/self-hosted reference settlement support for Lightning, Stripe, and
-  x402
+- Local/self-hosted reference settlement support for operator-controlled
+  Lightning, Stripe, and x402
 - Clearnet launch transport plus optional self-hosted Tor and Nostr-facing
   adapter support
 - Tests, validation scripts, and release docs for the public repo surface

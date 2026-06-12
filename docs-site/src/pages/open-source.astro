@@ -1,6 +1,7 @@
 ---
 import '../styles/custom.css';
 import '../styles/index-page.css';
+import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
@@ -88,6 +89,7 @@ const SECTIONS = [
 <meta name="twitter:description" content="The Froglet protocol kernel, reference implementation, and integrations are open source." />
 <meta name="twitter:image" content="https://froglet.dev/og/open-source.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="openSource" />
 <ThemeProvider />
 </head>
 <body data-screen-label="Open source">

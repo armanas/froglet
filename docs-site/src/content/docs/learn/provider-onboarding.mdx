@@ -110,6 +110,11 @@ The publish path now accepts `settlement.method` ∈ `none` | `lightning` |
   PaymentIntent reference, not a cryptographic proof. See
   [Stripe](/learn/payment-stripe/) for the buyer/seller caveats.
 
+For public onboarding, start with `none`. Do not ask ordinary providers or
+buyers to run LND, manage channel liquidity, or enter payment secrets. Use paid
+settlement only when the operator has already verified the rail and can hide the
+backend complexity from the buyer.
+
 Price a service with `[price] sats = N` plus `currency = "sat"` (satoshis →
 Lightning) or `currency = "usd"` (US cents → Stripe). The hosted trial at
 `try.froglet.dev` stays free-only. **x402** is defined in the protocol and

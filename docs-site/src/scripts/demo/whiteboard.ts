@@ -66,6 +66,7 @@ export function initWhiteboard(
   let W = 0;
   let H = 0;
   let animationFrameId: number | null = null;
+  let resizeObserver: ResizeObserver | null = null;
   let destroyed = false;
 
   function logicalW(): number {
@@ -79,8 +80,8 @@ export function initWhiteboard(
   function resize(): void {
     const scene = canvas.parentElement;
     if (!scene) return;
-    const logicalWVal = Math.max(850, scene.clientWidth);
-    const logicalHVal = scene.clientHeight;
+    const logicalWVal = Math.max(1, Math.round(scene.clientWidth));
+    const logicalHVal = Math.max(1, Math.round(scene.clientHeight));
     canvas.style.width = `${logicalWVal}px`;
     canvas.style.height = `${logicalHVal}px`;
     W = logicalWVal * devicePixelRatio;
@@ -543,10 +544,15 @@ export function initWhiteboard(
   }
 
   resize();
+  if (typeof ResizeObserver !== 'undefined' && canvas.parentElement) {
+    resizeObserver = new ResizeObserver(() => resize());
+    resizeObserver.observe(canvas.parentElement);
+  }
   animationFrameId = requestAnimationFrame(loop);
 
   function destroy(): void {
     destroyed = true;
+    resizeObserver?.disconnect();
     if (animationFrameId !== null) {
       cancelAnimationFrame(animationFrameId);
       animationFrameId = null;

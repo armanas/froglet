@@ -70,7 +70,9 @@ action: plan_install
 ```
 
 If `payment_rail` is omitted, MCP should return `decision_required`. Recommend
-`none` for the first install unless the user explicitly asks for paid services.
+`none` for the first install, normal evaluation, and any buyer-facing demo. Paid
+rails are operator-only choices unless a managed Froglet surface is handling the
+payment backend for the user.
 After the profile is confirmed, call `get_install_guide` before executing host
 shell commands.
 
@@ -83,7 +85,8 @@ Current payment options:
 - `x402`
 
 Do not ask for live Stripe keys, LND credentials, or wallet/facilitator inputs
-until local health and the free demo have passed.
+until local health and the free demo have passed, and do not ask ordinary buyers
+for those inputs at all.
 
 ## Public Reachability
 

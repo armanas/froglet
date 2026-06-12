@@ -1,21 +1,30 @@
 ---
-title: Payment Rails
-description: Choose between Lightning, Stripe, and x402 for local or self-hosted Froglet nodes.
+title: Operator Payment Rails
+description: Operator-only payment adapters for local or self-hosted Froglet nodes.
 ---
 
 <div class="learn-hero compact">
   <div>
-    <div class="learn-pill">Local adapters</div>
-    <p class="learn-lead">Lightning, Stripe, and x402 are local/self-hosted launch adapters.</p>
-    <p class="learn-sublead">Each adapter has a setup helper, operator docs, and a verification probe. The hosted trial at <code>try.froglet.dev</code> is free-only: <code>demo.add</code> is the canonical proof. Stripe paid-staging uses a separate host and has its own sandbox smoke evidence.</p>
+    <div class="learn-pill">Operator-only adapters</div>
+    <p class="learn-lead">End users should not configure Lightning nodes, Stripe secrets, or x402 wallets just to use Froglet.</p>
+    <p class="learn-sublead">The hosted trial at <code>try.froglet.dev</code> is free-only: <code>demo.add</code> is the canonical proof. These adapters are for local/self-hosted operators, paid-staging, and future managed infrastructure where Froglet hides the payment backend from ordinary buyers.</p>
   </div>
 </div>
 
-## MCP-first payment setup
+## Customer vs operator setup
 
-The no-clone bootstrap starts with `payment_rail=none`. After the free demo
-works, ask the Froglet MCP tool to plan the payment rail. It should return a
-decision checkpoint before any real secrets are entered.
+Customer path:
+
+- Hosted trial: no payment account, no wallet, no node credentials.
+- Future hosted paid path: card checkout or a hosted invoice surface; the buyer
+  does not run LND or manage channel liquidity.
+- Self-hosted free path: `payment_rail=none`.
+
+Operator path:
+
+The no-clone bootstrap starts with `payment_rail=none`. Only after the free demo
+works should an operator ask the Froglet MCP tool to plan a payment rail. It
+must return a decision checkpoint before any real secrets are entered.
 
 Use these rail names in MCP:
 
@@ -26,8 +35,10 @@ Use these rail names in MCP:
 - `x402`
 
 `stripe-live` requires a fresh human approval and a tiny live payment/refund
-proof before public copy can claim live fiat. `lightning-lnd-rest` requires the
-user's LND REST URL, macaroon, TLS cert, and channel liquidity.
+proof before public copy can claim live fiat. `lightning-lnd-rest` is advanced
+operator infrastructure: it requires the operator's LND REST URL, macaroon, TLS
+cert, backups, and channel liquidity. Do not present it as normal customer
+onboarding.
 
 ## Source helper
 
@@ -50,9 +61,9 @@ Each command:
 
 | Rail | Best first use | Verification path |
 |------|----------------|-------------------|
-| Lightning | local paid-flow development and Bitcoin-native settlement | mock mode locally, optional `lnd_rest` probe |
-| Stripe | card-backed test-mode on a local or self-hosted node | `GET /v1/account` with a test secret key and `livemode=false` |
-| x402 | USDC-style machine-to-machine flow | local Base-address/network validation plus facilitator `/verify` reachability |
+| Lightning | operator-controlled Bitcoin settlement, not ordinary buyer onboarding | mock mode locally, optional `lnd_rest` probe |
+| Stripe | operator card-flow development and paid-staging proof | `GET /v1/account` with a test secret key and `livemode=false` |
+| x402 | operator-controlled USDC-style machine-to-machine endpoints | local Base-address/network validation plus facilitator `/verify` reachability |
 
 The current public Stripe and x402 adapters reuse the configured numeric
 service price directly on the local runtime path. They do not perform FX

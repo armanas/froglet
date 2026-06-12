@@ -94,21 +94,25 @@ If you only want the hosted no-install proof, do not start a local node. Use
 
 ## Payment Decisions
 
-The bootstrap starts with `payment_rail=none`. Paid services are explicit:
+The bootstrap starts with `payment_rail=none`. That is the normal user path.
+Ordinary buyers should not configure LND, channel liquidity, Stripe API keys, or
+x402 wallets to try Froglet. Paid rails are explicit operator choices:
 
 | Rail | When to choose it | Human checkpoint |
 |------|-------------------|------------------|
 | `none` | First local demo and free services | none |
-| `lightning-lnd-rest` | Bitcoin Lightning payments. Reference rail, proven on regtest; mainnet pending channel liquidity | LND REST URL, macaroon, TLS cert, funded channel liquidity |
+| `lightning-lnd-rest` | Operator-controlled Bitcoin Lightning settlement. Reference rail, proven on regtest; mainnet pending channel liquidity | LND REST URL, macaroon, TLS cert, backups, funded channel liquidity |
 | `stripe-test` | Card-flow development on Stripe's agentic Shared Payment Token model (US-only; froglet↔froglet is test-only) | Stripe test secret key and webhook secret |
 | `stripe-live` | Production Stripe via the agentic SPT model — buyers are external ACP agents, not froglet nodes (US-only) | fresh explicit approval, live secret, tiny live payment/refund proof |
 | `x402` | Daemon-only USDC-style rail for self-hosted compute endpoints. **Not** a marketplace publish-path option | wallet address, facilitator, verify/settle proof |
 
 If an agent calls `plan_install` or `get_install_guide` without a rail, MCP
-returns `decision_required`. Pick `none` for the first demo. Do not enter real
-payment secrets until the local free path is healthy. Published marketplace
-services settle with `none`, `lightning`, or `stripe`; x402 stays at the daemon
-level. No real money has moved yet anywhere (test-mode / regtest only).
+returns `decision_required`. Pick `none` for the first demo and for normal
+customer evaluation. Do not enter real payment secrets until the local free path
+is healthy and the operator has deliberately chosen a paid rail. Published
+marketplace services settle with `none`, `lightning`, or `stripe`; x402 stays at
+the daemon level. No real money has moved yet anywhere (test-mode / regtest
+only).
 
 ## Public Registration Choices
 
@@ -187,11 +191,11 @@ Repo-local helpers remain available:
 ```bash
 ./scripts/setup-agent.sh --target claude-code
 ./scripts/setup-agent.sh --target codex
-./scripts/setup-payment.sh lightning
 docker compose up --build -d
 ```
 
-That is contributor mode, not the normal user path.
+That is contributor mode, not the normal user path. Payment helpers are
+operator-only and should be run separately after the free path is healthy.
 
 ## Fresh-Host Proof
 

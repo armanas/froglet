@@ -54,6 +54,19 @@ function topServiceKind(serviceKinds: string[]): string {
 	return serviceKinds[0] || 'n/a';
 }
 
+function providerEvidence(provider: MarketplaceProviderSummary): string {
+	return [
+		`provider_id: ${provider.providerId}`,
+		`descriptor_hash: ${provider.descriptorHash}`,
+		`endpoint: ${provider.endpoint || 'n/a'}`,
+		`services: ${provider.serviceKinds.join(', ') || 'n/a'}`,
+		`ok: ${provider.successCount}`,
+		`fail: ${provider.failureCount}`,
+		`receipts: ${provider.successCount + provider.failureCount}`,
+		`settled_msat: ${provider.totalSettledMsat}`,
+	].join('\n');
+}
+
 function serviceKindSummary(serviceKinds: string[]): string {
 	if (serviceKinds.length === 0) return 'NONE';
 	const groups = Array.from(new Set(serviceKinds.map((kind) => {
@@ -70,6 +83,7 @@ function renderProviderRow(provider: MarketplaceProviderSummary): HTMLTableRowEl
 	row.className = 'row';
 	row.dataset.marketplaceSearchRow = '';
 	row.dataset.marketplaceKind = 'provider';
+	row.dataset.providerSummary = providerEvidence(provider);
 	row.dataset.searchText = [
 		provider.providerId,
 		compactId(provider.providerId),
@@ -237,6 +251,89 @@ function initMarketplaceSearch(root: HTMLElement): () => void {
 	return apply;
 }
 
+function fieldText(root: ParentNode, field: string): string {
+	const element = root.querySelector(`[data-marketplace-field="${field}"]`);
+	return element?.textContent?.replace(/\s+/g, ' ').trim() || 'unavailable';
+}
+
+function marketplaceEvidence(root: HTMLElement): string {
+	return [
+		'Froglet marketplace evidence',
+		`checked_at: ${fieldText(root, 'checkedAt')}`,
+		`providers: ${fieldText(root, 'froglets')}`,
+		`offers: ${fieldText(root, 'offers')}`,
+		`free_offers: ${fieldText(root, 'freeOffers')}`,
+		`priced_offers: ${fieldText(root, 'paidOffers')}`,
+		`receipts: ${fieldText(root, 'receipts')}`,
+		`success_rate: ${fieldText(root, 'successRate')}`,
+		`indexed_receipt_value: ${fieldText(root, 'settledSats')}`,
+		`detail: ${fieldText(root, 'detail')}`,
+		'sources:',
+		'- https://marketplace.froglet.dev/v1/providers?limit=12',
+		'- https://marketplace.froglet.dev/v1/offers?limit=24',
+		'not_proved: hosted paid rails, mainnet money movement, or production marketplace depth beyond observed public data',
+	].join('\n');
+}
+
+function fallbackCopy(text: string): boolean {
+	const textarea = document.createElement('textarea');
+	textarea.value = text;
+	textarea.setAttribute('readonly', '');
+	textarea.style.position = 'fixed';
+	textarea.style.left = '-9999px';
+	textarea.style.top = '0';
+	document.body.appendChild(textarea);
+	textarea.select();
+	const copied = document.execCommand('copy');
+	textarea.remove();
+	return copied;
+}
+
+async function copyText(text: string): Promise<void> {
+	try {
+		await navigator.clipboard.writeText(text);
+		return;
+	} catch {}
+
+	if (!fallbackCopy(text)) throw new Error('copy failed');
+}
+
+function markCopyButton(button: HTMLButtonElement, label: string): void {
+	const original = button.dataset.copyLabel || button.textContent || 'Copy';
+	button.dataset.copyLabel = original;
+	button.textContent = label;
+	window.setTimeout(() => {
+		button.textContent = original;
+	}, 1600);
+}
+
+function initMarketplaceEvidenceActions(root: HTMLElement): void {
+	root.querySelector<HTMLButtonElement>('[data-marketplace-copy-summary]')?.addEventListener('click', async (event) => {
+		const button = event.currentTarget;
+		if (!(button instanceof HTMLButtonElement)) return;
+		try {
+			await copyText(marketplaceEvidence(root));
+			markCopyButton(button, 'Copied');
+		} catch {
+			markCopyButton(button, 'Copy failed');
+		}
+	});
+
+	root.querySelector<HTMLButtonElement>('[data-marketplace-copy-provider]')?.addEventListener('click', async (event) => {
+		const button = event.currentTarget;
+		if (!(button instanceof HTMLButtonElement)) return;
+		const row = root.querySelector<HTMLElement>('[data-provider-summary]:not([hidden])')
+			?? root.querySelector<HTMLElement>('[data-provider-summary]');
+		const summary = row?.dataset.providerSummary || 'No provider row available in the current marketplace snapshot.';
+		try {
+			await copyText(`Froglet top provider evidence\n${summary}`);
+			markCopyButton(button, 'Copied');
+		} catch {
+			markCopyButton(button, 'Copy failed');
+		}
+	});
+}
+
 function renderOfferBook(root: ParentNode, offers: MarketplaceOfferSummary[]): void {
 	const body = root.querySelector('[data-marketplace-offer-book]');
 	if (!body) return;
@@ -284,6 +381,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 	setText(root, '[data-marketplace-field="successCount"]', successCount);
 	setText(root, '[data-marketplace-field="failureCount"]', failureCount);
 	setText(root, '[data-marketplace-field="settledMsat"]', `${totalSettledMsat} MSAT`);
+	setText(root, '[data-marketplace-field="settledSats"]', `${Math.round(totalSettledMsat / 1000)}sats`);
 	setText(root, '[data-marketplace-field="dealFeedStatus"]', snapshot.dealFeed.status.toUpperCase());
 	setText(root, '[data-marketplace-field="dealFeedDetail"]', snapshot.dealFeed.detail);
 	setText(root, '[data-marketplace-field="dealFeedCount"]', snapshot.dealFeed.deals.length);
@@ -306,6 +404,7 @@ export function initMarketplaceLive(): void {
 	const root = document.querySelector<HTMLElement>('[data-marketplace-live]');
 	if (!root) return;
 	const applySearch = initMarketplaceSearch(root);
+	initMarketplaceEvidenceActions(root);
 
 	const refresh = async () => {
 		try {

@@ -3,11 +3,42 @@ import '../styles/custom.css';
 import '../styles/index-page.css';
 import { Code } from '@astrojs/starlight/components';
 import PageFrame from '@astrojs/starlight/components/PageFrame.astro';
+import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 
 Astro.locals.starlightRoute = { hasSidebar: false };
+
+const homepagePrompt = 'Open https://try.froglet.dev/llms.txt. Run demo.add and one witness/hash follow-up. Report statuses, result, receipt/feed proof, mismatches, and what this proves or does not prove for my projects/data. If unreachable, say so.';
+
+const promptVariants = [
+  {
+    k: 'fast proof',
+    title: 'Hosted proof',
+    prompt: 'Open https://try.froglet.dev/llms.txt and run task hosted-proof. Report the expected evidence fields, what was proved, what was not proved, and one next experiment for my current project.',
+  },
+  {
+    k: 'strict audit',
+    title: 'Evidence audit',
+    prompt: 'Open https://try.froglet.dev/llms.txt and run task hosted-proof. Return the Expected report shape exactly. Do not summarize Froglet until HTTP statuses, service IDs, deal status, result, receipt presence, feed shape, and mismatches are reported.',
+  },
+  {
+    k: 'follow-up',
+    title: 'Proof + witness',
+    prompt: 'Open https://try.froglet.dev/llms.txt and run task hosted-proof-with-witness. Use only a URL, hash, or content hash I own or control. Report demo.add first, then the witness/hash/notarize follow-up evidence.',
+  },
+  {
+    k: 'local path',
+    title: 'Install proposal',
+    prompt: 'Open https://try.froglet.dev/llms.txt and run task local-install-proposal. Finish the hosted evidence report first, then ask for the local install profile before suggesting commands.',
+  },
+  {
+    k: 'feed',
+    title: 'Receipt check',
+    prompt: 'Open https://try.froglet.dev/llms.txt, run hosted-proof, then run receipt-feed-check. Match feed evidence by signed deal_hash or quote_hash, not by runtime deal_id.',
+  },
+];
 ---
 <html lang="en">
 <head>
@@ -32,6 +63,7 @@ Astro.locals.starlightRoute = { hasSidebar: false };
 <meta name="twitter:description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
 <meta name="twitter:image" content="https://froglet.dev/og/default.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="home" />
 <ThemeProvider />
 </head>
 <body data-screen-label="Marketing · Home">
@@ -58,13 +90,22 @@ Astro.locals.starlightRoute = { hasSidebar: false };
         <span class="lbl">Prompt for your AI agent</span>
         <div class="hero-prompt">
           <Code
-            code={`Open https://try.froglet.dev/llms.txt. Run demo.add and one witness/hash follow-up. Report statuses, result, receipt/feed proof, mismatches, and what this proves or does not prove for my projects/data. If unreachable, say so.`}
+            code={homepagePrompt}
             lang="md"
           />
         </div>
         <p class="hero-agent-hint">
           Paste into Claude Code, Codex, OpenClaw, or any agentic client. The agent should come back with live evidence, not a product summary.
         </p>
+        <div class="prompt-variants" aria-label="Agent prompt variants">
+          {promptVariants.map((variant) => (
+            <div class="prompt-card">
+              <span class="prompt-k">{variant.k}</span>
+              <strong>{variant.title}</strong>
+              <button type="button" class="prompt-copy" data-prompt-copy data-prompt={variant.prompt}>Copy</button>
+            </div>
+          ))}
+        </div>
       </aside>
     </section>
 
@@ -113,7 +154,7 @@ Astro.locals.starlightRoute = { hasSidebar: false };
         <div class="entry-card" id="self-host-card">
           <div class="entry-num">02 · local</div>
           <h3>Run locally</h3>
-          <p>Pick an agent and the first payment decision. The snippet stays no-clone: it installs the signed node, starts published images, writes MCP config, and leaves public registration or paid rails for the agent after health checks pass.</p>
+          <p>Pick an agent and start free. The snippet stays no-clone: it installs the signed node, starts published images, writes MCP config, and leaves public registration or operator-only paid rails until after health checks pass.</p>
 
           <div class="config-group">
             <span class="config-label">Install</span>
@@ -135,14 +176,14 @@ Astro.locals.starlightRoute = { hasSidebar: false };
           </div>
 
           <div class="config-group">
-            <span class="config-label">Payment</span>
+            <span class="config-label">Operator Payment</span>
             <div class="config-options" data-group="payment">
               <button class="config-btn is-active" type="button" data-value="none" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>None</button>
               <button class="config-btn" type="button" data-value="lightning-mock" aria-pressed="false"><span class="brand-icon" style="color: var(--bolt); --logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning mock</button>
               <button class="config-btn" type="button" data-value="stripe-test" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe test</button>
               <button class="config-btn" type="button" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402 <small>daemon-only</small></button>
             </div>
-            <p class="config-hint">This sets up the local node's own payment backend. Published marketplace services settle with Lightning (regtest-proven) or Stripe (test-mode agentic). x402 is a daemon-level rail for self-hosted compute endpoints, not the publish path.</p>
+            <p class="config-hint">Normal users should keep this at None. The other choices configure the local node's own payment backend for an operator after the free path is healthy.</p>
           </div>
 
           <div class="config-group" style="display: none;" id="config-payment-input-container">
@@ -266,6 +307,44 @@ Astro.locals.starlightRoute = { hasSidebar: false };
   if (canvas && slider && display && result) {
     initTrustThreshold(canvas, slider, display, result);
   }
+
+  async function copyPrompt(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {}
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) throw new Error('copy command failed');
+  }
+
+  document.querySelectorAll<HTMLButtonElement>('[data-prompt-copy]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const prompt = button.dataset.prompt;
+      if (!prompt) return;
+      try {
+        await copyPrompt(prompt);
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = 'Copy';
+        }, 1600);
+      } catch {
+        button.textContent = 'Copy failed';
+        window.setTimeout(() => {
+          button.textContent = 'Copy';
+        }, 1600);
+      }
+    });
+  });
 </script>
 </body>
 </html>

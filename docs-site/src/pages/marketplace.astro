@@ -1,6 +1,7 @@
 ---
 import '../styles/custom.css';
 import '../styles/index-page.css';
+import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 import { compactId, formatSnapshotTime, getMarketplaceSnapshot } from '../data/live-snapshot';
@@ -25,6 +26,19 @@ function topServiceKind(kinds: string[] | undefined): string {
 function avatarInitials(id: string): string {
   const compact = compactId(id);
   return compact.slice(0, 2);
+}
+
+function providerEvidence(p: MarketplaceSnapshot['providers'][number]): string {
+  return [
+    `provider_id: ${p.providerId}`,
+    `descriptor_hash: ${p.descriptorHash}`,
+    `endpoint: ${p.endpoint || 'n/a'}`,
+    `services: ${p.serviceKinds.join(', ') || 'n/a'}`,
+    `ok: ${p.successCount}`,
+    `fail: ${p.failureCount}`,
+    `receipts: ${p.successCount + p.failureCount}`,
+    `settled_msat: ${p.totalSettledMsat}`,
+  ].join('\n');
 }
 
 function dashboardStats(snapshot: MarketplaceSnapshot) {
@@ -114,6 +128,7 @@ function formatFeedTime(iso: string | undefined): string {
 <meta name="twitter:description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
 <meta name="twitter:image" content="https://froglet.dev/og/marketplace.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="marketplace" />
 <ThemeProvider />
 </head>
 <body data-screen-label="Marketplace · Index">
@@ -126,7 +141,10 @@ function formatFeedTime(iso: string | undefined): string {
 
 <main class="mkt-shell" data-marketplace-live data-status={marketplace.status}>
   <div class="mkt-title">
-    <h1>Marketplace</h1>
+    <div class="mkt-title-main">
+      <h1>Marketplace</h1>
+      <button type="button" class="mkt-action" data-marketplace-copy-summary>Copy evidence</button>
+    </div>
     <div class="search" role="search" aria-label="Marketplace search" tabindex="0" data-marketplace-search-form>
       <label class="sr-only" for="marketplace-search">Search providers, services, or descriptors</label>
       <span class="search-icon" aria-hidden="true">🔍</span>
@@ -164,7 +182,7 @@ function formatFeedTime(iso: string | undefined): string {
   </div>
 
   <div class="mkt-grid">
-    <div class="panel">
+    <div class="panel panel--table">
       <div class="panel-head">
         <h3>Top froglets</h3>
         <div class="filt" aria-hidden="true">
@@ -173,6 +191,7 @@ function formatFeedTime(iso: string | undefined): string {
           <span>7d</span>
           <span>30d</span>
         </div>
+        <button type="button" class="panel-action" data-marketplace-copy-provider>Copy top provider</button>
       </div>
       <table class="providers">
         <thead><tr>
@@ -186,7 +205,7 @@ function formatFeedTime(iso: string | undefined): string {
         <tbody data-marketplace-provider-table>
           {topProviders.length > 0 ? (
             topProviders.map((p) => (
-              <tr class="row" data-marketplace-search-row data-marketplace-kind="provider" data-search-text={`${p.providerId} ${compactId(p.providerId)} ${p.descriptorHash} ${p.endpoint ?? ''} ${p.serviceKinds.join(' ')}`}>
+              <tr class="row" data-marketplace-search-row data-marketplace-kind="provider" data-provider-summary={providerEvidence(p)} data-search-text={`${p.providerId} ${compactId(p.providerId)} ${p.descriptorHash} ${p.endpoint ?? ''} ${p.serviceKinds.join(' ')}`}>
                 <td class="name">
                   <span class="av">{avatarInitials(p.providerId)}</span>
                   {compactId(p.providerId)}
@@ -267,9 +286,10 @@ function formatFeedTime(iso: string | undefined): string {
   <div class="mkt-footer">
     <span data-marketplace-field="detail">{marketplace.detail}</span>
     <nav aria-label="Marketplace data">
-      <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
-      <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>
-      <a href="/marketplace/overview/">Marketplace docs</a>
+	      <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
+	      <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>
+	      <a href="/verify-receipt/">Verify receipt</a>
+	      <a href="/marketplace/overview/">Marketplace docs</a>
     </nav>
   </div>
 </main>

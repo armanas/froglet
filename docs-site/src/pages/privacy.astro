@@ -1,6 +1,7 @@
 ---
 import '../styles/custom.css';
 import '../styles/index-page.css';
+import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
@@ -20,14 +21,15 @@ const UPDATED = 'April 29, 2026';
 <meta property="og:title" content="Privacy · Froglet" />
 <meta property="og:description" content="Froglet privacy posture for the public website, hosted proof trial, and local/self-hosted usage." />
 <meta property="og:url" content="https://froglet.dev/privacy/" />
-<meta property="og:image" content="https://froglet.dev/og/home.png" />
+<meta property="og:image" content="https://froglet.dev/og/default.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Privacy · Froglet" />
 <meta name="twitter:description" content="Froglet privacy posture for the public website, hosted proof trial, and local/self-hosted usage." />
-<meta name="twitter:image" content="https://froglet.dev/og/home.png" />
+<meta name="twitter:image" content="https://froglet.dev/og/default.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="privacy" />
 <ThemeProvider />
 </head>
 <body data-screen-label="Privacy">

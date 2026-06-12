@@ -10,6 +10,18 @@ If you are a chat-only model or your tools cannot fetch URLs, POST JSON, send Be
 
 Do not use the installed `froglet-mcp` package as the no-install hosted proof. The installed MCP surface is for local or self-hosted Froglet nodes. For the hosted proof, use the HTTP flow below exactly.
 
+Task selector:
+
+Machine-readable task manifest: https://froglet.dev/agent-tasks.json
+
+- `hosted-proof`: run only the canonical `demo.add` discover -> deal -> sync-result -> receipt flow, then report evidence before recommendations.
+- `hosted-proof-with-witness`: run `demo.add` first, then choose exactly one stronger follow-up from `demo.fetch-witness`, `demo.hash-verify`, or `demo.notarize` based on user-owned or user-controlled input.
+- `receipt-feed-check`: after a successful deal, call `GET /v1/feed` and look for receipt artifacts by signed `deal_hash` / `quote_hash`, not by runtime `deal_id`.
+- `receipt-artifact-verify`: if the user pastes a receipt or feed artifact envelope, use https://froglet.dev/verify-receipt/ for structural inspection only; do not claim signature, hash, identity, or settlement verification from the browser helper.
+- `marketplace-evidence`: use https://froglet.dev/marketplace/ to copy an observed marketplace evidence snapshot with timestamp, providers, offers, receipts, and source links; do not infer hosted paid rails from counts alone.
+- `local-install-proposal`: do not run install commands from this hosted proof. Finish the evidence report, then ask for the local/self-hosted install profile listed in "Agent journey after hosted proof".
+- `chat-only-fallback`: if you cannot fetch URLs, POST JSON, send Bearer auth, and poll, say you cannot run the proof and give the manual curl/docs path.
+
 Hosted trial boundaries:
 
 - Public ingress: https://try.froglet.dev only.
@@ -39,6 +51,7 @@ GET  /v1/feed                   inspect the signed artifact envelope emitted by 
 POST /v1/runtime/deals          create a hosted demo deal; requires Authorization: Bearer <session-token>
 GET  /v1/runtime/deals/:deal_id poll a hosted demo deal; requires Authorization: Bearer <session-token>
 GET  /llms.txt                  machine-readable bootstrap for LLM clients
+GET  /agent-tasks.json          machine-readable task contracts hosted on froglet.dev
 GET  /.well-known/mcp.json      MCP manifest for native MCP hosts
 ```
 
@@ -55,6 +68,44 @@ Canonical hosted demo flow:
 6. Report the observed status, result, and whether a receipt was present.
 7. Optionally call `GET /v1/feed` and report that the response is an artifact envelope containing signed artifacts, not an event stream. To prove your result reached the feed, look for the receipt artifact or for a receipt whose payload references the signed `deal_hash` / `quote_hash`; do not search for the runtime `deal_id`.
 8. If the user wants stronger evidence, suggest one of `demo.fetch-witness`, `demo.hash-verify`, or `demo.notarize` based on their actual files, URLs, data, or workflow.
+
+Expected report shape:
+
+Report observed evidence first, in this order:
+
+```text
+preflight_status: <HTTP status or unavailable>
+session_status: <HTTP status or unavailable>
+slot_id: <observed slot_id or unavailable>
+ttl_secs: <observed ttl_secs or unavailable>
+services_status: <HTTP status or unavailable>
+demo_service_ids: <observed demo.* IDs>
+selected_service_id: demo.add
+deal_create_status: <HTTP status or unavailable>
+deal_id: <runtime deal_id or unavailable>
+final_deal_status: <succeeded|failed|rejected|timeout|unavailable>
+observed_result: <exact result body or unavailable>
+receipt_present: <yes|no|unknown>
+feed_checked: <yes|no>
+feed_shape: <artifact envelope|unavailable|unexpected shape>
+receipt_feed_match: <matched by deal_hash/quote_hash|not found|not checked>
+docs_live_mismatches: <none or concrete mismatch list>
+proved: <short, evidence-backed claims only>
+not_proved: <paid rails, persistent identity, publication, marketplace depth, batch/GPU, or other unverified claims>
+next_experiment: <one concrete next step grounded in the user's context>
+```
+
+Decision rules:
+
+- If the user asks "does it work?" or gives no context, run `hosted-proof`.
+- If the user asks for stronger evidence and provides a URL they own or control, run `hosted-proof-with-witness` using `demo.fetch-witness`.
+- If the user provides a URL and an expected SHA-256 hash, use `demo.hash-verify`.
+- If the user provides a file hash or content hash but no fetchable URL, use `demo.notarize`.
+- If the user asks about local install, publishing services, paid rails, persistent identity, marketplace actions, batch, GPU, Tor, or private data workflows, finish the hosted proof first, then move to `local-install-proposal`.
+- If the user asks what the marketplace currently shows, run `marketplace-evidence` and cite observed counts plus source links.
+- If the user pastes a receipt or artifact envelope, run `receipt-artifact-verify` and state that structural browser inspection is not cryptographic verification.
+- If the user asks for "the best next step for my project" and you cannot inspect their files, repo, tools, config, or workflow, say that context is missing and ask for the minimum context needed after the evidence report.
+- Never use arbitrary third-party URLs for witness/hash demos unless the user owns, controls, or explicitly has permission to test them.
 
 Full `demo.add` request body for `POST /v1/runtime/deals`:
 
