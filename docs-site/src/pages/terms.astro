@@ -1,0 +1,176 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import AgentMeta from '../components/AgentMeta.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+
+const UPDATED = 'June 12, 2026';
+---
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms &amp; Acceptable Use · Froglet</title>
+<meta name="description" content="Terms of service, acceptable use policy, and takedown process for the hosted Froglet services." />
+<link rel="canonical" href="https://froglet.dev/terms/" />
+<meta name="color-scheme" content="dark" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Froglet" />
+<meta property="og:title" content="Terms &amp; Acceptable Use · Froglet" />
+<meta property="og:description" content="Terms of service, acceptable use policy, and takedown process for the hosted Froglet services." />
+<meta property="og:url" content="https://froglet.dev/terms/" />
+<meta property="og:image" content="https://froglet.dev/og/default.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Terms &amp; Acceptable Use · Froglet" />
+<meta name="twitter:description" content="Terms of service, acceptable use policy, and takedown process for the hosted Froglet services." />
+<meta name="twitter:image" content="https://froglet.dev/og/default.png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<AgentMeta route="terms" />
+<ThemeProvider />
+</head>
+<body data-screen-label="Terms">
+<SiteHeader currentPath={Astro.url.pathname} />
+<main class="froglet-home-main">
+  <section class="hero">
+    <span class="eyebrow">Terms &amp; Acceptable Use</span>
+    <h1>Plain rules for the <em>hosted services.</em></h1>
+    <p class="lede">
+      The Froglet protocol and reference node are Apache-2.0 open source — run
+      your own node and these terms do not apply to it. This page governs the
+      first-party hosted services only: <strong>froglet.dev</strong>,
+      <strong>try.froglet.dev</strong>, <strong>ai.froglet.dev</strong>,
+      <strong>marketplace.froglet.dev</strong>, and
+      <strong>arbiter.froglet.dev</strong>. Last updated: {UPDATED}.
+    </p>
+  </section>
+
+  <section class="block privacy-block">
+    <span class="eyebrow">Terms of service</span>
+    <h2>Alpha software, free tier, no custody.</h2>
+    <div class="entry-grid privacy-grid">
+      <article class="entry-card">
+        <div class="entry-num">01 · what you get</div>
+        <p>
+          The hosted services provide a public demo node, anonymous trial
+          sessions, marketplace discovery (indexing of provider feeds), and a
+          complaint/arbiter endpoint. They are provided free of charge, in
+          alpha, on an as-is and as-available basis, with no uptime commitment
+          and no warranty of any kind. We may modify, suspend, or discontinue
+          any hosted surface at any time.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">02 · payments &amp; custody</div>
+        <p>
+          The hosted services never take custody of your funds and never act
+          as a money transmitter. Settlement on Froglet runs directly between
+          requester and provider over their own payment infrastructure
+          (Lightning nodes, Stripe accounts). The hosted trial is free-only.
+          Payments between you and a provider are your transaction with that
+          provider — Lightning payments are irreversible, base fees are
+          non-refundable on execution failure, and the marketplace operator is
+          not a party to the deal.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">03 · marketplace listings</div>
+        <p>
+          The marketplace indexes signed artifacts published by third-party
+          providers. Listing is not endorsement: we do not verify provider
+          quality, legality of offered services in your jurisdiction, or
+          execution correctness. Use the trust signals (receipts, attestation)
+          and your own judgement — see
+          <a href="/learn/economics/">Trust &amp; Economics</a> for exactly
+          what is and is not guaranteed.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">04 · liability</div>
+        <p>
+          To the maximum extent permitted by law, the operator's total
+          liability arising from the hosted services is limited to the amount
+          you paid to use them — which is zero. You are responsible for losses
+          arising from deals you (or your agents) enter with third-party
+          providers. Configure your node's spend caps before giving an agent a
+          wallet.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="block privacy-block">
+    <span class="eyebrow">Acceptable use</span>
+    <h2>Don't make us write a longer policy.</h2>
+    <p class="section-lede">
+      Applies to all hosted surfaces, including services you publish to the
+      public marketplace. Violations lead to suspension of listings, session
+      revocation, or blocking — via the same operator-adjudicated enforcement
+      documented in
+      <a href="https://github.com/armanas/froglet/blob/main/docs/ARBITER.md">ARBITER.md</a>.
+    </p>
+    <div class="entry-grid privacy-grid">
+      <article class="entry-card">
+        <div class="entry-num">do not</div>
+        <p>
+          Use the hosted services to: break the law or facilitate breaking it
+          (including sanctions violations, malware distribution, CSAM, or
+          fraud); attack, probe, or degrade the services or other users
+          (volumetric abuse, quota evasion, credential stuffing); publish
+          listings that are deceptive about what a service does, its price, or
+          who operates it; impersonate other providers or operators; or
+          process data you have no right to process.
+        </p>
+      </article>
+      <article class="entry-card">
+        <div class="entry-num">security research</div>
+        <p>
+          Good-faith security research against the hosted services is welcome
+          within the scope of our
+          <a href="https://github.com/armanas/froglet/blob/main/SECURITY.md">security policy</a> —
+          report findings to security@armanas.dev rather than exploiting them.
+          Volumetric denial-of-service testing is out of scope.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="block privacy-block">
+    <span class="eyebrow">Takedown &amp; disputes</span>
+    <h2>One complaint endpoint, an auditable verdict.</h2>
+    <p class="section-lede">
+      To report a marketplace listing or provider — abuse, deception, rights
+      infringement, or a deal gone wrong — file a complaint with evidence
+      through the public arbiter:
+      <code>POST https://arbiter.froglet.dev/v1/complaints</code> (or the
+      <code>marketplace_file_complaint</code> MCP action). Complaints and
+      verdicts are recorded; upheld verdicts can suspend a provider from all
+      marketplace listings, and enforcement records are retained for audit.
+      The MVP arbiter is operator-adjudicated — decisions are made by the
+      maintainer, documented, and not (yet) stake-backed or decentralized.
+      Suspension affects hosted listings only; it cannot reverse settled
+      payments or invalidate signed artifacts. Rights holders and authorities
+      can also reach the operator directly via
+      <a href="https://armanas.dev">armanas.dev</a> or
+      security@armanas.dev.
+    </p>
+  </section>
+
+  <section class="block privacy-block">
+    <span class="eyebrow">Housekeeping</span>
+    <h2>Changes and contact.</h2>
+    <p class="section-lede">
+      These terms may change as the project matures; material changes are
+      noted in the repository history and the date above. Continued use of the
+      hosted services after a change is acceptance. Privacy practices are
+      documented separately on the <a href="/privacy/">privacy page</a>.
+      Operator contact: <a href="https://armanas.dev">armanas.dev</a>.
+    </p>
+  </section>
+</main>
+<SiteFooter />
+</body>
+</html>

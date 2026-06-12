@@ -80,4 +80,14 @@ export const routeAgentMetadata = {
 		canonical_sources: ['/privacy/', '/llms.txt', '/agent-tasks.json'],
 		preferred_next_action: 'Use this page to bound privacy claims, then run hosted-proof or local checks for runtime evidence.',
 	},
+	terms: {
+		route: '/terms/',
+		page_role: 'usage_policy',
+		agent_purpose: 'State the terms of service, acceptable use policy, and takedown process for the first-party hosted Froglet services.',
+		primary_task: 'chat-only-fallback',
+		relevant_tasks: ['chat-only-fallback', 'hosted-proof'],
+		evidence_boundary: 'Terms apply to the hosted services only; self-hosted nodes are governed by the Apache-2.0 license, not this page.',
+		canonical_sources: ['/terms/', '/privacy/', '/llms.txt'],
+		preferred_next_action: 'Use this page to bound usage and takedown claims; file marketplace complaints via the arbiter complaint endpoint.',
+	},
 } as const satisfies Record<string, AgentRouteMetadata>;

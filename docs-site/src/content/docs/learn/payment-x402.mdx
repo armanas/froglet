@@ -3,11 +3,15 @@ title: x402
 description: Operator setup and verification for the local/self-hosted x402 adapter.
 ---
 
-:::note
-x402 is implemented at the **daemon level** for self-hosted operators on the
-generic compute endpoints. It is **not** exposed on the marketplace publish
-path (`marketplace_publish` / `froglet-node publish`). To publish a paid
-marketplace service, use [Lightning](/learn/payment-lightning/) or
+:::caution[Experimental surface]
+x402 is **experimental**: implemented at the **daemon level** for self-hosted
+operators on the generic compute endpoints, **not** covered by the kernel
+conformance vectors, and **not** exposed on the marketplace publish path
+(`marketplace_publish` / `froglet-node publish`). Per the
+[versioning policy](https://github.com/armanas/froglet/blob/main/docs/VERSIONING.md),
+experimental surfaces may change or be removed without a major version — do
+not build on it for anything that must outlive a release cycle. To publish a
+paid marketplace service, use [Lightning](/learn/payment-lightning/) or
 [Stripe](/learn/payment-stripe/). `x402_usdc` is a lower-level payment *kind*,
 not a kernel receipt settlement method.
 :::

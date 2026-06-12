@@ -392,7 +392,11 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 **In this repo now:**
 
-- Protocol and supporting specifications under `docs/` and `conformance/`
+- Protocol and supporting specifications under `docs/` and `conformance/` —
+  stability guarantees in [docs/VERSIONING.md](docs/VERSIONING.md); to build a
+  second implementation in another language, start from the canonical test
+  vectors in [`conformance/kernel_v1.json`](conformance/kernel_v1.json) (guide:
+  [froglet.dev/spec/conformance](https://froglet.dev/spec/conformance/))
 - Reference Froglet node implementation: a single `froglet-node` binary
   serving split provider and runtime planes (published as `froglet-provider`
   and `froglet-runtime` container images)

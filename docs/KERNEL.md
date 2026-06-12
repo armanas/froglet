@@ -1,6 +1,6 @@
 # Froglet v1 Kernel Specification
 
-Status: normative kernel specification (current authoritative contract material — temporary, may later be removed or folded elsewhere)
+Status: normative kernel specification — the authoritative contract for `froglet/v1`. Stability guarantees and the change process are defined in [VERSIONING.md](./VERSIONING.md).
 
 This document is normative for the irreversible Froglet kernel only.
 

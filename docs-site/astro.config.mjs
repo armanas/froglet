@@ -53,6 +53,7 @@ export default defineConfig({
 							{ label: 'Deal Flow', slug: 'learn/deal-flow' },
 							{ label: 'Settlement', slug: 'learn/settlement' },
 							{ label: 'Trust & Economics', slug: 'learn/economics' },
+							{ label: 'How Froglet Compares', slug: 'learn/comparison' },
 						],
 					},
 					{
@@ -60,6 +61,7 @@ export default defineConfig({
 						items: [
 							{ label: 'Marketplace', slug: 'marketplace/overview' },
 							{ label: 'Kernel', slug: 'spec/kernel' },
+							{ label: 'Conformance', slug: 'spec/conformance' },
 							{ label: 'Service Binding', slug: 'spec/service-binding' },
 							{ label: 'Architecture', slug: 'architecture/overview' },
 							{ label: 'Crate Structure', slug: 'architecture/crates' },

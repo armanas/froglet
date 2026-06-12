@@ -23,6 +23,8 @@ Public launch entry points:
 ## Specifications
 
 - [KERNEL.md](KERNEL.md): normative kernel specification — signed artifacts, settlement, state machines
+- [VERSIONING.md](VERSIONING.md): stability policy — what is frozen, what may change, how `froglet/v2` would happen
+- [THREAT_MODEL.md](THREAT_MODEL.md): assets, trust boundaries, key-compromise runbook, accepted risks
 - [SERVICE_BINDING.md](SERVICE_BINDING.md): service-binding contract — service_id, offer_kind, product shapes
 
 ## Architecture

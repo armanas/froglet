@@ -1,0 +1,111 @@
+---
+title: How Froglet compares
+description: An honest comparison with x402, L402, AP2, ACP, and the agent-payment landscape — what overlaps, what differs, what Froglet deliberately does not do.
+---
+
+The agent-payments space institutionalized fast through 2025–2026: x402 moved
+to a Linux Foundation–backed foundation, Google donated AP2 to the FIDO
+Alliance, Stripe and OpenAI ship ACP in ChatGPT, and the card networks
+launched their own agent frameworks. This page places Froglet in that
+landscape honestly — including the parts where the others are far bigger.
+
+**The one-line difference:** those protocols answer *"how does an agent pay?"*
+Froglet answers *"what exactly was promised, executed, and settled — and can a
+third party verify it later?"* Payment is one leg of a Froglet deal, not the
+whole protocol.
+
+## The landscape at a glance
+
+| | **Froglet** | **x402** | **L402** | **AP2** | **ACP** |
+|---|---|---|---|---|---|
+| Built for | Compute/service **deals** between agents | Pay-per-request API/service access | Paid API access control | Payment **authorization** mandates for agents | Goods **checkout** via AI agents |
+| Steward | Solo open-source project | x402 Foundation (Linux Foundation, Apr 2026) | Lightning Labs (bLIP-0026) | FIDO Alliance (donated by Google, Apr 2026) | Stripe + OpenAI |
+| Identity | secp256k1 keypair, no signup | Wallet address (V2 adds sessions) | Macaroon bearer credential | W3C Verifiable Credentials | Platform accounts (ChatGPT, Stripe Link) |
+| Settlement | Lightning; Stripe (test-mode); x402 driver (experimental) | USDC/stablecoins on multiple chains; V2 adds card/ACH/SEPA facilitators | Bitcoin Lightning | Delegates: cards, x402 extension | Stripe Shared Payment Token |
+| Evidence after the fact | **Signed six-artifact chain** (descriptor → offer → quote → deal → receipt), offline-verifiable by anyone | On-chain transfer; optional receipt header (format unspecified) | Payment preimage proves *payment*, not work | Mandate chain proves *authorization*, not execution | Scoped token limits exposure; trust delegated to Stripe |
+| Execution semantics | Quotes, deadlines, execution limits, success/failure states, two-leg fees | None — request/response | None — access control | None — authorization layer | Cart/fulfillment, not compute |
+| Self-hosting | Single binary, fully self-hostable, Tor publishing supported | Spec + SDKs open; own facilitator needs chain infra | Fully (Aperture + LND) | Spec + reference impl open (Apache-2) | Spec open (Apache-2); SPT issuance requires Stripe today |
+| Adoption (mid-2026) | **Alpha. A handful of nodes.** | ~165M cumulative transactions | Production at Lightning Labs; Fewsats et al. | 60+ launch partners, v0.2 | Live in ChatGPT (US), PayPal adopting |
+
+Details on each, with sources, in the sections below.
+
+## What Froglet has that the others don't
+
+**A verifiable record of the work itself.** In x402 you can prove a payment
+happened. In AP2 you can prove a human authorized a purchase. In ACP, Stripe
+can attest a token was used within scope. In a Froglet deal you can hand a
+third party the receipt chain and they can verify — offline, with no API and
+no trust in any platform — *who offered what, at what price and limits, who
+committed, what the result hash was, and how each settlement leg ended*. For
+agent-to-agent compute, the dispute is rarely "did the money move" and almost
+always "did the work happen as agreed" — that is the part Froglet makes
+cryptographic. (And the part it honestly cannot make cryptographic —
+*correctness* of results — is documented in
+[Trust & Economics](/learn/economics/).)
+
+**Deal semantics for compute.** Quotes priced per workload, execution limits
+(time, memory, fuel), completion deadlines, terminal receipts for failure as
+well as success, and a two-leg fee structure that separates reservation risk
+from completion risk. None of the four protocols above model any of this —
+they end where the payment clears.
+
+**No platform prerequisite.** A Froglet provider is a keypair and a binary —
+publishable over Tor, with no account, no approval, and no foundation
+membership. ACP sellers onboard through partner application; AP2/x402 are
+open specs but their rails assume wallets or card infrastructure. Froglet's
+free path requires nothing at all.
+
+## What the others have that Froglet doesn't
+
+Stating this plainly, because launch-day readers will:
+
+- **Adoption and institutional weight.** x402 counts transactions in the
+  hundreds of millions with AWS, Google, Visa, and Mastercard as foundation
+  members; AP2 has 60+ partners under FIDO governance; ACP is live for
+  millions of ChatGPT users. Froglet is an alpha run by one person.
+- **Fiat checkout.** ACP does real card checkout today; AP2 models human
+  authorization for it. Froglet's Stripe rail is test-mode and attested (a
+  PaymentIntent reference), not cryptographic.
+- **Chargebacks and consumer protection.** Card rails have dispute processes;
+  Lightning is final. Froglet's answer is evidence + small deals, not
+  reversals.
+- **Multiple implementations.** All four have ecosystems of SDKs and
+  independent integrations. Froglet has one reference implementation and a
+  [conformance suite](/spec/conformance/) inviting a second.
+
+## Complement, not competitor
+
+The overlap is smaller than it looks. AP2 mandates could *authorize* a
+Froglet deal; an x402 transfer or L402 invoice could *settle* one (Froglet
+already ships an experimental x402 driver and a production-path Lightning
+rail — L402's preimage-as-proof is the same cryptographic idea Froglet's
+Lightning receipts use). What stays Froglet's job in every such pairing is
+the deal-and-evidence layer: signed offers, priced quotes, execution
+contracts, and receipts that outlive the session.
+
+## Also in the landscape
+
+- **UCP (Google, Jan 2026)** — full shopping-journey protocol for AI
+  surfaces; uses AP2 for payment authorization. Goods commerce, not compute.
+- **Visa Trusted Agent Protocol (Oct 2025)** and **Mastercard Agent Pay /
+  AP4M (June 2026)** — card-network frameworks for verified agent
+  transactions, including machine-speed micropayments (AP4M). Proprietary
+  network capabilities rather than open protocols.
+- **Cloudflare Pay Per Crawl** — HTTP 402 content monetization for AI
+  crawlers with Cloudflare as merchant of record; platform feature, not a
+  protocol.
+
+None of these model verifiable execution of arbitrary compute between
+peer-identified agents — which is the niche Froglet exists for.
+
+---
+
+*Landscape facts current as of June 2026; primary sources: the
+[x402 Foundation announcement](https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol)
+and [x402 V2 notes](https://www.x402.org/writing/x402-v2-launch),
+the [L402 spec](https://github.com/lightninglabs/L402) and
+[Lightning Labs' L402-for-agents post](https://lightning.engineering/posts/2026-03-11-L402-for-agents/),
+the [AP2 docs](https://ap2-protocol.org/) and
+[FIDO donation announcement](https://fidoalliance.org/google-donates-agent-payments-protocol-to-fido-alliance/),
+and the [ACP spec repo](https://github.com/agentic-commerce-protocol/agentic-commerce-protocol).
+Corrections welcome — this page is meant to stay honest.*
