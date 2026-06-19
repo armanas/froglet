@@ -37,8 +37,8 @@ The execution material for those bindings may eventually be delivered as:
 
 Current implementation note:
 
-- the checked-in reference implementation still uses Wasm-oriented submission
-  wrappers for the current execution profiles
+- the checked-in reference implementation supports Wasm, Python, container, and
+  builtin execution profiles through adapter-specific submission wrappers
 - those wrappers are reference adapters, not the permanent product boundary
 
 Longer-term delivery formats may include interpreted source bundles, archive

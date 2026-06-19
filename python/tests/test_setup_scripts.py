@@ -246,6 +246,7 @@ fi
         content = out_path.read_text(encoding="utf-8")
         self.assertIn("FROGLET_PAYMENT_BACKEND=stripe", content)
         self.assertIn("FROGLET_STRIPE_SECRET_KEY=sk_test_123", content)
+        self.assertIn("FROGLET_STRIPE_API_VERSION=2026-04-22.preview", content)
         self.assertIn("FROGLET_STRIPE_WEBHOOK_SECRET=whsec_test_123", content)
         self.assertIn("/v1/account", self.curl_log.read_text(encoding="utf-8"))
 

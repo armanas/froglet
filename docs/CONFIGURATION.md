@@ -83,9 +83,13 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe test secret API key for the public local helper (must use a Stripe test key, not a live key) |
-| `FROGLET_STRIPE_API_VERSION` | `2026-03-04.preview` | Stripe API version (required for MPP features) |
+| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe secret API key for MPP. Use `sk_test_...` by default; live keys require the explicit setup-script confirmation below. |
+| `FROGLET_STRIPE_LIVE_CONFIRM` | *(none)* | Set to `fresh` only for an operator-approved live Stripe setup/proof with `sk_live_...` |
+| `FROGLET_STRIPE_API_VERSION` | `2026-04-22.preview` | Stripe API version (required for MPP features) |
 | `FROGLET_STRIPE_WEBHOOK_SECRET` | *(none)* | Optional Stripe webhook endpoint signing secret (`whsec_...`) for `POST /v1/webhooks/stripe` |
+| `FROGLET_BUYER_STRIPE_SECRET_KEY` | *(none)* | Buyer-side Stripe secret key used to mint Shared Payment Tokens when this node buys Stripe-priced services |
+| `FROGLET_BUYER_STRIPE_PAYMENT_METHOD` | *(none)* | Buyer funding payment method (`pm_...`); required with buyer Stripe secret unless `FROGLET_BUYER_STRIPE_CUSTOMER` is set |
+| `FROGLET_BUYER_STRIPE_CUSTOMER` | *(none)* | Buyer funding customer (`cus_...`); alternative to `FROGLET_BUYER_STRIPE_PAYMENT_METHOD` |
 
 ## Execution
 
@@ -164,6 +168,11 @@ GPU probe output under its printed evidence directory.
 | `FROGLET_PUBLIC_WRITE_QUOTA_WINDOW_SECS` | `900` | Public event/quote/confidential quota window in seconds |
 | `FROGLET_HOSTED_TRIAL_ALLOWED_SERVICE_IDS` | `demo.add,demo.echo,demo.fetch-witness,demo.hash-verify,demo.notarize` | Comma-separated free local service IDs accepted by hosted-trial deal creation |
 
+Public write quotas use a request-origin identity, not body fields such as
+`requester_id` or event public keys. Keep
+`FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS=false` unless a trusted proxy strips
+client-supplied forwarding headers before forwarding to the node.
+
 ## Storage
 
 | Variable | Default | Description |
@@ -173,12 +182,20 @@ GPU probe output under its printed evidence directory.
 | `FROGLET_HOST_READABLE_CONTROL_TOKEN` | `false` | Make the provider control token readable on the host filesystem |
 | `FROGLET_PROVIDER_ARTIFACT_ROOT` | *(none)* | Directory root for provider-control `artifact_path` publication. When unset, daemon-local `artifact_path` inputs are rejected; prefer inline source/module bytes for agent-driven publication. |
 
+`FROGLET_PROVIDER_ARTIFACT_ROOT` is required only for trusted operator workflows
+that intentionally publish daemon-local files. Agent-driven publication should
+send `inline_source` or `wasm_module_hex` instead of absolute host paths.
+
 ## Marketplace
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for runtime discovery and provider self-registration. Use `https://marketplace.froglet.dev` for the default public marketplace. |
 | `FROGLET_MARKETPLACE_ALLOW_LOCAL` | `false` | Allow local/private marketplace URLs for explicit dev/test use. Production egress requires public HTTPS or approved onion transport. |
+
+When `FROGLET_MARKETPLACE_ALLOW_LOCAL=false`, marketplace egress rejects
+loopback, private-network, link-local, metadata, `.local`, `.internal`, and
+plain public HTTP endpoints.
 
 ## MCP Server (integrations/mcp/froglet)
 

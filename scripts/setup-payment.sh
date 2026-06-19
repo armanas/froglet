@@ -201,7 +201,7 @@ if not payload.get("nodeId"):
 
 probe_stripe() {
   local secret_key="${FROGLET_STRIPE_SECRET_KEY:-}"
-  local api_version="${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}"
+  local api_version="${FROGLET_STRIPE_API_VERSION:-2026-04-22.preview}"
   local response
   local livemode
   need_cmd curl
@@ -374,7 +374,7 @@ case "$rail" in
     begin_snippet
     add_env_line FROGLET_PAYMENT_BACKEND stripe
     add_env_line FROGLET_STRIPE_SECRET_KEY "${FROGLET_STRIPE_SECRET_KEY}"
-    add_env_line FROGLET_STRIPE_API_VERSION "${FROGLET_STRIPE_API_VERSION:-2026-03-04.preview}"
+    add_env_line FROGLET_STRIPE_API_VERSION "${FROGLET_STRIPE_API_VERSION:-2026-04-22.preview}"
     add_optional_env_line FROGLET_STRIPE_WEBHOOK_SECRET
     write_current_snippet
     printf 'Required inputs:\n'

@@ -27,7 +27,7 @@ Froglet's Stripe rail uses Stripe's **Agentic Commerce "Shared Payment Token"
 
 ## Setup
 
-Use a Stripe test-mode secret key:
+Use a Stripe test-mode secret key by default:
 
 ```bash
 cd froglet && FROGLET_STRIPE_SECRET_KEY=<stripe-test-secret-key> \
@@ -52,9 +52,10 @@ The setup helper probes Stripe by calling:
 GET https://api.stripe.com/v1/account
 ```
 
-The probe uses the configured secret key and Stripe API version header, then
-requires either `livemode=false` or a valid account object from an `sk_test_`
-key. Live keys are rejected before the probe on this public local setup path.
+The probe uses the configured secret key and Stripe API version header. Test
+keys must return `livemode=false`. Live keys are accepted only when the operator
+sets `FROGLET_STRIPE_LIVE_CONFIRM=fresh` for a fresh live proof; do not claim
+live fiat support until that proof and refund path are recorded.
 
 The current public adapter reuses the configured numeric service price
 directly for the PaymentIntent amount. It does not perform FX conversion from

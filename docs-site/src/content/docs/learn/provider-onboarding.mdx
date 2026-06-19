@@ -32,7 +32,7 @@ froglet-node publish --host tor                 # done
 ```
 
 Both paths run the same `froglet-publish-engine` pipeline: build →
-sign → register → verify. One source of truth.
+host → sign → register → verify. One source of truth.
 
 ## The MCP call shape
 
@@ -40,7 +40,7 @@ sign → register → verify. One source of truth.
 {
   "action": "marketplace_publish",
   "name": "translator-en-es",
-  "source_inline": "import json, sys\n\ndef handle(p):\n    return {\"translated\": p[\"text\"]}\n\nif __name__ == \"__main__\":\n    payload = json.load(sys.stdin)\n    json.dump(handle(payload), sys.stdout)\n",
+  "source_inline": "def handler(event, context):\n    return {\"translated\": event[\"text\"]}\n",
   "hosting": { "kind": "tor" },
   "summary": "Translate English to Spanish",
   "settlement": { "method": "none" }
@@ -74,7 +74,9 @@ POSTs `/v1/registrations` on the marketplace, then polls
   `$FROGLET_DATA_DIR/runtime/froglet-control.token`, automatically
   generated on first daemon boot
 - **For Tor hosting**: `FROGLET_NETWORK_MODE=tor` or `dual` on the daemon
-- **For self-hosted**: a public HTTPS URL serving the daemon
+- **For self-hosted**: a public HTTPS URL serving the daemon; loopback,
+  private-network, `.local`, `.internal`, and plain-public-HTTP URLs are
+  rejected before marketplace registration
 
 The default `curl https://froglet.dev/agent | bash` install gets you a
 daemon running with sensible defaults. You can `froglet-node whoami`
@@ -122,8 +124,10 @@ implemented at the daemon level, but is not a publish-path option.
 
 ## What v1 doesn't do yet
 
-- **WASM and OCI runtimes**: `runtime: "python"` + `package_kind: "inline_source"`
-  is the v1A scope. WASM modules and container images ship in v1B.
+- **WASM and OCI through `marketplace_publish`**: `runtime: "python"` +
+  `package_kind: "inline_source"` is the v1A scope for the one-call publish
+  tool. Lower-level local publication still supports prebuilt Wasm modules and
+  OCI-backed profiles through `publish_artifact`.
 - **Managed + Fly backends**: documented above, land in v1B.
 
 ## Full reference

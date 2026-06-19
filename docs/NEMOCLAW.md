@@ -31,7 +31,13 @@ Supported plugin keys are the same as OpenClaw:
 
 - `hostProduct`
 - `baseUrl`
+- `providerUrl`
+- `runtimeUrl`
+- `marketplaceUrl`
+- `marketplaceArbiterUrl`
 - `authTokenPath`
+- `providerAuthTokenPath`
+- `runtimeAuthTokenPath`
 - `requestTimeoutMs`
 - `defaultSearchLimit`
 - `maxSearchLimit`
@@ -100,7 +106,8 @@ The bot-facing tool contract is identical to OpenClaw: one tool named
 The live tool contract is the same as OpenClaw:
 
 - `summary` is metadata only
-- local publication currently goes through `publish_artifact`
+- agent-grade publication goes through `marketplace_publish`; lower-level local
+  artifact publication still goes through `publish_artifact`
 - service metadata exposes `offer_kind` and `resource_kind`; direct compute
   still goes through `run_compute` rather than service listing
 - `run_compute` should include `provider_id` or `provider_url` because direct

@@ -69,11 +69,14 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `get_install_guide`
 - `plan_use_case`
 - `marketplace_register`
+- `marketplace_domain_claim`
+- `marketplace_domain_complete`
 - `marketplace_search`
 - `marketplace_provider`
 - `marketplace_receipts`
 - `marketplace_file_complaint`
 - `marketplace_get_complaint`
+- `marketplace_publish`
 
 Named services are the default UX. Raw compute is the expert path.
 
@@ -98,13 +101,14 @@ The current checked-in API is service- and artifact-oriented:
 
 - discover remote services with `discover_services` / `get_service`
 - invoke named/data services with `invoke_service`
+- publish user-described services with `marketplace_publish`
 - inspect and publish local services with `list_local_services`,
   `get_local_service`, and `publish_artifact`
 - poll async work with `get_task` / `wait_task`
 - inspect settlement state with `get_wallet_balance`,
   `list_settlement_activity`, `get_payment_intent`, and `get_invoice_bundle`
 - use the marketplace wrappers when you want marketplace-native search,
-  provider detail, receipts, stake, or top-up operations
+  provider detail, receipts, registration, domain claims, or arbiter complaints
 - use `plan_install` before local setup to collect agent, footprint, role,
   payment, network, marketplace, and use-case choices
 - use `get_install_guide` after the install profile is confirmed to return

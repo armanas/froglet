@@ -91,6 +91,17 @@ JSON input.
 The requested deal does not exist on this node. Verify the deal ID and that
 you are querying the correct provider.
 
+### Quote Already Used (409)
+
+```json
+{ "error": "quote already used by a different deal" }
+```
+
+Provider-side quotes are single-use for distinct accepted executions. Exact
+replay of the same deal payload, or replay through the same idempotency key,
+returns the existing deal; a different deal against the same unexpired quote is
+rejected.
+
 ### Internal Error (500)
 
 ```json

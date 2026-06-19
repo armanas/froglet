@@ -33,7 +33,8 @@ Use the checked-in example config:
 - discover and invoke remote named/data services
 - inspect and publish local services
 - inspect status, tasks, and settlement state
-- use marketplace-native wrappers for search/provider/receipt/stake flows
+- use marketplace-native wrappers for search, provider details, receipts,
+  domain claims, registration, and arbiter complaints
 - run expert raw compute through the direct compute offer
 
 The default path is named services. `run_compute` is the low-level fallback and
@@ -56,9 +57,11 @@ services through Froglet discovery rather than by direct peer guessing.
 2. `froglet` with `action=get_service`
 3. `froglet` with `action=invoke_service`
 
-Publishing from the same node currently goes through `publish_artifact`.
-That action is the public local publication path for prebuilt Wasm modules,
-inline-source services, and OCI-backed/container profiles.
+Agent-grade publication goes through `marketplace_publish`: the tool shells out
+to `froglet-node publish`, builds the service, signs it through the local
+provider daemon, registers it, and verifies marketplace projection. The
+lower-level `publish_artifact` action remains available for local publication of
+prebuilt Wasm modules, inline-source services, and OCI-backed/container profiles.
 
 Current API note:
 

@@ -26,7 +26,7 @@ User: "Publish a Froglet service that translates English to Spanish."
 Claude (with froglet MCP):
   Calls marketplace_publish:
     name: "translator-en-es"
-    source_inline: "<generated handler.py>"
+    source_inline: "<generated Python source defining handler(event, context)>"
     hosting: { kind: "tor" }
     summary: "Translate EN→ES"
 
@@ -55,17 +55,18 @@ modes are typed; the LLM gets back a structured error it can act on
 {
   "action": "marketplace_publish",
   "name": "<lowercase-hyphenated-name>",
-  "source_inline": "<full Python source for handler.py>",
+  "source_inline": "<full Python source defining handler(event, context)>",
   "hosting": { "kind": "local|tor|self", "url": "<required if self>" },
   "settlement": { "method": "none|lightning|stripe" },
   "marketplace_url": "https://marketplace.froglet.dev"
 }
 ```
 
-Runtime is Python `inline_source` only in Phase 1A. WASM + OCI ship in
-Settlement = `"none"` (free), `"lightning"` (paid, requires a Lightning
-backend + `price.currency="sat"`), or `"stripe"` (Stripe MPP, requires a
-Stripe backend + `price.currency="usd"`).
+Runtime is Python `inline_source` only in Phase 1A. WASM and OCI publication
+are lower-level `publish_artifact` paths today and move to `marketplace_publish`
+in a later phase. Settlement = `"none"` (free), `"lightning"` (paid, requires a
+Lightning backend + `price.currency="sat"`), or `"stripe"` (Stripe MPP,
+requires a Stripe backend + `price.currency="usd"`).
 
 ---
 
@@ -138,10 +139,11 @@ self-hosted when ready.
 ### Self-hosted (`--host self`, Phase 1A)
 
 You deploy the daemon somewhere with a public HTTPS URL (Fly, Render,
-Railway, your VPS) and supply the URL in the manifest. The engine
-trusts the URL after a basic shape check; the marketplace's
-`/v1/registrations` does the real validation (must serve `/v1/feed`
-with a signed descriptor + offer matching your provider key).
+Railway, your VPS) and supply the URL in the manifest. The CLI and MCP
+front-ends reject loopback, private-network, `.local`, `.internal`, and
+plain-public-HTTP URLs before publish. The marketplace's `/v1/registrations`
+then performs the external validation: the URL must serve `/v1/feed` with a
+signed descriptor plus an offer matching your provider key.
 
 ```toml
 [hosting]
@@ -232,6 +234,8 @@ and it picks the right backend. The four-path framing is preserved in
 git history at `docs/PROVIDER_ONBOARDING.md@a5799dc` for reference.
 
 If you're an operator running your own marketplace, the engine talks
-to any `froglet-node` daemon over HTTP (`FROGLET_DAEMON_URL`) and
-registers against any marketplace (`marketplace_url` in the manifest).
-There is no first-party lock-in.
+to a configured `froglet-node` daemon (`FROGLET_DAEMON_URL`, default
+`http://127.0.0.1:8080`) and registers against the manifest's
+`marketplace_url`. Marketplace URLs must be public HTTPS or approved onion
+transport; local/private marketplace URLs are reserved for explicit dev/test
+paths. There is no first-party lock-in.

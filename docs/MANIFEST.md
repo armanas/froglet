@@ -183,7 +183,7 @@ sats = 0                            # 0 for free; ignored if settlement.method =
 |---|---|---|
 | `local` | — | Private dev only; not registered with marketplace |
 | `tor` | — | Engine auto-spawns `tor` daemon if available |
-| `self` | `hosting.self.url` | Engine validates URL is reachable + serves `/v1/feed` |
+| `self` | `hosting.self.url` | Public HTTPS or approved onion transport. Marketplace registration validates `/v1/feed` and signed descriptor/offer consistency. |
 | `managed` (1B) | — | Engine signs claim, requires public IP |
 | `fly` (1B) | `hosting.fly.app`, `hosting.fly.region` | Engine wraps `flyctl deploy` |
 

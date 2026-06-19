@@ -9,11 +9,12 @@ data-source surface small, declarative, and auditable.
 
 An `ExecutionMount` carries:
 
-- `kind` — data-source family (`postgres`, `filesystem`, …)
+- `kind` — data-source family (`postgres`, `sqlite`, `s3`, or `redis`)
 - `handle` — operator-chosen name (e.g. `analytics`)
 - `read_only` — whether the workload may write
-- `binding` — optional source-specific binding override (legacy; most modern
-  kinds resolve binding from operator config instead)
+- `binding` — source-specific binding value after trusted resolution. Provider
+  publication requests must not supply it; bindings come from the node
+  operator's environment.
 
 The capability string encoding is:
 
@@ -39,6 +40,13 @@ All kinds inject the same env-var shape into the workload:
 
 - `FROGLET_MOUNT_<HANDLE>_URL` — the operator-configured binding string
 - `FROGLET_MOUNT_<HANDLE>_READ_ONLY` — `"true"` or `"false"`
+
+Provider-control publication validates mount descriptors before signing an
+offer. It rejects unknown kinds, invalid handles, and caller-supplied
+`mount.binding`. At execution time, a granted mount is resolved from
+`FROGLET_MOUNT_<kind>_<handle>` on the provider node; missing or malformed
+operator config fails the invocation instead of falling back to a requester- or
+agent-supplied path/DSN.
 
 Kind-specific sandbox effects are applied by
 [`collect_data_mount_plan`](../src/data_mounts.rs). Network-backed kinds

@@ -95,8 +95,10 @@ scheduled.
 
 - Node-wide: request body cap (1 MiB), per-route timeouts, concurrency limits
   on provider/runtime/hosted-trial route groups.
-- Hosted trial: per-origin quotas (window-based, derived from
-  forwarded-for/CF headers behind the edge) on the public demo surface.
+- Hosted trial: per-origin quotas (window-based) on the public demo surface.
+  The default identity is the peer socket address. Forwarding headers are used
+  only when `FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS=1` and the edge strips
+  client-supplied copies before forwarding.
 - Marketplace: Cloudflare edge rate limits (e.g. registration: 5/min/IP) and
   bounded registration/domain-claim concurrency.
 - **Accepted gap:** fine-grained per-IP rate limiting on *all* node routes is
@@ -116,6 +118,6 @@ Stated so they are decisions, not surprises:
 3. **Marketplace enforcement is operator-adjudicated** — see
    [ARBITER.md](ARBITER.md); decentralized adjudication is post-MVP.
 4. **External uptime alerting for hosted services is paused** — accepted
-   alpha risk, documented in MONITORING.md.
+   alpha risk for the public free-tier trial.
 5. **No protocol revocation** — runbook above is the mitigation until a
    tombstone artifact ships.

@@ -272,8 +272,9 @@ configs such as the checked-in NemoClaw examples.
 The one `froglet` tool covers:
 
 - Service discovery and invocation
-- Local resource inspection and publication via `publish_artifact`
-- Settlement visibility and marketplace-native wrappers
+- Agent-grade service publication via `marketplace_publish`
+- Local artifact publication via `publish_artifact`
+- Settlement visibility and current marketplace wrappers
 - Status and task polling
 - Install planning via `plan_install`, then command generation via `get_install_guide`
 - Post-install workflow planning via `plan_use_case`
