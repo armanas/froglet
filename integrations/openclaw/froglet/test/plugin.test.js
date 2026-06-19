@@ -49,6 +49,26 @@ test("plugin registers exactly one froglet tool", async () => {
     assert.ok(
       froglet.definition.parameters.properties.action.enum.includes("marketplace_file_complaint")
     )
+    assert.ok(
+      froglet.definition.parameters.properties.action.enum.includes("marketplace_publish")
+    )
+    assert.ok(
+      !froglet.definition.parameters.properties.action.enum.includes("marketplace_stake")
+    )
+    assert.ok(
+      !froglet.definition.parameters.properties.action.enum.includes("marketplace_topup")
+    )
+    assert.equal(froglet.definition.parameters.properties.name.type, "string")
+    assert.equal(froglet.definition.parameters.properties.source_inline.type, "string")
+    assert.deepEqual(
+      froglet.definition.parameters.properties.hosting.properties.kind.enum,
+      ["local", "tor", "self"]
+    )
+    assert.deepEqual(
+      froglet.definition.parameters.properties.settlement.properties.method.enum,
+      ["none", "lightning", "stripe"]
+    )
+    assert.equal(froglet.definition.parameters.properties.marketplace_url.type, "string")
     assert.equal(froglet.definition.parameters.properties.starter.type, "string")
     assert.match(
       froglet.definition.parameters.properties.starter.description,

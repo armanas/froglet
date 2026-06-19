@@ -594,7 +594,7 @@ fn gpu_capability_segment(value: &str) -> Option<String> {
 /// session endpoints behind the worker/origin shared-secret gate and hands
 /// out ephemeral session tokens. See `src/session_pool.rs` for the data
 /// structure and `docs/SYSTEM_DESIGN.md §8` for the product rationale.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SessionPoolConfig {
     /// Set via `FROGLET_SESSION_POOL_ENABLED=1`. False means no pool and no
     /// hosted-trial session auth; `FROGLET_HOSTED_TRIAL_ORIGIN_SECRET` must
@@ -605,6 +605,52 @@ pub struct SessionPoolConfig {
     /// TTL per session slot in seconds. Clamped 60..=3600. Default 900 (15
     /// min).
     pub ttl_secs: u64,
+    /// Service IDs allowed through the hosted trial surface.
+    pub hosted_trial_allowed_service_ids: std::collections::BTreeSet<String>,
+}
+
+impl Default for SessionPoolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: 50,
+            ttl_secs: 900,
+            hosted_trial_allowed_service_ids: default_hosted_trial_allowed_service_ids(),
+        }
+    }
+}
+
+pub fn default_hosted_trial_allowed_service_ids() -> std::collections::BTreeSet<String> {
+    [
+        "demo.add",
+        "demo.echo",
+        "demo.fetch-witness",
+        "demo.hash-verify",
+        "demo.notarize",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn parse_hosted_trial_allowed_service_ids(
+    value: Option<String>,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let Some(value) = value else {
+        return Ok(default_hosted_trial_allowed_service_ids());
+    };
+    let mut service_ids = std::collections::BTreeSet::new();
+    for service_id in value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        service_ids.insert(service_id.to_ascii_lowercase());
+    }
+    if service_ids.is_empty() {
+        return Err("FROGLET_HOSTED_TRIAL_ALLOWED_SERVICE_IDS must not be empty".into());
+    }
+    Ok(service_ids)
 }
 
 #[derive(Debug, Clone)]
@@ -658,6 +704,12 @@ pub struct NodeConfig {
     pub gpu: GpuConfig,
     pub confidential: ConfidentialConfig,
     pub marketplace_url: Option<String>,
+    pub marketplace_allow_local: bool,
+    /// Root directory from which provider-control `artifact_path` publications
+    /// may read local artifacts. `artifact_path` is rejected unless both this
+    /// root and the artifact path canonicalize successfully and the artifact
+    /// stays under this root after symlink resolution.
+    pub provider_artifact_root: Option<PathBuf>,
     /// Operator-configured data-source mounts. Key is the mount handle
     /// (e.g. "analytics"); value is the DSN / connection string the workload
     /// gets through `FROGLET_MOUNT_<handle>_URL` when its capability is
@@ -931,6 +983,13 @@ impl NodeConfig {
                 .or_else(|_| env::var("FROGLET_DATA_DIR"))
                 .unwrap_or_else(|_| "./data".to_string()),
         );
+        let provider_artifact_root = match env::var("FROGLET_PROVIDER_ARTIFACT_ROOT") {
+            Ok(value) if value.trim().is_empty() => {
+                return Err("FROGLET_PROVIDER_ARTIFACT_ROOT must not be empty when set".into());
+            }
+            Ok(value) => Some(PathBuf::from(value)),
+            Err(_) => None,
+        };
         let host_readable_control_token = env_bool("FROGLET_HOST_READABLE_CONTROL_TOKEN", false)?;
         let identity_dir = data_dir.join("identity");
         let identity_seed_path = identity_dir.join("secp256k1.seed");
@@ -993,7 +1052,18 @@ impl NodeConfig {
             enabled: env_bool("FROGLET_SESSION_POOL_ENABLED", false)?,
             size: env_u64("FROGLET_SESSION_POOL_SIZE", 50)?.clamp(1, 1000) as usize,
             ttl_secs: env_u64("FROGLET_SESSION_TTL_SECS", 900)?.clamp(60, 3600),
+            hosted_trial_allowed_service_ids: parse_hosted_trial_allowed_service_ids(
+                env::var("FROGLET_HOSTED_TRIAL_ALLOWED_SERVICE_IDS").ok(),
+            )?,
         };
+        let marketplace_url = match env::var("FROGLET_MARKETPLACE_URL") {
+            Ok(value) if value.trim().is_empty() => {
+                return Err("FROGLET_MARKETPLACE_URL must not be empty when set".into());
+            }
+            Ok(value) => Some(value),
+            Err(_) => None,
+        };
+        let marketplace_allow_local = env_bool("FROGLET_MARKETPLACE_ALLOW_LOCAL", false)?;
         let default_public_quota = PublicQuotaConfig::default();
         let public_quota = PublicQuotaConfig {
             hosted_trial_deals_per_identity: env_u64(
@@ -1021,6 +1091,10 @@ impl NodeConfig {
                 u64::from(default_public_quota.confidential_sessions_per_identity),
             )?
             .clamp(1, 10_000) as u32,
+            trust_forward_public_quota_headers: env_bool(
+                "FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS",
+                default_public_quota.trust_forward_public_quota_headers,
+            )?,
             hosted_trial_window_secs: env_u64(
                 "FROGLET_HOSTED_TRIAL_DEAL_QUOTA_WINDOW_SECS",
                 default_public_quota.hosted_trial_window_secs,
@@ -1084,7 +1158,9 @@ impl NodeConfig {
                 session_ttl_secs: env_u64("FROGLET_CONFIDENTIAL_SESSION_TTL_SECS", 300)?
                     .clamp(30, 3600),
             },
-            marketplace_url: env::var("FROGLET_MARKETPLACE_URL").ok(),
+            marketplace_url,
+            marketplace_allow_local,
+            provider_artifact_root,
             postgres_mounts: load_postgres_mounts_from_env(),
             session_pool,
             public_quota,

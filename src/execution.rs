@@ -186,6 +186,29 @@ pub struct ExecutionMount {
     pub binding: Option<String>,
 }
 
+pub(crate) fn validate_execution_mount_descriptor(mount: &ExecutionMount) -> Result<(), String> {
+    if !matches!(mount.kind.as_str(), "postgres" | "sqlite" | "s3" | "redis") {
+        return Err(format!(
+            "unsupported mount kind: {}; allowed: postgres, sqlite, s3, redis",
+            mount.kind
+        ));
+    }
+    if mount.handle.is_empty() || mount.handle.len() > 64 {
+        return Err("mount handle must be 1-64 bytes".to_string());
+    }
+    if !mount
+        .handle
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(
+            "mount handle must contain only lowercase ASCII letters, digits, or underscores"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionWorkload {
     pub schema_version: String,
@@ -417,6 +440,9 @@ impl ExecutionWorkload {
             return Err(
                 "execution requests must not include provider host mount bindings".to_string(),
             );
+        }
+        for mount in &self.mounts {
+            validate_execution_mount_descriptor(mount)?;
         }
         if self.is_service_addressed() {
             return self.validate_service_addressed_shape();
@@ -974,5 +1000,56 @@ mod tests {
             error.contains("mount bindings"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn execution_validation_rejects_unknown_mount_kinds() {
+        let mut workload = ExecutionWorkload::python_inline_handler(
+            "def handler(event, ctx):\n    return event\n".to_string(),
+            "handler".to_string(),
+            Value::Null,
+        )
+        .expect("python workload");
+        workload.mounts.push(ExecutionMount {
+            handle: "workspace".to_string(),
+            kind: "filesystem".to_string(),
+            read_only: true,
+            binding: None,
+        });
+        workload
+            .requested_access
+            .push("mount.filesystem.read.workspace".to_string());
+
+        let error = workload
+            .validate_basic()
+            .expect_err("unknown mount kind must be rejected");
+        assert!(
+            error.contains("unsupported mount kind"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn execution_validation_rejects_invalid_mount_handles() {
+        let mut workload = ExecutionWorkload::python_inline_handler(
+            "def handler(event, ctx):\n    return event\n".to_string(),
+            "handler".to_string(),
+            Value::Null,
+        )
+        .expect("python workload");
+        workload.mounts.push(ExecutionMount {
+            handle: "../workspace".to_string(),
+            kind: "sqlite".to_string(),
+            read_only: true,
+            binding: None,
+        });
+        workload
+            .requested_access
+            .push("mount.sqlite.read.../workspace".to_string());
+
+        let error = workload
+            .validate_basic()
+            .expect_err("invalid mount handle must be rejected");
+        assert!(error.contains("mount handle"), "unexpected error: {error}");
     }
 }

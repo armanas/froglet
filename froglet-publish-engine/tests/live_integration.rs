@@ -43,10 +43,8 @@ fn marketplace_url() -> Url {
 }
 
 fn python_handler() -> &'static str {
-    r#"import json, sys
-def handle(p): return {"echo": p}
-payload = json.load(sys.stdin)
-json.dump(handle(payload), sys.stdout)
+    r#"def handler(event, context):
+    return {"echo": event, "mounts": context.get("mounts", {})}
 "#
 }
 
@@ -59,6 +57,7 @@ fn service_manifest(name: &str, hosting: &str, hosting_url: Option<&str>) -> Ser
 service_id = "{name}"
 runtime = "python"
 package_kind = "inline_source"
+entrypoint_kind = "handler"
 entrypoint = "handler.py"
 [hosting]
 default = "{hosting}"{hosting_self}

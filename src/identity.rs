@@ -333,6 +333,8 @@ mod tests {
                 session_ttl_secs: 300,
             },
             marketplace_url: None,
+            marketplace_allow_local: false,
+            provider_artifact_root: None,
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
             hosted_trial_origin_secret: None,

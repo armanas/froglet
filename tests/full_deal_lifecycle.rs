@@ -102,8 +102,11 @@ fn wasm_module_bytes() -> Vec<u8> {
 }
 
 fn test_wasm_submission() -> WasmSubmission {
+    test_wasm_submission_with_input(json!({"hello": "world"}))
+}
+
+fn test_wasm_submission_with_input(input: Value) -> WasmSubmission {
     let module_bytes = wasm_module_bytes();
-    let input = json!({"hello": "world"});
     let input_hash =
         crypto::sha256_hex(froglet::canonical_json::to_vec(&input).expect("canonical input"));
 
@@ -325,6 +328,8 @@ fn lightning_app_state_custom(
             session_ttl_secs: 300,
         },
         marketplace_url: None,
+        marketplace_allow_local: false,
+        provider_artifact_root: None,
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
@@ -475,6 +480,8 @@ fn stripe_app_state_with_mock_spend(
             session_ttl_secs: 300,
         },
         marketplace_url: None,
+        marketplace_allow_local: false,
+        provider_artifact_root: None,
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
@@ -1183,6 +1190,8 @@ fn phoenixd_app_state_with_mock_spend(
             session_ttl_secs: 300,
         },
         marketplace_url: None,
+        marketplace_allow_local: false,
+        provider_artifact_root: None,
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
@@ -1414,6 +1423,10 @@ fn spend_policy(
 }
 
 fn paid_create_body(provider_id: &str, provider_url: &str) -> Value {
+    paid_create_body_with_input(provider_id, provider_url, json!({"hello": "world"}))
+}
+
+fn paid_create_body_with_input(provider_id: &str, provider_url: &str, input: Value) -> Value {
     json!({
         "provider": {
             "provider_id": provider_id,
@@ -1421,7 +1434,7 @@ fn paid_create_body(provider_id: &str, provider_url: &str) -> Value {
         },
         "offer_id": "execute.compute",
         "kind": "wasm",
-        "submission": test_wasm_submission(),
+        "submission": test_wasm_submission_with_input(input),
     })
 }
 
@@ -1540,8 +1553,18 @@ async fn spend_budget_exhaustion_then_reset_restores_headroom() {
     assert_eq!(reset_status, StatusCode::OK);
     assert_eq!(reset["archived_deals"], 1, "reset: {reset}");
 
-    let (status3, resp3): (StatusCode, Value) =
-        http_post_json(&client, &deals_url, Some("test-runtime-token"), &body).await;
+    let post_reset_body = paid_create_body_with_input(
+        &provider_id,
+        &provider.base_url,
+        json!({"hello": "after-reset"}),
+    );
+    let (status3, resp3): (StatusCode, Value) = http_post_json(
+        &client,
+        &deals_url,
+        Some("test-runtime-token"),
+        &post_reset_body,
+    )
+    .await;
     assert_eq!(
         status3,
         StatusCode::OK,

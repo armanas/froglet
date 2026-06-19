@@ -144,6 +144,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
     identity_seed: Option<[u8; 32]>,
     public_base_url: Option<&str>,
 ) -> AppState {
+    let marketplace_allow_local = marketplace_url.is_some();
     let temp_dir = unique_temp_dir("runtime-routes");
     let db_path = temp_dir.join("node.db");
     let node_config = NodeConfig {
@@ -208,6 +209,8 @@ fn create_test_state_with_identity_seed_and_public_base_url(
             session_ttl_secs: 300,
         },
         marketplace_url,
+        marketplace_allow_local,
+        provider_artifact_root: None,
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
@@ -1308,6 +1311,26 @@ async fn runtime_auth_rejection_blocks_unauthenticated_requests() {
 }
 
 #[tokio::test]
+async fn runtime_auth_rejection_precedes_json_extraction() {
+    let state = Arc::new(create_test_state(None));
+    let app = runtime_router(state);
+    let request = Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/v1/runtime/deals")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{"))
+        .expect("build malformed unauthenticated request");
+
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response["error"],
+        Value::String("missing runtime authorization".to_string())
+    );
+}
+
+#[tokio::test]
 async fn runtime_auth_rejection_blocks_invalid_bearer_tokens() {
     let state = Arc::new(create_test_state(None));
     let app = runtime_router(state);
@@ -1340,6 +1363,27 @@ async fn runtime_search_requires_marketplace_url() {
     assert_eq!(
         response["error"],
         Value::String("no marketplace configured — set FROGLET_MARKETPLACE_URL".to_string())
+    );
+}
+
+#[tokio::test]
+async fn runtime_search_rejects_local_marketplace_without_override() {
+    let mut state = create_test_state(Some("http://127.0.0.1:9".to_string()));
+    state.config.marketplace_allow_local = false;
+    let app = runtime_router(Arc::new(state));
+    let request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/search",
+        Some("Bearer test-runtime-token"),
+        Some(json!({ "limit": 5 })),
+    );
+    let (status, response): (StatusCode, Value) = call_json(app, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("local or private-network")),
+        "unexpected response: {response}"
     );
 }
 

@@ -17,29 +17,17 @@ use std::path::Path;
 const HANDLER_PY: &str = r#"# Froglet Python handler. The default contract is
 # froglet.python.handler_json.v1, which means:
 #
-# - Input arrives as a JSON object on stdin
-# - You print exactly one JSON object on stdout as your result
-# - Nothing else may be written to stdout
+# - Input arrives as the `event` JSON object
+# - `context` carries runtime metadata such as granted mounts
+# - Return one JSON-serializable value
 #
-# Edit `handle()` to do real work, then run:
+# Edit `handler()` to do real work, then run:
 #   froglet-node publish
-import json
-import sys
 
 
-def handle(payload: dict) -> dict:
+def handler(event: dict, context: dict) -> dict:
     """Service entry point. Return the JSON result."""
-    return {"echo": payload}
-
-
-def main() -> None:
-    payload = json.load(sys.stdin)
-    result = handle(payload)
-    json.dump(result, sys.stdout)
-
-
-if __name__ == "__main__":
-    main()
+    return {"echo": event, "mounts": context.get("mounts", {})}
 "#;
 
 const GITIGNORE: &str =
@@ -73,7 +61,7 @@ summary = "Froglet service {name}"
 
 runtime = "python"
 package_kind = "inline_source"
-entrypoint_kind = "script"
+entrypoint_kind = "handler"
 entrypoint = "handler.py"
 contract_version = "froglet.python.handler_json.v1"
 
@@ -161,6 +149,15 @@ fn validate_name(name: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaffold_uses_handler_abi() {
+        let service = service_toml("echoer");
+        assert!(service.contains("entrypoint_kind = \"handler\""));
+        assert!(service.contains("entrypoint = \"handler.py\""));
+        assert!(service.contains("contract_version = \"froglet.python.handler_json.v1\""));
+        assert!(HANDLER_PY.contains("def handler(event: dict, context: dict) -> dict:"));
+    }
 
     #[test]
     fn validates_name_shape() {

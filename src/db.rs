@@ -20,6 +20,7 @@ use crate::{
 const LEGACY_ARTIFACTS_MIGRATION: &str = "20260313_legacy_artifacts_backfill";
 const ENFORCE_DEAL_ARTIFACT_HASH_UNIQUE: &str = "20261108_deal_artifact_hash_unique";
 const DOCUMENT_IDEMPOTENCY_KEY_UNIQUE: &str = "20261108_idempotency_key_partial_unique";
+const BACKFILL_QUOTE_USAGES: &str = "20261108_quote_usages_backfill";
 const DEFAULT_DB_READ_CONNECTIONS: usize = 4;
 pub const MAX_EVENT_QUERY_KINDS: usize = 100;
 
@@ -77,6 +78,18 @@ pub struct DealSettlementMaterializationRecord {
     pub deal_id: String,
     pub materialization_kind: String,
     pub request_json: String,
+    pub claim_token: Option<String>,
+    pub claim_expires_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DealPrepaidInvoiceRecord {
+    pub deal_id: String,
+    pub bolt11: String,
+    pub payment_hash: String,
+    pub amount_sat: u64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -285,6 +298,8 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_execution_evidence_content_hash
             ON execution_evidence (content_hash);
+         CREATE INDEX IF NOT EXISTS idx_deals_quote_hash_created_at
+            ON deals (quote_hash, created_at);
          CREATE INDEX IF NOT EXISTS idx_deals_payment_method_status_created_at
             ON deals (payment_method, status, created_at);
          CREATE INDEX IF NOT EXISTS idx_deals_deal_artifact_hash
@@ -293,12 +308,25 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             deal_id TEXT PRIMARY KEY,
             materialization_kind TEXT NOT NULL,
             request_json TEXT NOT NULL,
+            claim_token TEXT,
+            claim_expires_at INTEGER,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (deal_id) REFERENCES deals(deal_id)
          );
          CREATE INDEX IF NOT EXISTS idx_deal_settlement_materializations_updated_at
             ON deal_settlement_materializations (updated_at ASC);
+         CREATE TABLE IF NOT EXISTS deal_prepaid_invoices (
+            deal_id TEXT PRIMARY KEY,
+            bolt11 TEXT NOT NULL,
+            payment_hash TEXT NOT NULL UNIQUE,
+            amount_sat INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (deal_id) REFERENCES deals(deal_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_deal_prepaid_invoices_payment_hash
+            ON deal_prepaid_invoices (payment_hash);
          CREATE TABLE IF NOT EXISTS stripe_webhook_events (
             event_id TEXT PRIMARY KEY,
             event_type TEXT NOT NULL,
@@ -313,6 +341,18 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             ON stripe_webhook_events (event_type, received_at DESC);
          CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_payment_intent
             ON stripe_webhook_events (payment_intent_id, received_at DESC);",
+    )?;
+    ensure_column(
+        conn,
+        "deal_settlement_materializations",
+        "claim_token",
+        "TEXT",
+    )?;
+    ensure_column(
+        conn,
+        "deal_settlement_materializations",
+        "claim_expires_at",
+        "INTEGER",
     )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS deal_quarantine (
@@ -337,7 +377,15 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
             updated_at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_requester_spend_ledger_state
-            ON requester_spend_ledger (state);",
+            ON requester_spend_ledger (state);
+         CREATE TABLE IF NOT EXISTS quote_usages (
+            quote_hash TEXT PRIMARY KEY,
+            deal_id TEXT NOT NULL,
+            deal_artifact_hash TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_quote_usages_deal_artifact_hash
+            ON quote_usages (deal_artifact_hash);",
     )?;
     apply_migration_once(conn, LEGACY_ARTIFACTS_MIGRATION, migrate_legacy_artifacts)?;
     apply_migration_once(
@@ -350,6 +398,7 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         DOCUMENT_IDEMPOTENCY_KEY_UNIQUE,
         migrate_idempotency_key_partial_unique,
     )?;
+    apply_migration_once(conn, BACKFILL_QUOTE_USAGES, migrate_backfill_quote_usages)?;
     Ok(())
 }
 
@@ -814,6 +863,34 @@ fn migrate_idempotency_key_partial_unique(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
+fn migrate_backfill_quote_usages(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO quote_usages (
+            quote_hash,
+            deal_id,
+            deal_artifact_hash,
+            created_at
+         )
+         SELECT
+            d.quote_hash,
+            d.deal_id,
+            d.deal_artifact_hash,
+            d.created_at
+           FROM deals d
+          WHERE d.quote_hash IS NOT NULL
+            AND d.deal_artifact_hash IS NOT NULL
+            AND d.rowid = (
+                SELECT d2.rowid
+                  FROM deals d2
+                 WHERE d2.quote_hash = d.quote_hash
+                   AND d2.deal_artifact_hash IS NOT NULL
+              ORDER BY d2.created_at ASC, d2.rowid ASC
+                 LIMIT 1
+            );",
+    )?;
+    Ok(())
+}
+
 pub fn insert_artifact_document(
     conn: &Connection,
     artifact_hash: &str,
@@ -1220,7 +1297,8 @@ pub fn get_deal_settlement_materialization(
     deal_id: &str,
 ) -> Result<Option<DealSettlementMaterializationRecord>, String> {
     conn.query_row(
-        "SELECT deal_id, materialization_kind, request_json, created_at, updated_at
+        "SELECT deal_id, materialization_kind, request_json,
+                claim_token, claim_expires_at, created_at, updated_at
          FROM deal_settlement_materializations
          WHERE deal_id = ?1",
         params![deal_id],
@@ -1229,8 +1307,10 @@ pub fn get_deal_settlement_materialization(
                 deal_id: row.get(0)?,
                 materialization_kind: row.get(1)?,
                 request_json: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                claim_token: row.get(3)?,
+                claim_expires_at: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         },
     )
@@ -1238,12 +1318,39 @@ pub fn get_deal_settlement_materialization(
     .map_err(|error| error.to_string())
 }
 
+pub fn claim_deal_settlement_materialization(
+    conn: &Connection,
+    deal_id: &str,
+    claim_token: &str,
+    claim_expires_at: i64,
+    now: i64,
+) -> Result<Option<DealSettlementMaterializationRecord>, String> {
+    let updated = conn
+        .execute(
+            "UPDATE deal_settlement_materializations
+                SET claim_token = ?2, claim_expires_at = ?3, updated_at = ?4
+              WHERE deal_id = ?1
+                AND (
+                    claim_token IS NULL
+                    OR claim_expires_at IS NULL
+                    OR claim_expires_at <= ?4
+                )",
+            params![deal_id, claim_token, claim_expires_at, now],
+        )
+        .map_err(|error| error.to_string())?;
+    if updated == 0 {
+        return Ok(None);
+    }
+    get_deal_settlement_materialization(conn, deal_id)
+}
+
 pub fn list_deal_settlement_materializations(
     conn: &Connection,
 ) -> Result<Vec<DealSettlementMaterializationRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT deal_id, materialization_kind, request_json, created_at, updated_at
+            "SELECT deal_id, materialization_kind, request_json,
+                    claim_token, claim_expires_at, created_at, updated_at
              FROM deal_settlement_materializations
              ORDER BY updated_at ASC, deal_id ASC",
         )
@@ -1254,8 +1361,10 @@ pub fn list_deal_settlement_materializations(
                 deal_id: row.get(0)?,
                 materialization_kind: row.get(1)?,
                 request_json: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                claim_token: row.get(3)?,
+                claim_expires_at: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -1278,6 +1387,54 @@ pub fn delete_deal_settlement_materialization(
         )
         .map_err(|error| error.to_string())?;
     Ok(deleted > 0)
+}
+
+pub fn insert_deal_prepaid_invoice(
+    conn: &Connection,
+    deal_id: &str,
+    bolt11: &str,
+    payment_hash: &str,
+    amount_sat: u64,
+    created_at: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO deal_prepaid_invoices (
+            deal_id,
+            bolt11,
+            payment_hash,
+            amount_sat,
+            created_at,
+            updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        params![deal_id, bolt11, payment_hash, amount_sat as i64, created_at],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn get_deal_prepaid_invoice(
+    conn: &Connection,
+    deal_id: &str,
+) -> Result<Option<DealPrepaidInvoiceRecord>, String> {
+    conn.query_row(
+        "SELECT deal_id, bolt11, payment_hash, amount_sat, created_at, updated_at
+         FROM deal_prepaid_invoices
+         WHERE deal_id = ?1",
+        params![deal_id],
+        |row| {
+            let amount_sat: i64 = row.get(3)?;
+            Ok(DealPrepaidInvoiceRecord {
+                deal_id: row.get(0)?,
+                bolt11: row.get(1)?,
+                payment_hash: row.get(2)?,
+                amount_sat: amount_sat.max(0) as u64,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 pub fn upsert_provider_managed_offer(
@@ -1380,6 +1537,34 @@ pub fn list_duplicate_deal_artifact_hashes(
              GROUP BY deal_artifact_hash
              HAVING COUNT(*) > 1
              ORDER BY duplicate_count DESC, deal_artifact_hash ASC
+             LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok((row.get(0)?, row.get::<_, i64>(1)? as u64))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut duplicates = Vec::new();
+    for row in rows {
+        duplicates.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(duplicates)
+}
+
+pub fn list_duplicate_quote_hashes(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(String, u64)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT quote_hash, COUNT(*) AS duplicate_count
+             FROM deals
+             WHERE quote_hash IS NOT NULL AND quote_hash != ''
+             GROUP BY quote_hash
+             HAVING COUNT(*) > 1
+             ORDER BY duplicate_count DESC, quote_hash ASC
              LIMIT ?1",
         )
         .map_err(|error| error.to_string())?;
@@ -1726,6 +1911,52 @@ mod tests {
         )
         .expect_err("expected invalid identifier error");
         assert!(error.to_string().contains("invalid table name"));
+    }
+
+    #[test]
+    fn settlement_materialization_claim_is_exclusive_until_expiry() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        configure_connection(&conn).expect("configure");
+        conn.execute(
+            "INSERT INTO deals (
+                deal_id, idempotency_key, quote_id, quote_hash, offer_id,
+                service_id, workload_hash, spec_json, quote_json,
+                deal_artifact_json, status, created_at, updated_at
+             ) VALUES (
+                'deal-1', NULL, 'quote-1', 'quote-hash', 'offer-1',
+                'service-1', 'workload-hash', '{}', '{}',
+                '{}', 'payment_pending', 1, 1
+             )",
+            [],
+        )
+        .expect("insert parent deal");
+        insert_deal_settlement_materialization(
+            &conn,
+            "deal-1",
+            "stripe_payment_reservation",
+            "{}",
+            1,
+        )
+        .expect("insert materialization");
+
+        let first = claim_deal_settlement_materialization(&conn, "deal-1", "claim-a", 10, 2)
+            .expect("first claim")
+            .expect("materialization claimed");
+        assert_eq!(first.claim_token.as_deref(), Some("claim-a"));
+        assert_eq!(first.claim_expires_at, Some(10));
+
+        let second = claim_deal_settlement_materialization(&conn, "deal-1", "claim-b", 20, 3)
+            .expect("second claim");
+        assert!(
+            second.is_none(),
+            "unexpired claim must block a second claimant"
+        );
+
+        let third = claim_deal_settlement_materialization(&conn, "deal-1", "claim-c", 30, 11)
+            .expect("third claim")
+            .expect("expired materialization should be claimable");
+        assert_eq!(third.claim_token.as_deref(), Some("claim-c"));
+        assert_eq!(third.claim_expires_at, Some(30));
     }
 
     #[test]

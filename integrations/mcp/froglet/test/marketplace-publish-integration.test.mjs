@@ -107,7 +107,7 @@ describe("marketplace_publish: stub-binary integration", () => {
       {
         name: "translator",
         summary: "EN→ES translator",
-        source_inline: "def handle(p):\n    return p\n",
+        source_inline: "def handler(event, context):\n    return event\n",
         hosting: { kind: "tor" },
         marketplace_url: "https://marketplace.froglet.dev"
       },
@@ -127,8 +127,9 @@ describe("marketplace_publish: stub-binary integration", () => {
     assert.match(log, /=== froglet-service\.toml ===\s+schema_version = "froglet-service\/v3"/)
     assert.match(log, /service_id = "translator"/)
     assert.match(log, /summary = "EN→ES translator"/)
+    assert.match(log, /entrypoint_kind = "handler"/)
     assert.match(log, /default = "tor"/)
-    assert.match(log, /=== handler\.py ===\s+def handle/)
+    assert.match(log, /=== handler\.py ===\s+def handler\(event, context\)/)
   })
 
   it("passes --host local when hosting.kind is local", async () => {

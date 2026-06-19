@@ -149,11 +149,11 @@ difference is the handler runs in-process instead of in a sandbox.
 Node B (provider)                 Node C (external marketplace)
 
 private by default                a Froglet provider
-generates identity locally        serves discovery through the same deal flow
+generates identity locally        serves registration API + discovery deals
 publishes to marketplace          serves search as deals
   (optional, explicit)
       │                                  │
-      │   marketplace.register deal      │
+      │   POST /v1/registrations         │
       ├─────────────────────────────────►│
       │                                  │
                                          │

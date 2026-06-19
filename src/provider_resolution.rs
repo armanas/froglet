@@ -70,6 +70,16 @@ fn host_targets_local_network_literal(host: &str) -> bool {
     }
 }
 
+fn host_is_valid_v3_onion(host: &str) -> bool {
+    let Some(label) = host.strip_suffix(".onion") else {
+        return false;
+    };
+    label.len() == 56
+        && label
+            .chars()
+            .all(|character| matches!(character, 'a'..='z' | '2'..='7'))
+}
+
 fn normalize_remote_endpoint_url(raw_url: &str, label: &str) -> Result<reqwest::Url, String> {
     let parsed =
         reqwest::Url::parse(raw_url).map_err(|error| format!("invalid {label}: {error}"))?;
@@ -78,6 +88,9 @@ fn normalize_remote_endpoint_url(raw_url: &str, label: &str) -> Result<reqwest::
         _ => {
             return Err(format!("{label} must use http:// or https://"));
         }
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("{label} must not include credentials"));
     }
     if parsed.host_str().is_none() {
         return Err(format!("{label} must include a host"));
@@ -103,8 +116,19 @@ pub async fn classify_remote_endpoint_url(
     let parsed = normalize_remote_endpoint_url(raw_url, label)?;
     let normalized_url = parsed.as_str().trim_end_matches('/').to_string();
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    if host.ends_with(".local") || host.ends_with(".internal") {
+        return Err(format!(
+            "{label} host must not use .local or .internal names"
+        ));
+    }
 
     let (reachability, pinned_public_addresses) = if host.ends_with(".onion") {
+        if parsed.scheme() != "http" {
+            return Err(format!("{label} must use http:// for Tor onion transport"));
+        }
+        if !host_is_valid_v3_onion(&host) {
+            return Err(format!("{label} must use a Tor v3 .onion hostname"));
+        }
         (RemoteEndpointReachability::Onion, Vec::new())
     } else if host_targets_local_network_literal(&host) {
         (RemoteEndpointReachability::LocalOnly, Vec::new())
@@ -133,6 +157,21 @@ pub async fn classify_remote_endpoint_url(
         reachability,
         pinned_public_addresses,
     })
+}
+
+pub async fn validate_remote_egress_url(
+    raw_url: &str,
+    label: &str,
+    allow_local: bool,
+    allow_local_hint: &str,
+) -> Result<ValidatedRemoteEndpoint, String> {
+    let endpoint = classify_remote_endpoint_url(raw_url, label).await?;
+    if endpoint.reachability == RemoteEndpointReachability::LocalOnly && !allow_local {
+        return Err(format!(
+            "{label} targets a local or private-network address; {allow_local_hint}"
+        ));
+    }
+    Ok(endpoint)
 }
 
 pub fn configured_runtime_provider_base_url() -> Result<Option<String>, ResolutionFailure> {
@@ -249,6 +288,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn endpoint_rejects_embedded_credentials() {
+        let error = classify_remote_endpoint_url("https://user:pass@8.8.8.8/", "provider URL")
+            .await
+            .expect_err("provider URL credentials must be rejected");
+
+        assert!(
+            error.contains("must not include credentials"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_accepts_http_v3_onion_transport() {
+        let endpoint = classify_remote_endpoint_url(
+            &format!("http://{}.onion/", "a".repeat(56)),
+            "provider URL",
+        )
+        .await
+        .expect("classified onion endpoint");
+
+        assert_eq!(endpoint.reachability, RemoteEndpointReachability::Onion);
+        assert!(endpoint.pinned_public_addresses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn endpoint_rejects_non_v3_or_https_onion_transport() {
+        let short_error =
+            classify_remote_endpoint_url("http://abcdefghijklmnop.onion/", "provider URL")
+                .await
+                .expect_err("short onion host must be rejected");
+        assert!(
+            short_error.contains("Tor v3"),
+            "unexpected error: {short_error}"
+        );
+
+        let https_error = classify_remote_endpoint_url(
+            &format!("https://{}.onion/", "a".repeat(56)),
+            "provider URL",
+        )
+        .await
+        .expect_err("https onion transport must be rejected");
+        assert!(
+            https_error.contains("http://"),
+            "unexpected error: {https_error}"
+        );
+    }
+
+    #[tokio::test]
     async fn local_endpoint_has_no_pinned_public_addresses() {
         let endpoint = classify_remote_endpoint_url("http://127.0.0.1:8080/", "provider URL")
             .await
@@ -256,5 +343,36 @@ mod tests {
 
         assert_eq!(endpoint.reachability, RemoteEndpointReachability::LocalOnly);
         assert!(endpoint.pinned_public_addresses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_egress_rejects_local_endpoint_without_override() {
+        let error = validate_remote_egress_url(
+            "http://127.0.0.1:8080/",
+            "marketplace URL",
+            false,
+            "set FROGLET_MARKETPLACE_ALLOW_LOCAL=1 only for explicit dev/test use",
+        )
+        .await
+        .expect_err("local endpoint should require override");
+
+        assert!(
+            error.contains("local or private-network"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_egress_allows_local_endpoint_with_override() {
+        let endpoint = validate_remote_egress_url(
+            "http://127.0.0.1:8080/",
+            "marketplace URL",
+            true,
+            "set FROGLET_MARKETPLACE_ALLOW_LOCAL=1 only for explicit dev/test use",
+        )
+        .await
+        .expect("local endpoint should be allowed with override");
+
+        assert_eq!(endpoint.reachability, RemoteEndpointReachability::LocalOnly);
     }
 }

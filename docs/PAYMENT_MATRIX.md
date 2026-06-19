@@ -9,25 +9,24 @@ cell**. It exists so that "does Froglet support X?" has one answer, and so
 that regressions in a specific rail × mode cell fail a release gate rather
 than a launch post.
 
-### Publish-path posture (free + Lightning)
+### Publish-path posture (free + Lightning + Stripe)
 
 The publish path (the `marketplace_publish` MCP / `froglet-node publish` CLI
-narrative) supports **free (`none`) and Lightning** settlement:
+narrative) supports **free (`none`), Lightning, and Stripe** settlement:
 
 - `froglet-protocol::manifest::validate_settlement_method` accepts
-  `settlement.method` in {`"none"`, `"lightning"`} and fails closed on any
-  other value. Lightning is settled via the daemon's hold-invoice escrow
-  (base fee + success fee, preimage as proof). Publishing a paid Lightning
-  service requires a Lightning backend on the node
-  (`FROGLET_PAYMENT_BACKEND=lightning`).
-- Stripe and x402 are defined in the protocol kernel and supported by their
-  settlement drivers at runtime, but are **not yet exposed on the publish
-  path**: fiat cannot produce a third-party-verifiable settlement proof, so
-  Stripe is deferred pending a labeled-proof design. Self-hosted operators
-  can still issue those offers via the lower-level provider API.
+  `settlement.method` in {`"none"`, `"lightning"`, `"stripe"`} and fails
+  closed on any other value. Lightning is settled via the daemon's
+  hold-invoice escrow (base fee + success fee, preimage as proof). Publishing
+  a paid Lightning service requires a Lightning backend on the node
+  (`FROGLET_PAYMENT_BACKEND=lightning`). Stripe publish uses Stripe MPP with
+  USD pricing and requires the Stripe backend/configuration on the node.
+- x402 is defined in the protocol kernel and supported by its settlement
+  driver at runtime, but is **not yet exposed on the publish path**. Operators
+  can still issue x402 offers via the lower-level provider API.
 
-The hosted Lightning + Stripe rows below are evidence that the **code is
-ready**; Lightning is now on the publish path, Stripe/x402 are not yet.
+The hosted Lightning + Stripe rows below are evidence for the code paths now
+reachable from publish; x402 remains lower-level only.
 
 ## 1. Supported rails and modes
 

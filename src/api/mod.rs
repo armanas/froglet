@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     error_handling::HandleErrorLayer,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -19,6 +19,7 @@ use std::{
     fs,
     io::Write,
     net::{IpAddr, SocketAddr},
+    path::{Path as FsPath, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
@@ -45,7 +46,7 @@ use crate::{
         CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionEntrypointKind,
         ExecutionMount, ExecutionPackageKind, ExecutionRuntime, ExecutionSecurityMode,
         ExecutionWorkload, default_contract_version_for, default_entrypoint_for,
-        default_entrypoint_kind_for,
+        default_entrypoint_kind_for, validate_execution_mount_descriptor,
     },
     jobs::{self, JobSpec, NewJob},
     nostr,
@@ -210,14 +211,24 @@ fn events_query_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     http_events::query_routes(state)
 }
 
-fn provider_routes() -> Router<Arc<AppState>> {
+fn provider_control_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/v1/provider/artifacts/publish", post(publish_artifact))
+        .route("/v1/provider/domain-claims/sign", post(sign_domain_claim))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_provider_control_auth_middleware,
+        ))
+}
+
+fn provider_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .merge(http_catalog::routes())
         .merge(http_confidential::routes())
         .merge(http_deals::provider_routes())
         .merge(http_events::provider_routes())
         .merge(http_settlement::provider_routes())
-        .route("/v1/provider/domain-claims/sign", post(sign_domain_claim))
+        .merge(provider_control_routes(state))
         .route_layer(ConcurrencyLimitLayer::new(16))
         .layer(
             ServiceBuilder::new()
@@ -228,11 +239,15 @@ fn provider_routes() -> Router<Arc<AppState>> {
         )
 }
 
-fn runtime_routes() -> Router<Arc<AppState>> {
+fn runtime_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .merge(http_discovery::runtime_routes())
         .merge(http_deals::runtime_routes())
         .merge(http_settlement::runtime_routes())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_runtime_auth_middleware,
+        ))
         .route_layer(ConcurrencyLimitLayer::new(16))
         .layer(
             ServiceBuilder::new()
@@ -286,7 +301,7 @@ pub fn public_router(state: Arc<AppState>) -> Router {
     // tower_governor::GovernorLayer for per-caller throttling.
     let base = common_routes()
         .merge(events_query_routes(&state))
-        .merge(provider_routes())
+        .merge(provider_routes(&state))
         .merge(publish_routes());
 
     // Hosted-trial routes are present on the public listener only when the
@@ -298,14 +313,17 @@ pub fn public_router(state: Arc<AppState>) -> Router {
     } else {
         base
     };
-    router.with_state(state)
+    router
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .with_state(state)
 }
 
 pub fn runtime_router(state: Arc<AppState>) -> Router {
     common_routes()
-        .merge(runtime_routes())
+        .merge(runtime_routes(&state))
         .merge(execute_wasm_routes(&state))
         .merge(jobs_routes(&state))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
@@ -319,11 +337,12 @@ pub fn runtime_router(state: Arc<AppState>) -> Router {
 pub fn router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(events_query_routes(&state))
-        .merge(runtime_routes())
-        .merge(provider_routes())
+        .merge(runtime_routes(&state))
+        .merge(provider_routes(&state))
         .merge(publish_routes())
         .merge(execute_wasm_routes(&state))
         .merge(jobs_routes(&state))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
@@ -645,6 +664,29 @@ where
     remote_json_request_inner(state, method, url, body, preserve_client_errors, &[]).await
 }
 
+async fn remote_json_request_with_client_error_passthrough_and_pinned_addresses<T, B>(
+    state: &AppState,
+    method: reqwest::Method,
+    url: String,
+    body: Option<&B>,
+    preserve_client_errors: bool,
+    pinned_addresses: &[IpAddr],
+) -> Result<T, ApiFailure>
+where
+    T: DeserializeOwned,
+    B: Serialize + ?Sized,
+{
+    remote_json_request_inner(
+        state,
+        method,
+        url,
+        body,
+        preserve_client_errors,
+        pinned_addresses,
+    )
+    .await
+}
+
 async fn remote_json_request_inner<T, B>(
     state: &AppState,
     method: reqwest::Method,
@@ -722,6 +764,25 @@ where
             json!({ "error": "invalid upstream json", "details": error.to_string(), "url": url }),
         )
     })
+}
+
+const MARKETPLACE_ALLOW_LOCAL_HINT: &str =
+    "set FROGLET_MARKETPLACE_ALLOW_LOCAL=1 only for explicit dev/test use";
+
+async fn configured_marketplace_endpoint_for_egress(
+    state: &AppState,
+) -> Result<Option<provider_resolution::ValidatedRemoteEndpoint>, String> {
+    let Some(raw_url) = state.config.marketplace_url.as_deref() else {
+        return Ok(None);
+    };
+    provider_resolution::validate_remote_egress_url(
+        raw_url,
+        "FROGLET_MARKETPLACE_URL",
+        state.config.marketplace_allow_local,
+        MARKETPLACE_ALLOW_LOCAL_HINT,
+    )
+    .await
+    .map(Some)
 }
 
 fn pinned_json_client(url: &str, pinned_addresses: &[IpAddr]) -> Result<reqwest::Client, String> {
@@ -870,6 +931,12 @@ struct ResolvedProvider {
     pinned_public_addresses: Vec<IpAddr>,
 }
 
+struct SyncedRequesterDeal {
+    deal: requester_deals::StoredRequesterDeal,
+    provider_sync_url: String,
+    pinned_public_addresses: Vec<IpAddr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RuntimeCreateDealScope {
     Full,
@@ -890,13 +957,7 @@ impl RuntimeCreateDealScope {
 }
 
 struct HostedTrialSession {
-    slot_id: usize,
-}
-
-impl HostedTrialSession {
-    fn quota_identity(&self) -> String {
-        format!("hosted-trial-session:{}", self.slot_id)
-    }
+    _slot_id: usize,
 }
 
 async fn resolve_runtime_provider(
@@ -976,7 +1037,28 @@ fn enforce_hosted_trial_create_deal_quota(
     }
 }
 
-pub(crate) fn public_quota_identity_from_headers(headers: &HeaderMap) -> String {
+fn normalized_public_quota_ip(value: &str) -> Option<String> {
+    let mut value = value.trim().trim_matches('"').trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = value.strip_prefix('[')
+        && let Some((host, _)) = stripped.split_once(']')
+    {
+        value = host;
+    } else if let Ok(socket_addr) = value.parse::<SocketAddr>() {
+        return Some(socket_addr.ip().to_string());
+    } else if value.matches(':').count() == 1
+        && let Some((host, port)) = value.rsplit_once(':')
+        && port.parse::<u16>().is_ok()
+    {
+        value = host.trim();
+    }
+
+    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+fn forwarded_public_quota_identity(headers: &HeaderMap) -> Option<String> {
     fn first_header_value(headers: &HeaderMap, name: &str) -> Option<String> {
         headers
             .get(name)
@@ -988,25 +1070,43 @@ pub(crate) fn public_quota_identity_from_headers(headers: &HeaderMap) -> String 
 
     if let Some(forwarded_for) = first_header_value(headers, "x-forwarded-for")
         && let Some(first) = forwarded_for.split(',').next().map(str::trim)
-        && !first.is_empty()
+        && let Some(ip) = normalized_public_quota_ip(first)
     {
-        return format!("origin:{first}");
+        return Some(format!("origin:forwarded:{ip}"));
     }
     for header_name in ["cf-connecting-ip", "x-real-ip"] {
-        if let Some(value) = first_header_value(headers, header_name) {
-            return format!("origin:{value}");
+        if let Some(value) = first_header_value(headers, header_name)
+            && let Some(ip) = normalized_public_quota_ip(&value)
+        {
+            return Some(format!("origin:forwarded:{ip}"));
         }
     }
     if let Some(forwarded) = first_header_value(headers, "forwarded") {
-        for part in forwarded.split(';') {
-            let part = part.trim();
-            if let Some(value) = part.strip_prefix("for=") {
-                let value = value.trim_matches('"');
-                if !value.is_empty() {
-                    return format!("origin:{value}");
+        for entry in forwarded.split(',') {
+            for part in entry.split(';') {
+                let part = part.trim();
+                if let Some((name, value)) = part.split_once('=')
+                    && name.eq_ignore_ascii_case("for")
+                    && let Some(ip) = normalized_public_quota_ip(value)
+                {
+                    return Some(format!("origin:forwarded:{ip}"));
                 }
             }
         }
+    }
+    None
+}
+
+pub(crate) fn public_quota_identity_from_request(
+    headers: &HeaderMap,
+    peer_addr: Option<SocketAddr>,
+    trust_forwarded_headers: bool,
+) -> String {
+    if trust_forwarded_headers && let Some(identity) = forwarded_public_quota_identity(headers) {
+        return identity;
+    }
+    if let Some(peer_addr) = peer_addr {
+        return format!("origin:peer:{}", peer_addr.ip());
     }
     "origin:anonymous".to_string()
 }
@@ -1163,11 +1263,29 @@ async fn validate_hosted_trial_free_local_offer(
         ));
     };
 
+    validate_hosted_trial_local_offer_record(state, &offer_record, &payload.spec).await
+}
+
+async fn validate_hosted_trial_local_offer_record(
+    state: &AppState,
+    offer_record: &ProviderControlOfferRecord,
+    spec: &WorkloadSpec,
+) -> Result<(), ApiFailure> {
     let Some(service_id) = offer_record.service_id.as_deref() else {
         return Err(hosted_trial_policy_error(
             "hosted trial offers must be provider-managed services",
         ));
     };
+    if !state
+        .config
+        .session_pool
+        .hosted_trial_allowed_service_ids
+        .contains(service_id)
+    {
+        return Err(hosted_trial_policy_error(
+            "hosted trial service is outside the public demo catalog",
+        ));
+    }
     if offer_record.publication_state != "active"
         || offer_record.offer.payload.settlement_method != "none"
         || offer_record.offer.payload.price_schedule.base_fee_msat != 0
@@ -1199,12 +1317,22 @@ async fn validate_hosted_trial_free_local_offer(
             "hosted trial service is not active and free on the local provider",
         ));
     }
-    validate_hosted_trial_workload_matches_service(&payload.spec, &service).map_err(|error| {
+    validate_hosted_trial_workload_matches_service(spec, &service).map_err(|error| {
         (
             StatusCode::FORBIDDEN,
             json!({ "error": "hosted trial workload is outside the free demo scope", "details": error }),
         )
     })
+}
+
+async fn hosted_trial_offer_record_by_hash(
+    state: &AppState,
+    offer_hash: &str,
+) -> Result<Option<ProviderControlOfferRecord>, String> {
+    Ok(current_offer_records(state, false)
+        .await?
+        .into_iter()
+        .find(|record| record.offer.hash == offer_hash))
 }
 
 fn validate_hosted_trial_quote_terms(
@@ -1385,7 +1513,7 @@ async fn persist_requester_artifacts(
 async fn sync_requester_deal_from_provider(
     state: Arc<AppState>,
     deal_id: &str,
-) -> Result<requester_deals::StoredRequesterDeal, ApiFailure> {
+) -> Result<SyncedRequesterDeal, ApiFailure> {
     let lookup_deal_id = deal_id.to_string();
     let stored = state
         .db
@@ -1464,7 +1592,7 @@ async fn sync_requester_deal_from_provider(
     let error = remote.error.clone();
     let receipt = remote.receipt.clone();
     let updated_at = settlement::current_unix_timestamp();
-    state
+    let deal = state
         .db
         .with_write_conn(move |conn| {
             requester_deals::update_requester_deal_state(
@@ -1491,24 +1619,33 @@ async fn sync_requester_deal_from_provider(
                 StatusCode::NOT_FOUND,
                 json!({ "error": "deal not found after sync", "deal_id": deal_id }),
             )
-        })
+        })?;
+
+    Ok(SyncedRequesterDeal {
+        deal,
+        provider_sync_url: provider_endpoint.url,
+        pinned_public_addresses: provider_endpoint.pinned_public_addresses,
+    })
 }
 
 pub async fn hosted_trial_runtime_create_deal(
     State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Json(payload): Json<RuntimeCreateDealRequest>,
 ) -> Response {
-    let session = match require_hosted_trial_session_auth(&headers, state.as_ref()) {
-        Ok(session) => session,
-        Err(error) => return error_json(error.0, error.1).into_response(),
-    };
+    if let Err(error) = require_hosted_trial_session_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1).into_response();
+    }
+    let quota_identity = public_quota_identity_from_request(
+        &headers,
+        connect_info.map(|ConnectInfo(peer_addr)| peer_addr),
+        state.config.public_quota.trust_forward_public_quota_headers,
+    );
     runtime_create_deal_inner(
         state,
         payload,
-        RuntimeCreateDealScope::HostedTrial {
-            quota_identity: session.quota_identity(),
-        },
+        RuntimeCreateDealScope::HostedTrial { quota_identity },
     )
     .await
 }
@@ -2093,7 +2230,7 @@ async fn runtime_create_deal_inner(
     }
 
     let stored = match sync_requester_deal_from_provider(state.clone(), &stored.deal_id).await {
-        Ok(stored) => stored,
+        Ok(synced) => synced.deal,
         Err(_) => stored,
     };
     let mut payment_intent = None;
@@ -2144,10 +2281,10 @@ pub async fn runtime_get_deal(
 
 async fn runtime_get_deal_inner(state: Arc<AppState>, deal_id: String) -> Response {
     match sync_requester_deal_from_provider(state, &deal_id).await {
-        Ok(deal) => (
+        Ok(synced) => (
             StatusCode::OK,
             Json(json!(RuntimeDealResponse {
-                deal: deal.public_record()
+                deal: synced.deal.public_record()
             })),
         )
             .into_response(),
@@ -2179,10 +2316,15 @@ pub async fn runtime_mock_pay_deal(
         );
     }
 
-    let stored = match sync_requester_deal_from_provider(state.clone(), &deal_id).await {
-        Ok(deal) => deal,
+    let synced = match sync_requester_deal_from_provider(state.clone(), &deal_id).await {
+        Ok(synced) => synced,
         Err(error) => return error_json(error.0, error.1),
     };
+    let SyncedRequesterDeal {
+        deal: stored,
+        provider_sync_url,
+        pinned_public_addresses,
+    } = synced;
 
     if !quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
         return error_json(
@@ -2194,17 +2336,18 @@ pub async fn runtime_mock_pay_deal(
         );
     }
 
-    let remote = match remote_json_request::<deals::DealRecord, _>(
+    let remote = match remote_json_request_with_pinned_addresses::<deals::DealRecord, _>(
         state.as_ref(),
         reqwest::Method::POST,
         format!(
             "{}/v1/provider/deals/{}/mock-pay",
-            stored.sync_provider_url(),
+            provider_sync_url,
             urlencoding::encode(&deal_id)
         ),
         Some(&MockPayDealRequest {
             success_preimage: stored.success_preimage.clone(),
         }),
+        &pinned_public_addresses,
     )
     .await
     {
@@ -2257,20 +2400,28 @@ pub async fn runtime_accept_deal(
         return error_json(error.0, error.1);
     }
 
-    let stored = match sync_requester_deal_from_provider(state.clone(), &deal_id).await {
-        Ok(deal) => deal,
+    let synced = match sync_requester_deal_from_provider(state.clone(), &deal_id).await {
+        Ok(synced) => synced,
         Err(error) => return error_json(error.0, error.1),
     };
+    let SyncedRequesterDeal {
+        deal: stored,
+        provider_sync_url,
+        pinned_public_addresses,
+    } = synced;
     let expected_result_hash = payload
         .expected_result_hash
         .or_else(|| stored.result_hash.clone());
 
-    let terminal = match remote_json_request_with_client_error_passthrough::<deals::DealRecord, _>(
+    let terminal = match remote_json_request_with_client_error_passthrough_and_pinned_addresses::<
+        deals::DealRecord,
+        _,
+    >(
         state.as_ref(),
         reqwest::Method::POST,
         format!(
             "{}/v1/provider/deals/{}/accept",
-            stored.sync_provider_url(),
+            provider_sync_url,
             urlencoding::encode(&deal_id)
         ),
         Some(&ReleaseDealPreimageRequest {
@@ -2278,6 +2429,7 @@ pub async fn runtime_accept_deal(
             expected_result_hash,
         }),
         true,
+        &pinned_public_addresses,
     )
     .await
     {
@@ -2956,17 +3108,15 @@ pub async fn get_artifact(
 
 pub async fn create_quote(
     State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Json(payload): Json<CreateQuoteRequest>,
 ) -> impl IntoResponse {
-    let quota_identity = if payload.requester_id.trim().is_empty() {
-        public_quota_identity_from_headers(&headers)
-    } else {
-        format!(
-            "requester:{}",
-            payload.requester_id.trim().to_ascii_lowercase()
-        )
-    };
+    let quota_identity = public_quota_identity_from_request(
+        &headers,
+        connect_info.map(|ConnectInfo(peer_addr)| peer_addr),
+        state.config.public_quota.trust_forward_public_quota_headers,
+    );
     if let Err(response) =
         enforce_identity_quota(&state.quote_create_quota, &quota_identity, "quote creation")
     {
@@ -3621,6 +3771,8 @@ pub async fn verify_invoice_bundle(
 
 pub async fn publish_event(
     State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(payload): Json<PublishRequest>,
 ) -> impl IntoResponse {
     let event = payload.event;
@@ -3633,6 +3785,17 @@ pub async fn publish_event(
     }
 
     tracing::info!("Received Event Publish: {:?}", event.kind);
+
+    let quota_identity = public_quota_identity_from_request(
+        &headers,
+        connect_info.map(|ConnectInfo(peer_addr)| peer_addr),
+        state.config.public_quota.trust_forward_public_quota_headers,
+    );
+    if let Err(response) =
+        enforce_identity_quota(&state.event_publish_quota, &quota_identity, "event publish")
+    {
+        return response;
+    }
 
     if event.id != expected_node_event_id(&event) {
         return error_json(
@@ -3647,13 +3810,6 @@ pub async fn publish_event(
             StatusCode::BAD_REQUEST,
             json!({ "error": "invalid signature" }),
         );
-    }
-
-    let quota_identity = format!("event-pubkey:{}", event.pubkey.to_ascii_lowercase());
-    if let Err(response) =
-        enforce_identity_quota(&state.event_publish_quota, &quota_identity, "event publish")
-    {
-        return response;
     }
 
     match insert_event_db(state.as_ref(), event).await {
@@ -3700,11 +3856,24 @@ pub async fn query_events(
         return response;
     }
 
+    let direct_request_id = payload.payment.as_ref().map(|payment| {
+        let preimage = json!({
+            "endpoint": "/v1/node/events/query",
+            "kinds": &payload.kinds,
+            "limit": payload.limit,
+            "payment_kind": payment.kind.as_str(),
+            "payment_token_hash": crypto::sha256_hex(payment.token.as_bytes()),
+        });
+        format!(
+            "direct-events-query-{}",
+            crypto::sha256_hex(canonical_json::to_vec(&preimage).unwrap_or_default())
+        )
+    });
     let reservation = match settlement::prepare_payment(
         state.as_ref(),
         ServiceId::EventsQuery,
         payload.payment,
-        None,
+        direct_request_id,
     )
     .await
     {
@@ -3776,11 +3945,25 @@ pub async fn execute_wasm(
         return response;
     }
 
+    let direct_request_id = payload.payment.as_ref().map(|payment| {
+        let submission_hash =
+            crypto::sha256_hex(canonical_json::to_vec(&payload.submission).unwrap_or_default());
+        let preimage = json!({
+            "endpoint": "/v1/node/execute/wasm",
+            "submission_hash": submission_hash,
+            "payment_kind": payment.kind.as_str(),
+            "payment_token_hash": crypto::sha256_hex(payment.token.as_bytes()),
+        });
+        format!(
+            "direct-execute-wasm-{}",
+            crypto::sha256_hex(canonical_json::to_vec(&preimage).unwrap_or_default())
+        )
+    });
     let reservation = match settlement::prepare_payment(
         state.as_ref(),
         ServiceId::ExecuteWasm,
         payload.payment,
-        None,
+        direct_request_id,
     )
     .await
     {
@@ -4448,6 +4631,7 @@ pub async fn get_confidential_profile(
 
 pub async fn open_confidential_session(
     State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Json(payload): Json<ConfidentialSessionOpenRequest>,
 ) -> impl IntoResponse {
@@ -4461,14 +4645,11 @@ pub async fn open_confidential_session(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let quota_identity = if requester_id.is_empty() {
-        public_quota_identity_from_headers(&headers)
-    } else {
-        format!(
-            "confidential-requester:{}",
-            requester_id.to_ascii_lowercase()
-        )
-    };
+    let quota_identity = public_quota_identity_from_request(
+        &headers,
+        connect_info.map(|ConnectInfo(peer_addr)| peer_addr),
+        state.config.public_quota.trust_forward_public_quota_headers,
+    );
     if let Err(response) = enforce_identity_quota(
         &state.confidential_session_quota,
         &quota_identity,
@@ -4867,6 +5048,22 @@ fn mount_access_capabilities(mounts: &[ExecutionMount]) -> Vec<String> {
         .collect()
 }
 
+fn validate_provider_control_publish_mounts(
+    mounts: Vec<ExecutionMount>,
+) -> Result<Vec<ExecutionMount>, String> {
+    for mount in &mounts {
+        validate_provider_control_publish_mount(mount)?;
+    }
+    Ok(mounts)
+}
+
+fn validate_provider_control_publish_mount(mount: &ExecutionMount) -> Result<(), String> {
+    if mount.binding.is_some() {
+        return Err("provider-control publish mounts must not include binding".to_string());
+    }
+    validate_execution_mount_descriptor(mount)
+}
+
 fn merged_access_capabilities(definition: &ProviderManagedOfferDefinition) -> Vec<String> {
     let mut capabilities = definition.capabilities.clone();
     capabilities.extend(mount_access_capabilities(&definition.mounts));
@@ -5218,7 +5415,7 @@ fn require_hosted_trial_session_auth(
         && let Some(token) = extract_bearer_token(headers)
         && let Some(slot_id) = pool.validate(&token)
     {
-        return Ok(HostedTrialSession { slot_id });
+        return Ok(HostedTrialSession { _slot_id: slot_id });
     }
     Err((
         StatusCode::UNAUTHORIZED,
@@ -5266,6 +5463,17 @@ fn require_provider_control_auth(headers: &HeaderMap, state: &AppState) -> Resul
         &state.provider_control_auth_token,
         "provider-control",
     )
+}
+
+async fn require_provider_control_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(request.headers(), state.as_ref()) {
+        return (status, Json(json!(body))).into_response();
+    }
+    next.run(request).await
 }
 
 pub(crate) async fn publish_artifact(
@@ -5323,7 +5531,9 @@ async fn sign_domain_claim(
         )
             .into_response();
     }
-    if !signing_message.starts_with("froglet-provider-domain-claim-v1\n") {
+    if !signing_message.starts_with("froglet-provider-domain-claim-v1\n")
+        && !signing_message.starts_with("froglet-provider-domain-claim-intent-v1\n")
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -5894,7 +6104,7 @@ fn provider_service_from_definition(
         entrypoint_kind: definition.entrypoint_kind.clone(),
         entrypoint: definition.entrypoint.clone(),
         contract_version: definition.contract_version.clone(),
-        mounts: service_record_mounts(definition, include_binding),
+        mounts: service_record_mounts(state, definition, include_binding),
         capabilities: definition.capabilities.clone(),
         mode: definition.mode.clone(),
         price_sats: definition.price_sats,
@@ -5929,13 +6139,29 @@ fn provider_service_from_definition(
 }
 
 fn service_record_mounts(
+    state: &AppState,
     definition: &ProviderManagedOfferDefinition,
     include_binding: bool,
 ) -> Vec<ExecutionMount> {
     if include_binding {
-        return definition.mounts.clone();
+        return definition
+            .mounts
+            .iter()
+            .cloned()
+            .map(|mut mount| {
+                mount.binding = trusted_mount_binding(state, &mount);
+                mount
+            })
+            .collect();
     }
     mounts_without_bindings(&definition.mounts)
+}
+
+fn trusted_mount_binding(state: &AppState, mount: &ExecutionMount) -> Option<String> {
+    match mount.kind.as_str() {
+        "postgres" => state.config.postgres_mounts.get(&mount.handle).cloned(),
+        _ => None,
+    }
 }
 
 fn mounts_without_bindings(mounts: &[ExecutionMount]) -> Vec<ExecutionMount> {
@@ -6011,6 +6237,112 @@ pub(crate) fn persist_provider_offer_definition(
     db::upsert_provider_managed_offer(conn, &definition.offer_id, &definition_json, now)
 }
 
+fn canonical_provider_artifact_path(state: &AppState, path: &str) -> Result<PathBuf, ApiFailure> {
+    let Some(root) = state.config.provider_artifact_root.as_ref() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "artifact_path requires FROGLET_PROVIDER_ARTIFACT_ROOT"
+            }),
+        ));
+    };
+    let root = fs::canonicalize(root).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "FROGLET_PROVIDER_ARTIFACT_ROOT must resolve to an existing directory",
+                "root": root,
+                "details": error.to_string(),
+            }),
+        )
+    })?;
+    if !root.is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "FROGLET_PROVIDER_ARTIFACT_ROOT must resolve to a directory",
+                "root": root,
+            }),
+        ));
+    }
+
+    let artifact_path = fs::canonicalize(path).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "artifact_path must resolve to an existing file under FROGLET_PROVIDER_ARTIFACT_ROOT",
+                "artifact_path": path,
+                "details": error.to_string(),
+            }),
+        )
+    })?;
+    if !artifact_path.starts_with(&root) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "artifact_path must resolve under FROGLET_PROVIDER_ARTIFACT_ROOT",
+                "artifact_path": path,
+                "resolved_path": artifact_path,
+                "root": root,
+            }),
+        ));
+    }
+    if !artifact_path.is_file() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "artifact_path must resolve to a file",
+                "artifact_path": path,
+                "resolved_path": artifact_path,
+            }),
+        ));
+    }
+    Ok(artifact_path)
+}
+
+fn display_path(path: &FsPath) -> String {
+    path.display().to_string()
+}
+
+fn reject_unused_publish_artifact_fields(
+    payload: &ProviderControlPublishArtifactRequest,
+    unused: &[(&str, bool)],
+) -> Result<(), ApiFailure> {
+    let provided: Vec<&str> = unused
+        .iter()
+        .filter_map(|(name, is_present)| is_present.then_some(*name))
+        .collect();
+    if provided.is_empty() {
+        return Ok(());
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": "publish_artifact request includes fields that are not used by the selected runtime/package_kind",
+            "fields": provided,
+            "runtime": payload.runtime.as_deref(),
+            "package_kind": payload.package_kind.as_deref(),
+        }),
+    ))
+}
+
+fn validated_publish_oci_binding(
+    oci_reference: String,
+    oci_digest: String,
+) -> Result<(String, String), ApiFailure> {
+    let reference = oci_reference.trim().to_string();
+    let digest = oci_digest.trim().to_ascii_lowercase();
+    crate::execution::digest_pinned_oci_image_reference(&reference, &digest).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": error
+            }),
+        )
+    })?;
+    Ok((reference, digest))
+}
+
 pub fn artifact_provider_offer_definition(
     state: &AppState,
     payload: ProviderControlPublishArtifactRequest,
@@ -6026,6 +6358,9 @@ pub fn artifact_provider_offer_definition(
     // "usd" → Stripe backend required.
     let price_currency =
         validate_price_currency_for_backends(state, payload.price_currency.as_deref())?;
+    let mounts =
+        validate_provider_control_publish_mounts(payload.mounts.clone().unwrap_or_default())
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     let runtime = if let Some(runtime) = payload.runtime.as_deref() {
         ExecutionRuntime::parse(runtime)
             .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
@@ -6090,29 +6425,42 @@ pub fn artifact_provider_offer_definition(
         oci_digest,
     ) = match (&runtime, &package_kind) {
         (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
-            let module_bytes = match (
+            reject_unused_publish_artifact_fields(
+                &payload,
+                &[
+                    ("inline_source", payload.inline_source.is_some()),
+                    ("oci_reference", payload.oci_reference.is_some()),
+                    ("oci_digest", payload.oci_digest.is_some()),
+                ],
+            )?;
+            let (module_bytes, source_path) = match (
                 payload.artifact_path.as_ref(),
                 payload.wasm_module_hex.as_ref(),
                 payload.oci_reference.as_ref(),
                 payload.oci_digest.as_ref(),
             ) {
-                (Some(path), None, None, None) => fs::read(path).map_err(|error| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        json!({
-                            "error": "failed to read artifact_path",
-                            "artifact_path": path,
-                            "details": error.to_string(),
-                        }),
-                    )
-                })?,
+                (Some(path), None, None, None) => {
+                    let artifact_path = canonical_provider_artifact_path(state, path)?;
+                    let module_bytes = fs::read(&artifact_path).map_err(|error| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            json!({
+                                "error": "failed to read artifact_path",
+                                "artifact_path": display_path(&artifact_path),
+                                "details": error.to_string(),
+                            }),
+                        )
+                    })?;
+                    (module_bytes, Some(display_path(&artifact_path)))
+                }
                 (None, Some(module_hex), None, None) => {
-                    hex::decode(module_hex).map_err(|error| {
+                    let module_bytes = hex::decode(module_hex).map_err(|error| {
                         (
                             StatusCode::BAD_REQUEST,
                             json!({ "error": format!("invalid wasm_module_hex: {error}") }),
                         )
-                    })?
+                    })?;
+                    (module_bytes, None)
                 }
                 (Some(_), Some(_), _, _) => {
                     return Err((
@@ -6154,31 +6502,35 @@ pub fn artifact_provider_offer_definition(
                         .unwrap_or_else(|| hex::encode(&module_bytes)),
                 ),
                 None,
-                payload.artifact_path,
+                source_path,
                 "artifact".to_string(),
                 None,
                 None,
             )
         }
         (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage) => {
-            let Some(oci_reference) = payload.oci_reference else {
+            let Some(oci_reference) = payload.oci_reference.clone() else {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     json!({ "error": "oci_reference is required for runtime=wasm package_kind=oci_image" }),
                 ));
             };
-            let Some(oci_digest) = payload.oci_digest else {
+            let Some(oci_digest) = payload.oci_digest.clone() else {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     json!({ "error": "oci_digest is required for runtime=wasm package_kind=oci_image" }),
                 ));
             };
-            if payload.artifact_path.is_some() || payload.wasm_module_hex.is_some() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": "artifact_path and wasm_module_hex are not used for runtime=wasm package_kind=oci_image" }),
-                ));
-            }
+            reject_unused_publish_artifact_fields(
+                &payload,
+                &[
+                    ("artifact_path", payload.artifact_path.is_some()),
+                    ("wasm_module_hex", payload.wasm_module_hex.is_some()),
+                    ("inline_source", payload.inline_source.is_some()),
+                ],
+            )?;
+            let (oci_reference, oci_digest) =
+                validated_publish_oci_binding(oci_reference, oci_digest)?;
             (
                 wasm::WORKLOAD_KIND_COMPUTE_WASM_OCI_V1.to_string(),
                 Some(oci_digest.clone()),
@@ -6191,21 +6543,33 @@ pub fn artifact_provider_offer_definition(
             )
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
-            let source_text = match (
+            reject_unused_publish_artifact_fields(
+                &payload,
+                &[
+                    ("wasm_module_hex", payload.wasm_module_hex.is_some()),
+                    ("oci_reference", payload.oci_reference.is_some()),
+                    ("oci_digest", payload.oci_digest.is_some()),
+                ],
+            )?;
+            let (source_text, source_path) = match (
                 payload.inline_source.as_ref(),
                 payload.artifact_path.as_ref(),
             ) {
-                (Some(source), None) => source.clone(),
-                (None, Some(path)) => fs::read_to_string(path).map_err(|error| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        json!({
-                            "error": "failed to read artifact_path",
-                            "artifact_path": path,
-                            "details": error.to_string(),
-                        }),
-                    )
-                })?,
+                (Some(source), None) => (source.clone(), None),
+                (None, Some(path)) => {
+                    let artifact_path = canonical_provider_artifact_path(state, path)?;
+                    let source_text = fs::read_to_string(&artifact_path).map_err(|error| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            json!({
+                                "error": "failed to read artifact_path",
+                                "artifact_path": display_path(&artifact_path),
+                                "details": error.to_string(),
+                            }),
+                        )
+                    })?;
+                    (source_text, Some(display_path(&artifact_path)))
+                }
                 (Some(_), Some(_)) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
@@ -6224,7 +6588,7 @@ pub fn artifact_provider_offer_definition(
                 Some(crypto::sha256_hex(source_text.as_bytes())),
                 None,
                 Some(source_text),
-                payload.artifact_path,
+                source_path,
                 runtime.as_str().to_string(),
                 None,
                 None,
@@ -6232,18 +6596,28 @@ pub fn artifact_provider_offer_definition(
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
         | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
-            let Some(oci_reference) = payload.oci_reference else {
+            let Some(oci_reference) = payload.oci_reference.clone() else {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     json!({ "error": "oci_reference is required for OCI execution" }),
                 ));
             };
-            let Some(oci_digest) = payload.oci_digest else {
+            let Some(oci_digest) = payload.oci_digest.clone() else {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     json!({ "error": "oci_digest is required for OCI execution" }),
                 ));
             };
+            reject_unused_publish_artifact_fields(
+                &payload,
+                &[
+                    ("artifact_path", payload.artifact_path.is_some()),
+                    ("wasm_module_hex", payload.wasm_module_hex.is_some()),
+                    ("inline_source", payload.inline_source.is_some()),
+                ],
+            )?;
+            let (oci_reference, oci_digest) =
+                validated_publish_oci_binding(oci_reference, oci_digest)?;
             (
                 crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
                 Some(oci_digest.clone()),
@@ -6287,7 +6661,7 @@ pub fn artifact_provider_offer_definition(
         entrypoint_kind: entrypoint_kind.as_str().to_string(),
         entrypoint,
         contract_version: contract_version.clone(),
-        mounts: payload.mounts.unwrap_or_default(),
+        mounts,
         mode: payload.mode.unwrap_or_else(default_service_mode),
         capabilities: normalize_declared_capabilities(payload.capabilities.unwrap_or_default())
             .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?,
@@ -6409,6 +6783,24 @@ async fn create_quote_record(
             json!({ "error": "offer not found", "offer_id": payload.offer_id }),
         ));
     };
+    if state.config.session_pool.enabled {
+        let Some(offer_record) =
+            provider_control_offer_record(state.as_ref(), &payload.offer_id, false)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load local provider offer", "details": error }),
+                    )
+                })?
+        else {
+            return Err(hosted_trial_policy_error(
+                "hosted trial offer is not an active local free service",
+            ));
+        };
+        validate_hosted_trial_local_offer_record(state.as_ref(), &offer_record, &payload.spec)
+            .await?;
+    }
 
     let requester_id = normalize_hex_field("requester_id", payload.requester_id.clone(), 64)
         .map_err(|response| (response.0, response.1.0))?;
@@ -6662,6 +7054,25 @@ async fn create_quote_record(
     Ok(quote)
 }
 
+const STRIPE_PAYMENT_MATERIALIZATION_KIND: &str = "stripe_payment_reservation";
+const PREPAID_INVOICE_MATERIALIZATION_KIND: &str = "lightning_prepaid_invoice";
+const SETTLEMENT_MATERIALIZATION_CLAIM_TTL_SECS: i64 = 300;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StripePaymentMaterializationRequest {
+    service_id: String,
+    price_sats: u64,
+    payment: ProvidedPayment,
+    request_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PrepaidInvoiceMaterializationRequest {
+    amount_sats: u64,
+    expiry_secs: u64,
+    external_id: String,
+}
+
 async fn create_deal_record(
     state: Arc<AppState>,
     payload: CreateDealRequest,
@@ -6710,6 +7121,31 @@ async fn create_deal_record(
             StatusCode::BAD_REQUEST,
             json!({ "error": "quote was not issued by this provider" }),
         ));
+    }
+
+    if state.config.session_pool.enabled {
+        if payload.payment.is_some() {
+            return Err(hosted_trial_policy_error(
+                "hosted trial deals do not accept payment payloads",
+            ));
+        }
+        validate_hosted_trial_quote_terms(&payload.quote)?;
+        let Some(offer_record) =
+            hosted_trial_offer_record_by_hash(state.as_ref(), &payload.quote.payload.offer_hash)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load local provider offer", "details": error }),
+                    )
+                })?
+        else {
+            return Err(hosted_trial_policy_error(
+                "hosted trial offer is not an active local free service",
+            ));
+        };
+        validate_hosted_trial_local_offer_record(state.as_ref(), &offer_record, &payload.spec)
+            .await?;
     }
 
     if payload.quote.payload.provider_id != state.identity.node_id() {
@@ -6884,6 +7320,43 @@ async fn create_deal_record(
                 json!({ "error": "idempotency key reused with different deal payload" }),
             ));
         }
+        if uses_stripe && existing.status == deals::DEAL_STATUS_PAYMENT_PENDING {
+            let persisted = materialize_pending_stripe_payment(state.clone(), &existing)
+                .await
+                .map_err(|response| (response.0, response.1.0))?;
+            if persisted.status == deals::DEAL_STATUS_ACCEPTED {
+                tokio::spawn(process_deal_with_reserved_permit(
+                    state,
+                    persisted.deal_id.clone(),
+                    None,
+                ));
+            }
+            return Ok((persisted.public_record(), StatusCode::OK));
+        }
+        if uses_prepaid
+            && existing.status == deals::DEAL_STATUS_PAYMENT_PENDING
+            && existing.payment_token_hash.is_none()
+        {
+            let (persisted, invoice) =
+                materialize_pending_prepaid_invoice(state.clone(), &existing)
+                    .await
+                    .map_err(|response| (response.0, response.1.0))?;
+            let mut record = persisted.public_record();
+            record.prepaid_invoice = invoice;
+            return Ok((record, StatusCode::OK));
+        }
+        if uses_prepaid {
+            let mut record = existing.public_record();
+            attach_persisted_prepaid_invoice(state.as_ref(), &mut record)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load persisted prepaid invoice", "details": error }),
+                    )
+                })?;
+            return Ok((record, StatusCode::OK));
+        }
         return Ok((existing.public_record(), StatusCode::OK));
     }
 
@@ -6900,6 +7373,43 @@ async fn create_deal_record(
             ));
         }
 
+        if uses_stripe && existing.status == deals::DEAL_STATUS_PAYMENT_PENDING {
+            let persisted = materialize_pending_stripe_payment(state.clone(), &existing)
+                .await
+                .map_err(|response| (response.0, response.1.0))?;
+            if persisted.status == deals::DEAL_STATUS_ACCEPTED {
+                tokio::spawn(process_deal_with_reserved_permit(
+                    state,
+                    persisted.deal_id.clone(),
+                    None,
+                ));
+            }
+            return Ok((persisted.public_record(), StatusCode::OK));
+        }
+        if uses_prepaid
+            && existing.status == deals::DEAL_STATUS_PAYMENT_PENDING
+            && existing.payment_token_hash.is_none()
+        {
+            let (persisted, invoice) =
+                materialize_pending_prepaid_invoice(state.clone(), &existing)
+                    .await
+                    .map_err(|response| (response.0, response.1.0))?;
+            let mut record = persisted.public_record();
+            record.prepaid_invoice = invoice;
+            return Ok((record, StatusCode::OK));
+        }
+        if uses_prepaid {
+            let mut record = existing.public_record();
+            attach_persisted_prepaid_invoice(state.as_ref(), &mut record)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load persisted prepaid invoice", "details": error }),
+                    )
+                })?;
+            return Ok((record, StatusCode::OK));
+        }
         return Ok((existing.public_record(), StatusCode::OK));
     }
 
@@ -6938,56 +7448,6 @@ async fn create_deal_record(
     }
 
     let deal_id = protocol::new_artifact_id();
-
-    // For Stripe deals, prepare the PaymentIntent synchronously.  The
-    // reservation's token_hash is the PaymentIntent ID used for later
-    // capture (commit) or cancellation (release).
-    let reservation: Option<PaymentReservation> = if uses_stripe {
-        let provided_payment = payload.payment.clone();
-        settlement::prepare_payment_for_amount(
-            state.as_ref(),
-            ServiceId::ExecuteWasm,
-            quoted_total_sats,
-            provided_payment,
-            Some(deal_id.clone()),
-        )
-        .await
-        .map_err(|error| (error.status_code(), error.details()))?
-    } else {
-        None
-    };
-
-    // For prepaid (phoenixd) deals, mint an ordinary invoice now.  phoenixd
-    // chooses the payment hash + preimage; we record the hash as the deal's
-    // payment token and return the BOLT11 to the buyer so it can pay upfront.
-    let prepaid_invoice: Option<deals::PrepaidInvoice> = if uses_prepaid {
-        let client = state.phoenixd_client.as_ref().ok_or_else(|| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({ "error": "phoenixd backend is not configured for prepaid Lightning" }),
-            )
-        })?;
-        let created = client
-            .create_invoice(
-                quoted_total_sats,
-                &deal_id,
-                state.config.lightning.base_invoice_expiry_secs,
-            )
-            .await
-            .map_err(|error| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    json!({ "error": format!("failed to mint prepaid invoice: {error}") }),
-                )
-            })?;
-        Some(deals::PrepaidInvoice {
-            bolt11: created.payment_request,
-            payment_hash: created.payment_hash_hex,
-            amount_sat: quoted_total_sats,
-        })
-    } else {
-        None
-    };
     let deal_artifact = payload.deal.clone();
     let mut reserved_execution_permit = None;
     let mut immediate_rejection: Option<(
@@ -7008,8 +7468,8 @@ async fn create_deal_record(
             json!({ "error": format!("failed to encode quote: {error}") }),
         )
     })?;
-    let pending_materialization_request =
-        uses_lightning_bundle.then(|| settlement::BuildLightningInvoiceBundleRequest {
+    let pending_materialization = if uses_lightning_bundle {
+        let request = settlement::BuildLightningInvoiceBundleRequest {
             session_id: Some(deal_id.clone()),
             requester_id: payload.deal.payload.requester_id.clone(),
             quote_hash: canonical_quote_hash.clone(),
@@ -7019,12 +7479,67 @@ async fn create_deal_record(
             base_fee_msat: payload.quote.payload.settlement_terms.base_fee_msat,
             success_fee_msat: payload.quote.payload.settlement_terms.success_fee_msat,
             created_at: now,
-        });
+        };
+        Some((
+            "lightning_invoice_bundle".to_string(),
+            serde_json::to_string(&request).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to encode settlement materialization: {error}") }),
+                )
+            })?,
+        ))
+    } else if uses_stripe {
+        let payment = payload.payment.clone().ok_or_else(|| {
+            (
+                StatusCode::PAYMENT_REQUIRED,
+                json!({
+                    "error": "stripe_mpp.v1 deals require a payment token (ProvidedPayment{kind:\"stripe_mpp\",token:<SPT>})"
+                }),
+            )
+        })?;
+        let request = StripePaymentMaterializationRequest {
+            service_id: ServiceId::ExecuteWasm.as_str().to_string(),
+            price_sats: quoted_total_sats,
+            payment,
+            request_id: deal_id.clone(),
+        };
+        Some((
+            STRIPE_PAYMENT_MATERIALIZATION_KIND.to_string(),
+            serde_json::to_string(&request).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to encode stripe materialization: {error}") }),
+                )
+            })?,
+        ))
+    } else if uses_prepaid {
+        let request = PrepaidInvoiceMaterializationRequest {
+            amount_sats: quoted_total_sats,
+            expiry_secs: state.config.lightning.base_invoice_expiry_secs,
+            external_id: deal_id.clone(),
+        };
+        Some((
+            PREPAID_INVOICE_MATERIALIZATION_KIND.to_string(),
+            serde_json::to_string(&request).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to encode prepaid materialization: {error}") }),
+                )
+            })?,
+        ))
+    } else {
+        None
+    };
 
     // Prepaid deals defer execution until the invoice is paid (like the bundle
     // flow), so they do not acquire an execution permit at create time; the
     // reconcile→promote path acquires one when the payment is confirmed.
-    if !uses_lightning_bundle && !uses_prepaid && payload.spec.runtime() == Some("wasm") {
+    if !uses_lightning_bundle
+        && !uses_prepaid
+        && !uses_stripe
+        && payload.spec.runtime() == Some("wasm")
+    {
         match state.wasm_sandbox.try_acquire_execution_permit() {
             Ok(permit) => reserved_execution_permit = Some(permit),
             Err(error_message) => {
@@ -7091,14 +7606,8 @@ async fn create_deal_record(
     let spec_for_evidence = payload.spec.clone();
     let quote_artifact_ref = json!({ "artifact_hash": quote_hash.clone() });
     let deal_artifact_ref = json!({ "artifact_hash": deal_hash.clone() });
-    let materialization_request_for_db = pending_materialization_request.clone();
+    let materialization_for_db = pending_materialization.clone();
     let immediate_rejection_for_db = immediate_rejection.clone();
-    // Pre-extract the Stripe PaymentIntent ID before the move closure so that
-    // the reservation itself stays available for release on failure paths below.
-    let stripe_token_hash_for_db = reservation.as_ref().map(|r| r.token_hash.clone());
-    // Pre-extract the prepaid payment hash; the BOLT11 itself stays out of the DB
-    // (it is returned to the buyer in the response, not persisted).
-    let prepaid_payment_hash_for_db = prepaid_invoice.as_ref().map(|i| i.payment_hash.clone());
     let insert_result = state
         .db
         .with_write_conn(move |conn| {
@@ -7152,13 +7661,6 @@ async fn create_deal_record(
                     },
                     payment_token_hash: if uses_lightning_bundle {
                         Some(payload.deal.payload.success_payment_hash.clone())
-                    } else if uses_prepaid {
-                        // phoenixd-chosen payment hash of the minted invoice.
-                        prepaid_payment_hash_for_db.clone()
-                    } else if uses_stripe {
-                        // Pre-extracted above to avoid moving reservation into
-                        // the DB closure (needed for release on failure paths).
-                        stripe_token_hash_for_db.clone()
                     } else {
                         None
                     },
@@ -7167,11 +7669,12 @@ async fn create_deal_record(
                     } else {
                         None
                     },
-                    initial_status: if uses_lightning_bundle || uses_prepaid {
-                        // Prepaid + bundle both wait for payment before executing.
+                    initial_status: if uses_lightning_bundle || uses_prepaid || uses_stripe {
+                        // Paid materialization happens after the deal row is
+                        // durable, so paid deals wait here until the
+                        // settlement-specific materializer records the token.
                         deals::DEAL_STATUS_PAYMENT_PENDING.to_string()
                     } else {
-                        // Stripe: funds reserved synchronously; deal is accepted immediately.
                         deals::DEAL_STATUS_ACCEPTED.to_string()
                     },
                     created_at: now,
@@ -7209,14 +7712,14 @@ async fn create_deal_record(
                         &deal_artifact_ref,
                         now,
                     )?;
-                    if let Some(materialization_request) = materialization_request_for_db.as_ref() {
-                        let request_json = serde_json::to_string(materialization_request)
-                            .map_err(|error| error.to_string())?;
+                    if let Some((materialization_kind, request_json)) =
+                        materialization_for_db.as_ref()
+                    {
                         db::insert_deal_settlement_materialization(
                             conn,
                             &insert_outcome.deal.deal_id,
-                            "lightning_invoice_bundle",
-                            &request_json,
+                            materialization_kind,
+                            request_json,
                             now,
                         )?;
                     }
@@ -7285,8 +7788,10 @@ async fn create_deal_record(
     let insert_result = match insert_result {
         Ok(result) => result,
         Err(error) => {
-            let _ = release_payment(state.as_ref(), reservation.clone()).await;
-            let status = if error.contains("idempotency key reused") {
+            let status = if error.contains("idempotency key reused")
+                || error.contains(deals::QUOTE_ALREADY_USED_ERROR)
+                || error.contains(deals::QUOTE_ADMISSION_IN_PROGRESS_ERROR)
+            {
                 StatusCode::CONFLICT
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -7296,7 +7801,38 @@ async fn create_deal_record(
     };
 
     if !insert_result.created {
-        let _ = release_payment(state.as_ref(), reservation).await;
+        if uses_stripe {
+            let persisted = materialize_pending_stripe_payment(state.clone(), &insert_result.deal)
+                .await
+                .map_err(|response| (response.0, response.1.0))?;
+            if persisted.status == deals::DEAL_STATUS_ACCEPTED {
+                tokio::spawn(process_deal_with_reserved_permit(
+                    state,
+                    persisted.deal_id.clone(),
+                    None,
+                ));
+            }
+            return Ok((persisted.public_record(), StatusCode::OK));
+        }
+        if uses_prepaid {
+            let (persisted, invoice) =
+                materialize_pending_prepaid_invoice(state.clone(), &insert_result.deal)
+                    .await
+                    .map_err(|response| (response.0, response.1.0))?;
+            let mut record = persisted.public_record();
+            record.prepaid_invoice = invoice;
+            if record.prepaid_invoice.is_none() {
+                attach_persisted_prepaid_invoice(state.as_ref(), &mut record)
+                    .await
+                    .map_err(|error| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({ "error": "failed to load persisted prepaid invoice", "details": error }),
+                        )
+                    })?;
+            }
+            return Ok((record, StatusCode::OK));
+        }
         return Ok((insert_result.deal.public_record(), StatusCode::OK));
     }
 
@@ -7352,12 +7888,37 @@ async fn create_deal_record(
         return Ok((persisted.public_record(), StatusCode::ACCEPTED));
     }
 
+    if uses_stripe {
+        let persisted = materialize_pending_stripe_payment(state.clone(), &insert_result.deal)
+            .await
+            .map_err(|response| (response.0, response.1.0))?;
+        if persisted.status == deals::DEAL_STATUS_ACCEPTED {
+            tokio::spawn(process_deal_with_reserved_permit(
+                state,
+                persisted.deal_id.clone(),
+                None,
+            ));
+        }
+        return Ok((persisted.public_record(), StatusCode::ACCEPTED));
+    }
+
     if uses_prepaid {
-        // Prepaid deals stay payment_pending until the buyer pays the invoice;
-        // the Lightning reconcile loop promotes + executes once phoenixd reports
-        // the payment received.  Return the BOLT11 so the buyer can pay it.
-        let mut record = insert_result.deal.public_record();
-        record.prepaid_invoice = prepaid_invoice;
+        let (persisted, invoice) =
+            materialize_pending_prepaid_invoice(state.clone(), &insert_result.deal)
+                .await
+                .map_err(|response| (response.0, response.1.0))?;
+        let mut record = persisted.public_record();
+        record.prepaid_invoice = invoice;
+        if record.prepaid_invoice.is_none() {
+            attach_persisted_prepaid_invoice(state.as_ref(), &mut record)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "failed to load persisted prepaid invoice", "details": error }),
+                    )
+                })?;
+        }
         return Ok((record, StatusCode::ACCEPTED));
     }
 
@@ -7479,24 +8040,7 @@ async fn materialize_pending_lightning_bundle(
     state: Arc<AppState>,
     deal_id: &str,
 ) -> Result<(), String> {
-    let lookup_deal_id = deal_id.to_string();
-    let (deal, materialization) = state
-        .db
-        .with_read_conn(
-            move |conn| -> Result<
-                (
-                    Option<deals::StoredDeal>,
-                    Option<db::DealSettlementMaterializationRecord>,
-                ),
-                String,
-            > {
-                Ok((
-                    deals::get_deal(conn, &lookup_deal_id)?,
-                    db::get_deal_settlement_materialization(conn, &lookup_deal_id)?,
-                ))
-            },
-        )
-        .await?;
+    let (deal, materialization) = claim_deal_materialization(state.as_ref(), deal_id).await?;
 
     let Some(deal) = deal else {
         return Ok(());
@@ -7608,6 +8152,409 @@ async fn materialize_pending_lightning_bundle(
     }
 
     Ok(())
+}
+
+async fn claim_deal_materialization(
+    state: &AppState,
+    deal_id: &str,
+) -> Result<
+    (
+        Option<deals::StoredDeal>,
+        Option<db::DealSettlementMaterializationRecord>,
+    ),
+    String,
+> {
+    let claim_deal_id = deal_id.to_string();
+    let now = settlement::current_unix_timestamp();
+    let mut token_bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut token_bytes);
+    let claim_token = hex::encode(token_bytes);
+    let claim_expires_at = now.saturating_add(SETTLEMENT_MATERIALIZATION_CLAIM_TTL_SECS);
+    state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation = (|| -> Result<
+                (
+                    Option<deals::StoredDeal>,
+                    Option<db::DealSettlementMaterializationRecord>,
+                ),
+                String,
+            > {
+                let deal = deals::get_deal(conn, &claim_deal_id)?;
+                let materialization = db::claim_deal_settlement_materialization(
+                    conn,
+                    &claim_deal_id,
+                    &claim_token,
+                    claim_expires_at,
+                    now,
+                )?;
+                Ok((deal, materialization))
+            })();
+
+            match operation {
+                Ok(result) => {
+                    conn.execute_batch("COMMIT")
+                        .map_err(|error| error.to_string())?;
+                    Ok(result)
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+        .await
+}
+
+fn prepaid_invoice_from_record(record: db::DealPrepaidInvoiceRecord) -> deals::PrepaidInvoice {
+    deals::PrepaidInvoice {
+        bolt11: record.bolt11,
+        payment_hash: record.payment_hash,
+        amount_sat: record.amount_sat,
+    }
+}
+
+async fn load_deal_prepaid_invoice(
+    state: &AppState,
+    deal_id: &str,
+) -> Result<Option<deals::PrepaidInvoice>, String> {
+    let deal_id = deal_id.to_string();
+    state
+        .db
+        .with_read_conn(move |conn| {
+            db::get_deal_prepaid_invoice(conn, &deal_id)
+                .map(|record| record.map(prepaid_invoice_from_record))
+        })
+        .await
+}
+
+async fn attach_persisted_prepaid_invoice(
+    state: &AppState,
+    record: &mut deals::DealRecord,
+) -> Result<(), String> {
+    record.prepaid_invoice = load_deal_prepaid_invoice(state, &record.deal_id).await?;
+    Ok(())
+}
+
+async fn materialize_pending_stripe_payment(
+    state: Arc<AppState>,
+    deal: &deals::StoredDeal,
+) -> Result<deals::StoredDeal, (StatusCode, Json<serde_json::Value>)> {
+    let (loaded_deal, materialization) = claim_deal_materialization(state.as_ref(), &deal.deal_id)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({ "error": "failed to claim stripe materialization", "details": error }),
+                ),
+            )
+        })?;
+    let deal = loaded_deal.unwrap_or_else(|| deal.clone());
+    let Some(materialization) = materialization else {
+        return Ok(deal);
+    };
+    if materialization.materialization_kind != STRIPE_PAYMENT_MATERIALIZATION_KIND {
+        return Ok(deal);
+    }
+
+    let request: StripePaymentMaterializationRequest =
+        serde_json::from_str(&materialization.request_json).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({ "error": format!("invalid stripe materialization payload: {error}") }),
+                ),
+            )
+        })?;
+    let reservation = match settlement::prepare_payment_for_amount(
+        state.as_ref(),
+        ServiceId::ExecuteWasm,
+        request.price_sats,
+        Some(request.payment),
+        Some(request.request_id),
+    )
+    .await
+    {
+        Ok(Some(reservation)) => reservation,
+        Ok(None) => {
+            let message = "stripe materialization returned no payment reservation".to_string();
+            fail_pending_deal_materialization(
+                state,
+                &deal,
+                "stripe_payment_materialization_failed",
+                message.clone(),
+            )
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to persist stripe materialization failure", "details": error })),
+                )
+            })?;
+            return Err((StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))));
+        }
+        Err(error) => {
+            let message = error.details()["error"]
+                .as_str()
+                .unwrap_or("stripe payment materialization failed")
+                .to_string();
+            return Err((error.status_code(), Json(json!({ "error": message }))));
+        }
+    };
+
+    let reservation_for_db = reservation.clone();
+    let deal_id_for_db = deal.deal_id.clone();
+    let persisted = state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation = (|| -> Result<deals::StoredDeal, String> {
+                let Some(current) = deals::get_deal(conn, &deal_id_for_db)? else {
+                    return Err("deal disappeared during stripe materialization".to_string());
+                };
+                if db::get_deal_settlement_materialization(conn, &deal_id_for_db)?.is_none() {
+                    return Ok(current);
+                }
+                if current.payment_token_hash.as_deref()
+                    == Some(reservation_for_db.token_hash.as_str())
+                {
+                    db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                    return Ok(current);
+                }
+                if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+                    return Ok(current);
+                }
+                let updated = deals::materialize_payment_for_pending_deal(
+                    conn,
+                    &deal_id_for_db,
+                    &reservation_for_db.token_hash,
+                    reservation_for_db.amount_sats,
+                    deals::DEAL_STATUS_ACCEPTED,
+                    settlement::current_unix_timestamp(),
+                )?;
+                if !updated {
+                    return deals::get_deal(conn, &deal_id_for_db)?.ok_or_else(|| {
+                        "deal disappeared during stripe materialization".to_string()
+                    });
+                }
+                db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                deals::get_deal(conn, &deal_id_for_db)?
+                    .ok_or_else(|| "materialized stripe deal not readable".to_string())
+            })();
+
+            match operation {
+                Ok(result) => {
+                    conn.execute_batch("COMMIT")
+                        .map_err(|error| error.to_string())?;
+                    Ok(result)
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+        .await;
+
+    match persisted {
+        Ok(deal) => Ok(deal),
+        Err(error) => {
+            let release_error = settlement::release_payment(state.as_ref(), &reservation).await;
+            let message = match release_error {
+                Ok(()) => error,
+                Err(release_error) => {
+                    format!(
+                        "{error}; additionally failed to release stripe reservation: {release_error}"
+                    )
+                }
+            };
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": message })),
+            ))
+        }
+    }
+}
+
+async fn materialize_pending_prepaid_invoice(
+    state: Arc<AppState>,
+    deal: &deals::StoredDeal,
+) -> Result<(deals::StoredDeal, Option<deals::PrepaidInvoice>), (StatusCode, Json<Value>)> {
+    let (loaded_deal, materialization) = claim_deal_materialization(state.as_ref(), &deal.deal_id)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({ "error": "failed to claim prepaid materialization", "details": error }),
+                ),
+            )
+        })?;
+    let deal = loaded_deal.unwrap_or_else(|| deal.clone());
+    let Some(materialization) = materialization else {
+        let invoice = load_deal_prepaid_invoice(state.as_ref(), &deal.deal_id)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to load persisted prepaid invoice", "details": error })),
+                )
+            })?;
+        return Ok((deal, invoice));
+    };
+    if materialization.materialization_kind != PREPAID_INVOICE_MATERIALIZATION_KIND {
+        let invoice = load_deal_prepaid_invoice(state.as_ref(), &deal.deal_id)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to load persisted prepaid invoice", "details": error })),
+                )
+            })?;
+        return Ok((deal, invoice));
+    }
+
+    if let Some(invoice) = load_deal_prepaid_invoice(state.as_ref(), &deal.deal_id)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to load persisted prepaid invoice", "details": error })),
+            )
+        })?
+    {
+        return Ok((deal, Some(invoice)));
+    }
+
+    let request: PrepaidInvoiceMaterializationRequest =
+        serde_json::from_str(&materialization.request_json).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({ "error": format!("invalid prepaid materialization payload: {error}") }),
+                ),
+            )
+        })?;
+    let client = state.phoenixd_client.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "phoenixd backend is not configured for prepaid Lightning" })),
+        )
+    })?;
+    let created = match client
+        .create_invoice_with_external_id(
+            request.amount_sats,
+            &deal.deal_id,
+            request.expiry_secs,
+            Some(&request.external_id),
+        )
+        .await
+    {
+        Ok(created) => created,
+        Err(error) => {
+            let message = format!("failed to mint prepaid invoice: {error}");
+            return Err((StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))));
+        }
+    };
+    let prepaid_invoice = deals::PrepaidInvoice {
+        bolt11: created.payment_request,
+        payment_hash: created.payment_hash_hex,
+        amount_sat: request.amount_sats,
+    };
+
+    let invoice_for_db = prepaid_invoice.clone();
+    let deal_id_for_db = deal.deal_id.clone();
+    let persisted = state
+        .db
+        .with_write_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            let operation =
+                (|| -> Result<(deals::StoredDeal, Option<deals::PrepaidInvoice>), String> {
+                    let Some(current) = deals::get_deal(conn, &deal_id_for_db)? else {
+                        return Err("deal disappeared during prepaid materialization".to_string());
+                    };
+                    if let Some(existing_invoice) =
+                        db::get_deal_prepaid_invoice(conn, &deal_id_for_db)?
+                    {
+                        let _ = db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                        return Ok((current, Some(prepaid_invoice_from_record(existing_invoice))));
+                    }
+                    if db::get_deal_settlement_materialization(conn, &deal_id_for_db)?.is_none() {
+                        return Err(
+                        "prepaid materialization was already completed without a persisted invoice"
+                            .to_string(),
+                    );
+                    }
+                    if current.payment_token_hash.as_deref()
+                        == Some(invoice_for_db.payment_hash.as_str())
+                    {
+                        db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                        db::insert_deal_prepaid_invoice(
+                            conn,
+                            &deal_id_for_db,
+                            &invoice_for_db.bolt11,
+                            &invoice_for_db.payment_hash,
+                            invoice_for_db.amount_sat,
+                            settlement::current_unix_timestamp(),
+                        )?;
+                        return Ok((current, Some(invoice_for_db)));
+                    }
+                    if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+                        return Err(
+                            "prepaid materialization target deal is no longer payment_pending"
+                                .to_string(),
+                        );
+                    }
+                    let updated = deals::materialize_payment_for_pending_deal(
+                        conn,
+                        &deal_id_for_db,
+                        &invoice_for_db.payment_hash,
+                        invoice_for_db.amount_sat,
+                        deals::DEAL_STATUS_PAYMENT_PENDING,
+                        settlement::current_unix_timestamp(),
+                    )?;
+                    if !updated {
+                        return Err("prepaid deal could not be materialized".to_string());
+                    }
+                    db::insert_deal_prepaid_invoice(
+                        conn,
+                        &deal_id_for_db,
+                        &invoice_for_db.bolt11,
+                        &invoice_for_db.payment_hash,
+                        invoice_for_db.amount_sat,
+                        settlement::current_unix_timestamp(),
+                    )?;
+                    db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                    let deal = deals::get_deal(conn, &deal_id_for_db)?
+                        .ok_or_else(|| "materialized prepaid deal not readable".to_string())?;
+                    Ok((deal, Some(invoice_for_db)))
+                })();
+
+            match operation {
+                Ok(result) => {
+                    conn.execute_batch("COMMIT")
+                        .map_err(|error| error.to_string())?;
+                    Ok(result)
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+        .await;
+
+    persisted.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        )
+    })
 }
 
 fn validate_job_spec(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
@@ -8742,29 +9689,27 @@ async fn load_runtime_requester_deal_and_payment_intent(
     ),
     ApiFailure,
 > {
-    let stored = sync_requester_deal_from_provider(state.clone(), deal_id).await?;
+    let SyncedRequesterDeal {
+        deal: stored,
+        provider_sync_url,
+        pinned_public_addresses,
+    } = sync_requester_deal_from_provider(state.clone(), deal_id).await?;
 
     if !quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
         return Ok((stored.public_record(), None));
     }
 
-    let provider_endpoint = runtime_accessible_provider_endpoint(
-        state.as_ref(),
-        stored.sync_provider_url(),
-        Some(&stored.provider_id),
-    )
-    .await?;
     let bundle: settlement::LightningInvoiceBundleSession =
         remote_json_request_with_pinned_addresses(
             state.as_ref(),
             reqwest::Method::GET,
             format!(
                 "{}/v1/provider/deals/{}/invoice-bundle",
-                provider_endpoint.url,
+                provider_sync_url,
                 urlencoding::encode(deal_id)
             ),
             Option::<&()>::None,
-            &provider_endpoint.pinned_public_addresses,
+            &pinned_public_addresses,
         )
         .await?;
     let report = settlement::validate_lightning_invoice_bundle(
@@ -9619,10 +10564,24 @@ async fn finalize_payment(
     reservation: Option<PaymentReservation>,
 ) -> Result<Option<PaymentReceipt>, (StatusCode, Json<serde_json::Value>)> {
     match reservation {
-        Some(reservation) => settlement::commit_payment(state, reservation)
-            .await
-            .map(Some)
-            .map_err(|error| error_json(error.status_code(), error.details())),
+        Some(reservation) => {
+            let release_on_error = reservation.clone();
+            match settlement::commit_payment(state, reservation).await {
+                Ok(receipt) => Ok(Some(receipt)),
+                Err(error) => {
+                    if let Err(release_error) =
+                        settlement::release_payment(state, &release_on_error).await
+                    {
+                        tracing::error!(
+                            service_id = %release_on_error.service_id.as_str(),
+                            method = %release_on_error.method,
+                            "failed to release payment reservation after commit failure: {release_error}"
+                        );
+                    }
+                    Err(error_json(error.status_code(), error.details()))
+                }
+            }
+        }
         None => Ok(None),
     }
 }
@@ -9979,6 +10938,7 @@ struct RecoveredDealResume {
     deal_id: String,
     previous_status: String,
     reset_running_status: bool,
+    spawn_after_recovery: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -10011,11 +10971,39 @@ fn recovery_execution_state(deal: &deals::StoredDeal) -> &'static str {
     }
 }
 
+#[derive(Default)]
+struct RecoveredDealSettlementRefs {
+    bundle: Option<settlement::LightningInvoiceBundleSession>,
+    stripe_settlement: Option<StripeSettlementInfo>,
+    prepaid_settlement: Option<PrepaidSettlementInfo>,
+}
+
 fn build_recovered_deal_failure(
     state: &AppState,
     deal: deals::StoredDeal,
     recovered_at: i64,
     bundle: Option<settlement::LightningInvoiceBundleSession>,
+    error_message: impl Into<String>,
+    failure: ReceiptFailure,
+) -> Result<RecoveredDealFailure, String> {
+    build_recovered_deal_failure_with_settlement(
+        state,
+        deal,
+        recovered_at,
+        RecoveredDealSettlementRefs {
+            bundle,
+            ..RecoveredDealSettlementRefs::default()
+        },
+        error_message,
+        failure,
+    )
+}
+
+fn build_recovered_deal_failure_with_settlement(
+    state: &AppState,
+    deal: deals::StoredDeal,
+    recovered_at: i64,
+    settlement_refs: RecoveredDealSettlementRefs,
     error_message: impl Into<String>,
     failure: ReceiptFailure,
 ) -> Result<RecoveredDealFailure, String> {
@@ -10027,9 +11015,9 @@ fn build_recovered_deal_failure(
         ReceiptSignSpec {
             deal_state: "failed",
             execution_state: recovery_execution_state(&deal),
-            bundle: bundle.as_ref(),
-            stripe_settlement: None,
-            prepaid_settlement: None,
+            bundle: settlement_refs.bundle.as_ref(),
+            stripe_settlement: settlement_refs.stripe_settlement,
+            prepaid_settlement: settlement_refs.prepaid_settlement,
             result_hash: None,
             result_format: None,
             result_envelope_hash: None,
@@ -10040,12 +11028,64 @@ fn build_recovered_deal_failure(
 
     Ok(RecoveredDealFailure {
         deal,
-        bundle,
+        bundle: settlement_refs.bundle,
         error_message,
         failure,
         receipt,
         receipt_json,
     })
+}
+
+async fn recovered_stripe_release_settlement(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+) -> Option<StripeSettlementInfo> {
+    let payment_intent_id = deal.payment_token_hash.clone()?;
+    let charged_msat = deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000);
+    let reservation = PaymentReservation {
+        request_id: deal.deal_id.clone(),
+        method: "stripe_mpp".to_string(),
+        service_id: ServiceId::ExecuteWasm,
+        amount_sats: deal.payment_amount_sats.unwrap_or(0),
+        token_hash: payment_intent_id.clone(),
+    };
+    if let Err(error) = settlement::release_payment(state, &reservation).await {
+        tracing::error!(
+            deal_id = %deal.deal_id,
+            payment_intent_id = %payment_intent_id,
+            "Stripe release failed while recovering expired deal: {error}"
+        );
+    }
+    Some(StripeSettlementInfo {
+        payment_intent_id,
+        charged_msat,
+        captured: false,
+    })
+}
+
+async fn recovered_prepaid_settlement(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+) -> Result<Option<PrepaidSettlementInfo>, String> {
+    let Some(payment_hash) = deal.payment_token_hash.clone() else {
+        return Ok(Some(PrepaidSettlementInfo {
+            payment_hash: String::new(),
+            preimage_hex: String::new(),
+            charged_msat: 0,
+            paid: false,
+        }));
+    };
+
+    match prepaid_settlement_for_deal(state, deal).await {
+        Ok(settlement) => Ok(Some(settlement)),
+        Err(error) if error.contains("not yet paid") => Ok(Some(PrepaidSettlementInfo {
+            payment_hash,
+            preimage_hex: String::new(),
+            charged_msat: 0,
+            paid: false,
+        })),
+        Err(error) => Err(error),
+    }
 }
 
 async fn classify_deal_recovery(
@@ -10167,12 +11207,41 @@ async fn classify_deal_recovery(
             "completion_deadline_elapsed_during_recovery",
             "deal completion_deadline elapsed while recovering from node restart",
         );
+        let stripe_settlement = if deal.payment_method.as_deref() == Some("stripe") {
+            recovered_stripe_release_settlement(state.as_ref(), &deal).await
+        } else {
+            None
+        };
+        let prepaid_settlement = if deal.payment_method.as_deref() == Some("lightning_prepaid") {
+            match recovered_prepaid_settlement(state.as_ref(), &deal).await {
+                Ok(settlement) => settlement,
+                Err(error) => {
+                    tracing::warn!(
+                        deal_id = %deal.deal_id,
+                        "prepaid settlement could not be verified during recovery; \
+                         leaving deal non-terminal for retry: {error}"
+                    );
+                    return Ok(DealRecoveryDecision::Requeue(RecoveredDealResume {
+                        deal_id: deal.deal_id,
+                        previous_status: deal.status.clone(),
+                        reset_running_status: false,
+                        spawn_after_recovery: false,
+                    }));
+                }
+            }
+        } else {
+            None
+        };
         return Ok(DealRecoveryDecision::Fail(Box::new(
-            build_recovered_deal_failure(
+            build_recovered_deal_failure_with_settlement(
                 state.as_ref(),
                 deal,
                 recovered_at,
-                bundle,
+                RecoveredDealSettlementRefs {
+                    bundle,
+                    stripe_settlement,
+                    prepaid_settlement,
+                },
                 "deal completion_deadline elapsed while recovering from node restart",
                 failure,
             )?,
@@ -10183,6 +11252,7 @@ async fn classify_deal_recovery(
         deal_id: deal.deal_id,
         previous_status: deal.status.clone(),
         reset_running_status: deal.status == deals::DEAL_STATUS_RUNNING,
+        spawn_after_recovery: deal.status != deals::DEAL_STATUS_PAYMENT_PENDING,
     }))
 }
 
@@ -10242,7 +11312,7 @@ async fn apply_recovery_plan(
                         &deal.deal_id,
                         "recovery_action",
                         &json!({
-                            "action": "requeued",
+                            "action": if deal.spawn_after_recovery { "requeued" } else { "held" },
                             "previous_status": deal.previous_status,
                         }),
                         recovered_at,
@@ -10318,11 +11388,9 @@ async fn apply_recovery_plan(
     }
 
     for deal in recovered_deals {
-        tokio::spawn(process_deal_with_reserved_permit(
-            state.clone(),
-            deal.deal_id,
-            None,
-        ));
+        if deal.spawn_after_recovery {
+            tokio::spawn(process_recovered_deal(state.clone(), deal.deal_id));
+        }
     }
 
     Ok(())
@@ -10356,6 +11424,20 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
 
         match deal {
             Some(deal) => {
+                if record.materialization_kind == STRIPE_PAYMENT_MATERIALIZATION_KIND {
+                    let _ = materialize_pending_stripe_payment(state.clone(), &deal)
+                        .await
+                        .map_err(|response| response.1.0.to_string())?;
+                    continue;
+                }
+
+                if record.materialization_kind == PREPAID_INVOICE_MATERIALIZATION_KIND {
+                    let _ = materialize_pending_prepaid_invoice(state.clone(), &deal)
+                        .await
+                        .map_err(|response| response.1.0.to_string())?;
+                    continue;
+                }
+
                 let requires_remote_cancellation = state
                     .config
                     .payment_backends
@@ -10443,104 +11525,55 @@ async fn recover_orphaned_deal_materializations_remote(state: Arc<AppState>) -> 
 
 /// Register this provider's descriptor and offers with a marketplace.
 ///
-/// Makes a `marketplace.register` deal with the marketplace at `marketplace_url`.
 /// Uses a lightweight HTTP POST to submit the registration payload directly,
-/// bypassing the full deal flow for bootstrap simplicity.
+/// bypassing the retired deal-facing marketplace registration flow.
 pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), String> {
-    let marketplace_url = match state.config.marketplace_url.as_deref() {
-        Some(url) => url.to_string(),
-        None => return Ok(()), // no marketplace configured
-    };
+    let marketplace_endpoint =
+        match configured_marketplace_endpoint_for_egress(state.as_ref()).await? {
+            Some(endpoint) => endpoint,
+            None => return Ok(()), // no marketplace configured
+        };
+    let marketplace_url = marketplace_endpoint.normalized_url;
+    let pinned_marketplace_addresses = marketplace_endpoint.pinned_public_addresses;
 
-    let descriptor = current_descriptor_artifact(state.as_ref()).await?;
-    let offers = current_offer_artifacts(state.as_ref()).await?;
-
-    let descriptor_json = serde_json::to_value(&descriptor).map_err(|e| e.to_string())?;
-    let offer_jsons: Vec<serde_json::Value> = offers
-        .iter()
-        .map(|o| serde_json::to_value(o).map_err(|e| e.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // Determine our feed URL from transport status
     let transport_status = state.transport_status.lock().await.clone();
-    let feed_url = transport_status
-        .clearnet_url
-        .or(transport_status.tor_onion_url);
-
-    let registration_input = serde_json::json!({
-        "descriptor": descriptor_json,
-        "offers": offer_jsons,
-        "feed_url": feed_url,
-    });
-
-    // Build a builtin execution workload for marketplace.register
-    let execution = crate::execution::ExecutionWorkload::builtin_service(
-        "marketplace.register".to_string(),
-        registration_input,
-    )?;
-
-    // Call the marketplace's quote endpoint
-    let quote_url = format!("{marketplace_url}/v1/provider/quotes");
-    let quote_response: SignedArtifact<QuotePayload> = remote_json_request(
-        state.as_ref(),
-        reqwest::Method::POST,
-        quote_url,
-        Some(&serde_json::json!({
-            "offer_id": "marketplace.register",
-            "requester_id": state.identity.node_id(),
-            "kind": "execution",
-            "execution": execution,
-        })),
-    )
-    .await
-    .map_err(|(status, body)| format!("marketplace quote failed ({status}): {body}"))?;
-    let quote_response = verify_marketplace_quote_artifact(quote_response)
-        .map_err(|error| format!("marketplace quote verification failed: {error}"))?;
-
-    // Create and sign a deal referencing the quote
-    let created_at = settlement::current_unix_timestamp();
-    let deal_payload = protocol::DealPayload {
-        provider_id: quote_response.payload.provider_id.clone(),
-        requester_id: state.identity.node_id().to_string(),
-        quote_hash: quote_response.hash.clone(),
-        workload_hash: quote_response.payload.workload_hash.clone(),
-        confidential_session_hash: None,
-        extension_refs: Vec::new(),
-        authority_ref: None,
-        supersedes_deal_hash: None,
-        client_nonce: None,
-        success_payment_hash: crypto::sha256_hex(format!("mkt-reg-{created_at}")),
-        admission_deadline: created_at + 60,
-        completion_deadline: created_at + 90,
-        acceptance_deadline: created_at + 120,
+    let (provider_url, transport) = if let Some(url) = transport_status.clearnet_url {
+        (url, "clearnet")
+    } else if let Some(url) = transport_status.tor_onion_url {
+        (url, "tor")
+    } else {
+        return Err(
+            "marketplace registration requires an advertised provider URL; set FROGLET_PUBLIC_BASE_URL or enable Tor"
+                .to_string(),
+        );
     };
-    let deal = protocol::sign_artifact(
-        state.identity.node_id(),
-        |msg| state.identity.sign_message_hex(msg),
-        protocol::ARTIFACT_TYPE_DEAL,
-        created_at,
-        deal_payload,
-    )?;
 
-    // Send deal to marketplace
-    let deal_url = format!("{marketplace_url}/v1/provider/deals");
-    let _deal_response: serde_json::Value = remote_json_request(
+    let registration_url = format!("{}/v1/registrations", marketplace_url.trim_end_matches('/'));
+    let registration_response: serde_json::Value = remote_json_request_with_pinned_addresses(
         state.as_ref(),
         reqwest::Method::POST,
-        deal_url,
+        registration_url,
         Some(&serde_json::json!({
-            "quote": quote_response,
-            "deal": deal,
-            "kind": "execution",
-            "execution": execution,
+            "provider_url": provider_url,
+            "transport": transport,
         })),
+        &pinned_marketplace_addresses,
     )
     .await
-    .map_err(|(status, body)| format!("marketplace deal failed ({status}): {body}"))?;
+    .map_err(|(status, body)| format!("marketplace registration failed ({status}): {body}"))?;
 
     tracing::info!(
         marketplace = marketplace_url,
-        offers = offers.len(),
+        provider_url = provider_url,
+        transport = transport,
+        provider_id = registration_response
+            .get("provider_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("<unknown>"),
+        offers_seen = registration_response
+            .get("offers_seen")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
         "registered with marketplace"
     );
     Ok(())
@@ -11943,6 +12976,49 @@ async fn reject_deal_before_execution(
     }
 }
 
+fn deal_spec_requires_wasm_permit(spec: &WorkloadSpec) -> bool {
+    match spec {
+        WorkloadSpec::Execution { execution } => execution.requires_wasm_permit(),
+        WorkloadSpec::Wasm { .. }
+        | WorkloadSpec::OciWasm { .. }
+        | WorkloadSpec::AttestedWasm { .. } => true,
+        WorkloadSpec::ConfidentialService { .. } | WorkloadSpec::EventsQuery { .. } => false,
+    }
+}
+
+async fn process_recovered_deal(state: Arc<AppState>, deal_id: String) {
+    let lookup_deal_id = deal_id.clone();
+    let loaded_deal = state
+        .db
+        .with_read_conn(move |conn| deals::get_deal(conn, &lookup_deal_id))
+        .await;
+
+    let reserved_execution_permit = match loaded_deal {
+        Ok(Some(deal)) if deal.status == deals::DEAL_STATUS_ACCEPTED => {
+            if deal_spec_requires_wasm_permit(&deal.spec) {
+                match state.wasm_sandbox.acquire_execution_permit().await {
+                    Ok(permit) => Some(permit),
+                    Err(error) => {
+                        tracing::error!(
+                            "Failed to reserve Wasm execution permit for recovered deal {deal_id}: {error}"
+                        );
+                        return;
+                    }
+                }
+            } else {
+                None
+            }
+        }
+        Ok(Some(_)) | Ok(None) => return,
+        Err(error) => {
+            tracing::error!("Failed to load recovered deal {deal_id}: {error}");
+            return;
+        }
+    };
+
+    process_deal_with_reserved_permit(state, deal_id, reserved_execution_permit).await;
+}
+
 async fn process_deal_with_reserved_permit(
     state: Arc<AppState>,
     deal_id: String,
@@ -12313,10 +13389,11 @@ async fn process_deal_with_reserved_permit(
                                         completed_at,
                                     )?;
 
-                                    deals::complete_deal_success(
+                                    let updated = deals::complete_deal_success_if_status(
                                         conn,
-                                        deals::DealSuccessPersistence {
+                                        deals::DealSuccessCompletion {
                                             deal_id: &deal_for_commit.deal_id,
+                                            expected_status: deals::DEAL_STATUS_RUNNING,
                                             result: &result_for_db,
                                             explicit_result_hash: Some(
                                                 &output_for_commit.result_hash,
@@ -12327,6 +13404,9 @@ async fn process_deal_with_reserved_permit(
                                             now: completed_at,
                                         },
                                     )?;
+                                    if !updated {
+                                        return Ok(());
+                                    }
                                     Ok(())
                                 })();
 
@@ -12479,14 +13559,17 @@ async fn process_deal_with_reserved_permit(
                                         &json!({ "artifact_hash": receipt_for_db.hash }),
                                         completed_at,
                                     )?;
-                                    deals::complete_deal_failure(
+                                    let _ = deals::complete_deal_failure_if_status(
                                         conn,
-                                        &deal_id,
-                                        "stripe_capture_failed",
-                                        &receipt_for_db,
-                                        Some(&failure_evidence_hash),
-                                        Some(&receipt_for_db.hash),
-                                        completed_at,
+                                        deals::DealTerminalTransition {
+                                            deal_id: &deal_id,
+                                            expected_status: deals::DEAL_STATUS_RUNNING,
+                                            error: "stripe_capture_failed",
+                                            receipt: &receipt_for_db,
+                                            failure_evidence_hash: Some(&failure_evidence_hash),
+                                            receipt_artifact_hash: Some(&receipt_for_db.hash),
+                                            now: completed_at,
+                                        },
                                     )?;
                                     Ok(())
                                 })();
@@ -12654,14 +13737,17 @@ async fn process_deal_with_reserved_permit(
                             completed_at,
                         )?;
 
-                        deals::complete_deal_failure(
+                        let _ = deals::complete_deal_failure_if_status(
                             conn,
-                            &deal_id,
-                            &error_message,
-                            &receipt_for_db,
-                            Some(&failure_evidence_hash),
-                            Some(&receipt_for_db.hash),
-                            completed_at,
+                            deals::DealTerminalTransition {
+                                deal_id: &deal_id,
+                                expected_status: deals::DEAL_STATUS_RUNNING,
+                                error: &error_message,
+                                receipt: &receipt_for_db,
+                                failure_evidence_hash: Some(&failure_evidence_hash),
+                                receipt_artifact_hash: Some(&receipt_for_db.hash),
+                                now: completed_at,
+                            },
                         )?;
                         Ok(())
                     })();
@@ -12707,7 +13793,7 @@ mod tests {
     };
     use axum::{
         body::{Body, to_bytes},
-        http::{Method, Request, StatusCode, header},
+        http::{HeaderMap, Method, Request, StatusCode, header},
     };
     use std::sync::{
         Arc,
@@ -12845,6 +13931,8 @@ mod tests {
                 session_ttl_secs: 300,
             },
             marketplace_url: None,
+            marketplace_allow_local: false,
+            provider_artifact_root: None,
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
             hosted_trial_origin_secret: None,
@@ -13146,7 +14234,7 @@ mod tests {
                 runtime: Some("python".to_string()),
                 package_kind: Some("inline_source".to_string()),
                 entrypoint_kind: Some("handler".to_string()),
-                entrypoint: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
                 capabilities: None,
@@ -13166,6 +14254,306 @@ mod tests {
         .await;
     }
 
+    fn base_python_publish_request(service_id: &str) -> ProviderControlPublishArtifactRequest {
+        ProviderControlPublishArtifactRequest {
+            service_id: service_id.to_string(),
+            offer_id: None,
+            artifact_path: None,
+            wasm_module_hex: None,
+            oci_reference: None,
+            oci_digest: None,
+            runtime: Some("python".to_string()),
+            package_kind: Some("inline_source".to_string()),
+            entrypoint_kind: Some("handler".to_string()),
+            entrypoint: Some("handler.py".to_string()),
+            contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+            mounts: None,
+            capabilities: None,
+            inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
+            summary: Some(format!("test service {service_id}")),
+            starter: None,
+            mode: Some("sync".to_string()),
+            price_sats: 0,
+            price_currency: None,
+            publication_state: Some("active".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }
+    }
+
+    fn set_provider_artifact_root(state: &mut Arc<AppState>, root: std::path::PathBuf) {
+        Arc::get_mut(state)
+            .expect("unique test state")
+            .config
+            .provider_artifact_root = Some(root);
+    }
+
+    #[test]
+    fn public_quota_identity_trusts_forwarded_headers_only_when_configured() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.10"));
+        let peer_addr: SocketAddr = "198.51.100.25:49152".parse().expect("peer addr");
+
+        assert_eq!(
+            public_quota_identity_from_request(&headers, Some(peer_addr), false),
+            "origin:peer:198.51.100.25"
+        );
+        assert_eq!(
+            public_quota_identity_from_request(&headers, Some(peer_addr), true),
+            "origin:forwarded:203.0.113.10"
+        );
+
+        let mut malformed = HeaderMap::new();
+        malformed.insert("forwarded", HeaderValue::from_static("for=_hidden"));
+        assert_eq!(
+            public_quota_identity_from_request(&malformed, Some(peer_addr), true),
+            "origin:peer:198.51.100.25"
+        );
+    }
+
+    #[test]
+    fn provider_control_publish_rejects_unsafe_mount_descriptors() {
+        let state = test_app_state(PaymentBackend::None);
+
+        let mut binding_payload = base_python_publish_request("bad-mount-binding");
+        binding_payload.mounts = Some(vec![crate::execution::ExecutionMount {
+            kind: "postgres".to_string(),
+            handle: "analytics".to_string(),
+            binding: Some("postgres://example".to_string()),
+            read_only: true,
+        }]);
+        let binding_error = artifact_provider_offer_definition(state.as_ref(), binding_payload)
+            .expect_err("caller-supplied mount binding must be rejected");
+        assert_eq!(binding_error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            binding_error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("must not include binding")),
+            "unexpected error payload: {}",
+            binding_error.1
+        );
+
+        let mut kind_payload = base_python_publish_request("bad-mount-kind");
+        kind_payload.mounts = Some(vec![crate::execution::ExecutionMount {
+            kind: "filesystem".to_string(),
+            handle: "workspace".to_string(),
+            binding: None,
+            read_only: true,
+        }]);
+        let kind_error = artifact_provider_offer_definition(state.as_ref(), kind_payload)
+            .expect_err("unknown mount kind must be rejected");
+        assert_eq!(kind_error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            kind_error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("unsupported mount kind")),
+            "unexpected error payload: {}",
+            kind_error.1
+        );
+
+        let mut handle_payload = base_python_publish_request("bad-mount-handle");
+        handle_payload.mounts = Some(vec![crate::execution::ExecutionMount {
+            kind: "sqlite".to_string(),
+            handle: "Workspace".to_string(),
+            binding: None,
+            read_only: true,
+        }]);
+        let handle_error = artifact_provider_offer_definition(state.as_ref(), handle_payload)
+            .expect_err("invalid mount handle must be rejected");
+        assert_eq!(handle_error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            handle_error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("mount handle")),
+            "unexpected error payload: {}",
+            handle_error.1
+        );
+    }
+
+    #[test]
+    fn provider_control_artifact_path_requires_configured_root_and_blocks_escape() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let root = unique_temp_dir("artifact-root");
+        let outside = unique_temp_dir("artifact-outside");
+        std::fs::create_dir_all(&root).expect("artifact root");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        let inside_file = root.join("handler.py");
+        let outside_file = outside.join("handler.py");
+        std::fs::write(
+            &inside_file,
+            "def handler(event, context):\n    return event\n",
+        )
+        .expect("inside source");
+        std::fs::write(
+            &outside_file,
+            "def handler(event, context):\n    return event\n",
+        )
+        .expect("outside source");
+
+        let mut missing_root = base_python_publish_request("missing-artifact-root");
+        missing_root.inline_source = None;
+        missing_root.artifact_path = Some(inside_file.display().to_string());
+        let missing_root_error = artifact_provider_offer_definition(state.as_ref(), missing_root)
+            .expect_err("artifact_path without configured root must be rejected");
+        assert_eq!(missing_root_error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            missing_root_error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("FROGLET_PROVIDER_ARTIFACT_ROOT")),
+            "unexpected error payload: {}",
+            missing_root_error.1
+        );
+
+        set_provider_artifact_root(&mut state, root.clone());
+
+        let mut outside_payload = base_python_publish_request("outside-artifact-root");
+        outside_payload.inline_source = None;
+        outside_payload.artifact_path = Some(outside_file.display().to_string());
+        let outside_error = artifact_provider_offer_definition(state.as_ref(), outside_payload)
+            .expect_err("artifact_path outside root must be rejected");
+        assert_eq!(outside_error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            outside_error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("must resolve under")),
+            "unexpected error payload: {}",
+            outside_error.1
+        );
+
+        #[cfg(unix)]
+        {
+            let symlink_path = root.join("escape.py");
+            std::os::unix::fs::symlink(&outside_file, &symlink_path).expect("symlink escape");
+            let mut symlink_payload = base_python_publish_request("symlink-artifact-root");
+            symlink_payload.inline_source = None;
+            symlink_payload.artifact_path = Some(symlink_path.display().to_string());
+            let symlink_error = artifact_provider_offer_definition(state.as_ref(), symlink_payload)
+                .expect_err("artifact_path symlink escape must be rejected");
+            assert_eq!(symlink_error.0, StatusCode::BAD_REQUEST);
+            assert!(
+                symlink_error.1["error"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("must resolve under")),
+                "unexpected error payload: {}",
+                symlink_error.1
+            );
+        }
+
+        let mut inside_payload = base_python_publish_request("inside-artifact-root");
+        inside_payload.inline_source = None;
+        inside_payload.artifact_path = Some(inside_file.display().to_string());
+        let definition = artifact_provider_offer_definition(state.as_ref(), inside_payload)
+            .expect("artifact_path inside configured root should be accepted");
+        let inside_display = std::fs::canonicalize(&inside_file)
+            .expect("canonical inside path")
+            .display()
+            .to_string();
+        assert_eq!(
+            definition.source_path.as_deref(),
+            Some(inside_display.as_str())
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn provider_control_publish_rejects_ambiguous_artifact_inputs() {
+        let state = test_app_state(PaymentBackend::None);
+
+        let mut python_payload = base_python_publish_request("ambiguous-python");
+        python_payload.wasm_module_hex = Some("00".to_string());
+        let python_error = artifact_provider_offer_definition(state.as_ref(), python_payload)
+            .expect_err("python inline source must reject unused wasm bytes");
+        assert_eq!(python_error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(python_error.1["fields"], json!(["wasm_module_hex"]));
+
+        let mut wasm_payload = base_python_publish_request("ambiguous-wasm");
+        wasm_payload.runtime = Some("wasm".to_string());
+        wasm_payload.package_kind = Some("inline_module".to_string());
+        wasm_payload.contract_version = Some(wasm::WASM_RUN_JSON_ABI_V1.to_string());
+        wasm_payload.inline_source = Some("def handler(event, context): return event".to_string());
+        wasm_payload.wasm_module_hex = Some("00".to_string());
+        let wasm_error = artifact_provider_offer_definition(state.as_ref(), wasm_payload)
+            .expect_err("wasm inline module must reject unused inline source");
+        assert_eq!(wasm_error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(wasm_error.1["fields"], json!(["inline_source"]));
+    }
+
+    #[test]
+    fn provider_control_publish_rejects_invalid_oci_binding() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut payload = base_python_publish_request("bad-oci");
+        payload.runtime = Some("container".to_string());
+        payload.package_kind = Some("oci_image".to_string());
+        payload.entrypoint_kind = None;
+        payload.entrypoint = None;
+        payload.contract_version = Some(CONTRACT_CONTAINER_JSON_V1.to_string());
+        payload.inline_source = None;
+        payload.oci_reference = Some("no-slash".to_string());
+        payload.oci_digest = Some("xyz".to_string());
+
+        let error = artifact_provider_offer_definition(state.as_ref(), payload)
+            .expect_err("invalid OCI binding must be rejected at publication");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("oci_digest")),
+            "unexpected error payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_control_auth_rejection_precedes_json_extraction() {
+        let state = test_app_state(PaymentBackend::None);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/provider/artifacts/publish")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{"))
+            .expect("build malformed provider-control request");
+
+        let response = public_router(state)
+            .oneshot(request)
+            .await
+            .expect("provider-control publish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(payload["error"], "missing provider-control authorization");
+    }
+
+    #[tokio::test]
+    async fn provider_domain_claim_sign_accepts_intent_separator() {
+        let state = test_app_state(PaymentBackend::None);
+        let request = runtime_request(
+            Method::POST,
+            "/v1/provider/domain-claims/sign",
+            Some("test-provider-control-token"),
+            Some(json!({
+                "signing_message": concat!(
+                    "froglet-provider-domain-claim-intent-v1\n",
+                    "provider_id:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                    "slug:demo-1\n",
+                    "hostname:demo-1.providers.froglet.dev\n",
+                    "public_ip:8.8.8.8"
+                )
+            })),
+        );
+
+        let response = public_router(state)
+            .oneshot(request)
+            .await
+            .expect("domain-claim sign response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["signature"].as_str().map(str::len), Some(128));
+    }
+
     #[tokio::test]
     async fn publishing_gpu_capability_requires_configured_provider_gpu() {
         let state = test_app_state(PaymentBackend::None);
@@ -13178,7 +14566,7 @@ mod tests {
                 artifact_path: None,
                 wasm_module_hex: None,
                 oci_reference: Some("ghcr.io/example/gpu-runner".to_string()),
-                oci_digest: Some(format!("sha256:{}", "ab".repeat(32))),
+                oci_digest: Some("ab".repeat(32)),
                 runtime: Some("container".to_string()),
                 package_kind: Some("oci_image".to_string()),
                 entrypoint_kind: None,
@@ -13335,7 +14723,13 @@ mod tests {
 
     #[tokio::test]
     async fn published_service_capabilities_flow_to_service_offer_and_execution() {
-        let state = test_app_state(PaymentBackend::None);
+        let mut state = test_app_state(PaymentBackend::None);
+        let fixtures_dsn = "postgres://reader:secret@db.internal:5432/fixtures";
+        Arc::get_mut(&mut state)
+            .expect("unique app state")
+            .config
+            .postgres_mounts
+            .insert("fixtures".to_string(), fixtures_dsn.to_string());
 
         publish_test_service(
             &state,
@@ -13353,9 +14747,9 @@ mod tests {
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: Some(vec![crate::execution::ExecutionMount {
                     handle: "fixtures".to_string(),
-                    kind: "fs".to_string(),
+                    kind: "postgres".to_string(),
                     read_only: true,
-                    binding: Some("/tmp".to_string()),
+                    binding: None,
                 }]),
                 capabilities: Some(vec!["custom.vector-index".to_string()]),
                 inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
@@ -13387,7 +14781,10 @@ mod tests {
             .expect("private service record")
             .expect("published service");
         assert_eq!(private_service.mounts.len(), 1);
-        assert_eq!(private_service.mounts[0].binding.as_deref(), Some("/tmp"));
+        assert_eq!(
+            private_service.mounts[0].binding.as_deref(),
+            Some(fixtures_dsn)
+        );
 
         let offer = provider_control_offer_record(state.as_ref(), &service.offer_id, true)
             .await
@@ -13398,7 +14795,7 @@ mod tests {
             offer.offer.payload.execution_profile.capabilities,
             vec![
                 "custom.vector-index".to_string(),
-                "mount.fs.read.fixtures".to_string()
+                "mount.postgres.read.fixtures".to_string()
             ]
         );
 
@@ -13409,7 +14806,7 @@ mod tests {
             execution.requested_access,
             vec![
                 "custom.vector-index".to_string(),
-                "mount.fs.read.fixtures".to_string()
+                "mount.postgres.read.fixtures".to_string()
             ]
         );
     }
@@ -14302,7 +15699,7 @@ mod tests {
                 runtime: Some("python".to_string()),
                 package_kind: Some("inline_source".to_string()),
                 entrypoint_kind: Some("handler".to_string()),
-                entrypoint: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
                 capabilities: None,
@@ -14560,7 +15957,7 @@ mod tests {
                 runtime: Some("python".to_string()),
                 package_kind: Some("inline_source".to_string()),
                 entrypoint_kind: Some("handler".to_string()),
-                entrypoint: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
                 capabilities: None,
@@ -14669,7 +16066,7 @@ mod tests {
                 runtime: Some("python".to_string()),
                 package_kind: Some("inline_source".to_string()),
                 entrypoint_kind: Some("handler".to_string()),
-                entrypoint: Some("handler".to_string()),
+                entrypoint: Some("handler.py".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: None,
                 capabilities: None,
@@ -14862,7 +16259,15 @@ mod tests {
 
     #[tokio::test]
     async fn service_addressed_execution_rejects_metadata_and_offer_mismatches() {
-        let state = test_app_state(PaymentBackend::None);
+        let mut state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut state)
+            .expect("unique app state")
+            .config
+            .postgres_mounts
+            .insert(
+                "fixtures".to_string(),
+                "postgres://reader:secret@db.internal:5432/fixtures".to_string(),
+            );
         publish_test_service(
             &state,
             ProviderControlPublishArtifactRequest {
@@ -14879,9 +16284,9 @@ mod tests {
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
                 mounts: Some(vec![crate::execution::ExecutionMount {
                     handle: "fixtures".to_string(),
-                    kind: "fs".to_string(),
+                    kind: "postgres".to_string(),
                     read_only: true,
-                    binding: Some("/tmp".to_string()),
+                    binding: None,
                 }]),
                 capabilities: None,
                 inline_source: Some("def handler(event, context):\n    return event\n".to_string()),
@@ -16666,7 +18071,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_trial_create_deal_quota_is_keyed_by_session_identity() {
+    async fn hosted_trial_create_deal_quota_is_keyed_by_request_origin() {
         let mut state = test_app_state_with_session_pool(PaymentBackend::None);
         {
             let state_mut = Arc::get_mut(&mut state).expect("unique app state");
@@ -16685,7 +18090,8 @@ mod tests {
         let provider = spawn_public_test_server(state.clone()).await;
         let _env_lock = TEST_ENV_LOCK.lock().await;
         let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
-        let session_token = issue_test_session_token(&state);
+        let first_session_token = issue_test_session_token(&state);
+        let second_session_token = issue_test_session_token(&state);
         let public = public_router(state.clone());
 
         let first_response = public
@@ -16693,7 +18099,7 @@ mod tests {
             .oneshot(hosted_trial_runtime_request(
                 Method::POST,
                 "/v1/runtime/deals",
-                Some(&session_token),
+                Some(&first_session_token),
                 Some(test_runtime_demo_add_create_deal_request(
                     state.identity.node_id(),
                     &provider.base_url,
@@ -16706,17 +18112,21 @@ mod tests {
             response_json(first_response).await;
         assert_eq!(first_status, StatusCode::OK);
 
+        let mut second_request = hosted_trial_runtime_request(
+            Method::POST,
+            "/v1/runtime/deals",
+            Some(&second_session_token),
+            Some(test_runtime_demo_add_create_deal_request(
+                state.identity.node_id(),
+                &provider.base_url,
+                "hosted-trial-quota-second",
+            )),
+        );
+        second_request
+            .headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("203.0.113.10"));
         let second_response = public
-            .oneshot(hosted_trial_runtime_request(
-                Method::POST,
-                "/v1/runtime/deals",
-                Some(&session_token),
-                Some(test_runtime_demo_add_create_deal_request(
-                    state.identity.node_id(),
-                    &provider.base_url,
-                    "hosted-trial-quota-second",
-                )),
-            ))
+            .oneshot(second_request)
             .await
             .expect("second hosted-trial create deal response");
         let (second_status, second_payload): (StatusCode, Value) =
@@ -16836,6 +18246,152 @@ mod tests {
             .await
             .expect("hosted-trial max-price response");
         assert_eq!(max_price_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_create_deal_rejects_non_demo_free_local_service() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        publish_test_python_service(&state, "internal-free", 0, "active").await;
+        let provider = spawn_public_test_server(state.clone()).await;
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+        let service = provider_service_record(state.as_ref(), "internal-free", false, true)
+            .await
+            .expect("provider service lookup")
+            .expect("published service");
+        let execution = service_addressed_execution_from_record(&service, json!({}));
+        let request = serde_json::to_value(RuntimeCreateDealRequest {
+            provider: RuntimeProviderRef {
+                provider_id: Some(state.identity.node_id().to_string()),
+                provider_url: Some(provider.base_url.clone()),
+            },
+            offer_id: "internal-free".to_string(),
+            spec: WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            max_price_sats: Some(0),
+            idempotency_key: Some("hosted-trial-non-demo".to_string()),
+            payment: None,
+        })
+        .expect("hosted-trial non-demo request");
+        let session_token = issue_test_session_token(&state);
+        let public = public_router(state.clone());
+
+        let response = public
+            .oneshot(hosted_trial_runtime_request(
+                Method::POST,
+                "/v1/runtime/deals",
+                Some(&session_token),
+                Some(request),
+            ))
+            .await
+            .expect("hosted-trial non-demo response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            payload["error"],
+            "hosted trial service is outside the public demo catalog"
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_raw_provider_quote_rejects_non_demo_free_local_service() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        publish_test_python_service(&state, "internal-free", 0, "active").await;
+        let service = provider_service_record(state.as_ref(), "internal-free", false, true)
+            .await
+            .expect("provider service lookup")
+            .expect("published service");
+        let execution = service_addressed_execution_from_record(&service, json!({}));
+        let request = serde_json::to_value(CreateQuoteRequest {
+            offer_id: "internal-free".to_string(),
+            requester_id: state.identity.node_id().to_string(),
+            spec: WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            max_price_sats: Some(0),
+        })
+        .expect("raw quote request");
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/quotes",
+                None,
+                Some(request),
+            ))
+            .await
+            .expect("raw provider quote response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            payload["error"],
+            "hosted trial service is outside the public demo catalog"
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_trial_raw_provider_deal_rejects_payment_payload() {
+        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        publish_test_python_service(&state, "demo.add", 0, "active").await;
+        let service = provider_service_record(state.as_ref(), "demo.add", false, true)
+            .await
+            .expect("provider service lookup")
+            .expect("demo.add service");
+        let execution = service_addressed_execution_from_record(&service, json!({"a": 1, "b": 2}));
+        let spec = WorkloadSpec::Execution {
+            execution: Box::new(execution),
+        };
+        let quote = create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: service.offer_id.clone(),
+                requester_id: state.identity.node_id().to_string(),
+                spec: spec.clone(),
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .expect("demo quote");
+        let preimage = generate_success_preimage_hex();
+        let payment_hash = crypto::sha256_hex(hex::decode(&preimage).expect("hex preimage"));
+        let deal = build_runtime_requester_deal_artifact(
+            state.as_ref(),
+            &quote,
+            &payment_hash,
+            settlement::current_unix_timestamp(),
+            false,
+        )
+        .expect("deal artifact");
+        let request = serde_json::to_value(CreateDealRequest {
+            quote,
+            deal,
+            spec,
+            idempotency_key: Some("hosted-trial-raw-payment".to_string()),
+            payment: Some(ProvidedPayment {
+                kind: "test".to_string(),
+                token: "secret".to_string(),
+            }),
+        })
+        .expect("raw deal request");
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/deals",
+                None,
+                Some(request),
+            ))
+            .await
+            .expect("raw provider deal response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            payload["error"],
+            "hosted trial deals do not accept payment payloads"
+        );
     }
 
     #[tokio::test]
@@ -17104,14 +18660,29 @@ mod tests {
             .expect("first session response");
         assert_eq!(first_session.status(), StatusCode::OK);
 
+        let oversized_event_response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/events/publish",
+                None,
+                Some(json!({ "padding": "x".repeat(MAX_BODY_BYTES) })),
+            ))
+            .await
+            .expect("oversized event response");
+        assert_eq!(
+            oversized_event_response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+
+        let mut second_session_request =
+            hosted_trial_runtime_request(Method::POST, "/api/sessions", None, None);
+        second_session_request
+            .headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("203.0.113.10"));
         let second_session = public
             .clone()
-            .oneshot(hosted_trial_runtime_request(
-                Method::POST,
-                "/api/sessions",
-                None,
-                None,
-            ))
+            .oneshot(second_session_request)
             .await
             .expect("second session response");
         assert_eq!(second_session.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -17124,11 +18695,11 @@ mod tests {
             Duration::from_secs(60),
         ));
         let event_public = public_router(event_state);
-        let event_key = crypto::generate_signing_key();
         for (content, expected_status) in [
             ("first event", StatusCode::CREATED),
             ("second event", StatusCode::TOO_MANY_REQUESTS),
         ] {
+            let event_key = crypto::generate_signing_key();
             let response = event_public
                 .clone()
                 .oneshot(runtime_request(
@@ -17143,6 +18714,48 @@ mod tests {
                 .expect("event publish response");
             assert_eq!(response.status(), expected_status);
         }
+
+        let mut invalid_event_state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut invalid_event_state)
+            .expect("unique invalid event quota state")
+            .event_publish_quota = Arc::new(crate::public_quota::IdentityQuota::new(
+            1,
+            Duration::from_secs(60),
+        ));
+        let invalid_event_public = public_router(invalid_event_state);
+        let invalid_event_key = crypto::generate_signing_key();
+        let mut invalid_event =
+            signed_test_event(&invalid_event_key, "market.listing", "invalid event");
+        invalid_event.id = "00".repeat(32);
+        let invalid_response = invalid_event_public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/events/publish",
+                None,
+                Some(json!({ "event": invalid_event })),
+            ))
+            .await
+            .expect("invalid event publish response");
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+
+        let valid_after_invalid_key = crypto::generate_signing_key();
+        let valid_after_invalid = invalid_event_public
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/events/publish",
+                None,
+                Some(json!({
+                    "event": signed_test_event(
+                        &valid_after_invalid_key,
+                        "market.listing",
+                        "valid after invalid"
+                    ),
+                })),
+            ))
+            .await
+            .expect("valid-after-invalid event publish response");
+        assert_eq!(valid_after_invalid.status(), StatusCode::TOO_MANY_REQUESTS);
 
         let mut quote_state = test_app_state(PaymentBackend::None);
         Arc::get_mut(&mut quote_state)
@@ -17161,20 +18774,36 @@ mod tests {
                 .expect("events query workload"),
             ),
         };
-        let quote_body = serde_json::to_value(CreateQuoteRequest {
+        let first_quote_body = serde_json::to_value(CreateQuoteRequest {
             offer_id: "missing-offer".to_string(),
             requester_id: "11".repeat(32),
             spec: quote_spec,
             max_price_sats: None,
         })
         .expect("quote request JSON");
+        let second_quote_spec = WorkloadSpec::Execution {
+            execution: Box::new(
+                crate::execution::ExecutionWorkload::builtin_events_query(
+                    vec!["market.listing".to_string()],
+                    Some(1),
+                )
+                .expect("events query workload"),
+            ),
+        };
+        let second_quote_body = serde_json::to_value(CreateQuoteRequest {
+            offer_id: "missing-offer".to_string(),
+            requester_id: "22".repeat(32),
+            spec: second_quote_spec,
+            max_price_sats: None,
+        })
+        .expect("second quote request JSON");
         let first_quote = quote_public
             .clone()
             .oneshot(runtime_request(
                 Method::POST,
                 "/v1/provider/quotes",
                 None,
-                Some(quote_body.clone()),
+                Some(first_quote_body),
             ))
             .await
             .expect("first quote response");
@@ -17185,7 +18814,7 @@ mod tests {
                 Method::POST,
                 "/v1/provider/quotes",
                 None,
-                Some(quote_body),
+                Some(second_quote_body),
             ))
             .await
             .expect("second quote response");
@@ -17239,6 +18868,20 @@ mod tests {
                 requester_public_key,
             })
             .expect("confidential session request JSON");
+        let second_requester_key = crypto::generate_signing_key();
+        let (_, second_requester_public_key) = crate::confidential::generate_keypair();
+        let second_confidential_body =
+            serde_json::to_value(crate::confidential::ConfidentialSessionOpenRequest {
+                requester_id: crypto::public_key_hex(&second_requester_key),
+                confidential_profile_hash: confidential_body["confidential_profile_hash"]
+                    .as_str()
+                    .expect("confidential profile hash in request")
+                    .to_string(),
+                allowed_workload_kind: crate::confidential::WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1
+                    .to_string(),
+                requester_public_key: second_requester_public_key,
+            })
+            .expect("second confidential session request JSON");
         let first_confidential = confidential_public
             .clone()
             .oneshot(runtime_request(
@@ -17256,7 +18899,7 @@ mod tests {
                 Method::POST,
                 "/v1/provider/confidential/sessions",
                 None,
-                Some(confidential_body),
+                Some(second_confidential_body),
             ))
             .await
             .expect("second confidential response");
@@ -17396,6 +19039,104 @@ mod tests {
             .await
             .expect("runtime create-job authenticated response");
         assert_ne!(runtime_jobs_with_auth.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_deal_record_rejects_distinct_deal_reusing_quote() {
+        let state = test_app_state(PaymentBackend::None);
+        let now = settlement::current_unix_timestamp();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = WorkloadSpec::Wasm {
+            submission: Box::new(test_wasm_submission()),
+        };
+        let workload_hash = spec.request_hash().expect("workload hash");
+        let quote = sign_node_artifact(
+            state.as_ref(),
+            ARTIFACT_KIND_QUOTE,
+            now,
+            QuotePayload {
+                provider_id: state.identity.node_id().to_string(),
+                requester_id,
+                descriptor_hash: "aa".repeat(32),
+                offer_hash: "bb".repeat(32),
+                expires_at: now + 600,
+                workload_kind: "compute.wasm.v1".to_string(),
+                workload_hash,
+                confidential_session_hash: None,
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
+                settlement_terms: QuoteSettlementTerms {
+                    method: "none".to_string(),
+                    destination_identity: String::new(),
+                    base_fee_msat: 0,
+                    success_fee_msat: 0,
+                    max_base_invoice_expiry_secs: 0,
+                    max_success_hold_expiry_secs: 0,
+                    min_final_cltv_expiry: 0,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1024,
+                    max_runtime_ms: 1_000,
+                    max_memory_bytes: 4096,
+                    max_output_bytes: 1024,
+                    fuel_limit: 10_000,
+                },
+            },
+        )
+        .expect("free quote");
+
+        let first_deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_key,
+            &"11".repeat(32),
+            now,
+            false,
+        )
+        .expect("first deal");
+        let second_deal = build_requester_signed_deal_artifact(
+            &quote,
+            &requester_key,
+            &"22".repeat(32),
+            now,
+            false,
+        )
+        .expect("second deal");
+
+        let (_accepted, first_status) = create_deal_record(
+            state.clone(),
+            CreateDealRequest {
+                quote: quote.clone(),
+                deal: first_deal,
+                spec: spec.clone(),
+                idempotency_key: Some("quote-reuse-first".to_string()),
+                payment: None,
+            },
+        )
+        .await
+        .expect("first deal accepted");
+        assert!(first_status.is_success());
+
+        let quote_reuse = create_deal_record(
+            state.clone(),
+            CreateDealRequest {
+                quote,
+                deal: second_deal,
+                spec,
+                idempotency_key: Some("quote-reuse-second".to_string()),
+                payment: None,
+            },
+        )
+        .await
+        .expect_err("distinct deal must not reuse quote");
+        assert_eq!(
+            quote_reuse.0,
+            StatusCode::CONFLICT,
+            "unexpected quote reuse error payload: {}",
+            quote_reuse.1
+        );
+        assert_eq!(quote_reuse.1["error"], deals::QUOTE_ALREADY_USED_ERROR);
     }
 
     #[tokio::test]

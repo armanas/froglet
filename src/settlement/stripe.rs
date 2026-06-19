@@ -49,6 +49,15 @@ impl StripeDriver {
         format!("{}{}", self.api_base_url, path)
     }
 
+    fn redacted_path(path: &str) -> String {
+        const SPT_PREFIX: &str = "/v1/shared_payment/granted_tokens/";
+        if path.starts_with(SPT_PREFIX) {
+            format!("{SPT_PREFIX}<redacted>")
+        } else {
+            path.to_string()
+        }
+    }
+
     /// Perform an authenticated GET against the Stripe API and return the
     /// parsed JSON body.
     async fn stripe_get(&self, path: &str) -> Result<serde_json::Value, String> {
@@ -68,12 +77,15 @@ impl StripeDriver {
             .map_err(|e| format!("Stripe GET response decode failed: {e}"))?;
 
         if !status.is_success() {
+            let redacted_path = Self::redacted_path(path);
             let message = body
                 .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error");
-            return Err(format!("Stripe GET {path} returned {status}: {message}"));
+            return Err(format!(
+                "Stripe GET {redacted_path} returned {status}: {message}"
+            ));
         }
 
         Ok(body)
@@ -91,15 +103,29 @@ impl StripeDriver {
         path: &str,
         params: &[(&str, &str)],
     ) -> Result<serde_json::Value, String> {
+        self.stripe_post_form_with_idempotency(path, params, None)
+            .await
+    }
+
+    async fn stripe_post_form_with_idempotency(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+        idempotency_key: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
         let body = encode_form_params(params);
 
-        let response = self
+        let mut request = self
             .http_client
             .post(self.api_url(path))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Stripe-Version", &self.api_version)
             .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body)
+            .body(body);
+        if let Some(key) = idempotency_key {
+            request = request.header("Idempotency-Key", key);
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| format!("Stripe POST request failed: {e}"))?;
@@ -215,7 +241,7 @@ impl SettlementDriver for StripeDriver {
                 .or_else(|| usage_limits.and_then(|limits| limits.get("expires_at")))
                 .and_then(|v| v.as_i64())
                 .ok_or_else(|| {
-                    tracing::warn!(spt_id = %spt_id, "Stripe SPT missing expires_at field");
+                    tracing::warn!("Stripe SPT missing expires_at field");
                     PaymentError::BackendUnavailable {
                         service_id: request.service_id.as_str().to_string(),
                         price_sats: request.price_sats,
@@ -225,7 +251,6 @@ impl SettlementDriver for StripeDriver {
             let now = super::current_unix_timestamp();
             if expires_at < now {
                 tracing::warn!(
-                    spt_id = %spt_id,
                     expires_at = %expires_at,
                     now = %now,
                     "Stripe SPT has expired"
@@ -243,7 +268,7 @@ impl SettlementDriver for StripeDriver {
                 .or_else(|| usage_limits.and_then(|limits| limits.get("currency")))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    tracing::warn!(spt_id = %spt_id, "Stripe SPT missing currency field");
+                    tracing::warn!("Stripe SPT missing currency field");
                     PaymentError::BackendUnavailable {
                         service_id: request.service_id.as_str().to_string(),
                         price_sats: request.price_sats,
@@ -251,7 +276,7 @@ impl SettlementDriver for StripeDriver {
                     }
                 })?;
             if !currency.eq_ignore_ascii_case("usd") {
-                tracing::warn!(spt_id = %spt_id, %currency, "Stripe SPT currency is not USD");
+                tracing::warn!(%currency, "Stripe SPT currency is not USD");
                 return Err(PaymentError::BackendUnavailable {
                     service_id: request.service_id.as_str().to_string(),
                     price_sats: request.price_sats,
@@ -266,7 +291,7 @@ impl SettlementDriver for StripeDriver {
                 .or_else(|| usage_limits.and_then(|limits| limits.get("max_amount")))
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| {
-                    tracing::warn!(spt_id = %spt_id, "Stripe SPT missing maximum_amount / max_amount field");
+                    tracing::warn!("Stripe SPT missing maximum_amount / max_amount field");
                     PaymentError::BackendUnavailable {
                         service_id: request.service_id.as_str().to_string(),
                         price_sats: request.price_sats,
@@ -275,7 +300,6 @@ impl SettlementDriver for StripeDriver {
                 })?;
             if max_amount < request.price_sats {
                 tracing::warn!(
-                    spt_id = %spt_id,
                     spt_max = %max_amount,
                     required = %request.price_sats,
                     "Stripe SPT maximum_amount is less than required price"
@@ -298,14 +322,17 @@ impl SettlementDriver for StripeDriver {
                 ("capture_method", "manual"),
             ];
 
+            let request_id = request.request_id.clone().unwrap_or_else(new_request_id);
+            let idempotency_key = format!("froglet-stripe-reserve-{request_id}");
             let pi_data = self
-                .stripe_post_form("/v1/payment_intents", params)
+                .stripe_post_form_with_idempotency(
+                    "/v1/payment_intents",
+                    params,
+                    Some(&idempotency_key),
+                )
                 .await
                 .map_err(|err| {
-                    tracing::error!(
-                        spt_id = %spt_id,
-                        "Stripe PaymentIntent creation failed: {err}"
-                    );
+                    tracing::error!("Stripe PaymentIntent creation failed: {err}");
                     PaymentError::BackendUnavailable {
                         service_id: request.service_id.as_str().to_string(),
                         price_sats: request.price_sats,
@@ -350,7 +377,6 @@ impl SettlementDriver for StripeDriver {
             // Store the PaymentIntent ID in token_hash so commit/release can
             // reference it. The field name is inherited from the shared struct;
             // for this driver it holds an opaque Stripe resource ID, not a hash.
-            let request_id = request.request_id.unwrap_or_else(new_request_id);
             Ok(Some(PaymentReservation {
                 request_id,
                 method: "stripe_mpp".to_string(),
@@ -370,17 +396,51 @@ impl SettlementDriver for StripeDriver {
             // token_hash holds the PaymentIntent ID for this driver.
             let pi_id = &reservation.token_hash;
             let capture_path = format!("/v1/payment_intents/{pi_id}/capture");
+            let idempotency_key = format!("froglet-stripe-capture-{}", reservation.request_id);
 
-            self.stripe_post_form(&capture_path, &[])
-                .await
-                .map_err(|err| {
-                    tracing::error!(pi_id = %pi_id, "Stripe PaymentIntent capture failed: {err}");
-                    PaymentError::BackendUnavailable {
-                        service_id: reservation.service_id.as_str().to_string(),
-                        price_sats: reservation.amount_sats,
-                        backend: "stripe".to_string(),
+            let captured = self
+                .stripe_post_form_with_idempotency(&capture_path, &[], Some(&idempotency_key))
+                .await;
+            if let Err(err) = captured {
+                let intent_path = format!("/v1/payment_intents/{pi_id}");
+                match self.stripe_get(&intent_path).await {
+                    Ok(intent)
+                        if intent.get("status").and_then(|v| v.as_str()) == Some("succeeded") =>
+                    {
+                        tracing::warn!(
+                            pi_id = %pi_id,
+                            "Stripe PaymentIntent capture retry observed already-succeeded intent"
+                        );
                     }
-                })?;
+                    Ok(intent) => {
+                        let status = intent
+                            .get("status")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("unknown");
+                        tracing::error!(
+                            pi_id = %pi_id,
+                            pi_status = %status,
+                            "Stripe PaymentIntent capture failed: {err}"
+                        );
+                        return Err(PaymentError::BackendUnavailable {
+                            service_id: reservation.service_id.as_str().to_string(),
+                            price_sats: reservation.amount_sats,
+                            backend: "stripe".to_string(),
+                        });
+                    }
+                    Err(status_error) => {
+                        tracing::error!(
+                            pi_id = %pi_id,
+                            "Stripe PaymentIntent capture failed: {err}; status lookup failed: {status_error}"
+                        );
+                        return Err(PaymentError::BackendUnavailable {
+                            service_id: reservation.service_id.as_str().to_string(),
+                            price_sats: reservation.amount_sats,
+                            backend: "stripe".to_string(),
+                        });
+                    }
+                }
+            }
 
             Ok(reservation.receipt(
                 crate::protocol::SettlementStatus::Committed,
@@ -547,6 +607,7 @@ mod tests {
     use axum::{
         Json, Router,
         extract::{Path, State},
+        http::HeaderMap,
         routing::{get, post},
     };
     use std::{
@@ -598,13 +659,18 @@ mod tests {
 
         async fn create_payment_intent(
             State(state): State<Arc<MockStripeState>>,
+            headers: HeaderMap,
             body: String,
         ) -> Json<serde_json::Value> {
+            let idempotency = headers
+                .get("idempotency-key")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>");
             state
                 .calls
                 .lock()
                 .await
-                .push(format!("POST:/v1/payment_intents:{body}"));
+                .push(format!("POST:/v1/payment_intents:{idempotency}:{body}"));
             Json(serde_json::json!({
                 "id": "pi_test_123",
                 "status": "requires_capture"
@@ -613,13 +679,16 @@ mod tests {
 
         async fn capture_payment_intent(
             State(state): State<Arc<MockStripeState>>,
+            headers: HeaderMap,
             Path(intent_id): Path<String>,
         ) -> Json<serde_json::Value> {
-            state
-                .calls
-                .lock()
-                .await
-                .push(format!("POST:/v1/payment_intents/{intent_id}/capture"));
+            let idempotency = headers
+                .get("idempotency-key")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>");
+            state.calls.lock().await.push(format!(
+                "POST:/v1/payment_intents/{intent_id}/capture:{idempotency}"
+            ));
             Json(serde_json::json!({
                 "id": intent_id,
                 "status": "succeeded"
@@ -748,6 +817,8 @@ mod tests {
                 session_ttl_secs: 300,
             },
             marketplace_url: None,
+            marketplace_allow_local: false,
+            provider_artifact_root: None,
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
             hosted_trial_origin_secret: None,
@@ -942,18 +1013,117 @@ mod tests {
         );
         assert!(
             calls.iter().any(|call| {
-                call.contains("POST:/v1/payment_intents:amount=100")
-                    && call.contains("capture_method=manual")
+                call.contains(
+                    "POST:/v1/payment_intents:froglet-stripe-reserve-stripe-prepare:amount=100",
+                ) && call.contains("capture_method=manual")
                     && call.contains("shared_payment_granted_token=spt_test_123")
                     && !call.contains("payment_method_data")
             }),
-            "prepare should create a manual-capture payment intent"
+            "prepare should create a manual-capture payment intent with a stable idempotency key"
         );
         assert!(
             calls
                 .iter()
-                .any(|call| call == "POST:/v1/payment_intents/pi_test_123/capture"),
-            "commit should capture the payment intent"
+                .any(|call| call == "POST:/v1/payment_intents/pi_test_123/capture:froglet-stripe-capture-stripe-prepare"),
+            "commit should capture the payment intent with a stable idempotency key"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn stripe_driver_commit_treats_already_succeeded_intent_as_committed() {
+        #[derive(Debug, Default)]
+        struct CaptureRetryState {
+            calls: TokioMutex<Vec<String>>,
+        }
+
+        async fn capture_payment_intent(
+            State(state): State<Arc<CaptureRetryState>>,
+            headers: HeaderMap,
+            Path(intent_id): Path<String>,
+        ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+            let idempotency = headers
+                .get("idempotency-key")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>");
+            state
+                .calls
+                .lock()
+                .await
+                .push(format!("capture:{intent_id}:{idempotency}"));
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": { "message": "intent already captured" }
+                })),
+            )
+        }
+
+        async fn get_payment_intent(
+            State(state): State<Arc<CaptureRetryState>>,
+            Path(intent_id): Path<String>,
+        ) -> Json<serde_json::Value> {
+            state.calls.lock().await.push(format!("get:{intent_id}"));
+            Json(serde_json::json!({
+                "id": intent_id,
+                "status": "succeeded"
+            }))
+        }
+
+        let state = Arc::new(CaptureRetryState::default());
+        let app = Router::new()
+            .route(
+                "/v1/payment_intents/:intent_id/capture",
+                post(capture_payment_intent),
+            )
+            .route("/v1/payment_intents/:intent_id", get(get_payment_intent))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock stripe");
+        let address = listener.local_addr().expect("listener address");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock stripe");
+        });
+
+        let driver = StripeDriver::with_base_url(
+            StripeConfig {
+                api_version: "2024-06-20".to_string(),
+                webhook_secret: None,
+            },
+            "stripe_test_secret_placeholder".to_string(),
+            &format!("http://{address}"),
+        );
+        let app_state = make_state();
+        let receipt = driver
+            .commit(
+                &app_state,
+                PaymentReservation {
+                    request_id: "deal-123".to_string(),
+                    method: "stripe_mpp".to_string(),
+                    service_id: ServiceId::ExecuteWasm,
+                    amount_sats: 42,
+                    token_hash: "pi_retry_123".to_string(),
+                },
+            )
+            .await
+            .expect("already captured intent should be treated as committed");
+
+        assert_eq!(
+            receipt.settlement_status,
+            crate::protocol::SettlementStatus::Committed
+        );
+        assert_eq!(
+            receipt.settlement_reference.as_deref(),
+            Some("pi_retry_123")
+        );
+        let calls = state.calls.lock().await.clone();
+        assert_eq!(
+            calls,
+            vec![
+                "capture:pi_retry_123:froglet-stripe-capture-deal-123",
+                "get:pi_retry_123"
+            ]
         );
         handle.abort();
     }

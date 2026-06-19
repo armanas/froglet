@@ -72,8 +72,6 @@ The plugin registers one tool named `froglet`. It supports these actions:
 - `marketplace_search`
 - `marketplace_provider`
 - `marketplace_receipts`
-- `marketplace_stake`
-- `marketplace_topup`
 - `marketplace_file_complaint`
 - `marketplace_get_complaint`
 

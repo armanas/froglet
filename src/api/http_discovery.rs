@@ -44,14 +44,15 @@ fn build_marketplace_deal(
 
 async fn marketplace_deal(
     state: &AppState,
-    marketplace_url: &str,
+    marketplace_endpoint: &provider_resolution::ValidatedRemoteEndpoint,
     offer_id: &str,
     execution: &crate::execution::ExecutionWorkload,
     nonce: &str,
 ) -> Result<Value, (StatusCode, Value)> {
+    let marketplace_url = marketplace_endpoint.normalized_url.as_str();
     // Quote
     let quote_url = format!("{marketplace_url}/v1/provider/quotes");
-    let quote: SignedArtifact<QuotePayload> = remote_json_request(
+    let quote: SignedArtifact<QuotePayload> = remote_json_request_with_pinned_addresses(
         state,
         reqwest::Method::POST,
         quote_url,
@@ -61,6 +62,7 @@ async fn marketplace_deal(
             "kind": "execution",
             "execution": execution,
         })),
+        &marketplace_endpoint.pinned_public_addresses,
     )
     .await
     .map_err(|(s, b)| (s, json!({"error":"marketplace quote failed","detail":b})))?;
@@ -76,7 +78,7 @@ async fn marketplace_deal(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e})))?;
 
     let deal_url = format!("{marketplace_url}/v1/provider/deals");
-    let response: Value = remote_json_request(
+    let response: Value = remote_json_request_with_pinned_addresses(
         state,
         reqwest::Method::POST,
         deal_url,
@@ -86,6 +88,7 @@ async fn marketplace_deal(
             "kind": "execution",
             "execution": execution,
         })),
+        &marketplace_endpoint.pinned_public_addresses,
     )
     .await
     .map_err(|(s, b)| (s, json!({"error":"marketplace deal failed","detail":b})))?;
@@ -254,9 +257,10 @@ fn normalize_read_api_provider(provider: &Value, offers: Vec<Value>) -> Value {
 
 async fn try_marketplace_read_api_search(
     state: &AppState,
-    marketplace_url: &str,
+    marketplace_endpoint: &provider_resolution::ValidatedRemoteEndpoint,
     payload: &Value,
 ) -> Result<Option<Value>, ApiFailure> {
+    let marketplace_url = marketplace_endpoint.normalized_url.as_str();
     let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20);
     let mut params = vec![("limit", limit.to_string())];
     if let Some(runtime) = payload.get("runtime").and_then(|v| v.as_str()) {
@@ -266,19 +270,21 @@ async fn try_marketplace_read_api_search(
         params.push(("offer_kind", offer_kind.to_string()));
     }
 
-    let offers_response: Value = match remote_json_request_with_client_error_passthrough(
-        state,
-        reqwest::Method::GET,
-        marketplace_read_url(marketplace_url, "/v1/offers", &params),
-        Option::<&()>::None,
-        true,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err((status, _)) if read_api_route_missing(status) => return Ok(None),
-        Err(error) => return Err(error),
-    };
+    let offers_response: Value =
+        match remote_json_request_with_client_error_passthrough_and_pinned_addresses(
+            state,
+            reqwest::Method::GET,
+            marketplace_read_url(marketplace_url, "/v1/offers", &params),
+            Option::<&()>::None,
+            true,
+            &marketplace_endpoint.pinned_public_addresses,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err((status, _)) if read_api_route_missing(status) => return Ok(None),
+            Err(error) => return Err(error),
+        };
 
     let offers = offers_response
         .get("items")
@@ -298,32 +304,34 @@ async fn try_marketplace_read_api_search(
 
     let mut providers = Vec::new();
     for (provider_id, offers) in offers_by_provider {
-        let provider: Value = remote_json_request_with_client_error_passthrough(
-            state,
-            reqwest::Method::GET,
-            marketplace_read_url(
-                marketplace_url,
-                &format!("/v1/providers/{}", urlencoding::encode(&provider_id)),
-                &[],
-            ),
-            Option::<&()>::None,
-            true,
-        )
-        .await
-        .map_err(|(status, body)| {
-            if read_api_route_missing(status) {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    json!({
-                        "error": "marketplace read api offer referenced missing provider",
-                        "provider_id": provider_id,
-                        "detail": body,
-                    }),
-                )
-            } else {
-                (status, body)
-            }
-        })?;
+        let provider: Value =
+            remote_json_request_with_client_error_passthrough_and_pinned_addresses(
+                state,
+                reqwest::Method::GET,
+                marketplace_read_url(
+                    marketplace_url,
+                    &format!("/v1/providers/{}", urlencoding::encode(&provider_id)),
+                    &[],
+                ),
+                Option::<&()>::None,
+                true,
+                &marketplace_endpoint.pinned_public_addresses,
+            )
+            .await
+            .map_err(|(status, body)| {
+                if read_api_route_missing(status) {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        json!({
+                            "error": "marketplace read api offer referenced missing provider",
+                            "provider_id": provider_id,
+                            "detail": body,
+                        }),
+                    )
+                } else {
+                    (status, body)
+                }
+            })?;
         providers.push(normalize_read_api_provider(&provider, offers));
     }
 
@@ -335,42 +343,47 @@ async fn try_marketplace_read_api_search(
 
 async fn try_marketplace_read_api_provider(
     state: &AppState,
-    marketplace_url: &str,
+    marketplace_endpoint: &provider_resolution::ValidatedRemoteEndpoint,
     provider_id: &str,
 ) -> Result<Option<Value>, ApiFailure> {
-    let provider: Value = match remote_json_request_with_client_error_passthrough(
-        state,
-        reqwest::Method::GET,
-        marketplace_read_url(
-            marketplace_url,
-            &format!("/v1/providers/{}", urlencoding::encode(provider_id)),
-            &[],
-        ),
-        Option::<&()>::None,
-        true,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err((status, _)) if read_api_route_missing(status) => return Ok(None),
-        Err(error) => return Err(error),
-    };
+    let marketplace_url = marketplace_endpoint.normalized_url.as_str();
+    let provider: Value =
+        match remote_json_request_with_client_error_passthrough_and_pinned_addresses(
+            state,
+            reqwest::Method::GET,
+            marketplace_read_url(
+                marketplace_url,
+                &format!("/v1/providers/{}", urlencoding::encode(provider_id)),
+                &[],
+            ),
+            Option::<&()>::None,
+            true,
+            &marketplace_endpoint.pinned_public_addresses,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err((status, _)) if read_api_route_missing(status) => return Ok(None),
+            Err(error) => return Err(error),
+        };
 
-    let offers_response: Value = remote_json_request_with_client_error_passthrough(
-        state,
-        reqwest::Method::GET,
-        marketplace_read_url(
-            marketplace_url,
-            "/v1/offers",
-            &[
-                ("provider_id", provider_id.to_string()),
-                ("limit", "100".to_string()),
-            ],
-        ),
-        Option::<&()>::None,
-        true,
-    )
-    .await?;
+    let offers_response: Value =
+        remote_json_request_with_client_error_passthrough_and_pinned_addresses(
+            state,
+            reqwest::Method::GET,
+            marketplace_read_url(
+                marketplace_url,
+                "/v1/offers",
+                &[
+                    ("provider_id", provider_id.to_string()),
+                    ("limit", "100".to_string()),
+                ],
+            ),
+            Option::<&()>::None,
+            true,
+            &marketplace_endpoint.pinned_public_addresses,
+        )
+        .await?;
     let offers = offers_response
         .get("items")
         .and_then(|value| value.as_array())
@@ -394,14 +407,19 @@ async fn runtime_search(
         return error_json(error.0, error.1);
     }
 
-    let Some(marketplace_url) = state.config.marketplace_url.as_deref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"no marketplace configured — set FROGLET_MARKETPLACE_URL"}),
-        );
-    };
+    let marketplace_endpoint =
+        match configured_marketplace_endpoint_for_egress(state.as_ref()).await {
+            Ok(Some(endpoint)) => endpoint,
+            Ok(None) => {
+                return error_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"no marketplace configured — set FROGLET_MARKETPLACE_URL"}),
+                );
+            }
+            Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        };
 
-    match try_marketplace_read_api_search(state.as_ref(), marketplace_url, &payload).await {
+    match try_marketplace_read_api_search(state.as_ref(), &marketplace_endpoint, &payload).await {
         Ok(Some(result)) => return (StatusCode::OK, Json(result)),
         Ok(None) => {}
         Err((status, body)) => return error_json(status, body),
@@ -423,7 +441,7 @@ async fn runtime_search(
 
     match marketplace_deal(
         state.as_ref(),
-        marketplace_url,
+        &marketplace_endpoint,
         "marketplace.search",
         &execution,
         "mkt-search",
@@ -444,14 +462,21 @@ async fn runtime_provider_details(
         return error_json(error.0, error.1);
     }
 
-    let Some(marketplace_url) = state.config.marketplace_url.as_deref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"no marketplace configured — set FROGLET_MARKETPLACE_URL"}),
-        );
-    };
+    let marketplace_endpoint =
+        match configured_marketplace_endpoint_for_egress(state.as_ref()).await {
+            Ok(Some(endpoint)) => endpoint,
+            Ok(None) => {
+                return error_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"no marketplace configured — set FROGLET_MARKETPLACE_URL"}),
+                );
+            }
+            Err(error) => return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        };
 
-    match try_marketplace_read_api_provider(state.as_ref(), marketplace_url, &provider_id).await {
+    match try_marketplace_read_api_provider(state.as_ref(), &marketplace_endpoint, &provider_id)
+        .await
+    {
         Ok(Some(result)) => return (StatusCode::OK, Json(result)),
         Ok(None) => {}
         Err((status, body)) => return error_json(status, body),
@@ -467,7 +492,7 @@ async fn runtime_provider_details(
 
     match marketplace_deal(
         state.as_ref(),
-        marketplace_url,
+        &marketplace_endpoint,
         "marketplace.provider",
         &execution,
         "mkt-prov",

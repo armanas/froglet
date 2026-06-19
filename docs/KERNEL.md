@@ -11,7 +11,7 @@ It defines:
 - the six artifact types: Descriptor, Offer, Quote, Deal, InvoiceBundle, and Receipt
 - the hash-chain and verification rules between those artifacts
 - the canonical deal, execution, and settlement states
-- the two standardized v1 settlement methods: `none` and `lightning.base_fee_plus_success_fee.v1`
+- the recognized v1 settlement methods: `none`, `lightning.base_fee_plus_success_fee.v1`, `stripe_mpp.v1`, and `lightning.prepaid.v1`
 - the invoice bundle immutability model
 - receipt terminal-only semantics
 - expiry ordering constraints
@@ -220,7 +220,7 @@ and optional publication-key linkage.
 Settlement method rules for offers:
 
 - An Offer for a free service (where `price_schedule.base_fee_msat == 0` AND `price_schedule.success_fee_msat == 0`) MUST use `settlement_method: "none"`.
-- An Offer for a paid service MUST use `settlement_method: "lightning.base_fee_plus_success_fee.v1"`.
+- An Offer for a paid service MUST use a recognized paid settlement method: `"lightning.base_fee_plus_success_fee.v1"`, `"stripe_mpp.v1"`, or `"lightning.prepaid.v1"`.
 - An Offer MUST NOT use a paid settlement method string when fees are zero, and MUST NOT use `"none"` when fees are non-zero.
 
 ### 3.3 Quote Payload
@@ -262,7 +262,8 @@ For `settlement_method: "none"`, `settlement_terms` MUST contain:
 Quote validation rules:
 
 - `provider_id` MUST match the referenced offer and descriptor
-- `expires_at` MUST be no later than `created_at + Offer.quote_ttl_secs`
+- `expires_at` MUST be no later than `Offer.expires_at` when the referenced offer has an expiry
+- Providers SHOULD issue quotes whose `expires_at` is no later than issuance time plus `Offer.quote_ttl_secs`; this is an issuance policy constraint, not a hash-chain validation rule, because the quote artifact does not commit to the exact request timestamp.
 - `workload_kind` MUST be compatible with `Offer.offer_kind`
 - `execution_limits` MUST be less than or equal to the maxima advertised in `Offer.execution_profile`
 - `settlement_terms.method` MUST equal `Offer.settlement_method`
@@ -390,12 +391,14 @@ When an `invoice_bundle` expires (`expires_at` is past), the provider SHALL trea
 
 ### 5.1 Overview
 
-`settlement_method` is a string field on Offer, Quote `settlement_terms`, and Receipt `settlement_refs`. v1 standardizes exactly two methods:
+`settlement_method` is a string field on Offer, Quote `settlement_terms`, and Receipt `settlement_refs`. v1 recognizes these methods:
 
 - `"none"` — free service, no payment required
-- `"lightning.base_fee_plus_success_fee.v1"` — paid service via Lightning Network
+- `"lightning.base_fee_plus_success_fee.v1"` — paid escrow-style service via Lightning Network base-fee invoice plus success-fee hold invoice
+- `"stripe_mpp.v1"` — paid service via Stripe Machine Payments Protocol manual-capture PaymentIntent
+- `"lightning.prepaid.v1"` — paid prepaid Lightning service using a standard BOLT11 invoice
 
-Future settlement methods (Stripe-backed flows, B2B rails, ACH/wire/invoice, custom credit systems) are architecturally expected but MUST NOT be presented as v1 interoperable unless explicitly standardized in a future version.
+Future settlement methods (B2B rails, ACH/wire/invoice, custom credit systems) are architecturally expected but MUST NOT be presented as v1 interoperable unless explicitly standardized in a future version.
 
 If a requester encounters an unrecognized `settlement_method` in an Offer, the requester SHALL treat the offer as unsupported rather than attempting settlement.
 
@@ -501,6 +504,37 @@ Examples:
 - base fee `settled`, success fee `canceled` → `settlement_state = "canceled"`
 - base fee `settled`, success fee `expired` → `settlement_state = "expired"`
 
+### 5.4 Settlement Method: `"stripe_mpp.v1"` (Paid Service)
+
+The Stripe MPP method uses a manual-capture PaymentIntent as the base-fee settlement leg. It does not use an `invoice_bundle`.
+
+Receipt rules for `stripe_mpp.v1`:
+
+- `Receipt.payload.settlement_refs.method` MUST be `"stripe_mpp.v1"`.
+- `settlement_refs.bundle_hash` MUST be `null`.
+- `settlement_refs.destination_identity` MUST be empty.
+- `settlement_refs.base_fee.payment_hash` carries the Stripe PaymentIntent id.
+- `settlement_refs.base_fee.state` MUST be terminal: `"settled"` for captured PaymentIntents, `"canceled"` for uncaptured/canceled PaymentIntents.
+- `settlement_refs.success_fee` MUST be a zero-valued canceled placeholder.
+- A successful deal receipt MUST have `settlement_state == "settled"`.
+- A failed deal receipt MUST have `settlement_state` in `{settled, canceled}` depending on whether the PaymentIntent was captured before failure evidence was emitted.
+
+### 5.5 Settlement Method: `"lightning.prepaid.v1"` (Paid Service)
+
+The prepaid Lightning method uses a standard BOLT11 invoice paid before execution. It does not use an `invoice_bundle` or requester-controlled success-fee hold.
+
+Receipt rules for `lightning.prepaid.v1`:
+
+- `Receipt.payload.settlement_refs.method` MUST be `"lightning.prepaid.v1"`.
+- `settlement_refs.bundle_hash` MUST be `null`.
+- `settlement_refs.destination_identity` MUST be empty.
+- `settlement_refs.base_fee.payment_hash` carries the BOLT11 payment hash.
+- For settled receipts, `settlement_refs.base_fee.invoice_hash` carries the 32-byte payment preimage, and `SHA256(preimage) == payment_hash`.
+- For canceled receipts, `settlement_refs.base_fee.invoice_hash` MUST be empty.
+- `settlement_refs.success_fee` MUST be a zero-valued canceled placeholder.
+- A successful deal receipt MUST have `settlement_state == "settled"`.
+- A failed deal receipt MUST have `settlement_state` in `{settled, canceled}` depending on whether the prepaid invoice was paid.
+
 ## 6. Lightning Settlement Binding
 
 ### 6.1 Signed InvoiceBundle
@@ -560,12 +594,12 @@ Complete enumeration of valid `settlement_state` values for terminal receipts:
 
 | Value | Meaning | Valid For |
 |---|---|---|
-| `"settled"` | All payment legs reached terminal settled state | Lightning-settled deals only |
-| `"canceled"` | Success-fee hold invoice was canceled | Lightning-settled deals only |
-| `"expired"` | Payment expired before completion | Lightning-settled deals only |
+| `"settled"` | Payment reached terminal settled state | Paid settlement methods |
+| `"canceled"` | Payment authorization/invoice was canceled or never paid | Paid settlement methods |
+| `"expired"` | Payment expired before completion | `lightning.base_fee_plus_success_fee.v1` |
 | `"none"` | No settlement involved (free deal) | `settlement_method: "none"` only |
 
-Invariant: A terminal receipt for a deal using `settlement_method: "lightning.base_fee_plus_success_fee.v1"` MUST have `settlement_state` in `{settled, canceled, expired}`. The value `"none"` is forbidden on terminal receipts for paid deals.
+Invariant: A terminal receipt for a deal using a paid settlement method MUST have a paid terminal `settlement_state`. The value `"none"` is forbidden on terminal receipts for paid deals.
 
 Invariant: A terminal receipt for a deal using `settlement_method: "none"` MUST have `settlement_state == "none"`.
 
@@ -746,7 +780,7 @@ The following are explicitly NOT part of the kernel. Implementations MUST NOT tr
 
 **Adapters:**
 - Transport choice (HTTPS, Tor, Nostr relay) is an adapter concern that MUST NOT change kernel artifact semantics.
-- Settlement driver choice (Mock Lightning, LND REST, future drivers) MUST preserve invoice_bundle commitments, leg-state meanings, gating rules, and receipt semantics.
+- Settlement driver choice (Mock Lightning, LND REST, Stripe, phoenixd, future drivers) MUST preserve the selected settlement method's commitments, leg-state meanings, gating rules, and receipt semantics.
 - Discovery bootstrap (direct peers, allowlists, curated lists, private catalogs, brokers) is an adapter concern.
 - Execution material delivery (module uploads, source bundles, archives, container references) is an adapter concern.
 - Deployment (Docker Compose, Kubernetes, cloud-native) MUST preserve kernel semantics and artifact verification.
@@ -755,7 +789,7 @@ The following are explicitly NOT part of the kernel. Implementations MUST NOT tr
 - Storage engine choice is an implementation concern that MUST preserve artifact immutability and evidence retention invariants.
 
 **Future extensions (not part of v1):**
-- Additional settlement methods (Stripe, B2B, ACH, credit systems)
+- Additional settlement methods (B2B, ACH, credit systems)
 - Long-running batch orchestration
 - Native cloud deployment adapters
 - Archive/zip packaging as first-class execution format

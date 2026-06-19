@@ -272,6 +272,7 @@ test("publishArtifact posts to provider API and accepts HTTP 201", async () => {
       const body = JSON.parse(options.body)
       assert.equal(body.runtime, "wasm")
       assert.equal(body.package_kind, "inline_module")
+      assert.equal(body.wasm_module_hex, "0061736d01000000")
       assert.equal(body.starter, "{\"a\":7,\"b\":5}")
       return new Response(JSON.stringify({ status: "published" }), {
         status: 201,
@@ -288,7 +289,7 @@ test("publishArtifact posts to provider API and accepts HTTP 201", async () => {
           offer_id: "svc-1",
           runtime: "wasm",
           package_kind: "inline_module",
-          artifact_path: "/tmp/lol.wasm",
+          wasm_module_hex: "0061736d01000000",
           starter: "{\"a\":7,\"b\":5}"
         }
       })

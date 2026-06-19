@@ -263,6 +263,10 @@ export async function validateProviderUrl(value, label, opts = {}) {
   if (LOOPBACK_HOSTS.has(hostname.toLowerCase())) {
     throw new Error(`${label} points at a loopback host (${hostname})`)
   }
+  const loweredHostname = hostname.toLowerCase()
+  if (loweredHostname.endsWith(".local") || loweredHostname.endsWith(".internal")) {
+    throw new Error(`${label} host must not use .local or .internal names`)
+  }
 
   const port = parsed.port
     ? Number.parseInt(parsed.port, 10)

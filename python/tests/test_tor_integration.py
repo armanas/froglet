@@ -25,7 +25,7 @@ class TorIntegrationTests(FrogletAsyncTestCase):
 
         async with aiohttp.ClientSession() as session:
             while asyncio.get_running_loop().time() < deadline:
-                async with session.get(node.url("/v1/descriptor")) as resp:
+                async with session.get(node.url("/v1/provider/descriptor")) as resp:
                     self.assertEqual(resp.status, 200)
                     descriptor = await resp.json()
 
@@ -41,7 +41,7 @@ class TorIntegrationTests(FrogletAsyncTestCase):
             else:
                 self.fail("timed out waiting for Tor transport to become available")
 
-            async with session.get(node.url("/v1/offers")) as resp:
+            async with session.get(node.url("/v1/provider/offers")) as resp:
                 self.assertEqual(resp.status, 200)
                 offers = await resp.json()
 
@@ -75,7 +75,10 @@ class TorIntegrationTests(FrogletAsyncTestCase):
         self.assertNotEqual(
             descriptor["signer"], descriptor_transports["tor"]["uri"]
         )
-        self.assertEqual(len(offers["offers"]), 2)
+        self.assertEqual(
+            {offer["payload"]["offer_id"] for offer in offers["offers"]},
+            {"events.query", "execute.compute", "execute.compute.generic"},
+        )
         self.assertGreaterEqual(len(feed["artifacts"]), 1)
 
 

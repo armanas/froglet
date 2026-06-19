@@ -1129,6 +1129,7 @@ async function handleMarketplaceDomainClaim(args, config, includeRaw) {
   }
   const response = await createProviderDomainClaim({
     marketplaceUrl: firstDefined(args.marketplace_url, config.marketplaceUrl),
+    ...providerCtx(config),
     requestTimeoutMs: config.requestTimeoutMs,
     request: {
       provider_id: providerId.trim(),
@@ -1215,41 +1216,15 @@ async function handleMarketplaceReceipts(args, config, includeRaw) {
 }
 
 async function handleMarketplaceStake(args, config, includeRaw) {
-  const providerId = typeof args.marketplace_provider_id === "string"
-    ? args.marketplace_provider_id.trim()
-    : ""
-  if (providerId.length === 0) {
-    throw new Error("marketplace_provider_id is required for marketplace_stake")
-  }
-  if (typeof args.amount_msat !== "number" || !Number.isFinite(args.amount_msat) || args.amount_msat <= 0) {
-    throw new Error("amount_msat must be a positive number for marketplace_stake")
-  }
-  return handleMarketplaceInvoke(args, config, includeRaw, {
-    serviceId: "marketplace.stake",
-    input: {
-      provider_id: providerId,
-      amount_msat: args.amount_msat
-    }
-  })
+  throw new Error(
+    "marketplace_stake is not available: marketplace-node no longer publishes marketplace.stake; use marketplace_provider for current provider details."
+  )
 }
 
 async function handleMarketplaceTopup(args, config, includeRaw) {
-  const providerId = typeof args.marketplace_provider_id === "string"
-    ? args.marketplace_provider_id.trim()
-    : ""
-  if (providerId.length === 0) {
-    throw new Error("marketplace_provider_id is required for marketplace_topup")
-  }
-  if (typeof args.amount_msat !== "number" || !Number.isFinite(args.amount_msat) || args.amount_msat <= 0) {
-    throw new Error("amount_msat must be a positive number for marketplace_topup")
-  }
-  return handleMarketplaceInvoke(args, config, includeRaw, {
-    serviceId: "marketplace.topup",
-    input: {
-      provider_id: providerId,
-      amount_msat: args.amount_msat
-    }
-  })
+  throw new Error(
+    "marketplace_topup is not available: marketplace-node no longer publishes marketplace.topup; use marketplace_provider for current provider details."
+  )
 }
 
 async function handleMarketplaceFileComplaint(args, config, includeRaw) {

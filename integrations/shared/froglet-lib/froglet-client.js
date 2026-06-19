@@ -21,6 +21,7 @@ const CONTRACT_BUILTIN_EVENTS_QUERY_V1 = "froglet.builtin.events_query.v1"
 const CONTRACT_CONTAINER_JSON_V1 = "froglet.container.stdin_json.v1"
 const CONTRACT_PYTHON_HANDLER_JSON_V1 = "froglet.python.handler_json.v1"
 const CONTRACT_PYTHON_SCRIPT_JSON_V1 = "froglet.python.script_json.v1"
+const DEFAULT_PROVIDER_DOMAIN_SUFFIX = "providers.froglet.dev"
 const TERMINAL_DEAL_STATES = new Set(["succeeded", "failed", "rejected", "cancelled", "completed", "done", "error"])
 const TERMINAL_TASK_STATES = new Set(["succeeded", "failed", "rejected", "cancelled", "completed", "done", "error"])
 
@@ -177,6 +178,69 @@ function sameApiBaseUrl(left, right) {
   const normalizedLeft = normalizeUrl(left)
   const normalizedRight = normalizeUrl(right)
   return normalizedLeft !== null && normalizedLeft === normalizedRight
+}
+
+function normalizeProviderDomainClaimProviderId(value) {
+  if (typeof value !== "string") {
+    throw new Error("provider_id is required for marketplace_domain_claim")
+  }
+  const providerId = value.trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(providerId)) {
+    throw new Error("provider_id must be a 64-character hex public key")
+  }
+  return providerId
+}
+
+function normalizeProviderDomainClaimSlug(value, providerId) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return providerId.slice(0, 16)
+  }
+  const slug = value.trim().toLowerCase()
+  if (!/^[a-z0-9](?:[a-z0-9-]{4,61}[a-z0-9])$/.test(slug)) {
+    throw new Error("requested_slug must be 6-63 chars of lowercase letters, digits, or interior hyphens")
+  }
+  return slug
+}
+
+function normalizeProviderDomainSuffix(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return DEFAULT_PROVIDER_DOMAIN_SUFFIX
+  }
+  const suffix = value.trim().replace(/\.$/, "").toLowerCase()
+  if (
+    suffix.length > 253 ||
+    suffix.split(".").length < 2 ||
+    suffix.split(".").some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+  ) {
+    throw new Error("provider_domain_suffix must be a valid DNS suffix")
+  }
+  return suffix
+}
+
+function providerDomainClaimIntent({ providerId, requestedSlug, publicIp, providerDomainSuffix }) {
+  const normalizedProviderId = normalizeProviderDomainClaimProviderId(providerId)
+  const slug = normalizeProviderDomainClaimSlug(requestedSlug, normalizedProviderId)
+  const suffix = normalizeProviderDomainSuffix(providerDomainSuffix)
+  const normalizedPublicIp =
+    typeof publicIp === "string" && publicIp.trim().length > 0
+      ? publicIp.trim()
+      : null
+  if (!normalizedPublicIp) {
+    throw new Error("public_ip is required for marketplace_domain_claim")
+  }
+  const hostname = `${slug}.${suffix}`
+  return {
+    providerId: normalizedProviderId,
+    slug,
+    hostname,
+    publicIp: normalizedPublicIp,
+    signingMessage:
+      `froglet-provider-domain-claim-intent-v1\n` +
+      `provider_id:${normalizedProviderId}\n` +
+      `slug:${slug}\n` +
+      `hostname:${hostname}\n` +
+      `public_ip:${normalizedPublicIp}`,
+  }
 }
 
 export async function validateMarketplaceUrl(value, label = "marketplace_url", opts = {}) {
@@ -1449,14 +1513,33 @@ export async function registerProviderOnMarketplace({
 /**
  * Create a Froglet-managed providers.froglet.dev domain claim.
  *
- * @param {{ marketplaceUrl: string, requestTimeoutMs: number, request: { provider_id: string, requested_slug?: string, public_ip: string } }} config
+ * @param {{ marketplaceUrl: string, providerUrl: string, providerAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id: string, requested_slug?: string, public_ip: string, provider_domain_suffix?: string } }} config
  */
 export async function createProviderDomainClaim({
   marketplaceUrl,
+  providerUrl,
+  providerAuthTokenPath,
   requestTimeoutMs,
   request,
   _deps = {},
 }) {
+  const intent = providerDomainClaimIntent({
+    providerId: request?.provider_id,
+    requestedSlug: request?.requested_slug,
+    publicIp: request?.public_ip,
+    providerDomainSuffix: request?.provider_domain_suffix,
+  })
+  const signResponse = await frogletRequest(
+    providerUrl,
+    providerAuthTokenPath,
+    requestTimeoutMs,
+    "POST",
+    "/v1/provider/domain-claims/sign",
+    {
+      jsonBody: { signing_message: intent.signingMessage },
+      expectedStatuses: [200],
+    }
+  )
   const marketplace = await validateMarketplaceUrl(marketplaceUrl, "marketplace_url", {
     _deps: _deps.marketplaceUrl,
   })
@@ -1466,7 +1549,12 @@ export async function createProviderDomainClaim({
     {
       method: "POST",
       timeoutMs: requestTimeoutMs,
-      jsonBody: request,
+      jsonBody: {
+        provider_id: intent.providerId,
+        requested_slug: intent.slug,
+        public_ip: intent.publicIp,
+        intent_signature: signResponse.signature,
+      },
       expectedStatuses: [200],
     },
     _deps

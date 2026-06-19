@@ -71,14 +71,19 @@ fn verify_case(case: &ArtifactVerificationCase) -> bool {
 // Feature: production-contract-hardening, Property 1: Settlement Method String Canonicality
 // Validates: Requirements 9.1, 10.1
 //
-// For all artifacts, settlement_method/method is either "none" or
-// "lightning.base_fee_plus_success_fee.v1". No other strings.
+// For all artifacts, settlement_method/method is one of the recognized v1
+// settlement methods. No other strings.
 #[test]
 fn property_1_settlement_method_string_canonicality() {
     let fixture = load_conformance();
-    let allowed: HashSet<&str> = ["none", "lightning.base_fee_plus_success_fee.v1"]
-        .into_iter()
-        .collect();
+    let allowed: HashSet<&str> = [
+        "none",
+        "lightning.base_fee_plus_success_fee.v1",
+        "stripe_mpp.v1",
+        "lightning.prepaid.v1",
+    ]
+    .into_iter()
+    .collect();
 
     // Check all artifacts in the "artifacts" map
     if let Some(artifacts) = fixture.get("artifacts").and_then(|v| v.as_object()) {

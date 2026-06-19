@@ -32,7 +32,8 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
 
     // Resolve marketplace URL (override > service [marketplace] > project [project.marketplace] > default).
     let marketplace_url =
-        resolve_marketplace_url(marketplace_override.as_deref(), &service, project.as_ref())?;
+        resolve_marketplace_url(marketplace_override.as_deref(), &service, project.as_ref())
+            .await?;
 
     // Read source from the manifest's entrypoint relative to the service dir.
     let source = read_source(&service, &service_dir)?;
@@ -54,8 +55,16 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
                             .to_string(),
                     )
                 })?;
+            let endpoint = crate::provider_resolution::validate_remote_egress_url(
+                url,
+                "[hosting.self] url",
+                false,
+                "use a public https:// or .onion self-host URL",
+            )
+            .await
+            .map_err(CliError::BadArgs)?;
             Some(HostingChoice::SelfHosted {
-                url: Url::parse(url).map_err(|e| {
+                url: Url::parse(&endpoint.normalized_url).map_err(|e| {
                     CliError::BadArgs(format!("[hosting.self] url is not a valid URL: {e}"))
                 })?,
             })
@@ -109,7 +118,7 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     Ok(())
 }
 
-fn resolve_marketplace_url(
+async fn resolve_marketplace_url(
     override_flag: Option<&str>,
     service: &froglet_protocol::manifest::ServiceManifest,
     project: Option<&froglet_protocol::manifest::ProjectManifest>,
@@ -125,7 +134,15 @@ fn resolve_marketplace_url(
     } else {
         "https://marketplace.froglet.dev".to_string()
     };
-    Url::parse(&raw)
+    let endpoint = crate::provider_resolution::validate_remote_egress_url(
+        &raw,
+        "marketplace URL",
+        false,
+        "use a public https:// or .onion marketplace URL",
+    )
+    .await
+    .map_err(CliError::BadArgs)?;
+    Url::parse(&endpoint.normalized_url)
         .map_err(|e| CliError::BadArgs(format!("marketplace URL {raw:?} is invalid: {e}")))
 }
 

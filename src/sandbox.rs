@@ -139,6 +139,15 @@ impl WasmSandbox {
             .map_err(|_| "Wasm concurrency limit reached".to_string())
     }
 
+    pub async fn acquire_execution_permit(&self) -> Result<ExecutionPermit, String> {
+        self.concurrency_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map(ExecutionPermit)
+            .map_err(|_| "Wasm concurrency limiter closed".to_string())
+    }
+
     pub fn execute_module(
         &self,
         wasm_bytes: &[u8],

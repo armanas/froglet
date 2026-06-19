@@ -22,7 +22,7 @@ describe("marketplace_publish: validatePublishInput", () => {
   }
 
   it("accepts the minimum viable input", async () => {
-    const r = await ok({ name: "translator", source_inline: "print('hi')" })
+    const r = await ok({ name: "translator", source_inline: "def handler(event, context):\n    return event\n" })
     assert.equal(r.name, "translator")
     assert.equal(r.runtime, "python")
     assert.equal(r.packageKind, "inline_source")
@@ -31,6 +31,16 @@ describe("marketplace_publish: validatePublishInput", () => {
     assert.equal(r.marketplaceUrl, "https://marketplace.froglet.dev")
     assert.equal(r.entrypoint, "handler.py")
     assert.match(r.summary, /translator/)
+  })
+
+  it("scaffolds the handler ABI in the service manifest", async () => {
+    const toml = serviceToml(await ok({
+      name: "translator",
+      source_inline: "def handler(event, context):\n    return event\n"
+    }))
+    assert.match(toml, /entrypoint_kind = "handler"/)
+    assert.match(toml, /entrypoint = "handler\.py"/)
+    assert.match(toml, /contract_version = "froglet\.python\.handler_json\.v1"/)
   })
 
   it("carries price_sats and currency=usd for a stripe service", async () => {

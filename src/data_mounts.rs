@@ -20,7 +20,10 @@ pub(crate) fn collect_data_mount_plan(
     for mount in &execution.mounts {
         let kind = mount.kind.to_ascii_lowercase();
         let Some(kind_policy) = MountKindPolicy::for_kind(&kind) else {
-            continue;
+            return Err(format!(
+                "unsupported mount kind: {}; allowed: postgres, sqlite, s3, redis",
+                mount.kind
+            ));
         };
         let capability = format!(
             "mount.{}.{}.{}",
@@ -253,6 +256,27 @@ mod tests {
 
         assert!(plan.env.is_empty());
         assert!(!plan.needs_network);
+    }
+
+    #[test]
+    fn unknown_mount_kind_fails_closed_before_capability_filtering() {
+        let execution = ExecutionWorkload {
+            mounts: vec![crate::execution::ExecutionMount {
+                handle: "workspace".to_string(),
+                kind: "filesystem".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+
+        let error = collect_data_mount_plan(&execution, &[])
+            .expect_err("unknown mount kind must fail closed");
+
+        assert!(
+            error.contains("unsupported mount kind"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

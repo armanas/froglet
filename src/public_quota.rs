@@ -11,6 +11,7 @@ pub struct PublicQuotaConfig {
     pub event_publishes_per_identity: u32,
     pub quotes_per_identity: u32,
     pub confidential_sessions_per_identity: u32,
+    pub trust_forward_public_quota_headers: bool,
     pub hosted_trial_window_secs: u64,
     pub public_write_window_secs: u64,
 }
@@ -23,6 +24,7 @@ impl Default for PublicQuotaConfig {
             event_publishes_per_identity: 60,
             quotes_per_identity: 60,
             confidential_sessions_per_identity: 20,
+            trust_forward_public_quota_headers: false,
             hosted_trial_window_secs: 900,
             public_write_window_secs: 900,
         }

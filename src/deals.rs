@@ -16,6 +16,9 @@ pub const DEAL_STATUS_RESULT_READY: &str = "result_ready";
 pub const DEAL_STATUS_SUCCEEDED: &str = "succeeded";
 pub const DEAL_STATUS_FAILED: &str = "failed";
 pub const DEAL_STATUS_REJECTED: &str = "rejected";
+pub const QUOTE_ALREADY_USED_ERROR: &str = "quote already used by a different deal";
+pub const QUOTE_ADMISSION_IN_PROGRESS_ERROR: &str =
+    "quote admission is already in progress for this deal";
 
 #[derive(Debug, Clone)]
 pub struct StoredQuote {
@@ -40,8 +43,9 @@ pub struct NewDeal {
 }
 
 /// A prepaid (`lightning.prepaid.v1`) BOLT11 invoice the provider mints at
-/// deal-create time and returns to the buyer so it can pay upfront.  Conveyed
-/// only on the create response; never persisted in `StoredDeal`.
+/// deal-create time and returns to the buyer so it can pay upfront. Persisted
+/// outside `StoredDeal` so idempotent retries can return the same payable
+/// invoice without changing the signed deal payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrepaidInvoice {
     pub bolt11: String,
@@ -66,8 +70,8 @@ pub struct DealRecord {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt: Option<SignedArtifact<ReceiptPayload>>,
-    /// Set only on the provider's deal-create response for prepaid Lightning
-    /// deals, so the buyer can pay the invoice.  Not persisted.
+    /// Set on provider deal-create and idempotent replay responses for prepaid
+    /// Lightning deals, so the buyer can pay the invoice.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub prepaid_invoice: Option<PrepaidInvoice>,
     pub created_at: i64,
@@ -236,14 +240,6 @@ pub fn insert_or_get_deal(
     let artifact_json = serde_json::to_string(&artifact).map_err(|e| e.to_string())?;
 
     if let Some(existing) = get_deal_by_artifact_hash(conn, &deal_artifact_hash)? {
-        if let Some(idempotency_key) = idempotency_key.as_deref()
-            && existing.idempotency_key.as_deref() != Some(idempotency_key)
-        {
-            return Err(
-                "idempotency key conflict: artifact hash already claimed with a different key"
-                    .to_string(),
-            );
-        }
         return Ok(InsertDealOutcome {
             deal: existing,
             created: false,
@@ -261,6 +257,8 @@ pub fn insert_or_get_deal(
             created: false,
         });
     }
+
+    reserve_quote_usage(conn, &quote.hash, &deal_id, &deal_artifact_hash, created_at)?;
 
     let insert_result = conn.execute(
         "INSERT INTO deals (
@@ -341,6 +339,112 @@ pub fn insert_or_get_deal(
             Err(e.to_string())
         }
     }
+}
+
+fn reserve_quote_usage(
+    conn: &Connection,
+    quote_hash: &str,
+    deal_id: &str,
+    deal_artifact_hash: &str,
+    created_at: i64,
+) -> Result<(), String> {
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO quote_usages (
+                quote_hash,
+                deal_id,
+                deal_artifact_hash,
+                created_at
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![quote_hash, deal_id, deal_artifact_hash, created_at],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if inserted > 0 {
+        return Ok(());
+    }
+
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT deal_artifact_hash FROM quote_usages WHERE quote_hash = ?1",
+            params![quote_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if existing.as_deref() == Some(deal_artifact_hash) {
+        return Ok(());
+    }
+
+    Err(QUOTE_ALREADY_USED_ERROR.to_string())
+}
+
+/// Durably reserves a quote before external settlement side effects.
+///
+/// This is intentionally stricter than `reserve_quote_usage`: if the same
+/// deal hash already reserved the quote but no deal row exists yet, a second
+/// caller must not mint a second Stripe PaymentIntent or prepaid invoice.
+pub fn reserve_quote_usage_before_side_effects(
+    conn: &Connection,
+    quote_hash: &str,
+    deal_id: &str,
+    deal_artifact_hash: &str,
+    created_at: i64,
+) -> Result<bool, String> {
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO quote_usages (
+                quote_hash,
+                deal_id,
+                deal_artifact_hash,
+                created_at
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![quote_hash, deal_id, deal_artifact_hash, created_at],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if inserted > 0 {
+        return Ok(true);
+    }
+
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT deal_artifact_hash FROM quote_usages WHERE quote_hash = ?1",
+            params![quote_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if existing.as_deref() != Some(deal_artifact_hash) {
+        return Err(QUOTE_ALREADY_USED_ERROR.to_string());
+    }
+
+    if get_deal_by_artifact_hash(conn, deal_artifact_hash)?.is_some() {
+        return Ok(false);
+    }
+
+    Err(QUOTE_ADMISSION_IN_PROGRESS_ERROR.to_string())
+}
+
+pub fn release_quote_usage_for_unpersisted_deal(
+    conn: &Connection,
+    quote_hash: &str,
+    deal_artifact_hash: &str,
+) -> Result<bool, String> {
+    if get_deal_by_artifact_hash(conn, deal_artifact_hash)?.is_some() {
+        return Ok(false);
+    }
+
+    let deleted = conn
+        .execute(
+            "DELETE FROM quote_usages
+              WHERE quote_hash = ?1 AND deal_artifact_hash = ?2",
+            params![quote_hash, deal_artifact_hash],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(deleted > 0)
 }
 
 pub fn set_deal_storage_refs(
@@ -506,6 +610,42 @@ pub fn try_mark_deal_accepted_from_payment_pending(
             params![
                 deal_id,
                 DEAL_STATUS_ACCEPTED,
+                now,
+                DEAL_STATUS_PAYMENT_PENDING
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
+pub fn materialize_payment_for_pending_deal(
+    conn: &Connection,
+    deal_id: &str,
+    payment_token_hash: &str,
+    payment_amount_sats: u64,
+    next_status: &str,
+    now: i64,
+) -> Result<bool, String> {
+    if next_status != DEAL_STATUS_ACCEPTED && next_status != DEAL_STATUS_PAYMENT_PENDING {
+        return Err(format!(
+            "unsupported materialized deal status: {next_status}"
+        ));
+    }
+
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET payment_token_hash = ?2,
+                 payment_amount_sats = ?3,
+                 status = ?4,
+                 updated_at = ?5
+             WHERE deal_id = ?1 AND status = ?6",
+            params![
+                deal_id,
+                payment_token_hash,
+                payment_amount_sats as i64,
+                next_status,
                 now,
                 DEAL_STATUS_PAYMENT_PENDING
             ],
@@ -1252,6 +1392,325 @@ fn deal_row_snapshot(row: &rusqlite::Row<'_>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{
+        self, ARTIFACT_KIND_DEAL, ARTIFACT_KIND_QUOTE, ExecutionLimits, QuoteSettlementTerms,
+    };
+
+    fn test_spec() -> WorkloadSpec {
+        WorkloadSpec::EventsQuery {
+            kinds: vec!["froglet.test".to_string()],
+            limit: Some(10),
+        }
+    }
+
+    fn signed_test_quote(
+        provider_key: &crypto::NodeSigningKey,
+        requester_id: &str,
+        spec: &WorkloadSpec,
+    ) -> SignedArtifact<QuotePayload> {
+        let provider_id = crypto::public_key_hex(provider_key);
+        protocol::sign_artifact(
+            &provider_id,
+            |message| crypto::sign_message_hex(provider_key, message),
+            ARTIFACT_KIND_QUOTE,
+            1_700_000_000,
+            QuotePayload {
+                provider_id: provider_id.clone(),
+                requester_id: requester_id.to_string(),
+                descriptor_hash: "aa".repeat(32),
+                offer_hash: "bb".repeat(32),
+                expires_at: 1_700_000_600,
+                workload_kind: spec.workload_kind().to_string(),
+                workload_hash: spec.request_hash().expect("workload hash"),
+                confidential_session_hash: None,
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
+                settlement_terms: QuoteSettlementTerms {
+                    method: "none".to_string(),
+                    destination_identity: provider_id.clone(),
+                    base_fee_msat: 0,
+                    success_fee_msat: 0,
+                    max_base_invoice_expiry_secs: 0,
+                    max_success_hold_expiry_secs: 0,
+                    min_final_cltv_expiry: 0,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1024,
+                    max_runtime_ms: 1_000,
+                    max_memory_bytes: 1024 * 1024,
+                    max_output_bytes: 1024,
+                    fuel_limit: 10_000,
+                },
+            },
+        )
+        .expect("quote")
+    }
+
+    fn signed_test_deal(
+        requester_key: &crypto::NodeSigningKey,
+        quote: &SignedArtifact<QuotePayload>,
+        client_nonce: &str,
+    ) -> SignedArtifact<DealPayload> {
+        let requester_id = crypto::public_key_hex(requester_key);
+        protocol::sign_artifact(
+            &requester_id,
+            |message| crypto::sign_message_hex(requester_key, message),
+            ARTIFACT_KIND_DEAL,
+            1_700_000_001,
+            DealPayload {
+                requester_id: requester_id.clone(),
+                provider_id: quote.payload.provider_id.clone(),
+                quote_hash: quote.hash.clone(),
+                workload_hash: quote.payload.workload_hash.clone(),
+                confidential_session_hash: None,
+                extension_refs: Vec::new(),
+                authority_ref: None,
+                supersedes_deal_hash: None,
+                client_nonce: Some(client_nonce.to_string()),
+                success_payment_hash: "cc".repeat(32),
+                admission_deadline: 1_700_000_060,
+                completion_deadline: 1_700_000_120,
+                acceptance_deadline: 1_700_000_180,
+            },
+        )
+        .expect("deal")
+    }
+
+    fn new_test_deal(
+        deal_id: &str,
+        idempotency_key: Option<&str>,
+        quote: &SignedArtifact<QuotePayload>,
+        spec: &WorkloadSpec,
+        artifact: &SignedArtifact<DealPayload>,
+    ) -> NewDeal {
+        NewDeal {
+            deal_id: deal_id.to_string(),
+            idempotency_key: idempotency_key.map(str::to_string),
+            quote: quote.clone(),
+            spec: spec.clone(),
+            artifact: artifact.clone(),
+            workload_evidence_hash: None,
+            deal_artifact_hash: artifact.hash.clone(),
+            payment_method: None,
+            payment_token_hash: None,
+            payment_amount_sats: None,
+            initial_status: DEAL_STATUS_ACCEPTED.to_string(),
+            created_at: artifact.created_at,
+        }
+    }
+
+    fn insert_deal_in_transaction(
+        conn: &Connection,
+        new_deal: NewDeal,
+    ) -> Result<InsertDealOutcome, String> {
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        let result = insert_or_get_deal(conn, new_deal);
+        match result {
+            Ok(outcome) => {
+                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    #[test]
+    fn insert_or_get_deal_reserves_quote_and_allows_exact_replay() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let deal = signed_test_deal(&requester_key, &quote, "nonce-1");
+
+        let first = insert_deal_in_transaction(
+            &conn,
+            new_test_deal("deal-1", Some("idem-1"), &quote, &spec, &deal),
+        )
+        .expect("first deal insert");
+        assert!(first.created);
+
+        let usage_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quote_usages", [], |row| row.get(0))
+            .expect("quote usage count");
+        let reserved_deal_hash: String = conn
+            .query_row(
+                "SELECT deal_artifact_hash FROM quote_usages WHERE quote_hash = ?1",
+                params![quote.hash],
+                |row| row.get(0),
+            )
+            .expect("quote usage row");
+        assert_eq!(usage_count, 1);
+        assert_eq!(reserved_deal_hash, deal.hash);
+
+        let replay = insert_deal_in_transaction(
+            &conn,
+            new_test_deal("deal-replay", Some("idem-1"), &quote, &spec, &deal),
+        )
+        .expect("exact replay");
+        assert!(!replay.created);
+        assert_eq!(replay.deal.deal_id, "deal-1");
+        assert_eq!(replay.deal.artifact.hash, deal.hash);
+
+        let replay_with_fresh_key = insert_deal_in_transaction(
+            &conn,
+            new_test_deal(
+                "deal-replay-fresh-key",
+                Some("idem-2"),
+                &quote,
+                &spec,
+                &deal,
+            ),
+        )
+        .expect("exact replay with fresh idempotency key");
+        assert!(!replay_with_fresh_key.created);
+        assert_eq!(replay_with_fresh_key.deal.deal_id, "deal-1");
+        assert_eq!(replay_with_fresh_key.deal.artifact.hash, deal.hash);
+    }
+
+    #[test]
+    fn insert_or_get_deal_rejects_distinct_deal_for_used_quote() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let first_deal = signed_test_deal(&requester_key, &quote, "nonce-1");
+        let second_deal = signed_test_deal(&requester_key, &quote, "nonce-2");
+
+        insert_deal_in_transaction(
+            &conn,
+            new_test_deal("deal-1", Some("idem-1"), &quote, &spec, &first_deal),
+        )
+        .expect("first deal insert");
+
+        let same_key_error = match insert_deal_in_transaction(
+            &conn,
+            new_test_deal("deal-2", Some("idem-1"), &quote, &spec, &second_deal),
+        ) {
+            Ok(_) => panic!("expected idempotency conflict"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            same_key_error,
+            "idempotency key reused with different deal payload"
+        );
+
+        let distinct_error = match insert_deal_in_transaction(
+            &conn,
+            new_test_deal("deal-3", Some("idem-3"), &quote, &spec, &second_deal),
+        ) {
+            Ok(_) => panic!("expected quote reuse conflict"),
+            Err(error) => error,
+        };
+        assert_eq!(distinct_error, QUOTE_ALREADY_USED_ERROR);
+
+        let deal_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deals", [], |row| row.get(0))
+            .expect("deal count");
+        let usage_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quote_usages", [], |row| row.get(0))
+            .expect("quote usage count");
+        assert_eq!(deal_count, 1);
+        assert_eq!(usage_count, 1);
+    }
+
+    #[test]
+    fn pre_side_effect_quote_reservation_blocks_concurrent_admission_until_deal_exists() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let deal = signed_test_deal(&requester_key, &quote, "nonce-1");
+
+        assert!(
+            reserve_quote_usage_before_side_effects(
+                &conn,
+                &quote.hash,
+                "deal-1",
+                &deal.hash,
+                deal.created_at,
+            )
+            .expect("initial reservation")
+        );
+
+        let duplicate_error = reserve_quote_usage_before_side_effects(
+            &conn,
+            &quote.hash,
+            "deal-1-retry",
+            &deal.hash,
+            deal.created_at,
+        )
+        .expect_err("concurrent side effect must be blocked");
+        assert_eq!(duplicate_error, QUOTE_ADMISSION_IN_PROGRESS_ERROR);
+
+        let released = release_quote_usage_for_unpersisted_deal(&conn, &quote.hash, &deal.hash)
+            .expect("release unpersisted reservation");
+        assert!(released);
+
+        let usage_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quote_usages", [], |row| row.get(0))
+            .expect("quote usage count");
+        assert_eq!(usage_count, 0);
+    }
+
+    #[test]
+    fn pre_side_effect_quote_reservation_survives_after_deal_is_persisted() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let deal = signed_test_deal(&requester_key, &quote, "nonce-1");
+
+        reserve_quote_usage_before_side_effects(
+            &conn,
+            &quote.hash,
+            "deal-1",
+            &deal.hash,
+            deal.created_at,
+        )
+        .expect("initial reservation");
+
+        insert_deal_in_transaction(
+            &conn,
+            new_test_deal("deal-1", Some("idem-1"), &quote, &spec, &deal),
+        )
+        .expect("deal insert after pre-reservation");
+
+        let reused = reserve_quote_usage_before_side_effects(
+            &conn,
+            &quote.hash,
+            "deal-1-replay",
+            &deal.hash,
+            deal.created_at,
+        )
+        .expect("exact replay after persistence should not side-effect reserve");
+        assert!(!reused);
+
+        let released = release_quote_usage_for_unpersisted_deal(&conn, &quote.hash, &deal.hash)
+            .expect("release persisted reservation");
+        assert!(!released);
+
+        let usage_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quote_usages", [], |row| row.get(0))
+            .expect("quote usage count");
+        assert_eq!(usage_count, 1);
+    }
 
     #[test]
     fn quarantine_invalid_deals_removes_unreadable_rows() {

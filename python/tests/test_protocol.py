@@ -1043,12 +1043,18 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
             async with session.get(node.url(f"/v1/provider/deals/{deal['deal_id']}")) as resp:
                 reread = await resp.json()
 
+            second_request = build_wasm_request(
+                VALID_WASM_HEX, input={"job": "reference-first-reads-second"}
+            )
+            second_requester_key, second_quote = await self._create_quote(
+                session, node, second_request
+            )
             second_deal = await self._create_deal(
                 session,
                 node,
-                quote=quote,
-                request=request,
-                requester_key=requester_key,
+                quote=second_quote,
+                request=second_request,
+                requester_key=second_requester_key,
                 idempotency_key="reference-first-deal-second",
             )
 
@@ -1060,7 +1066,8 @@ class ProtocolPrimitiveTests(FrogletAsyncTestCase):
 
         second_terminal = await self.wait_for_deal(node, second_deal["deal_id"])
         self.assertEqual(second_terminal["status"], "succeeded")
-        self.assertEqual(second_terminal["quote"]["hash"], quote["hash"])
+        self.assertEqual(second_terminal["quote"]["hash"], second_quote["hash"])
+        self.assertNotEqual(second_quote["hash"], quote["hash"])
 
     async def test_quote_rejects_unsupported_wasm_abi_version(self) -> None:
         node = await self.start_provider()

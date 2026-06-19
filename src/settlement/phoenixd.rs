@@ -135,18 +135,28 @@ impl PhoenixdClient {
         description: &str,
         expiry_secs: u64,
     ) -> Result<CreatedInvoice, PhoenixdError> {
+        self.create_invoice_with_external_id(amount_sat, description, expiry_secs, None)
+            .await
+    }
+
+    pub async fn create_invoice_with_external_id(
+        &self,
+        amount_sat: u64,
+        description: &str,
+        expiry_secs: u64,
+        external_id: Option<&str>,
+    ) -> Result<CreatedInvoice, PhoenixdError> {
         let amount = amount_sat.to_string();
         let expiry = expiry_secs.to_string();
-        let response: CreateInvoiceResponse = self
-            .post_form(
-                "/createinvoice",
-                &[
-                    ("amountSat", amount.as_str()),
-                    ("description", description),
-                    ("expirySeconds", expiry.as_str()),
-                ],
-            )
-            .await?;
+        let mut params = vec![
+            ("amountSat", amount.as_str()),
+            ("description", description),
+            ("expirySeconds", expiry.as_str()),
+        ];
+        if let Some(external_id) = external_id {
+            params.push(("externalId", external_id));
+        }
+        let response: CreateInvoiceResponse = self.post_form("/createinvoice", &params).await?;
         Ok(CreatedInvoice {
             payment_request: response.serialized,
             payment_hash_hex: response.payment_hash,
@@ -537,6 +547,12 @@ mod tests {
         assert_eq!(sent.preimage_hex, "bb".repeat(32));
         assert_eq!(sent.routing_fee_sat, 1);
 
+        let external_invoice = client
+            .create_invoice_with_external_id(30, "deal-456", 300, Some("deal-456"))
+            .await
+            .unwrap();
+        assert_eq!(external_invoice.payment_request, "lnbc300n1prepaidinvoice");
+
         let requests = state.requests.lock().unwrap().clone();
         assert_eq!(requests[0].0, "createinvoice");
         assert!(requests[0].1.contains("amountSat=30"));
@@ -545,6 +561,9 @@ mod tests {
         assert_eq!(requests[1].1, "aa".repeat(32));
         assert_eq!(requests[2].0, "payinvoice");
         assert!(requests[2].1.contains("invoice=lnbc300n1prepaidinvoice"));
+        assert_eq!(requests[3].0, "createinvoice");
+        assert!(requests[3].1.contains("description=deal-456"));
+        assert!(requests[3].1.contains("externalId=deal-456"));
     }
 
     #[tokio::test]

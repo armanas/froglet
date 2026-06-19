@@ -12,13 +12,13 @@
 use crate::state::AppState;
 use axum::{
     Json,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 #[derive(Debug, Serialize)]
 struct SessionResponse {
@@ -49,6 +49,13 @@ async fn preflight(State(state): State<Arc<AppState>>) -> Response {
             Some(pool) => (true, Some(pool.size()), Some(pool.ttl().as_secs())),
             None => (false, None, None),
         };
+    let public_hosted_proof_services: Vec<String> = state
+        .config
+        .session_pool
+        .hosted_trial_allowed_service_ids
+        .iter()
+        .cloned()
+        .collect();
 
     (
         StatusCode::OK,
@@ -87,13 +94,7 @@ async fn preflight(State(state): State<Arc<AppState>>) -> Response {
                 "custom_headers": ["Authorization: Bearer <session-token>", "content-type: application/json"],
                 "polling": true
             },
-            "public_hosted_proof_services": [
-                "demo.add",
-                "demo.echo",
-                "demo.fetch-witness",
-                "demo.hash-verify",
-                "demo.notarize"
-            ],
+            "public_hosted_proof_services": public_hosted_proof_services,
             "non_demo_services": "Other service IDs may appear on the reference node, but they are outside the public hosted proof contract.",
             "local_install_handoff": {
                 "when_user_asks": "After reporting hosted evidence, collect the local install profile, call plan_install before get_install_guide, run commands through the user's host shell, verify provider/runtime health, then call plan_use_case.",
@@ -107,12 +108,20 @@ async fn preflight(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-async fn create_session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn create_session(
+    State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+) -> Response {
     let Some(pool) = state.session_pool.as_ref() else {
         return session_pool_not_enabled_response();
     };
 
-    let quota_identity = super::public_quota_identity_from_headers(&headers);
+    let quota_identity = super::public_quota_identity_from_request(
+        &headers,
+        connect_info.map(|ConnectInfo(peer_addr)| peer_addr),
+        state.config.public_quota.trust_forward_public_quota_headers,
+    );
     if let Err(response) = super::enforce_identity_quota(
         state.hosted_trial_session_quota.as_ref(),
         &quota_identity,

@@ -191,6 +191,7 @@ async fn run(
     sanitize_persisted_deals(state.clone()).await?;
     log_startup_db_metrics(state.clone(), &node_config.storage.db_path).await?;
     audit_duplicate_deal_hashes(state.clone()).await?;
+    audit_duplicate_quote_hashes(state.clone()).await?;
 
     let restart_policy = SupervisionPolicy::Restart {
         min_delay: Duration::from_secs(SUPERVISOR_RESTART_MIN_DELAY_SECS),
@@ -574,6 +575,30 @@ async fn audit_duplicate_deal_hashes(state: Arc<AppState>) -> Result<(), String>
     Ok(())
 }
 
+async fn audit_duplicate_quote_hashes(state: Arc<AppState>) -> Result<(), String> {
+    let duplicates = state
+        .db
+        .with_read_conn(move |conn| crate::db::list_duplicate_quote_hashes(conn, 10))
+        .await?;
+    if duplicates.is_empty() {
+        info!("No duplicate quote hashes detected at startup");
+        return Ok(());
+    }
+
+    warn!(
+        duplicate_quote_hashes = duplicates.len(),
+        "Duplicate quote hashes detected at startup"
+    );
+    for (quote_hash, duplicate_count) in duplicates {
+        warn!(
+            %quote_hash,
+            duplicate_count,
+            "duplicate quote hash audit hit"
+        );
+    }
+    Ok(())
+}
+
 fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_string()
@@ -802,7 +827,7 @@ async fn serve_http_listener(
 
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
+            Ok((stream, peer_addr)) => {
                 accept_backoff = Duration::from_millis(HTTP_ACCEPT_BACKOFF_MIN_MS);
                 let permit = match connection_semaphore.clone().try_acquire_owned() {
                     Ok(permit) => permit,
@@ -814,7 +839,9 @@ async fn serve_http_listener(
                 let app_clone = app.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    if let Err(error) = serve_http_stream(stream, app_clone, config).await {
+                    if let Err(error) =
+                        serve_http_stream(stream, peer_addr, app_clone, config).await
+                    {
                         error!("Error serving Axum over TCP stream: {error}");
                     }
                 });
@@ -835,6 +862,7 @@ async fn serve_http_listener(
 
 async fn serve_http_stream(
     stream: tokio::net::TcpStream,
+    peer_addr: SocketAddr,
     app: axum::Router,
     config: HttpServeConfig,
 ) -> Result<(), String> {
@@ -845,7 +873,9 @@ async fn serve_http_stream(
     builder.header_read_timeout(Some(config.header_read_timeout));
 
     let hyper_service =
-        hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+        hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+            req.extensions_mut()
+                .insert(axum::extract::ConnectInfo(peer_addr));
             app.clone().call(req)
         });
 

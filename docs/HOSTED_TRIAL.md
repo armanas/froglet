@@ -98,6 +98,12 @@ Only `demo.*` services are part of the public hosted proof. Other service IDs
 may appear on the reference node, but they are outside this public hosted trial
 contract and should not be used to judge the hosted proof.
 
+The hosted-trial runtime enforces this catalog before creating free local
+deals. By default it allows `demo.add`, `demo.echo`, `demo.fetch-witness`,
+`demo.hash-verify`, and `demo.notarize`; operators can replace that set with
+`FROGLET_HOSTED_TRIAL_ALLOWED_SERVICE_IDS` when running a different public
+trial catalog.
+
 ```bash
 curl -sS https://try.froglet.dev/api/preflight | jq .
 TOKEN=$(curl -sS -X POST https://try.froglet.dev/api/sessions | jq -r .session_token)

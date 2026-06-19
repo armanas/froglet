@@ -165,8 +165,6 @@ describe("tool definitions", () => {
       "marketplace_search",
       "marketplace_provider",
       "marketplace_receipts",
-      "marketplace_stake",
-      "marketplace_topup",
       "marketplace_file_complaint",
       "marketplace_get_complaint",
       "marketplace_publish"
@@ -290,6 +288,7 @@ describe("froglet MCP actions", () => {
       assert.equal(String(url), "http://127.0.0.1:8080/v1/provider/artifacts/publish")
       const body = JSON.parse(options.body)
       assert.equal(body.service_id, "svc-1")
+      assert.equal(body.wasm_module_hex, "0061736d01000000")
       assert.equal(body.starter, "{\"a\":7,\"b\":5}")
       assert.deepEqual(body.input_schema, {
         type: "object",
@@ -312,7 +311,7 @@ describe("froglet MCP actions", () => {
           service_id: "svc-1",
           runtime: "wasm",
           package_kind: "inline_module",
-          artifact_path: "/tmp/demo.wasm",
+          wasm_module_hex: "0061736d01000000",
           starter: "{\"a\":7,\"b\":5}",
           input_schema: { type: "object", required: ["a", "b"] },
           output_schema: { type: "object", required: ["sum"] }
@@ -890,8 +889,28 @@ describe("froglet MCP actions", () => {
 
   it("marketplace_domain_claim creates a managed subdomain claim", async () => {
     let capturedBody
+    const seen = []
     const restore = mockFetch(async (url, opts) => {
       const urlStr = String(url)
+      seen.push(urlStr)
+      if (urlStr === "http://127.0.0.1:8080/v1/provider/domain-claims/sign") {
+        assert.equal(opts.headers.Authorization, "Bearer test-token-abc")
+        assert.deepEqual(JSON.parse(opts.body), {
+          signing_message:
+            "froglet-provider-domain-claim-intent-v1\n" +
+            `provider_id:${"a".repeat(64)}\n` +
+            "slug:demo-1\n" +
+            "hostname:demo-1.providers.froglet.dev\n" +
+            "public_ip:8.8.8.8"
+        })
+        return new Response(
+          JSON.stringify({
+            provider_id: "a".repeat(64),
+            signature: "f".repeat(128)
+          }),
+          { status: 200 }
+        )
+      }
       if (urlStr === "https://mkt.example/v1/provider-domains/claims") {
         capturedBody = JSON.parse(opts.body)
         return new Response(
@@ -924,8 +943,13 @@ describe("froglet MCP actions", () => {
       assert.deepEqual(capturedBody, {
         provider_id: "a".repeat(64),
         requested_slug: "demo-1",
-        public_ip: "8.8.8.8"
+        public_ip: "8.8.8.8",
+        intent_signature: "f".repeat(128)
       })
+      assert.deepEqual(seen, [
+        "http://127.0.0.1:8080/v1/provider/domain-claims/sign",
+        "https://mkt.example/v1/provider-domains/claims"
+      ])
       assert.match(result.content[0].text, /claim_id: claim-1/)
       assert.match(result.content[0].text, /hostname: demo-1\.providers\.froglet\.dev/)
     } finally {
@@ -990,109 +1014,28 @@ describe("froglet MCP actions", () => {
     }
   })
 
-  it("marketplace_stake requires marketplace_provider_id", async () => {
+  it("legacy marketplace_stake returns a local disabled-action error", async () => {
     const result = await handleToolCall(
       "froglet",
       { action: "marketplace_stake", amount_msat: 1000 },
       config
     )
     assert.equal(result.isError, true)
-    assert.match(result.content[0].text, /marketplace_provider_id is required/)
+    assert.match(result.content[0].text, /marketplace_stake is not available/)
   })
 
-  it("marketplace_stake requires a positive amount_msat", async () => {
+  it("legacy marketplace_topup returns a local disabled-action error", async () => {
     const result = await handleToolCall(
       "froglet",
       {
-        action: "marketplace_stake",
+        action: "marketplace_topup",
         marketplace_provider_id: "prov-1",
-        amount_msat: 0
+        amount_msat: 1000
       },
       config
     )
     assert.equal(result.isError, true)
-    assert.match(result.content[0].text, /amount_msat must be a positive number/)
-  })
-
-  it("marketplace_topup forwards provider_id and amount_msat", async () => {
-    let capturedInput
-    const restore = mockFetch(async (url, opts) => {
-      const urlStr = String(url)
-      if (urlStr.endsWith("/v1/runtime/search")) {
-        return new Response(
-          JSON.stringify({
-            providers: [
-              {
-                provider_id: "prov-mkt",
-                descriptor_hash: "desc-mkt",
-                transport_endpoints: [
-                  { uri: "https://mkt.example", features: ["quote_http"], priority: 1 }
-                ],
-                offers: [
-                  {
-                    offer_hash: "marketplace-topup-hash",
-                    offer_id: "marketplace.topup",
-                    offer_kind: "builtin",
-                    runtime: "builtin"
-                  }
-                ],
-                last_seen_at: "2026-04-16T00:00:00Z"
-              }
-            ]
-          }),
-          { status: 200 }
-        )
-      }
-      if (urlStr === "https://mkt.example/v1/provider/services/marketplace.topup") {
-        return new Response(
-          JSON.stringify({
-            service: {
-              service_id: "marketplace.topup",
-              offer_id: "marketplace.topup",
-              provider_id: "prov-mkt",
-              runtime: "builtin",
-              package_kind: "builtin"
-            }
-          }),
-          { status: 200 }
-        )
-      }
-      if (urlStr.endsWith("/v1/runtime/deals")) {
-        capturedInput = JSON.parse(opts.body)
-        return new Response(
-          JSON.stringify({
-            provider_id: "prov-mkt",
-            provider_url: "https://mkt.example",
-            deal: { status: "succeeded", result: { total_staked_msat: 2000 } },
-            result: { total_staked_msat: 2000 }
-          }),
-          { status: 200 }
-        )
-      }
-      throw new Error(`unexpected URL: ${urlStr}`)
-    })
-    try {
-      const result = await handleToolCall(
-        "froglet",
-        {
-          action: "marketplace_topup",
-          marketplace_provider_id: "prov-7",
-          amount_msat: 1000
-        },
-        config
-      )
-      assert.equal(result.isError, undefined, result.content?.[0]?.text)
-      assert.equal(capturedInput.execution.workload_kind, "marketplace.topup")
-      assert.equal(capturedInput.execution.builtin_name, "marketplace.topup")
-      assert.deepEqual(capturedInput.execution.security, { mode: "standard" })
-      assert.equal(capturedInput.execution.module_hash, undefined)
-      assert.deepEqual(capturedInput.execution.input, {
-        provider_id: "prov-7",
-        amount_msat: 1000
-      })
-    } finally {
-      restore()
-    }
+    assert.match(result.content[0].text, /marketplace_topup is not available/)
   })
 
   it("marketplace_file_complaint posts a public complaint to the arbiter", async () => {

@@ -99,7 +99,7 @@ summary = "Translate EN→ES via Claude"
 # Runtime / packaging
 runtime = "python"                  # python | wasm | container | builtin
 package_kind = "inline_source"      # inline_source | inline_module | oci_image
-entrypoint_kind = "script"          # script (python default) | handler | module
+entrypoint_kind = "handler"         # handler (python default) | script | module
 entrypoint = "handler.py"
 contract_version = "froglet.python.handler_json.v1"  # defaulted per runtime
 mode = "sync"                       # sync | async
@@ -195,7 +195,7 @@ When omitted from the manifest:
 |---|---|
 | `offer_id` | `service_id` |
 | `summary` | `"Froglet service {service_id}"` |
-| `entrypoint_kind` | runtime-derived (`script` for python, `module` for wasm, `image` for container) |
+| `entrypoint_kind` | runtime-derived (`handler` for python, `module` for wasm, `image` for container) |
 | `contract_version` | `"froglet.{runtime}.{package_kind}.v1"` form |
 | `mode` | `"sync"` |
 | `source_kind` | inferred from runtime + package_kind |

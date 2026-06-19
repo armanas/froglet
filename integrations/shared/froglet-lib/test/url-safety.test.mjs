@@ -139,6 +139,21 @@ test("validateProviderUrl rejects loopback hostnames", async () => {
   )
 })
 
+test("validateProviderUrl rejects local-name suffixes before DNS", async () => {
+  for (const url of ["https://svc.internal", "https://printer.local"]) {
+    await assert.rejects(
+      () =>
+        validateProviderUrl(url, "provider_url", {
+          _deps: {
+            lookup: stubLookup([{ address: "93.184.216.34", family: 4 }]),
+          },
+        }),
+      /\.local or \.internal/,
+      `expected ${url} to be rejected`
+    )
+  }
+})
+
 test("validateProviderUrl rejects private IPv4 literals", async () => {
   for (const url of [
     "https://127.0.0.1",

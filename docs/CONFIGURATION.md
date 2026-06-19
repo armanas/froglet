@@ -155,12 +155,14 @@ GPU probe output under its printed evidence directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY` | `10` | Hosted trial deal creations allowed per identity/window |
+| `FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY` | `10` | Hosted trial deal creations allowed per request-origin identity/window |
 | `FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY` | `20` | Hosted trial session creations allowed per origin identity/window |
-| `FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY` | `60` | Public event publishes allowed per event signer/window |
-| `FROGLET_QUOTE_QUOTA_PER_IDENTITY` | `60` | Provider quote creations allowed per requester/window |
+| `FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY` | `60` | Public event publishes allowed per request-origin identity/window |
+| `FROGLET_QUOTE_QUOTA_PER_IDENTITY` | `60` | Provider quote creations allowed per request-origin identity/window |
+| `FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS` | `false` | Trust normalized `Forwarded`/`X-Forwarded-For`/`X-Real-IP`/`CF-Connecting-IP` values for public quota identity. Leave false unless a trusted proxy strips client-supplied copies first. |
 | `FROGLET_HOSTED_TRIAL_DEAL_QUOTA_WINDOW_SECS` | `900` | Hosted trial quota window in seconds |
 | `FROGLET_PUBLIC_WRITE_QUOTA_WINDOW_SECS` | `900` | Public event/quote/confidential quota window in seconds |
+| `FROGLET_HOSTED_TRIAL_ALLOWED_SERVICE_IDS` | `demo.add,demo.echo,demo.fetch-witness,demo.hash-verify,demo.notarize` | Comma-separated free local service IDs accepted by hosted-trial deal creation |
 
 ## Storage
 
@@ -169,12 +171,14 @@ GPU probe output under its printed evidence directory.
 | `FROGLET_DATA_ROOT` | `./data` | Root data directory (also accepts legacy `FROGLET_DATA_DIR`) |
 | `FROGLET_DB_PATH` | `<data_root>/node.db` | SQLite database path |
 | `FROGLET_HOST_READABLE_CONTROL_TOKEN` | `false` | Make the provider control token readable on the host filesystem |
+| `FROGLET_PROVIDER_ARTIFACT_ROOT` | *(none)* | Directory root for provider-control `artifact_path` publication. When unset, daemon-local `artifact_path` inputs are rejected; prefer inline source/module bytes for agent-driven publication. |
 
 ## Marketplace
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FROGLET_MARKETPLACE_URL` | *(none)* | Marketplace URL for runtime discovery and provider self-registration. Use `https://marketplace.froglet.dev` for the default public marketplace. |
+| `FROGLET_MARKETPLACE_ALLOW_LOCAL` | `false` | Allow local/private marketplace URLs for explicit dev/test use. Production egress requires public HTTPS or approved onion transport. |
 
 ## MCP Server (integrations/mcp/froglet)
 

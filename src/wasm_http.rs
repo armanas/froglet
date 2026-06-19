@@ -225,10 +225,21 @@ fn validate_auth_profile_endpoint(
     if port != profile.port {
         return Err("http auth profile port constraint does not match request".to_string());
     }
-    if !parsed_url.path().starts_with(&profile.path_prefix) {
+    if !auth_profile_path_matches(parsed_url.path(), &profile.path_prefix) {
         return Err("http auth profile path constraint does not match request".to_string());
     }
     Ok(())
+}
+
+fn auth_profile_path_matches(request_path: &str, path_prefix: &str) -> bool {
+    if path_prefix == "/" || request_path == path_prefix {
+        return true;
+    }
+
+    let Some(suffix) = request_path.strip_prefix(path_prefix) else {
+        return false;
+    };
+    path_prefix.ends_with('/') || suffix.starts_with('/')
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,7 +272,7 @@ async fn fetch_following_validated_redirects(
         let request_headers = if redirects_used == 0 {
             header_map.clone()
         } else if auth_profile.is_some() {
-            headers_without_auth(&header_map)
+            headers_without_auth(&header_map, auth_profile.as_ref())
         } else {
             header_map.clone()
         };
@@ -316,10 +327,18 @@ fn redirected_url(current_url: &Url, headers: &HeaderMap) -> Result<Url, String>
         .map_err(|error| format!("invalid http redirect URL: {error}"))
 }
 
-fn headers_without_auth(headers: &HeaderMap) -> HeaderMap {
+fn headers_without_auth(
+    headers: &HeaderMap,
+    auth_profile: Option<&WasmHttpAuthProfile>,
+) -> HeaderMap {
     let mut filtered = headers.clone();
     filtered.remove(reqwest::header::AUTHORIZATION);
     filtered.remove(reqwest::header::PROXY_AUTHORIZATION);
+    if let Some(profile) = auth_profile
+        && let Ok(header_name) = HeaderName::from_str(&profile.header_name)
+    {
+        filtered.remove(header_name);
+    }
     filtered
 }
 
@@ -723,6 +742,33 @@ mod tests {
     }
 
     #[test]
+    fn auth_profile_path_scope_uses_slash_boundary() {
+        let mut policy = test_policy();
+        policy
+            .auth_profiles
+            .get_mut("github")
+            .expect("test profile")
+            .path_prefix = "/api".to_string();
+        let profile = policy.auth_profiles.get("github").expect("test profile");
+
+        let exact = Url::parse("https://example.com/api").expect("valid url");
+        validate_http_url_for_policy(&policy.allowed_hosts, &exact, Some(profile))
+            .expect("exact path segment should match");
+
+        let child = Url::parse("https://example.com/api/v1").expect("valid url");
+        validate_http_url_for_policy(&policy.allowed_hosts, &child, Some(profile))
+            .expect("child path should match");
+
+        let sibling = Url::parse("https://example.com/apiary").expect("valid url");
+        let error = validate_http_url_for_policy(&policy.allowed_hosts, &sibling, Some(profile))
+            .expect_err("sibling path must not match auth profile scope");
+        assert!(
+            error.contains("path constraint"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn redirect_validation_rejects_disallowed_hosts() {
         let policy = test_policy();
         let next_url = Url::parse("https://attacker.example").expect("valid redirect destination");
@@ -749,10 +795,35 @@ mod tests {
         );
         headers.insert("x-public", HeaderValue::from_static("ok"));
 
-        let filtered = headers_without_auth(&headers);
+        let filtered = headers_without_auth(&headers, None);
 
         assert!(filtered.get(reqwest::header::AUTHORIZATION).is_none());
         assert!(filtered.get(reqwest::header::PROXY_AUTHORIZATION).is_none());
+        assert_eq!(
+            filtered
+                .get("x-public")
+                .and_then(|value| value.to_str().ok()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn auth_profile_header_is_removed_from_redirect_requests() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("secret"));
+        headers.insert("x-public", HeaderValue::from_static("ok"));
+        let profile = WasmHttpAuthProfile {
+            scheme: "https".to_string(),
+            host: "api.example".to_string(),
+            port: 443,
+            path_prefix: "/".to_string(),
+            header_name: "x-api-key".to_string(),
+            header_value: "secret".to_string(),
+        };
+
+        let filtered = headers_without_auth(&headers, Some(&profile));
+
+        assert!(filtered.get("x-api-key").is_none());
         assert_eq!(
             filtered
                 .get("x-public")

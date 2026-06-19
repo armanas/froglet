@@ -1,3 +1,4 @@
+pub mod chain;
 mod identity_attestation;
 mod kernel;
 mod publication;

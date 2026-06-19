@@ -41,9 +41,9 @@ verification outcome of any existing artifact:
   execution, storage profiles) layered above the kernel.
 
 Every addition ships with conformance vectors in
-[`conformance/kernel_v1.json`](../conformance/kernel_v1.json) (or a sibling
-fixture) in the same release. An addition without vectors is not part of the
-protocol.
+[`conformance/kernel_v1.json`](../conformance/kernel_v1.json), a sibling
+fixture, or method-specific protocol validation tests in the same release. An
+addition without verifier coverage is not part of the protocol.
 
 ## What is experimental
 

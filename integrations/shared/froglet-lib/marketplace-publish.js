@@ -112,7 +112,7 @@ function validatePublishInputShape(args) {
 
   if (typeof args.source_inline !== "string" || args.source_inline.length === 0) {
     throw new Error(
-      "marketplace_publish: source_inline is required (string of Python source); " +
+      "marketplace_publish: source_inline is required (Python source defining handler(event, context)); " +
         "WASM + OCI source forms are Phase 1B"
     )
   }
@@ -219,7 +219,7 @@ export function serviceToml(input) {
     ``,
     `runtime = ${tomlString(runtime)}`,
     `package_kind = ${tomlString(packageKind)}`,
-    `entrypoint_kind = "script"`,
+    `entrypoint_kind = "handler"`,
     `entrypoint = ${tomlString(entrypoint)}`,
     `contract_version = "froglet.python.handler_json.v1"`,
     ``,
