@@ -17,6 +17,12 @@ const { compact = false } = Astro.props;
 				Open protocol for AI agents. Apache-2.0 licensed.<br />
 				Built by <a class="author-link" href="https://armanas.dev" target="_blank" rel="noopener">Armanas</a>.
 			</p>
+			<div class="alithea-project">
+				<span>A project of <a class="alithea-text-link" href="https://alithea-bio.com" target="_blank" rel="noopener">Alithea</a>.</span>
+				<a class="alithea-logo-link" href="https://alithea-bio.com" target="_blank" rel="noopener" aria-label="Visit Alithea">
+					<img class="alithea-logo" src="/logos/alithea-horizontal-violet.svg" alt="Alithea" width="1374" height="371" decoding="async" />
+				</a>
+			</div>
 		</div>
 		<div class="col">
 			<h5>Product</h5>
@@ -67,6 +73,48 @@ const { compact = false } = Astro.props;
 
 	.site-ftr .brand-col .author-link:hover {
 		color: var(--frog-400);
+	}
+
+	.site-ftr .brand-col .alithea-project {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+		margin-top: 16px;
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: var(--fg3);
+	}
+
+	.site-ftr .brand-col .alithea-text-link {
+		display: inline;
+		padding: 0;
+		font-size: inherit;
+		color: var(--fg1);
+		text-decoration: none;
+	}
+
+	.site-ftr .brand-col .alithea-text-link:hover {
+		color: var(--frog-400);
+	}
+
+	.site-ftr .brand-col .alithea-logo-link {
+		display: inline-flex;
+		padding: 0;
+		line-height: 1;
+		opacity: 0.92;
+		transition: opacity 160ms ease;
+	}
+
+	.site-ftr .brand-col .alithea-logo-link:hover {
+		opacity: 1;
+	}
+
+	.site-ftr .brand-col .alithea-logo {
+		display: block;
+		width: 142px;
+		max-width: 100%;
+		height: auto;
 	}
 
 	.site-ftr--compact {

@@ -224,6 +224,8 @@ describe('hosted trial docs copy', () => {
     const footer = readRepoFile('docs-site/src/components/SiteFooter.astro');
     expect(footer).toContain('Apache-2.0 licensed');
     expect(footer).toContain('https://armanas.dev');
+    expect(footer).toContain('https://alithea-bio.com');
+    expect(footer).toContain('/logos/alithea-horizontal-violet.svg');
     expect(footer).toContain('Built by');
     expect(footer).not.toContain('MIT' + ' licensed');
   });

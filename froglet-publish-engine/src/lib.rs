@@ -2,10 +2,7 @@
 //! services. The engine takes a parsed manifest + source code and turns
 //! it into a live marketplace offer in one call.
 //!
-//! See `docs/MANIFEST.md` for the contract this engine consumes, and
-//! the plan file at
-//! `/Users/armanas/.claude/plans/review-codebase-and-froglet-services-lexical-scott.md`
-//! for the design rationale.
+//! See `docs/MANIFEST.md` for the contract this engine consumes.
 //!
 //! ## Surfaces
 //!
