@@ -42,6 +42,7 @@ astro-dev-toolbar {
 }
 
 .demo-shell {
+	--demo-shell-max: max(var(--shell-max), 95vw);
 	flex: 1 1 auto;
 	display: flex;
 	flex-direction: column;
@@ -58,7 +59,7 @@ astro-dev-toolbar {
 	gap: 16px;
 	padding: 16px var(--shell-gut);
 	min-height: 0;
-	max-width: var(--shell-max);
+	max-width: var(--demo-shell-max);
 	width: 100%;
 	margin: 0 auto;
 	align-items: stretch;
@@ -315,7 +316,7 @@ astro-dev-toolbar {
 	padding: 10px var(--shell-gut);
 	gap: 14px;
 	flex-shrink: 0;
-	max-width: var(--shell-max);
+	max-width: var(--demo-shell-max);
 	width: 100%;
 	margin: 0 auto;
 	box-sizing: border-box;

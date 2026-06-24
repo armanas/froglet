@@ -17,6 +17,19 @@ const PROMPT_PAUSE = 140;
 const POST_COMMAND_PAUSE = 70;
 const OUTPUT_LINE_PAUSE = 45;
 
+function nextAnimationTick(): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    requestAnimationFrame(done);
+    window.setTimeout(done, 16);
+  });
+}
+
 // ── DOM helpers ──
 
 function promptMarkup(p: string): string {
@@ -65,7 +78,7 @@ export function createTerminalAnimator(body: HTMLElement): TerminalAnimator {
     while (performance.now() < end) {
       if (rid !== runId) return 'abort';
       if (skipRequested) return 'skip';
-      await new Promise<void>((r) => requestAnimationFrame(r));
+      await nextAnimationTick();
     }
     return rid !== runId ? 'abort' : skipRequested ? 'skip' : 'ok';
   }

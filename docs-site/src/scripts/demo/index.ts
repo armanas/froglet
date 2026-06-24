@@ -85,8 +85,10 @@ export function initDemo(): void {
     updateNavState();
     sceneStartedAt = performance.now();
 
-    // Animate terminal, then update nav state when done
-    terminal.animate(s.term).then(() => {
+    // Animate terminal, updating nav once typing starts and again when done.
+    const animation = terminal.animate(s.term);
+    updateNavState();
+    animation.then(() => {
       updateNavState();
     });
   }
