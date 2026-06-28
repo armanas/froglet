@@ -55,20 +55,22 @@ docs-site/.wrangler/
 # Canonical ignored staging root for local-only incubation work
 /private_work/
 
-# IDE and local tooling
+# IDE and local tooling (ignore local noise, keep committed config manifests)
 .idea/
 .vscode/
 .qodo/
 .claude/
 .ai/
 .codex/
-.cursor/
 .froglet/
 .kiro
-AGENTS.md
-CLAUDE.md
-.claude-plugin
-.agents
+.cursor/
+!.cursor/mcp.json
+.claude-plugin/
+!.claude-plugin/marketplace.json
+.agents/
+!.agents/plugins/
+!.agents/plugins/marketplace.json
 
 # OS files
 .DS_Store
