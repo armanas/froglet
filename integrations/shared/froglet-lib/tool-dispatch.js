@@ -148,7 +148,7 @@ function publishTemplateRequest(args) {
     contract_version: args.contract_version ?? "froglet.python.handler_json.v1",
     inline_source:
       args.inline_source ??
-      "def handler(event, context):\n    return {\"sum\": int(event[\"a\"]) + int(event[\"b\"])}\n",
+      "import json\n\n\ndef handler(event, context):\n    if isinstance(event, str):\n        event = json.loads(event)\n    return {\"sum\": int(event[\"a\"]) + int(event[\"b\"])}\n",
     input_schema:
       args.input_schema ?? {
         type: "object",

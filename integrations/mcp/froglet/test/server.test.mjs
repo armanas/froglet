@@ -362,6 +362,7 @@ describe("froglet MCP actions", () => {
       assert.equal(capturedBody.package_kind, "inline_source")
       assert.equal(capturedBody.price_sats, 0)
       assert.match(capturedBody.inline_source, /def handler/)
+      assert.match(capturedBody.inline_source, /json\.loads\(event\)/)
       assert.match(result.content[0].text, /status: published/)
     } finally {
       restore()
