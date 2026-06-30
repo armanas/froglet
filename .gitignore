@@ -64,13 +64,13 @@ docs-site/.wrangler/
 .codex/
 .froglet/
 .kiro
-.cursor/
-!.cursor/mcp.json
-.claude-plugin/
-!.claude-plugin/marketplace.json
-.agents/
-!.agents/plugins/
-!.agents/plugins/marketplace.json
+/.cursor/
+!/.cursor/mcp.json
+/.claude-plugin/
+!/.claude-plugin/marketplace.json
+/.agents/
+!/.agents/plugins/
+!/.agents/plugins/marketplace.json
 
 # OS files
 .DS_Store
