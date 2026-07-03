@@ -17,6 +17,13 @@ services:
       FROGLET_X402_NETWORK: ${FROGLET_X402_NETWORK:-base}
       FROGLET_X402_FACILITATOR_URL: ${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}
       FROGLET_NETWORK_MODE: ${FROGLET_NETWORK_MODE:-clearnet}
+      # The daemon refuses a wildcard bind without a public base URL
+      # (src/state.rs invariant), so fail at compose time with a clear message
+      # instead of a container crash loop. Set this to the public https://
+      # origin the provider is reachable at:
+      #   FROGLET_PUBLIC_BASE_URL=https://provider.example.com \
+      #     docker compose -f compose.provider.yaml up -d
+      FROGLET_PUBLIC_BASE_URL: ${FROGLET_PUBLIC_BASE_URL:?required for the provider-only compose file (wildcard bind) - set to this provider's public https:// origin}
       FROGLET_LISTEN_ADDR: 0.0.0.0:8080
     ports:
       - "127.0.0.1:8080:8080"
