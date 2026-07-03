@@ -8,7 +8,7 @@ function errorResult(error) {
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool for a local or self-hosted Froglet node. Use exact Froglet actions instead of guessing. Start with status to verify provider/runtime reachability. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. For ONE-CALL agent-grade publishing (user says \"publish a Froglet service that does X\") use marketplace_publish — it shells out to `froglet-node publish` which builds, signs, registers, and verifies in one call; pass {name, source_inline, hosting:{kind:'tor'|'local'|'self'}}. publish_artifact still exists for the lower-level path of publishing a pre-built artifact to a local provider only. For settlement visibility use get_wallet_balance (current funds snapshot), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_register (self-register a public provider), marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_file_complaint (file an arbiter complaint), marketplace_get_complaint (read complaint status). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime. After install, call plan_use_case before implementing consumer, provider, evidence, payments, batch, or GPU workflows so unsupported boundaries are named before execution. The no-install public demo lives at https://froglet.dev/llms.txt and is intentionally not exposed as an MCP action."
+  "Authoritative Froglet MCP tool for a local or self-hosted Froglet node. Use exact Froglet actions instead of guessing. Start with status to verify provider/runtime reachability. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. For ONE-CALL agent-grade publishing (user says \"publish a Froglet service that does X\") use marketplace_publish — it shells out to `froglet-node publish` which builds, signs, registers, and verifies in one call; pass {name, source_inline, hosting:{kind:'tor'|'local'|'self'}}. publish_artifact still exists for the lower-level path of publishing a pre-built artifact to a local provider only. For settlement visibility use get_wallet_balance (current funds snapshot), get_spend_status (requester spend budget + headroom; paid deals are refused fail-closed until a budget is configured), reset_spend (archive committed spend to restore budget headroom), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_register (self-register a public provider), marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_file_complaint (file an arbiter complaint), marketplace_get_complaint (read complaint status). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime. After install, call plan_use_case before implementing consumer, provider, evidence, payments, batch, or GPU workflows so unsupported boundaries are named before execution. The no-install public demo lives at https://froglet.dev/llms.txt and is intentionally not exposed as an MCP action."
 
 function frogletToolInputSchema(config) {
   return {
@@ -18,7 +18,7 @@ function frogletToolInputSchema(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use status first to verify local provider/runtime reachability. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact to a local provider, run_compute for open-ended compute. For one-call agent-grade publishing (HEADLINE action) use marketplace_publish — it scaffolds manifests, builds the artifact, signs, registers, and verifies in one MCP call. Settlement visibility: get_wallet_balance, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_register, marketplace_search, marketplace_provider, marketplace_receipts, marketplace_file_complaint, marketplace_get_complaint — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime. plan_use_case returns the post-install implementation plan for consumer/provider/evidence/payments/batch/GPU workflows.",
+          "Exact Froglet action name. Do not invent actions. Use status first to verify local provider/runtime reachability. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact to a local provider, run_compute for open-ended compute. For one-call agent-grade publishing (HEADLINE action) use marketplace_publish — it scaffolds manifests, builds the artifact, signs, registers, and verifies in one MCP call. Settlement visibility: get_wallet_balance, get_spend_status, reset_spend, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_register, marketplace_search, marketplace_provider, marketplace_receipts, marketplace_file_complaint, marketplace_get_complaint — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime. plan_use_case returns the post-install implementation plan for consumer/provider/evidence/payments/batch/GPU workflows.",
         enum: [
           "discover_services",
           "get_service",
@@ -31,6 +31,8 @@ function frogletToolInputSchema(config) {
           "wait_task",
           "run_compute",
           "get_wallet_balance",
+          "get_spend_status",
+          "reset_spend",
           "list_settlement_activity",
           "get_payment_intent",
           "get_invoice_bundle",
@@ -159,15 +161,15 @@ function frogletToolInputSchema(config) {
       },
       payment_rail: {
         type: "string",
-        enum: ["none", "lightning-mock", "lightning-lnd-rest", "stripe-test", "stripe-live", "x402"],
+        enum: ["none", "lightning-mock", "lightning-lnd-rest", "lightning-phoenixd", "stripe-test", "stripe-live", "x402"],
         description:
           "Explicit payment rail for plan_install/get_install_guide. Required before commands are generated; use none for the first free demo service."
       },
       lightning_mode: {
         type: "string",
-        enum: ["mock", "lnd_rest"],
+        enum: ["mock", "lnd_rest", "phoenixd"],
         description:
-          "Lightning mode for plan_install/get_install_guide. mock requires no wallet; lnd_rest requires an LND REST URL and macaroon path."
+          "Lightning mode for plan_install/get_install_guide. mock requires no wallet; lnd_rest requires an LND REST URL and macaroon path; phoenixd requires a running phoenixd daemon URL and its http-password (prepaid rail, no channel management)."
       },
       footprint: {
         type: "string",
@@ -186,11 +188,6 @@ function frogletToolInputSchema(config) {
         enum: ["clearnet", "tor", "dual"],
         description:
           "Network mode for local/self-hosted Froglet. Keep clearnet/loopback first; use tor or dual only after local health checks pass."
-      },
-      marketplace_url: {
-        type: "string",
-        description:
-          "Optional marketplace URL to export before starting the local stack."
       },
       marketplace_arbiter_url: {
         type: "string",
@@ -308,7 +305,7 @@ function frogletToolInputSchema(config) {
       marketplace_url: {
         type: "string",
         description:
-          "Marketplace URL for marketplace_publish (and for marketplace_register / domain_claim). Defaults to https://marketplace.froglet.dev."
+          "Marketplace URL for marketplace_publish, marketplace_register, and domain_claim (defaults to https://marketplace.froglet.dev), and the URL plan_install/get_install_guide export before starting the local stack."
       }
     }
   }

@@ -213,8 +213,8 @@ context, then ask for the local profile:
   `openclaw` only when the user accepts source/plugin mode
 - footprint: `binary`, `docker`, or `source`
 - role: `consumer`, `provider`, or `both`
-- payment rail: `none`, `lightning-lnd-rest`, `stripe-test`,
-  `stripe-live`, or `x402`
+- payment rail: `none`, `lightning-phoenixd`, `lightning-lnd-rest`,
+  `stripe-test`, `stripe-live`, or `x402`
 - network mode: `clearnet`, `tor`, or `dual`
 - marketplace URL: none, `https://marketplace.froglet.dev`, or custom
 - first use case: consume, publish, witness, hash-verify, notarize, paid

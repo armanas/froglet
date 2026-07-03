@@ -153,6 +153,8 @@ describe("tool definitions", () => {
       "wait_task",
       "run_compute",
       "get_wallet_balance",
+      "get_spend_status",
+      "reset_spend",
       "list_settlement_activity",
       "get_payment_intent",
       "get_invoice_bundle",
@@ -194,6 +196,31 @@ describe("tool definitions", () => {
     assert.match(
       tools[0].inputSchema.properties.starter.description,
       /example only/
+    )
+    assert.deepEqual(tools[0].inputSchema.properties.payment_rail.enum, [
+      "none",
+      "lightning-mock",
+      "lightning-lnd-rest",
+      "lightning-phoenixd",
+      "stripe-test",
+      "stripe-live",
+      "x402"
+    ])
+    assert.deepEqual(tools[0].inputSchema.properties.lightning_mode.enum, [
+      "mock",
+      "lnd_rest",
+      "phoenixd"
+    ])
+    // Regression: marketplace_url must be defined exactly once in the schema
+    // source — a duplicate object key silently overwrites the first and the
+    // earlier description is never served to agents.
+    assert.match(
+      tools[0].inputSchema.properties.marketplace_url.description,
+      /plan_install/
+    )
+    assert.match(
+      tools[0].inputSchema.properties.marketplace_url.description,
+      /marketplace_publish/
     )
   })
 })
@@ -1137,6 +1164,63 @@ describe("froglet MCP actions", () => {
       assert.equal(result.isError, undefined, result.content?.[0]?.text)
       assert.match(result.content[0].text, /status: upheld/)
       assert.match(result.content[0].text, /latest_remedy: suspend_provider/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_file_complaint degrades to arbiter_unavailable on a dark endpoint 404", async () => {
+    const restore = mockFetch(async () => new Response(null, { status: 404 }))
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        {
+          action: "marketplace_file_complaint",
+          marketplace_provider_id: "prov-9",
+          deal_id: "deal-9",
+          reason: "receipt did not verify"
+        },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.match(result.content[0].text, /status: arbiter_unavailable/)
+      assert.match(result.content[0].text, /NOT recorded/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_get_complaint degrades to arbiter_unavailable on connection failure", async () => {
+    const restore = mockFetch(async () => {
+      throw new TypeError("fetch failed")
+    })
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        { action: "marketplace_get_complaint", complaint_id: "cmp-1" },
+        config
+      )
+      assert.equal(result.isError, undefined, result.content?.[0]?.text)
+      assert.match(result.content[0].text, /status: arbiter_unavailable/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("marketplace_get_complaint keeps a live arbiter's JSON 404 as a normal error", async () => {
+    const restore = mockFetch(
+      async () =>
+        new Response(JSON.stringify({ error: "complaint not found" }), { status: 404 })
+    )
+    try {
+      const result = await handleToolCall(
+        "froglet",
+        { action: "marketplace_get_complaint", complaint_id: "cmp-missing" },
+        config
+      )
+      assert.equal(result.isError, true)
+      assert.match(result.content[0].text, /404/)
+      assert.doesNotMatch(result.content[0].text, /arbiter_unavailable/)
     } finally {
       restore()
     }

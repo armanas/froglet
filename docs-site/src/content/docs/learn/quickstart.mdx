@@ -101,6 +101,7 @@ x402 wallets to try Froglet. Paid rails are explicit operator choices:
 | Rail | When to choose it | Human checkpoint |
 |------|-------------------|------------------|
 | `none` | First local demo and free services | none |
+| `lightning-phoenixd` | Self-custodial Lightning without channel management (ACINQ phoenixd, prepaid `lightning.prepaid.v1`, buyer auto-pay) | run phoenixd, paste its URL + http-password; `FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=1` for real funds |
 | `lightning-lnd-rest` | Operator-controlled Bitcoin Lightning settlement. Reference rail, proven on regtest; mainnet pending channel liquidity | LND REST URL, macaroon, TLS cert, backups, funded channel liquidity |
 | `stripe-test` | Card-flow development on Stripe's agentic Shared Payment Token model (US-only; froglet↔froglet is test-only) | Stripe test secret key and webhook secret |
 | `stripe-live` | Production Stripe via the agentic SPT model — buyers are external ACP agents, not froglet nodes (US-only) | fresh explicit approval, live secret, tiny live payment/refund proof |

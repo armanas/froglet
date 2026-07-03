@@ -1868,6 +1868,38 @@ export async function getWalletBalance({ runtimeUrl, runtimeAuthTokenPath, reque
 }
 
 /**
+ * Requester spend policy and ledger totals (fail-closed budget headroom).
+ * Wraps GET /v1/runtime/spend.
+ *
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number }} config
+ */
+export async function getSpendStatus({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs }) {
+  return frogletRequest(
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    requestTimeoutMs,
+    "GET",
+    "/v1/runtime/spend"
+  )
+}
+
+/**
+ * Archive committed spend, restoring cumulative budget headroom. In-flight
+ * reservations are left untouched. Wraps POST /v1/runtime/spend/reset.
+ *
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number }} config
+ */
+export async function resetSpend({ runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs }) {
+  return frogletRequest(
+    runtimeUrl,
+    runtimeAuthTokenPath,
+    requestTimeoutMs,
+    "POST",
+    "/v1/runtime/spend/reset"
+  )
+}
+
+/**
  * List recent requester-side deals with compact settlement state. Wraps GET
  * /v1/runtime/settlement/activity.
  *

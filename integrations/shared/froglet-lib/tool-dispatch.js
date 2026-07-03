@@ -9,6 +9,7 @@ import {
   getLocalService,
   getMarketplaceComplaint,
   getService,
+  getSpendStatus,
   getTask,
   getWalletBalance,
   invokeService,
@@ -16,6 +17,7 @@ import {
   listSettlementActivity,
   publishArtifact,
   registerProviderOnMarketplace,
+  resetSpend,
   runCompute,
   waitTask
 } from "./froglet-client.js"
@@ -393,6 +395,33 @@ async function handleWalletBalance(args, config, includeRaw) {
   return renderResult(lines, response, includeRaw)
 }
 
+async function handleSpendStatus(args, config, includeRaw) {
+  const response = await getSpendStatus(runtimeCtx(config))
+  const budget = response.spend_budget_msat
+  const lines = [
+    `spend_budget_msat: ${budget ?? "unconfigured (paid deals refused fail-closed)"}`,
+    `max_deal_msat: ${response.max_deal_msat ?? "unset"}`,
+    `reserved_msat: ${response.reserved_msat ?? 0}`,
+    `committed_msat: ${response.committed_msat ?? 0}`,
+    `remaining_msat: ${response.remaining_msat ?? (budget == null ? "n/a" : "unknown")}`
+  ]
+  if (budget == null) {
+    lines.push(
+      "hint: set FROGLET_REQUESTER_SPEND_BUDGET_MSAT on the runtime daemon and restart it to enable paid deals"
+    )
+  }
+  return renderResult(lines, response, includeRaw)
+}
+
+async function handleSpendReset(args, config, includeRaw) {
+  const response = await resetSpend(runtimeCtx(config))
+  const lines = [
+    `archived_deals: ${response.archived_deals ?? 0}`,
+    "note: committed spend archived; budget headroom restored. In-flight reservations untouched."
+  ]
+  return renderResult(lines, response, includeRaw)
+}
+
 async function handleSettlementActivity(args, config, includeRaw) {
   const response = await listSettlementActivity({
     ...runtimeCtx(config),
@@ -451,6 +480,7 @@ const SUPPORTED_INSTALL_RAILS = new Set([
   "none",
   "lightning-mock",
   "lightning-lnd-rest",
+  "lightning-phoenixd",
   "stripe-test",
   "stripe-live",
   "x402",
@@ -459,7 +489,7 @@ const SUPPORTED_INSTALL_RAILS = new Set([
   "lightning",
   "stripe"
 ])
-const SUPPORTED_LIGHTNING_MODES = new Set(["mock", "lnd_rest"])
+const SUPPORTED_LIGHTNING_MODES = new Set(["mock", "lnd_rest", "phoenixd"])
 const SUPPORTED_INSTALL_FOOTPRINTS = new Set(["docker", "binary", "source"])
 const SUPPORTED_INSTALL_ROLES = new Set(["consumer", "provider", "both"])
 const SUPPORTED_NETWORK_MODES = new Set(["clearnet", "tor", "dual"])
@@ -499,10 +529,16 @@ function normalizePaymentRail(args) {
   }
   const raw = args.payment_rail.trim().toLowerCase()
   if (!SUPPORTED_INSTALL_RAILS.has(raw)) {
-    throw new Error(`${"payment_rail"} must be one of: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, x402`)
+    throw new Error(`${"payment_rail"} must be one of: none, lightning-mock, lightning-lnd-rest, lightning-phoenixd, stripe-test, stripe-live, x402`)
   }
   if (raw === "lightning") {
-    return args.lightning_mode === "lnd_rest" ? "lightning-lnd-rest" : "lightning-mock"
+    if (args.lightning_mode === "lnd_rest") {
+      return "lightning-lnd-rest"
+    }
+    if (args.lightning_mode === "phoenixd") {
+      return "lightning-phoenixd"
+    }
+    return "lightning-mock"
   }
   if (raw === "stripe") {
     return "stripe-test"
@@ -512,10 +548,14 @@ function normalizePaymentRail(args) {
 
 function normalizeInstallProfile(args) {
   const paymentRail = normalizePaymentRail(args)
+  const lightningModeByRail = {
+    "lightning-lnd-rest": "lnd_rest",
+    "lightning-phoenixd": "phoenixd"
+  }
   const profile = {
     targetAgent: normalizeChoice(args, "target_agent", "claude-code", SUPPORTED_INSTALL_AGENTS),
     paymentRail,
-    lightningMode: paymentRail === "lightning-lnd-rest" ? "lnd_rest" : "mock",
+    lightningMode: lightningModeByRail[paymentRail] ?? "mock",
     footprint: normalizeChoice(args, "footprint", "docker", SUPPORTED_INSTALL_FOOTPRINTS),
     role: normalizeChoice(args, "role", "both", SUPPORTED_INSTALL_ROLES),
     networkMode: normalizeChoice(args, "network_mode", "clearnet", SUPPORTED_NETWORK_MODES),
@@ -525,14 +565,18 @@ function normalizeInstallProfile(args) {
   if (profile.marketplaceUrl && !/^https?:\/\/[^\s]+$/.test(profile.marketplaceUrl)) {
     throw new Error("marketplace_url must be an http:// or https:// URL")
   }
-  if (args.lightning_mode && !["lightning", "lightning-mock", "lightning-lnd-rest"].includes(String(args.payment_rail ?? ""))) {
-    throw new Error("lightning_mode only applies when payment_rail is lightning-mock or lightning-lnd-rest")
+  if (args.lightning_mode && !["lightning", "lightning-mock", "lightning-lnd-rest", "lightning-phoenixd"].includes(String(args.payment_rail ?? ""))) {
+    throw new Error("lightning_mode only applies when payment_rail is lightning-mock, lightning-lnd-rest, or lightning-phoenixd")
   }
   return profile
 }
 
 function paymentEnvName(paymentRail) {
-  if (paymentRail === "lightning-mock" || paymentRail === "lightning-lnd-rest") {
+  if (
+    paymentRail === "lightning-mock" ||
+    paymentRail === "lightning-lnd-rest" ||
+    paymentRail === "lightning-phoenixd"
+  ) {
     return "lightning.env"
   }
   if (paymentRail === "stripe-test" || paymentRail === "stripe-live") {
@@ -556,6 +600,9 @@ function renderPaymentStep({ paymentRail, lightningMode }) {
   }
   if (paymentRail === "lightning-lnd-rest" || lightningMode === "lnd_rest") {
     return "cd froglet && FROGLET_LIGHTNING_REST_URL=<lnd-rest-url> FROGLET_LIGHTNING_MACAROON_PATH=<macaroon-path> FROGLET_LIGHTNING_TLS_CERT_PATH=<tls-cert-path-if-needed> ./scripts/setup-payment.sh lightning --mode lnd_rest"
+  }
+  if (paymentRail === "lightning-phoenixd" || lightningMode === "phoenixd") {
+    return "cd froglet && FROGLET_LIGHTNING_PHOENIXD_URL=<phoenixd-url-default-http://127.0.0.1:9740> FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD=<http-password-from-~/.phoenix/phoenix.conf> ./scripts/setup-payment.sh lightning --mode phoenixd"
   }
   return "cd froglet && ./scripts/setup-payment.sh lightning"
 }
@@ -626,7 +673,7 @@ function installQuestions(args) {
     questions.push("Is the user primarily a consumer, provider, or both?")
   }
   if (!args.payment_rail) {
-    questions.push("Which payment mode: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, or x402?")
+    questions.push("Which payment mode: none, lightning-mock, lightning-lnd-rest, lightning-phoenixd, stripe-test, stripe-live, or x402?")
   }
   if (!args.network_mode) {
     questions.push("Which network mode: clearnet, tor, or dual?")
@@ -640,7 +687,7 @@ function installQuestions(args) {
 function requiredInstallInputs(profile) {
   if (!profile.paymentRail) {
     return [
-      "Payment choice is required before commands are generated: none, lightning-mock, lightning-lnd-rest, stripe-test, stripe-live, or x402."
+      "Payment choice is required before commands are generated: none, lightning-mock, lightning-lnd-rest, lightning-phoenixd, stripe-test, stripe-live, or x402."
     ]
   }
   if (profile.paymentRail === "stripe-test") {
@@ -657,6 +704,13 @@ function requiredInstallInputs(profile) {
       "LND REST URL.",
       "LND macaroon path.",
       "LND TLS certificate path when the endpoint uses a private CA."
+    ]
+  }
+  if (profile.paymentRail === "lightning-phoenixd") {
+    return [
+      "phoenixd URL (default http://127.0.0.1:9740).",
+      "phoenixd http-password (from ~/.phoenix/phoenix.conf).",
+      "FROGLET_LIGHTNING_PHOENIXD_MAINNET_CONFIRM=1 for non-loopback (real-funds) URLs."
     ]
   }
   return ["No payment secret is required for this profile."]
@@ -1227,6 +1281,40 @@ async function handleMarketplaceTopup(args, config, includeRaw) {
   )
 }
 
+/**
+ * Classify arbiter client failures that mean "no arbiter service is reachable
+ * at this endpoint" — connection failures, timeouts, non-JSON error pages, and
+ * bare 404s. A live arbiter's 404-with-JSON on an unknown complaint id is NOT
+ * unavailability and stays a normal error.
+ */
+function isArbiterUnavailable(error, { treat404AsUnavailable = false } = {}) {
+  const message = String(error?.message ?? error)
+  // "invalid payload" / JSON parse failures cover HTML-or-empty error pages
+  // from hosts with no arbiter service behind them.
+  if (
+    /timed out|fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|invalid payload|Unexpected end of JSON input|Unexpected token/i.test(
+      message
+    )
+  ) {
+    return true
+  }
+  if (/failed with 404: null/.test(message)) {
+    return true
+  }
+  return treat404AsUnavailable && /failed with 404/.test(message)
+}
+
+function arbiterUnavailableResult(error, arbiterUrl, includeRaw) {
+  const resolvedUrl = arbiterUrl ?? "default arbiter"
+  const lines = [
+    "status: arbiter_unavailable",
+    `arbiter_url: ${resolvedUrl}`,
+    `detail: ${error?.message ?? String(error)}`,
+    "hint: no arbiter service responded at this endpoint. The MVP arbiter is a separate operator-run service (docs/ARBITER.md) and may not be deployed yet. The complaint was NOT recorded; retry later or pass marketplace_arbiter_url to target a different arbiter."
+  ]
+  return renderResult(lines, { status: "arbiter_unavailable", arbiter_url: resolvedUrl }, includeRaw)
+}
+
 async function handleMarketplaceFileComplaint(args, config, includeRaw) {
   const providerId = typeof args.marketplace_provider_id === "string"
     ? args.marketplace_provider_id.trim()
@@ -1242,23 +1330,34 @@ async function handleMarketplaceFileComplaint(args, config, includeRaw) {
   if (reason.length === 0) {
     throw new Error("reason is required for marketplace_file_complaint")
   }
-  const response = await fileMarketplaceComplaint({
-    arbiterUrl: firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl),
-    requestTimeoutMs: config.requestTimeoutMs,
-    request: {
-      provider_id: providerId,
-      deal_id: dealId,
-      reason,
-      ...(typeof args.receipt_hash === "string" && args.receipt_hash.trim().length > 0
-        ? { receipt_hash: args.receipt_hash.trim() }
-        : {}),
-      ...(typeof args.complainant_id === "string" && args.complainant_id.trim().length > 0
-        ? { complainant_id: args.complainant_id.trim() }
-        : {}),
-      ...(args.evidence !== undefined ? { evidence: args.evidence } : {})
-    },
-    _deps: marketplaceDeps(config)
-  })
+  const arbiterUrl = firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl)
+  let response
+  try {
+    response = await fileMarketplaceComplaint({
+      arbiterUrl,
+      requestTimeoutMs: config.requestTimeoutMs,
+      request: {
+        provider_id: providerId,
+        deal_id: dealId,
+        reason,
+        ...(typeof args.receipt_hash === "string" && args.receipt_hash.trim().length > 0
+          ? { receipt_hash: args.receipt_hash.trim() }
+          : {}),
+        ...(typeof args.complainant_id === "string" && args.complainant_id.trim().length > 0
+          ? { complainant_id: args.complainant_id.trim() }
+          : {}),
+        ...(args.evidence !== undefined ? { evidence: args.evidence } : {})
+      },
+      _deps: marketplaceDeps(config)
+    })
+  } catch (error) {
+    // A live arbiter never 404s its collection endpoint, so any 404 here
+    // means the service itself is absent.
+    if (isArbiterUnavailable(error, { treat404AsUnavailable: true })) {
+      return arbiterUnavailableResult(error, arbiterUrl, includeRaw)
+    }
+    throw error
+  }
   const lines = [
     `complaint_id: ${response.complaint_id ?? "unknown"}`,
     `status: ${response.status ?? "unknown"}`,
@@ -1274,12 +1373,23 @@ async function handleMarketplaceGetComplaint(args, config, includeRaw) {
   if (complaintId.length === 0) {
     throw new Error("complaint_id is required for marketplace_get_complaint")
   }
-  const response = await getMarketplaceComplaint({
-    arbiterUrl: firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl),
-    requestTimeoutMs: config.requestTimeoutMs,
-    complaintId,
-    _deps: marketplaceDeps(config)
-  })
+  const arbiterUrl = firstDefined(args.marketplace_arbiter_url, config.marketplaceArbiterUrl)
+  let response
+  try {
+    response = await getMarketplaceComplaint({
+      arbiterUrl,
+      requestTimeoutMs: config.requestTimeoutMs,
+      complaintId,
+      _deps: marketplaceDeps(config)
+    })
+  } catch (error) {
+    // 404-with-JSON from a live arbiter means "complaint not found" and stays
+    // an error; only bare 404s / connection failures classify as unavailable.
+    if (isArbiterUnavailable(error)) {
+      return arbiterUnavailableResult(error, arbiterUrl, includeRaw)
+    }
+    throw error
+  }
   const complaint = response.complaint ?? {}
   const verdicts = Array.isArray(response.verdicts) ? response.verdicts : []
   const lines = [
@@ -1370,6 +1480,10 @@ export async function dispatchFrogletAction(args, config, { includeRaw = false }
       return handleCompute(args, config, includeRaw)
     case "get_wallet_balance":
       return handleWalletBalance(args, config, includeRaw)
+    case "get_spend_status":
+      return handleSpendStatus(args, config, includeRaw)
+    case "reset_spend":
+      return handleSpendReset(args, config, includeRaw)
     case "list_settlement_activity":
       return handleSettlementActivity(args, config, includeRaw)
     case "get_payment_intent":
