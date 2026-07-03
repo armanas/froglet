@@ -29,9 +29,14 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     // ships the publish loop; invoke gets a thin pointer here so the
     // help output stays honest.
     Err(CliError::Other(
-        "froglet-node invoke is a Phase 2 stub. Use the MCP `invoke_service` tool, \
-         or call the daemon's runtime API directly. The CLI version lands in a \
-         follow-up once the wire shape is stable across runtimes."
+        "froglet-node invoke is a Phase 2 stub. Working paths today:\n  \
+         - MCP: call the `froglet` tool with action `invoke_service` and \
+         {\"service_id\": \"...\", \"provider_id\": \"...\"} (Claude Code, Codex, \
+         Cursor, etc. via `npx froglet-mcp`)\n  \
+         - HTTP: POST /v1/runtime/deals on the runtime API with a \
+         service-addressed execution workload (see docs/RUNTIME.md)\n\
+         The CLI version lands in a follow-up once the wire shape is stable \
+         across runtimes."
             .to_string(),
     ))
 }
