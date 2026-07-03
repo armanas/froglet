@@ -1,7 +1,7 @@
 use crate::{
     api,
     config::{NodeConfig, PaymentBackend},
-    db, settlement,
+    db, relay_tunnel, settlement,
     state::{self, AppState},
     tls, tor,
 };
@@ -205,8 +205,10 @@ async fn run(
 
     let public_app = api::public_router(state.clone());
     let runtime_app = api::runtime_router(state.clone());
+    // The loopback backend listener fronts both outbound-tunnel transports:
+    // the Tor hidden service and the relay ingress tunnel.
     let tor_backend_addr = if service_role.is_provider()
-        && node_config.network_mode.should_start_tor()
+        && (node_config.network_mode.should_start_tor() || node_config.relay.enabled)
     {
         let tor_backend_addr: SocketAddr = node_config
             .tor
@@ -416,6 +418,7 @@ async fn run(
     }
 
     if service_role.is_provider()
+        && node_config.network_mode.should_start_tor()
         && let Some(tor_backend_addr) = tor_backend_addr
     {
         let tor_state = state.clone();
@@ -477,6 +480,29 @@ async fn run(
                             Err(format!("failed to start Tor hidden service: {error}"))
                         }
                     }
+                })
+            }),
+        );
+    }
+
+    // Relay ingress tunnel (docs/RELAY.md): outbound WSS to the relay,
+    // forwarding public HTTPS traffic to the same loopback backend the Tor
+    // hidden service uses. One run_tunnel_once call per supervisor iteration;
+    // the restart policy provides the spec's reconnect-with-backoff.
+    if service_role.is_provider()
+        && node_config.relay.enabled
+        && let (Some(relay_url), Some(relay_backend_addr)) =
+            (node_config.relay.url.clone(), tor_backend_addr)
+    {
+        let relay_state = state.clone();
+        spawn_supervised_task(
+            "relay-tunnel",
+            restart_policy,
+            Arc::new(move || {
+                let relay_state = relay_state.clone();
+                let relay_url = relay_url.clone();
+                Box::pin(async move {
+                    relay_tunnel::run_tunnel_once(relay_state, &relay_url, relay_backend_addr).await
                 })
             }),
         );

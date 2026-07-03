@@ -98,6 +98,7 @@ fn create_test_state_with_handler(
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
+        relay: froglet::config::RelayConfig::default(),
         identity: IdentityConfig {
             auto_generate: true,
         },

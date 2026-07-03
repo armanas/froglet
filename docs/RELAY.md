@@ -2,8 +2,10 @@
 
 Status: contract specification — the relay **service** implementation lives in
 the closed-source marketplace services workspace; the **node-side tunnel
-client** lands in this repo behind a config flag. This document is the
-interface both sides build against.
+client** is implemented in this repo (`src/relay_tunnel.rs`, configured via
+`FROGLET_RELAY_URL` / `FROGLET_RELAY_ENABLED`, end-to-end tested against a
+stub relay in `tests/relay_tunnel.rs`). This document is the interface both
+sides build against.
 
 Relay ingress gives a froglet provider a public HTTPS address without DNS
 setup, TLS certificates, port forwarding, or NAT traversal: the node dials

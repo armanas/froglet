@@ -284,6 +284,7 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:8082".into(),
                 startup_timeout_secs: 90,
             },
+            relay: crate::config::RelayConfig::default(),
             identity: IdentityConfig { auto_generate },
             pricing: PricingConfig {
                 events_query: 0,

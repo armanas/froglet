@@ -453,6 +453,54 @@ pub struct TorSidecarConfig {
     pub startup_timeout_secs: u64,
 }
 
+/// Relay ingress tunnel (docs/RELAY.md): the node dials OUT to a relay and
+/// receives a public HTTPS hostname with TLS terminated at the relay — no
+/// DNS, certificates, or inbound reachability required on this node.
+#[derive(Debug, Clone, Default)]
+pub struct RelayConfig {
+    /// Tunnel endpoint, e.g. `wss://relay.froglet.dev/v1/tunnel`.
+    pub url: Option<String>,
+    /// Whether the tunnel client runs. Defaults to true when a URL is set.
+    pub enabled: bool,
+}
+
+impl RelayConfig {
+    pub fn from_env() -> Result<Self, String> {
+        let url = match env::var("FROGLET_RELAY_URL") {
+            Ok(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
+            _ => None,
+        };
+        if let Some(url) = &url {
+            validate_relay_url(url)?;
+        }
+        let enabled = env_bool("FROGLET_RELAY_ENABLED", url.is_some())?;
+        if enabled && url.is_none() {
+            return Err("FROGLET_RELAY_ENABLED=1 requires FROGLET_RELAY_URL".into());
+        }
+        Ok(RelayConfig { url, enabled })
+    }
+}
+
+/// wss:// only, except loopback ws:// for local development and tests —
+/// the tunnel carries plaintext request/response frames.
+fn validate_relay_url(url: &str) -> Result<(), String> {
+    let plaintext_loopback = url
+        .strip_prefix("ws://")
+        .map(|rest| {
+            rest.starts_with("127.0.0.1")
+                || rest.starts_with("localhost")
+                || rest.starts_with("[::1]")
+        })
+        .unwrap_or(false);
+    if !url.starts_with("wss://") && !plaintext_loopback {
+        return Err(
+            "FROGLET_RELAY_URL must use wss:// unless it points to a loopback-only ws:// endpoint"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -712,6 +760,7 @@ pub struct NodeConfig {
     pub runtime_allow_non_loopback: bool,
     pub http_ca_cert_path: Option<PathBuf>,
     pub tor: TorSidecarConfig,
+    pub relay: RelayConfig,
     pub identity: IdentityConfig,
     pub pricing: PricingConfig,
     pub payment_backends: Vec<PaymentBackend>,
@@ -774,6 +823,8 @@ impl NodeConfig {
                 .unwrap_or_else(|_| "127.0.0.1:8082".to_string()),
             startup_timeout_secs: env_u64("FROGLET_TOR_STARTUP_TIMEOUT_SECS", 90)?.clamp(5, 300),
         };
+
+        let relay = RelayConfig::from_env()?;
 
         let pricing = PricingConfig {
             events_query: env_u64("FROGLET_PRICE_EVENTS_QUERY", 0)?,
@@ -1146,6 +1197,7 @@ impl NodeConfig {
             runtime_allow_non_loopback,
             http_ca_cert_path,
             tor,
+            relay,
             identity: IdentityConfig {
                 auto_generate: env_bool("FROGLET_IDENTITY_AUTO_GENERATE", true)?,
             },
@@ -1794,6 +1846,17 @@ path = "{}"
         );
         // Non-secret fields should still be present.
         assert!(debug_output.contains("2026-04-22.preview"));
+    }
+
+    #[test]
+    fn relay_url_requires_wss_or_loopback_ws() {
+        assert!(validate_relay_url("wss://relay.froglet.dev/v1/tunnel").is_ok());
+        assert!(validate_relay_url("ws://127.0.0.1:9000/v1/tunnel").is_ok());
+        assert!(validate_relay_url("ws://localhost:9000").is_ok());
+        assert!(validate_relay_url("ws://[::1]:9000").is_ok());
+        assert!(validate_relay_url("ws://relay.froglet.dev/v1/tunnel").is_err());
+        assert!(validate_relay_url("ws://10.0.0.5:9000").is_err());
+        assert!(validate_relay_url("https://relay.froglet.dev").is_err());
     }
 
     #[test]

@@ -29,6 +29,9 @@ pub struct TransportStatus {
     pub tor_enabled: bool,
     pub tor_onion_url: Option<String>,
     pub tor_status: String,
+    pub relay_enabled: bool,
+    pub relay_url: Option<String>,
+    pub relay_status: String,
 }
 
 impl TransportStatus {
@@ -42,6 +45,13 @@ impl TransportStatus {
             tor_enabled: config.network_mode.should_start_tor(),
             tor_onion_url: None,
             tor_status: if config.network_mode.should_start_tor() {
+                "starting".to_string()
+            } else {
+                "disabled".to_string()
+            },
+            relay_enabled: config.relay.enabled,
+            relay_url: None,
+            relay_status: if config.relay.enabled {
                 "starting".to_string()
             } else {
                 "disabled".to_string()
@@ -291,6 +301,7 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:8082".to_string(),
                 startup_timeout_secs: 90,
             },
+            relay: crate::config::RelayConfig::default(),
             identity: IdentityConfig {
                 auto_generate: true,
             },

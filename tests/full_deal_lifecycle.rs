@@ -275,6 +275,7 @@ fn lightning_app_state_custom(
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
+        relay: froglet::config::RelayConfig::default(),
         identity: IdentityConfig {
             auto_generate: true,
         },
@@ -427,6 +428,7 @@ fn stripe_app_state_with_mock_spend(
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
+        relay: froglet::config::RelayConfig::default(),
         identity: IdentityConfig {
             auto_generate: true,
         },
@@ -1132,6 +1134,7 @@ fn phoenixd_app_state_with_mock_spend(
             backend_listen_addr: "127.0.0.1:0".to_string(),
             startup_timeout_secs: 90,
         },
+        relay: froglet::config::RelayConfig::default(),
         identity: IdentityConfig {
             auto_generate: true,
         },

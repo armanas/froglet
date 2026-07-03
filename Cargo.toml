@@ -31,6 +31,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 futures = "0.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "socks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Relay ingress tunnel client (docs/RELAY.md); rustls flavor to avoid a
+# second OpenSSL path.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 
 # Serialization & Deserialization
 serde = { version = "1.0", features = ["derive"] }

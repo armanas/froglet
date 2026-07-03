@@ -25,8 +25,10 @@ the `FROGLET_` prefix. Unset variables fall back to sensible defaults.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FROGLET_TOR_BINARY` | `tor` | Path to the Tor binary |
-| `FROGLET_TOR_BACKEND_LISTEN_ADDR` | `127.0.0.1:8082` | Tor backend listener (must be loopback) |
+| `FROGLET_TOR_BACKEND_LISTEN_ADDR` | `127.0.0.1:8082` | Loopback backend listener fronted by the Tor hidden service and the relay tunnel |
 | `FROGLET_TOR_STARTUP_TIMEOUT_SECS` | `90` | Seconds to wait for Tor to bootstrap (5-300) |
+| `FROGLET_RELAY_URL` | *(none)* | Relay ingress tunnel endpoint per [RELAY.md](RELAY.md), e.g. `wss://relay.froglet.dev/v1/tunnel`; must be `wss://` unless loopback `ws://`. Setting it enables the tunnel. |
+| `FROGLET_RELAY_ENABLED` | url set | Explicit on/off for the relay tunnel independent of `FROGLET_RELAY_URL` presence |
 
 ## Identity
 

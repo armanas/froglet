@@ -44,6 +44,7 @@ pub mod process_runtime;
 pub mod protocol;
 pub mod public_quota;
 pub mod python_sandbox;
+pub mod relay_tunnel;
 pub mod requester_budget;
 pub mod requester_deals;
 pub mod runtime_auth;

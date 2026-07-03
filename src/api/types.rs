@@ -29,6 +29,7 @@ pub struct DiscoveryInfo {
 pub struct TransportsInfo {
     pub clearnet: ClearnetInfo,
     pub tor: TorInfo,
+    pub relay: RelayInfo,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +44,14 @@ pub struct TorInfo {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub onion_url: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelayInfo {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     pub status: String,
 }
 

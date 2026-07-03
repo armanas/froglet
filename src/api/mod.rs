@@ -387,6 +387,11 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
                 onion_url: transport_status.tor_onion_url,
                 status: transport_status.tor_status,
             },
+            relay: RelayInfo {
+                enabled: transport_status.relay_enabled,
+                url: transport_status.relay_url,
+                status: transport_status.relay_status,
+            },
         },
         execution: ExecutionInfo {
             wasm: WasmInfo {
@@ -11537,13 +11542,25 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
     let pinned_marketplace_addresses = marketplace_endpoint.pinned_public_addresses;
 
     let transport_status = state.transport_status.lock().await.clone();
-    let (provider_url, transport) = if let Some(url) = transport_status.clearnet_url {
+    // Precedence: an operator-configured public base URL is explicit intent;
+    // otherwise a live relay tunnel beats the auto-derived clearnet URL
+    // (which is typically a loopback/docker-internal address the marketplace
+    // rejects); Tor last.
+    let explicit_clearnet = state.config.public_base_url.is_some();
+    let (provider_url, transport) = if explicit_clearnet && transport_status.clearnet_url.is_some()
+    {
+        (transport_status.clearnet_url.unwrap(), "clearnet")
+    } else if let Some(url) = transport_status.relay_url {
+        // Relay hostnames are public HTTPS; the marketplace treats them as
+        // clearnet endpoints.
+        (url, "clearnet")
+    } else if let Some(url) = transport_status.clearnet_url {
         (url, "clearnet")
     } else if let Some(url) = transport_status.tor_onion_url {
         (url, "tor")
     } else {
         return Err(
-            "marketplace registration requires an advertised provider URL; set FROGLET_PUBLIC_BASE_URL or enable Tor"
+            "marketplace registration requires an advertised provider URL; set FROGLET_PUBLIC_BASE_URL, enable the relay tunnel, or enable Tor"
                 .to_string(),
         );
     };
@@ -13879,6 +13896,7 @@ mod tests {
                 backend_listen_addr: "127.0.0.1:0".to_string(),
                 startup_timeout_secs: 90,
             },
+            relay: crate::config::RelayConfig::default(),
             identity: IdentityConfig {
                 auto_generate: true,
             },
