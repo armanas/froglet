@@ -3,11 +3,22 @@
 # Build from repo root:
 #   docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp .
 #
+# The marketplace_publish action shells out to the froglet-node binary, so the
+# image bundles it by copying from a provider image. FROGLET_NODE_IMAGE must
+# point at a froglet-provider image with a matching version; release builds
+# pass the same-version tag pushed earlier in the pipeline:
+#   docker build -f integrations/mcp/froglet/Dockerfile \
+#     --build-arg FROGLET_NODE_IMAGE=ghcr.io/armanas/froglet-provider:<version> \
+#     -t froglet-mcp .
+#
 # Run:
 #   docker run --rm -i \
 #     -e FROGLET_PROVIDER_URL=http://host.docker.internal:8080 \
 #     -e FROGLET_RUNTIME_URL=http://host.docker.internal:8081 \
 #     froglet-mcp
+
+ARG FROGLET_NODE_IMAGE=ghcr.io/armanas/froglet-provider:latest
+FROM ${FROGLET_NODE_IMAGE} AS froglet-node-src
 
 FROM node:22-slim AS build
 WORKDIR /build
@@ -30,6 +41,19 @@ LABEL org.opencontainers.image.url="https://github.com/armanas/froglet"
 
 RUN groupadd --gid 10001 froglet && \
     useradd --uid 10001 --gid 10001 --no-create-home froglet
+
+# froglet-node dynamically links libssl.so.3 (oci-registry-client → reqwest
+# 0.12 → native-tls), which node:22-slim does not ship.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# froglet-node is required by marketplace_publish (execFile from
+# integrations/shared/froglet-lib/marketplace-publish.js). Same-version copy
+# from the provider image; both bases are Debian bookworm, so the glibc ABI
+# matches.
+COPY --from=froglet-node-src /usr/local/bin/froglet-node /usr/local/bin/froglet-node
+ENV FROGLET_NODE_BIN=/usr/local/bin/froglet-node
 
 WORKDIR /
 # Runtime imports resolve ../../../shared/... from /app/mcp/lib/*.js, which lands at /shared.

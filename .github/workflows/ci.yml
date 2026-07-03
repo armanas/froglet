@@ -201,6 +201,10 @@ jobs:
     name: Docker Compose
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Pin the compose project so the network name (froglet_default) is
+      # deterministic for the dockerized MCP smoke below.
+      COMPOSE_PROJECT_NAME: froglet
 
     steps:
       - name: Check out repo
@@ -281,6 +285,39 @@ jobs:
       - name: Smoke test MCP server against compose-backed Froglet
         env:
           FROGLET_RUNTIME_AUTH_TOKEN_PATH: ${{ runner.temp }}/froglet-runtime-auth.token
+        run: node integrations/mcp/froglet/test/compose-smoke.mjs
+
+      - name: Build MCP image with bundled froglet-node
+        run: |
+          docker build \
+            -f integrations/mcp/froglet/Dockerfile \
+            --build-arg FROGLET_NODE_IMAGE=froglet-provider:local \
+            -t froglet-mcp:local \
+            .
+
+      - name: Verify froglet-node runs inside the MCP image
+        run: docker run --rm --entrypoint /usr/local/bin/froglet-node froglet-mcp:local help
+
+      - name: Stage tokens for dockerized MCP smoke
+        run: |
+          mkdir -p "$RUNNER_TEMP/froglet-tokens"
+          docker compose exec -T provider cat /data/runtime/froglet-control.token > "$RUNNER_TEMP/froglet-tokens/froglet-control.token"
+          docker compose exec -T runtime cat /data/runtime/auth.token > "$RUNNER_TEMP/froglet-tokens/auth.token"
+          # World-readable on purpose: the MCP container reads these as uid
+          # 10001 and RUNNER_TEMP is ephemeral CI scratch space.
+          chmod 0644 "$RUNNER_TEMP"/froglet-tokens/*.token
+
+      - name: Smoke test dockerized MCP image (marketplace_publish regression)
+        env:
+          FROGLET_MCP_SMOKE_COMMAND: docker
+          FROGLET_MCP_SMOKE_ARGS: '["run","--rm","-i","--network","froglet_default","-v","${{ runner.temp }}/froglet-tokens:/froglet-tokens:ro","-e","FROGLET_PROVIDER_URL","-e","FROGLET_RUNTIME_URL","-e","FROGLET_PROVIDER_AUTH_TOKEN_PATH","-e","FROGLET_RUNTIME_AUTH_TOKEN_PATH","-e","FROGLET_DAEMON_URL","-e","FROGLET_PROVIDER_CONTROL_TOKEN_PATH","-e","FROGLET_REQUEST_TIMEOUT_MS","froglet-mcp:local"]'
+          FROGLET_PROVIDER_URL: http://provider:8080
+          FROGLET_RUNTIME_URL: http://runtime:8081
+          FROGLET_DAEMON_URL: http://provider:8080
+          FROGLET_PROVIDER_AUTH_TOKEN_PATH: /froglet-tokens/froglet-control.token
+          FROGLET_RUNTIME_AUTH_TOKEN_PATH: /froglet-tokens/auth.token
+          FROGLET_PROVIDER_CONTROL_TOKEN_PATH: /froglet-tokens/froglet-control.token
+          FROGLET_MCP_SMOKE_EXPECT_PUBLISH: "1"
         run: node integrations/mcp/froglet/test/compose-smoke.mjs
 
       - name: Show container status

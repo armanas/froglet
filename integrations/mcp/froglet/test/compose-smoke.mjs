@@ -91,21 +91,38 @@ async function waitForHealthyStatus(client, timeoutMs = 15000) {
 async function main() {
   const providerUrl = process.env.FROGLET_PROVIDER_URL ?? "http://127.0.0.1:8080"
   const runtimeUrl = process.env.FROGLET_RUNTIME_URL ?? "http://127.0.0.1:8081"
+  // Default: spawn the server directly with node. CI also reruns this smoke
+  // against the published Docker image by overriding the command/args (the
+  // docker CLI forwards the env below via its `-e NAME` flags).
+  const smokeCommand = process.env.FROGLET_MCP_SMOKE_COMMAND ?? process.execPath
+  const smokeArgs = process.env.FROGLET_MCP_SMOKE_ARGS
+    ? JSON.parse(process.env.FROGLET_MCP_SMOKE_ARGS)
+    : [serverPath]
+  const serverEnv = {
+    FROGLET_PROVIDER_URL: providerUrl,
+    FROGLET_RUNTIME_URL: runtimeUrl,
+    FROGLET_PROVIDER_AUTH_TOKEN_PATH:
+      process.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH ??
+      path.join(repoRoot, "data/runtime/froglet-control.token"),
+    FROGLET_RUNTIME_AUTH_TOKEN_PATH:
+      process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH ??
+      path.join(repoRoot, "data/runtime/auth.token"),
+    FROGLET_REQUEST_TIMEOUT_MS: process.env.FROGLET_REQUEST_TIMEOUT_MS ?? "10000"
+  }
+  // marketplace_publish shells out to froglet-node, which needs the daemon
+  // control endpoint + token. Only forwarded when the caller provides them.
+  if (process.env.FROGLET_DAEMON_URL) {
+    serverEnv.FROGLET_DAEMON_URL = process.env.FROGLET_DAEMON_URL
+  }
+  if (process.env.FROGLET_PROVIDER_CONTROL_TOKEN_PATH) {
+    serverEnv.FROGLET_PROVIDER_CONTROL_TOKEN_PATH =
+      process.env.FROGLET_PROVIDER_CONTROL_TOKEN_PATH
+  }
   const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [serverPath],
+    command: smokeCommand,
+    args: smokeArgs,
     cwd: packageDir,
-    env: {
-      FROGLET_PROVIDER_URL: providerUrl,
-      FROGLET_RUNTIME_URL: runtimeUrl,
-      FROGLET_PROVIDER_AUTH_TOKEN_PATH:
-        process.env.FROGLET_PROVIDER_AUTH_TOKEN_PATH ??
-        path.join(repoRoot, "data/runtime/froglet-control.token"),
-      FROGLET_RUNTIME_AUTH_TOKEN_PATH:
-        process.env.FROGLET_RUNTIME_AUTH_TOKEN_PATH ??
-        path.join(repoRoot, "data/runtime/auth.token"),
-      FROGLET_REQUEST_TIMEOUT_MS: process.env.FROGLET_REQUEST_TIMEOUT_MS ?? "10000"
-    },
+    env: serverEnv,
     stderr: "pipe"
   })
   const stderrChunks = []
@@ -161,6 +178,28 @@ async function main() {
     } else {
       assertContainsAll(computeText, ["status: succeeded"], "unexpected compute result")
       assertOptionalResult(computeText, 42, "unexpected compute result payload")
+    }
+
+    // Regression for the docker MCP profile: marketplace_publish shells out
+    // to the bundled froglet-node binary. hosting local binds 127.0.0.1 on
+    // the daemon and skips marketplace registration, so this stays hermetic.
+    // Opt-in because the node-spawned variant of this smoke runs on hosts
+    // without froglet-node installed.
+    if (process.env.FROGLET_MCP_SMOKE_EXPECT_PUBLISH === "1") {
+      const publishText = await callToolText(client, "froglet", {
+        action: "marketplace_publish",
+        name: "smoke-local-add",
+        runtime: "python",
+        package_kind: "inline_source",
+        source_inline:
+          'def handler(event, context):\n    return {"sum": event.get("a", 0) + event.get("b", 0)}\n',
+        hosting: { kind: "local" }
+      })
+      assertContainsAll(
+        publishText,
+        ["status: published", "provider_id:", "offer_hash:"],
+        "marketplace_publish (hosting local) failed"
+      )
     }
   } catch (error) {
     const stderr = stderrChunks.join("").trim()

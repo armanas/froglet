@@ -226,6 +226,8 @@ ${docker_network_json_args}
         "-e", "FROGLET_RUNTIME_URL",
         "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH",
         "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH",
+        "-e", "FROGLET_DAEMON_URL",
+        "-e", "FROGLET_PROVIDER_CONTROL_TOKEN_PATH",
         "-e", "FROGLET_REQUEST_TIMEOUT_MS",
         "-e", "FROGLET_DEFAULT_SEARCH_LIMIT",
         "-e", "FROGLET_MAX_SEARCH_LIMIT",
@@ -236,6 +238,8 @@ ${docker_network_json_args}
         "FROGLET_RUNTIME_URL": ${docker_runtime_url_json},
         "FROGLET_PROVIDER_AUTH_TOKEN_PATH": ${docker_provider_token_path_json},
         "FROGLET_RUNTIME_AUTH_TOKEN_PATH": ${docker_runtime_token_path_json},
+        "FROGLET_DAEMON_URL": ${docker_provider_url_json},
+        "FROGLET_PROVIDER_CONTROL_TOKEN_PATH": ${docker_provider_token_path_json},
         "FROGLET_REQUEST_TIMEOUT_MS": ${request_timeout_ms_json},
         "FROGLET_DEFAULT_SEARCH_LIMIT": ${default_search_limit_json},
         "FROGLET_MAX_SEARCH_LIMIT": ${max_search_limit_json}
@@ -281,8 +285,8 @@ EOF
       cat >"$out_path" <<EOF
 [mcp_servers.froglet]
 command = "docker"
-args = ["run", "--rm", "-i", ${docker_network_toml_args}"--add-host", "host.docker.internal:host-gateway", "-v", ${provider_token_dir_toml}, "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", ${mcp_image_toml}]
-env = { FROGLET_PROVIDER_URL = ${docker_provider_url_toml}, FROGLET_RUNTIME_URL = ${docker_runtime_url_toml}, FROGLET_PROVIDER_AUTH_TOKEN_PATH = ${docker_provider_token_path_toml}, FROGLET_RUNTIME_AUTH_TOKEN_PATH = ${docker_runtime_token_path_toml}, FROGLET_REQUEST_TIMEOUT_MS = "${request_timeout_ms}", FROGLET_DEFAULT_SEARCH_LIMIT = "${default_search_limit}", FROGLET_MAX_SEARCH_LIMIT = "${max_search_limit}" }
+args = ["run", "--rm", "-i", ${docker_network_toml_args}"--add-host", "host.docker.internal:host-gateway", "-v", ${provider_token_dir_toml}, "-e", "FROGLET_PROVIDER_URL", "-e", "FROGLET_RUNTIME_URL", "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH", "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH", "-e", "FROGLET_DAEMON_URL", "-e", "FROGLET_PROVIDER_CONTROL_TOKEN_PATH", "-e", "FROGLET_REQUEST_TIMEOUT_MS", "-e", "FROGLET_DEFAULT_SEARCH_LIMIT", "-e", "FROGLET_MAX_SEARCH_LIMIT", ${mcp_image_toml}]
+env = { FROGLET_PROVIDER_URL = ${docker_provider_url_toml}, FROGLET_RUNTIME_URL = ${docker_runtime_url_toml}, FROGLET_PROVIDER_AUTH_TOKEN_PATH = ${docker_provider_token_path_toml}, FROGLET_RUNTIME_AUTH_TOKEN_PATH = ${docker_runtime_token_path_toml}, FROGLET_DAEMON_URL = ${docker_provider_url_toml}, FROGLET_PROVIDER_CONTROL_TOKEN_PATH = ${docker_provider_token_path_toml}, FROGLET_REQUEST_TIMEOUT_MS = "${request_timeout_ms}", FROGLET_DEFAULT_SEARCH_LIMIT = "${default_search_limit}", FROGLET_MAX_SEARCH_LIMIT = "${max_search_limit}" }
 EOF
     fi
     printf 'Wrote Codex MCP config to %s\n' "$out_path"

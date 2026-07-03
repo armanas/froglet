@@ -220,7 +220,10 @@ jobs:
       - name: Validate Compose configurations
         run: |
           docker compose config
-          docker compose -f compose.provider.yaml config
+          # compose.provider.yaml requires FROGLET_PUBLIC_BASE_URL (wildcard
+          # bind invariant); supply a placeholder for config validation only.
+          FROGLET_PUBLIC_BASE_URL=https://provider.example.com \
+            docker compose -f compose.provider.yaml config
           docker compose -f compose.runtime.yaml config
 
       - name: Log in to GHCR
@@ -266,18 +269,23 @@ jobs:
       - name: Build and push MCP server image
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.mcp_version }}
+          NODE_VERSION: ${{ needs.verify-release-metadata.outputs.version }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
           SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
         run: |
           image="ghcr.io/${OWNER_LC}/froglet-mcp"
+          # froglet-node is copied from the provider image pushed earlier in
+          # this job, pinning the bundled binary to the same release.
           docker build \
             -f integrations/mcp/froglet/Dockerfile \
+            --build-arg "FROGLET_NODE_IMAGE=ghcr.io/${OWNER_LC}/froglet-provider:${NODE_VERSION}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${image}:${VERSION}" \
             -t "${image}:${SHA_TAG}" \
             -t "${image}:latest" \
             .
+          docker run --rm --entrypoint /usr/local/bin/froglet-node "${image}:${VERSION}" help >/dev/null
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
           docker push "${image}:latest"
