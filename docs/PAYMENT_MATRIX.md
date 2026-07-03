@@ -1,7 +1,15 @@
 # Payment Verification Matrix
 
 Status: living document.
-Last refreshed: 2026-05-15 (v0.2.0 cut).
+Last refreshed: 2026-07-03 (v0.4.x line; phoenixd row added, MCP action names
+corrected).
+
+> [!WARNING]
+> **Staleness advisory (per § 7's own rule):** most 🟢 cells below carry
+> evidence dated 2026-05-15 (v0.2.0 cut) or 2026-04-30, which is more than one
+> release cycle behind the shipping 0.4.x code. Read those cells as 🟡
+> until their commands are re-run and re-dated. Freshly verified on
+> 2026-07-03: `Lightning::Phoenixd` unit + mock-lifecycle rows.
 
 This is the single source of truth for **which payment rails Froglet
 supports, in which modes, with which test coverage, and how to re-run any
@@ -76,9 +84,10 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 
 | Rail / mode | Unit (Rust `#[test]`) | Local integration | Hosted sandbox | Hosted live | Failure injection | Restart recovery | Observability |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests; verified 2026-05-15 | 🟢 local compose smoke (`release_gate.sh --compose`) | 🟢 `marketplace.froglet.dev` /v1/providers /v1/offers /v1/stats verified 2026-05-15 via `scripts/hosted_smoke.sh` (5/5) | 🟢 v0.2 launch posture: free hosted catalog is the headline product; `marketplace_publish` MCP + CLI tested via 25-test Phase 4 harness | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via MCP `get_settlement_state` |
+| `None` | 🟢 covered in `payments_and_discovery.rs` + most `api/mod.rs` tests; verified 2026-05-15 | 🟢 local compose smoke (`release_gate.sh --compose`) | 🟢 `marketplace.froglet.dev` /v1/providers /v1/offers /v1/stats verified 2026-05-15 via `scripts/hosted_smoke.sh` (5/5) | 🟢 v0.2 launch posture: free hosted catalog is the headline product; `marketplace_publish` MCP + CLI tested via 25-test Phase 4 harness | 🟢 `PaymentBackend::None` is the default fallback when rails misconfigure | — | 🟢 settlement state reads as "free" via the MCP settlement actions (§ 4) |
 | `Lightning::Mock` | 🟢 Mock-Lightning logic exercised via `tests/payments_and_discovery.rs` integration suite (6/6 pass, verified 2026-05-15); stripe/x402 in-file tests also exercise Mock-Lightning as their settlement substrate | 🟢 `payments_and_discovery.rs` 6/6 pass (verified 2026-05-15): mock invoice bundle persists across reload, quote/deal commitment validation, randomized invoice-bundle validation reports targeted issues, payments_enforce_all_error_paths | — | — | 🟢 mock can be forced to return failure in tests | 🟢 Mock state persists in sqlite between restarts (covered by `lightning_mock_invoice_bundle_persists_and_updates_state`) | 🟢 settlement state via MCP |
 | `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs; verified 2026-05-15 | 🟢 6/6 fake-LND-REST integration tests pass (`tests/lnd_rest_settlement.rs`, verified 2026-05-15) covering BOLT11 invoice issuance, bundle cancellation, backend cancellation reflection, orphaned-materialization recovery, and issue-delay tolerance. **Real-LND regtest** (`python/tests/test_lnd_regtest.py::test_lnd_regtest_hold_invoice_flow_and_restart_recovery`) passed 2026-05-15 in 78.8s end-to-end: Docker + bitcoind + 2 LND nodes (alice + bob, `lightninglabs/lnd:v0.20.0-beta`), hold-invoice issued by bob, paid by alice, success-fee settled through the Froglet provider, restart-recovery semantics verified. See [§ 7. Regtest run log](#7-regtest-run-log). | 🟡 mainnet test harness in place (`python/tests/test_lnd_mainnet.py`, double-gated on `FROGLET_RUN_LND_MAINNET=1` + `~/.froglet/voltage/lightning.env`); blocked on inbound channel liquidity on the Voltage node (`channel_remote_sats = 0` as of 2026-05-15). See [§ 8. Mainnet run log](#8-mainnet-run-log) — empty until first real-money settlement clears. | ⬜ v0.3 publish-path follow-up; daemon supports mainnet Lightning today (`test_lnd_mainnet.py` will prove it once channels open), `marketplace_publish` does not yet | 🟢 timeout + cancellation tested in fake-LND-REST integration; restart-recovery exercised in the live regtest run | 🟢 invoice bundle state + preimage persistence verified across process restart in both `tests/lnd_rest_settlement.rs` and the live regtest (`test_lnd_regtest_hold_invoice_flow_and_restart_recovery`, 2026-05-15) | 🟢 settlement state + invoice-bundle status via MCP |
+| `Lightning::Phoenixd` | 🟢 4 tests in [phoenixd.rs `mod tests`](../src/settlement/phoenixd.rs) (verified 2026-07-03) | 🟢 mock-phoenixd prepaid deal lifecycle + spend-refusal ordering in `tests/full_deal_lifecycle.rs` (`phoenixd_prepaid_full_paid_deal_produces_settled_receipt`, `spend_refusal_precedes_phoenixd_payment`; 2/2 pass, verified 2026-07-03). No live-phoenixd run yet | ⬜ not attempted | ⬜ not attempted; no real-money settlement on this rail yet | 🟡 mock covers invoice-not-paid gating; daemon-down/flaky-peer not simulated | 🟡 prepaid preimage persists in the receipt; restart replay not explicitly exercised | 🟢 wallet/intent/bundle state via the MCP actions in § 4 |
 | `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts (verified 2026-05-15) | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ v0.3 follow-up | ⬜ v0.3 follow-up | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
 | `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping (verified 2026-05-15) | 🟡 Stripe driver tested against a **local mock HTTP server**; one operator-run Stripe sandbox smoke on 2026-04-30: local `/v1/node/events/query` returned `stripe_mpp` receipt status `committed` with a `pi_` PaymentIntent reference. Webhook signature verification and event-id dedupe covered in `python/tests/test_payments.py` | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); evidence above is point-in-time and has not been re-run for v0.2. The hosted endpoint is in the private `froglet-services` workspace; re-running requires deployment access | ⬜ v0.3 publish-path follow-up; production live-money Stripe not yet wired to `marketplace_publish` | 🟡 API error mapping exercised; webhook signature failure + duplicate delivery tested locally and on paid-staging as of 2026-04-30 | 🟡 VM-backed restart replay passed 2026-04-30 (replaying `evt_froglet_restart_1777551288` returned `duplicate:true`); not re-verified for v0.2 | 🟢 settlement state via MCP |
 
@@ -128,10 +137,15 @@ python3 -W error -m unittest python.tests.test_lnd_regtest
 
 Every rail exposes settlement state through the same MCP surface:
 
-- **MCP action `get_settlement_state`** returns the current settlement-driver
-  verdict for a deal (invoice status for Lightning, challenge status for
-  X402, intent status for Stripe, "free" for None). Landed in commit
-  `2ca1aa3` ("Expose settlement state to the MCP tool surface").
+- **MCP settlement actions** (landed in commit `2ca1aa3`, "Expose settlement
+  state to the MCP tool surface"): `get_wallet_balance` (driver snapshot),
+  `list_settlement_activity` (recent deals with settlement state),
+  `get_payment_intent` (per-deal intent: invoice status for Lightning,
+  challenge status for X402, intent status for Stripe, "free" for None), and
+  `get_invoice_bundle` (per-deal Lightning bundle). Requester budget headroom
+  is separately visible via `get_spend_status` / `reset_spend`. (Earlier
+  drafts of this document referenced a `get_settlement_state` action that was
+  never shipped under that name.)
 - **Structured logs** — every settlement-driver call logs an event with the
   rail, deal id, operation, and outcome. Inspectable via `docker logs` on
   local compose; hosted log aggregation is planned separately.

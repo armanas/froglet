@@ -2,9 +2,11 @@
 
 All notable changes to this repo should be recorded here.
 
-The format follows Keep a Changelog. The current release line is `0.2.x`,
-which adds agent-grade publish (one MCP call from intent to live offer) on
-top of the `0.1.x` protocol core.
+The format follows Keep a Changelog. The current release line is `0.4.x`:
+`0.2.x` added agent-grade publish (one MCP call from intent to live offer) on
+top of the `0.1.x` protocol core, `0.3.x` put paid services on the publish
+path (Lightning + Stripe settlement), and `0.4.x` added the phoenixd prepaid
+Lightning rail and MCP registry distribution.
 
 ## [Unreleased]
 

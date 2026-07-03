@@ -260,8 +260,9 @@ A v2 manifest is implicitly equivalent to a v3 manifest with:
 - `[marketplace] url` from project default or built-in default
 
 The parser emits one `Deprecation` warning per missing section, suggesting
-the explicit v3 form. v2 is supported for one minor version cycle (through
-v0.3); v0.4 drops v2 support.
+the explicit v3 form. v2 remains accepted with deprecation warnings (the
+planned v0.4 removal did not ship — `froglet-protocol/src/manifest.rs` still
+loads `froglet-service/v2`); prefer v3 for all new manifests.
 
 ---
 

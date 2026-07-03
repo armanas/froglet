@@ -5,6 +5,27 @@ design stubs. It is not the kernel specification. `docs/KERNEL.md` remains the
 authoritative source for canonical artifact payloads, hashing, signing bytes,
 state transitions, and settlement bindings.
 
+## Order 44 - Batch Fan-Out
+
+Status: not implemented; boundary is enforced in agent-facing truth strings
+(`integrations/shared/froglet-lib/tool-dispatch.js` `plan_use_case` batch
+profile, `docs/HOSTED_TRIAL.md`, `docs/llms/try.froglet.dev.txt`).
+
+Multi-item batch fan-out, retries, and paid async settlement across the
+runtime deal flow. Until this lands, batch workloads use the existing async
+task-status primitives one task at a time, and agent surfaces must not claim
+batch support.
+
+## Order 45 - GPU Scheduling and Routing
+
+Status: partially proven; boundary is enforced in the same agent-facing truth
+strings as Order 44.
+
+A single-node Docker GPU path is verified (GCP T4, provider-advertised
+capability metadata, `--gpus all` gating, no-CPU-fallback errors, signed
+receipt). Remaining: provider scheduling policy, quota, marketplace routing,
+fallback semantics, and production GPU capacity/selection docs.
+
 ## Order 70 - Strict Egress Pin Propagation
 
 Status: implemented with regression coverage in

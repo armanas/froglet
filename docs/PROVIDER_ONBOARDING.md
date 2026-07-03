@@ -34,10 +34,10 @@ Claude (with froglet MCP):
     provider_id:            c9ecac3a…
     public_url:             http://abc123…onion
     marketplace_offer_url:  https://marketplace.froglet.dev/v1/offers/…
-    invoke_command:         froglet-node invoke translator-en-es '{}'
+    invoke_command:         MCP froglet action invoke_service {"service_id": "translator-en-es", …}
 
 Claude: "Your service is live at marketplace.froglet.dev/v1/offers/…
-        Call it with: froglet-node invoke …"
+        Call it with the froglet invoke_service action."
 ```
 
 That's the whole flow. Behind the scenes the MCP handler shells out to
@@ -124,8 +124,10 @@ address. No DNS, no TLS, no port-forwarding, works behind any NAT.
 Requires:
 
 ```bash
-FROGLET_NETWORK_MODE=tor froglet-node serve   # or "dual" for clearnet+tor
+FROGLET_NETWORK_MODE=tor froglet-node   # or "dual" for clearnet+tor
 ```
+
+(`froglet-node` with no subcommand runs the daemon.)
 
 Strongest no-DNS posture. Tradeoff: higher latency (~500ms+), clients
 must speak Tor.
@@ -221,7 +223,8 @@ When you eventually want one:
   DNS).
 - **OAuth attestation** (GitHub today; pattern extends to Google,
   GitLab, Gitea, Microsoft) needs only a GitHub account. Spec is
-  complete; the issuance service ships in v0.2.
+  complete; the issuance service is not yet built (tracked as Order 81
+  in `TODO.md`).
 
 ---
 

@@ -135,9 +135,10 @@ Supported: Linux x86_64/arm64, macOS arm64.
 ## Quick Start
 
 Canonical onboarding lives in
-[docs-site/src/content/docs/learn/index.mdx](docs-site/src/content/docs/learn/index.mdx).
-Use the repo README for the product and codebase overview, the `learn/` docs
-for the public launch path, and `docs/` for specs, operator notes, and
+[docs-site/src/content/docs/docs.mdx](docs-site/src/content/docs/docs.mdx)
+(the `learn/` index remains as a legacy route).
+Use the repo README for the product and codebase overview, the docs-site
+manual for the public launch path, and `docs/` for specs, operator notes, and
 integration reference.
 
 The public launch story still has exactly two entry points:
@@ -441,7 +442,7 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 | Document | Topic |
 |---|---|
-| [docs-site/src/content/docs/learn/index.mdx](docs-site/src/content/docs/learn/index.mdx) | Canonical onboarding index for the public launch story |
+| [docs-site/src/content/docs/docs.mdx](docs-site/src/content/docs/docs.mdx) | Canonical onboarding manual for the public launch story |
 | [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx) | Hosted trial walkthrough and contract |
 | [docs-site/src/content/docs/learn/quickstart.mdx](docs-site/src/content/docs/learn/quickstart.mdx) | Local self-host quickstart |
 | [docs/README.md](docs/README.md) | Reference-doc map for specs, operations, and integrations |
@@ -459,11 +460,20 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [STORAGE_PROFILE.md](docs/STORAGE_PROFILE.md) | Storage profiles |
 | [GCP_SINGLE_VM.md](docs/GCP_SINGLE_VM.md) | Single-VM self-host deployment wrapper |
 | [MARKETPLACE.md](docs/MARKETPLACE.md) | Marketplace integration and the default public marketplace |
+| [RELAY.md](docs/RELAY.md) | Relay ingress v1 contract (outbound tunnel, zero-DNS public HTTPS) |
 | [ARBITER.md](docs/ARBITER.md) | MVP complaint and marketplace enforcement boundary |
 | [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the hosted trial |
 | [RELEASE.md](docs/RELEASE.md) | Release process |
 | [NAME_COHERENCE.md](docs/NAME_COHERENCE.md) | Lightweight launch name and registry-risk note |
 | [PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md) | Supported payment rails and verification coverage |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | Environment-variable configuration reference |
+| [MANIFEST.md](docs/MANIFEST.md) | Service manifest format (froglet-service.toml) |
+| [PROVIDER_ONBOARDING.md](docs/PROVIDER_ONBOARDING.md) | Publish path and provider onboarding |
+| [API_ERRORS.md](docs/API_ERRORS.md) | API error reference — status codes and error shapes |
+| [THREAT_MODEL.md](docs/THREAT_MODEL.md) | Assets, trust boundaries, key-compromise runbook |
+| [DOCKER.md](docs/DOCKER.md) | Local compose and container deployment |
+| [MOUNTS.md](docs/MOUNTS.md) | Capability-gated data mounts for published services |
+| [ROLE_TOOL_ARCHITECTURE.md](docs/ROLE_TOOL_ARCHITECTURE.md) | Role and tool architecture |
 | [FEEDBACK.md](docs/FEEDBACK.md) | MVP feedback channel and first-four-weeks triage loop |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community standards (Contributor Covenant 2.1) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
@@ -475,6 +485,6 @@ separately from the public protocol and self-host docs in this repo.
 
 <div align="center">
 
-**[Learn Index Source](docs-site/src/content/docs/learn/index.mdx)** &middot; **[Releases](https://github.com/armanas/froglet/releases)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
+**[Docs Manual Source](docs-site/src/content/docs/docs.mdx)** &middot; **[Releases](https://github.com/armanas/froglet/releases)** &middot; **[Discussions](https://github.com/armanas/froglet/discussions)** &middot; **[Issues](https://github.com/armanas/froglet/issues)** &middot; **[License](LICENSE)**
 
 </div>

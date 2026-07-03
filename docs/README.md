@@ -5,11 +5,12 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 ## Start Here
 
 Canonical onboarding lives in
-[../docs-site/src/content/docs/learn/index.mdx](../docs-site/src/content/docs/learn/index.mdx).
-Use the repo docs with this split:
+[../docs-site/src/content/docs/docs.mdx](../docs-site/src/content/docs/docs.mdx)
+(the `learn/` index remains as a legacy route). Use the repo docs with this
+split:
 
 - [../README.md](../README.md): repo overview, component map, verification, and release surfaces
-- [../docs-site/src/content/docs/learn/index.mdx](../docs-site/src/content/docs/learn/index.mdx): canonical public onboarding path
+- [../docs-site/src/content/docs/docs.mdx](../docs-site/src/content/docs/docs.mdx): canonical public onboarding path
 - `docs/`: specifications, operator references, and integration details once you know which path you need
 
 Public launch entry points:
@@ -26,12 +27,15 @@ Public launch entry points:
 - [VERSIONING.md](VERSIONING.md): stability policy — what is frozen, what may change, how `froglet/v2` would happen
 - [THREAT_MODEL.md](THREAT_MODEL.md): assets, trust boundaries, key-compromise runbook, accepted risks
 - [SERVICE_BINDING.md](SERVICE_BINDING.md): service-binding contract — service_id, offer_kind, product shapes
+- [MANIFEST.md](MANIFEST.md): service manifest format (`froglet-service.toml`)
+- [openapi.yaml](openapi.yaml): HTTP API reference (OpenAPI)
 
 ## Architecture
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): system layering — kernel, adapters, runtime, services
 - [MARKETPLACE.md](MARKETPLACE.md): marketplace integration and the default public marketplace
 - [ARBITER.md](ARBITER.md): MVP complaint and marketplace enforcement boundary
+- [RELAY.md](RELAY.md): relay ingress v1 contract (outbound tunnel, zero-DNS public HTTPS)
 
 ## Companion Docs
 
@@ -45,15 +49,21 @@ Public launch entry points:
 
 ## Operations
 
+- [CONFIGURATION.md](CONFIGURATION.md): environment-variable configuration reference
+- [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md): publish path and provider onboarding
+- [PAYMENT_MATRIX.md](PAYMENT_MATRIX.md): payment rails and verification coverage
+- [IDENTITY_ATTESTATION.md](IDENTITY_ATTESTATION.md): optional DNS + OAuth identity bindings
 - [DOCKER.md](DOCKER.md): local compose and container deployment
 - [GCP_SINGLE_VM.md](GCP_SINGLE_VM.md): single-VM self-host deployment wrapper
 - [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the hosted trial
 - [NAME_COHERENCE.md](NAME_COHERENCE.md): lightweight launch name and registry-risk note
 - [RELEASE.md](RELEASE.md): release process and published image contract
+- [FEEDBACK.md](FEEDBACK.md): MVP feedback channel and triage loop
 
 ## Integrations
 
 - [PLUGIN_DISTRIBUTION.md](PLUGIN_DISTRIBUTION.md): MCP registry and agent-plugin distribution order
+- [MCP_DIRECTORY_SUBMISSIONS.md](MCP_DIRECTORY_SUBMISSIONS.md): MCP directory submission tracking
 - [OPENCLAW.md](OPENCLAW.md): OpenClaw (Claude) integration
 - [NEMOCLAW.md](NEMOCLAW.md): NemoClaw (local agent) integration
 - [ROLE_TOOL_ARCHITECTURE.md](ROLE_TOOL_ARCHITECTURE.md): role and tool architecture
