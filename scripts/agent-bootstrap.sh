@@ -250,6 +250,6 @@ cat <<EOF
   "mcp_docker_network": "$(json_escape "$MCP_DOCKER_NETWORK")",
   "mcp_config_path": "$(json_escape "$mcp_config_path")",
   "next_mcp_actions": ["status", "publish_artifact"],
-  "next_instruction": "Restart or point your agent at the MCP config path, call froglet status, then publish a demo service with template demo.add."
+  "next_instruction": "Restart or point your agent at the MCP config path, call froglet status, then publish a demo service with template demo.add. For host-shell froglet-node CLI use, export FROGLET_DATA_DIR=$(json_escape "$DATA_DIR")."
 }
 EOF

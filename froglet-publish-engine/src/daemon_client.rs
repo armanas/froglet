@@ -172,8 +172,10 @@ impl DaemonClient {
     /// - `FROGLET_DAEMON_URL` → daemon URL (default `http://127.0.0.1:8080`)
     /// - `FROGLET_PROVIDER_CONTROL_TOKEN` → literal token (preferred)
     /// - `FROGLET_PROVIDER_CONTROL_TOKEN_PATH` → token file path
-    ///   (default `~/.froglet/runtime/froglet-control.token` if neither
-    ///   env var is set)
+    /// - otherwise `FROGLET_DATA_DIR/runtime/froglet-control.token`, and with
+    ///   no data dir set, the first existing of the daemon layout
+    ///   (`~/.froglet/runtime/`) and the agent-bootstrap layout
+    ///   (`~/.froglet/data/runtime/`)
     pub fn from_env() -> Result<Self, PublishError> {
         let daemon_url_str =
             std::env::var("FROGLET_DAEMON_URL").unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_string());
@@ -186,21 +188,15 @@ impl DaemonClient {
             ControlAuth::Value(token)
         } else if let Ok(path) = std::env::var("FROGLET_PROVIDER_CONTROL_TOKEN_PATH") {
             ControlAuth::File(PathBuf::from(path))
+        } else if let Ok(data_dir) = std::env::var("FROGLET_DATA_DIR") {
+            ControlAuth::File(PathBuf::from(data_dir).join("runtime/froglet-control.token"))
         } else {
-            // Fall back to the daemon's default token path under FROGLET_DATA_DIR.
-            let data_dir = std::env::var("FROGLET_DATA_DIR")
-                .map(PathBuf::from)
-                .or_else(|_| {
-                    dirs_home()
-                        .map(|h| h.join(".froglet"))
-                        .ok_or_else(|| PublishError::InvalidInput {
-                            field: "FROGLET_DATA_DIR",
-                            reason:
-                                "no FROGLET_DATA_DIR or HOME set; cannot find provider-control token"
-                                    .to_string(),
-                        })
-                })?;
-            ControlAuth::File(data_dir.join("runtime/froglet-control.token"))
+            let home = dirs_home().ok_or_else(|| PublishError::InvalidInput {
+                field: "FROGLET_DATA_DIR",
+                reason: "no FROGLET_DATA_DIR or HOME set; cannot find provider-control token"
+                    .to_string(),
+            })?;
+            ControlAuth::File(default_control_token_path(&home))
         };
 
         Self::new(daemon_url, control_auth)
@@ -276,6 +272,23 @@ fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// The daemon's own data dir defaults to `~/.froglet` while the agent
+/// bootstrap (scripts/agent-bootstrap.sh) provisions `~/.froglet/data`, so a
+/// fresh shell must probe both token layouts. When neither file exists yet,
+/// return the daemon layout so error messages point at the canonical path.
+fn default_control_token_path(home: &std::path::Path) -> PathBuf {
+    let candidates = [
+        home.join(".froglet/runtime/froglet-control.token"),
+        home.join(".froglet/data/runtime/froglet-control.token"),
+    ];
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.clone();
+        }
+    }
+    candidates[0].clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +319,40 @@ mod tests {
         let _g = TestEnv::set_var("FROGLET_PROVIDER_CONTROL_TOKEN", "test-tok");
         let client = DaemonClient::from_env().unwrap();
         assert!(matches!(client.control_auth, ControlAuth::Value(ref v) if v == "test-tok"));
+    }
+
+    #[test]
+    fn default_token_path_prefers_daemon_layout_when_present() {
+        let home = tempfile::tempdir().unwrap();
+        let daemon = home.path().join(".froglet/runtime/froglet-control.token");
+        let bootstrap = home
+            .path()
+            .join(".froglet/data/runtime/froglet-control.token");
+        for p in [&daemon, &bootstrap] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "tok").unwrap();
+        }
+        assert_eq!(default_control_token_path(home.path()), daemon);
+    }
+
+    #[test]
+    fn default_token_path_probes_bootstrap_layout() {
+        let home = tempfile::tempdir().unwrap();
+        let bootstrap = home
+            .path()
+            .join(".froglet/data/runtime/froglet-control.token");
+        std::fs::create_dir_all(bootstrap.parent().unwrap()).unwrap();
+        std::fs::write(&bootstrap, "tok").unwrap();
+        assert_eq!(default_control_token_path(home.path()), bootstrap);
+    }
+
+    #[test]
+    fn default_token_path_falls_back_to_daemon_layout() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            default_control_token_path(home.path()),
+            home.path().join(".froglet/runtime/froglet-control.token")
+        );
     }
 
     /// RAII guard that sets an env var for the duration of one test and
