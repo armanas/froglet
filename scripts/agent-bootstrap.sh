@@ -15,6 +15,11 @@ PROVIDER_URL="${FROGLET_PROVIDER_URL:-http://127.0.0.1:8080}"
 RUNTIME_URL="${FROGLET_RUNTIME_URL:-http://127.0.0.1:8081}"
 NETWORK_MODE="${FROGLET_NETWORK_MODE:-clearnet}"
 MARKETPLACE_URL="${FROGLET_MARKETPLACE_URL:-https://marketplace.froglet.dev}"
+# Requester spend policy (buyer side), carried on the single spawn command so
+# paid buying needs no post-install config edit. Unset keeps the daemon's
+# fail-closed default: every paid deal is refused until a budget exists.
+SPEND_BUDGET_MSAT="${FROGLET_REQUESTER_SPEND_BUDGET_MSAT:-}"
+MAX_DEAL_MSAT="${FROGLET_REQUESTER_MAX_DEAL_MSAT:-}"
 START_STACK="${FROGLET_BOOTSTRAP_START:-1}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-${FROGLET_COMPOSE_PROJECT_NAME:-froglet_agent}}"
 MCP_DOCKER_NETWORK="${FROGLET_MCP_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME}_default}"
@@ -115,8 +120,30 @@ configure_payment() {
   fi
 }
 
+require_msat_or_empty() {
+  # $1 = env var name, $2 = value. Positive-integer msat or empty.
+  case "$2" in
+    '') ;;
+    *[!0-9]*|0) fail "$1 must be a positive integer (millisatoshis), got: $2" ;;
+  esac
+}
+
 write_compose() {
   mkdir -p "$BOOTSTRAP_DIR" "$DATA_DIR"
+  require_msat_or_empty FROGLET_REQUESTER_SPEND_BUDGET_MSAT "$SPEND_BUDGET_MSAT"
+  require_msat_or_empty FROGLET_REQUESTER_MAX_DEAL_MSAT "$MAX_DEAL_MSAT"
+  # Spend policy is enforced by the runtime (buyer) node and read once at
+  # startup; emit the env lines only when values were provided so the
+  # fail-closed default is preserved verbatim otherwise.
+  runtime_spend_env=""
+  if [ -n "$SPEND_BUDGET_MSAT" ]; then
+    runtime_spend_env="      FROGLET_REQUESTER_SPEND_BUDGET_MSAT: \"$SPEND_BUDGET_MSAT\"
+"
+  fi
+  if [ -n "$MAX_DEAL_MSAT" ]; then
+    runtime_spend_env="${runtime_spend_env}      FROGLET_REQUESTER_MAX_DEAL_MSAT: \"$MAX_DEAL_MSAT\"
+"
+  fi
   cat >"$BOOTSTRAP_DIR/compose.yaml" <<EOF
 services:
   provider:
@@ -153,7 +180,7 @@ services:
       FROGLET_RUNTIME_PROVIDER_BASE_URL: http://provider:8080
       FROGLET_MARKETPLACE_URL: $(yaml_quote FROGLET_MARKETPLACE_URL "$MARKETPLACE_URL")
       FROGLET_NETWORK_MODE: $(yaml_quote FROGLET_NETWORK_MODE "$NETWORK_MODE")
-      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
+${runtime_spend_env}      FROGLET_HOST_READABLE_CONTROL_TOKEN: "true"
     ports:
       - "127.0.0.1:8081:8081"
     volumes:
@@ -243,6 +270,8 @@ cat <<EOF
   "provider_url": "$(json_escape "$PROVIDER_URL")",
   "runtime_url": "$(json_escape "$RUNTIME_URL")",
   "network_mode": "$(json_escape "$NETWORK_MODE")",
+  "requester_spend_budget_msat": ${SPEND_BUDGET_MSAT:-null},
+  "requester_max_deal_msat": ${MAX_DEAL_MSAT:-null},
   "compose_file": "$(json_escape "$compose_file")",
   "compose_project_name": "$(json_escape "$COMPOSE_PROJECT_NAME")",
   "compose_started": $compose_started,

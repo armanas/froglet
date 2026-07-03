@@ -118,7 +118,10 @@ only).
 :::caution[Buying side: set a spend budget before giving an agent a wallet]
 A node that *pays* for services refuses paid deals — fail-closed — until you
 set `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative budget, persistently
-tracked; optional per-deal cap via `FROGLET_REQUESTER_MAX_DEAL_MSAT`).
+tracked; optional per-deal cap via `FROGLET_REQUESTER_MAX_DEAL_MSAT`). Both
+can ride the single bootstrap command so no post-install edit is needed:
+`FROGLET_REQUESTER_SPEND_BUDGET_MSAT=500000 curl -fsSL https://froglet.dev/agent | bash`.
+Agents can inspect headroom with the `get_spend_status` MCP action.
 Enforcement happens before any money moves on every rail; check the ledger
 with `GET /v1/runtime/spend`. Free deals need no budget. See
 [Configuration](https://github.com/armanas/froglet/blob/main/docs/CONFIGURATION.md).
