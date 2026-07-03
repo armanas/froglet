@@ -163,6 +163,29 @@ impl fmt::Debug for BuyerStripeConfig {
     }
 }
 
+/// Live Stripe keys move real money; require a fresh explicit opt-in so a
+/// live key pasted into the wrong environment can never settle by accident.
+/// `setup-payment.sh` enforces the same rule at env-file creation time, but
+/// env vars can be exported directly — the daemon must hold the same line.
+fn check_stripe_live_confirm(
+    var: &str,
+    secret_key: &str,
+    confirm: Option<&str>,
+) -> Result<(), String> {
+    if secret_key.starts_with("sk_live_") && confirm != Some("fresh") {
+        return Err(format!(
+            "{var} is a live-mode key (sk_live_…); set FROGLET_STRIPE_LIVE_CONFIRM=fresh to \
+             confirm real-money operation for this process"
+        ));
+    }
+    Ok(())
+}
+
+fn require_stripe_live_confirm(var: &str, secret_key: &str) -> Result<(), String> {
+    let confirm = env::var("FROGLET_STRIPE_LIVE_CONFIRM").ok();
+    check_stripe_live_confirm(var, secret_key, confirm.as_deref())
+}
+
 impl BuyerStripeConfig {
     /// Parse buyer Stripe config from the process environment.
     ///
@@ -177,6 +200,7 @@ impl BuyerStripeConfig {
             }
             Err(_) => return Ok(None),
         };
+        require_stripe_live_confirm("FROGLET_BUYER_STRIPE_SECRET_KEY", &secret_key)?;
 
         let api_version = env::var("FROGLET_STRIPE_API_VERSION")
             .unwrap_or_else(|_| "2026-04-22.preview".to_string());
@@ -806,10 +830,11 @@ impl NodeConfig {
         };
 
         if stripe_active {
-            env::var("FROGLET_STRIPE_SECRET_KEY").map_err(|_| {
+            let seller_key = env::var("FROGLET_STRIPE_SECRET_KEY").map_err(|_| {
                 "FROGLET_STRIPE_SECRET_KEY is required when stripe is in payment backends"
                     .to_string()
             })?;
+            require_stripe_live_confirm("FROGLET_STRIPE_SECRET_KEY", &seller_key)?;
         }
 
         let stripe = if stripe_active {
@@ -1769,6 +1794,23 @@ path = "{}"
         );
         // Non-secret fields should still be present.
         assert!(debug_output.contains("2026-04-22.preview"));
+    }
+
+    #[test]
+    fn stripe_live_key_requires_fresh_confirm() {
+        // Test keys never need confirmation.
+        assert!(check_stripe_live_confirm("VAR", "sk_test_abc", None).is_ok());
+        assert!(check_stripe_live_confirm("VAR", "sk_test_abc", Some("fresh")).is_ok());
+        // Live keys are refused without the exact fresh confirmation.
+        assert!(check_stripe_live_confirm("VAR", "sk_live_abc", None).is_err());
+        assert!(check_stripe_live_confirm("VAR", "sk_live_abc", Some("1")).is_err());
+        assert!(check_stripe_live_confirm("VAR", "sk_live_abc", Some("stale")).is_err());
+        assert!(check_stripe_live_confirm("VAR", "sk_live_abc", Some("fresh")).is_ok());
+        // The error names the variable and the remediation.
+        let err = check_stripe_live_confirm("FROGLET_STRIPE_SECRET_KEY", "sk_live_abc", None)
+            .unwrap_err();
+        assert!(err.contains("FROGLET_STRIPE_SECRET_KEY"));
+        assert!(err.contains("FROGLET_STRIPE_LIVE_CONFIRM=fresh"));
     }
 
     #[test]

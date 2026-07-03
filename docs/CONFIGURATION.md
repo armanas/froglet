@@ -83,8 +83,8 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe secret API key for MPP. Use `sk_test_...` by default; live keys require the explicit setup-script confirmation below. |
-| `FROGLET_STRIPE_LIVE_CONFIRM` | *(none)* | Set to `fresh` only for an operator-approved live Stripe setup/proof with `sk_live_...` |
+| `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe secret API key for MPP. Use `sk_test_...` by default; live keys require the explicit confirmation below. |
+| `FROGLET_STRIPE_LIVE_CONFIRM` | *(none)* | Set to `fresh` only for an operator-approved live Stripe setup/proof with `sk_live_...`. Enforced by the daemon itself (fail-closed at startup for both `FROGLET_STRIPE_SECRET_KEY` and `FROGLET_BUYER_STRIPE_SECRET_KEY`), not just by `setup-payment.sh`. |
 | `FROGLET_STRIPE_API_VERSION` | `2026-04-22.preview` | Stripe API version (required for MPP features) |
 | `FROGLET_STRIPE_WEBHOOK_SECRET` | *(none)* | Optional Stripe webhook endpoint signing secret (`whsec_...`) for `POST /v1/webhooks/stripe` |
 | `FROGLET_BUYER_STRIPE_SECRET_KEY` | *(none)* | Buyer-side Stripe secret key used to mint Shared Payment Tokens when this node buys Stripe-priced services |
