@@ -29,7 +29,7 @@ tower = { version = "0.4", features = ["util", "limit", "timeout"] }
 hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 futures = "0.3"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "socks"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "query", "rustls", "socks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # Relay ingress tunnel client (docs/RELAY.md); rustls flavor to avoid a
 # second OpenSSL path.
@@ -65,7 +65,6 @@ thiserror = "2.0"
 subtle = "2"
 zeroize = "1"
 toml = "0.9"
-oci-registry-client = "0.2.3"
 urlencoding = "2.1"
 wat = "1"
 

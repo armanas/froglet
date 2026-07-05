@@ -31,6 +31,25 @@ Lightning rail and MCP registry distribution.
   warning when a buyer wallet is configured without one. Free deals are
   unaffected.
 
+- **`froglet-node` no longer links OpenSSL.** The `oci-registry-client`
+  dependency hard-wired reqwest's native-tls backend (the binary's only
+  `libssl.so.3` linkage); it is replaced by a small in-repo pull client
+  (`src/oci.rs`) — token auth, manifest fetch, blob download — on the
+  workspace's rustls-only reqwest. This also collapses the duplicate
+  reqwest 0.12 stack the crate pinned. Deployment images only need
+  `ca-certificates` now (rustls verifies against the system CA store);
+  the MCP image no longer installs `libssl3`.
+
+### Fixed
+
+- **Anonymous ghcr.io pulls for OCI Wasm workloads.** The old OCI client
+  required `access_token`/`expires_in`/`issued_at` in the token response,
+  but ghcr.io's token endpoint returns only `token`, so anonymous auth
+  always failed and the subsequent manifest fetch went out without
+  credentials. The new client accepts both token shapes. Docker Hub
+  references now also send the correct token-scope service
+  (`registry.docker.io`) instead of the submitted host alias.
+
 ## [0.4.0] - 2026-05-30
 
 ### Added

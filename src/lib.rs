@@ -62,6 +62,7 @@ pub mod deals;
 pub(crate) mod data_mounts;
 pub(crate) mod jobs;
 pub(crate) mod nostr;
+pub(crate) mod oci;
 pub(crate) mod provider_resolution;
 pub(crate) mod tor;
 pub(crate) mod wasm_db;

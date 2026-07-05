@@ -42,10 +42,10 @@ LABEL org.opencontainers.image.url="https://github.com/armanas/froglet"
 RUN groupadd --gid 10001 froglet && \
     useradd --uid 10001 --gid 10001 --no-create-home froglet
 
-# froglet-node dynamically links libssl.so.3 (oci-registry-client → reqwest
-# 0.12 → native-tls), which node:22-slim does not ship.
+# froglet-node uses rustls with the platform verifier, which reads the
+# system CA store; ca-certificates provides it. No libssl needed.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # froglet-node is required by marketplace_publish (execFile from
