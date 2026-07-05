@@ -2,14 +2,14 @@
 
 > [!IMPORTANT]
 > **Status: design contract, operator-adjudicated MVP.** The arbiter server is
-> not in this repository (it lives in the closed-source marketplace services),
-> and the default endpoint may not be deployed — client tooling returns a typed
-> `arbiter_unavailable` result when it is unreachable. Every verdict in the MVP
-> is issued manually by the marketplace operator via the admin endpoint below.
-> The decentralized mechanism (stake-backed, panel-selected, slashable) is a
-> stub pending data-backed economic parameters — see `TODO.md` ("Arbiter
-> Mechanism Design"). Numbers in this document are placeholders, not
-> commitments.
+> not in this repository (it lives in the closed-source marketplace services).
+> `arbiter.froglet.dev` is live as of 2026-07-05, serving exactly the public
+> endpoints below; client tooling still returns a typed `arbiter_unavailable`
+> result if it ever becomes unreachable. Every verdict in the MVP is issued
+> manually by the marketplace operator via the admin endpoint below. The
+> decentralized mechanism (stake-backed, panel-selected, slashable) is a stub
+> pending data-backed economic parameters — see `TODO.md` ("Arbiter Mechanism
+> Design"). Numbers in this document are placeholders, not commitments.
 
 Froglet's MVP marketplace arbiter is a separate service, not a kernel feature.
 It gives the public marketplace an operator-run complaint and suspension path
