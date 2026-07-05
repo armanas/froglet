@@ -40,6 +40,15 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // An unrecognized subcommand must fail loudly. Silently falling through
+    // to server mode turned typos into a daemon start (and stale binaries
+    // into surprise servers); only a bare `froglet-node` runs the server.
+    if let Some(unknown) = subcommand {
+        eprintln!("error: unknown subcommand {unknown:?}\n");
+        print_help();
+        return ExitCode::FAILURE;
+    }
+
     // No subcommand → run the server (preserves backward compat with
     // existing docker-compose / installer / agent-bootstrap callers).
     let role = match std::env::var("FROGLET_NODE_ROLE")
@@ -120,6 +129,7 @@ make_async_handler!(BuildHandler, froglet::cli::build::run);
 make_async_handler!(PublishHandler, froglet::cli::publish::run);
 make_async_handler!(WhoamiHandler, froglet::cli::whoami::run);
 make_async_handler!(InvokeHandler, froglet::cli::invoke::run);
+make_async_handler!(AttestHandler, froglet::cli::attest::run);
 
 fn lookup_cli_handler(name: &str) -> Option<Box<dyn CliHandler>> {
     match name {
@@ -128,6 +138,7 @@ fn lookup_cli_handler(name: &str) -> Option<Box<dyn CliHandler>> {
         "publish" => Some(Box::new(PublishHandler)),
         "whoami" => Some(Box::new(WhoamiHandler)),
         "invoke" => Some(Box::new(InvokeHandler)),
+        "attest-dns-record" => Some(Box::new(AttestHandler)),
         _ => None,
     }
 }
@@ -194,7 +205,8 @@ fn print_help() {
          \n\
          Identity utilities:\n  \
            froglet-node sign-message             read a message from stdin and emit a hex Schnorr signature\n  \
-           froglet-node print-identity           print the node's provider_id (pubkey hex)\n\
+           froglet-node print-identity           print the node's provider_id (pubkey hex)\n  \
+           froglet-node attest-dns-record <zone> print the signed _froglet.<zone> TXT record for DNS attestation\n\
          \n\
          Common flags:\n  \
            --json                                emit machine-readable output\n  \

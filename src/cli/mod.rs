@@ -18,6 +18,7 @@
 //!   `froglet_publish_engine`.** The CLI is a thin shell over the
 //!   engine; one source of truth for build → host → sign → register.
 
+pub mod attest;
 pub mod build;
 pub mod init;
 pub mod invoke;

@@ -254,6 +254,21 @@ function frogletToolInputSchema(config) {
         minimum: 0,
         description: "Upper price bound in sats for marketplace_search results."
       },
+      attested: {
+        type: "boolean",
+        description:
+          "marketplace_search filter: only providers holding at least one valid identity attestation (docs/IDENTITY_ATTESTATION.md). Attestations are optional; unattested providers are still first-class."
+      },
+      attestation_kind: {
+        type: "string",
+        enum: ["dns", "oauth"],
+        description: "marketplace_search filter: require an attestation of this kind."
+      },
+      attestation_dns_zone: {
+        type: "string",
+        description:
+          "marketplace_search filter: require a DNS attestation for this zone (e.g. example.com)."
+      },
       status: {
         type: "string",
         description: "Status filter for marketplace_receipts (e.g. \"succeeded\")."

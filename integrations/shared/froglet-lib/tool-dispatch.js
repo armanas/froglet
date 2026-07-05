@@ -1142,6 +1142,13 @@ async function handleMarketplaceSearch(args, config, includeRaw) {
       ...(typeof args.max_price_sats === "number"
         ? { max_price_sats: args.max_price_sats }
         : {}),
+      ...(typeof args.attested === "boolean" ? { attested: args.attested } : {}),
+      ...(typeof args.attestation_kind === "string" && args.attestation_kind.length > 0
+        ? { attestation_kind: args.attestation_kind }
+        : {}),
+      ...(typeof args.attestation_dns_zone === "string" && args.attestation_dns_zone.length > 0
+        ? { attestation_dns_zone: args.attestation_dns_zone }
+        : {}),
       ...(typeof args.cursor === "string" && args.cursor.length > 0
         ? { cursor: args.cursor }
         : {}),

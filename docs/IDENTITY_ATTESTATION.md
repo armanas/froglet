@@ -1,7 +1,13 @@
 # Identity Attestation
 
 Status: specification for the optional identity-attestation layer on the
-Froglet marketplace. Implementation remains planned, not yet shipped.
+Froglet marketplace. Subject-side pieces are shipped in this repo: the
+credential validator and the canonical DNS bind-statement helpers
+(`froglet-protocol/src/protocol/identity_attestation.rs`), the
+`froglet-node attest-dns-record <zone>` command, and the
+`attested`/`attestation_kind`/`attestation_dns_zone` discovery filters.
+The issuance service itself (Order 81, § "Issuance service HTTP contract")
+is not yet built.
 This document is **normative for the attestation credential shape and the two
 attestation flows** (DNS and OAuth/OIDC). It is **not** normative for the
 Froglet kernel, which remains identity-agnostic.
@@ -80,21 +86,32 @@ verified the chain at `issued_at`. Consumers verify both.
 
 ### Steps
 
-1. **Subject signs a bind statement** using their Froglet private key:
+1. **Subject signs a bind statement** using their Froglet private key. The
+   signed bytes are the JCS encoding of exactly this JSON object — the
+   canonical shape is pinned in
+   `froglet-protocol/src/protocol/identity_attestation.rs::dns_bind_statement_bytes`,
+   and both the subject and the issuance service MUST build the bytes
+   through that function:
+   ```json
+   {"claim":"dns:example.com","domain":"froglet-identity-bind/v1","subject_pubkey":"<hex>","ts":"<RFC3339-UTC>"}
    ```
-   froglet-identity-bind/v1
-   dns:example.com
-   <subject_pubkey_hex>
-   <current-RFC3339-UTC-timestamp>
-   ```
-   Output: a hex-encoded signature over the canonical JCS encoding of that
-   statement as a JSON object.
+   The zone is normalized (lowercase, no trailing dot, no `_froglet.`
+   prefix) before signing. Output: a hex-encoded BIP340 Schnorr signature
+   over those bytes.
 
 2. **Subject publishes a TXT record** at `_froglet.example.com`:
    ```
    _froglet.example.com. 300 IN TXT "v=froglet1; pubkey=<hex>; sig=<hex>; ts=<rfc3339>"
    ```
    TTL is the subject's choice; 300 seconds is a reasonable default.
+   Unknown `key=value` fields are ignored by parsers so the format can grow
+   additively (`parse_dns_txt_record` in the protocol crate is the
+   reference parser).
+
+   > **One command:** `froglet-node attest-dns-record <zone>` performs
+   > steps 1–2 — it signs the bind statement with the node identity and
+   > prints the exact TXT record name and value to publish (`--json` for
+   > agents).
 
 3. **Subject calls `marketplace.attest_dns`** with the zone name and the
    Froglet pubkey.
@@ -199,6 +216,44 @@ renew.
   held the corresponding Froglet key at the same moment.
 - **Does not prove:** the subject is the human named in the OAuth profile.
   OAuth accounts can be sold, transferred, or operated on behalf of others.
+
+## Issuance service HTTP contract (v1)
+
+The marketplace attestation service (Order 81; lives in the closed-source
+marketplace services workspace) serves this contract. The node-side pieces in
+this repo — `froglet-node attest-dns-record`, the protocol crate's bind
+helpers, and the discovery filter passthrough — build against it.
+
+```http
+POST /v1/attestations/dns
+Content-Type: application/json
+{ "dns_zone": "example.com", "subject_pubkey": "<hex>" }
+```
+
+The service resolves `_froglet.<dns_zone>` TXT over DNS-over-HTTPS, parses it
+with the reference parser, checks `ts` freshness (10-minute window), verifies
+the bind signature via `verify_dns_txt_record`, confirms
+`subject_pubkey` matches the record's `pubkey`, then issues and stores the
+signed `identity_attestation/v1` artifact and returns it:
+
+- `201` `{ "attestation": <SignedArtifact<IdentityAttestationPayload>> }`
+- `422` with a typed `code` on failure: `txt_record_missing`,
+  `txt_record_invalid`, `bind_signature_invalid`, `bind_timestamp_stale`,
+  `subject_mismatch`
+- `429` on per-zone / per-subject rate limits
+
+```http
+GET /v1/attestations?subject=<pubkey-hex>
+```
+
+- `200` `{ "attestations": [ ... ] }` — all currently valid (unexpired,
+  re-verification passing) attestations for the subject. Revoked or
+  re-verification-failed credentials are excluded, not tombstoned.
+
+The service's own signing pubkey is published in its discovery record; every
+returned artifact has `signer == payload.issuer ==` that pubkey. OAuth
+issuance (`POST /v1/attestations/oauth/...`) follows in a later revision of
+this contract once the GitHub flow is built.
 
 ## Consumer verification
 

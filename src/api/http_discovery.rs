@@ -251,6 +251,10 @@ fn normalize_read_api_provider(provider: &Value, offers: Vec<Value>) -> Value {
         "linked_identities": descriptor.get("linked_identities").cloned().unwrap_or_else(|| json!([])),
         "capabilities": descriptor.get("capabilities").cloned().unwrap_or_else(|| json!({})),
         "trust": provider.get("trust").cloned().unwrap_or(Value::Null),
+        // Issued identity attestations, served from the marketplace's
+        // attestation index (docs/IDENTITY_ATTESTATION.md). Empty until the
+        // issuance service (Order 81) populates it.
+        "attestations": provider.get("attestations").cloned().unwrap_or_else(|| json!([])),
         "offers": offers,
     })
 }
@@ -268,6 +272,17 @@ async fn try_marketplace_read_api_search(
     }
     if let Some(offer_kind) = payload.get("offer_kind").and_then(|v| v.as_str()) {
         params.push(("offer_kind", offer_kind.to_string()));
+    }
+    // Attestation filters (docs/IDENTITY_ATTESTATION.md): forwarded verbatim;
+    // filtering happens marketplace-side against its attestation index.
+    if let Some(attested) = payload.get("attested").and_then(|v| v.as_bool()) {
+        params.push(("attested", attested.to_string()));
+    }
+    if let Some(kind) = payload.get("attestation_kind").and_then(|v| v.as_str()) {
+        params.push(("attestation_kind", kind.to_string()));
+    }
+    if let Some(zone) = payload.get("attestation_dns_zone").and_then(|v| v.as_str()) {
+        params.push(("attestation_dns_zone", zone.to_string()));
     }
 
     let offers_response: Value =
