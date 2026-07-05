@@ -99,9 +99,9 @@ pub struct PublishOutput {
     /// Marketplace URL where the offer is queryable. `None` for
     /// `Local` (no marketplace registration).
     pub marketplace_offer_url: Option<String>,
-    /// How to invoke the published service. Points at the MCP
-    /// `invoke_service` action — the CLI `froglet-node invoke` subcommand is
-    /// still a stub and must not be advertised until it works.
+    /// How to invoke the published service. Leads with the CLI
+    /// `froglet-node invoke` subcommand (local-node invocation) and keeps
+    /// the MCP `invoke_service` action as the remote-capable alternative.
     pub invoke_command: String,
     /// Status URL the caller can poll for indexer eventual-consistency
     /// updates. `None` for `Local`.
@@ -197,8 +197,9 @@ pub async fn publish(
         .unwrap_or_else(|| evidence.offer_id.clone());
     Ok(PublishOutput {
         invoke_command: format!(
-            "MCP froglet action invoke_service {{\"service_id\": \"{}\", \"provider_id\": \"{}\"}}",
-            invoke_service_id, evidence.provider_id
+            "froglet-node invoke {invoke_service_id} '<json_input>' (or MCP froglet action \
+             invoke_service {{\"service_id\": \"{invoke_service_id}\", \"provider_id\": \"{}\"}})",
+            evidence.provider_id
         ),
         provider_id: evidence.provider_id,
         public_url: prepared.public_url,

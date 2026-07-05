@@ -15683,10 +15683,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_accessible_provider_url_requires_configured_base_url_for_local_provider() {
+    async fn runtime_accessible_provider_url_rejects_loopback_when_no_provider_listener_bound() {
+        // Runtime-only shape: no env override and no local provider
+        // listener recorded → loopback provider URLs stay fail-closed
+        // even for the local identity.
         let _env_lock = TEST_ENV_LOCK.lock().await;
         let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
         let state = test_app_state(PaymentBackend::None);
+        assert!(
+            state
+                .transport_status
+                .lock()
+                .await
+                .local_provider_bound_addr
+                .is_none()
+        );
         let local_node_id = state.identity.node_id().to_string();
         let error = runtime_accessible_provider_url(
             state.as_ref(),
@@ -15694,7 +15705,87 @@ mod tests {
             Some(&local_node_id),
         )
         .await
-        .expect_err("local provider loopback should require configured base url");
+        .expect_err("local provider loopback should require a bound listener or env override");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|value| value.contains("local or private-network")),
+            "unexpected payload: {}",
+            error.1
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_defaults_to_bound_provider_listener() {
+        // Dual-mode shape: the node recorded its own provider listener at
+        // bind time — loopback self-resolution works without the env var.
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+        let state = test_app_state(PaymentBackend::None);
+        state
+            .transport_status
+            .lock()
+            .await
+            .local_provider_bound_addr = Some("127.0.0.1:18080".parse().expect("socket addr"));
+        let local_node_id = state.identity.node_id().to_string();
+
+        let provider_url = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://127.0.0.1:8080",
+            Some(&local_node_id),
+        )
+        .await
+        .expect("bound provider listener should satisfy local resolution");
+
+        assert_eq!(provider_url, "http://127.0.0.1:18080");
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_env_overrides_bound_provider_listener() {
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", "http://provider:8080");
+        let state = test_app_state(PaymentBackend::None);
+        state
+            .transport_status
+            .lock()
+            .await
+            .local_provider_bound_addr = Some("127.0.0.1:18080".parse().expect("socket addr"));
+        let local_node_id = state.identity.node_id().to_string();
+
+        let provider_url = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://127.0.0.1:8080",
+            Some(&local_node_id),
+        )
+        .await
+        .expect("env override should win over the bound listener");
+
+        assert_eq!(provider_url, "http://provider:8080");
+    }
+
+    #[tokio::test]
+    async fn runtime_accessible_provider_url_bound_listener_never_serves_remote_provider_ids() {
+        // The self-dial fallback must not weaken the SSRF stance: a
+        // loopback URL claiming a DIFFERENT provider identity is still
+        // refused even though a local listener is bound.
+        let _env_lock = TEST_ENV_LOCK.lock().await;
+        let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+        let state = test_app_state(PaymentBackend::None);
+        state
+            .transport_status
+            .lock()
+            .await
+            .local_provider_bound_addr = Some("127.0.0.1:18080".parse().expect("socket addr"));
+
+        let error = runtime_accessible_provider_url(
+            state.as_ref(),
+            "http://127.0.0.1:8080",
+            Some(&"11".repeat(32)),
+        )
+        .await
+        .expect_err("remote provider_id loopback must stay refused");
 
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(

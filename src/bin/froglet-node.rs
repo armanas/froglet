@@ -190,7 +190,7 @@ fn print_help() {
            froglet-node build                    validate manifests + build artifact (no publish)\n  \
            froglet-node publish [--host X]       publish service to marketplace via the local daemon\n  \
            froglet-node whoami                   print identity + daemon info\n  \
-           froglet-node invoke <id> <input>      (Phase 2 stub; use MCP invoke_service for now)\n\
+           froglet-node invoke <id> [input]      invoke a service published on the local node\n\
          \n\
          Identity utilities:\n  \
            froglet-node sign-message             read a message from stdin and emit a hex Schnorr signature\n  \
@@ -200,6 +200,7 @@ fn print_help() {
            --json                                emit machine-readable output\n  \
            --host local|tor|self                 override the manifest's hosting choice (publish only)\n  \
            --marketplace URL                     override the marketplace URL (publish only)\n  \
+           --no-wait | --timeout-secs N          skip or bound polling for the deal result (invoke only)\n  \
          \n  \
            froglet-node help                     show this message\n"
     );

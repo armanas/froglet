@@ -225,6 +225,14 @@ async fn run(
 
         let tor_backend_listener = tokio::net::TcpListener::bind(tor_backend_addr).await?;
         let bound_tor_backend_addr = tor_backend_listener.local_addr()?;
+        // The loopback backend serves the same public router as the
+        // clearnet listener, so it doubles as the runtime's self-dial
+        // provider target on Tor-only nodes. A clearnet bind below
+        // overwrites this with the clearnet listener.
+        {
+            let mut transport_status = state.transport_status.lock().await;
+            transport_status.local_provider_bound_addr = Some(bound_tor_backend_addr);
+        }
         let initial_tor_backend_listener = Arc::new(TokioMutex::new(Some(tor_backend_listener)));
         let tor_backend_app = public_app.clone();
         let tor_backend_policy = if node_config.network_mode.tor_required() {

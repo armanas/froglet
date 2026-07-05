@@ -206,7 +206,20 @@ pub async fn runtime_accessible_provider_endpoint(
     raw_url: &str,
     provider_id: Option<&str>,
 ) -> Result<RuntimeProviderEndpoint, ResolutionFailure> {
-    let local_provider_base_url = configured_runtime_provider_base_url()?;
+    // The env var is an explicit override (required on split
+    // runtime/provider deployments where the provider is another host).
+    // Without it, a dual node falls back to its own bound provider
+    // listener recorded at startup, so local self-invocation works out of
+    // the box. Runtime-only nodes record no listener and stay fail-closed.
+    let local_provider_base_url = match configured_runtime_provider_base_url()? {
+        Some(base_url) => Some(base_url),
+        None => state
+            .transport_status
+            .lock()
+            .await
+            .local_provider_bound_addr
+            .map(|bound_addr| format!("http://{bound_addr}")),
+    };
     let is_local_provider =
         provider_id.is_some_and(|provider_id| provider_id == state.identity.node_id());
     if is_local_provider && let Some(base_url) = local_provider_base_url.as_deref() {
@@ -258,7 +271,7 @@ pub async fn runtime_accessible_provider_endpoint(
         return Err((
             StatusCode::BAD_REQUEST,
             json!({
-                "error": "provider URL targets a local or private-network address and is only allowed for the local node via FROGLET_RUNTIME_PROVIDER_BASE_URL",
+                "error": "provider URL targets a local or private-network address and is only allowed for the local node's own provider listener (dual-mode nodes trust their bound listener automatically; split runtime deployments must set FROGLET_RUNTIME_PROVIDER_BASE_URL)",
                 "value": raw_url,
             }),
         ));

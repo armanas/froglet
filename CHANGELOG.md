@@ -12,6 +12,18 @@ Lightning rail and MCP registry distribution.
 
 ### Added
 
+- **`froglet-node invoke <service_id> [json_input]` — CLI invocation of
+  local services.** The Phase 2 stub is now implemented for services
+  published on the LOCAL node: the CLI fetches the canonical service record
+  (`GET /v1/provider/services/:id`), builds the same service-addressed
+  execution workload as the JS client's `buildServiceAddressedExecution`,
+  submits it through `POST /v1/runtime/deals`, and polls the deal to a
+  terminal state (`--no-wait` / `--timeout-secs N` / `--json` supported;
+  input `-` reads stdin). Requester-spend 402 refusals surface their stable
+  `code` and remediation. Remote providers still go through the MCP
+  `invoke_service` action — full remote resolution stays JS-side.
+  `froglet-node publish` output now advertises the CLI command again.
+
 - **Requester spend caps (buyer safety).** New node-local spend policy bounds
   what a node will pay when it creates deals as a buyer, across every
   settlement rail: `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative budget,
@@ -24,6 +36,18 @@ Lightning rail and MCP registry distribution.
   provider to enforce it.
 
 ### Changed
+
+- **Dual-mode nodes trust their own provider listener for local
+  self-invocation.** The runtime API previously refused deals targeting the
+  node's own provider over a loopback URL unless the operator exported
+  `FROGLET_RUNTIME_PROVIDER_BASE_URL`. A node that binds a provider listener
+  (clearnet or the Tor loopback backend) now records it at startup and uses
+  it as the default self-dial target, so a bare `froglet-node` (dual role)
+  can invoke its own services — `froglet-node invoke`, MCP `invoke_service`,
+  raw `POST /v1/runtime/deals` — with zero configuration. The env var
+  remains the override for split runtime/provider deployments, provider-id
+  identity checks are unchanged, and runtime-only nodes stay fail-closed
+  for loopback provider URLs.
 
 - **BREAKING (behavioral, fail-closed): paid deals are refused until
   `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` is configured.** Buyer nodes that pay
