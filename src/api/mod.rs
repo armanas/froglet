@@ -11858,9 +11858,12 @@ async fn fetch_oci_wasm_module(
         }
     };
 
-    // Registry URL mappings; fall back to https://{host} for OCI-compliant registries
-    let (api_url, auth_url) = if let Some(scheme) = explicit_scheme {
+    // Registry URL mappings; fall back to https://{host} for OCI-compliant
+    // registries. `service` is the token-scope service name, which for Docker
+    // Hub differs from both the submitted host and the API host.
+    let (service, api_url, auth_url) = if let Some(scheme) = explicit_scheme {
         (
+            host.to_string(),
             format!("{scheme}://{host}"),
             format!("{scheme}://{host}/token"),
         )
@@ -11869,35 +11872,37 @@ async fn fetch_oci_wasm_module(
         || host == "registry-1.docker.io"
     {
         (
+            "registry.docker.io".to_string(),
             "https://registry-1.docker.io".to_string(),
             "https://auth.docker.io/token".to_string(),
         )
     } else if host == "ghcr.io" {
         (
+            "ghcr.io".to_string(),
             "https://ghcr.io".to_string(),
             "https://ghcr.io/token".to_string(),
         )
     } else {
-        (format!("https://{host}"), format!("https://{host}/token"))
+        (
+            host.to_string(),
+            format!("https://{host}"),
+            format!("https://{host}/token"),
+        )
     };
 
     // 2. Setup Client
-    use oci_registry_client::DockerRegistryClientV2;
-    let mut client = DockerRegistryClientV2::new(host, &api_url, &auth_url);
+    let mut client = crate::oci::RegistryClient::new(&service, &api_url, &auth_url)?;
 
     // 3. Authenticate (anonymous pull)
-    match client.auth("repository", image, "pull").await {
-        Ok(token) => client.set_auth_token(Some(token)),
-        Err(err) => {
-            tracing::warn!("OCI auth failed (might be public repo): {}", err);
-        }
+    if let Err(err) = client.auth_pull(image).await {
+        tracing::warn!("OCI auth failed (might be public repo): {}", err);
     }
 
     // 4. Fetch Manifest
     let manifest = client
         .manifest(image, reference)
         .await
-        .map_err(|e| format!("failed to fetch OCI manifest: {:?}", e))?;
+        .map_err(|e| format!("failed to fetch OCI manifest: {e}"))?;
 
     // 5. Extract first WASM layer
     let wasm_layer = manifest
@@ -11910,7 +11915,7 @@ async fn fetch_oci_wasm_module(
     let mut blob_stream = client
         .blob(image, &wasm_layer.digest)
         .await
-        .map_err(|e| format!("failed to fetch OCI blob {}: {:?}", wasm_layer.digest, e))?;
+        .map_err(|e| format!("failed to fetch OCI blob {}: {e}", wasm_layer.digest))?;
 
     let mut module_bytes = Vec::new();
     loop {
