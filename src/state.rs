@@ -12,6 +12,20 @@ fn advertiseable_clearnet_url(addr: SocketAddr) -> Option<String> {
     (!addr.ip().is_unspecified()).then(|| format!("http://{}", addr))
 }
 
+/// Map a bound listener address to one this same process can dial:
+/// wildcard binds (`0.0.0.0` / `::`) accept loopback connections, so
+/// substitute the matching loopback address and keep the bound port.
+fn self_dial_addr(bound_addr: SocketAddr) -> SocketAddr {
+    if !bound_addr.ip().is_unspecified() {
+        return bound_addr;
+    }
+    let loopback: std::net::IpAddr = match bound_addr.ip() {
+        std::net::IpAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+        std::net::IpAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+    };
+    SocketAddr::new(loopback, bound_addr.port())
+}
+
 fn configured_clearnet_url(config: &NodeConfig) -> Option<String> {
     config.public_base_url.clone().or_else(|| {
         config
@@ -32,6 +46,14 @@ pub struct TransportStatus {
     pub relay_enabled: bool,
     pub relay_url: Option<String>,
     pub relay_status: String,
+    /// Self-dialable address of this node's own provider (public router)
+    /// listener, recorded at bind time. Lets the runtime half of a dual
+    /// node resolve itself as a provider without the operator setting
+    /// `FROGLET_RUNTIME_PROVIDER_BASE_URL`. Stays `None` on runtime-only
+    /// nodes so loopback provider URLs remain fail-closed there. Internal
+    /// routing detail — never serialized into transport-status responses.
+    #[serde(skip)]
+    pub local_provider_bound_addr: Option<SocketAddr>,
 }
 
 impl TransportStatus {
@@ -56,6 +78,7 @@ impl TransportStatus {
             } else {
                 "disabled".to_string()
             },
+            local_provider_bound_addr: None,
         }
     }
 
@@ -67,6 +90,11 @@ impl TransportStatus {
         if !self.clearnet_enabled {
             return Ok(());
         }
+
+        // The provider listener is bound; remember a self-dialable form of
+        // it (wildcard binds are reachable via loopback) so the runtime
+        // half of a dual node can resolve itself as a provider.
+        self.local_provider_bound_addr = Some(self_dial_addr(bound_addr));
 
         if let Some(public_base_url) = config.public_base_url.clone() {
             self.clearnet_url = Some(public_base_url);
@@ -472,6 +500,60 @@ mod tests {
     fn transport_status_does_not_advertise_wildcard_bind_without_public_url() {
         let status = TransportStatus::from_config(&test_config(NetworkMode::Clearnet, None));
         assert!(status.clearnet_url.is_none());
+    }
+
+    #[test]
+    fn transport_status_records_local_provider_bound_addr() {
+        let config = test_config(NetworkMode::Clearnet, None);
+        let mut status = TransportStatus::from_config(&config);
+        assert!(status.local_provider_bound_addr.is_none());
+
+        status
+            .update_clearnet_bound_addr(
+                &config,
+                "127.0.0.1:49152".parse().expect("valid socket address"),
+            )
+            .expect("bound address should be advertiseable");
+
+        assert_eq!(
+            status.local_provider_bound_addr,
+            Some("127.0.0.1:49152".parse().expect("valid socket address"))
+        );
+    }
+
+    #[test]
+    fn transport_status_records_wildcard_bind_as_loopback_self_dial() {
+        // Wildcard binds accept loopback connections; the recorded
+        // self-dial target must be the loopback form, not 0.0.0.0.
+        let config = test_config(NetworkMode::Clearnet, Some("https://froglet.example"));
+        let mut status = TransportStatus::from_config(&config);
+
+        status
+            .update_clearnet_bound_addr(
+                &config,
+                "0.0.0.0:49152".parse().expect("valid socket address"),
+            )
+            .expect("public base url keeps wildcard binds valid");
+
+        assert_eq!(
+            status.local_provider_bound_addr,
+            Some("127.0.0.1:49152".parse().expect("valid socket address"))
+        );
+    }
+
+    #[test]
+    fn transport_status_does_not_record_provider_addr_when_clearnet_disabled() {
+        let config = test_config(NetworkMode::Tor, None);
+        let mut status = TransportStatus::from_config(&config);
+
+        status
+            .update_clearnet_bound_addr(
+                &config,
+                "127.0.0.1:49152".parse().expect("valid socket address"),
+            )
+            .expect("disabled clearnet is a no-op");
+
+        assert!(status.local_provider_bound_addr.is_none());
     }
 
     #[test]
