@@ -7,7 +7,7 @@ describe('buildSelfHostScript', () => {
 
     expect(script).toMatch(/^set -eu$/m);
     expect(script).toContain('froglet-agent-bootstrap.XXXXXX');
-    expect(script).toContain('tag=v0.4.2');
+    expect(script).toContain('tag=v0.4.3');
     expect(script).not.toContain('releases/latest');
     expect(script).toContain('releases/download/$tag/agent-bootstrap.sh');
     expect(script).toContain('/releases/tags/$tag');
