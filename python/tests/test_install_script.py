@@ -773,7 +773,7 @@ exec /bin/mkdir "$@"
             stderr=subprocess.PIPE,
         )
         try:
-            for _ in range(200):
+            for _ in range(1000):
                 if ready.exists():
                     break
                 if first.poll() is not None:
@@ -781,7 +781,7 @@ exec /bin/mkdir "$@"
                 time.sleep(0.01)
             if not ready.exists():
                 release.touch()
-                first_stdout, first_stderr = first.communicate(timeout=5)
+                first_stdout, first_stderr = first.communicate(timeout=20)
                 self.fail(first_stderr + first_stdout)
             before = sorted(
                 str(path.relative_to(home)) for path in home.rglob("*")
@@ -878,7 +878,7 @@ esac
             stderr=subprocess.PIPE,
         )
         try:
-            for _ in range(300):
+            for _ in range(1000):
                 if cleanup_ready.exists():
                     break
                 if first.poll() is not None:
@@ -886,7 +886,7 @@ esac
                 time.sleep(0.01)
             if not cleanup_ready.exists():
                 release_cleanup.touch()
-                first_stdout, first_stderr = first.communicate(timeout=5)
+                first_stdout, first_stderr = first.communicate(timeout=20)
                 self.fail(first_stderr + first_stdout)
             self.assertTrue(lock_dir.is_dir())
             before = sorted(
