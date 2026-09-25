@@ -140,7 +140,7 @@ jobs:
             --platform linux \
             --arch x86_64 \
             --out-dir dist
-          (cd dist && sha256sum froglet-*.tar.gz > SHA256SUMS)
+          (cd dist && sha256sum froglet-*.tar.gz agent-bootstrap.sh > SHA256SUMS)
           ./scripts/verify_release_assets.sh --dir dist --version "$RELEASE_TAG" --target linux:x86_64
 
       - name: Smoke test one-line installer from packaged assets

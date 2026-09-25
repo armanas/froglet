@@ -2,7 +2,7 @@
 
 Choose the task from the user's intent:
 
-- Publish a catalog or small Wasm function: follow https://froglet.dev/learn/share-services/ and task `publish-service` in https://froglet.dev/agent-tasks.json. Native Codex/Claude Code; macOS arm64 and Linux x86_64/arm64; free first use. The candidate is under qualification: verify an immutable release exists before installing. Use separate approvals for persistent installation and exact publication. Never overwrite unrelated agent settings or publish automatically after a source change.
+- Publish a catalog or small Wasm function: follow https://froglet.dev/learn/share-services/ and task `publish-service` in https://froglet.dev/agent-tasks.json. Native Codex/Claude Code; macOS arm64 and Linux x86_64/arm64; free first use. Public beta; stable qualification is pending. Verify an immutable release exists before installing. Use separate approvals for persistent installation and exact publication. Never overwrite unrelated agent settings or publish automatically after a source change.
 - Receive a provider/service link: use task `consume-service` and the same native installation. Validate identity, HTTPS endpoint, free signed offer, and the result receipt. A stale webpage or marketplace listing does not prove a successful call.
 - Try a sample without installation: use the hosted proof below or https://froglet.dev/verify-receipt/. This is optional; it is not a prerequisite for preparing the user's own catalog.
 

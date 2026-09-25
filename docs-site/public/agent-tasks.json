@@ -1,7 +1,7 @@
 {
   "schema_version": "froglet.agent-tasks.v1",
   "name": "Froglet public agent task manifest",
-  "updated": "2026-09-24",
+  "updated": "2026-09-25",
   "purpose": "Give HTTP-capable agents exact Froglet task contracts, evidence boundaries, and report fields before they run or recommend a hosted or local Froglet workflow.",
   "canonical_sources": [
     "https://froglet.dev/llms.txt",
@@ -26,7 +26,7 @@
         "linux-x86_64",
         "linux-arm64"
       ],
-      "release_status": "candidate_under_qualification",
+      "release_status": "public_beta_stable_qualification_pending",
       "steps": [
         "Inspect installation and current agent settings; use the exact immutable-release installation plan and separate approval if needed.",
         "Call native status from the actual agent; shell probes are not agent attachment.",

@@ -9,7 +9,7 @@ RUN cargo build --release --locked --bin froglet-node -p froglet
 
 FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gosu tor \
+    && apt-get install -y --no-install-recommends ca-certificates curl gosu tini tor \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 froglet \
@@ -41,7 +41,7 @@ ENV FROGLET_NODE_ROLE=provider \
 
 VOLUME ["/data"]
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["froglet-node"]
 
 # ── froglet-node (runtime/requester mode) ─────────────────────────
@@ -59,7 +59,7 @@ ENV FROGLET_NODE_ROLE=runtime \
 
 VOLUME ["/data"]
 EXPOSE 8081
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["froglet-node"]
 
 # ── froglet-node (dual mode — both provider + runtime) ────────────
@@ -77,5 +77,5 @@ ENV FROGLET_NODE_ROLE=dual \
 
 VOLUME ["/data"]
 EXPOSE 8080 8081
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["froglet-node"]

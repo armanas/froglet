@@ -49,7 +49,7 @@ RUN groupadd --gid 10001 froglet && \
 # system CA store. Its locked Python publication path needs a local CPython
 # interpreter to attest and package inline Python services without pip.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates python3 && \
+    apt-get install -y --no-install-recommends ca-certificates python3 tini && \
     rm -rf /var/lib/apt/lists/*
 
 # froglet-node is required by marketplace_publish (execFile from
@@ -68,4 +68,4 @@ COPY --from=build --chown=froglet:froglet /build/mcp/ ./mcp/
 USER froglet
 WORKDIR /app/mcp
 
-ENTRYPOINT ["node", "server.js"]
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "server.js"]
