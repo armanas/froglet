@@ -12,21 +12,19 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Versioning
 
-An uncommitted stabilization worktree is a local candidate, not a published
-release. Before cutting the next release, choose an unused version, commit
-the public source, and verify the immutable Release Bundle for that exact
-commit. In `froglet-services`, update `.github/froglet-source.json` to that
-revision and regenerate its lockfile against the same checkout. Its CI and
-release jobs share this pin and both require locked dependencies. Do not
-reuse the already-published `v0.4.0` tag for new bundle contents.
+`v0.4.5` is the immutable public beta release, built from source revision
+`602e41ef4a966aaeb4f2fb4259e591a1f65510b8`. Hosted services release
+`v0.1.0-beta.19` pins that exact revision. Future releases require a new tag,
+a verified immutable Release Bundle, and a refreshed services source pin and
+lockfile. CI and release jobs share that pin and require locked dependencies.
 
 ## Effortless publishing qualification
 
-The current working tree is a **private candidate, not a qualified release**.
-Keep existing changes uncommitted during preparation. Deployment and the final
-public source pin are deferred. The command `scripts/release_gate.sh` covers
-software checks; a PASS with skipped platform or external work does not satisfy
-the product release gate below.
+The public beta is deployed at `froglet.dev` with the relay and marketplace in
+the separate `froglet-prod-eu` GCP project. It is **not a qualified stable
+release**. The command `scripts/release_gate.sh` covers software checks; a PASS
+with skipped platform or external work does not satisfy the stable product gate
+below.
 
 Platform and participant qualification are pending at the user's request
 (2026-09-24). Do not schedule sessions or claim this gate has passed.
@@ -37,7 +35,7 @@ Wasm functions are in scope. Python remains advanced Linux functionality.
 Windows, managed always-on hosting, arbitrary applications, broader agent
 qualification, and advanced payments are outside this release.
 
-### Candidate implementation and local evidence
+### Beta implementation and verification evidence
 
 - Configuration changes merge only Froglet, preserve TOML comments, back up
   changed files, compare approved fingerprints, and compensate only matching
@@ -70,12 +68,26 @@ installation, and identity-retention smokes passed on fresh Linux x86_64 and
 arm64 VMs without a checkout or toolchain. All 11 Linux Python isolation tests
 passed on an arm64 VM with Landlock ABI v3 support. A Debian 12 arm64 VM exposed
 its older ABI v2; Python fails closed there with an explicit requirement for v3.
-The final uncommitted macOS arm64 candidate passed packaging and a pinned local
+The earlier uncommitted macOS arm64 candidate passed packaging and a pinned local
 installer smoke. From this Mac, a separate requester runtime made a free call
 through the candidate HTTPS relay and verified receipt
 `ac7169e32b2356fbfc9e7e99c1c08d6f035bbf3947e1c79932c21c0e4b6ab13a`.
-These checks do not prove actual Codex/Claude Code connection on clean machines,
-immutable public release installation, or the five-participant acceptance gate.
+Those earlier checks did not prove actual Codex/Claude Code connection on clean
+machines, immutable public release installation, or the five-participant gate.
+
+On 2026-09-25, the immutable `v0.4.5` Mac asset passed a no-checkout native
+installer smoke in an isolated home, including local JSON publication,
+invocation, and cleanup. Hosted CI, strict checks, audits, and website tests
+passed. The website, relay, marketplace, indexer, marketplace API, and node are
+deployed as public beta. Before and after the digest-pinned hosted
+`v0.1.0-beta.19` upgrade, an independent Linux x86_64 requester running the
+immutable `v0.4.5` asset made free calls by explicit relay endpoint and by
+marketplace discovery. All four calls succeeded with verified receipts and
+only the three approved snapshot fields. The test publication was removed;
+the relay denied it immediately and the indexed offer disappeared after its
+health lease expired. An EU pre-upgrade snapshot is ready; a separate earlier
+snapshot was restored to a temporary disk and checked. This is public-path
+evidence, not the six clean agent/platform cells or five-user trial.
 
 On 2026-09-25, `scripts/release_gate.sh --compose --package-assets
 --install-smoke --version v0.4.1-rc.1 --platform darwin --arch arm64`
@@ -83,9 +95,8 @@ passed its secret scan, strict checks (including Compose), full docs build and
 tests, asset verification, and installer smoke. Evidence is in
 `_tmp/release_gate/20260925T085434Z/` locally; this ignored directory is not a
 published attestation. A candidate-origin docs build also confirmed the
-publishing prompt points to the guide in the same build. The currently deployed
-candidate site predates that prompt correction and still links to the public
-host, where the guide returns 404 until cutover.
+publishing prompt points to the guide in the same build. The corrected guide
+is now live at `froglet.dev/learn/share-services/`.
 
 An isolated macOS agent probe on 2026-09-25 did not satisfy the agent-connection
 gate: Claude Code's CLI required login, and Codex discovered the native MCP
@@ -142,25 +153,20 @@ screen-reader announcements, contrast, zoom, stale/offline states, copying when
 clipboard permission is absent, and actual downloaded file contents. DOM roles
 and screenshots alone are not a complete screen-reader qualification.
 
-### Release sequence (deferred)
+### Stable release sequence (pending)
 
-After candidate qualification: choose an unused release version; finalize the
-public source commit; update the services source pin and lockfile to that exact
-revision; run locked public/services checks and audits; verify repository
-immutable-release configuration; produce and verify the bundle; deploy approved
-relay, marketplace, and site configurations; and repeat the external journey.
-Final verification must install through the actual immutable public release path,
-not only candidate fixture URLs. Keep the stable claim closed until those checks
-and the human gate pass. Deployment credentials remain a release dependency.
+The public beta sequence above is complete. Before a stable label, complete
+every clean machine and agent cell, recovery and UI qualification, and the
+five-participant acceptance gate described above. Cut a new immutable release
+for any code changes made to close those gaps, update the hosted source pin, and repeat
+the external journey through those final assets. Keep the stable claim closed
+until the checks and human gate pass.
 
 The 2026-09-24 services candidate audit reported `RUSTSEC-2026-0097` for
-transitive `rand 0.10.0` and a yanked `chacha20 0.10.0`. On 2026-09-25, the
-uncommitted services lockfile was provisionally updated to `rand 0.10.3` and
-`chacha20 0.10.2` alongside three missing packages. `cargo audit`, locked
-services tests against disposable Postgres, and locked Clippy then passed.
-The services source pin still names the previous public revision; finalize it
-against the release commit, regenerate the lockfile, and rerun those checks
-before publication.
+transitive `rand 0.10.0` and a yanked `chacha20 0.10.0`. The hosted beta.19
+lockfile uses `rand 0.10.3` and `chacha20 0.10.2`; locked tests, Clippy, and
+`cargo audit` passed before publication. Its source pin names the exact public
+`v0.4.5` revision above.
 
 The supported stabilization scope is the signed agreement/receipt chain,
 offline verification (including browser WASM), local node and agent flows,
@@ -176,12 +182,10 @@ They must not be advertised as completed features. A signed receipt proves
 the signer's statement and artifact linkage, not independent execution
 quality or external settlement finality.
 
-Use semver with explicit alpha prereleases for the current train, for example:
-
-- `0.1.0-alpha.1`
-- `0.1.0-alpha.2`
-
-The Git tag must be prefixed with `v`, for example `v0.1.0-alpha.1`.
+Use semver with a new version for every immutable release. GitHub marks
+`v0.4.5` as a prerelease even though its version has no prerelease suffix;
+future beta versions can use an explicit suffix such as `v0.4.6-beta.1`.
+The Git tag must be prefixed with `v`.
 
 `Cargo.toml` and the Git tag must match exactly apart from that leading `v`.
 The release workflow checks this and fails if they diverge.
