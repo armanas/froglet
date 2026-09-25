@@ -1860,9 +1860,7 @@ async function handleMarketplacePublish(args, config, includeRaw) {
   const response = await runMarketplacePublish(args, {
     _deps: marketplacePublishDeps(config),
   })
-  const lines = [
-    `status: ${response.status === "approval_required" ? "approval required" : response?.warnings?.length ? "published with warnings" : "published"}`
-  ]
+  const lines = [`status: ${response.status === "approval_required" ? "approval required" : response.status ?? "unknown"}`]
   if (response.status === "approval_required") {
     lines.push(`consent_hash: ${response.consent_hash}`)
     lines.push(`consent_summary: ${JSON.stringify(response.summary)}`)
@@ -1874,6 +1872,9 @@ async function handleMarketplacePublish(args, config, includeRaw) {
     `public_url: ${response.public_url}`,
     `offer_hash: ${response.offer_hash}`
   )
+  if (response.progress) {
+    lines.push(`progress: ${JSON.stringify(response.progress)}`)
+  }
   if (response.marketplace_offer_url) {
     lines.push(`marketplace_offer_url: ${response.marketplace_offer_url}`)
   }

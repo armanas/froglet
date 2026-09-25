@@ -8951,6 +8951,13 @@ pub(crate) fn provider_offer_limits(
         .min(MAX_PUBLICATION_VERIFICATION_RUNTIME_MS);
     match runtime {
         "builtin" => (MAX_BODY_BYTES, max_runtime_ms, 0, MAX_BODY_BYTES, 0),
+        "python" | "tee.python" | "container" => (
+            MAX_WASM_INPUT_BYTES,
+            max_runtime_ms,
+            usize::try_from(state.config.process_limits.memory_max_bytes).unwrap_or(usize::MAX),
+            sandbox::WASM_MAX_OUTPUT_BYTES,
+            0,
+        ),
         _ => (
             MAX_WASM_INPUT_BYTES,
             max_runtime_ms,
@@ -23047,6 +23054,24 @@ mod tests {
                 Duration::from_secs(state_mut.config.public_quota.hosted_trial_window_secs),
             )));
         state
+    }
+
+    #[test]
+    fn publication_memory_limit_matches_runtime_kind() {
+        let state = test_app_state(PaymentBackend::None);
+        let process_memory = usize::try_from(state.config.process_limits.memory_max_bytes)
+            .expect("test process limit fits usize");
+        assert!(process_memory > sandbox::WASM_MAX_MEMORY_BYTES);
+        assert_eq!(
+            provider_offer_limits(&state, "wasm").2,
+            sandbox::WASM_MAX_MEMORY_BYTES
+        );
+        assert_eq!(provider_offer_limits(&state, "python").2, process_memory);
+        assert_eq!(
+            provider_offer_limits(&state, "tee.python").2,
+            process_memory
+        );
+        assert_eq!(provider_offer_limits(&state, "container").2, process_memory);
     }
 
     #[tokio::test]

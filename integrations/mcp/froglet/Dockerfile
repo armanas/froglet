@@ -46,9 +46,10 @@ RUN groupadd --gid 10001 froglet && \
     useradd --uid 10001 --gid 10001 --no-create-home froglet
 
 # froglet-node uses rustls with the platform verifier, which reads the
-# system CA store; ca-certificates provides it. No libssl needed.
+# system CA store. Its locked Python publication path needs a local CPython
+# interpreter to attest and package inline Python services without pip.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates python3 && \
     rm -rf /var/lib/apt/lists/*
 
 # froglet-node is required by marketplace_publish (execFile from

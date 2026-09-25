@@ -10,6 +10,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from python.tests.test_support import _cargo_debug_dir
 
 
@@ -32,6 +33,12 @@ class InstallScriptTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
+        # setup-python/CI runners may export XDG_CONFIG_HOME outside HOME.
+        # Keep service-manager fixtures inside this test's isolated root.
+        self.xdg_config_patch = mock.patch.dict(
+            os.environ, {"XDG_CONFIG_HOME": str(self.root / "xdg-config")}
+        )
+        self.xdg_config_patch.start()
         self.assets_root = self.root / "assets"
         self.stub_dir = self.root / "stubs"
         self.home_dir = self.root / "home"
@@ -119,6 +126,7 @@ esac
         )
 
     def tearDown(self):
+        self.xdg_config_patch.stop()
         self.temp_dir.cleanup()
 
     def test_installs_latest_linux_x86_64_release_and_prints_path_hint(self):

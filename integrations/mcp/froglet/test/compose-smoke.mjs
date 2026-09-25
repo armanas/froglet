@@ -193,11 +193,12 @@ async function main() {
         package_kind: "inline_source",
         source_inline:
           'def handler(event, context):\n    return {"sum": event.get("a", 0) + event.get("b", 0)}\n',
+        verification: { input: { a: 20, b: 22 }, expected_output: { sum: 42 } },
         hosting: { kind: "local" }
       })
       assertContainsAll(
         publishText,
-        ["status: published", "provider_id:", "offer_hash:"],
+        ["status: local_verified", "provider_id:", "offer_hash:", '"local_verified":true'],
         "marketplace_publish (hosting local) failed"
       )
     }

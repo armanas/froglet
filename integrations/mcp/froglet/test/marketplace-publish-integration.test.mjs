@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { runMarketplacePublish } from "../../../shared/froglet-lib/marketplace-publish.js"
+import { dispatchFrogletAction } from "../../../shared/froglet-lib/tool-dispatch.js"
 
 const execFileAsync = promisify(execFileCb)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -132,6 +133,44 @@ describe("marketplace_publish: stub-binary integration", () => {
     assert.match(log, /entrypoint_kind = "handler"/)
     assert.match(log, /default = "tor"/)
     assert.match(log, /=== handler\.py ===\s+def handler\(event, context\)/)
+  })
+
+  it("preserves distinct local and pending publication states", async () => {
+    process.env.FROGLET_NODE_BIN = stubBinary
+    process.env.FROGLET_STUB_LOG = join(stubDir, "log-publication-states.txt")
+    process.env.FROGLET_STUB_EXIT = "0"
+    delete process.env.FROGLET_STUB_STDERR
+    for (const status of ["local_verified", "pending_review"]) {
+      process.env.FROGLET_STUB_RESPONSE = JSON.stringify({
+        status,
+        provider_id: "deadbeef".repeat(8),
+        public_url: "http://127.0.0.1:8080",
+        offer_hash: "0123abcd".repeat(8),
+        warnings: []
+      })
+      const result = await runMarketplacePublish(
+        {
+          name: "state-check",
+          source_inline: "def handler(event, context):\n    return event\n",
+          verification: { input: {} },
+          hosting: { kind: "local" }
+        },
+        { _deps: publicUrlDeps }
+      )
+      assert.equal(result.status, status)
+      const rendered = await dispatchFrogletAction(
+        {
+          action: "marketplace_publish",
+          name: "state-check",
+          source_inline: "def handler(event, context):\n    return event\n",
+          verification: { input: {} },
+          hosting: { kind: "local" }
+        },
+        { _deps: { marketplacePublish: publicUrlDeps } }
+      )
+      assert.match(rendered.content[0].text, new RegExp(`^status: ${status}$`, "m"))
+      assert.doesNotMatch(rendered.content[0].text, /^status: published$/m)
+    }
   })
 
   it("plans a public publication without opening the tunnel", async () => {

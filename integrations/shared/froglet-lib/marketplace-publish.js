@@ -565,7 +565,11 @@ export function validateMarketplacePublishResponse(response) {
     }
     return response
   }
-  if (response.status && !["published", "active", "succeeded"].includes(response.status)) {
+  if (response.status && ![
+    "published", "active", "succeeded", // older CLI responses
+    "local_published", "local_verified", "pending_review",
+    "marketplace_active", "healthy"
+  ].includes(response.status)) {
     throw new Error(`marketplace_publish: unexpected publication status ${response.status}`)
   }
   for (const field of ["provider_id", "public_url", "offer_hash"]) {
