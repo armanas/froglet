@@ -750,6 +750,7 @@ exec /bin/mkdir "$@"
                 "FROGLET_BOOTSTRAP_MODE": "native",
                 "FROGLET_SERVICE_MANAGER": "systemd",
                 "FROGLET_BOOTSTRAP_START": "0",
+                "FROGLET_GH_ATTESTATION_MODE": "off",
                 "FROGLET_INSTALL_BASE_URL": "https://fixtures.invalid",
             }
         )
@@ -853,6 +854,7 @@ esac
                 "FROGLET_BOOTSTRAP_MODE": "native",
                 "FROGLET_SERVICE_MANAGER": "systemd",
                 "FROGLET_BOOTSTRAP_START": "0",
+                "FROGLET_GH_ATTESTATION_MODE": "off",
                 "FROGLET_INSTALL_BASE_URL": "https://fixtures.invalid",
                 "FROGLET_TEST_CLEANUP_READY": str(cleanup_ready),
                 "FROGLET_TEST_RELEASE_CLEANUP": str(release_cleanup),
