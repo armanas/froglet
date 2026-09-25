@@ -33,6 +33,7 @@ import {
   buildExecutionWorkload,
   buildServiceAddressedExecution,
   canonicalJsonBytes,
+  canonicalJsonStringify,
   flattenMarketplaceProviders,
   selectTransportEndpoint,
   sha256Hex,
@@ -67,6 +68,7 @@ function providerSearchResponse() {
         offers: [
           {
             offer_hash: "offer-hash-1",
+            service_id: "svc-1",
             offer_id: "svc-1",
             offer_kind: "execution",
             runtime: "python",
@@ -157,6 +159,21 @@ test("selectTransportEndpoint prefers lowest-priority quote_http https endpoint"
   assert.equal(endpoint?.uri, PUBLIC_PROVIDER_URL)
 })
 
+test("selectTransportEndpoint never lets public HTTP priority outrank HTTPS", () => {
+  const endpoint = selectTransportEndpoint([
+    { uri: `http://${PUBLIC_PROVIDER_HOST}`, features: ["quote_http"], priority: 1 },
+    { uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 20 }
+  ])
+  assert.equal(endpoint?.uri, PUBLIC_PROVIDER_URL)
+})
+
+test("canonicalJsonStringify uses deterministic UTF-16 property ordering", () => {
+  assert.equal(
+    canonicalJsonStringify({ "\r": 3, "😀": 5, "€": 4, a: 2, "ö": 6, Z: 1 }),
+    "{\"\\r\":3,\"Z\":1,\"a\":2,\"ö\":6,\"€\":4,\"😀\":5}"
+  )
+})
+
 test("flattenMarketplaceProviders preserves providers and flattens offers into compatibility services", () => {
   const services = flattenMarketplaceProviders(providerSearchResponse(), { query: "svc-1" })
   assert.equal(services.length, 1)
@@ -197,6 +214,15 @@ test("buildExecutionWorkload applies JS defaults matching runtime execution help
     workload.input_hash,
     sha256Hex(canonicalJsonBytes({ pong: true }))
   )
+})
+
+test("Wasm builders reject malformed hexadecimal instead of hashing truncated bytes", () => {
+  for (const malformed of ["0", "zz", "00zz"]) {
+    assert.throws(
+      () => buildExecutionWorkload({ runtime: "wasm", package_kind: "inline_module", wasm_module_hex: malformed }),
+      /even-length hexadecimal/
+    )
+  }
 })
 
 test("buildServiceAddressedExecution uses binding hash and service defaults", () => {
@@ -245,6 +271,49 @@ test("buildServiceAddressedExecution builds builtin service workload without bin
   assert.equal(execution.module_hash, undefined)
   assert.equal(execution.source_hash, undefined)
   assert.deepEqual(execution.security, { mode: "standard" })
+})
+
+test("buildServiceAddressedExecution preserves immutable builtin service binding", () => {
+  const bindingHash = "cc".repeat(32)
+  const execution = buildServiceAddressedExecution(
+    {
+      service_id: "data.catalog",
+      offer_id: "data.catalog",
+      offer_kind: "data.catalog",
+      runtime: "builtin",
+      package_kind: "builtin",
+      entrypoint_kind: "builtin",
+      entrypoint: "data.catalog",
+      contract_version: "froglet.builtin.data_query.json.v1",
+      binding_hash: bindingHash
+    },
+    { limit: 10 }
+  )
+
+  assert.equal(execution.builtin_name, "data.catalog")
+  assert.equal(execution.module_hash, bindingHash)
+  assert.deepEqual(execution.security, {
+    mode: "standard",
+    service_id: "data.catalog"
+  })
+  assert.equal(
+    sha256Hex(canonicalJsonBytes(execution)),
+    "045a1210bc07d291d91916beb4acfac6a801e1ddc0cbb0f44a0d6728bd7bc67f"
+  )
+  assert.equal(execution.requested_access, undefined)
+  assert.equal(execution.mounts, undefined)
+
+  const legacyExecution = buildServiceAddressedExecution({
+    service_id: "data.legacy",
+    runtime: "builtin",
+    package_kind: "builtin",
+    entrypoint_kind: "builtin",
+    entrypoint: "data.legacy",
+    contract_version: "froglet.builtin.data_query.json.v1",
+    module_hash: bindingHash
+  })
+  assert.equal(legacyExecution.module_hash, bindingHash)
+  assert.equal(legacyExecution.security.service_id, "data.legacy")
 })
 
 test("buildServiceAddressedExecution falls back to service_id for builtin name", () => {
@@ -502,7 +571,7 @@ test("getService rejects private provider URLs discovered through service_id", a
               transport_endpoints: [
                 { uri: "https://[::ffff:7f00:1]", features: ["quote_http"], priority: 1 }
               ],
-              offers: [{ offer_id: "svc-private", offer_kind: "execution" }]
+              offers: [{ service_id: "svc-private", offer_id: "offer-private", offer_kind: "execution" }]
             }
           ]
         }),
@@ -646,6 +715,47 @@ test("invokeService resolves provider details, fetches canonical service record,
   })
 })
 
+test("invokeService rejects a provider service substitution", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    global.fetch = async (url) => {
+      const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/prov-1") {
+        return new Response(JSON.stringify({
+          provider: {
+            provider_id: "prov-1",
+            transport_endpoints: [{ uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 1 }]
+          }
+        }), { status: 200 })
+      }
+      if (urlStr === `${PUBLIC_PROVIDER_URL}/v1/provider/services/wanted`) {
+        return new Response(JSON.stringify({
+          service: {
+            service_id: "other",
+            offer_id: "other-offer",
+            provider_id: "prov-1"
+          }
+        }), { status: 200 })
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    }
+    try {
+      await assert.rejects(
+        () => invokeService({
+          runtimeUrl: "http://127.0.0.1:8081",
+          runtimeAuthTokenPath: tokenPath,
+          requestTimeoutMs: 1000,
+          request: { provider_id: "prov-1", service_id: "wanted" },
+          _deps: clientDeps()
+        }),
+        /returned service other for requested service wanted/
+      )
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
 test("runCompute posts a canonical runtime Wasm deal and normalizes terminal deals", async () => {
   await withTokenPath(async (tokenPath) => {
     const previousFetch = global.fetch
@@ -740,7 +850,7 @@ test("runCompute uses execute.compute.generic for execution workloads", async ()
   })
 })
 
-test("runCompute falls back to the operator-configured provider URL for a local provider_id", async () => {
+test("runCompute uses the operator-configured provider URL only when no provider identity is supplied", async () => {
   await withTokenPath(async (tokenPath) => {
     const previousFetch = global.fetch
     let runtimeDealBody = null
@@ -766,7 +876,6 @@ test("runCompute falls back to the operator-configured provider URL for a local 
         requestTimeoutMs: 1000,
         trustedProviderUrl: "http://127.0.0.1:8080",
         request: {
-          provider_id: "prov-1",
           runtime: "wasm",
           package_kind: "inline_module",
           wasm_module_hex: "0061736d01000000"
@@ -775,11 +884,54 @@ test("runCompute falls back to the operator-configured provider URL for a local 
       assert.equal(response.status, "succeeded")
       assert.equal(response.result, 42)
       assert.deepEqual(runtimeDealBody.provider, {
-        provider_id: "prov-1",
         provider_url: "http://127.0.0.1:8080"
       })
       assert.equal(runtimeDealBody.offer_id, "execute.compute")
       assert.equal(runtimeDealBody.kind, "wasm")
+    } finally {
+      global.fetch = previousFetch
+    }
+  })
+})
+
+test("runCompute resolves an explicit provider_id even when a trusted local URL exists", async () => {
+  await withTokenPath(async (tokenPath) => {
+    const previousFetch = global.fetch
+    const urls = []
+    global.fetch = async (url, options = {}) => {
+      const urlStr = String(url)
+      urls.push(urlStr)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/prov-remote") {
+        return new Response(JSON.stringify({
+          provider: {
+            provider_id: "prov-remote",
+            transport_endpoints: [{ uri: PUBLIC_PROVIDER_URL, features: ["quote_http"], priority: 1 }]
+          }
+        }), { status: 200 })
+      }
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
+        const body = JSON.parse(options.body)
+        assert.deepEqual(body.provider, { provider_id: "prov-remote", provider_url: PUBLIC_PROVIDER_URL })
+        return new Response(JSON.stringify({ deal: { deal_id: "deal-remote", status: "succeeded", result: 7 } }), { status: 200 })
+      }
+      throw new Error(`unexpected URL: ${urlStr}`)
+    }
+    try {
+      const response = await runCompute({
+        runtimeUrl: "http://127.0.0.1:8081",
+        runtimeAuthTokenPath: tokenPath,
+        requestTimeoutMs: 1000,
+        trustedProviderUrl: "http://127.0.0.1:8080",
+        request: {
+          provider_id: "prov-remote",
+          runtime: "wasm",
+          package_kind: "inline_module",
+          wasm_module_hex: "0061736d01000000"
+        },
+        _deps: clientDeps()
+      })
+      assert.equal(response.result, 7)
+      assert.ok(urls.includes("http://127.0.0.1:8081/v1/runtime/providers/prov-remote"))
     } finally {
       global.fetch = previousFetch
     }

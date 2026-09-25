@@ -10,7 +10,7 @@
 ///   signed receipt with settlement_state="settled".
 ///
 /// Test 2 — Stripe MPP (mock server):
-///   buyer mints SPT (mock) → quote → deal + PaymentIntent reservation →
+///   explicit seller sandbox helper simulates SPT receipt → quote → deal + reservation →
 ///   execution + capture → signed receipt with settlement_state="settled".
 use axum::{
     Json as AxumJson, Router,
@@ -26,7 +26,7 @@ use froglet::{
         PaymentBackend, PricingConfig, StorageConfig, StripeConfig, WasmConfig,
     },
     crypto,
-    db::DbPool,
+    db::{self, DbPool},
     deals,
     protocol::{validate_receipt_artifact, verify_artifact},
     settlement::{self, SettlementRegistry},
@@ -340,7 +340,7 @@ fn lightning_app_state_custom(
     let events_query_capacity = db.read_connection_count().max(1);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
-    let settlement_registry = SettlementRegistry::new(&node_config);
+    let settlement_registry = SettlementRegistry::new(&node_config).expect("settlement registry");
 
     let state = Arc::new(AppState {
         db,
@@ -351,7 +351,7 @@ fn lightning_app_state_custom(
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::builder()
+        http_client: froglet::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client"),
@@ -365,6 +365,8 @@ fn lightning_app_state_custom(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -400,7 +402,7 @@ fn stripe_app_state_with_mock(
 ) -> Arc<AppState> {
     stripe_app_state_with_mock_spend(
         mock_base_url,
-        buyer_config,
+        Some(buyer_config),
         froglet::config::RequesterSpendConfig {
             max_deal_msat: None,
             spend_budget_msat: Some(1_000_000_000),
@@ -410,7 +412,7 @@ fn stripe_app_state_with_mock(
 
 fn stripe_app_state_with_mock_spend(
     mock_base_url: &str,
-    buyer_config: BuyerStripeConfig,
+    buyer_config: Option<BuyerStripeConfig>,
     requester_spend: froglet::config::RequesterSpendConfig,
 ) -> Arc<AppState> {
     let temp_dir = unique_temp_dir("stripe");
@@ -455,7 +457,7 @@ fn stripe_app_state_with_mock_spend(
             api_version: "2026-04-22.preview".to_string(),
             webhook_secret: None,
         }),
-        buyer_stripe: Some(buyer_config),
+        buyer_stripe: buyer_config,
         buyer_phoenixd: None,
         requester_spend,
         storage: StorageConfig {
@@ -501,15 +503,17 @@ fn stripe_app_state_with_mock_spend(
     //
     // Use stripe_driver_boxed so the returned driver is `'static` even though
     // stripe_driver_with_base_url's opaque `impl` return captures &str lifetime.
-    let stripe_driver: Arc<dyn froglet::settlement::SettlementDriver> =
-        Arc::from(froglet::settlement::stripe_driver_boxed(
+    let stripe_driver: Arc<dyn froglet::settlement::SettlementDriver> = Arc::from(
+        froglet::settlement::stripe_driver_boxed(
             StripeConfig {
                 api_version: "2026-04-22.preview".to_string(),
                 webhook_secret: None,
             },
             "sk_test_mock_full_deal".to_string(),
             mock_base_url.to_string(),
-        ));
+        )
+        .expect("Stripe driver"),
+    );
     let settlement_registry = SettlementRegistry::with_single_driver("stripe_mpp", stripe_driver);
 
     Arc::new(AppState {
@@ -521,7 +525,7 @@ fn stripe_app_state_with_mock_spend(
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::builder()
+        http_client: froglet::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client"),
@@ -535,6 +539,8 @@ fn stripe_app_state_with_mock_spend(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -568,6 +574,7 @@ fn stripe_app_state_with_mock_spend(
 #[derive(Debug, Default)]
 struct MockStripeState {
     pub calls: std::sync::Mutex<Vec<String>>,
+    pub create_intent_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 async fn start_mock_stripe() -> (String, Arc<MockStripeState>, tokio::task::JoinHandle<()>) {
@@ -618,6 +625,12 @@ async fn start_mock_stripe() -> (String, Arc<MockStripeState>, tokio::task::Join
             .lock()
             .unwrap()
             .push(format!("POST:payment_intents:{body}"));
+        let delay_ms = state
+            .create_intent_delay_ms
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
         AxumJson(json!({
             "id": "pi_full_deal_test",
             "status": "requires_capture"
@@ -714,7 +727,7 @@ async fn lightning_mock_full_paid_deal_produces_settled_receipt() {
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
 
-    let client = reqwest::Client::builder()
+    let client = froglet::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
@@ -830,9 +843,9 @@ async fn lightning_mock_full_paid_deal_produces_settled_receipt() {
 
 /// Full Stripe MPP paid deal from creation through capture.
 ///
-/// Architecture: provider and runtime are the same node. The buyer_stripe config
-/// on the AppState causes `runtime_create_deal_inner` to auto-mint an SPT (via
-/// the mock Stripe server), attach it as a ProvidedPayment, and send it to the
+/// Architecture: provider and runtime are the same node. An explicitly enabled
+/// sandbox-helper config causes `runtime_create_deal_inner` to simulate SPT
+/// receipt (via the mock Stripe server), attach it, and send it to the
 /// provider's `POST /v1/provider/deals`. The provider calls `prepare_payment_for_amount`
 /// (via `settlement_registry.driver_for("stripe_mpp")` pointed at the mock), which
 /// validates the SPT and creates a PaymentIntent. After execution completes,
@@ -840,7 +853,7 @@ async fn lightning_mock_full_paid_deal_produces_settled_receipt() {
 /// a receipt with settlement_state="settled".
 ///
 /// This path was previously unexercised end-to-end. The test verifies:
-/// - The buyer SPT mint call hits the mock.
+/// - The seller SPT test-helper call carries its seller scope.
 /// - The seller SPT validation + PI creation calls hit the mock.
 /// - The PI capture call hits the mock.
 /// - The final receipt has deal_state="succeeded", settlement_state="settled",
@@ -848,12 +861,20 @@ async fn lightning_mock_full_paid_deal_produces_settled_receipt() {
 #[tokio::test]
 async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
     let (mock_base_url, mock_stripe, _mock_handle) = start_mock_stripe().await;
+    // Regression: provider routes used to cancel durable materialization at
+    // ten seconds. Keep the backend just beyond that old boundary and prove
+    // the same request still reaches a fully settled deal.
+    mock_stripe
+        .create_intent_delay_ms
+        .store(10_500, std::sync::atomic::Ordering::SeqCst);
 
     let buyer_config = BuyerStripeConfig {
+        test_helper_enabled: true,
         secret_key: "sk_test_buyer_full_deal".to_string(),
         api_version: "2026-04-22.preview".to_string(),
-        payment_method: Some("pm_test_full_deal_buyer".to_string()),
-        customer: None,
+        payment_method: "pm_test_full_deal_buyer".to_string(),
+        seller_network_id: "internal".to_string(),
+        seller_external_id: Some("provider-full-deal".to_string()),
         // Redirect buyer-side SPT minting to the local mock instead of real Stripe.
         api_base_url: Some(mock_base_url.clone()),
     };
@@ -868,7 +889,7 @@ async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
 
-    let client = reqwest::Client::builder()
+    let client = froglet::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
@@ -881,7 +902,7 @@ async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
     let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
 
     // `runtime_create_deal_inner` detects stripe_mpp.v1 in the quote and
-    // auto-mints an SPT via `state.config.buyer_stripe`, then forwards it to
+    // uses the explicit sandbox helper via `state.config.buyer_stripe`, then forwards it to
     // `POST /v1/provider/deals` as a ProvidedPayment.
     let create_body = json!({
         "provider": {
@@ -936,8 +957,12 @@ async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
         let calls = mock_stripe.calls.lock().unwrap().clone();
 
         assert!(
-            calls.iter().any(|c| c.starts_with("POST:granted_tokens:")),
-            "buyer SPT create call must appear; calls: {calls:?}"
+            calls.iter().any(|c| {
+                c.starts_with("POST:granted_tokens:")
+                    && c.contains("seller_details%5Bnetwork_id%5D=internal")
+                    && c.contains("seller_details%5Bexternal_id%5D=provider-full-deal")
+            }),
+            "seller-scoped SPT sandbox helper call must appear; calls: {calls:?}"
         );
         assert!(
             calls
@@ -994,7 +1019,174 @@ async fn stripe_mpp_full_paid_deal_produces_settled_receipt() {
     );
 }
 
+#[tokio::test]
+async fn stripe_materialization_and_dispatch_survive_client_disconnect() {
+    let (mock_base_url, mock_stripe, _mock_handle) = start_mock_stripe().await;
+    mock_stripe
+        .create_intent_delay_ms
+        .store(1_500, std::sync::atomic::Ordering::SeqCst);
+    let buyer_config = BuyerStripeConfig {
+        test_helper_enabled: true,
+        secret_key: "sk_test_buyer_disconnect".to_string(),
+        api_version: "2026-04-22.preview".to_string(),
+        payment_method: "pm_test_disconnect".to_string(),
+        seller_network_id: "internal".to_string(),
+        seller_external_id: Some("provider-disconnect".to_string()),
+        api_base_url: Some(mock_base_url.clone()),
+    };
+    let state = stripe_app_state_with_mock(&mock_base_url, buyer_config);
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = froglet::tls::reqwest_client_builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let provider_id = state.identity.node_id().to_string();
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+    let create_body = json!({
+        "provider": {
+            "provider_id": provider_id,
+            "provider_url": provider.base_url,
+        },
+        "offer_id": "execute.compute",
+        "kind": "wasm",
+        "submission": test_wasm_submission(),
+    });
+    let runtime_url = format!("{}/v1/runtime/deals", runtime.base_url);
+    let request_task = tokio::spawn(async move {
+        let _: (StatusCode, Value) = http_post_json(
+            &client,
+            &runtime_url,
+            Some("test-runtime-token"),
+            &create_body,
+        )
+        .await;
+    });
+
+    let mut queued_deal_id = None;
+    for _ in 0..50 {
+        let records = state
+            .db
+            .with_read_conn(db::list_deal_settlement_materializations)
+            .await
+            .expect("materialization queue");
+        if let Some(record) = records.into_iter().find(|record| {
+            record.materialization_kind == "stripe_payment_reservation"
+                && record.claim_token.is_some()
+        }) {
+            queued_deal_id = Some(record.deal_id);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let deal_id = queued_deal_id.expect("Stripe materialization must be durably queued");
+    request_task.abort();
+
+    let terminal = wait_for_deal_status(&state, &deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
+    assert!(terminal.receipt.is_some());
+    assert!(
+        mock_stripe
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call == "POST:payment_intents/pi_full_deal_test/capture")
+    );
+}
+
 // ─── Test 3: phoenixd prepaid full paid deal ───────────────────────────────────
+
+#[tokio::test]
+async fn stripe_paid_deal_without_platform_spt_fails_before_stripe_io() {
+    let (mock_base_url, mock_stripe, _mock_handle) = start_mock_stripe().await;
+    let state =
+        stripe_app_state_with_mock_spend(&mock_base_url, None, spend_policy(None, Some(1_000_000)));
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let provider_id = state.identity.node_id().to_string();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+    let (status, response): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &paid_create_body(&provider_id, &provider.base_url),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "body: {response}");
+    assert_eq!(response["code"], "stripe_spt_required", "body: {response}");
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("authorized agentic-commerce platform")),
+        "body: {response}"
+    );
+    assert!(
+        mock_stripe.calls.lock().unwrap().is_empty(),
+        "missing caller SPT must not trigger Stripe traffic"
+    );
+}
+
+#[tokio::test]
+async fn stripe_paid_deal_uses_platform_supplied_spt_without_test_helper() {
+    let (mock_base_url, mock_stripe, _mock_handle) = start_mock_stripe().await;
+    let state =
+        stripe_app_state_with_mock_spend(&mock_base_url, None, spend_policy(None, Some(1_000_000)));
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let provider_id = state.identity.node_id().to_string();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
+
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+    let mut body = paid_create_body(&provider_id, &provider.base_url);
+    body["payment"] = json!({
+        "kind": "stripe_mpp",
+        "token": "spt_platform_supplied_test",
+    });
+    let (status, response): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/runtime/deals", runtime.base_url),
+        Some("test-runtime-token"),
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {response}");
+
+    let deal_id = response["deal"]["deal_id"]
+        .as_str()
+        .expect("deal id")
+        .to_string();
+    wait_for_deal_status(&state, &deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
+
+    let calls = mock_stripe.calls.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .all(|call| !call.starts_with("POST:granted_tokens:")),
+        "caller-supplied production flow must not call the seller test helper: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call == "GET:granted_tokens/spt_platform_supplied_test"),
+        "provider must validate the exact supplied SPT: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call == "POST:payment_intents/pi_full_deal_test/capture"),
+        "provider must capture the resulting PaymentIntent: {calls:?}"
+    );
+}
 
 /// A fixed preimage and its SHA-256 payment hash, shared by all mock phoenixd
 /// routes so the settled receipt's `sha256(preimage) == payment_hash` proof
@@ -1009,6 +1201,7 @@ fn prepaid_preimage_and_hash() -> (String, String) {
 struct MockPhoenixdState {
     calls: std::sync::Mutex<Vec<String>>,
     paid: std::sync::atomic::AtomicBool,
+    created_invoice: std::sync::Mutex<Option<(String, String)>>,
     preimage_hex: String,
     payment_hash_hex: String,
     bolt11: String,
@@ -1019,17 +1212,40 @@ struct MockPhoenixdState {
 /// invoice to paid), and the provider polls (`/payments/incoming/{hash}`),
 /// observing the unpaid→paid transition and reading the preimage once paid.
 async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::JoinHandle<()>) {
+    use bitcoin::{
+        hashes::{Hash as _, sha256},
+        secp256k1::{PublicKey, Secp256k1, SecretKey},
+    };
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
     let (preimage_hex, payment_hash_hex) = prepaid_preimage_and_hash();
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(&[42; 32]).unwrap();
+    let payee = PublicKey::from_secret_key(&secp, &secret);
+    let bolt11 = InvoiceBuilder::new(Currency::Bitcoin)
+        .description("Froglet prepaid integration proof".to_string())
+        .payment_hash(sha256::Hash::from_slice(&hex::decode(&payment_hash_hex).unwrap()).unwrap())
+        .payment_secret(PaymentSecret([43; 32]))
+        .current_timestamp()
+        .expiry_time(Duration::from_secs(300))
+        .min_final_cltv_expiry_delta(18)
+        .payee_pub_key(payee)
+        .amount_milli_satoshis(30_000)
+        .build_signed(|hash| secp.sign_ecdsa_recoverable(hash, &secret))
+        .unwrap()
+        .to_string();
     let state = Arc::new(MockPhoenixdState {
         calls: std::sync::Mutex::new(Vec::new()),
         paid: std::sync::atomic::AtomicBool::new(false),
+        created_invoice: std::sync::Mutex::new(None),
         preimage_hex,
         payment_hash_hex,
-        bolt11: "lnbc300n1pprepaidmockinvoice".to_string(),
+        bolt11,
     });
 
     async fn getinfo() -> AxumJson<Value> {
-        AxumJson(json!({ "nodeId": format!("03{}", "ab".repeat(32)) }))
+        let key = SecretKey::from_slice(&[42; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &key);
+        AxumJson(json!({ "nodeId": hex::encode(pubkey.serialize()) }))
     }
 
     async fn createinvoice(
@@ -1041,6 +1257,13 @@ async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::
             .lock()
             .unwrap()
             .push(format!("createinvoice:{body}"));
+        let fields = url::form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect::<std::collections::HashMap<_, _>>();
+        *state.created_invoice.lock().unwrap() = Some((
+            fields.get("externalId").cloned().unwrap_or_default(),
+            fields.get("description").cloned().unwrap_or_default(),
+        ));
         AxumJson(json!({
             "amountSat": 30,
             "paymentHash": state.payment_hash_hex,
@@ -1083,10 +1306,28 @@ async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::
         }))
     }
 
+    async fn incoming_list(AxumState(state): AxumState<Arc<MockPhoenixdState>>) -> AxumJson<Value> {
+        let created = state.created_invoice.lock().unwrap().clone();
+        match created {
+            Some((external_id, description)) => AxumJson(json!([{
+                "paymentHash": state.payment_hash_hex,
+                "externalId": external_id,
+                "description": description,
+                "invoice": state.bolt11,
+                "isPaid": state.paid.load(std::sync::atomic::Ordering::SeqCst),
+                "isExpired": false,
+                "requestedSat": 30,
+                "receivedSat": 0
+            }])),
+            None => AxumJson(json!([])),
+        }
+    }
+
     let app = Router::new()
         .route("/getinfo", axum_get(getinfo))
         .route("/createinvoice", axum_post(createinvoice))
         .route("/payinvoice", axum_post(payinvoice))
+        .route("/payments/incoming", axum_get(incoming_list))
         .route("/payments/incoming/:hash", axum_get(incoming))
         .with_state(state.clone());
 
@@ -1204,7 +1445,7 @@ fn phoenixd_app_state_with_mock_spend(
     let events_query_capacity = db.read_connection_count().max(1);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
-    let settlement_registry = SettlementRegistry::new(&node_config);
+    let settlement_registry = SettlementRegistry::new(&node_config).expect("settlement registry");
 
     // Build the phoenixd client pointed at the mock and use it as both the
     // concrete prepaid client and the backend-neutral lightning wallet.
@@ -1227,7 +1468,7 @@ fn phoenixd_app_state_with_mock_spend(
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::builder()
+        http_client: froglet::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client"),
@@ -1241,6 +1482,8 @@ fn phoenixd_app_state_with_mock_spend(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -1297,7 +1540,7 @@ async fn phoenixd_prepaid_full_paid_deal_produces_settled_receipt() {
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
 
-    let client = reqwest::Client::builder()
+    let client = froglet::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
@@ -1448,7 +1691,9 @@ async fn spend_cap_refuses_overpriced_lightning_deal() {
         lightning_app_state_custom(spend_policy(Some(29_000), Some(1_000_000)), None);
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
-    let client = reqwest::Client::new();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
     let provider_id = state.identity.node_id().to_string();
 
     let _env_guard = env_lock().lock().await;
@@ -1483,7 +1728,9 @@ async fn spend_budget_unconfigured_refuses_paid_deal() {
     let (state, _dir) = lightning_app_state_custom(spend_policy(None, None), None);
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
-    let client = reqwest::Client::new();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
     let provider_id = state.identity.node_id().to_string();
 
     let _env_guard = env_lock().lock().await;
@@ -1506,12 +1753,46 @@ async fn spend_budget_unconfigured_refuses_paid_deal() {
 }
 
 #[tokio::test]
+async fn requester_idempotency_reuses_the_durable_deal_without_double_spend() {
+    let (state, _dir) = lightning_app_state_custom(spend_policy(None, Some(1_000_000)), None);
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    let client = froglet::tls::reqwest_client_builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let provider_id = state.identity.node_id().to_string();
+    let _env_guard = env_lock().lock().await;
+    let _env = ScopedEnvVar::set("FROGLET_RUNTIME_PROVIDER_BASE_URL", &provider.base_url);
+    let mut body = paid_create_body(&provider_id, &provider.base_url);
+    body["idempotency_key"] = json!("requester-paid-retry");
+    let url = format!("{}/v1/runtime/deals", runtime.base_url);
+
+    let (first_status, first): (StatusCode, Value) =
+        http_post_json(&client, &url, Some("test-runtime-token"), &body).await;
+    assert_eq!(first_status, StatusCode::OK, "first: {first}");
+    let (second_status, second): (StatusCode, Value) =
+        http_post_json(&client, &url, Some("test-runtime-token"), &body).await;
+    assert_eq!(second_status, StatusCode::OK, "second: {second}");
+    assert_eq!(first["deal"]["deal_id"], second["deal"]["deal_id"]);
+
+    let (spend_status, spend): (StatusCode, Value) = http_get_json(
+        &client,
+        &format!("{}/v1/runtime/spend", runtime.base_url),
+        Some("test-runtime-token"),
+    )
+    .await;
+    assert_eq!(spend_status, StatusCode::OK);
+    assert_eq!(spend["committed_msat"], 30_000, "spend: {spend}");
+}
+
+#[tokio::test]
 async fn spend_budget_exhaustion_then_reset_restores_headroom() {
     // Budget fits one 30_000 msat deal but not two.
     let (state, _dir) = lightning_app_state_custom(spend_policy(None, Some(45_000)), None);
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
-    let client = reqwest::Client::builder()
+    let client = froglet::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
@@ -1581,7 +1862,7 @@ async fn spend_ledger_survives_restart() {
     let (state, dir) = lightning_app_state_custom(policy, None);
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
-    let client = reqwest::Client::builder()
+    let client = froglet::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
@@ -1647,7 +1928,9 @@ async fn spend_refusal_precedes_phoenixd_payment() {
     );
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
-    let client = reqwest::Client::new();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
     let provider_id = state.identity.node_id().to_string();
 
     let _env_guard = env_lock().lock().await;
@@ -1674,20 +1957,24 @@ async fn spend_refusal_precedes_phoenixd_payment() {
 async fn spend_refusal_precedes_stripe_spt_mint() {
     let (mock_base_url, mock_stripe, _mock_handle) = start_mock_stripe().await;
     let buyer_config = BuyerStripeConfig {
+        test_helper_enabled: true,
         secret_key: "sk_test_buyer_spend_cap".to_string(),
         api_version: "2026-04-22.preview".to_string(),
-        payment_method: Some("pm_test_spend_cap".to_string()),
-        customer: None,
+        payment_method: "pm_test_spend_cap".to_string(),
+        seller_network_id: "internal".to_string(),
+        seller_external_id: Some("provider-spend-cap".to_string()),
         api_base_url: Some(mock_base_url.clone()),
     };
     let state = stripe_app_state_with_mock_spend(
         &mock_base_url,
-        buyer_config,
+        Some(buyer_config),
         spend_policy(Some(29_000), Some(1_000_000)),
     );
     let provider = spawn_server(public_router(state.clone())).await;
     let runtime = spawn_server(runtime_router(state.clone())).await;
-    let client = reqwest::Client::new();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
     let provider_id = state.identity.node_id().to_string();
 
     let _env_guard = env_lock().lock().await;

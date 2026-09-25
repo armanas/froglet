@@ -108,9 +108,46 @@ trap cleanup EXIT
 mkdir -p "$install_root" "$release_root" "$data_dir"
 cp "$assets_dir"/* "$release_root/"
 
+# The production release bundle contains all supported targets. This local
+# smoke may package only the host target, so complete the non-host checksum
+# entries with deterministic fixture digests before exercising manifest
+# generation and the installer's explicit SHA-256 trust-pin path.
+manifest_sums="$work_dir/manifest.SHA256SUMS"
+cp "$release_root/SHA256SUMS" "$manifest_sums"
+for target in linux:x86_64 linux:arm64 darwin:arm64; do
+  platform="${target%%:*}"
+  arch="${target##*:}"
+  asset="froglet-node-${version}-${platform}-${arch}.tar.gz"
+  if ! grep -F "  $asset" "$manifest_sums" >/dev/null; then
+    printf '%064d  %s\n' 0 "$asset" >> "$manifest_sums"
+  fi
+done
+
+python3 "$repo_root/scripts/release_manifest.py" generate \
+  --release "$version" \
+  --repository armanas/froglet \
+  --source-revision 0000000000000000000000000000000000000000 \
+  --checksums "$manifest_sums" \
+  --provider-image "ghcr.io/armanas/froglet-provider@sha256:$(printf '%064d' 1)" \
+  --runtime-image "ghcr.io/armanas/froglet-runtime@sha256:$(printf '%064d' 2)" \
+  --dual-image "ghcr.io/armanas/froglet-dual@sha256:$(printf '%064d' 4)" \
+  --mcp-image "ghcr.io/armanas/froglet-mcp@sha256:$(printf '%064d' 3)" \
+  --out "$release_root/release-manifest.json"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  manifest_sha256="$(sha256sum "$release_root/release-manifest.json" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  manifest_sha256="$(shasum -a 256 "$release_root/release-manifest.json" | awk '{print $1}')"
+else
+  echo "missing required checksum tool: sha256sum or shasum" >&2
+  exit 1
+fi
+
 INSTALL_DIR="$install_root" \
 VERSION="$version" \
 FROGLET_INSTALL_BASE_URL="file://$work_dir/releases" \
+FROGLET_RELEASE_MANIFEST_SHA256="$manifest_sha256" \
+FROGLET_TRUSTED_MANIFEST_PIN=1 \
 sh "$repo_root/scripts/install.sh"
 
 FROGLET_NODE_ROLE=provider \

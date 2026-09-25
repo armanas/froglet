@@ -31,8 +31,10 @@ describe('agent-facing website experience', () => {
     const taskIds = manifest.task_contracts.map((task) => task.task_id);
 
     expect(manifest.schema_version).toBe('froglet.agent-tasks.v1');
-    expect(manifest.default_task_id).toBe('hosted-proof');
+    expect(manifest.default_task_id).toBe('publish-service');
     expect(taskIds).toEqual(expect.arrayContaining([
+      'publish-service',
+      'consume-service',
       'hosted-proof',
       'hosted-proof-with-witness',
       'receipt-feed-check',
@@ -87,15 +89,15 @@ describe('agent-facing website experience', () => {
     }
   });
 
-  it('adds receipt verification as structural inspection with explicit limits', () => {
+  it('adds local receipt verification with explicit limits', () => {
     const page = readRepoFile('docs-site/src/pages/verify-receipt.astro');
     const footer = readRepoFile('docs-site/src/components/SiteFooter.astro');
 
     expect(page).toContain('data-receipt-input');
     expect(page).toContain('data-receipt-verify');
     expect(page).toContain('receipt-artifact-verify');
-    expect(page).toContain('not_cryptographically_verified');
-    expect(page).toContain('signature validity, canonical hash, provider identity, and settlement remain unverified');
+    expect(page).toContain('initReceiptVerifier');
+    expect(page).toContain('They do not prove a human or organization authorized the action');
     expect(footer).toContain('/verify-receipt/');
   });
 
@@ -105,7 +107,7 @@ describe('agent-facing website experience', () => {
 
     expect(page).toContain('data-marketplace-copy-summary');
     expect(page).toContain('data-marketplace-copy-provider');
-    expect(page).toContain('data-provider-summary');
+    expect(script).toContain('providerSummary');
     expect(page).toContain('/verify-receipt/');
     expect(script).toContain('marketplaceEvidence');
     expect(script).toContain('not_proved: hosted paid rails');

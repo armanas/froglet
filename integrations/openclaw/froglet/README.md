@@ -110,9 +110,12 @@ The current checked-in API is service- and artifact-oriented:
 - use the marketplace wrappers when you want marketplace-native search,
   provider detail, receipts, registration, domain claims, or arbiter complaints
 - use `plan_install` before local setup to collect agent, footprint, role,
-  payment, network, marketplace, and use-case choices
-- use `get_install_guide` after the install profile is confirmed to return
-  host-shell commands
+  payment, network, marketplace, and use-case choices, then present its
+  immutable release tag, manifest/bootstrap hashes, persistent paths,
+  process-manager impact, and exact command preview
+- use `get_install_guide` only after explicit approval, passing the exact
+  returned `release_tag` and `install_approval_hash`; it otherwise withholds
+  executable host-shell commands
 - use `plan_use_case` after health checks pass and before implementing
   consumer, provider, evidence, payments, batch, or GPU workflows
 

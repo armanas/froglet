@@ -1,20 +1,47 @@
 ---
+tableOfContents: false
 title: Try In Cloud
-description: The hosted Froglet trial uses a shared session-token pool fronted by a Cloudflare Worker, with a 15-minute TTL and a free-only demo surface.
+description: Run a free example with your agent and inspect its result and signed receipt. No installation or payment required.
 ---
 
-<div class="learn-hero compact">
-  <div>
-    <div class="learn-pill">Hosted trial</div>
-    <p class="learn-lead">Anonymous 15-minute session against the first-party hosted node. Free-only demo surface.</p>
-    <p class="learn-sublead">This path is the first-party hosted entry point at <code>try.froglet.dev</code>. It fronts the reference node with a constrained public gateway. The public docs describe the user promise and the external API contract.</p>
-    <div class="learn-chip-row">
-      <span class="learn-chip">15-minute TTL</span>
-      <span class="learn-chip">Shared session pool</span>
-      <span class="learn-chip">No email, no account</span>
-    </div>
-  </div>
-</div>
+## Start with a verifiable result
+
+**Hosted demo status:** temporarily unavailable. On 24 September 2026 the
+landing page loaded, but session creation returned a Cloudflare origin-DNS
+error. Do not treat the prompt below as a successful live proof until a new
+session and deal complete. The [browser sample](/verify-receipt/) still verifies
+signed example records locally.
+
+[Verify a sample signed chain in your browser](/verify-receipt/). Select **Verify sample chain** to check every signature and hash link locally, then select **Check tampered sample** to see a changed receipt rejected. No installation, account, or payment is required. The sample is a public conformance fixture, not a live transaction.
+
+For a **fresh hosted transaction**, use the prompt below. The hosted flow runs `demo.add` and returns a signed receipt. It is a free, temporary demonstration; the API contract and manual steps follow the prompt.
+
+## Prompt to paste into your LLM
+
+Use this when you want your model to inspect the hosted trial and decide
+whether Froglet is useful for your actual setup after it runs the hosted
+demo instead of giving a generic summary.
+
+```md wrap
+Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.
+```
+
+## Know when it worked
+
+Your agent should report **the result `12` for `7 + 5`**, a successful deal status,
+and whether it received a signed receipt. A receipt being present is not the same
+as its signature being verified; ask the agent to distinguish those checks.
+
+If the host is unavailable or your chat cannot run HTTP requests, use the
+[browser sample](/verify-receipt/). No installation is needed for that path.
+Sessions expire after 15 minutes. If one expires, start a new session and rerun
+the free demo; do not reuse its old token.
+
+After the demo, [prepare local setup](/learn/quickstart/) if you want to use your
+own services. The hosted demo does not establish paid settlement or production readiness.
+
+<details>
+<summary>Technical reference: agent tasks, API, and troubleshooting</summary>
 
 ## Launch promise
 
@@ -26,16 +53,6 @@ description: The hosted Froglet trial uses a shared session-token pool fronted b
 - keep Lightning, Stripe, x402, persistent identity, and service publication on the local/self-hosted path
 - defer first-party hosted paid rails to v0.2
 
-## Prompt to paste into your LLM
-
-Use this when you want your model to inspect the hosted trial and decide
-whether Froglet is useful for your actual setup after it runs the hosted
-demo instead of giving a generic summary.
-
-```md
-Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.
-```
-
 Expected behavior:
 
 - the model should use your existing context, not invent a generic buyer persona
@@ -44,8 +61,8 @@ Expected behavior:
 - the model should say what the hosted demo proved and what it still did not prove
 - if the model cannot access the live URLs, it should stop there instead of guessing
 - if the model can use MCP tools after the proof, it should call `plan_install`
-  before `get_install_guide` so it asks the right local setup questions instead
-  of rushing into a default install
+  before `get_install_guide`, show the exact immutable release and host impact,
+  and pass the returned release tag and approval hash only after approval
 - after a local install, the model should call `plan_use_case` before it tries
   to implement consumer, provider, evidence, payments, batch, or GPU workflows
 - if the model is only a web-chat LLM with no HTTP, shell, or MCP access, it
@@ -64,7 +81,7 @@ Machine-readable task manifest: [`/agent-tasks.json`](/agent-tasks.json)
 | `hosted-proof` | Run only the canonical `demo.add` discover -> deal -> sync-result -> receipt flow, then report evidence before recommendations. |
 | `hosted-proof-with-witness` | Run `demo.add` first, then choose one stronger follow-up from `demo.fetch-witness`, `demo.hash-verify`, or `demo.notarize` based on user-owned or user-controlled input. |
 | `receipt-feed-check` | After a successful deal, call `GET /v1/feed` and look for receipt artifacts by signed `deal_hash` / `quote_hash`, not by runtime `deal_id`. |
-| `receipt-artifact-verify` | If a user pastes a receipt or feed artifact envelope, use `/verify-receipt/` for structural inspection only; do not claim signature, hash, identity, or settlement verification from the browser helper. |
+| `receipt-artifact-verify` | If a user pastes a receipt or feed artifact envelope, use `/verify-receipt/` for local signature, hash, and chain verification; report missing artifacts and do not infer real-world identity, truthful execution, or external settlement. |
 | `marketplace-evidence` | Use `/marketplace/` to copy an observed marketplace evidence snapshot with timestamp, providers, offers, receipts, and source links; do not infer hosted paid rails from counts alone. |
 | `local-install-proposal` | Do not run install commands from this hosted proof. Finish the evidence report, then ask for the local/self-hosted install profile. |
 | `chat-only-fallback` | If the model cannot fetch URLs, POST JSON, send Bearer auth, and poll, it should say it cannot run the proof and give the manual curl/docs path. |
@@ -108,8 +125,7 @@ Decision rules:
 - if the user asks what the marketplace currently shows, run
   `marketplace-evidence` and cite observed counts plus source links
 - if the user pastes a receipt or artifact envelope, run
-  `receipt-artifact-verify` and state that structural browser inspection is not
-  cryptographic verification
+  `receipt-artifact-verify` and use the browser verifier to check signatures and links; report incomplete chains explicitly
 - if the user asks for the best next step for a project and the model cannot
   inspect the repo, files, tools, config, or workflow, it should say that
   context is missing after the evidence report
@@ -304,20 +320,23 @@ An agent that can run tools should use this staged local flow:
 3. Ask for the local install profile before running commands:
    - agent: `claude-code`, `codex`, or `manual` for no-clone setup;
      `openclaw` only for source/plugin mode
-   - footprint: `binary`, `docker`, or `source`
+   - footprint: `auto` (recommended native-first), `native`, `docker`, `binary`, or `source`
    - role: `consumer`, `provider`, or `both`
    - payment: `none`, `lightning-lnd-rest`, `stripe-test`, `stripe-live`, or `x402`
    - network: `clearnet`, `tor`, or `dual`
    - marketplace: none, `https://marketplace.froglet.dev`, or a custom URL
    - first use case: consume, publish, witness, hash-verify, notarize, paid
      compute, or prepare batch/GPU work later
-4. Call `plan_install` with those choices. It returns remaining questions,
-   prerequisites, required secrets, command preview, validation checks, and
-   post-install playbooks.
-5. Call `get_install_guide` only after you confirm the profile. The agent runs
-   those commands through its host shell, not through Froglet runtime.
-6. For a disposable-host proof of the default quickstart, run
-   `curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.
+4. Call `plan_install` with those choices. A complete call is non-mutating and
+   returns one published immutable release tag, release-manifest/bootstrap
+   hashes, persistent paths, process-manager impact, exact command preview,
+   and `install_approval_hash`. Show the whole plan and wait for approval.
+5. Only after approval, call `get_install_guide` with the exact returned
+   `release_tag` and `install_approval_hash` plus the unchanged profile. The
+   agent runs its verified-temp-file command through the host shell, not
+   through Froglet runtime.
+6. For a disposable-host proof from a trusted checkout, run
+   `bash scripts/fresh_host_quickstart_smoke.sh`.
 7. Verify provider health, runtime health, and local Froglet `status`.
 8. Call `plan_use_case` before implementing the concrete workflow. For batch
    requests, start with existing async task status primitives and do not claim
@@ -342,3 +361,5 @@ commands, or call MCP tools. In that case the honest answer is:
 The fallback still has value: the model can explain what to run, what output to
 look for, and how to choose the local install profile, but it must not claim it
 observed live Froglet evidence.
+
+</details>

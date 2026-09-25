@@ -39,20 +39,39 @@ Current implementation note:
 - the intended product boundary is a generic execution primitive that can back
   named services, data services, and open-ended compute
 
+## Settlement setup and recovery
+
+A paid deal is not admitted to execution until its required settlement bundle
+has been persisted. Recovery respects another worker's active materialization
+claim instead of classifying an in-progress setup as an invariant failure.
+
+If setup is abandoned before admission, recovery cancels the external invoices
+it can identify and records a local runtime failure with diagnostic evidence.
+It does **not** manufacture a free signed Receipt for a paid Quote: that would
+contradict the Quote's settlement bindings. The local terminal status without
+a Receipt is an unadmitted setup failure, not verified execution or proof of
+settlement. Remote callers must keep that distinction; operators must inspect
+the cancellation evidence when external cleanup cannot be confirmed.
+
 ## Python sandbox
 
 Python workloads run inside a Linux-native sandbox composed of three kernel
 primitives:
 
-- **`landlock`** (kernel 5.13+) restricts filesystem access to an explicit
-  allow-list. The default profile grants read on `/usr`, `/lib`, `/lib64`,
+- **`landlock` ABI v3** (kernel 6.2+) restricts filesystem access to an explicit
+  allow-list, including `truncate`, `ftruncate`, and `O_TRUNC`. Froglet refuses
+  Python execution on older Landlock ABIs rather than silently weakening the
+  write boundary. The default profile grants read on Python/library paths under
+  `/usr/lib`, `/usr/local/lib`, `/lib`, `/lib64`,
   SSL trust stores, `/etc/resolv.conf`, `/etc/hosts`, and `/etc/localtime`,
   and grants write only to the per-invocation tempdir. All other paths are
   denied at the kernel layer — including attempts to `open("/etc/passwd")`
   or write under `/tmp/<other>`.
-- **`seccomp`** (via a BPF filter) denies a targeted set of syscalls that
-  form the practical escape surface: `execve`, `execveat`, `socket`,
-  `socketpair`, `connect`, and `bind`. Everything else is allowed so the
+- **`seccomp`** (via a BPF filter) denies network, process creation, and
+  `io_uring` entry points: `socket`, `socketpair`, `connect`, `bind`, `fork`,
+  `vfork`, `clone`, `clone3`, and the `io_uring_*` syscalls. Landlock grants
+  execute access only to the selected Python interpreter and its ELF loader.
+  Everything else is allowed so the
   Python stdlib runs unmodified. This is a **deny-list** rather than a
   syscall-level allow-list — a smaller, more auditable policy that closes
   the concrete threats (arbitrary exec and outbound network) without
@@ -64,6 +83,9 @@ primitives:
 The sandbox lives in [`src/python_sandbox.rs`](../src/python_sandbox.rs) and
 is applied via `Command::pre_exec` in the fork-before-exec window, so the
 restrictions inherit to the `python3` process across the `execve` boundary.
+Each invocation also has its own process group. Timeout and output-limit
+cancellation kills and reaps that group; seccomp keeps the workload to the one
+Python process, so its `RLIMIT_AS` and `RLIMIT_CPU` ceilings are aggregate.
 
 **Network access.** Network is denied by default. Network-backed data mounts
 (`postgres`, `s3`, `redis`) fail closed until Froglet ships endpoint-scoped

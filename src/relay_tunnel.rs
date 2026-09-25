@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
@@ -36,6 +36,23 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(55);
 const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 /// Bound on concurrently forwarded requests per tunnel.
 const MAX_IN_FLIGHT: usize = 32;
+
+/// Tokio detaches a task when its `JoinHandle` is dropped. The relay writer
+/// owns the WebSocket sink, so deactivation must abort it synchronously rather
+/// than leaving public forwarding alive until request tasks release senders.
+struct AbortTaskOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> AbortTaskOnDrop<T> {
+    fn abort(&self) {
+        self.0.abort();
+    }
+}
+
+impl<T> Drop for AbortTaskOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// Messages the relay sends to the node.
 #[derive(Debug, Deserialize)]
@@ -86,6 +103,26 @@ fn auth_message(challenge_bytes: &[u8], pubkey_bytes: &[u8]) -> Vec<u8> {
     message.extend_from_slice(challenge_bytes);
     message.extend_from_slice(pubkey_bytes);
     message
+}
+
+pub(crate) fn validate_public_url(value: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(value)
+        .map_err(|error| format!("relay advertised an invalid public_url: {error}"))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "relay public_url must be a credential-free HTTPS endpoint without query or fragment"
+                .to_string(),
+        );
+    }
+    let normalized_path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&normalized_path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 /// Headers forwarded from relay frames into local requests.
@@ -215,6 +252,80 @@ async fn set_relay_status(state: &AppState, url: Option<String>, status: &str) {
     transport.relay_status = status.to_string();
 }
 
+async fn wait_for_activation_state(
+    activation: &mut watch::Receiver<bool>,
+    desired: bool,
+) -> Result<(), String> {
+    loop {
+        if *activation.borrow() == desired {
+            return Ok(());
+        }
+        activation
+            .changed()
+            .await
+            .map_err(|_| "relay activation gate closed".to_string())?;
+    }
+}
+
+/// Keep the relay completely disconnected until a durable exact publication
+/// grant requests activation. Deactivation cancels the active socket before
+/// returning to the dormant `reserved` state; unexpected disconnects bubble
+/// to the outer daemon supervisor for bounded-backoff restart.
+pub async fn run_activation_gated_tunnel(
+    state: Arc<AppState>,
+    relay_url: &str,
+    backend_addr: SocketAddr,
+    expected_public_url: &str,
+    mut activation: watch::Receiver<bool>,
+) -> Result<(), String> {
+    loop {
+        wait_for_activation_state(&mut activation, true).await?;
+        set_relay_status(
+            state.as_ref(),
+            Some(expected_public_url.to_string()),
+            "starting",
+        )
+        .await;
+
+        tokio::select! {
+            outcome = run_tunnel_once(
+                state.clone(),
+                relay_url,
+                backend_addr,
+                expected_public_url,
+            ) => {
+                let status = if *activation.borrow() { "down" } else { "reserved" };
+                set_relay_status(
+                    state.as_ref(),
+                    Some(expected_public_url.to_string()),
+                    status,
+                )
+                .await;
+                return outcome;
+            },
+            deactivated = wait_for_activation_state(&mut activation, false) => {
+                if let Err(error) = deactivated {
+                    set_relay_status(
+                        state.as_ref(),
+                        Some(expected_public_url.to_string()),
+                        "down",
+                    )
+                    .await;
+                    return Err(error);
+                }
+                // Dropping the tunnel future above closes the WebSocket. Keep
+                // the deterministic endpoint available for read-only planning.
+                set_relay_status(
+                    state.as_ref(),
+                    Some(expected_public_url.to_string()),
+                    "reserved",
+                )
+                .await;
+            }
+        }
+    }
+}
+
 /// One tunnel connection lifecycle: connect → authenticate → serve frames
 /// until the connection drops. Always returns `Err` (a healthy tunnel never
 /// finishes) so the supervising restart loop reconnects with backoff.
@@ -222,6 +333,7 @@ pub async fn run_tunnel_once(
     state: Arc<AppState>,
     relay_url: &str,
     backend_addr: SocketAddr,
+    expected_public_url: &str,
 ) -> Result<(), String> {
     let (ws, _response) = connect_async(relay_url)
         .await
@@ -281,8 +393,12 @@ pub async fn run_tunnel_once(
                 public_url: url,
                 max_body_bytes: advertised_cap,
             } => {
-                if !url.starts_with("https://") {
-                    return Err(format!("relay advertised a non-https public_url: {url}"));
+                let url = validate_public_url(&url)?;
+                if url != expected_public_url.trim_end_matches('/') {
+                    return Err(format!(
+                        "relay advertised public_url {url:?}, expected the approval-bound endpoint {:?}",
+                        expected_public_url.trim_end_matches('/')
+                    ));
                 }
                 if let Some(cap) = advertised_cap {
                     max_body_bytes = cap.min(DEFAULT_MAX_BODY_BYTES);
@@ -297,7 +413,9 @@ pub async fn run_tunnel_once(
             }
         }
     }
-    let public_url = public_url.expect("loop exits only with a url");
+    let Some(public_url) = public_url else {
+        return Err("relay stream ended before advertising a public URL".to_string());
+    };
     info!("relay tunnel established: {public_url}");
     set_relay_status(&state, Some(public_url.clone()), "up").await;
 
@@ -305,18 +423,18 @@ pub async fn run_tunnel_once(
     // Forwarded requests run concurrently (bounded); their response frames
     // funnel through one writer task via this channel.
     let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(MAX_IN_FLIGHT * 2);
-    let writer = tokio::spawn(async move {
+    let writer = AbortTaskOnDrop(tokio::spawn(async move {
         while let Some(message) = frame_rx.recv().await {
             if let Err(error) = write.send(message).await {
                 warn!("relay write failed: {error}");
                 break;
             }
         }
-    });
+    }));
 
     // Local-only client: never routed through env proxies, so a Tor/egress
     // proxy configuration cannot capture loopback forwarding.
-    let http = reqwest::Client::builder()
+    let http = crate::tls::reqwest_client_builder()
         .no_proxy()
         .build()
         .map_err(|e| format!("failed to build relay backend client: {e}"))?;
@@ -360,7 +478,7 @@ pub async fn run_tunnel_once(
 
     drop(frame_tx);
     writer.abort();
-    set_relay_status(&state, None, "down").await;
+    set_relay_status(&state, Some(expected_public_url.to_string()), "down").await;
     Err(disconnect_reason)
 }
 
@@ -377,6 +495,26 @@ mod tests {
         expected.extend_from_slice(&challenge);
         expected.extend_from_slice(&pubkey);
         assert_eq!(message, expected);
+    }
+
+    #[test]
+    fn relay_public_url_is_an_exact_credential_free_https_endpoint() {
+        assert_eq!(
+            validate_public_url("https://x.relay.froglet.dev/").unwrap(),
+            "https://x.relay.froglet.dev"
+        );
+        for invalid in [
+            "http://x.relay.froglet.dev",
+            "https://user:secret@x.relay.froglet.dev",
+            "https://x.relay.froglet.dev/?token=secret",
+            "https://x.relay.froglet.dev/#fragment",
+            "not a URL",
+        ] {
+            assert!(
+                validate_public_url(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
     }
 
     #[test]

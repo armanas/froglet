@@ -49,6 +49,19 @@ require_http_url() {
   esac
 }
 
+require_x402_facilitator_url() {
+  local value="$1"
+  case "$value" in
+    https://*|http://127.*|http://\[::1\]* ) ;;
+    http://*)
+      fail "FROGLET_X402_FACILITATOR_URL must use HTTPS (literal loopback HTTP is test-only)"
+      ;;
+    *)
+      fail "FROGLET_X402_FACILITATOR_URL must use https:// or literal loopback http://"
+      ;;
+  esac
+}
+
 require_stripe_secret_key() {
   local secret_key="${FROGLET_STRIPE_SECRET_KEY:-}"
   if [[ "$secret_key" == sk_test_* ]]; then
@@ -96,9 +109,15 @@ validate_no_control_chars() {
 env_line() {
   local name="$1"
   local value="$2"
+  local escaped
   [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fail "invalid environment variable name: $name"
   validate_no_control_chars "$name" "$value"
-  printf '%s=%q' "$name" "$value"
+  printf -v escaped '%q' "$value"
+  # Bash's %q leaves a leading tilde unescaped even though an assignment
+  # re-expands it when the snippet is sourced. Escape every tilde so the
+  # persisted value is byte-for-byte identical at service launch.
+  escaped="${escaped//~/\\~}"
+  printf '%s=%s' "$name" "$escaped"
 }
 
 snippet_lines=()
@@ -254,9 +273,10 @@ else:
 }
 
 probe_x402() {
-  local facilitator_url="${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}"
+  local facilitator_url="${FROGLET_X402_FACILITATOR_URL:-}"
   local status
   local body='{"payload":{}}'
+  [ -n "$facilitator_url" ] || fail "FROGLET_X402_FACILITATOR_URL is required for x402"
   need_cmd curl
   status="$(
     curl --silent --show-error \
@@ -267,8 +287,11 @@ probe_x402() {
       "$facilitator_url/verify" || true
   )"
   case "$status" in
-    200|400|401|403|422)
+    200|400|422)
       printf 'Verification: x402 wallet/network inputs validated locally and facilitator /verify responded with HTTP %s.\n' "$status"
+      ;;
+    401|403)
+      fail "x402 facilitator rejected Froglet as unauthenticated (HTTP $status); configure an operator-managed endpoint that authenticates upstream requests"
       ;;
     404)
       fail "x402 facilitator /verify endpoint not found at $facilitator_url/verify"
@@ -388,21 +411,20 @@ case "$rail" in
   x402)
     out_path="${out_path:-$repo_root/.froglet/payment/x402.env}"
     require_env FROGLET_X402_WALLET_ADDRESS
+    require_env FROGLET_X402_FACILITATOR_URL
     require_x402_wallet_address
     x402_network="$(normalize_x402_network)"
-    require_http_url \
-      FROGLET_X402_FACILITATOR_URL \
-      "${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}"
+    require_x402_facilitator_url "$FROGLET_X402_FACILITATOR_URL"
     begin_snippet
     add_env_line FROGLET_PAYMENT_BACKEND x402
     add_env_line FROGLET_X402_WALLET_ADDRESS "${FROGLET_X402_WALLET_ADDRESS}"
     add_env_line FROGLET_X402_NETWORK "${x402_network}"
-    add_env_line FROGLET_X402_FACILITATOR_URL "${FROGLET_X402_FACILITATOR_URL:-https://api.cdp.coinbase.com/platform/v2/x402}"
+    add_env_line FROGLET_X402_FACILITATOR_URL "$FROGLET_X402_FACILITATOR_URL"
     write_current_snippet
     printf 'Required inputs:\n'
     printf '  - FROGLET_X402_WALLET_ADDRESS (0x-prefixed Base address)\n'
     printf '  - optional FROGLET_X402_NETWORK=base\n'
-    printf '  - optional FROGLET_X402_FACILITATOR_URL\n'
+    printf '  - FROGLET_X402_FACILITATOR_URL (authenticated facilitator or transparent authenticated proxy)\n'
     if [[ "$verify" -eq 1 ]]; then
       probe_x402
     fi

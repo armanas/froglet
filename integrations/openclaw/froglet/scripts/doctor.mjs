@@ -40,6 +40,24 @@ function overallStatus(checks) {
   return "ok"
 }
 
+export function runtimeHealthCheck(status) {
+  return buildCheck(
+    "runtime_health",
+    status.healthy === true ? "ok" : "error",
+    status.healthy === true
+      ? "Froglet provider and runtime APIs are healthy"
+      : "Froglet provider or runtime API reported unhealthy",
+    {
+      healthy: status.healthy,
+      node_id: status.node_id,
+      provider_healthy: status.provider_healthy,
+      runtime_healthy: status.runtime_healthy,
+      compute_offers: status.compute_offers,
+      components: status.components
+    }
+  )
+}
+
 function validateInteger(name, value, minimum, maximum) {
   if (!Number.isInteger(value)) {
     throw new Error(`${name} must be an integer`)
@@ -231,16 +249,7 @@ export async function main() {
         pluginConfig.runtimeUrl,
         pluginConfig.requestTimeoutMs
       )
-      checks.push(
-        buildCheck("runtime_health", "ok", "Froglet provider API responded", {
-          healthy: status.healthy,
-          node_id: status.node_id,
-          provider_healthy: status.provider_healthy,
-          runtime_healthy: status.runtime_healthy,
-          compute_offers: status.compute_offers,
-          components: status.components
-        })
-      )
+      checks.push(runtimeHealthCheck(status))
     } catch (error) {
       checks.push(buildCheck("runtime_health", "error", `Runtime check failed: ${error.message}`))
     }

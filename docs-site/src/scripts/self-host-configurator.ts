@@ -45,8 +45,35 @@ export function buildSelfHostScript(config: SelfHostConfig = DEFAULT_SELF_HOST_C
   if (config.agent !== 'claude-code') {
     env.push(`FROGLET_AGENT_TARGET=${config.agent}`);
   }
+  if (config.install === 'docker') {
+    env.push('FROGLET_BOOTSTRAP_MODE=docker');
+  }
 
-  lines.push(`${env.length > 0 ? `${env.join(' ')} ` : ''}curl -fsSL https://froglet.dev/agent | bash`);
+  const bootstrapEnv = `env ${env.length > 0 ? `${env.join(' ')} ` : ''}VERSION="$tag" `;
+  lines.push('set -eu');
+  lines.push('repo=armanas/froglet');
+  lines.push('metadata="$(mktemp "${TMPDIR:-/tmp}/froglet-release.XXXXXX")"');
+  lines.push('bootstrap="$(mktemp "${TMPDIR:-/tmp}/froglet-agent-bootstrap.XXXXXX")"');
+  lines.push('release_url="$(curl -fsSL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 -o /dev/null -w \'%{url_effective}\' "https://github.com/$repo/releases/latest")"');
+  lines.push('tag="${release_url%/}"; tag="${tag##*/}"');
+  lines.push("printf '%s' \"$tag\" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+-]*$'");
+  lines.push("curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \"https://api.github.com/repos/$repo/releases/tags/$tag\" -o \"$metadata\"");
+  lines.push('[ "$(sed -n \'s/^  "immutable": \\([a-z]*\\),*$/\\1/p\' "$metadata")" = true ]');
+  lines.push('[ "$(sed -n \'s/^  "tag_name": "\\([^\"]*\\)",*$/\\1/p\' "$metadata")" = "$tag" ]');
+  lines.push("asset_record=\"$(awk '/^    [{]/ { in_asset=1; name=digest=state=\"\"; next } in_asset && /^      \"name\":/ { v=$0; sub(/^      \"name\": \"/,\"\",v); sub(/\",*$/,\"\",v); name=v } in_asset && /^      \"digest\":/ { v=$0; sub(/^      \"digest\": \"/,\"\",v); sub(/\",*$/,\"\",v); digest=v } in_asset && /^      \"state\":/ { v=$0; sub(/^      \"state\": \"/,\"\",v); sub(/\",*$/,\"\",v); state=v } in_asset && /^    [}],*$/ { if (name==\"agent-bootstrap.sh\") print digest \"|\" state; in_asset=0 }' \"$metadata\")\"");
+  lines.push('[ "$(printf \'%s\\n\' "$asset_record" | sed \'/^$/d\' | wc -l | tr -d \' \')" = 1 ]');
+  lines.push('bootstrap_digest="${asset_record%%|*}"; asset_state="${asset_record#*|}"');
+  lines.push('[ "$asset_state" = uploaded ]');
+  lines.push("printf '%s' \"$bootstrap_digest\" | grep -Eq '^sha256:[0-9a-f]{64}$'");
+  lines.push('bootstrap_digest="${bootstrap_digest#sha256:}"');
+  lines.push('curl -fsSL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 "https://github.com/$repo/releases/download/$tag/agent-bootstrap.sh" -o "$bootstrap"');
+  lines.push('if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$bootstrap" | awk \'{print $1}\')"; elif command -v shasum >/dev/null 2>&1; then actual="$(shasum -a 256 "$bootstrap" | awk \'{print $1}\')"; else actual="$(openssl dgst -sha256 "$bootstrap" | sed \'s/^.*= //\')"; fi');
+  lines.push('[ "$actual" = "$bootstrap_digest" ]');
+  lines.push('chmod 0700 "$bootstrap"');
+  lines.push(`${bootstrapEnv}sh "$bootstrap" plan`);
+  lines.push('# Review the complete plan, then replace the placeholder with its exact approved hash.');
+  lines.push(`${bootstrapEnv}sh "$bootstrap" execute '<install_approval_hash>'`);
+  lines.push('rm -f "$bootstrap" "$metadata"');
 
   return lines.join('\n');
 }

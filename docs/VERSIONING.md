@@ -48,10 +48,17 @@ addition without verifier coverage is not part of the protocol.
 ## What is experimental
 
 Surfaces labeled **experimental** may change or be removed without a major
-version: currently the **x402 (`x402_usdc`) settlement driver** — implemented
-at the daemon level, not covered by conformance vectors, and not exposed on
-the marketplace publish path. Do not build on experimental surfaces for
-anything that must outlive a release cycle.
+version. Do not build on experimental surfaces for anything that must outlive a
+release cycle.
+
+**x402 is partially graduated.** The kernel settlement method
+`x402.eip3009.v1` is specified in [KERNEL.md §5.6](./KERNEL.md) and covered by
+[`conformance/x402_v1.json`](../conformance/x402_v1.json), so its **artifact and
+receipt format carry the same frozen-forever guarantee as every other v1
+method**. What remains experimental is the surrounding rail: the `x402_usdc`
+settlement driver is daemon-level only, the method is not yet exposed on the
+marketplace publish path, and no live payment transcript exists on any network.
+Treat the wire format as stable and the operational rail as not yet proven.
 
 ## What may change with notice (implementation, pre-1.0)
 
@@ -61,6 +68,16 @@ implementation version (currently 0.x). Pre-1.0, these may change in any
 release with a CHANGELOG entry; behavior-breaking changes (e.g. a new
 fail-closed default) are called out explicitly in the release notes. The
 kernel wire format does **not** participate in this looseness.
+
+## Versioned application-layer contracts
+
+Publication Intent, Publication Revision, Service Manifest v4, relay
+reachability, Managed Deployment, and Release Bundle use explicit independent
+versions documented in
+[`PUBLICATION_CONTRACT.md`](PUBLICATION_CONTRACT.md). They are non-Kernel
+authoring, transport, operation, or supply-chain contracts. Their versions do
+not create Kernel artifact types and do not change `froglet/v1` signing or
+verification rules.
 
 ## How `froglet/v2` would happen
 

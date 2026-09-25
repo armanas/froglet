@@ -129,6 +129,23 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
+      - name: Require immutable releases before any release mutation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          immutable_releases_enabled="$(
+            gh api \
+              --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "/repos/${GITHUB_REPOSITORY}/immutable-releases" \
+              --jq '.enabled'
+          )"
+          if [[ "$immutable_releases_enabled" != "true" ]]; then
+            echo "GitHub immutable releases must already be enabled before tagging; refusing to create or edit a release" >&2
+            exit 1
+          fi
+
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -142,10 +159,19 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
+              --draft \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
               "${release_args[@]}"
-          elif [[ ${#release_args[@]} -gt 0 ]]; then
+          else
+            current_draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)"
+            if [[ "$current_draft" != "true" ]]; then
+              echo "release $GITHUB_REF_NAME is already published; immutable releases cannot be rebuilt or overwritten" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ ${#release_args[@]} -gt 0 ]]; then
             current_prerelease="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease -q .isPrerelease)"
             if [[ "$current_prerelease" != "true" ]]; then
               gh release edit "$GITHUB_REF_NAME" \
@@ -212,6 +238,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [verify-release-metadata]
+    outputs:
+      provider_image: ${{ steps.provider_image.outputs.reference }}
+      runtime_image: ${{ steps.runtime_image.outputs.reference }}
+      dual_image: ${{ steps.dual_image.outputs.reference }}
+      mcp_image: ${{ steps.mcp_image.outputs.reference }}
 
     steps:
       - name: Check out repo
@@ -233,6 +264,7 @@ jobs:
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Build and push provider image
+        id: provider_image
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.version }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
@@ -248,8 +280,20 @@ jobs:
             .
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
+          version_digest="$(docker buildx imagetools inspect "${image}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          sha_digest="$(docker buildx imagetools inspect "${image}:${SHA_TAG}" --format '{{.Manifest.Digest}}')"
+          [[ "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid provider image digest: $version_digest" >&2
+            exit 1
+          }
+          [[ "$version_digest" == "$sha_digest" ]] || {
+            echo "provider tags resolve to different manifests: version=${version_digest} sha=${sha_digest}" >&2
+            exit 1
+          }
+          echo "reference=${image}@${version_digest}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push runtime image
+        id: runtime_image
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.version }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
@@ -265,11 +309,53 @@ jobs:
             .
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
+          version_digest="$(docker buildx imagetools inspect "${image}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          sha_digest="$(docker buildx imagetools inspect "${image}:${SHA_TAG}" --format '{{.Manifest.Digest}}')"
+          [[ "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid runtime image digest: $version_digest" >&2
+            exit 1
+          }
+          [[ "$version_digest" == "$sha_digest" ]] || {
+            echo "runtime tags resolve to different manifests: version=${version_digest} sha=${sha_digest}" >&2
+            exit 1
+          }
+          echo "reference=${image}@${version_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push dual-role fallback image
+        id: dual_image
+        env:
+          VERSION: ${{ needs.verify-release-metadata.outputs.version }}
+          OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
+          SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
+        run: |
+          image="ghcr.io/${OWNER_LC}/froglet-dual"
+          docker build \
+            --target dual \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            -t "${image}:${VERSION}" \
+            -t "${image}:${SHA_TAG}" \
+            .
+          docker run --rm --entrypoint /usr/local/bin/froglet-node "${image}:${VERSION}" help >/dev/null
+          docker push "${image}:${VERSION}"
+          docker push "${image}:${SHA_TAG}"
+          version_digest="$(docker buildx imagetools inspect "${image}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          sha_digest="$(docker buildx imagetools inspect "${image}:${SHA_TAG}" --format '{{.Manifest.Digest}}')"
+          [[ "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid dual-role image digest: $version_digest" >&2
+            exit 1
+          }
+          [[ "$version_digest" == "$sha_digest" ]] || {
+            echo "dual-role tags resolve to different manifests: version=${version_digest} sha=${sha_digest}" >&2
+            exit 1
+          }
+          echo "reference=${image}@${version_digest}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push MCP server image
+        id: mcp_image
         env:
           VERSION: ${{ needs.verify-release-metadata.outputs.mcp_version }}
-          NODE_VERSION: ${{ needs.verify-release-metadata.outputs.version }}
+          NODE_IMAGE: ${{ steps.provider_image.outputs.reference }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
           SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
         run: |
@@ -278,17 +364,26 @@ jobs:
           # this job, pinning the bundled binary to the same release.
           docker build \
             -f integrations/mcp/froglet/Dockerfile \
-            --build-arg "FROGLET_NODE_IMAGE=ghcr.io/${OWNER_LC}/froglet-provider:${NODE_VERSION}" \
+            --build-arg "FROGLET_NODE_IMAGE=${NODE_IMAGE}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${image}:${VERSION}" \
             -t "${image}:${SHA_TAG}" \
-            -t "${image}:latest" \
             .
           docker run --rm --entrypoint /usr/local/bin/froglet-node "${image}:${VERSION}" help >/dev/null
           docker push "${image}:${VERSION}"
           docker push "${image}:${SHA_TAG}"
-          docker push "${image}:latest"
+          version_digest="$(docker buildx imagetools inspect "${image}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          sha_digest="$(docker buildx imagetools inspect "${image}:${SHA_TAG}" --format '{{.Manifest.Digest}}')"
+          [[ "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "invalid MCP image digest: $version_digest" >&2
+            exit 1
+          }
+          [[ "$version_digest" == "$sha_digest" ]] || {
+            echo "MCP tags resolve to different manifests: version=${version_digest} sha=${sha_digest}" >&2
+            exit 1
+          }
+          echo "reference=${image}@${version_digest}" >> "$GITHUB_OUTPUT"
 
       - name: Write release summary
         env:
@@ -296,21 +391,28 @@ jobs:
           MCP_VERSION: ${{ needs.verify-release-metadata.outputs.mcp_version }}
           OWNER_LC: ${{ needs.verify-release-metadata.outputs.owner_lc }}
           SHA_TAG: ${{ needs.verify-release-metadata.outputs.sha_tag }}
+          PROVIDER_IMAGE: ${{ steps.provider_image.outputs.reference }}
+          RUNTIME_IMAGE: ${{ steps.runtime_image.outputs.reference }}
+          DUAL_IMAGE: ${{ steps.dual_image.outputs.reference }}
+          MCP_IMAGE: ${{ steps.mcp_image.outputs.reference }}
         run: |
           {
-            echo "## Published Images"
+            echo "## Canonical OCI Images (GHCR)"
             echo ""
-            echo "- ghcr.io/${OWNER_LC}/froglet-provider:${VERSION}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-provider:${SHA_TAG}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${VERSION}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${SHA_TAG}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${MCP_VERSION}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${SHA_TAG}"
-            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:latest"
+            echo "- provider: ${PROVIDER_IMAGE}"
+            echo "- runtime: ${RUNTIME_IMAGE}"
+            echo "- dual fallback: ${DUAL_IMAGE}"
+            echo "- MCP: ${MCP_IMAGE}"
+            echo ""
+            echo "Discovery aliases:"
+            echo "- ghcr.io/${OWNER_LC}/froglet-provider:${VERSION}, :${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-runtime:${VERSION}, :${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-dual:${VERSION}, :${SHA_TAG}"
+            echo "- ghcr.io/${OWNER_LC}/froglet-mcp:${MCP_VERSION}, :${SHA_TAG}"
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish-checksums:
-    name: Publish Binary Checksums
+    name: Publish Release Asset Checksums
     runs-on: ubuntu-latest
     needs: [verify-release-metadata, build-release-assets]
 
@@ -350,7 +452,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+          cp scripts/agent-bootstrap.sh dist/agent-bootstrap.sh
+          chmod 0755 dist/agent-bootstrap.sh
+          (cd dist && sha256sum *.tar.gz agent-bootstrap.sh > SHA256SUMS)
           ./scripts/verify_release_assets.sh \
             --dir dist \
             --version "$RELEASE_TAG" \
@@ -358,10 +462,15 @@ jobs:
             --target linux:arm64 \
             --target darwin:arm64
 
-      - name: Upload SHA256SUMS
+      - name: Upload bootstrap and SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/agent-bootstrap.sh \
+            dist/SHA256SUMS \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
 
       - name: Write binary asset summary
         run: |
@@ -369,4 +478,136 @@ jobs:
             echo "## Published Binary Assets"
             echo ""
             ls -1 dist
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-release-bundle:
+    name: Publish Attested Release Bundle
+    runs-on: ubuntu-latest
+    needs: [verify-release-metadata, publish-images, publish-checksums]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Download checksums and release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS \
+            --pattern agent-bootstrap.sh \
+            --pattern "*.tar.gz" \
+            --dir dist \
+            --clobber
+
+      - name: Generate immutable release manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          PROVIDER_IMAGE: ${{ needs.publish-images.outputs.provider_image }}
+          RUNTIME_IMAGE: ${{ needs.publish-images.outputs.runtime_image }}
+          DUAL_IMAGE: ${{ needs.publish-images.outputs.dual_image }}
+          MCP_IMAGE: ${{ needs.publish-images.outputs.mcp_image }}
+        run: |
+          python3 scripts/release_manifest.py generate \
+            --release "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-revision "$GITHUB_SHA" \
+            --checksums dist/SHA256SUMS \
+            --provider-image "$PROVIDER_IMAGE" \
+            --runtime-image "$RUNTIME_IMAGE" \
+            --dual-image "$DUAL_IMAGE" \
+            --mcp-image "$MCP_IMAGE" \
+            --out dist/release-manifest.json
+          python3 scripts/release_manifest.py verify \
+            --manifest dist/release-manifest.json \
+            --assets-dir dist
+
+      - name: Attest release manifest
+        id: attest_manifest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: dist/release-manifest.json
+
+      - name: Attest agent bootstrap
+        id: attest_bootstrap
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: dist/agent-bootstrap.sh
+
+      - name: Upload release manifest and offline attestation bundles
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MANIFEST_ATTESTATION_BUNDLE: ${{ steps.attest_manifest.outputs.bundle-path }}
+          BOOTSTRAP_ATTESTATION_BUNDLE: ${{ steps.attest_bootstrap.outputs.bundle-path }}
+        run: |
+          cp "$MANIFEST_ATTESTATION_BUNDLE" dist/release-manifest.intoto.jsonl
+          cp "$BOOTSTRAP_ATTESTATION_BUNDLE" dist/agent-bootstrap.intoto.jsonl
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/release-manifest.json \
+            dist/release-manifest.intoto.jsonl \
+            dist/agent-bootstrap.intoto.jsonl \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish and verify immutable GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          checked_out_commit="$(git rev-parse HEAD)"
+          remote_tag_commit="$(
+            gh api \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" \
+              --jq '.sha'
+          )"
+          [[ "$checked_out_commit" == "$GITHUB_SHA" ]] || {
+            echo "checked-out commit ${checked_out_commit} does not match workflow source ${GITHUB_SHA}" >&2
+            exit 1
+          }
+          [[ "$remote_tag_commit" == "$GITHUB_SHA" ]] || {
+            echo "release tag moved before immutable publication: tag=${remote_tag_commit} source=${GITHUB_SHA}" >&2
+            exit 1
+          }
+
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
+
+          for attempt in {1..10}; do
+            immutable="$(
+              gh api \
+                -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+                --jq '.immutable'
+            )"
+            if [[ "$immutable" == "true" ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "published release is not immutable; enable GitHub immutable releases before tagging" >&2
+          exit 1
+
+      - name: Write release bundle summary
+        env:
+          PROVIDER_IMAGE: ${{ needs.publish-images.outputs.provider_image }}
+          RUNTIME_IMAGE: ${{ needs.publish-images.outputs.runtime_image }}
+          DUAL_IMAGE: ${{ needs.publish-images.outputs.dual_image }}
+          MCP_IMAGE: ${{ needs.publish-images.outputs.mcp_image }}
+        run: |
+          {
+            echo "## Release Bundle (separate attestations published)"
+            echo ""
+            echo "- source revision: ${GITHUB_SHA}"
+            echo "- agent bootstrap: agent-bootstrap.sh"
+            echo "- provider: ${PROVIDER_IMAGE}"
+            echo "- runtime: ${RUNTIME_IMAGE}"
+            echo "- dual fallback: ${DUAL_IMAGE}"
+            echo "- MCP: ${MCP_IMAGE}"
           } >> "$GITHUB_STEP_SUMMARY"

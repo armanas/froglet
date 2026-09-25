@@ -30,6 +30,7 @@ jobs:
         with:
           toolchain: 1.91.0
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
@@ -166,6 +167,18 @@ jobs:
       - name: Install docs site dependencies
         run: npm ci --prefix docs-site
 
+      - name: Audit docs site dependencies
+        run: npm audit --prefix docs-site --audit-level=high
+
+      - name: Set up Rust for browser verification
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: 1.91.0
+          targets: wasm32-unknown-unknown
+
+      - name: Build the locked browser verifier
+        run: npm run build:verifier --prefix docs-site
+
       - name: Run docs site tests
         run: npm test --prefix docs-site
 
@@ -193,9 +206,7 @@ jobs:
           node --check integrations/openclaw/froglet/index.js
           node --check integrations/openclaw/froglet/scripts/doctor.mjs
           node --test integrations/openclaw/froglet/test/plugin.test.js \
-            integrations/openclaw/froglet/test/config-profiles.test.mjs \
-            integrations/openclaw/froglet/test/doctor.test.mjs \
-            integrations/openclaw/froglet/test/froglet-client.test.mjs
+            integrations/openclaw/froglet/test/*.test.mjs
 
   docker-compose:
     name: Docker Compose
@@ -347,6 +358,7 @@ jobs:
         with:
           toolchain: 1.91.0
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6

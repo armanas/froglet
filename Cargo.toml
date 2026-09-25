@@ -1,10 +1,10 @@
 [workspace]
-members = [".", "froglet-protocol", "froglet-publish-engine"]
+members = [".", "froglet-protocol", "froglet-publish-engine", "froglet-verify"]
 resolver = "2"
 
 [package]
 name = "froglet"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 autobins = false
 authors = ["Armanas Povilionis-Muradian"]
@@ -22,15 +22,32 @@ froglet-publish-engine = { path = "froglet-publish-engine" }
 url = "2.5"
 
 # Async Runtime & Web Framework
-tokio = { version = "1.37", features = ["full"] }
-axum = { version = "0.7", features = ["macros", "tokio"] }
-tower-http = { version = "0.5", features = ["trace", "cors", "set-header"] }
+tokio = { version = "1.37", features = [
+    "fs",
+    "io-std",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+axum = { version = "0.7", default-features = false, features = [
+    "http1",
+    "json",
+    "query",
+    "tokio",
+    "tracing",
+] }
+tower-http = { version = "0.5", features = ["trace", "set-header"] }
 tower = { version = "0.4", features = ["util", "limit", "timeout"] }
-hyper = { version = "1.0", features = ["full"] }
+hyper = { version = "1.0", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 futures = "0.3"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "query", "rustls", "socks"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "query", "rustls-no-provider", "socks"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 # Relay ingress tunnel client (docs/RELAY.md); rustls flavor to avoid a
 # second OpenSSL path.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
@@ -43,18 +60,23 @@ serde_json = "1.0"
 
 # Cryptography
 k256 = { version = "0.13", features = ["schnorr", "ecdh"] }
-rand = "0.8"
+rand = "0.8.6"
 hex = "0.4"
 sha2 = "0.10"
 base64 = "0.22"
+data-encoding = "2.11"
 lightning-invoice = { version = "0.34", features = ["std"] }
 aes-gcm-siv = "0.11"
 
 # Security Sandbox (WASM)
-wasmtime = "43.0.2"
+wasmtime = { version = "36.0.14", default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+] }
 
 # Database
-rusqlite = { version = "0.38", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.38", features = ["bundled", "hooks", "limits"] }
 
 # Logging and errors
 tracing = "0.1"
@@ -65,8 +87,13 @@ thiserror = "2.0"
 subtle = "2"
 zeroize = "1"
 toml = "0.9"
+toml_edit = "0.23"
+csv = "1.4"
 urlencoding = "2.1"
-wat = "1"
+wat = "=1.245.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Security Sandbox (Python) — Linux-only.
 # landlock restricts filesystem access; seccompiler installs BPF syscall filters.
@@ -75,12 +102,11 @@ wat = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 seccompiler = "0.5"
-libc = "0.2"
 
 [dev-dependencies]
 bitcoin = "0.32.8"
 proptest = "1"
 rcgen = "0.13"
 tempfile = "3"
-tokio-rustls = "0.26"
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 zeroize = "1"

@@ -137,7 +137,8 @@ fn in_memory_state() -> AppState {
 
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config).expect("identity");
-    let settlement_registry = settlement::SettlementRegistry::new(&node_config);
+    let settlement_registry =
+        settlement::SettlementRegistry::new(&node_config).expect("settlement registry");
 
     AppState {
         db: pool,
@@ -148,7 +149,9 @@ fn in_memory_state() -> AppState {
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::new(),
+        http_client: froglet::tls::reqwest_client_builder()
+            .build()
+            .expect("reqwest client"),
         wasm_host: None,
         confidential_policy: None,
         runtime_auth_token: "test-runtime-token".to_string(),
@@ -159,6 +162,8 @@ fn in_memory_state() -> AppState {
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -240,7 +245,8 @@ fn payments_enforce_all_error_paths() {
     // configuration).  The registry dispatches on payment kind, so an absent token
     // triggers PaymentRequired rather than BackendUnavailable.
     state.config.payment_backends = vec![PaymentBackend::None];
-    state.settlement_registry = settlement::SettlementRegistry::new(&state.config);
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&state.config).expect("settlement registry");
     let err = rt
         .block_on(settlement::prepare_payment(
             &state,
@@ -256,7 +262,8 @@ fn payments_enforce_all_error_paths() {
 
     // Same for Lightning: no token provided → PaymentRequired.
     state.config.payment_backends = vec![PaymentBackend::Lightning];
-    state.settlement_registry = settlement::SettlementRegistry::new(&state.config);
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&state.config).expect("settlement registry");
     let err = rt
         .block_on(settlement::prepare_payment(
             &state,
@@ -324,7 +331,8 @@ fn settlement_driver_reports_capabilities_consistently() {
     );
 
     state.config.payment_backends = vec![PaymentBackend::None];
-    state.settlement_registry = settlement::SettlementRegistry::new(&state.config);
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&state.config).expect("settlement registry");
     let none_descriptor = settlement::driver_descriptor(&state);
     assert_eq!(none_descriptor.backend, "none");
     assert_eq!(none_descriptor.mode, "disabled");
@@ -347,7 +355,8 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
     state.config.payment_backends = vec![PaymentBackend::Lightning];
-    state.settlement_registry = settlement::SettlementRegistry::new(&state.config);
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&state.config).expect("settlement registry");
 
     let created = rt
         .block_on(settlement::create_lightning_invoice_bundle(
@@ -402,6 +411,26 @@ fn lightning_mock_invoice_bundle_persists_and_updates_state() {
     assert_eq!(updated.base_state, InvoiceBundleLegState::Accepted);
     assert_eq!(updated.success_state, InvoiceBundleLegState::Settled);
     assert_eq!(updated.bundle.hash, created.bundle.hash);
+
+    let after_stale_write = rt
+        .block_on(settlement::update_lightning_invoice_bundle_states(
+            &state,
+            "ln-session-1",
+            InvoiceBundleLegState::Open,
+            InvoiceBundleLegState::Open,
+        ))
+        .expect("stale update")
+        .expect("bundle should still exist");
+    assert_eq!(
+        after_stale_write.base_state,
+        InvoiceBundleLegState::Accepted,
+        "an accepted leg must not regress to open"
+    );
+    assert_eq!(
+        after_stale_write.success_state,
+        InvoiceBundleLegState::Settled,
+        "a terminal leg must never be overwritten by stale reconciliation"
+    );
 }
 
 #[test]
@@ -409,7 +438,8 @@ fn lightning_invoice_bundle_validation_checks_quote_and_deal_commitments() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
     state.config.payment_backends = vec![PaymentBackend::Lightning];
-    state.settlement_registry = settlement::SettlementRegistry::new(&state.config);
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&state.config).expect("settlement registry");
 
     let now = 1_700_000_000;
     let settlement_terms = rt
@@ -529,7 +559,8 @@ fn randomized_invoice_bundle_validation_reports_targeted_issues() {
     let rt = Runtime::new().unwrap();
     let mut state = in_memory_state();
     state.config.payment_backends = vec![PaymentBackend::Lightning];
-    state.settlement_registry = settlement::SettlementRegistry::new(&state.config);
+    state.settlement_registry =
+        settlement::SettlementRegistry::new(&state.config).expect("settlement registry");
     let mut rng = StdRng::seed_from_u64(0x000F_06A1_E7B0_0D1E);
 
     for iteration in 0..27_u64 {
@@ -950,7 +981,7 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
     // Instead, mirror what the stripe.rs unit tests do: call prepare_payment
     // directly on a StripeDriver built with with_base_url, bypassing the registry.
     // The integration test below uses this pattern.
-    let settlement_registry = SettlementRegistry::new(&node_config);
+    let settlement_registry = SettlementRegistry::new(&node_config).expect("settlement registry");
     unsafe {
         std::env::remove_var("FROGLET_STRIPE_SECRET_KEY");
     }
@@ -974,7 +1005,9 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::new(),
+        http_client: froglet::tls::reqwest_client_builder()
+            .build()
+            .expect("reqwest client"),
         wasm_host: None,
         confidential_policy: None,
         runtime_auth_token: "test-token".to_string(),
@@ -985,6 +1018,8 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -1028,7 +1063,8 @@ async fn stripe_mpp_deal_prepare_commit_produces_valid_receipt() {
         },
         "sk_test_mock".to_string(),
         &base_url,
-    );
+    )
+    .expect("Stripe driver");
     let state = stripe_app_state(&base_url);
 
     // Step 1 — prepare: validates SPT and creates a manual-capture PaymentIntent.
@@ -1189,7 +1225,8 @@ async fn stripe_mpp_deal_prepare_release_on_failure_produces_valid_receipt() {
         },
         "sk_test_mock".to_string(),
         &base_url,
-    );
+    )
+    .expect("Stripe driver");
     let state = stripe_app_state(&base_url);
 
     // Prepare a reservation.
@@ -1314,11 +1351,11 @@ async fn stripe_mpp_deal_prepare_release_on_failure_produces_valid_receipt() {
 
 // ─── Buyer-side SPT minting tests ─────────────────────────────────────────────
 //
-// These tests verify the full buyer→seller Stripe path:
-//   buyer mints SPT (mock) → seller prepare validates it + creates PaymentIntent
+// These tests verify the full Stripe sandbox-helper→seller path:
+//   seller helper simulates SPT receipt → prepare validates it + creates PaymentIntent
 //   (mock) → commit captures → a kernel-valid stripe_mpp.v1 receipt is produced.
 
-/// Unit test: buyer mints an SPT against the mock, then passes it directly to
+/// Unit test: the seller sandbox helper creates an SPT against the mock, then passes it to
 /// the seller's `prepare` + `commit` cycle.  Asserts the mint call hit the
 /// mock, the seller accepted the token, and the resulting receipt passes kernel
 /// validation.
@@ -1326,15 +1363,17 @@ async fn stripe_mpp_deal_prepare_release_on_failure_produces_valid_receipt() {
 /// NOTE: Stripe shared-payment is a preview API; confirm exact field
 /// names/endpoint against Stripe preview docs before live use.
 #[tokio::test]
-async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
+async fn seller_test_helper_spt_prepare_commit_produces_valid_receipt() {
     let (base_url, mock_server, handle) = start_mock_stripe_server().await;
 
     // ── Buyer side: mint an SPT ─────────────────────────────────────────────
     let buyer_config = BuyerStripeConfig {
+        test_helper_enabled: true,
         secret_key: "sk_test_buyer_mock".to_string(),
         api_version: "2026-04-22.preview".to_string(),
-        payment_method: Some("pm_test_buyer_mock".to_string()),
-        customer: None,
+        payment_method: "pm_test_buyer_mock".to_string(),
+        seller_network_id: "internal".to_string(),
+        seller_external_id: Some("provider-mock".to_string()),
         api_base_url: None,
     };
     let price_cents: u64 = 30;
@@ -1343,7 +1382,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
     let spt_id =
         settlement::mint_buyer_spt(&buyer_config, price_cents, expires_at, Some(&base_url))
             .await
-            .expect("buyer SPT mint must succeed against mock");
+            .expect("seller SPT test helper must succeed against mock");
 
     assert!(
         spt_id.starts_with("spt_"),
@@ -1357,8 +1396,10 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
             calls.iter().any(|c| c.starts_with("POST:granted_tokens:")
                 && c.contains("payment_method")
                 && c.contains("pm_test_buyer_mock")
-                && c.contains("usage_limits")),
-            "mock should have received SPT create call with payment_method; calls: {calls:?}"
+                && c.contains("usage_limits")
+                && c.contains("seller_details%5Bnetwork_id%5D=internal")
+                && c.contains("seller_details%5Bexternal_id%5D=provider-mock")),
+            "mock should have received a seller-scoped SPT test-helper call; calls: {calls:?}"
         );
     }
 
@@ -1370,7 +1411,8 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
         },
         "sk_test_seller_mock".to_string(),
         &base_url,
-    );
+    )
+    .expect("Stripe driver");
     let state = stripe_app_state(&base_url);
 
     let reservation = seller_driver
@@ -1387,7 +1429,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
             },
         )
         .await
-        .expect("seller prepare must succeed with buyer-minted SPT")
+        .expect("seller prepare must succeed with helper-created SPT")
         .expect("paid service must return a reservation");
 
     assert_eq!(reservation.method, "stripe_mpp");
@@ -1479,11 +1521,11 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
 
     assert!(
         verify_artifact(&signed_receipt),
-        "buyer-minted SPT receipt must have a valid signature"
+        "helper-created SPT receipt must have a valid signature"
     );
     assert!(
         validate_receipt_artifact(&signed_receipt).is_ok(),
-        "buyer-minted SPT receipt must pass kernel validation: {:?}",
+        "helper-created SPT receipt must pass kernel validation: {:?}",
         validate_receipt_artifact(&signed_receipt)
     );
     assert_eq!(
@@ -1496,7 +1538,7 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
     let calls = mock_server.calls.lock().unwrap().clone();
     assert!(
         calls.iter().any(|c| c.starts_with("POST:granted_tokens:")),
-        "buyer SPT create call must appear in mock log; calls: {calls:?}"
+        "seller SPT test-helper call must appear in mock log; calls: {calls:?}"
     );
     assert!(
         calls
@@ -1520,126 +1562,149 @@ async fn buyer_mints_spt_and_seller_prepare_commit_produces_valid_receipt() {
     handle.abort();
 }
 
-/// Unit test: `mint_buyer_spt` with a customer funding source produces an SPT
-/// id; and the no-config error path returns a descriptive error rather than
-/// panicking.
+/// The seller-only test helper requires an explicit opt-in, a test key, and
+/// the exact seller scope. Every guard must run before network I/O.
 #[tokio::test]
-async fn buyer_stripe_config_funding_source_variants() {
-    let (base_url, _mock_server, handle) = start_mock_stripe_server().await;
+async fn stripe_spt_test_helper_is_explicit_test_only_and_seller_scoped() {
+    let (base_url, mock_server, handle) = start_mock_stripe_server().await;
 
-    // Customer funding source.
-    let buyer_config_customer = BuyerStripeConfig {
-        secret_key: "sk_test_buyer_cus".to_string(),
+    let mut config = BuyerStripeConfig {
+        test_helper_enabled: false,
+        secret_key: "sk_test_seller_sandbox".to_string(),
         api_version: "2026-04-22.preview".to_string(),
-        payment_method: None,
-        customer: Some("cus_test_buyer_mock".to_string()),
+        payment_method: "pm_test_sandbox".to_string(),
+        seller_network_id: "internal".to_string(),
+        seller_external_id: Some("provider-scoped".to_string()),
         api_base_url: None,
     };
-    let spt_id = settlement::mint_buyer_spt(
-        &buyer_config_customer,
+
+    let disabled = settlement::mint_buyer_spt(
+        &config,
         50,
         settlement::current_unix_timestamp() + 600,
         Some(&base_url),
     )
     .await
-    .expect("customer-funded mint must succeed");
-    assert!(spt_id.starts_with("spt_"), "spt id: {spt_id}");
-
-    // No funding source → error path exercised via mint_buyer_spt with an
-    // intentionally broken config (no pm, no customer).  We exercise the
-    // error path via the low-level driver directly.
-    let driver = froglet::settlement::stripe_driver_with_base_url(
-        StripeConfig {
-            api_version: "2026-04-22.preview".to_string(),
-            webhook_secret: None,
-        },
-        "sk_test_no_funding".to_string(),
-        &base_url,
+    .expect_err("disabled helper must fail");
+    assert!(
+        disabled.contains("disabled"),
+        "unexpected error: {disabled}"
     );
-    // The driver itself does not know about the config validation — that is
-    // done in BuyerStripeConfig::from_env.  Test the env-level guard: a
-    // BuyerStripeConfig with no funding source should fail from_env.
-    // We test via the public API rather than calling env vars.
-    let no_funding_config = BuyerStripeConfig {
-        secret_key: "sk_test_no_funding".to_string(),
-        api_version: "2026-04-22.preview".to_string(),
-        payment_method: None,
-        customer: None,
-        api_base_url: None,
-    };
-    let result = settlement::mint_buyer_spt(
-        &no_funding_config,
-        10,
+
+    config.test_helper_enabled = true;
+    config.secret_key = "sk_live_refused".to_string();
+    let live_key = settlement::mint_buyer_spt(
+        &config,
+        50,
         settlement::current_unix_timestamp() + 600,
         Some(&base_url),
     )
-    .await;
+    .await
+    .expect_err("live key must be rejected before test-helper I/O");
     assert!(
-        result.is_err(),
-        "mint_buyer_spt with no funding source must fail"
-    );
-    let err_msg = result.unwrap_err();
-    assert!(
-        err_msg.contains("funding source"),
-        "error must mention funding source; got: {err_msg}"
+        live_key.contains("sk_test_") && live_key.contains("live keys are refused"),
+        "unexpected error: {live_key}"
     );
 
-    // Suppress unused-variable warning on `driver` (used for type inference above).
-    drop(driver);
+    config.secret_key = "sk_test_seller_sandbox".to_string();
+    let remote_override = settlement::mint_buyer_spt(
+        &config,
+        50,
+        settlement::current_unix_timestamp() + 600,
+        Some("https://stripe-credential-sink.example"),
+    )
+    .await
+    .expect_err("non-loopback test API override must be rejected");
+    assert!(
+        remote_override.contains("only for exact loopback hosts"),
+        "unexpected error: {remote_override}"
+    );
+
+    assert!(
+        mock_server.calls.lock().unwrap().is_empty(),
+        "guard failures must not reach Stripe"
+    );
+
+    let spt_id = settlement::mint_buyer_spt(
+        &config,
+        50,
+        settlement::current_unix_timestamp() + 600,
+        Some(&base_url),
+    )
+    .await
+    .expect("explicit test-helper call must succeed");
+    assert!(spt_id.starts_with("spt_"), "spt id: {spt_id}");
+
+    let calls = mock_server.calls.lock().unwrap().clone();
+    assert!(
+        calls.iter().any(|call| {
+            call.contains("payment_method=pm_test_sandbox")
+                && call.contains("seller_details%5Bnetwork_id%5D=internal")
+                && call.contains("seller_details%5Bexternal_id%5D=provider-scoped")
+        }),
+        "test-helper request must carry exact seller scope; calls: {calls:?}"
+    );
+
     handle.abort();
 }
 
-/// REAL-STRIPE smoke test — validates the shared-payment (SPT) PREVIEW API
-/// shapes end-to-end against LIVE Stripe. `#[ignore]`d so it never runs in CI.
+/// REAL-STRIPE-API sandbox smoke — validates the shared-payment (SPT) private
+/// preview shapes with a Stripe test account. `#[ignore]`d so it never runs in
+/// CI. This never accepts an `sk_live_` key.
 ///
-/// It exercises the *actual* froglet code paths: buyer `mint_buyer_spt` →
+/// It exercises the *actual* Froglet sandbox-helper path: `mint_buyer_spt` →
 /// seller `prepare` (validate SPT + create a manual-capture PaymentIntent) →
 /// `commit` (capture); then a second mint → `prepare` → `release` (cancel).
 /// Every step prints. If the preview API field shapes differ from our
 /// assumptions, the mint step's error string shows the real Stripe error so
 /// `src/settlement/stripe.rs::mint_spt` can be corrected.
 ///
-/// Run with your Stripe TEST keys (no real money moves in test mode):
+/// Run with your Stripe TEST key (no real money moves in test mode):
 ///   FROGLET_STRIPE_SECRET_KEY=sk_test_... \
-///   FROGLET_BUYER_STRIPE_SECRET_KEY=sk_test_... \
+///   FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED=1 \
 ///   FROGLET_BUYER_STRIPE_PAYMENT_METHOD=pm_card_visa \
+///   FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID=internal \
 ///   cargo test --test payments_and_discovery stripe_real_api_smoke -- --ignored --nocapture
 #[tokio::test]
-#[ignore = "hits live Stripe; run manually with test keys (see doc comment)"]
+#[ignore = "hits the real Stripe sandbox API; run manually with test keys"]
 async fn stripe_real_api_smoke() {
     const REAL: &str = "https://api.stripe.com";
     const API_VERSION: &str = "2026-04-22.preview";
 
     let Ok(seller_key) = std::env::var("FROGLET_STRIPE_SECRET_KEY") else {
-        eprintln!(
-            "SKIP stripe_real_api_smoke: set FROGLET_STRIPE_SECRET_KEY (+ \
-             FROGLET_BUYER_STRIPE_SECRET_KEY + FROGLET_BUYER_STRIPE_PAYMENT_METHOD) to run"
-        );
+        eprintln!("SKIP stripe_real_api_smoke: set the documented Stripe sandbox variables to run");
         return;
     };
-    let buyer_key =
-        std::env::var("FROGLET_BUYER_STRIPE_SECRET_KEY").unwrap_or_else(|_| seller_key.clone());
-    let payment_method = std::env::var("FROGLET_BUYER_STRIPE_PAYMENT_METHOD").ok();
-    let customer = std::env::var("FROGLET_BUYER_STRIPE_CUSTOMER").ok();
-    if payment_method.is_none() && customer.is_none() {
-        eprintln!(
-            "SKIP stripe_real_api_smoke: set FROGLET_BUYER_STRIPE_PAYMENT_METHOD (pm_...) \
-             or FROGLET_BUYER_STRIPE_CUSTOMER (cus_...)"
-        );
+    if !seller_key.starts_with("sk_test_") {
+        eprintln!("SKIP stripe_real_api_smoke: FROGLET_STRIPE_SECRET_KEY must be an sk_test_ key");
         return;
     }
+    if std::env::var("FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED").as_deref() != Ok("1") {
+        eprintln!("SKIP stripe_real_api_smoke: set FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED=1");
+        return;
+    }
+    let Ok(payment_method) = std::env::var("FROGLET_BUYER_STRIPE_PAYMENT_METHOD") else {
+        eprintln!("SKIP stripe_real_api_smoke: set FROGLET_BUYER_STRIPE_PAYMENT_METHOD=pm_...");
+        return;
+    };
+    let Ok(seller_network_id) = std::env::var("FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID") else {
+        eprintln!("SKIP stripe_real_api_smoke: set FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID");
+        return;
+    };
 
     let buyer_config = BuyerStripeConfig {
-        secret_key: buyer_key,
+        test_helper_enabled: true,
+        secret_key: seller_key.clone(),
         api_version: API_VERSION.to_string(),
         payment_method,
-        customer,
+        seller_network_id,
+        seller_external_id: std::env::var("FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID").ok(),
         api_base_url: None,
     };
     let price_cents: u64 = 200; // $2.00 — above Stripe's per-account minimum charge
     let expires_at = settlement::current_unix_timestamp() + 600;
 
-    eprintln!("\n=== [1/4] buyer mint_buyer_spt against {REAL} (the most uncertain call) ===");
+    eprintln!("\n=== [1/4] seller SPT test helper against {REAL} ===");
     let spt_id =
         match settlement::mint_buyer_spt(&buyer_config, price_cents, expires_at, None).await {
             Ok(id) => {
@@ -1652,7 +1717,7 @@ async fn stripe_real_api_smoke() {
                      request. Paste this error to the agent; the assumed field names live in \
                      src/settlement/stripe.rs::mint_spt and are easy to adjust."
                 );
-                panic!("mint_buyer_spt failed against live Stripe: {e}");
+                panic!("mint_buyer_spt failed against Stripe sandbox: {e}");
             }
         };
 
@@ -1664,7 +1729,8 @@ async fn stripe_real_api_smoke() {
         },
         seller_key,
         REAL,
-    );
+    )
+    .expect("Stripe driver");
 
     eprintln!("=== [2/4] seller prepare (validate SPT + create manual-capture PaymentIntent) ===");
     let reservation = match seller
@@ -1743,7 +1809,7 @@ async fn stripe_real_api_smoke() {
     }
 
     eprintln!(
-        "\n=== stripe_real_api_smoke PASSED — mint/validate/capture/cancel all work against \
-         live Stripe. The Stripe rail is API-shape-validated. ===\n"
+        "\n=== stripe_real_api_smoke PASSED — helper/validate/capture/cancel work against \
+         Stripe's sandbox API. No live-money claim is implied. ===\n"
     );
 }

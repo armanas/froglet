@@ -1,69 +1,179 @@
 ---
+tableOfContents: false
 title: Quickstart
 description: "Run Froglet locally through an agent without cloning the repo first."
 ---
 
-<div class="learn-hero compact">
-  <div>
-    <div class="learn-pill">Agent-first install</div>
-    <p class="learn-lead">Start a local Froglet node without a repo clone, a domain, or a payment account.</p>
-    <p class="learn-sublead">The normal path is one tiny bootstrap, then everything else goes through <code>froglet-mcp</code>. The first proof is a free local <code>demo.add</code> service. Payments, public registration, Tor, and backend integrations are explicit follow-up decisions.</p>
-    <div class="learn-chip-row">
-      <span class="learn-chip">No git clone</span>
-      <span class="learn-chip">No paid domain</span>
-      <span class="learn-chip">MCP is the control surface</span>
-    </div>
-  </div>
-</div>
+## Start free on your computer
 
-## TL;DR
+Connect Froglet to your agent, run a small local check, and keep the signed evidence.
+You do not need a payment account or a public server.
 
-```bash
-curl -fsSL https://froglet.dev/agent | bash
+:::note[Release availability]
+The commands below require an immutable release containing `agent-bootstrap.sh`
+and its release manifest. If that bundle is missing, stop and use the
+[browser sample](/verify-receipt/) or [hosted demo](/learn/cloud-trial/).
+Do not bypass release verification to make an older release install.
+:::
+
+## 1. Check your computer
+
+- **Supported:** macOS on Apple Silicon, or Linux on x86_64 / arm64.
+- **Agent:** Claude Code or Codex with shell access. Other clients can use manual MCP configuration.
+- **Tools:** `curl`, `tar`, and a SHA-256 tool. Native setup uses launchd on macOS or user systemd on Linux.
+- **Windows:** a native Windows install is not covered by this guide.
+
+Only evaluating Froglet? [Try a sample in your browser](/verify-receipt/) first.
+
+## 2. Ask your agent to prepare setup
+
+Paste this into your agent in the project where you want to use Froglet:
+
+```text wrap
+Read https://froglet.dev/learn/quickstart/ and prepare a free, local Froglet installation for this project. Detect the supported OS and agent. Use the native-first path, no payment rail, and no public publication. Verify the immutable release and show the install plan, changed files, persistent service, and approval hash. Stop if the release bundle is unavailable. Wait for my approval before executing that exact plan. After installation, check status and the recorded local proof, then tell me the next action in plain language.
 ```
 
-The bootstrap:
+Your agent should handle the platform details. You review where Froglet will
+store data, which service it will start, and which agent configuration it will
+write before approving installation.
 
-- installs the signed `froglet-node` binary
-- writes `~/.froglet/agent/compose.yaml`
-- starts provider/runtime from published GHCR images matching the latest release
-- writes MCP config for the selected agent target
-- prints JSON with `provider_url`, `runtime_url`, MCP config path, and the next recommended MCP actions
+## 3. Know when it worked
+
+Ask your agent to report these checks separately:
+
+- **Node running:** provider and runtime health checks pass.
+- **Agent connected:** the Froglet `status` tool responds.
+- **Local example passed:** the recorded data proof shows a successful run and cleanup.
+
+The temporary example is removed after setup. That is expected. Next, ask your
+agent to [publish a small local service](/learn/provider-onboarding/).
+Payments and public access are separate choices you can make later.
+
+## If you get stuck
+
+| What you see | What to do next |
+| --- | --- |
+| Release bundle missing or verification failed | Stop. Check the release assets; keep using the browser sample until a verified bundle is available. |
+| Froglet tool does not appear | Check the printed MCP config path belongs to this project. Restart the agent if it does not reload configuration automatically. |
+| Node health check fails | Ask the agent to inspect the printed lifecycle command and logs. Do not start a second node over the same state directory. |
+| Permission or authentication error | Check the configured local token-file paths. Do not paste their contents into a website or chat. |
+| Local checks pass but public access fails | Local success does not establish public reachability. Follow the publication guide before exposing a service. |
+
+<details>
+<summary>Advanced: manual commands, payment options, and operator reference</summary>
+
+## Manual verified installation
+
+```bash
+set -eu
+repo=armanas/froglet
+metadata="$(mktemp "${TMPDIR:-/tmp}/froglet-release.XXXXXX")"
+bootstrap="$(mktemp "${TMPDIR:-/tmp}/froglet-agent-bootstrap.XXXXXX")"
+release_url="$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")"
+tag="${release_url%/}"; tag="${tag##*/}"
+printf '%s' "$tag" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+-]*$'
+curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2026-03-10' \
+  "https://api.github.com/repos/$repo/releases/tags/$tag" -o "$metadata"
+[ "$(sed -n 's/^  "immutable": \([a-z]*\),*$/\1/p' "$metadata")" = true ]
+[ "$(sed -n 's/^  "tag_name": "\([^"]*\)",*$/\1/p' "$metadata")" = "$tag" ]
+asset_record="$(awk '
+  /^    \{/ { in_asset=1; name=digest=state=""; next }
+  in_asset && /^      "name":/ { v=$0; sub(/^      "name": "/,"",v); sub(/",*$/,"",v); name=v }
+  in_asset && /^      "digest":/ { v=$0; sub(/^      "digest": "/,"",v); sub(/",*$/,"",v); digest=v }
+  in_asset && /^      "state":/ { v=$0; sub(/^      "state": "/,"",v); sub(/",*$/,"",v); state=v }
+  in_asset && /^    \},*$/ { if (name=="agent-bootstrap.sh") print digest "|" state; in_asset=0 }
+' "$metadata")"
+[ "$(printf '%s\n' "$asset_record" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ]
+bootstrap_digest="${asset_record%%|*}"; asset_state="${asset_record#*|}"
+[ "$asset_state" = uploaded ]
+printf '%s' "$bootstrap_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+bootstrap_digest="${bootstrap_digest#sha256:}"
+curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  "https://github.com/$repo/releases/download/$tag/agent-bootstrap.sh" -o "$bootstrap"
+if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$bootstrap" | awk '{print $1}')";
+elif command -v shasum >/dev/null 2>&1; then actual="$(shasum -a 256 "$bootstrap" | awk '{print $1}')";
+else actual="$(openssl dgst -sha256 "$bootstrap" | sed 's/^.*= //')"; fi
+[ "$actual" = "$bootstrap_digest" ]
+chmod 0700 "$bootstrap"
+VERSION="$tag" sh "$bootstrap" plan
+# Present the complete plan and wait for approval, then copy its exact hash:
+VERSION="$tag" sh "$bootstrap" execute '<install_approval_hash>'
+rm -f "$bootstrap" "$metadata"
+```
+
+The first call is non-mutating: it uses only temporary files and returns the
+immutable release tag, verified manifest and target binary asset digests, exact
+bootstrap/install/configuration script digests, profile, persistent paths,
+service-manager impact, command, and canonical `install_approval_hash`. Show
+the complete plan to the user. The second call re-resolves every input and
+stops before a persistent write if anything drifted or the hash differs.
+
+After that approval gate, the bootstrap:
+
+- verifies the immutable release manifest and exact binary checksum
+- installs one checksum-verified `froglet-node` binary from the immutable
+  Release Bundle into a versioned release directory
+- starts one dual-role node through launchd or user systemd with persistent
+  identity/state under `~/.froglet/data`
+- writes Claude Code or Codex configuration for the dependency-free native MCP bridge
+- proves provider/runtime health and native MCP attachment without seeding a
+  service, then publishes/invokes a read-only JSON fixture and
+  confirmed-unpublishes it before reporting success
+- prints JSON with the exact release and source revision, install mode, state
+  path, MCP config, lifecycle command, proof booleans, data-proof path, and next
+  native actions
 
 It does **not** publish public services, register with the marketplace, or turn
-on paid rails. Those steps happen later through `froglet-mcp` after local health
-checks pass.
+on paid rails. A digest-pinned OCI image is only the fallback when native
+service management is unavailable. Public service publication happens later
+through the same native tool after local proofs pass; broader payment-planning
+and legacy registration helpers belong to the optional JavaScript MCP surface.
+If bootstrap JSON reports `install_mode: "docker"`, use its emitted
+`next_mcp_actions` rather than assuming the native publication/lifecycle action
+set; the native contract below applies when `install_mode` is `native`.
 
 ## Prerequisites
 
 - Linux x86_64 / arm64 or macOS arm64
 - `curl`
-- Docker with Compose v2 for the default provider/runtime stack
+- `tar` and `sha256sum` (Linux) or `shasum` (macOS)
+- launchd or user systemd for the default native path
+- Optional: Docker with Compose v2 for the immutable-image fallback
+- Optional for public publication: a live Froglet relay deployment (the
+  official endpoint is planned dormant by default)
 - Optional: Tor for zero-cost public registration from behind NAT
 - Optional: a public VM IP if you want a Froglet-managed clearnet subdomain
 
-You do not need Git, Rust, Node.js, Cloudflare, or a paid domain for the default
-bootstrap path.
+You do not need Git, Rust, Node.js, Python, `jq`, Docker, Cloudflare, a payment
+account, or a paid domain for the default native bootstrap path.
 
 ## Agent Targets
 
 Default target:
 
 ```bash
-curl -fsSL https://froglet.dev/agent | bash
+sh "$bootstrap" plan
+sh "$bootstrap" execute '<install_approval_hash>'
 ```
 
 Codex target:
 
 ```bash
-FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash
+FROGLET_AGENT_TARGET=codex sh "$bootstrap" plan
+FROGLET_AGENT_TARGET=codex sh "$bootstrap" execute '<install_approval_hash>'
 ```
 
 Manual target:
 
 ```bash
-FROGLET_AGENT_TARGET=manual curl -fsSL https://froglet.dev/agent | bash
+FROGLET_AGENT_TARGET=manual sh "$bootstrap" plan
+FROGLET_AGENT_TARGET=manual sh "$bootstrap" execute '<install_approval_hash>'
 ```
+
+Use exactly the same profile environment for both calls. Any changed target,
+path, payment choice, network setting, or service-manager impact invalidates
+the old approval and requires a new plan.
 
 OpenClaw still needs the repo-local OpenClaw plugin folder. Use the MCP path
 above for no-clone setup; use source mode only if you are developing or testing
@@ -72,15 +182,24 @@ the OpenClaw plugin itself.
 ## First MCP Calls
 
 After the bootstrap finishes, restart or point your agent at the printed MCP
-config path. Then have the agent call the Froglet MCP tool in this order:
+config path. Then have the agent call the single `froglet` tool in this order:
 
 1. `status`
-2. `publish_artifact` with `template: "demo.add"`
-3. `list_local_services`
-4. `invoke_service` for `demo.add.local` with `{"a":7,"b":5}`
+2. Read `<bootstrap_dir>/local-proof.json`; require native MCP status `ok`.
+3. Read the emitted `data_proof_path`; require successful publication and
+   invocation, `unpublish.isError=false`, and an empty
+   `final_feed.active_offer_hashes` array.
 
-Expected first proof: the local service returns `{"sum":12}` and the agent can
-report provider/runtime health, service metadata, and receipt evidence.
+The proof service is intentionally no longer invokable after installation.
+The bootstrap records its transient result and cleanup evidence without
+leaving any offer that a later public reachability grant could expose.
+
+To author another service, have the agent create a small directory containing
+`froglet-service.toml` plus its source/data file. `marketplace_publish` takes
+that `project_dir`. Local hosting returns a verified local revision directly;
+every public hosting choice first returns a non-mutating consent summary. The
+agent must show that summary to the user and may call the action again with its
+exact `consent_hash` only after approval.
 
 If you already have a local provider/runtime and only need the MCP stdio server,
 use the published package directly:
@@ -107,20 +226,22 @@ x402 wallets to try Froglet. Paid rails are explicit operator choices:
 | `stripe-live` | Production Stripe via the agentic SPT model — buyers are external ACP agents, not froglet nodes (US-only) | fresh explicit approval, live secret, tiny live payment/refund proof |
 | `x402` | Daemon-only USDC-style rail for self-hosted compute endpoints. **Not** a marketplace publish-path option | wallet address, facilitator, verify/settle proof |
 
-If an agent calls `plan_install` or `get_install_guide` without a rail, MCP
-returns `decision_required`. Pick `none` for the first demo and for normal
-customer evaluation. Do not enter real payment secrets until the local free path
-is healthy and the operator has deliberately chosen a paid rail. Published
-marketplace services settle with `none`, `lightning`, or `stripe`; x402 stays at
-the daemon level. No real money has moved yet anywhere (test-mode / regtest
-only).
+If an agent uses the optional JavaScript MCP's `plan_install` or
+`get_install_guide` without a rail, that compatibility surface returns
+`decision_required`; those are not native-bridge actions. Pick `none` for the first demo and for normal
+customer evaluation. Do not enter real payment
+secrets until the local free path is healthy and the operator has deliberately
+chosen a paid rail. Published marketplace services settle with `none`,
+`lightning`, or `stripe`; x402 stays at the daemon level. No real money has
+moved yet anywhere (test-mode / regtest only).
 
 :::caution[Buying side: set a spend budget before giving an agent a wallet]
 A node that *pays* for services refuses paid deals — fail-closed — until you
 set `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative budget, persistently
 tracked; optional per-deal cap via `FROGLET_REQUESTER_MAX_DEAL_MSAT`). Both
 can ride the single bootstrap command so no post-install edit is needed:
-`FROGLET_REQUESTER_SPEND_BUDGET_MSAT=500000 curl -fsSL https://froglet.dev/agent | bash`.
+set `FROGLET_REQUESTER_SPEND_BUDGET_MSAT=500000` for both the `plan` and
+`execute` commands. The budget is included in the approval hash.
 Agents can inspect headroom with the `get_spend_status` MCP action.
 Enforcement happens before any money moves on every rail; check the ledger
 with `GET /v1/runtime/spend`. Free deals need no budget. See
@@ -130,36 +251,58 @@ with `GET /v1/runtime/spend`. Free deals need no budget. See
 ## Public Registration Choices
 
 Marketplace registration requires the provider to advertise the exact public
-URL that the marketplace will fetch. There are three practical paths:
+URL that the marketplace will fetch. There are four practical paths:
 
 | Path | Cost | Works behind NAT | Marketplace URL |
 |------|------|------------------|-----------------|
 | Local only | $0 | yes | not registered |
+| Outbound Froglet relay | operator policy | yes | identity-assigned HTTPS URL |
 | Tor | $0 | yes | `http://<onion>.onion` |
 | Froglet-managed subdomain | $0 | no, needs public inbound IP | `https://<slug>.providers.froglet.dev` |
 
 Raw IPs and self-signed clearnet URLs are not accepted by the public
 marketplace. They create poor trust and UX for requesters.
 
+### Relay Publication
+
+Relay is the dependency-minimal public design: the node opens outbound WSS,
+the relay assigns an identity-derived HTTPS origin, and no inbound port or
+user-owned DNS account is needed. Bootstrap plans the official URL and suffix
+by default, but that configuration stays dormant and opens no socket until an
+exact durable publication grant exists. Set both relay variables empty during
+`plan` and `execute` to opt out. Publication planning fails before user
+approval unless the node reports `relay.status=up`, the exact HTTPS URL, and
+the provider identity. The current first-party deployment status is tracked in
+the implementation evidence matrix; dormant configuration is not a claim that
+the public relay is online.
+
 ### Tor Registration
 
-Use Tor when the user has no domain and no public inbound internet. After local
-health passes, ask MCP to plan a Tor exposure. The registration call is:
+Use Tor when the user has no domain and no public inbound internet. On the
+native lane, author the service and make the normal two-call publication with
+`host: "tor"`; the first call is still non-mutating:
 
 ```json
 {
-  "action": "marketplace_register",
-  "registration_transport": "tor"
+  "action": "marketplace_publish",
+  "project_dir": "/absolute/path/to/my-service",
+  "host": "tor"
 }
 ```
 
-The provider must advertise the same onion URL in `/v1/node/capabilities`, and
-the marketplace/indexer runtime must have Tor SOCKS access.
+Repeat only with the exact approved `consent_hash`. The provider must advertise
+the same onion URL in `/v1/node/capabilities`, and the marketplace/indexer
+runtime must have Tor SOCKS access. The broader JavaScript MCP also exposes
+`marketplace_register` for an already-exposed provider; it is not the native
+clean-host publication action.
 
 ### Froglet-Managed Subdomain
 
 Use this when the provider is on a VM or home network with public inbound
 connectivity but the user does not want to buy a domain.
+
+These claim/completion actions are currently on the broader JavaScript MCP
+compatibility surface, not the native bridge installed by the clean-host path:
 
 1. Agent reads the local provider identity from `status`.
 2. Agent calls `marketplace_domain_claim` with `provider_id`, optional
@@ -174,7 +317,8 @@ This is not a proxy. The provider still hosts its own Froglet node.
 
 ## Backend Integration Flow
 
-After the free demo works, the agent should ask what the user wants to expose:
+After the transient proof has been confirmed-unpublished and the active offer
+feed is empty, the agent should ask what the user wants to expose:
 
 - demo service
 - local script
@@ -215,18 +359,19 @@ operator-only and should be run separately after the free path is healthy.
 The disposable-host proof exercises the no-clone bootstrap in an isolated
 `HOME`:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
-```
+From a trusted checkout, run
+`bash scripts/fresh_host_quickstart_smoke.sh`.
 
-For setup-only evidence without starting Docker:
+For setup-only evidence when the host cannot or must not start either the
+native user service or the explicitly selected Docker fallback:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash -s -- --skip-start
-```
+From a trusted checkout, run
+`bash scripts/fresh_host_quickstart_smoke.sh --skip-start`.
 
 ## Related
 
 - [Connect Agents](/learn/agents/)
 - [Payment Rails](/learn/payment-rails/)
 - [Marketplace](/marketplace/overview/)
+
+</details>

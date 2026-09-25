@@ -6,16 +6,19 @@
 //! - read or write outside an explicit allow-list (enforced by `landlock`),
 //! - issue outbound network connections unless the caller grants it
 //!   (enforced by `seccomp` denying `socket`/`connect`/`bind`),
+//! - create descendant processes or threads (enforced by `seccomp` denying
+//!   `fork`/`vfork`/`clone`/`clone3`),
 //! - `execve` another binary (enforced by Landlock execute restrictions), or
 //! - gain new privileges via suid binaries (enforced by `prctl PR_SET_NO_NEW_PRIVS`).
 //!
 //! This is a **deny-list** sandbox, not a full allow-list: Python stdlib uses
 //! dozens of syscalls and enumerating every one across Python versions is
-//! fragile. The deny-list targets the five concrete attack surfaces a
+//! fragile. The deny-list targets the concrete attack surfaces a
 //! malicious workload would exploit: filesystem reads of host secrets,
 //! filesystem writes outside its tempdir, outbound network, arbitrary exec,
-//! and escape to a new privileged program. Filesystem and executable access
-//! are closed by Landlock; network syscalls are closed by seccomp.
+//! descendant processes, and escape to a new privileged program. Filesystem
+//! and executable access are closed by Landlock; network and process-creation
+//! syscalls are closed by seccomp.
 //!
 //! On non-Linux hosts the module is a no-op and `install()` refuses to run a
 //! Python workload unless `FROGLET_ALLOW_UNSANDBOXED_PYTHON=1` is set. This
@@ -49,6 +52,12 @@ pub struct SandboxConfig {
     /// workload has been granted a capability that requires network
     /// (e.g., a postgres mount).
     pub allow_network: bool,
+    /// Address-space ceiling for the Python child. Applied with `RLIMIT_AS`
+    /// before exec on Linux.
+    pub memory_limit_bytes: Option<u64>,
+    /// CPU-time ceiling for the Python child. This complements the caller's
+    /// wall-clock timeout and is enforced with `RLIMIT_CPU` before exec.
+    pub cpu_time_limit_secs: Option<u64>,
 }
 
 impl SandboxConfig {
@@ -60,6 +69,8 @@ impl SandboxConfig {
             writable_paths: vec![tempdir.to_path_buf()],
             executable_paths: Vec::new(),
             allow_network: false,
+            memory_limit_bytes: None,
+            cpu_time_limit_secs: None,
         }
     }
 }
@@ -102,9 +113,9 @@ fn default_readonly_paths() -> Vec<PathBuf> {
 /// see what level of isolation is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxTier {
-    /// Full sandbox — landlock + seccomp + NO_NEW_PRIVS.
+    /// Full sandbox — Landlock ABI v3+ + seccomp + NO_NEW_PRIVS.
     Full,
-    /// Landlock and seccomp both unavailable on this host (pre-5.13 kernel
+    /// Landlock and seccomp both unavailable on this host (pre-6.2 kernel
     /// on Linux, or running on non-Linux with the opt-out env var set).
     Unsandboxed,
 }
@@ -113,11 +124,49 @@ pub enum SandboxTier {
 pub fn detect_tier() -> SandboxTier {
     #[cfg(target_os = "linux")]
     {
-        SandboxTier::Full
+        if runtime_available() {
+            SandboxTier::Full
+        } else {
+            SandboxTier::Unsandboxed
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
         SandboxTier::Unsandboxed
+    }
+}
+
+/// Report whether this host can enforce the minimum Landlock ABI promised by
+/// the Python runtime. This is a read-only kernel query used for capability
+/// advertisement; `harden_command` still performs the authoritative check in
+/// the child and fails closed.
+pub fn runtime_available() -> bool {
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        const LANDLOCK_CREATE_RULESET_VERSION: libc::c_long = 1;
+        let abi = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<libc::c_void>(),
+                0,
+                LANDLOCK_CREATE_RULESET_VERSION,
+            )
+        };
+        abi >= 3
+    }
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "x86_64", target_arch = "aarch64"))
+    ))]
+    {
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::var("FROGLET_ALLOW_UNSANDBOXED_PYTHON").as_deref() == Ok("1")
     }
 }
 
@@ -133,12 +182,36 @@ pub fn harden_command(
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
+        if !runtime_available() {
+            return Err(
+                "python execution requires Linux Landlock ABI v3 or newer; this kernel cannot enforce the required filesystem sandbox"
+                    .to_string(),
+            );
+        }
         let mut config_clone = config;
         config_clone
             .executable_paths
             .extend(resolve_command_executables(command));
         unsafe {
             command.pre_exec(move || {
+                if let Some(memory_limit_bytes) = config_clone.memory_limit_bytes {
+                    let limit = libc::rlimit {
+                        rlim_cur: memory_limit_bytes as libc::rlim_t,
+                        rlim_max: memory_limit_bytes as libc::rlim_t,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if let Some(cpu_time_limit_secs) = config_clone.cpu_time_limit_secs {
+                    let limit = libc::rlimit {
+                        rlim_cur: cpu_time_limit_secs.max(1) as libc::rlim_t,
+                        rlim_max: cpu_time_limit_secs.max(1) as libc::rlim_t,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_CPU, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 install_sandbox(&config_clone).map_err(std::io::Error::other)?;
                 Ok(())
             });
@@ -253,12 +326,16 @@ fn install_landlock(config: &SandboxConfig) -> Result<(), String> {
         RulesetCreatedAttr, RulesetStatus, make_bitflags,
     };
 
-    let abi = ABI::V1;
+    // ABI v3 is the first ABI that mediates truncate(2), ftruncate(2), and
+    // O_TRUNC.  Falling back to v1/v2 would silently leave a write primitive
+    // outside the advertised writable-path boundary, so compatibility is a
+    // hard requirement rather than a best-effort downgrade.
+    let abi = ABI::V3;
     let read_dir_access = make_bitflags!(AccessFs::{ReadFile | ReadDir});
     let read_file_access = make_bitflags!(AccessFs::{ReadFile});
     let execute_access = make_bitflags!(AccessFs::{ReadFile | Execute});
     let write_dir_access = read_dir_access | AccessFs::from_write(abi);
-    let write_file_access = read_file_access | make_bitflags!(AccessFs::{WriteFile});
+    let write_file_access = read_file_access | make_bitflags!(AccessFs::{WriteFile | Truncate});
     let access_for_path = |path: &PathBuf, dir_access, file_access| {
         if path
             .metadata()
@@ -339,6 +416,21 @@ fn install_seccomp(config: &SandboxConfig) -> Result<(), String> {
         denied.insert(libc::SYS_connect);
         denied.insert(libc::SYS_bind);
     }
+    // Keep the workload to one process. RLIMIT_AS and RLIMIT_CPU are
+    // per-process ceilings; denying all process/thread creation makes those
+    // ceilings aggregate for the complete Python workload and prevents pipe-
+    // holding descendants from surviving cancellation.
+    // AArch64 has no fork/vfork syscall numbers: libc implements those
+    // operations through clone. Keep the x86_64 entries where they exist,
+    // and deny clone/clone3 on both supported Linux architectures.
+    #[cfg(target_arch = "x86_64")]
+    {
+        denied.insert(libc::SYS_fork);
+        denied.insert(libc::SYS_vfork);
+    }
+    denied.insert(libc::SYS_clone);
+    denied.insert(libc::SYS_clone3);
+
     // io_uring (since Linux 5.1) bypasses the per-syscall seccomp gate above:
     // its IORING_OP_SOCKET / CONNECT / BIND opcodes do not invoke the
     // socket/connect/bind syscalls and thus would slip past the deny-list.
@@ -434,6 +526,21 @@ mod tests {
     }
 
     #[test]
+    fn harden_command_explains_unsupported_landlock() {
+        if runtime_available() {
+            return;
+        }
+        let dir = tempdir();
+        let mut command = Command::new(resolve_python3_executable());
+        let error = harden_command(&mut command, SandboxConfig::for_python(dir.path()))
+            .expect_err("unsupported Landlock must be rejected before spawn");
+        assert!(
+            error.contains("Landlock ABI v3"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     #[ignore = "requires landlock+seccomp syscalls unavailable on default CI runners; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
     fn python_cannot_read_etc_passwd_under_landlock() {
         let dir = tempdir();
@@ -458,6 +565,77 @@ try:\n  open('/tmp/froglet-sandbox-outside', 'w').write('x')\n  print('LEAKED')\
         let (code, stdout, _) = run_python(script, config);
         assert_eq!(code, 0);
         assert!(stdout.contains("BLOCKED"), "unexpected stdout: {stdout}");
+    }
+
+    #[test]
+    #[ignore = "requires Landlock ABI v3+ and seccomp; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
+    fn python_cannot_truncate_readonly_file_under_landlock() {
+        let dir = tempdir();
+        let readonly = tempfile::NamedTempFile::new().expect("readonly temp file");
+        std::fs::write(readonly.path(), b"must remain intact").expect("seed readonly file");
+        let mut config = SandboxConfig::for_python(dir.path());
+        config.readonly_paths.push(readonly.path().to_path_buf());
+        let script = format!(
+            "import os\ntry:\n  os.truncate({:?}, 0)\n  print('LEAKED')\nexcept PermissionError:\n  print('BLOCKED')\n",
+            readonly.path().to_string_lossy()
+        );
+
+        let (code, stdout, stderr) = run_python(&script, config);
+
+        assert_eq!(
+            code, 0,
+            "unexpected exit {code}; stdout: {stdout}; stderr: {stderr}"
+        );
+        assert!(stdout.contains("BLOCKED"), "unexpected stdout: {stdout}");
+        assert_eq!(
+            std::fs::read(readonly.path()).expect("read readonly file"),
+            b"must remain intact"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Landlock ABI v3+ and seccomp; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
+    fn python_cannot_create_descendant_process_under_seccomp() {
+        let dir = tempdir();
+        let config = SandboxConfig::for_python(dir.path());
+        let script = "\
+import os\n\
+try:\n  os.fork()\n  print('LEAKED')\n\
+except PermissionError:\n  print('BLOCKED')\n\
+except OSError as e:\n  if e.errno == 1:\n    print('BLOCKED')\n  else:\n    raise\n";
+
+        let (code, stdout, stderr) = run_python(script, config);
+
+        assert_eq!(
+            code, 0,
+            "unexpected exit {code}; stdout: {stdout}; stderr: {stderr}"
+        );
+        assert_eq!(
+            stdout.matches("BLOCKED").count(),
+            1,
+            "unexpected stdout: {stdout}"
+        );
+        assert!(!stdout.contains("LEAKED"), "unexpected stdout: {stdout}");
+    }
+
+    #[test]
+    #[ignore = "requires Landlock ABI v3+ and seccomp; run via FROGLET_RUN_LINUX_SANDBOX_TESTS=1 scripts/strict_checks.sh"]
+    fn python_cannot_create_thread_with_clone_under_seccomp() {
+        let dir = tempdir();
+        let config = SandboxConfig::for_python(dir.path());
+        let script = "\
+import threading\n\
+try:\n  thread = threading.Thread(target=lambda: print('LEAKED'))\n  thread.start()\n  thread.join()\n\
+except RuntimeError as error:\n  if 'start new thread' in str(error):\n    print('BLOCKED')\n  else:\n    raise\n";
+
+        let (code, stdout, stderr) = run_python(script, config);
+
+        assert_eq!(
+            code, 0,
+            "unexpected exit {code}; stdout: {stdout}; stderr: {stderr}"
+        );
+        assert!(stdout.contains("BLOCKED"), "unexpected stdout: {stdout}");
+        assert!(!stdout.contains("LEAKED"), "unexpected stdout: {stdout}");
     }
 
     #[test]

@@ -5,7 +5,15 @@ describe('buildSelfHostScript', () => {
   it('builds a pasteable default script without nested cd commands', () => {
     const script = buildSelfHostScript();
 
-    expect(script).toContain('curl -fsSL https://froglet.dev/agent | bash');
+    expect(script).toMatch(/^set -eu$/m);
+    expect(script).toContain('froglet-agent-bootstrap.XXXXXX');
+    expect(script).toContain('releases/download/$tag/agent-bootstrap.sh');
+    expect(script).toContain('/releases/tags/$tag');
+    expect(script).toContain('"immutable"');
+    expect(script).toContain('"$asset_state" = uploaded');
+    expect(script).toContain("--proto-redir '=https'");
+    expect(script).toContain('sh "$bootstrap" plan');
+    expect(script).toContain('sh "$bootstrap" execute \'<install_approval_hash>\'');
     expect(script).not.toContain('git clone https://github.com/armanas/froglet.git');
     expect(script.match(/^cd froglet$/gm)).toBeNull();
     expect(script).not.toContain('cd froglet &&');
@@ -21,7 +29,13 @@ describe('buildSelfHostScript', () => {
       payment: 'x402',
     });
 
-    expect(script).toContain('FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash');
+    expect(script).toContain(
+      'env FROGLET_AGENT_TARGET=codex VERSION="$tag" sh "$bootstrap" plan',
+    );
+    expect(script).toContain(
+      'env FROGLET_AGENT_TARGET=codex VERSION="$tag" sh "$bootstrap" execute \'<install_approval_hash>\'',
+    );
+    expect(script).not.toMatch(/^FROGLET_AGENT_TARGET=.*curl /m);
     expect(script).toContain('configure x402 with your Base wallet address');
   });
 
@@ -34,7 +48,10 @@ describe('buildSelfHostScript', () => {
 
     expect(script).not.toContain('install.sh');
     expect(script).not.toContain('npm ci --prefix integrations/mcp/froglet');
-    expect(script).toContain('FROGLET_AGENT_TARGET=manual curl -fsSL https://froglet.dev/agent | bash');
+    expect(script).toContain(
+      'env FROGLET_AGENT_TARGET=manual FROGLET_BOOTSTRAP_MODE=docker VERSION="$tag" sh "$bootstrap" plan',
+    );
+    expect(script).not.toMatch(/^FROGLET_(?:AGENT_TARGET|BOOTSTRAP_MODE)=.*curl /m);
     expect(script).toContain('configure Stripe test mode');
   });
 });

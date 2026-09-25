@@ -36,7 +36,7 @@ impl SettlementRegistry {
     /// - `PaymentBackend::Stripe` registers the Stripe Machine Payments
     ///   driver when the API version and secret key are present.
     /// - `PaymentBackend::None` is silently ignored (no driver is registered).
-    pub fn new(config: &NodeConfig) -> Self {
+    pub fn new(config: &NodeConfig) -> Result<Self, String> {
         let mut drivers: Vec<(String, Arc<dyn SettlementDriver>)> = Vec::new();
         for backend in &config.payment_backends {
             match backend {
@@ -51,7 +51,7 @@ impl SettlementRegistry {
                     if let Some(x402_config) = &config.x402 {
                         drivers.push((
                             "x402_usdc".to_string(),
-                            Arc::new(x402::X402Driver::new(x402_config.clone())),
+                            Arc::new(x402::X402Driver::new(x402_config.clone())?),
                         ));
                     } else {
                         tracing::warn!(
@@ -68,7 +68,10 @@ impl SettlementRegistry {
                         if !api_key.is_empty() {
                             drivers.push((
                                 "stripe_mpp".to_string(),
-                                Arc::new(stripe::StripeDriver::new(stripe_config.clone(), api_key)),
+                                Arc::new(stripe::StripeDriver::new(
+                                    stripe_config.clone(),
+                                    api_key,
+                                )?),
                             ));
                         } else {
                             tracing::warn!(
@@ -87,7 +90,7 @@ impl SettlementRegistry {
                 }
             }
         }
-        Self { drivers }
+        Ok(Self { drivers })
     }
 
     /// Return the driver responsible for `payment_kind`, or `None` if no
@@ -157,10 +160,20 @@ pub use lightning::{
     update_lightning_invoice_bundle_states, validate_lightning_invoice_bundle,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProvidedPayment {
     pub kind: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for ProvidedPayment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProvidedPayment")
+            .field("kind", &self.kind)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +183,20 @@ pub struct PaymentReservation {
     pub service_id: ServiceId,
     pub amount_sats: u64,
     pub token_hash: String,
+}
+
+/// Provider-confirmed state of an external payment reservation.
+///
+/// This is intentionally runtime-local evidence rather than a Kernel receipt
+/// state. Callers must not emit a terminal signed receipt from `Pending`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaymentReservationState {
+    /// The external provider still reports a non-terminal state.
+    Pending(String),
+    /// Funds were captured/committed by the external provider.
+    Committed,
+    /// The authorization was canceled/released by the external provider.
+    Released,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +291,13 @@ pub enum PaymentError {
         kind: String,
         accepted_payment_methods: Vec<String>,
     },
+    #[error("invalid payment credential")]
+    InvalidPayment {
+        service_id: String,
+        price_sats: u64,
+        kind: String,
+        reason: &'static str,
+    },
     #[error("payment backend unavailable")]
     BackendUnavailable {
         service_id: String,
@@ -279,6 +313,7 @@ impl PaymentError {
         match self {
             PaymentError::PaymentRequired { .. } => StatusCode::PAYMENT_REQUIRED,
             PaymentError::UnsupportedKind { .. } => StatusCode::BAD_REQUEST,
+            PaymentError::InvalidPayment { .. } => StatusCode::BAD_REQUEST,
             PaymentError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             PaymentError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -306,6 +341,18 @@ impl PaymentError {
                 "service_id": service_id,
                 "price_sats": price_sats,
                 "accepted_payment_methods": accepted_payment_methods
+            }),
+            PaymentError::InvalidPayment {
+                service_id,
+                price_sats,
+                kind,
+                reason,
+            } => serde_json::json!({
+                "error": "invalid payment credential",
+                "service_id": service_id,
+                "price_sats": price_sats,
+                "kind": kind,
+                "reason": reason,
             }),
             PaymentError::BackendUnavailable {
                 service_id,
@@ -352,6 +399,19 @@ pub trait SettlementDriver: Send + Sync {
         state: &'a AppState,
         reservation: &'a PaymentReservation,
     ) -> BoxFuture<'a, Result<(), String>>;
+
+    /// Inspect external reservation state without causing a mutation.
+    ///
+    /// Drivers that cannot provide authoritative state may keep the default
+    /// error. Durable reconciliation uses this hook only for rails that
+    /// implement it explicitly (currently Stripe MPP).
+    fn reservation_state<'a>(
+        &'a self,
+        _state: &'a AppState,
+        _reservation: &'a PaymentReservation,
+    ) -> BoxFuture<'a, Result<PaymentReservationState, String>> {
+        Box::pin(async { Err("payment reservation state inspection is unsupported".to_string()) })
+    }
 }
 
 pub fn driver_descriptor(state: &AppState) -> SettlementDriverDescriptor {
@@ -451,6 +511,17 @@ pub async fn release_payment(
     driver.release(state, reservation).await
 }
 
+pub async fn payment_reservation_state(
+    state: &AppState,
+    reservation: &PaymentReservation,
+) -> Result<PaymentReservationState, String> {
+    let driver = state
+        .settlement_registry
+        .driver_for(&reservation.method)
+        .unwrap_or_else(|| state.settlement_registry.primary_driver());
+    driver.reservation_state(state, reservation).await
+}
+
 /// Build a [`StripeDriver`] pointed at a custom base URL.
 ///
 /// This constructor is intentionally public so that integration tests can
@@ -461,7 +532,7 @@ pub fn stripe_driver_with_base_url(
     config: crate::config::StripeConfig,
     api_key: String,
     api_base_url: &str,
-) -> impl SettlementDriver {
+) -> Result<impl SettlementDriver, String> {
     stripe::StripeDriver::with_base_url(config, api_key, api_base_url)
 }
 
@@ -476,23 +547,23 @@ pub fn stripe_driver_boxed(
     config: crate::config::StripeConfig,
     api_key: String,
     api_base_url: impl Into<String>,
-) -> Box<dyn SettlementDriver> {
-    Box::new(stripe::StripeDriver::with_base_url(
+) -> Result<Box<dyn SettlementDriver>, String> {
+    Ok(Box::new(stripe::StripeDriver::with_base_url(
         config,
         api_key,
         &api_base_url.into(),
-    ))
+    )?))
 }
 
-/// Mint a Stripe Shared Payment Token (SPT) using the buyer node's Stripe
-/// credentials.
+/// Simulate receipt of a Stripe Shared Payment Token (SPT) with Stripe's
+/// seller-side test helper.
 ///
-/// This is the buyer-side complement to the seller's `prepare()` step.  Call
-/// this before sending a `CreateDealRequest` to a provider whose quote carries
-/// `settlement_terms.method == "stripe_mpp.v1"`.
+/// This function is sandbox-only. Production requesters must obtain an SPT
+/// from an authorized agentic-commerce platform and put it in the deal's
+/// `payment` field; Froglet never mints a production SPT.
 ///
 /// # Parameters
-/// - `buyer_config` — the buyer's Stripe credentials and funding source.
+/// - `buyer_config` — explicit seller test-helper sandbox configuration.
 /// - `amount_cents` — the SPT ceiling in cents; must be ≥ the quoted price.
 /// - `expires_at` — Unix timestamp; the seller rejects tokens past this time.
 /// - `api_base_url` — override the Stripe API base URL (use `None` for
@@ -506,6 +577,11 @@ pub async fn mint_buyer_spt(
     expires_at: i64,
     api_base_url: Option<&str>,
 ) -> Result<String, String> {
+    buyer_config.validate_test_helper()?;
+    if let Some(url) = api_base_url {
+        validate_stripe_test_helper_base_url(url)?;
+    }
+
     let seller_config = crate::config::StripeConfig {
         api_version: buyer_config.api_version.clone(),
         webhook_secret: None,
@@ -515,25 +591,49 @@ pub async fn mint_buyer_spt(
             stripe::StripeDriver::with_base_url(seller_config, buyer_config.secret_key.clone(), url)
         }
         None => stripe::StripeDriver::new(seller_config, buyer_config.secret_key.clone()),
-    };
-
-    let funding_source = match (
-        buyer_config.payment_method.as_deref(),
-        buyer_config.customer.as_deref(),
-    ) {
-        (Some(pm_id), _) => stripe::BuyerFundingSource::PaymentMethod(pm_id),
-        (None, Some(cus_id)) => stripe::BuyerFundingSource::Customer(cus_id),
-        (None, None) => {
-            return Err(
-                "buyer Stripe config has no funding source (payment_method or customer)".into(),
-            );
-        }
-    };
+    }?;
 
     let minted = driver
-        .mint_spt(amount_cents, expires_at, &funding_source)
+        .mint_spt(
+            amount_cents,
+            expires_at,
+            &buyer_config.payment_method,
+            &buyer_config.seller_network_id,
+            buyer_config.seller_external_id.as_deref(),
+        )
         .await?;
     Ok(minted.spt_id)
+}
+
+fn validate_stripe_test_helper_base_url(value: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(value)
+        .map_err(|error| format!("invalid Stripe test-helper API base URL: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(
+            "Stripe test-helper API base URL must be a credential-free HTTP(S) loopback origin"
+                .to_string(),
+        );
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Stripe test-helper API base URL must include a host".to_string())?;
+    let loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback {
+        return Err(
+            "Stripe test-helper API base URL overrides are allowed only for exact loopback hosts"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Pay a prepaid (`lightning.prepaid.v1`) BOLT11 invoice from the buyer's own
@@ -562,8 +662,8 @@ pub async fn pay_buyer_prepaid_invoice(
         .map_err(|error| error.to_string())
 }
 
-// Re-export buyer-mint types so tests can use them directly.
-pub use stripe::{BuyerFundingSource, MintedSpt};
+// Re-export the test-helper response type for integration tests.
+pub use stripe::MintedSpt;
 
 pub fn current_unix_timestamp() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {

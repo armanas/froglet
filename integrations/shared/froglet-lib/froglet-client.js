@@ -143,7 +143,10 @@ export function canonicalJsonStringify(value) {
     case "object": {
       const entries = Object.entries(value)
         .filter(([, entry]) => entry !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        // RFC 8785 orders property names by their raw UTF-16 code units.  A
+        // locale-aware comparator is both host-dependent and observably
+        // different for ordinary inputs such as `Z` versus `a`.
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJsonStringify(entry)}`).join(",")}}`
     }
     default:
@@ -508,9 +511,15 @@ export function selectTransportEndpoint(transportEndpoints) {
       priority: normalizedPriority(endpoint?.priority),
     }))
     .filter((candidate) => candidate.scheme !== null)
-  const preferred = supported.some((candidate) => candidate.hasQuoteHttp)
+  const featured = supported.some((candidate) => candidate.hasQuoteHttp)
     ? supported.filter((candidate) => candidate.hasQuoteHttp)
     : supported
+  // A lower numeric priority must not make a plaintext public endpoint win
+  // over an otherwise usable HTTPS endpoint.  Loopback development URLs are
+  // supplied through the trusted local-provider path rather than discovery.
+  const preferred = featured.some((candidate) => candidate.scheme === "https")
+    ? featured.filter((candidate) => candidate.scheme === "https")
+    : featured
   preferred.sort((left, right) => {
     if (left.priority !== right.priority) {
       return left.priority - right.priority
@@ -550,7 +559,9 @@ function flattenProviderOffer(provider, offer) {
   const executionProfile = offer?.execution_profile ?? {}
   const endpoint = selectTransportEndpoint(provider?.transport_endpoints)
   return {
-    service_id: offer?.offer_id ?? "unknown",
+    // service_id and offer_id are distinct contracts.  Do not invent a
+    // service binding when a marketplace response only contains an Offer.
+    service_id: offer?.service_id ?? null,
     offer_id: offer?.offer_id ?? "unknown",
     offer_kind: offer?.offer_kind ?? "unknown",
     resource_kind: "service",
@@ -706,6 +717,17 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
 }
 
+function decodeStrictHex(value, label) {
+  const normalized = nonEmptyString(value)
+  if (normalized === null) {
+    throw new Error(`${label} is required`)
+  }
+  if (normalized.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(normalized)) {
+    throw new Error(`${label} must be an even-length hexadecimal string`)
+  }
+  return { normalized, bytes: Buffer.from(normalized, "hex") }
+}
+
 function builtinServiceName(service, normalizedEntrypoint) {
   return nonEmptyString(service?.entrypoint) ?? nonEmptyString(service?.service_id) ?? normalizedEntrypoint
 }
@@ -716,10 +738,10 @@ export function buildWasmSubmission({
   contractVersion = WASM_RUN_JSON_ABI_V1,
   requestedCapabilities = [],
 }) {
-  if (typeof moduleBytesHex !== "string" || moduleBytesHex.trim().length === 0) {
-    throw new Error("inline Wasm submission requires wasm_module_hex")
-  }
-  const moduleBytes = Buffer.from(moduleBytesHex.trim(), "hex")
+  const { normalized: normalizedModuleHex, bytes: moduleBytes } = decodeStrictHex(
+    moduleBytesHex,
+    "wasm_module_hex"
+  )
   const normalized = normalizedInput(input)
   return {
     schema_version: FROGLET_SCHEMA_V1,
@@ -734,7 +756,7 @@ export function buildWasmSubmission({
       input_hash: inputHash(normalized),
       requested_capabilities: [...requestedCapabilities],
     },
-    module_bytes_hex: moduleBytesHex.trim(),
+    module_bytes_hex: normalizedModuleHex,
     input: normalized,
   }
 }
@@ -815,11 +837,12 @@ export function buildExecutionWorkload(request = {}) {
   }
 
   if (packageKind === "inline_module") {
-    if (typeof request?.wasm_module_hex !== "string" || request.wasm_module_hex.trim().length === 0) {
-      throw new Error("inline_module execution requires wasm_module_hex")
-    }
-    workload.module_hash = sha256Hex(Buffer.from(request.wasm_module_hex.trim(), "hex"))
-    workload.module_bytes_hex = request.wasm_module_hex.trim()
+    const { normalized: normalizedModuleHex, bytes: moduleBytes } = decodeStrictHex(
+      request?.wasm_module_hex,
+      "inline_module wasm_module_hex"
+    )
+    workload.module_hash = sha256Hex(moduleBytes)
+    workload.module_bytes_hex = normalizedModuleHex
   } else if (packageKind === "inline_source") {
     if (typeof request?.inline_source !== "string" || request.inline_source.trim().length === 0) {
       throw new Error("inline_source execution requires inline_source")
@@ -859,10 +882,12 @@ export function buildServiceAddressedExecution(service, input = null) {
   if (packageKind !== "builtin" && !bindingHash) {
     throw new Error(`service ${service.service_id ?? "unknown"} does not expose a binding hash`)
   }
+  const boundBuiltin = packageKind === "builtin" && bindingHash !== null
   const builtinName = packageKind === "builtin" ? builtinServiceName(service, entrypoint) : null
   const effectiveEntrypoint = builtinName ?? entrypoint
+  const requestedAccess = requestedAccessFromService(service, mounts)
   const security =
-    packageKind === "builtin"
+    packageKind === "builtin" && !boundBuiltin
       ? { mode: "standard" }
       : {
           mode: "standard",
@@ -883,10 +908,14 @@ export function buildServiceAddressedExecution(service, input = null) {
         : contractVersion,
     input_format: JCS_JSON_FORMAT,
     input_hash: inputHash(normalized),
-    requested_access: requestedAccessFromService(service, mounts),
     security,
-    mounts,
     input: normalized,
+  }
+  if (requestedAccess.length > 0) {
+    execution.requested_access = requestedAccess
+  }
+  if (mounts.length > 0) {
+    execution.mounts = mounts
   }
   if (packageKind === "inline_source") {
     execution.source_hash = bindingHash
@@ -894,6 +923,9 @@ export function buildServiceAddressedExecution(service, input = null) {
     execution.module_hash = bindingHash
   } else if (packageKind === "builtin") {
     execution.builtin_name = builtinName
+    if (boundBuiltin) {
+      execution.module_hash = bindingHash
+    }
   }
   return execution
 }
@@ -970,6 +1002,7 @@ async function resolveProviderReference({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  trustedProviderAuthTokenPath = null,
   preferTrustedProviderUrl = false,
   _deps = {},
 }) {
@@ -1007,17 +1040,15 @@ async function resolveProviderReference({
     }
   }
 
+  const hasTrustedProviderUrl =
+    typeof trustedProviderUrl === "string" && trustedProviderUrl.trim().length > 0
+
   if (explicitProviderId) {
-    const hasTrustedProviderUrl =
-      typeof trustedProviderUrl === "string" && trustedProviderUrl.trim().length > 0
-    if (hasTrustedProviderUrl && preferTrustedProviderUrl) {
-      return {
-        providerId: explicitProviderId,
-        providerUrl: trustedProviderUrl.trim(),
-        matchSource: "trusted_provider_url",
-      }
-    }
-    let providerResponse
+    // A caller-supplied provider_id is an identity constraint.  Never pair it
+    // with the operator's local URL unless that identity was independently
+    // resolved; doing so can silently route a remote request to the local node.
+    let providerResponse = null
+    let providerLookupError = null
     try {
       providerResponse = await runtimeProviderDetails({
         runtimeUrl,
@@ -1026,23 +1057,34 @@ async function resolveProviderReference({
         providerId: explicitProviderId,
       })
     } catch (error) {
-      if (hasTrustedProviderUrl) {
-        return {
-          providerId: explicitProviderId,
-          providerUrl: trustedProviderUrl.trim(),
-          matchSource: "trusted_provider_url_fallback",
-        }
-      }
-      throw error
+      providerLookupError = error
     }
     const detail = providerResponse?.provider
     if (!detail) {
-      if (hasTrustedProviderUrl) {
-        return {
-          providerId: explicitProviderId,
-          providerUrl: trustedProviderUrl.trim(),
-          matchSource: "trusted_provider_url_fallback",
+      if (hasTrustedProviderUrl && trustedProviderAuthTokenPath) {
+        try {
+          const identity = await frogletRequest(
+            trustedProviderUrl.trim(),
+            trustedProviderAuthTokenPath,
+            requestTimeoutMs,
+            "GET",
+            "/v1/node/identity"
+          )
+          const trustedProviderId = identity?.node_id ?? identity?.id
+          if (trustedProviderId === explicitProviderId) {
+            return {
+              providerId: explicitProviderId,
+              providerUrl: trustedProviderUrl.trim(),
+              matchSource: "verified_trusted_local_provider",
+            }
+          }
+        } catch {
+          // Preserve the authoritative runtime lookup error below.  A local
+          // fallback is optional and must never weaken the identity check.
         }
+      }
+      if (providerLookupError) {
+        throw providerLookupError
       }
       throw new Error(`provider ${explicitProviderId} not found`)
     }
@@ -1057,6 +1099,14 @@ async function resolveProviderReference({
       pin: validated.pin,
       providerDetail: detail,
       matchSource: "provider_id",
+    }
+  }
+
+  if (!serviceId && hasTrustedProviderUrl && preferTrustedProviderUrl) {
+    return {
+      providerId: null,
+      providerUrl: trustedProviderUrl.trim(),
+      matchSource: "trusted_local_provider_url",
     }
   }
 
@@ -1109,6 +1159,7 @@ async function resolveRemoteService({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  trustedProviderAuthTokenPath = null,
   _deps = {},
 }) {
   const serviceId =
@@ -1125,6 +1176,7 @@ async function resolveRemoteService({
     request,
     searchLimit,
     trustedProviderUrl,
+    trustedProviderAuthTokenPath,
     _deps,
   })
   const serviceResponse = await fetchPublicProviderService({
@@ -1138,6 +1190,11 @@ async function resolveRemoteService({
   if (!service) {
     throw new Error(`provider ${provider.providerId ?? provider.providerUrl} did not return a service record for ${serviceId}`)
   }
+  if (typeof service?.service_id !== "string" || service.service_id !== serviceId) {
+    throw new Error(
+      `provider ${provider.providerId ?? provider.providerUrl} returned service ${service?.service_id ?? "unknown"} for requested service ${serviceId}`
+    )
+  }
   if (
     provider.providerId &&
     typeof service?.provider_id === "string" &&
@@ -1146,6 +1203,15 @@ async function resolveRemoteService({
   ) {
     throw new Error(
       `service ${serviceId} belongs to provider ${service.provider_id}, not requested provider ${provider.providerId}`
+    )
+  }
+  if (
+    provider.discoveryService?.offer_id &&
+    typeof service?.offer_id === "string" &&
+    service.offer_id !== provider.discoveryService.offer_id
+  ) {
+    throw new Error(
+      `service ${serviceId} changed offer_id from discovered ${provider.discoveryService.offer_id} to ${service.offer_id}`
     )
   }
   return {
@@ -1743,7 +1809,7 @@ async function createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeou
  * Invoke a named service by building a canonical service-addressed execution
  * workload and submitting it through the runtime deal flow.
  *
- * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, service_id?: string, input?: unknown }, searchLimit?: number, trustedProviderUrl?: string | null }} config
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, service_id?: string, input?: unknown }, searchLimit?: number, trustedProviderUrl?: string | null, trustedProviderAuthTokenPath?: string | null }} config
  */
 export async function invokeService({
   runtimeUrl,
@@ -1752,6 +1818,7 @@ export async function invokeService({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  trustedProviderAuthTokenPath = null,
   _deps = {},
 }) {
   const resolved = await resolveRemoteService({
@@ -1761,6 +1828,7 @@ export async function invokeService({
     request,
     searchLimit,
     trustedProviderUrl,
+    trustedProviderAuthTokenPath,
     _deps,
   })
   const response = await createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, {
@@ -1778,7 +1846,7 @@ export async function invokeService({
 /**
  * Run open-ended compute through the runtime deal flow.
  *
- * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, input?: unknown, runtime?: string, package_kind?: string, entrypoint_kind?: string, entrypoint?: string, contract_version?: string, mounts?: unknown, artifact_path?: string, wasm_module_hex?: string, inline_source?: string, oci_reference?: string, oci_digest?: string }, searchLimit?: number, trustedProviderUrl?: string | null }} config
+ * @param {{ runtimeUrl: string, runtimeAuthTokenPath: string, requestTimeoutMs: number, request: { provider_id?: string, provider_url?: string, input?: unknown, runtime?: string, package_kind?: string, entrypoint_kind?: string, entrypoint?: string, contract_version?: string, mounts?: unknown, artifact_path?: string, wasm_module_hex?: string, inline_source?: string, oci_reference?: string, oci_digest?: string }, searchLimit?: number, trustedProviderUrl?: string | null, trustedProviderAuthTokenPath?: string | null }} config
  */
 export async function runCompute({
   runtimeUrl,
@@ -1787,6 +1855,7 @@ export async function runCompute({
   request,
   searchLimit = 100,
   trustedProviderUrl = null,
+  trustedProviderAuthTokenPath = null,
   _deps = {},
 }) {
   if (typeof request?.artifact_path === "string" && request.artifact_path.trim().length > 0) {
@@ -1799,6 +1868,7 @@ export async function runCompute({
     request,
     searchLimit,
     trustedProviderUrl,
+    trustedProviderAuthTokenPath,
     preferTrustedProviderUrl: true,
     _deps,
   })

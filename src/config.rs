@@ -116,31 +116,33 @@ impl fmt::Debug for StripeConfig {
     }
 }
 
-/// Configuration for the buyer (requester) side of Stripe Machine Payments.
+/// Explicit sandbox configuration for Stripe's seller-side SPT test helper.
 ///
-/// A buyer node needs its own Stripe secret key to mint Shared Payment Tokens
-/// (SPTs) that it presents to a provider whose service is priced with
-/// `stripe_mpp.v1` settlement terms.  The funding source (payment method or
-/// customer) must be attached to this account in Stripe before use.
+/// Stripe's `/v1/test_helpers/shared_payment/granted_tokens` endpoint lets a
+/// *seller* simulate receiving an SPT from an agent. It is not a production
+/// buyer-token issuer. Production requesters obtain an SPT from an authorized
+/// agentic-commerce platform and provide it with the deal request instead.
 #[derive(Clone)]
 pub struct BuyerStripeConfig {
-    /// Stripe secret key for the buyer's Stripe account
+    /// Must be `true` before Froglet may call Stripe's test-helper endpoint.
+    pub test_helper_enabled: bool,
+    /// Stripe test secret key for the seller sandbox account
     /// (`FROGLET_BUYER_STRIPE_SECRET_KEY`).
     pub secret_key: String,
-    /// Optional Stripe API version override for the buyer key.
+    /// Optional Stripe API version override for the test-helper call.
     /// Defaults to the same version used for the seller config
     /// (`FROGLET_STRIPE_API_VERSION`) or `"2026-04-22.preview"`.
     pub api_version: String,
-    /// Stripe payment method ID (`pm_…`) attached to the buyer's Stripe
-    /// account that will fund the minted SPT
+    /// Stripe test payment method ID (`pm_…`) used by the helper
     /// (`FROGLET_BUYER_STRIPE_PAYMENT_METHOD`).
-    /// Mutually exclusive with `customer`.  At least one of `payment_method`
-    /// or `customer` must be set.
-    pub payment_method: Option<String>,
-    /// Stripe customer ID (`cus_…`) whose default payment method funds the SPT
-    /// (`FROGLET_BUYER_STRIPE_CUSTOMER`).
-    pub customer: Option<String>,
-    /// Override the Stripe API base URL used for buyer-side SPT minting.
+    pub payment_method: String,
+    /// Seller network scope required by Stripe's SPT test helper
+    /// (`FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID`).
+    pub seller_network_id: String,
+    /// Optional seller, cart, or connected-account scope
+    /// (`FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID`).
+    pub seller_external_id: Option<String>,
+    /// Override the Stripe API base URL used for the sandbox helper.
     ///
     /// When `None` (the default in production), the standard
     /// `https://api.stripe.com` is used.  Set this in integration tests to
@@ -154,10 +156,12 @@ pub struct BuyerStripeConfig {
 impl fmt::Debug for BuyerStripeConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BuyerStripeConfig")
+            .field("test_helper_enabled", &self.test_helper_enabled)
             .field("secret_key", &"[REDACTED]")
             .field("api_version", &self.api_version)
-            .field("payment_method", &self.payment_method)
-            .field("customer", &self.customer)
+            .field("payment_method", &"[REDACTED]")
+            .field("seller_network_id", &self.seller_network_id)
+            .field("seller_external_id", &self.seller_external_id)
             .field("api_base_url", &self.api_base_url)
             .finish()
     }
@@ -187,48 +191,135 @@ fn require_stripe_live_confirm(var: &str, secret_key: &str) -> Result<(), String
 }
 
 impl BuyerStripeConfig {
-    /// Parse buyer Stripe config from the process environment.
-    ///
-    /// Returns `Ok(None)` when `FROGLET_BUYER_STRIPE_SECRET_KEY` is absent
-    /// (buyer-side payments simply remain unconfigured).
-    /// Returns `Err` when the key is set but the funding source is missing.
-    pub fn from_env() -> Result<Option<Self>, String> {
-        let secret_key = match env::var("FROGLET_BUYER_STRIPE_SECRET_KEY") {
-            Ok(value) if !value.trim().is_empty() => value,
-            Ok(_) => {
-                return Err("FROGLET_BUYER_STRIPE_SECRET_KEY must not be empty when set".into());
-            }
-            Err(_) => return Ok(None),
-        };
-        require_stripe_live_confirm("FROGLET_BUYER_STRIPE_SECRET_KEY", &secret_key)?;
-
-        let api_version = env::var("FROGLET_STRIPE_API_VERSION")
-            .unwrap_or_else(|_| "2026-04-22.preview".to_string());
-
-        let payment_method = env::var("FROGLET_BUYER_STRIPE_PAYMENT_METHOD")
-            .ok()
-            .filter(|v| !v.trim().is_empty());
-        let customer = env::var("FROGLET_BUYER_STRIPE_CUSTOMER")
-            .ok()
-            .filter(|v| !v.trim().is_empty());
-
-        if payment_method.is_none() && customer.is_none() {
+    pub(crate) fn validate_test_helper(&self) -> Result<(), String> {
+        if !self.test_helper_enabled {
             return Err(
-                "FROGLET_BUYER_STRIPE_SECRET_KEY is set but no funding source is configured; \
-                 set either FROGLET_BUYER_STRIPE_PAYMENT_METHOD (pm_…) or \
-                 FROGLET_BUYER_STRIPE_CUSTOMER (cus_…)"
+                "Stripe SPT test-helper minting is disabled; supply a platform-issued SPT in the deal"
+                    .to_string(),
+            );
+        }
+        if !self.secret_key.starts_with("sk_test_") {
+            return Err(
+                "Stripe SPT test-helper minting requires an sk_test_ key; live keys are refused"
+                    .to_string(),
+            );
+        }
+        if !self.payment_method.starts_with("pm_") {
+            return Err(
+                "Stripe SPT test-helper minting requires a pm_ test payment method".to_string(),
+            );
+        }
+        validate_stripe_seller_scope(
+            "FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID",
+            &self.seller_network_id,
+        )?;
+        if let Some(value) = self.seller_external_id.as_deref() {
+            validate_stripe_seller_scope("FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID", value)?;
+        }
+        Ok(())
+    }
+
+    /// Parse the opt-in Stripe SPT test-helper config from the environment.
+    ///
+    /// Returns `Ok(None)` when the helper is disabled. Setting any helper
+    /// credential without the explicit opt-in is an error, as is using a live
+    /// key: production SPTs must arrive in the caller-supplied payment field.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        const ENABLED: &str = "FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED";
+        let enabled = env_bool(ENABLED, false)?;
+        let configured_names = [
+            "FROGLET_BUYER_STRIPE_SECRET_KEY",
+            "FROGLET_BUYER_STRIPE_PAYMENT_METHOD",
+            "FROGLET_BUYER_STRIPE_CUSTOMER",
+            "FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID",
+            "FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID",
+        ];
+        if !enabled {
+            if let Some(name) = configured_names
+                .iter()
+                .find(|name| env::var_os(name).is_some())
+            {
+                return Err(format!(
+                    "{name} is set, but Stripe SPT test-helper minting is disabled; set \
+                     {ENABLED}=1 only for an explicitly approved Stripe test sandbox, or \
+                     remove the helper credentials and supply a platform-issued SPT in the deal"
+                ));
+            }
+            return Ok(None);
+        }
+
+        let secret_key = required_nonempty_env("FROGLET_BUYER_STRIPE_SECRET_KEY", ENABLED)?;
+        if !secret_key.starts_with("sk_test_") {
+            return Err(
+                "FROGLET_BUYER_STRIPE_SECRET_KEY must start with sk_test_ when \
+                 FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED=1; Stripe's seller SPT helper must \
+                 never be called with a live key"
                     .into(),
             );
         }
 
-        Ok(Some(BuyerStripeConfig {
+        let api_version = env::var("FROGLET_STRIPE_API_VERSION")
+            .unwrap_or_else(|_| "2026-04-22.preview".to_string());
+        let payment_method = required_nonempty_env(
+            "FROGLET_BUYER_STRIPE_PAYMENT_METHOD",
+            "FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED",
+        )?;
+        if env::var_os("FROGLET_BUYER_STRIPE_CUSTOMER").is_some() {
+            return Err(
+                "FROGLET_BUYER_STRIPE_CUSTOMER is not supported by Stripe's documented SPT \
+                 test helper; use FROGLET_BUYER_STRIPE_PAYMENT_METHOD with a test payment method"
+                    .into(),
+            );
+        }
+        let seller_network_id = required_nonempty_env(
+            "FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID",
+            "FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED",
+        )?;
+        validate_stripe_seller_scope("FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID", &seller_network_id)?;
+        let seller_external_id = optional_nonempty_env("FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID")?;
+        if let Some(value) = seller_external_id.as_deref() {
+            validate_stripe_seller_scope("FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID", value)?;
+        }
+
+        let config = BuyerStripeConfig {
+            test_helper_enabled: true,
             secret_key,
             api_version,
             payment_method,
-            customer,
+            seller_network_id,
+            seller_external_id,
             api_base_url: None,
-        }))
+        };
+        config.validate_test_helper()?;
+        Ok(Some(config))
     }
+}
+
+fn required_nonempty_env(name: &str, enabled_by: &str) -> Result<String, String> {
+    match env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(format!("{name} is required when {enabled_by}=1")),
+    }
+}
+
+fn optional_nonempty_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) if value.trim().is_empty() => Err(format!("{name} must not be empty when set")),
+        Ok(value) => Ok(Some(value)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn validate_stripe_seller_scope(name: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{name} must not be empty"));
+    }
+    if value.len() > 512 || value.chars().any(char::is_control) {
+        return Err(format!(
+            "{name} must be at most 512 bytes and contain no control characters"
+        ));
+    }
+    Ok(())
 }
 
 /// Buyer-side phoenixd connection used to pay prepaid Lightning invoices.
@@ -453,14 +544,22 @@ pub struct TorSidecarConfig {
     pub startup_timeout_secs: u64,
 }
 
-/// Relay ingress tunnel (docs/RELAY.md): the node dials OUT to a relay and
-/// receives a public HTTPS hostname with TLS terminated at the relay — no
-/// DNS, certificates, or inbound reachability required on this node.
+/// Relay ingress configuration (docs/RELAY.md). Configuration reserves no
+/// socket and opens no forwarding path: the identity-derived HTTPS endpoint
+/// is planned locally and the WSS tunnel is activated only by an exact,
+/// persisted publication grant.
 #[derive(Debug, Clone, Default)]
 pub struct RelayConfig {
     /// Tunnel endpoint, e.g. `wss://relay.froglet.dev/v1/tunnel`.
     pub url: Option<String>,
-    /// Whether the tunnel client runs. Defaults to true when a URL is set.
+    /// Public provider-host suffix, e.g. `relay.froglet.dev`.
+    ///
+    /// This is explicit because a relay's control endpoint and public ingress
+    /// suffix are not required to use the same hostname.
+    pub public_suffix: Option<String>,
+    /// Whether relay endpoint planning is available. A true value does not
+    /// activate the tunnel; activation is controlled by durable publication
+    /// grants.
     pub enabled: bool,
 }
 
@@ -471,30 +570,104 @@ impl RelayConfig {
             _ => None,
         };
         if let Some(url) = &url {
-            validate_relay_url(url)?;
+            validate_relay_control_url(url)?;
         }
+        let public_suffix = match env::var("FROGLET_RELAY_PUBLIC_SUFFIX") {
+            Ok(value) if !value.trim().is_empty() => {
+                let suffix = value.trim().trim_matches('.').to_ascii_lowercase();
+                validate_relay_public_suffix(&suffix)?;
+                Some(suffix)
+            }
+            _ => None,
+        };
         let enabled = env_bool("FROGLET_RELAY_ENABLED", url.is_some())?;
         if enabled && url.is_none() {
             return Err("FROGLET_RELAY_ENABLED=1 requires FROGLET_RELAY_URL".into());
         }
-        Ok(RelayConfig { url, enabled })
+        if enabled && public_suffix.is_none() {
+            return Err(
+                "FROGLET_RELAY_ENABLED=1 requires FROGLET_RELAY_PUBLIC_SUFFIX so the exact public endpoint can be planned without opening a tunnel"
+                    .into(),
+            );
+        }
+        if !enabled && public_suffix.is_some() {
+            return Err(
+                "FROGLET_RELAY_PUBLIC_SUFFIX is set while relay endpoint planning is disabled"
+                    .into(),
+            );
+        }
+        Ok(RelayConfig {
+            url,
+            public_suffix,
+            enabled,
+        })
     }
+
+    /// Deterministically derive the exact public HTTPS origin for a provider
+    /// without connecting to the relay or changing external state.
+    pub fn planned_public_url(&self, provider_id: &str) -> Result<Option<String>, String> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let suffix = self
+            .public_suffix
+            .as_deref()
+            .ok_or("enabled relay is missing its public suffix")?;
+        let pubkey = hex::decode(provider_id)
+            .map_err(|_| "provider identity must be lowercase hexadecimal".to_string())?;
+        if pubkey.len() != 32
+            || provider_id.len() != 64
+            || !provider_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("provider identity must be 64 lowercase hexadecimal characters".into());
+        }
+        let label = data_encoding::BASE32_NOPAD
+            .encode(&pubkey)
+            .to_ascii_lowercase();
+        Ok(Some(format!("https://{label}.{suffix}")))
+    }
+}
+
+fn validate_relay_public_suffix(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 253
+        || !value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+    {
+        return Err("FROGLET_RELAY_PUBLIC_SUFFIX must be a valid lowercase DNS suffix".into());
+    }
+    Ok(())
 }
 
 /// wss:// only, except loopback ws:// for local development and tests —
 /// the tunnel carries plaintext request/response frames.
-fn validate_relay_url(url: &str) -> Result<(), String> {
-    let plaintext_loopback = url
-        .strip_prefix("ws://")
-        .map(|rest| {
-            rest.starts_with("127.0.0.1")
-                || rest.starts_with("localhost")
-                || rest.starts_with("[::1]")
-        })
-        .unwrap_or(false);
-    if !url.starts_with("wss://") && !plaintext_loopback {
+pub(crate) fn validate_relay_control_url(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|error| format!("invalid relay control URL: {error}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("relay control URL must not contain credentials".into());
+    }
+    let plaintext_loopback = parsed.scheme() == "ws"
+        && parsed.host().is_some_and(|host| match host {
+            url::Host::Domain(domain) => domain == "localhost",
+            url::Host::Ipv4(address) => address.is_loopback(),
+            url::Host::Ipv6(address) => address.is_loopback(),
+        });
+    if parsed.host_str().is_none()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || (parsed.scheme() != "wss" && !plaintext_loopback)
+    {
         return Err(
-            "FROGLET_RELAY_URL must use wss:// unless it points to a loopback-only ws:// endpoint"
+            "relay control URL must be credential-free WSS (or loopback WS) without query or fragment"
                 .into(),
         );
     }
@@ -870,9 +1043,13 @@ impl NodeConfig {
                     .to_string()
             })?;
             Some(X402Config {
-                facilitator_url: env::var("FROGLET_X402_FACILITATOR_URL").unwrap_or_else(|_| {
-                    "https://api.cdp.coinbase.com/platform/v2/x402".to_string()
-                }),
+                // No production-safe unauthenticated default exists: CDP's
+                // mainnet facilitator requires per-request CDP API JWT auth,
+                // while the public x402.org facilitator is testnet-only.
+                facilitator_url: required_nonempty_env(
+                    "FROGLET_X402_FACILITATOR_URL",
+                    "FROGLET_PAYMENT_BACKEND=x402",
+                )?,
                 wallet_address,
                 network: env::var("FROGLET_X402_NETWORK").unwrap_or_else(|_| "base".to_string()),
             })
@@ -1024,6 +1201,37 @@ impl NodeConfig {
             }
         }
 
+        let lnd_rest = if matches!(lightning_mode, LightningMode::LndRest) {
+            Some(LightningLndRestConfig {
+                rest_url: lnd_rest_url.ok_or_else(|| {
+                    "FROGLET_LIGHTNING_MODE=lnd_rest requires FROGLET_LIGHTNING_REST_URL"
+                        .to_string()
+                })?,
+                tls_cert_path: lnd_tls_cert_path,
+                macaroon_path: lnd_macaroon_path.ok_or_else(|| {
+                    "FROGLET_LIGHTNING_MODE=lnd_rest requires FROGLET_LIGHTNING_MACAROON_PATH"
+                        .to_string()
+                })?,
+                request_timeout_secs: lnd_request_timeout_secs,
+            })
+        } else {
+            None
+        };
+        let phoenixd = if matches!(lightning_mode, LightningMode::Phoenixd) {
+            Some(LightningPhoenixdConfig {
+                url: phoenixd_url.ok_or_else(|| {
+                    "FROGLET_LIGHTNING_MODE=phoenixd requires FROGLET_LIGHTNING_PHOENIXD_URL"
+                        .to_string()
+                })?,
+                http_password: Zeroizing::new(phoenixd_http_password.ok_or_else(|| {
+                    "FROGLET_LIGHTNING_MODE=phoenixd requires FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD"
+                        .to_string()
+                })?),
+                request_timeout_secs: phoenixd_request_timeout_secs,
+            })
+        } else {
+            None
+        };
         let lightning = LightningConfig {
             mode: lightning_mode,
             destination_identity: env::var("FROGLET_LIGHTNING_DESTINATION_IDENTITY").ok(),
@@ -1035,23 +1243,8 @@ impl NodeConfig {
                 .clamp(1, 144) as u32,
             sync_interval_ms: env_u64("FROGLET_LIGHTNING_SYNC_INTERVAL_MS", 1_000)?
                 .clamp(100, 60_000),
-            lnd_rest: matches!(lightning_mode, LightningMode::LndRest).then(|| {
-                LightningLndRestConfig {
-                    rest_url: lnd_rest_url.expect("validated lnd rest url"),
-                    tls_cert_path: lnd_tls_cert_path,
-                    macaroon_path: lnd_macaroon_path.expect("validated lnd macaroon path"),
-                    request_timeout_secs: lnd_request_timeout_secs,
-                }
-            }),
-            phoenixd: matches!(lightning_mode, LightningMode::Phoenixd).then(|| {
-                LightningPhoenixdConfig {
-                    url: phoenixd_url.expect("validated phoenixd url"),
-                    http_password: Zeroizing::new(
-                        phoenixd_http_password.expect("validated phoenixd password"),
-                    ),
-                    request_timeout_secs: phoenixd_request_timeout_secs,
-                }
-            }),
+            lnd_rest,
+            phoenixd,
         };
 
         let data_dir = PathBuf::from(
@@ -1850,13 +2043,48 @@ path = "{}"
 
     #[test]
     fn relay_url_requires_wss_or_loopback_ws() {
-        assert!(validate_relay_url("wss://relay.froglet.dev/v1/tunnel").is_ok());
-        assert!(validate_relay_url("ws://127.0.0.1:9000/v1/tunnel").is_ok());
-        assert!(validate_relay_url("ws://localhost:9000").is_ok());
-        assert!(validate_relay_url("ws://[::1]:9000").is_ok());
-        assert!(validate_relay_url("ws://relay.froglet.dev/v1/tunnel").is_err());
-        assert!(validate_relay_url("ws://10.0.0.5:9000").is_err());
-        assert!(validate_relay_url("https://relay.froglet.dev").is_err());
+        assert!(validate_relay_control_url("wss://relay.froglet.dev/v1/tunnel").is_ok());
+        assert!(validate_relay_control_url("ws://127.0.0.1:9000/v1/tunnel").is_ok());
+        assert!(validate_relay_control_url("ws://localhost:9000").is_ok());
+        assert!(validate_relay_control_url("ws://[::1]:9000").is_ok());
+        assert!(validate_relay_control_url("ws://relay.froglet.dev/v1/tunnel").is_err());
+        assert!(validate_relay_control_url("ws://10.0.0.5:9000").is_err());
+        assert!(validate_relay_control_url("ws://localhost.evil.example/tunnel").is_err());
+        assert!(validate_relay_control_url("ws://127.0.0.1.evil.example/tunnel").is_err());
+        assert!(validate_relay_control_url("wss://user:secret@relay.froglet.dev/tunnel").is_err());
+        assert!(validate_relay_control_url("wss://relay.froglet.dev/tunnel?token=x").is_err());
+        assert!(validate_relay_control_url("https://relay.froglet.dev").is_err());
+    }
+
+    #[test]
+    fn relay_public_suffix_and_identity_derive_exact_endpoint_without_network() {
+        assert!(validate_relay_public_suffix("relay.froglet.dev").is_ok());
+        for invalid in [
+            "",
+            ".relay.example",
+            "Relay.example",
+            "-relay.example",
+            "relay_.example",
+        ] {
+            assert!(
+                validate_relay_public_suffix(invalid).is_err(),
+                "accepted invalid suffix {invalid:?}"
+            );
+        }
+
+        let config = RelayConfig {
+            url: Some("wss://control.example/v1/tunnel".to_string()),
+            public_suffix: Some("ingress.example".to_string()),
+            enabled: true,
+        };
+        let provider_id = "ab".repeat(32);
+        let expected_label = data_encoding::BASE32_NOPAD
+            .encode(&[0xabu8; 32])
+            .to_ascii_lowercase();
+        assert_eq!(
+            config.planned_public_url(&provider_id).unwrap().as_deref(),
+            Some(format!("https://{expected_label}.ingress.example").as_str())
+        );
     }
 
     #[test]
@@ -1877,13 +2105,16 @@ path = "{}"
     }
 
     #[test]
-    fn buyer_stripe_config_debug_redacts_secret_key() {
-        let secret_value = "sk_live_supersecret456";
+    fn buyer_stripe_config_debug_redacts_credentials() {
+        let secret_value = "not-a-credential:redaction-sentinel";
+        let payment_method = "pm_test_abc";
         let config = BuyerStripeConfig {
+            test_helper_enabled: true,
             secret_key: secret_value.to_string(),
             api_version: "2026-04-22.preview".to_string(),
-            payment_method: Some("pm_test_abc".to_string()),
-            customer: None,
+            payment_method: payment_method.to_string(),
+            seller_network_id: "internal".to_string(),
+            seller_external_id: Some("provider-test".to_string()),
             api_base_url: None,
         };
         let debug_output = format!("{config:?}");
@@ -1892,11 +2123,14 @@ path = "{}"
             "Debug output must not contain the secret_key value; got: {debug_output}"
         );
         assert!(
+            !debug_output.contains(payment_method),
+            "Debug output must not contain the payment method ID; got: {debug_output}"
+        );
+        assert!(
             debug_output.contains("[REDACTED]"),
             "Debug output must contain [REDACTED]; got: {debug_output}"
         );
         // Non-secret fields should still be present.
-        assert!(debug_output.contains("pm_test_abc"));
         assert!(debug_output.contains("2026-04-22.preview"));
     }
 

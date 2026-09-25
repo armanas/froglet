@@ -28,7 +28,11 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
             "clearnet_url": clearnet_url,
             "tor_url": tor_url,
         });
-        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload)
+                .map_err(|error| CliError::Other(format!("failed to encode identity: {error}")))?
+        );
     } else {
         println!("Daemon:      {}", daemon.daemon_url);
         println!("provider_id: {}", caps.identity.node_id);

@@ -157,11 +157,12 @@ async fn marketplace_deal(
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        current = remote_json_request(
+        current = remote_json_request_with_pinned_addresses(
             state,
             reqwest::Method::GET,
             status_url.clone(),
             None::<&Value>,
+            &marketplace_endpoint.pinned_public_addresses,
         )
         .await
         .map_err(|(s, b)| {

@@ -1,11 +1,20 @@
-# Froglet MCP Server
+# Froglet MCP surfaces
 
-MCP (Model Context Protocol) server that exposes Froglet services, compute,
-and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
+Froglet exposes two MCP stdio adapters:
+
+- `froglet-node mcp`: dependency-minimal native bridge installed on the
+  clean-host path; and
+- `froglet-mcp`: broader JavaScript compatibility server for discovery,
+  compute, settlement, install planning, and existing host integrations.
+
+Both expose one tool named `froglet`. Publication delegates to the same Rust
+publication/consent/provider-control modules; the JavaScript layer must not
+become a second policy implementation.
 
 ## Requirements
 
-- Node.js 18+ (or Docker)
+- Native bridge: a released `froglet-node`; no Node.js or Docker
+- JavaScript compatibility server: Node.js 18+ or a digest-pinned MCP image
 - A running Froglet provider/runtime is required for provider, runtime,
   marketplace, payment, and publication actions
 - Use the public `llms.txt` HTTP flow when you only want the no-install hosted
@@ -17,14 +26,31 @@ and project management to AI agents (Claude, Cursor, Codex, Windsurf, etc.).
 
 For a user who wants a local Froglet node plus MCP config:
 
-```bash
-curl -fsSL https://froglet.dev/agent | bash
-```
+Use the copyable immutable-release resolver in the
+[Quickstart](../../../docs-site/src/content/docs/learn/quickstart.mdx). It
+requires `immutable: true`, verifies the uploaded `agent-bootstrap.sh` API
+digest before executing it, then runs the non-mutating plan. Present that plan
+and wait before running its exact approved execute command.
 
-That bootstrap installs the signed `froglet-node`, starts provider/runtime from
-published GHCR images matching the latest release, and writes MCP config backed
-by the published `froglet-mcp` image. After health passes, use MCP actions for service
-publication, invocation, public registration, and payment setup.
+The first call writes only temporary files and binds the exact release, target
+binary and script digests, paths, profile, process-manager impact, and command.
+The second recomputes that contract before any host mutation. It then installs the checksum-verified native binary,
+starts the dual-role launchd/systemd service, and writes config that launches
+`froglet-node mcp`. It returns only after node health, a non-seeding native MCP
+status proof, and a transient read-only publication/invocation proof that is
+confirmed-unpublished with no active offer remaining. A digest-pinned dual-role image is
+used only when native service management is unavailable.
+
+The native tool supports `status`, `invoke_service`, two-step
+`marketplace_publish`, `publication_status`, `publication_logs`,
+`publication_pause`, `publication_resume`, `publication_rollback`, and
+`publication_unpublish`, plus managed-operation status, confirmed
+reconciliation, and confirmed compensation. The first publish call is non-mutating; the second
+must carry the exact user-approved `consent_hash`. Rollback requires an exact
+revision hash and unpublish requires an exact `confirm_service_id` before the
+bridge sends an HTTP request. Managed mutation similarly requires an exact
+`confirm_operation_id`. `local_proof` is an operator-enabled demo action;
+the clean install does not seed the demo it requires.
 
 ### Local npm profile
 
@@ -35,8 +61,12 @@ npx froglet-mcp
 The npm package defaults to `FROGLET_PROFILE=local` with provider/runtime URLs
 pointing at `http://127.0.0.1:8080` and `http://127.0.0.1:8081`. Agents should
 call `status` first. If the local node or token files are missing, call
-`plan_install` and then `get_install_guide` before running host-shell setup
-commands. After local health is verified, call `plan_use_case` before
+`plan_install` and present its exact immutable release, manifest/bootstrap
+hashes, persistent paths, process-manager impact, and command preview. After
+the user approves that exact plan, pass its `release_tag` and
+`install_approval_hash` unchanged to `get_install_guide`; only then run the
+returned host-shell command. After local health is verified, call
+`plan_use_case` before
 implementing consumer, provider, evidence, payments, batch, or GPU workflows.
 
 ### Local source checkout
@@ -65,8 +95,9 @@ Agents should call the Froglet `plan_install` action before local setup when the
 user has not specified the target agent, install footprint, role, payment rail,
 network mode, marketplace URL, or first use case. If `payment_rail` is omitted,
 the tool returns `decision_required`; recommend `none` for the first local demo.
-After the profile is confirmed, `get_install_guide` returns the exact
-host-shell commands.
+A complete `plan_install` returns `status=approval_required` and makes no local
+changes. `get_install_guide` withholds executable commands until it can
+recompute and match the exact `release_tag` plus `install_approval_hash`.
 After health checks pass, `plan_use_case` returns a bounded first-workflow plan
 and names unsupported edges before execution. In particular, true batch
 fan-out, GPU scheduling/provider selection, marketplace GPU routing, and
@@ -88,7 +119,12 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.toke
 
 ## Configuration
 
-All configuration is through environment variables:
+The table below is the broader JavaScript server configuration. Native mode
+uses `FROGLET_PROVIDER_URL`/`FROGLET_DAEMON_URL`, `FROGLET_RUNTIME_URL`, the
+matching provider/runtime token paths, and `FROGLET_DATA_DIR`; normal installs
+write these values rather than asking the user to copy them.
+
+JavaScript configuration is through environment variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -126,6 +162,10 @@ Marketplace registration helpers:
 ---
 
 ## IDE / Agent Integration
+
+For the normal native path, run the verified agent bootstrap or generate config
+with `FROGLET_MCP_MODE=native` and an executable `FROGLET_NODE_BIN`. The
+Node.js examples below are contributor/compatibility configurations.
 
 ### Claude Desktop
 
@@ -227,11 +267,14 @@ cd froglet && ./scripts/setup-agent.sh --target codex
 
 ### Docker
 
-The MCP server is published as `ghcr.io/armanas/froglet-mcp`. No Node.js required.
+The MCP server is published as `ghcr.io/armanas/froglet-mcp`. No Node.js is
+required, but a successful install must use the exact `image_mcp` digest from a
+verified Release Bundle, never a mutable tag.
 
 ```bash
-# Pull the public image
-docker pull ghcr.io/armanas/froglet-mcp:latest
+# Obtain this exact value from verified release-manifest.json.
+export FROGLET_MCP_IMAGE='ghcr.io/armanas/froglet-mcp@sha256:<64-lowercase-hex>'
+docker pull "$FROGLET_MCP_IMAGE"
 
 # Run (connects to a Froglet node reachable from inside the container)
 docker run --rm -i \
@@ -240,7 +283,7 @@ docker run --rm -i \
   -e FROGLET_RUNTIME_URL=http://host.docker.internal:8081 \
   -e FROGLET_PROVIDER_AUTH_TOKEN_PATH=/tokens/froglet-control.token \
   -e FROGLET_RUNTIME_AUTH_TOKEN_PATH=/tokens/auth.token \
-  ghcr.io/armanas/froglet-mcp:latest
+  "$FROGLET_MCP_IMAGE"
 ```
 
 Use in any MCP client config:
@@ -256,7 +299,7 @@ Use in any MCP client config:
         "-e", "FROGLET_RUNTIME_URL=http://host.docker.internal:8081",
         "-e", "FROGLET_PROVIDER_AUTH_TOKEN_PATH=/tokens/froglet-control.token",
         "-e", "FROGLET_RUNTIME_AUTH_TOKEN_PATH=/tokens/auth.token",
-        "ghcr.io/armanas/froglet-mcp:latest"],
+        "ghcr.io/armanas/froglet-mcp@sha256:<64-lowercase-hex>"],
       "type": "stdio"
     }
   }

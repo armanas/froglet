@@ -14,6 +14,16 @@ test("OpenClaw manifest declares the froglet tool contract", async () => {
   assert.deepEqual(manifest.contracts?.tools, ["froglet"])
 })
 
+test("OpenClaw manifest permits runtime defaults and rejects empty configured strings", async () => {
+  const manifest = JSON.parse(
+    await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8")
+  )
+  assert.equal(manifest.configSchema.anyOf, undefined)
+  for (const name of ["providerUrl", "runtimeUrl", "baseUrl", "providerAuthTokenPath", "runtimeAuthTokenPath", "authTokenPath"]) {
+    assert.equal(manifest.configSchema.properties[name].minLength, 1)
+  }
+})
+
 function buildTools(config = {}) {
   const tools = new Map()
   register({
@@ -62,7 +72,23 @@ test("plugin registers exactly one froglet tool", async () => {
     assert.equal(froglet.definition.parameters.properties.source_inline.type, "string")
     assert.deepEqual(
       froglet.definition.parameters.properties.hosting.properties.kind.enum,
-      ["local", "tor", "self"]
+      ["local", "relay", "tor", "self"]
+    )
+    assert.deepEqual(
+      froglet.definition.parameters.properties.mounts.items.properties.kind.enum,
+      ["postgres", "sqlite", "object_store", "s3", "redis"]
+    )
+    assert.deepEqual(
+      froglet.definition.parameters.properties.footprint.enum,
+      ["auto", "native", "docker", "binary", "source"]
+    )
+    assert.match(
+      froglet.definition.parameters.properties.action.description,
+      /two-call flow/
+    )
+    assert.doesNotMatch(
+      froglet.definition.parameters.properties.action.description,
+      /one-call/
     )
     assert.deepEqual(
       froglet.definition.parameters.properties.settlement.properties.method.enum,
@@ -217,6 +243,7 @@ test("create_project action returns isError with project-authoring message", asy
     // create_project is removed — should throw / return error text
     const text = result.content?.[0]?.text ?? ""
     assert.ok(text.includes("not available") || text.includes("Error"), "must surface removal error")
+    assert.equal(result.isError, true)
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }

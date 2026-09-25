@@ -8,7 +8,7 @@ use k256::{
     ecdh::diffie_hellman,
     elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags, limits::Limit};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use crate::{canonical_json, crypto, protocol};
@@ -36,6 +37,7 @@ pub const EXECUTION_MODE_TEE: &str = "tee";
 pub const ATTESTATION_PLATFORM_NVIDIA: &str = "nvidia";
 pub const ATTESTATION_BACKEND_NVIDIA_MOCK_V1: &str = "nvidia.mock.v1";
 pub const KEY_RELEASE_PROVIDER_MOCK_EXTERNAL_V1: &str = "mock_external_kms.v1";
+pub const CONFIDENTIAL_RUNTIME_UNAVAILABLE: &str = "confidential execution is unavailable: this build has only mock attestation and mock key release, not a hardware-backed TEE trust path";
 
 const ENVELOPE_DIRECTION_REQUEST: &str = "request";
 const ENVELOPE_DIRECTION_RESULT: &str = "result";
@@ -290,9 +292,11 @@ pub enum ConfidentialConnectorConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConfidentialExecutionContext<'a> {
-    pub confidential_session_hash: &'a str,
+pub struct ConfidentialExecutionContext {
+    pub confidential_session_hash: String,
     pub now: i64,
+    pub deadline: Instant,
+    pub max_output_bytes: usize,
 }
 
 pub trait AttestationProvider {
@@ -320,12 +324,17 @@ pub trait ConfidentialExecutor {
         &self,
         service_id: &str,
         input: Value,
-        context: &ConfidentialExecutionContext<'_>,
+        context: &ConfidentialExecutionContext,
     ) -> Result<Value, String>;
 }
 
 pub trait ServiceConnector {
-    fn execute_search(&self, input: &Value, max_results: usize, now: i64) -> Result<Value, String>;
+    fn execute_search(
+        &self,
+        input: &Value,
+        max_results: usize,
+        context: &ConfidentialExecutionContext,
+    ) -> Result<Value, String>;
 }
 
 #[derive(Debug, Clone)]
@@ -397,12 +406,22 @@ impl ConfidentialExecutor for PolicyConfidentialExecutor {
         &self,
         service_id: &str,
         input: Value,
-        context: &ConfidentialExecutionContext<'_>,
+        context: &ConfidentialExecutionContext,
     ) -> Result<Value, String> {
+        enforce_confidential_deadline(context)?;
         let Some(service) = self.policy.services.get(service_id) else {
             return Err(format!("unknown confidential service: {service_id}"));
         };
-        match service.handler.as_str() {
+        let profile = self.policy.profiles.get(&service.profile).ok_or_else(|| {
+            format!("confidential service {service_id} references a missing profile")
+        })?;
+        if profile.service_id.as_deref() != Some(service_id) {
+            return Err(format!(
+                "confidential service {service_id} is not bound to profile {}",
+                service.profile
+            ));
+        }
+        let result = match service.handler.as_str() {
             "echo" => Ok(json!({
                 "service_id": service_id,
                 "confidential_session_hash": context.confidential_session_hash,
@@ -413,11 +432,24 @@ impl ConfidentialExecutor for PolicyConfidentialExecutor {
                 let connector_name = service.connector.as_deref().ok_or_else(|| {
                     format!("confidential service {service_id} is missing connector")
                 })?;
+                if !profile
+                    .allowed_connectors
+                    .iter()
+                    .any(|allowed| allowed == connector_name)
+                {
+                    return Err(format!(
+                        "connector '{connector_name}' is not allowed by confidential profile {}",
+                        service.profile
+                    ));
+                }
                 let connector = connector_from_policy(&self.policy, connector_name)?;
-                connector.execute_search(&input, service.max_results, context.now)
+                connector.execute_search(&input, service.max_results, context)
             }
             other => Err(format!("unsupported confidential service handler: {other}")),
-        }
+        }?;
+        enforce_confidential_deadline(context)?;
+        enforce_confidential_output_limit(&result, context.max_output_bytes)?;
+        Ok(result)
     }
 }
 
@@ -459,7 +491,15 @@ pub fn load_policy(path: &Path, internal_db_path: &Path) -> Result<ConfidentialP
         )
     })?;
     validate_policy(&policy, internal_db_path)?;
-    Ok(policy)
+    // The mock providers below are retained solely for protocol/unit tests.
+    // Accepting a production policy would advertise TEE guarantees while
+    // executing in the ordinary node process and releasing keys without real
+    // evidence verification.
+    Err(CONFIDENTIAL_RUNTIME_UNAVAILABLE.to_string())
+}
+
+pub const fn production_runtime_available() -> bool {
+    false
 }
 
 pub fn validate_policy(policy: &ConfidentialPolicy, internal_db_path: &Path) -> Result<(), String> {
@@ -526,13 +566,39 @@ pub fn validate_policy(policy: &ConfidentialPolicy, internal_db_path: &Path) -> 
                 "confidential profile '{profile_id}' requires service_id for confidential.service.v1"
             ));
         }
+        if profile.allowed_workload_kind == WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1 {
+            let service_id = profile.service_id.as_deref().expect("checked above");
+            let service = policy.services.get(service_id).ok_or_else(|| {
+                format!(
+                    "confidential profile '{profile_id}' references unknown service_id '{service_id}'"
+                )
+            })?;
+            if service.profile != *profile_id {
+                return Err(format!(
+                    "confidential profile '{profile_id}' service_id '{service_id}' points to service profile '{}'",
+                    service.profile
+                ));
+            }
+        } else if profile.service_id.is_some() || !profile.allowed_connectors.is_empty() {
+            return Err(format!(
+                "confidential Wasm profile '{profile_id}' must not declare service_id or allowed_connectors"
+            ));
+        }
     }
 
     for (service_id, service) in &policy.services {
         validate_policy_name("confidential service", service_id)?;
-        if !policy.profiles.contains_key(&service.profile) {
-            return Err(format!(
+        let profile = policy.profiles.get(&service.profile).ok_or_else(|| {
+            format!(
                 "confidential service '{service_id}' references unknown profile '{}'",
+                service.profile
+            )
+        })?;
+        if profile.allowed_workload_kind != WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1
+            || profile.service_id.as_deref() != Some(service_id)
+        {
+            return Err(format!(
+                "confidential service '{service_id}' is not bidirectionally bound to profile '{}'",
                 service.profile
             ));
         }
@@ -546,6 +612,35 @@ pub fn validate_policy(policy: &ConfidentialPolicy, internal_db_path: &Path) -> 
             if !policy.connectors.contains_key(connector) {
                 return Err(format!(
                     "confidential service '{service_id}' references unknown connector '{connector}'"
+                ));
+            }
+            if !profile
+                .allowed_connectors
+                .iter()
+                .any(|allowed| allowed == connector)
+            {
+                return Err(format!(
+                    "confidential service '{service_id}' connector '{connector}' is not in profile '{}' allowed_connectors",
+                    service.profile
+                ));
+            }
+        }
+        match service.handler.as_str() {
+            "echo" if service.connector.is_none() => {}
+            "json_search" if service.connector.is_some() => {}
+            "echo" => {
+                return Err(format!(
+                    "confidential echo service '{service_id}' must not declare a connector"
+                ));
+            }
+            "json_search" => {
+                return Err(format!(
+                    "confidential json_search service '{service_id}' requires a connector"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "confidential service '{service_id}' has unsupported handler '{other}'"
                 ));
             }
         }
@@ -570,6 +665,14 @@ pub fn validate_policy(policy: &ConfidentialPolicy, internal_db_path: &Path) -> 
                     return Err(format!(
                         "confidential sqlite connector '{connector_name}' must list at least one column"
                     ));
+                }
+                validate_sqlite_identifier("table", table).map_err(|error| {
+                    format!("confidential sqlite connector '{connector_name}' {error}")
+                })?;
+                for column in columns {
+                    validate_sqlite_identifier("column", column).map_err(|error| {
+                        format!("confidential sqlite connector '{connector_name}' {error}")
+                    })?;
                 }
                 if !path.exists() {
                     return Err(format!(
@@ -945,22 +1048,41 @@ struct InlineJsonSearchConnector {
 }
 
 impl ServiceConnector for InlineJsonSearchConnector {
-    fn execute_search(&self, input: &Value, max_results: usize, now: i64) -> Result<Value, String> {
+    fn execute_search(
+        &self,
+        input: &Value,
+        max_results: usize,
+        context: &ConfidentialExecutionContext,
+    ) -> Result<Value, String> {
         let (query, limit) = parse_search_input(input, max_results)?;
         let query_lower = query.to_lowercase();
-        let matches = self
-            .documents
-            .iter()
-            .filter(|document| document_matches_query(document, &query_lower))
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(json!({
+        let mut matches = Vec::new();
+        for document in &self.documents {
+            enforce_confidential_deadline(context)?;
+            if document_matches_query(document, &query_lower) {
+                let document_size = canonical_json::to_vec(document)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                if document_size > context.max_output_bytes {
+                    return Err(
+                        "confidential connector result exceeds profile max_output_bytes"
+                            .to_string(),
+                    );
+                }
+                matches.push(document.clone());
+                if matches.len() >= limit {
+                    break;
+                }
+            }
+        }
+        let result = json!({
             "query": query,
             "returned": matches.len(),
-            "executed_at": now,
+            "executed_at": context.now,
             "matches": matches,
-        }))
+        });
+        enforce_confidential_output_limit(&result, context.max_output_bytes)?;
+        Ok(result)
     }
 }
 
@@ -972,52 +1094,133 @@ struct SqliteSearchConnector {
 }
 
 impl ServiceConnector for SqliteSearchConnector {
-    fn execute_search(&self, input: &Value, max_results: usize, now: i64) -> Result<Value, String> {
+    fn execute_search(
+        &self,
+        input: &Value,
+        max_results: usize,
+        context: &ConfidentialExecutionContext,
+    ) -> Result<Value, String> {
+        enforce_confidential_deadline(context)?;
         let (query, limit) = parse_search_input(input, max_results)?;
         let like_pattern = format!("%{}%", query.to_lowercase());
         let select_columns = self
             .columns
             .iter()
-            .map(|column| format!("CAST({column} AS TEXT) AS {column}"))
+            .map(|column| {
+                let column = quote_sqlite_identifier(column);
+                format!("CAST({column} AS TEXT) AS {column}")
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let where_clause = self
             .columns
             .iter()
-            .map(|column| format!("LOWER(CAST({column} AS TEXT)) LIKE ?1"))
+            .map(|column| {
+                format!(
+                    "LOWER(CAST({} AS TEXT)) LIKE ?1",
+                    quote_sqlite_identifier(column)
+                )
+            })
             .collect::<Vec<_>>()
             .join(" OR ");
         let sql = format!(
             "SELECT {select_columns} FROM {} WHERE {where_clause} LIMIT {}",
-            self.table, limit
+            quote_sqlite_identifier(&self.table),
+            limit
         );
-        let conn = Connection::open(&self.path).map_err(|error| error.to_string())?;
+        let conn = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| error.to_string())?;
+        conn.set_limit(
+            Limit::SQLITE_LIMIT_LENGTH,
+            i32::try_from(context.max_output_bytes).unwrap_or(i32::MAX),
+        )
+        .map_err(|error| format!("failed to apply confidential sqlite limit: {error}"))?;
+        let deadline = context.deadline;
+        conn.progress_handler(100, Some(move || Instant::now() >= deadline))
+            .map_err(|error| {
+                format!("failed to apply confidential sqlite deadline handler: {error}")
+            })?;
         let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
         let column_count = self.columns.len();
-        let rows = statement
-            .query_map([like_pattern], |row| {
-                let mut object = serde_json::Map::new();
-                for index in 0..column_count {
-                    let value: Option<String> = row.get(index)?;
-                    object.insert(
-                        self.columns[index].clone(),
-                        value.map(Value::String).unwrap_or(Value::Null),
-                    );
-                }
-                Ok(Value::Object(object))
-            })
+        let mut rows = statement
+            .query([like_pattern])
             .map_err(|error| error.to_string())?;
         let mut matches = Vec::new();
-        for row in rows {
-            matches.push(row.map_err(|error| error.to_string())?);
+        while let Some(row) = rows.next().map_err(|error| {
+            if Instant::now() >= context.deadline {
+                "confidential connector deadline exceeded".to_string()
+            } else {
+                error.to_string()
+            }
+        })? {
+            enforce_confidential_deadline(context)?;
+            let mut object = serde_json::Map::new();
+            for index in 0..column_count {
+                let value: Option<String> = row.get(index).map_err(|error| error.to_string())?;
+                object.insert(
+                    self.columns[index].clone(),
+                    value.map(Value::String).unwrap_or(Value::Null),
+                );
+            }
+            matches.push(Value::Object(object));
+            let partial = json!({
+                "query": &query,
+                "returned": matches.len(),
+                "executed_at": context.now,
+                "matches": &matches,
+            });
+            enforce_confidential_output_limit(&partial, context.max_output_bytes)?;
         }
-        Ok(json!({
+        let result = json!({
             "query": query,
             "returned": matches.len(),
-            "executed_at": now,
+            "executed_at": context.now,
             "matches": matches,
-        }))
+        });
+        enforce_confidential_output_limit(&result, context.max_output_bytes)?;
+        Ok(result)
     }
+}
+
+fn enforce_confidential_deadline(context: &ConfidentialExecutionContext) -> Result<(), String> {
+    if Instant::now() >= context.deadline {
+        Err("confidential connector deadline exceeded".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn enforce_confidential_output_limit(value: &Value, max_output_bytes: usize) -> Result<(), String> {
+    let encoded_size = canonical_json::to_vec(value)
+        .map_err(|error| error.to_string())?
+        .len();
+    if encoded_size > max_output_bytes {
+        Err("confidential result exceeds profile max_output_bytes".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_sqlite_identifier(kind: &str, value: &str) -> Result<(), String> {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return Err(format!("{kind} must not be empty"));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || !characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return Err(format!(
+            "{kind} '{value}' must be a simple SQLite identifier"
+        ));
+    }
+    Ok(())
+}
+
+fn quote_sqlite_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('\"', "\"\""))
 }
 
 fn parse_search_input(input: &Value, max_results: usize) -> Result<(String, usize), String> {
@@ -1152,11 +1355,85 @@ mod tests {
         };
 
         let result = connector
-            .execute_search(&json!({"query": "frog", "limit": 10}), 10, 1_700_000_000)
+            .execute_search(
+                &json!({"query": "frog", "limit": 10}),
+                10,
+                &ConfidentialExecutionContext {
+                    confidential_session_hash: "aa".repeat(32),
+                    now: 1_700_000_000,
+                    deadline: Instant::now() + std::time::Duration::from_secs(1),
+                    max_output_bytes: 16 * 1024,
+                },
+            )
             .expect("search result");
 
         assert_eq!(result["returned"], 1);
         assert_eq!(result["matches"][0]["name"], "alpha");
+    }
+
+    #[test]
+    fn inline_connector_enforces_deadline_and_output_limit() {
+        let connector = InlineJsonSearchConnector {
+            documents: vec![json!({"name": "froglet", "body": "sensitive result"})],
+        };
+        let expired = ConfidentialExecutionContext {
+            confidential_session_hash: "aa".repeat(32),
+            now: 1_700_000_000,
+            deadline: Instant::now(),
+            max_output_bytes: 16 * 1024,
+        };
+        let deadline_error = connector
+            .execute_search(&json!({"query": "froglet"}), 10, &expired)
+            .expect_err("expired connector deadline must fail");
+        assert!(deadline_error.contains("deadline"));
+
+        let tiny_output = ConfidentialExecutionContext {
+            confidential_session_hash: "aa".repeat(32),
+            now: 1_700_000_000,
+            deadline: Instant::now() + std::time::Duration::from_secs(1),
+            max_output_bytes: 8,
+        };
+        let output_error = connector
+            .execute_search(&json!({"query": "froglet"}), 10, &tiny_output)
+            .expect_err("oversized connector output must fail");
+        assert!(output_error.contains("max_output_bytes"));
+    }
+
+    #[test]
+    fn production_policy_loading_rejects_mock_trust_providers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let policy_path = dir.path().join("confidential.toml");
+        std::fs::write(
+            &policy_path,
+            include_str!("../examples/confidential_policy.example.toml"),
+        )
+        .expect("write policy");
+
+        let error = load_policy(&policy_path, &dir.path().join("node.sqlite"))
+            .expect_err("mock trust providers must not enable production confidential execution");
+
+        assert_eq!(error, CONFIDENTIAL_RUNTIME_UNAVAILABLE);
+    }
+
+    #[test]
+    fn policy_rejects_connector_not_allowed_by_bound_profile() {
+        let mut policy: ConfidentialPolicy =
+            toml::from_str(include_str!("../examples/confidential_policy.example.toml"))
+                .expect("parse policy");
+        policy
+            .profiles
+            .get_mut("confidential_search")
+            .expect("profile")
+            .allowed_connectors
+            .clear();
+
+        let error = validate_policy(&policy, Path::new("node.sqlite"))
+            .expect_err("service connector must be explicitly allowlisted");
+
+        assert!(
+            error.contains("not in profile"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

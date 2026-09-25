@@ -15,10 +15,16 @@ describe("marketplace_publish: validatePublishInput", () => {
     }
   }
   function ok(input) {
-    return validatePublishInput(input, publicUrlDeps)
+    return validatePublishInput(
+      { verification: { input: {} }, ...input },
+      publicUrlDeps
+    )
   }
   async function err(input, pattern) {
-    await assert.rejects(() => validatePublishInput(input, publicUrlDeps), pattern)
+    await assert.rejects(
+      () => validatePublishInput({ verification: { input: {} }, ...input }, publicUrlDeps),
+      pattern
+    )
   }
 
   it("accepts the minimum viable input", async () => {
@@ -26,11 +32,31 @@ describe("marketplace_publish: validatePublishInput", () => {
     assert.equal(r.name, "translator")
     assert.equal(r.runtime, "python")
     assert.equal(r.packageKind, "inline_source")
-    assert.equal(r.hosting.kind, "tor")
+    assert.equal(r.hosting.kind, "relay")
     assert.equal(r.settlement.method, "none")
     assert.equal(r.marketplaceUrl, "https://marketplace.froglet.dev")
     assert.equal(r.entrypoint, "handler.py")
     assert.match(r.summary, /translator/)
+  })
+
+  it("requires a private verification fixture for the default public path", async () => {
+    await assert.rejects(
+      () => validatePublishInput(
+        { name: "translator", source_inline: "def handler(event, context):\n    return event\n" },
+        publicUrlDeps
+      ),
+      /verification with an input fixture is required/
+    )
+  })
+
+  it("accepts only a canonical consent hash", async () => {
+    const hash = "ab".repeat(32)
+    const r = await ok({ name: "translator", source_inline: "x", consent_hash: hash })
+    assert.equal(r.consentHash, hash)
+    await err(
+      { name: "translator", source_inline: "x", consent_hash: "not-a-hash" },
+      /consent_hash must be/
+    )
   })
 
   it("scaffolds the handler ABI in the service manifest", async () => {
@@ -41,6 +67,7 @@ describe("marketplace_publish: validatePublishInput", () => {
     assert.match(toml, /entrypoint_kind = "handler"/)
     assert.match(toml, /entrypoint = "handler\.py"/)
     assert.match(toml, /contract_version = "froglet\.python\.handler_json\.v1"/)
+    assert.match(toml, /default = "relay"/)
   })
 
   it("carries price_sats and currency=usd for a stripe service", async () => {
@@ -52,6 +79,114 @@ describe("marketplace_publish: validatePublishInput", () => {
     assert.match(toml, /method = "stripe"/)
     assert.match(toml, /currency = "usd"/)
     assert.match(toml, /sats = 500/)
+  })
+
+  it("preserves the complete publication intent in the service manifest", async () => {
+    const toml = serviceToml(await ok({
+      name: "analytics",
+      offer_id: "analytics-read-v2",
+      source_inline: "def handler(event, context):\n    return event\n",
+      starter: '{"query":"select 1"}',
+      mode: "async",
+      publication_state: "hidden",
+      mounts: [
+        { handle: "warehouse", kind: "postgres", read_only: true }
+      ],
+      capabilities: ["network.http.fetch"],
+      limits: {
+        max_input_bytes: 4096,
+        max_runtime_ms: 2500,
+        max_memory_bytes: 8388608,
+        max_output_bytes: 2048,
+        fuel_limit: 50000
+      },
+      input_schema: {
+        type: "object",
+        required: ["query"],
+        properties: { query: { type: "string" } }
+      },
+      output_schema: {
+        type: "object",
+        properties: { rows: { type: "array" } }
+      },
+      settlement: { method: "stripe" },
+      price_sats: 500
+    }))
+
+    assert.match(toml, /^offer_id = "analytics-read-v2"$/m)
+    assert.match(toml, /^starter = "\{\\\"query\\\":\\\"select 1\\\"\}"$/m)
+    assert.match(toml, /^mode = "async"$/m)
+    assert.match(toml, /^publication_state = "hidden"$/m)
+    assert.match(toml, /^mounts = \[\{ handle = "warehouse", kind = "postgres", read_only = true \}\]$/m)
+    assert.match(toml, /^capabilities = \["network.http.fetch"\]$/m)
+    assert.match(toml, /^limits = \{ max_input_bytes = 4096, max_runtime_ms = 2500, max_memory_bytes = 8388608, max_output_bytes = 2048, fuel_limit = 50000 \}$/m)
+    assert.ok(toml.split("\n").includes(
+      `input_schema_json = ${JSON.stringify(JSON.stringify({
+        type: "object",
+        required: ["query"],
+        properties: { query: { type: "string" } }
+      }))}`
+    ))
+    assert.ok(toml.split("\n").includes(
+      `output_schema_json = ${JSON.stringify(JSON.stringify({
+        type: "object",
+        properties: { rows: { type: "array" } }
+      }))}`
+    ))
+    assert.match(toml, /\[settlement\]\nmethod = "stripe"/)
+    assert.match(toml, /\[price\]\nsats = 500\ncurrency = "usd"/)
+  })
+
+  it("normalizes the legacy s3 mount namespace before writing a manifest", async () => {
+    const normalized = await ok({
+      name: "archive-reader",
+      source_inline: "def handler(event, context):\n    return event\n",
+      mounts: [{ handle: "archive", kind: "s3" }],
+      capabilities: [" MOUNT.S3.READ.ARCHIVE "]
+    })
+    assert.deepEqual(normalized.mounts, [
+      { handle: "archive", kind: "object_store", read_only: true }
+    ])
+    assert.deepEqual(normalized.capabilities, ["mount.object_store.read.archive"])
+
+    const toml = serviceToml(normalized)
+    assert.match(
+      toml,
+      /^mounts = \[\{ handle = "archive", kind = "object_store", read_only = true \}\]$/m
+    )
+    assert.match(toml, /^capabilities = \["mount.object_store.read.archive"\]$/m)
+    assert.doesNotMatch(toml, /mount\.s3|kind = "s3"/)
+  })
+
+  it("emits a provider-private verification fixture", async () => {
+    const toml = serviceToml(await ok({
+      name: "verified-service",
+      source_inline: "def handler(event, context):\n    return event\n",
+      verification: {
+        input: { message: "hello" },
+        expected_output: { message: "hello" }
+      }
+    }))
+
+    assert.ok(toml.split("\n").includes(
+      `verification = { input_json = ${JSON.stringify(JSON.stringify({ message: "hello" }))}, expected_output_json = ${JSON.stringify(JSON.stringify({ message: "hello" }))} }`
+    ))
+  })
+
+  it("preserves JSON null through TOML-safe schema and verification fields", async () => {
+    const toml = serviceToml(await ok({
+      name: "nullable-service",
+      source_inline: "def handler(event, context):\n    return event\n",
+      input_schema: { type: ["object", "null"], default: null },
+      verification: { input: null, expected_output: null }
+    }))
+
+    assert.ok(toml.split("\n").includes(
+      `input_schema_json = ${JSON.stringify(JSON.stringify({ type: ["object", "null"], default: null }))}`
+    ))
+    assert.ok(toml.split("\n").includes(
+      `verification = { input_json = ${JSON.stringify("null")}, expected_output_json = ${JSON.stringify("null")} }`
+    ))
   })
 
   it("scaffolds sat currency for free/lightning services", async () => {

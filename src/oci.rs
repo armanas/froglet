@@ -69,7 +69,7 @@ impl RegistryClient {
     /// * `api_url` - registry base URL (example: `https://registry-1.docker.io`)
     /// * `auth_url` - token endpoint URL (example: `https://auth.docker.io/token`)
     pub fn new(service: &str, api_url: &str, auth_url: &str) -> Result<Self, String> {
-        let http = reqwest::Client::builder()
+        let http = crate::tls::reqwest_client_builder()
             .user_agent(concat!("froglet/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)

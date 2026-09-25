@@ -1,5 +1,11 @@
 # Confidential Execution
 
+> **Unavailable in this build.** Froglet currently contains protocol types and
+> mock providers for tests, but no hardware-backed attestation verifier or
+> evidence-gated external key-release implementation. Setting
+> `FROGLET_CONFIDENTIAL_POLICY_PATH` fails node startup. The node does not
+> advertise any `tee.*` runtime.
+
 Confidential execution is an additive extension on top of the normal Froglet topology:
 
 - local requester runtime
@@ -30,7 +36,7 @@ Receipts may also reference `result_envelope_hash`.
 
 ## Provider Routes
 
-When `FROGLET_CONFIDENTIAL_POLICY_PATH` is set, the provider exposes:
+The reserved provider API shape is:
 
 - `GET /v1/provider/confidential/profiles/:artifact_hash`
 - `POST /v1/provider/confidential/sessions`
@@ -40,21 +46,14 @@ Bots still initiate confidential work through the local runtime. The provider co
 
 ## Policy
 
-Start from [../examples/confidential_policy.example.toml](../examples/confidential_policy.example.toml).
-
-Enable confidential execution on the provider:
-
-```bash
-FROGLET_CONFIDENTIAL_POLICY_PATH=./examples/confidential_policy.example.toml \
-FROGLET_PAYMENT_BACKEND=lightning \
-FROGLET_LIGHTNING_MODE=mock \
-cargo run --bin froglet-provider
-```
+The file [../examples/confidential_policy.example.toml](../examples/confidential_policy.example.toml)
+is a protocol/test fixture, not an enablement configuration. Production support
+requires a real attestation verifier and key-release provider before this path
+can be enabled.
 
 ## Client Helpers
 
 Confidential helpers above the raw provider routes are intentionally treated as
 client- or SDK-level surfaces rather than part of the core Froglet node
-contract. The stable core interfaces are the provider confidential routes and
-the signed artifacts described above. External SDKs may wrap those primitives,
-but they should not redefine the requester-runtime topology.
+contract. The signed artifact shapes are retained for interoperability work;
+provider routes are not a runnable production capability in this build.

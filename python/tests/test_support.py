@@ -23,8 +23,18 @@ from aiohttp import web
 from ecdsa import curves, ellipticcurve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TARGET_DIR = REPO_ROOT / "target" / "debug"
-FROGLET_NODE_BIN = TARGET_DIR / "froglet-node"
+
+
+def _cargo_debug_dir() -> Path:
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    target_root = Path(configured) if configured else REPO_ROOT / "target"
+    if not target_root.is_absolute():
+        target_root = REPO_ROOT / target_root
+    return target_root / "debug"
+
+
+TARGET_DIR = _cargo_debug_dir()
+FROGLET_NODE_BIN = TARGET_DIR / ("froglet-node.exe" if os.name == "nt" else "froglet-node")
 # Legacy aliases for backward compat with test helpers
 FROGLET_PROVIDER_BIN = FROGLET_NODE_BIN
 FROGLET_RUNTIME_BIN = FROGLET_NODE_BIN
@@ -148,7 +158,7 @@ def ensure_binaries() -> None:
 
     subprocess.run(["cargo", "build", "--bin", "froglet-node"], cwd=REPO_ROOT, check=True)
     if not FROGLET_NODE_BIN.exists():
-        raise RuntimeError("Expected compiled froglet-node binary in target/debug")
+        raise RuntimeError(f"Expected compiled froglet-node binary at {FROGLET_NODE_BIN}")
     _BUILD_DONE = True
 
 

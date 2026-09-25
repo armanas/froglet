@@ -50,6 +50,12 @@ if [[ ${#targets[@]} -eq 0 ]]; then
   targets=("linux:x86_64" "linux:arm64" "darwin:arm64")
 fi
 
+[[ -f "$dir/agent-bootstrap.sh" ]] || {
+  echo "missing release asset: $dir/agent-bootstrap.sh" >&2
+  exit 1
+}
+bash -n "$dir/agent-bootstrap.sh"
+
 for target in "${targets[@]}"; do
   platform="${target%%:*}"
   arch="${target##*:}"

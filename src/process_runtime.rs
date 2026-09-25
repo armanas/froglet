@@ -202,6 +202,18 @@ impl ProcessRuntime {
             .map(|permit| ProcessPermit { _permit: permit })
             .map_err(|_| "process concurrency limit reached".to_string())
     }
+
+    /// Wait for process capacity. Queue workers use this path so temporary
+    /// saturation provides backpressure instead of turning into a terminal
+    /// job failure.
+    pub async fn acquire(&self) -> Result<ProcessPermit, String> {
+        self.semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map(|permit| ProcessPermit { _permit: permit })
+            .map_err(|_| "process runtime is shutting down".to_string())
+    }
 }
 
 pub struct ProcessPermit {
@@ -283,6 +295,12 @@ fn read_stream_bounded<R: Read>(mut stream: R, limit: usize) -> io::Result<Bound
         } else {
             truncated = true;
         }
+        // Stop as soon as the limit is known to be exceeded. Continuing to
+        // drain an untrusted stream lets a child force unbounded reader work
+        // even though none of the additional bytes can be returned.
+        if truncated {
+            break;
+        }
     }
 
     Ok(BoundedStream {
@@ -306,7 +324,7 @@ mod tests {
     use std::{collections::HashMap, io::Cursor};
 
     #[test]
-    fn bounded_reader_keeps_limit_and_drains_rest() {
+    fn bounded_reader_keeps_limit_and_stops_after_detecting_overflow() {
         let stream = read_stream_bounded(Cursor::new(b"abcdef"), 4).expect("read stream");
 
         assert_eq!(stream.bytes, b"abcd");

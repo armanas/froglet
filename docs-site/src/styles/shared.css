@@ -25,7 +25,7 @@
 }
 .brand .mark {
 	font-family: var(--font-mono);
-	color: var(--frog-400);
+	color: var(--accent-code);
 	font-weight: 700;
 }
 
@@ -62,7 +62,7 @@
 	color: var(--fg1);
 }
 .site-hdr nav a.active {
-	color: var(--frog-400);
+	color: var(--accent-code);
 }
 .site-hdr .right {
 	margin-left: auto;
@@ -144,7 +144,7 @@
 	background: var(--ink-50);
 }
 .theme-switch__btn.is-active {
-	color: var(--frog-400);
+	color: var(--accent-code);
 	background: rgba(82, 199, 42, 0.1);
 }
 @media (max-width: 560px) {
@@ -373,7 +373,7 @@ code.inline {
 .site-ftr .col {
 	min-width: 140px;
 }
-.site-ftr .col h5 {
+.site-ftr .col h2 {
 	font-family: var(--font-mono);
 	font-size: 11px;
 	font-weight: 600;

@@ -42,18 +42,13 @@ name = "{name}"
 
 [project.marketplace]
 url = "https://marketplace.froglet.dev"
-
-[project.defaults]
-runtime = "python"
-hosting = "tor"
-settlement = "none"
 "#
     )
 }
 
 fn service_toml(name: &str) -> String {
     format!(
-        r#"schema_version = "froglet-service/v3"
+        r#"schema_version = "froglet-service/v4"
 
 project_id = "{name}"
 service_id = "{name}"
@@ -64,9 +59,10 @@ package_kind = "inline_source"
 entrypoint_kind = "handler"
 entrypoint = "handler.py"
 contract_version = "froglet.python.handler_json.v1"
+verification = {{ input = {{}} }}
 
 [hosting]
-default = "tor"
+default = "relay"
 
 [settlement]
 method = "none"
@@ -112,7 +108,7 @@ pub fn run(mut args: Vec<String>) -> Result<(), CliError> {
     } else {
         println!("Scaffolded Froglet service at {}:", dir.display());
         println!("  - froglet.toml          (project manifest)");
-        println!("  - froglet-service.toml  (service manifest, v3)");
+        println!("  - froglet-service.toml  (service manifest, v4)");
         println!("  - handler.py            (Python entrypoint)");
         println!("  - .gitignore");
         println!();
@@ -149,6 +145,7 @@ fn validate_name(name: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use froglet_protocol::manifest::{ProjectManifest, ServiceManifest};
 
     #[test]
     fn scaffold_uses_handler_abi() {
@@ -156,7 +153,20 @@ mod tests {
         assert!(service.contains("entrypoint_kind = \"handler\""));
         assert!(service.contains("entrypoint = \"handler.py\""));
         assert!(service.contains("contract_version = \"froglet.python.handler_json.v1\""));
+        assert!(service.contains("verification = { input = {} }"));
         assert!(HANDLER_PY.contains("def handler(event: dict, context: dict) -> dict:"));
+    }
+
+    #[test]
+    fn scaffold_uses_schema_valid_relay_publication_defaults() {
+        let project = project_toml("echoer");
+        let service = service_toml("echoer");
+
+        assert!(!project.contains("[project.defaults]"));
+        assert!(service.contains("default = \"relay\""));
+        assert!(service.contains("verification = { input = {} }"));
+        ProjectManifest::from_toml(&project).expect("generated project manifest is valid");
+        ServiceManifest::from_toml(&service).expect("generated service manifest is valid");
     }
 
     #[test]

@@ -71,6 +71,20 @@ test("MCP config defaults to local loopback without token files", () => {
   }
 })
 
+test("MCP config refuses bearer-token node URLs over public plaintext HTTP", () => {
+  const previous = snapshotEnv(CONFIG_ENV_KEYS)
+  try {
+    for (const key of CONFIG_ENV_KEYS) {
+      delete process.env[key]
+    }
+    process.env.FROGLET_PROVIDER_URL = "http://provider.example:8080"
+    process.env.FROGLET_RUNTIME_URL = "http://runtime.example:8081"
+    assert.throws(() => readConfig(), /must use https:\/\//)
+  } finally {
+    restoreEnv(previous)
+  }
+})
+
 test("Hosted-proof profile is no longer accepted by the installed MCP server", () => {
   const previous = snapshotEnv(CONFIG_ENV_KEYS)
   try {

@@ -81,6 +81,7 @@ async fn live_local_backend_publishes_offer_without_marketplace() {
         source: SourceLocator::Inline(python_handler().to_string()),
         hosting_override: None,
         marketplace_url: marketplace_url(),
+        approved_consent_hash: None,
     };
     let output = publish(input, &daemon)
         .await
@@ -122,6 +123,7 @@ async fn live_self_hosted_backend_registers_with_marketplace() {
         source: SourceLocator::Inline(python_handler().to_string()),
         hosting_override: None,
         marketplace_url: marketplace_url(),
+        approved_consent_hash: None,
     };
     let output = publish(input, &daemon)
         .await
@@ -155,6 +157,7 @@ async fn live_tor_backend_uses_daemon_onion_url() {
         source: SourceLocator::Inline(python_handler().to_string()),
         hosting_override: None,
         marketplace_url: marketplace_url(),
+        approved_consent_hash: None,
     };
     let output = publish(input, &daemon)
         .await

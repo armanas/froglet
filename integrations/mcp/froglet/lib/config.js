@@ -12,11 +12,49 @@ import {
   normalizeBaseUrl,
   normalizeFilesystemPath
 } from "../../../shared/froglet-lib/shared.js"
+import { isIP } from "node:net"
 
 const LOCAL_PROFILE = "local"
 const DEFAULT_LOCAL_PROVIDER_URL = "http://127.0.0.1:8080"
 const DEFAULT_LOCAL_RUNTIME_URL = "http://127.0.0.1:8081"
 const SUPPORTED_PROFILES = new Set([LOCAL_PROFILE])
+
+function isPrivateIpv4(hostname) {
+  const octets = hostname.split(".").map(Number)
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false
+  }
+  return octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+}
+
+function isLocalPlaintextHost(hostname) {
+  const normalized = hostname.toLowerCase()
+  if (normalized === "localhost" || normalized === "host.docker.internal" || normalized.endsWith(".localhost")) {
+    return true
+  }
+  if (isIP(normalized) === 4) {
+    return isPrivateIpv4(normalized)
+  }
+  if (isIP(normalized) === 6) {
+    return normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")
+  }
+  // Single-label names are used by Docker/Compose private DNS.  Public DNS
+  // names must use HTTPS before bearer credentials can be attached.
+  return !normalized.includes(".")
+}
+
+function normalizeNodeUrl(value, label) {
+  const normalized = normalizeBaseUrl(value, label, { allowInsecure: true })
+  const parsed = new URL(normalized)
+  if (parsed.protocol === "http:" && !isLocalPlaintextHost(parsed.hostname)) {
+    throw new Error(`${label} must use https:// unless it targets loopback, a private address, or a local container host`)
+  }
+  return normalized
+}
 
 function nonEmptyEnv(name) {
   const value = process.env[name]
@@ -44,17 +82,13 @@ function resolveProfile() {
 function resolveProviderUrl() {
   const explicit = nonEmptyEnv("FROGLET_PROVIDER_URL")
   if (explicit) {
-    return normalizeBaseUrl(explicit, "FROGLET_PROVIDER_URL", { allowInsecure: true })
+    return normalizeNodeUrl(explicit, "FROGLET_PROVIDER_URL")
   }
   const fallback = nonEmptyEnv("FROGLET_BASE_URL")
   if (fallback) {
-    return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_PROVIDER_URL", {
-      allowInsecure: true
-    })
+    return normalizeNodeUrl(fallback, "FROGLET_BASE_URL / FROGLET_PROVIDER_URL")
   }
-  return normalizeBaseUrl(DEFAULT_LOCAL_PROVIDER_URL, "FROGLET_PROVIDER_URL default", {
-    allowInsecure: true
-  })
+  return normalizeNodeUrl(DEFAULT_LOCAL_PROVIDER_URL, "FROGLET_PROVIDER_URL default")
 }
 
 /**
@@ -68,17 +102,13 @@ function resolveProviderUrl() {
 function resolveRuntimeUrl() {
   const explicit = nonEmptyEnv("FROGLET_RUNTIME_URL")
   if (explicit) {
-    return normalizeBaseUrl(explicit, "FROGLET_RUNTIME_URL", { allowInsecure: true })
+    return normalizeNodeUrl(explicit, "FROGLET_RUNTIME_URL")
   }
   const fallback = nonEmptyEnv("FROGLET_BASE_URL")
   if (fallback) {
-    return normalizeBaseUrl(fallback, "FROGLET_BASE_URL / FROGLET_RUNTIME_URL", {
-      allowInsecure: true
-    })
+    return normalizeNodeUrl(fallback, "FROGLET_BASE_URL / FROGLET_RUNTIME_URL")
   }
-  return normalizeBaseUrl(DEFAULT_LOCAL_RUNTIME_URL, "FROGLET_RUNTIME_URL default", {
-    allowInsecure: true
-  })
+  return normalizeNodeUrl(DEFAULT_LOCAL_RUNTIME_URL, "FROGLET_RUNTIME_URL default")
 }
 
 /**

@@ -1,0 +1,593 @@
+{
+  "artifact_verification_cases": [
+    {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "12a529ade22009113ce2329b159ff1ab41ecf8d09c692314593b27c7281a0ef1",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "succeeded",
+          "execution_state": "succeeded",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "result_format": "application/json",
+          "result_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+              "payment_hash": "3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+              "state": "settled"
+            },
+            "bundle_hash": "082986519ebb583557eddbc1accf19425458b31c046b63442547a36c37bb6ea4",
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "settled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "cd2c0cbcd276d3850da59e59fd91be3b23bbcb1bfba838d07ad305eba967b2e9",
+        "schema_version": "froglet/v1",
+        "signature": "558d2037f155ec4d8580b4519d62738b82a15f15ca53383025fdae25d9a4b2224ea6499f0ee7a9b0aa8112feac1eb972c3bed846a37644c30049980a376107b3",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_type": "receipt",
+      "expected_valid": true,
+      "name": "x402_receipt_valid"
+    },
+    {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "3d520eb2813c2ee72382c11f15ba6216eb1df7915e1784042c5f97743f2ed6eb",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "succeeded",
+          "execution_state": "succeeded",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "result_format": "application/json",
+          "result_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+              "payment_hash": "3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+              "state": "settled"
+            },
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "settled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "cca2febc5072daf8ed46aa1df81034115b8636042ead5b8173e453a975e94208",
+        "schema_version": "froglet/v1",
+        "signature": "be86e2a22046fa2f0b0f2f3a2e2bc17a6467d3a0cc332dc7c6de2d04cdbe7076c2e0e5fdb4069e8aacc6e543385523546d400133813021911ec97f24d5db247d",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_type": "receipt",
+      "expected_valid": false,
+      "name": "x402_receipt_missing_bundle_hash"
+    },
+    {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "125ed8333b06048adde3fbdf3b567a31ff307ae4acb237255c43147abc63ca4d",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "succeeded",
+          "execution_state": "succeeded",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "result_format": "application/json",
+          "result_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+              "payment_hash": "3F1E5C0A7B92D48E6FA1C3B5D7092E4A8C6B1D3F5A7E9C2B4D6F8A0C2E4B6D80",
+              "state": "settled"
+            },
+            "bundle_hash": "082986519ebb583557eddbc1accf19425458b31c046b63442547a36c37bb6ea4",
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "settled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "1077f9f7b08b65159440b23f7550ef9a28a27388293daec3dc28aede20b946d3",
+        "schema_version": "froglet/v1",
+        "signature": "9a760f4391ea7df5141f5cfc8d976a46ff28814069e092822b33e6e72a7ecc7e3a3bfa92577cb26e3e1901ded6193e73cea676dcfc005b14c386290851f368be",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_type": "receipt",
+      "expected_valid": false,
+      "name": "x402_receipt_uppercase_nonce"
+    },
+    {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "4c5600935314986ea5f2aac7c92967b945f00a85f541957f2b4cdc64c61b6d43",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "succeeded",
+          "execution_state": "succeeded",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "result_format": "application/json",
+          "result_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "",
+              "payment_hash": "3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+              "state": "canceled"
+            },
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "canceled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "c8786494acf3fd6a0d8a5024ada695744225a77c61c96155d026525d31487be3",
+        "schema_version": "froglet/v1",
+        "signature": "e3225d7fc509984740e394f6beadd8a4568b860ea838e37e54f238a16c5635eab491fbdc1712394292a284996eab9b3d4b57942fb8fb3fd7f8289726894be38c",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_type": "receipt",
+      "expected_valid": false,
+      "name": "x402_receipt_succeeded_but_unsettled"
+    },
+    {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "3cb7b248c166aa12f8e61d8b3b1f138f5d317b79ba8a03b2db8f0d474dd351fb",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "canceled",
+          "execution_state": "not_started",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+              "payment_hash": "3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+              "state": "canceled"
+            },
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "canceled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "c8e970bed26b62c7d64209563c475f3370bbe712440dfefcf7e4476a94d6de3b",
+        "schema_version": "froglet/v1",
+        "signature": "082b0c2d29308307f27a9c35d4f58c3fe9bdd75f7ef1e2f5a19a8302796d0d1c524fbee837b7ec4be005bebe8b13383aecef5a25195e64e56dd51674fe262abc",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_type": "receipt",
+      "expected_valid": false,
+      "name": "x402_receipt_canceled_with_tx_hash"
+    },
+    {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "bc67360628847e425970b4650e81e1590ff5a40aaa04ade1c4e15a2f1db2dc8a",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "succeeded",
+          "execution_state": "succeeded",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "result_format": "application/json",
+          "result_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+              "payment_hash": "3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+              "state": "settled"
+            },
+            "bundle_hash": "082986519ebb583557eddbc1accf19425458b31c046b63442547a36c37bb6ea4",
+            "destination_identity": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "settled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "023b89f5bc1298e35d00fca7f9ea2c64b737e015aecff6ac354b23896d18ed9c",
+        "schema_version": "froglet/v1",
+        "signature": "13f65bc0e4b3494f662c3a270cbdf79174480ba41dc503c1bcac7a128121d0d47563f96e9848a48e24b9d3baf9508f9f9ab7e05d267b39550b6357d52037e60c",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_type": "receipt",
+      "expected_valid": false,
+      "name": "x402_receipt_prefixed_destination"
+    }
+  ],
+  "artifacts": {
+    "deal": {
+      "artifact": {
+        "artifact_type": "deal",
+        "created_at": 1700000000,
+        "hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+        "payload": {
+          "acceptance_deadline": 1700000180,
+          "admission_deadline": 1700000060,
+          "completion_deadline": 1700000120,
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "success_payment_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+          "workload_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "payload_hash": "232bb17be542bba2e8b967557c31ebed86b753b237336155411fbfe33ad790fc",
+        "schema_version": "froglet/v1",
+        "signature": "813db850f8ede117ded520a34932814c7406652198ca885aebeb5928f2746be8e1e3d40a448b3fa9c0c8ee17b1362416b40e11060997991991c1c6bb1085d50e",
+        "signer": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+      },
+      "artifact_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+      "canonical_signing_bytes_hex": "5b2266726f676c65742f7631222c226465616c222c2234363664376663616535363365356362303961306431383730626235383033343438303436313738373961313439343963663232323835663162616533663237222c313730303030303030302c2232333262623137626535343262626132653862393637353537633331656265643836623735336232333733333631353534313166626665333361643739306663222c7b22616363657074616e63655f646561646c696e65223a313730303030303138302c2261646d697373696f6e5f646561646c696e65223a313730303030303036302c22636f6d706c6574696f6e5f646561646c696e65223a313730303030303132302c2270726f76696465725f6964223a2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c2271756f74655f68617368223a2238643561623066613832373131643431363733336564623838376638643730323262383831313237633633623062306662363231633639343264313835656139222c227265717565737465725f6964223a2234363664376663616535363365356362303961306431383730626235383033343438303436313738373961313439343963663232323835663162616533663237222c22737563636573735f7061796d656e745f68617368223a2232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c22776f726b6c6f61645f68617368223a2231313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131227d5d",
+      "payload_hash": "232bb17be542bba2e8b967557c31ebed86b753b237336155411fbfe33ad790fc"
+    },
+    "descriptor": {
+      "artifact": {
+        "artifact_type": "descriptor",
+        "created_at": 1700000000,
+        "hash": "31f6f743b5c057164f103e4057132a02482c3de4a509215c7e3f80bb9edd3211",
+        "payload": {
+          "accepted_payment_methods": [
+            "x402_usdc"
+          ],
+          "capabilities": {
+            "execution_runtimes": [
+              "wasm"
+            ],
+            "service_kinds": [
+              "compute.wasm.v1"
+            ]
+          },
+          "descriptor_seq": 1,
+          "protocol_version": "froglet/v1",
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "transport_endpoints": [
+            {
+              "created_at": 1700000000,
+              "features": [
+                "quote_http",
+                "artifact_fetch",
+                "receipt_poll"
+              ],
+              "priority": 10,
+              "transport": "https",
+              "uri": "https://provider.example"
+            }
+          ]
+        },
+        "payload_hash": "ae3f4b5fe157183c23629633913de36bece1cbe5076148bb1d717a84a2537129",
+        "schema_version": "froglet/v1",
+        "signature": "871ec35c2182c0f0ada8b34eb4bec00c8ab0cea28a8849d3891d6e4892d086800a101abd9c0e5ed948cd797064f6f5d408ea6fb41380a7219e93a9b0a48aa123",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_hash": "31f6f743b5c057164f103e4057132a02482c3de4a509215c7e3f80bb9edd3211",
+      "canonical_signing_bytes_hex": "5b2266726f676c65742f7631222c2264657363726970746f72222c2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c313730303030303030302c2261653366346235666531353731383363323336323936333339313364653336626563653163626535303736313438626231643731376138346132353337313239222c7b2261636365707465645f7061796d656e745f6d6574686f6473223a5b22783430325f75736463225d2c226361706162696c6974696573223a7b22657865637574696f6e5f72756e74696d6573223a5b227761736d225d2c22736572766963655f6b696e6473223a5b22636f6d707574652e7761736d2e7631225d7d2c2264657363726970746f725f736571223a312c2270726f746f636f6c5f76657273696f6e223a2266726f676c65742f7631222c2270726f76696465725f6964223a2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c227472616e73706f72745f656e64706f696e7473223a5b7b22637265617465645f6174223a313730303030303030302c226665617475726573223a5b2271756f74655f68747470222c2261727469666163745f6665746368222c22726563656970745f706f6c6c225d2c227072696f72697479223a31302c227472616e73706f7274223a226874747073222c22757269223a2268747470733a2f2f70726f76696465722e6578616d706c65227d5d7d5d",
+      "payload_hash": "ae3f4b5fe157183c23629633913de36bece1cbe5076148bb1d717a84a2537129"
+    },
+    "offer": {
+      "artifact": {
+        "artifact_type": "offer",
+        "created_at": 1700000000,
+        "hash": "52c13488237abb6f518a4dc73babb3b562819d229a7c1366b182813b3e605088",
+        "payload": {
+          "descriptor_hash": "31f6f743b5c057164f103e4057132a02482c3de4a509215c7e3f80bb9edd3211",
+          "execution_profile": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000,
+            "runtime": "wasm"
+          },
+          "offer_id": "execute.wasm",
+          "offer_kind": "compute.wasm.v1",
+          "price_schedule": {
+            "base_fee_msat": 250000,
+            "success_fee_msat": 0
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_ttl_secs": 300,
+          "settlement_method": "x402.eip3009.v1"
+        },
+        "payload_hash": "6f642a22fd5168d778c5305d812f75af5464d76840e13dfcb3e99c3374af8a74",
+        "schema_version": "froglet/v1",
+        "signature": "419bc7fc09045c190b9be6de2a72daf146c1a5e64d3a76a43895f187201e0056db2a9e952aeea862b30e273a856c21332a2f57023ede16b9fd54922423825c79",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_hash": "52c13488237abb6f518a4dc73babb3b562819d229a7c1366b182813b3e605088",
+      "canonical_signing_bytes_hex": "5b2266726f676c65742f7631222c226f66666572222c2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c313730303030303030302c2236663634326132326664353136386437373863353330356438313266373561663534363464373638343065313364666362336539396333333734616638613734222c7b2264657363726970746f725f68617368223a2233316636663734336235633035373136346631303365343035373133326130323438326333646534613530393231356337653366383062623965646433323131222c22657865637574696f6e5f70726f66696c65223a7b226162695f76657273696f6e223a2266726f676c65742e7761736d2e72756e5f6a736f6e2e7631222c226675656c5f6c696d6974223a35303030303030302c226d61785f696e7075745f6279746573223a3133313037322c226d61785f6d656d6f72795f6279746573223a383338383630382c226d61785f6f75747075745f6279746573223a3133313037322c226d61785f72756e74696d655f6d73223a33303030302c2272756e74696d65223a227761736d227d2c226f666665725f6964223a22657865637574652e7761736d222c226f666665725f6b696e64223a22636f6d707574652e7761736d2e7631222c2270726963655f7363686564756c65223a7b22626173655f6665655f6d736174223a3235303030302c22737563636573735f6665655f6d736174223a307d2c2270726f76696465725f6964223a2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c2271756f74655f74746c5f73656373223a3330302c22736574746c656d656e745f6d6574686f64223a22783430322e656970333030392e7631227d5d",
+      "payload_hash": "6f642a22fd5168d778c5305d812f75af5464d76840e13dfcb3e99c3374af8a74"
+    },
+    "quote": {
+      "artifact": {
+        "artifact_type": "quote",
+        "created_at": 1700000000,
+        "hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+        "payload": {
+          "descriptor_hash": "31f6f743b5c057164f103e4057132a02482c3de4a509215c7e3f80bb9edd3211",
+          "execution_limits": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "expires_at": 1700000300,
+          "offer_hash": "52c13488237abb6f518a4dc73babb3b562819d229a7c1366b182813b3e605088",
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "settlement_terms": {
+            "base_fee_msat": 250000,
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "max_base_invoice_expiry_secs": 0,
+            "max_success_hold_expiry_secs": 0,
+            "method": "x402.eip3009.v1",
+            "min_final_cltv_expiry": 0,
+            "success_fee_msat": 0
+          },
+          "workload_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "workload_kind": "compute.wasm.v1"
+        },
+        "payload_hash": "9c1f24e6e8058be55c4a80eb6787e9cc4645b181f78cc9b38f4c773fc4909cbd",
+        "schema_version": "froglet/v1",
+        "signature": "0e0b0561a96d76fe0d7574af5d640136a547ad00ec63e9aaed3af81a7044ddb3c7dfb47ccd35ccccd516fadd60e69e08a562791a8827559b3718f01ae4198a1b",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+      "canonical_signing_bytes_hex": "5b2266726f676c65742f7631222c2271756f7465222c2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c313730303030303030302c2239633166323465366538303538626535356334613830656236373837653963633436343562313831663738636339623338663463373733666334393039636264222c7b2264657363726970746f725f68617368223a2233316636663734336235633035373136346631303365343035373133326130323438326333646534613530393231356337653366383062623965646433323131222c22657865637574696f6e5f6c696d697473223a7b226675656c5f6c696d6974223a35303030303030302c226d61785f696e7075745f6279746573223a3133313037322c226d61785f6d656d6f72795f6279746573223a383338383630382c226d61785f6f75747075745f6279746573223a3133313037322c226d61785f72756e74696d655f6d73223a33303030307d2c22657870697265735f6174223a313730303030303330302c226f666665725f68617368223a2235326331333438383233376162623666353138613464633733626162623362353632383139643232396137633133363662313832383133623365363035303838222c2270726f76696465725f6964223a2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c227265717565737465725f6964223a2234363664376663616535363365356362303961306431383730626235383033343438303436313738373961313439343963663232323835663162616533663237222c22736574746c656d656e745f7465726d73223a7b22626173655f6665655f6d736174223a3235303030302c2264657374696e6174696f6e5f6964656e74697479223a2261306238363939316336323138623336633164313964346132653965623063653336303665623438222c226d61785f626173655f696e766f6963655f6578706972795f73656373223a302c226d61785f737563636573735f686f6c645f6578706972795f73656373223a302c226d6574686f64223a22783430322e656970333030392e7631222c226d696e5f66696e616c5f636c74765f657870697279223a302c22737563636573735f6665655f6d736174223a307d2c22776f726b6c6f61645f68617368223a2231313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c22776f726b6c6f61645f6b696e64223a22636f6d707574652e7761736d2e7631227d5d",
+      "payload_hash": "9c1f24e6e8058be55c4a80eb6787e9cc4645b181f78cc9b38f4c773fc4909cbd"
+    },
+    "receipt": {
+      "artifact": {
+        "artifact_type": "receipt",
+        "created_at": 1700000002,
+        "hash": "12a529ade22009113ce2329b159ff1ab41ecf8d09c692314593b27c7281a0ef1",
+        "payload": {
+          "deal_hash": "0b72debc63611ee1b8bddbf75dfa1bf7589f6861b5dfa58f7ed870cebb7748d1",
+          "deal_state": "succeeded",
+          "execution_state": "succeeded",
+          "executor": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "module_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "runtime": "wasm",
+            "runtime_version": "wasmtime-43"
+          },
+          "finished_at": 1700000002,
+          "limits_applied": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 30000
+          },
+          "provider_id": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+          "quote_hash": "8d5ab0fa82711d416733edb887f8d7022b881127c63b0b0fb621c6942d185ea9",
+          "requester_id": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+          "result_format": "application/json",
+          "result_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "settlement_refs": {
+            "base_fee": {
+              "amount_msat": 250000,
+              "invoice_hash": "8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f",
+              "payment_hash": "3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+              "state": "settled"
+            },
+            "bundle_hash": "082986519ebb583557eddbc1accf19425458b31c046b63442547a36c37bb6ea4",
+            "destination_identity": "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "method": "x402.eip3009.v1",
+            "success_fee": {
+              "amount_msat": 0,
+              "invoice_hash": "",
+              "payment_hash": "",
+              "state": "canceled"
+            }
+          },
+          "settlement_state": "settled",
+          "started_at": 1700000001
+        },
+        "payload_hash": "cd2c0cbcd276d3850da59e59fd91be3b23bbcb1bfba838d07ad305eba967b2e9",
+        "schema_version": "froglet/v1",
+        "signature": "558d2037f155ec4d8580b4519d62738b82a15f15ca53383025fdae25d9a4b2224ea6499f0ee7a9b0aa8112feac1eb972c3bed846a37644c30049980a376107b3",
+        "signer": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      },
+      "artifact_hash": "12a529ade22009113ce2329b159ff1ab41ecf8d09c692314593b27c7281a0ef1",
+      "canonical_signing_bytes_hex": "5b2266726f676c65742f7631222c2272656365697074222c2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c313730303030303030322c2263643263306362636432373664333835306461353965353966643931626533623233626263623162666261383338643037616433303565626139363762326539222c7b226465616c5f68617368223a2230623732646562633633363131656531623862646462663735646661316266373538396636383631623564666135386637656438373063656262373734386431222c226465616c5f7374617465223a22737563636565646564222c22657865637574696f6e5f7374617465223a22737563636565646564222c226578656375746f72223a7b226162695f76657273696f6e223a2266726f676c65742e7761736d2e72756e5f6a736f6e2e7631222c226d6f64756c655f68617368223a2234343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c2272756e74696d65223a227761736d222c2272756e74696d655f76657273696f6e223a227761736d74696d652d3433227d2c2266696e69736865645f6174223a313730303030303030322c226c696d6974735f6170706c696564223a7b226675656c5f6c696d6974223a35303030303030302c226d61785f696e7075745f6279746573223a3133313037322c226d61785f6d656d6f72795f6279746573223a383338383630382c226d61785f6f75747075745f6279746573223a3133313037322c226d61785f72756e74696d655f6d73223a33303030307d2c2270726f76696465725f6964223a2234663335356264636237636330616637323865663363636562393631356439303638346262356232636135663835396162306630623730343037353837316161222c2271756f74655f68617368223a2238643561623066613832373131643431363733336564623838376638643730323262383831313237633633623062306662363231633639343264313835656139222c227265717565737465725f6964223a2234363664376663616535363365356362303961306431383730626235383033343438303436313738373961313439343963663232323835663162616533663237222c22726573756c745f666f726d6174223a226170706c69636174696f6e2f6a736f6e222c22726573756c745f68617368223a2233333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c22736574746c656d656e745f72656673223a7b22626173655f666565223a7b22616d6f756e745f6d736174223a3235303030302c22696e766f6963655f68617368223a2238643466326136633065316233643566376139633265346236643866306131633365356237643966316133633565376239643166336135633765396231643366222c227061796d656e745f68617368223a2233663165356330613762393264343865366661316333623564373039326534613863366231643366356137653963326234643666386130633265346236643830222c227374617465223a22736574746c6564227d2c2262756e646c655f68617368223a2230383239383635313965626235383335353765646462633161636366313934323534353862333163303436623633343432353437613336633337626236656134222c2264657374696e6174696f6e5f6964656e74697479223a2261306238363939316336323138623336633164313964346132653965623063653336303665623438222c226d6574686f64223a22783430322e656970333030392e7631222c22737563636573735f666565223a7b22616d6f756e745f6d736174223a302c22696e766f6963655f68617368223a22222c227061796d656e745f68617368223a22222c227374617465223a2263616e63656c6564227d7d2c22736574746c656d656e745f7374617465223a22736574746c6564222c22737461727465645f6174223a313730303030303030317d5d",
+      "payload_hash": "cd2c0cbcd276d3850da59e59fd91be3b23bbcb1bfba838d07ad305eba967b2e9"
+    }
+  },
+  "conformance_path": {
+    "artifact_order": [
+      "descriptor",
+      "offer",
+      "quote",
+      "deal",
+      "receipt"
+    ],
+    "description": "x402.eip3009.v1 is a single-leg prepaid-style method: there is no invoice_bundle transport artifact."
+  },
+  "evidence": {
+    "bundle": {
+      "content": {
+        "authorization": {
+          "domain": {
+            "chainId": 84532,
+            "name": "USD Coin",
+            "verifyingContract": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+            "version": "2"
+          },
+          "message": {
+            "from": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            "nonce": "0x3f1e5c0a7b92d48e6fa1c3b5d7092e4a8c6b1d3f5a7e9c2b4d6f8a0c2e4b6d80",
+            "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "validAfter": "0",
+            "validBefore": "1700003600",
+            "value": "250"
+          }
+        },
+        "chain_id": 84532,
+        "network": "base-sepolia",
+        "scheme": "exact",
+        "settlement": {
+          "facilitator": "https://x402.org/facilitator",
+          "tx_hash": "0x8d4f2a6c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f"
+        },
+        "x402_version": 1
+      },
+      "evidence_format": "froglet-evidence/v1",
+      "kind": "x402.eip3009.v1"
+    },
+    "bundle_hash": "082986519ebb583557eddbc1accf19425458b31c046b63442547a36c37bb6ea4",
+    "note": "bundle_hash is sha256(JCS(bundle)) and is committed to by receipt.settlement_refs.bundle_hash. Offline recovery of the payer's EIP-712 signature is specified by the evidence-refs chapter and covered by conformance/evidence_refs_v1.json."
+  },
+  "fixture_type": "froglet.x402-settlement-conformance",
+  "fixture_version": 1,
+  "keys": {
+    "provider_seed_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "requester_seed_hex": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "schema_version": "froglet/v1",
+  "settlement_method": "x402.eip3009.v1"
+}

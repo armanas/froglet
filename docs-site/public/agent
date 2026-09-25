@@ -1,3 +1,13 @@
 #!/bin/sh
 set -eu
-exec sh -c "$(curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/agent-bootstrap.sh)"
+cat >&2 <<'EOF'
+Froglet installation no longer supports pipe-to-shell because the downloaded
+bootstrap bytes are part of the approval contract.
+
+Use the transparent immutable-release resolver at:
+  https://froglet.dev/learn/quickstart/
+
+It verifies the uploaded agent-bootstrap.sh asset digest before any bootstrap
+bytes execute, then requires a separate plan approval before host mutation.
+EOF
+exit 64

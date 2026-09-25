@@ -14,6 +14,7 @@
 //! - remote provider / unknown service error paths pointing at MCP
 //!   `invoke_service`.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use froglet::{
     api::{public_router, runtime_router},
     cli::invoke::{InvokeOptions, invoke_local_service},
@@ -165,7 +166,7 @@ fn create_dual_state(payment_backends: Vec<PaymentBackend>) -> AppState {
     let identity =
         froglet::identity::NodeIdentity::load_or_create(&node_config).expect("test identity");
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
-    let settlement_registry = SettlementRegistry::new(&node_config);
+    let settlement_registry = SettlementRegistry::new(&node_config).expect("settlement registry");
 
     AppState {
         db: pool,
@@ -176,7 +177,7 @@ fn create_dual_state(payment_backends: Vec<PaymentBackend>) -> AppState {
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::builder()
+        http_client: froglet::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(10))
             .build()
             .expect("reqwest client"),
@@ -190,6 +191,8 @@ fn create_dual_state(payment_backends: Vec<PaymentBackend>) -> AppState {
         provider_control_auth_token_path: unique_temp_dir("token").join("froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -282,6 +285,7 @@ fn invoke_options(node: &DualNode, service_id: &str, input: Value) -> InvokeOpti
         runtime_url: node.runtime.base_url.clone(),
         runtime_token: "test-runtime-token".to_string(),
         provider_id_override: None,
+        idempotency_key: None,
         wait_timeout: Duration::from_secs(30),
         poll_interval: Duration::from_millis(100),
     }
@@ -290,7 +294,9 @@ fn invoke_options(node: &DualNode, service_id: &str, input: Value) -> InvokeOpti
 /// Publish an inline-source Python service through the provider-control
 /// API, mirroring what `froglet-node publish --host local` sends.
 async fn publish_python_service(node: &DualNode, service_id: &str, price_sats: u64) {
-    let client = reqwest::Client::new();
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
     let response = client
         .post(format!(
             "{}/v1/provider/artifacts/publish",
@@ -304,7 +310,46 @@ async fn publish_python_service(node: &DualNode, service_id: &str, price_sats: u
             "entrypoint": "handler",
             "inline_source": "def handler(event, context):\n    return event\n",
             "summary": "echo back the input event",
+            "settlement_method": if price_sats == 0 { "none" } else { "lightning" },
             "price_sats": price_sats,
+        }))
+        .send()
+        .await
+        .expect("publish request");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::CREATED,
+        "publish {service_id} failed: {body}"
+    );
+}
+
+async fn publish_native_json_service(node: &DualNode, service_id: &str) {
+    let client = froglet::tls::reqwest_client_builder()
+        .build()
+        .expect("reqwest client");
+    let source = br#"[{"id":1,"name":"Ada"},{"id":2,"name":"Grace"}]"#;
+    let response = client
+        .post(format!(
+            "{}/v1/provider/artifacts/publish",
+            node.provider.base_url
+        ))
+        .bearer_auth("test-provider-token")
+        .json(&json!({
+            "service_id": service_id,
+            "runtime": "builtin",
+            "package_kind": "builtin",
+            "data_source": {
+                "format": "json",
+                "content_base64": STANDARD.encode(source),
+            },
+            "settlement_method": "none",
+            "price_sats": 0,
+            "publication_state": "active",
+            "verification": {
+                "input": {"op": "select", "collection": "rows", "limit": 1},
+            },
         }))
         .send()
         .await
@@ -358,6 +403,62 @@ async fn invoke_published_python_service_creates_service_addressed_deal() {
     assert!(!report.deal_id.is_empty());
     assert!(!report.status.is_empty());
     assert_eq!(report.provider_id, node.state.identity.node_id());
+}
+
+#[tokio::test]
+async fn invoke_published_native_data_service_preserves_immutable_binding() {
+    let node = spawn_dual_node(vec![PaymentBackend::None], false).await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+
+    publish_native_json_service(&node, "data.people").await;
+
+    let report = invoke_local_service(&invoke_options(
+        &node,
+        "data.people",
+        json!({
+            "op": "select",
+            "collection": "rows",
+            "columns": ["name"],
+            "equals": {"id": 2},
+            "limit": 1,
+        }),
+    ))
+    .await
+    .expect("invoke native data service");
+
+    assert_eq!(report.status, "succeeded", "report: {report:?}");
+    let result = report.result.expect("native data result");
+    assert_eq!(
+        result["contract_version"],
+        froglet::builtins::DATA_QUERY_CONTRACT_V1
+    );
+    assert_eq!(result["source_kind"], "json");
+    assert_eq!(result["collection"], "rows");
+    assert_eq!(result["rows"], json!([{"name": "Grace"}]));
+    assert_eq!(result["returned"], 1);
+    let status: Value = froglet::tls::reqwest_client_builder()
+        .build()
+        .unwrap()
+        .get(format!(
+            "{}/v1/provider/publications",
+            node.provider.base_url
+        ))
+        .bearer_auth("test-provider-token")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        status["last_successful_calls"]["data.people"]
+            .as_i64()
+            .is_some_and(|timestamp| timestamp > 0),
+        "{status}"
+    );
 }
 
 #[tokio::test]

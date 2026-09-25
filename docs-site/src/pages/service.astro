@@ -1,0 +1,21 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import AgentMeta from '../components/AgentMeta.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+---
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="robots" content="noindex"/><title>Shared service · Froglet</title><ThemeProvider /><AgentMeta route="service" /></head>
+<body>
+<SiteHeader currentPath={Astro.url.pathname} />
+<main class="froglet-home-main share-page">
+  <section class="hero"><span class="eyebrow">Shared with your agent</span><h1 id="service-title">A Froglet service</h1><p id="service-summary" class="lede">Check availability, then give your agent the prompt below.</p><p id="availability" role="status" aria-live="polite">Checking availability…</p><p id="checked-at" class="note"></p><button class="btn ghost" type="button" id="refresh-service">Check again</button></section>
+  <section class="block"><h2>Use this service</h2><p>Paste this prompt into Codex or Claude Code. Your agent uses the same native Froglet installation as the publisher.</p><label for="recipient-prompt">Recipient prompt</label><textarea id="recipient-prompt" readonly rows="6"></textarea><button class="btn primary" type="button" id="copy-service-prompt">Copy prompt</button><p id="copy-status" role="status"></p><p class="note">Installation requires your approval. The first-use path only calls free services. The publisher’s computer must stay awake and online.</p></section>
+  <section class="block"><h2>Selected service</h2><dl><dt>Provider identity</dt><dd id="service-provider">Waiting for a link</dd><dt>Selected revision</dt><dd id="service-revision">Not yet verified</dd><dt>Marketplace activation</dt><dd id="service-marketplace">Not yet verified</dd><dt>Recipient execution</dt><dd>Not run on this page</dd></dl><h3>Example input</h3><pre id="service-example">Waiting for current service metadata.</pre><p class="note">Availability is an observation at the time shown. Your agent verifies signed offers and the receipt from its own call. A marketplace listing alone does not prove that call succeeded.</p></section>
+  <p><a href="/publish/">Publish your own service</a> · <a href="/verify-receipt/">Verify a receipt</a></p>
+</main><SiteFooter />
+<script>import '../scripts/shared-service-page';</script>
+<style>.share-page{max-width:960px;margin:auto;padding:24px}.share-page .hero{padding:36px 0}.share-page textarea{width:100%;display:block;margin:12px 0 16px;padding:16px;min-height:180px;font:inherit;color:var(--fg1);background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px}.share-page pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;border:1px solid var(--border);border-radius:8px}.share-page dd{margin:4px 0 20px;overflow-wrap:anywhere}.share-page dt{font-weight:650}.share-page .note{font-size:.92rem;color:var(--fg2)}.share-page button{min-height:44px}:focus-visible{outline:3px solid var(--accent-code);outline-offset:4px}</style>
+</body></html>

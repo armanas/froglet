@@ -34,6 +34,7 @@ pub fn verify_message(pubkey_hex: &str, sig_hex: &str, message: &[u8]) -> bool {
     verifying_key.verify(message, &signature).is_ok()
 }
 
+#[cfg(any(feature = "generate", test))]
 pub fn generate_signing_key() -> NodeSigningKey {
     SigningKey::random(&mut rand::rngs::OsRng)
 }

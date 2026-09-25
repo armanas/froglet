@@ -12,7 +12,7 @@ per [VERSIONING.md](VERSIONING.md).
 |---|---|---|
 | Node identity seed (secp256k1) | `data/identity/node_identity_seed`, mode 0600; optionally `FROGLET_IDENTITY_SEED_HEX` | Full impersonation — see [key compromise](#key-compromise-blast-radius-and-runbook) |
 | Nostr publication seed | separate file under `data/identity/` | Forged feed publications under the linked identity |
-| Payment credentials | buyer Stripe secret key, phoenixd credentials, LND macaroons (env/config) | Direct spend of wallet funds, independent of identity |
+| Payment credentials | provider Stripe secret key, sandbox-only Stripe SPT helper key, phoenixd credentials, LND macaroons (env/config) | Direct access to the corresponding payment account or wallet, independent of identity |
 | Success-fee preimages | requester node state, per deal | Leaking a preimage settles that success fee unconditionally |
 | Signed artifacts / receipts | node DB, public feeds, archives | Integrity is cryptographic; the threat is *loss*, not forgery |
 | Hosted service availability | `ai.froglet.dev`, `marketplace.froglet.dev`, `try.froglet.dev`, `arbiter.froglet.dev` | Free-tier outage; no custody of user funds |
@@ -87,9 +87,12 @@ scheduled.
   attributable, not correct. Mitigations are economic and documented in
   [Trust & Economics](https://froglet.dev/learn/economics/): small deals,
   attestation filters, spot-check re-execution, the arbiter complaint path.
-- **Stripe rail:** test-mode only; SPT validation fails closed; secrets are
-  redacted from debug output. No production Stripe claims until live-mode
-  transcripts exist (see PAYMENT_MATRIX.md).
+- **Stripe rail:** Shared Payment Tokens are a Stripe private-preview surface.
+  Production requesters must supply a platform-issued SPT; Froglet's automatic
+  helper is seller-sandbox-only, requires an explicit opt-in plus `sk_test_`,
+  and scopes the token with seller details. SPT validation fails closed and
+  secrets are redacted from debug output. No production Stripe claims until
+  live-mode transcripts exist (see PAYMENT_MATRIX.md).
 
 ## Denial of service
 

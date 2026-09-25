@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "froglet-verify"
+version = "0.1.0"
+description = "Pure-Python, zero-dependency offline verifier for Froglet protocol signed-artifact chains."
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Froglet" }]
+keywords = ["froglet", "verification", "bip340", "schnorr", "jcs", "rfc8785"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://froglet.dev"
+
+[tool.setuptools.packages.find]
+include = ["froglet_verify*"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true

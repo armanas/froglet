@@ -63,11 +63,14 @@ pub fn build_event(
     tags: Vec<Vec<String>>,
     content: String,
     sign_message_hex: impl Fn(&[u8]) -> String,
-) -> NostrEvent {
-    let id_bytes = event_id_preimage(pubkey, created_at, kind, &tags, &content);
+) -> Result<NostrEvent, String> {
+    let id_bytes = event_id_preimage(pubkey, created_at, kind, &tags, &content)
+        .map_err(|error| format!("failed to serialize Nostr event id preimage: {error}"))?;
     let id = crypto::sha256_hex(&id_bytes);
-    let sig = sign_message_hex(&hex::decode(&id).expect("event id is valid hex"));
-    NostrEvent {
+    let signing_bytes = hex::decode(&id)
+        .map_err(|error| format!("failed to decode generated Nostr event id: {error}"))?;
+    let sig = sign_message_hex(&signing_bytes);
+    Ok(NostrEvent {
         id,
         pubkey: pubkey.to_string(),
         created_at,
@@ -75,17 +78,20 @@ pub fn build_event(
         tags,
         content,
         sig,
-    }
+    })
 }
 
 pub fn verify_event(event: &NostrEvent) -> bool {
-    let expected_id = crypto::sha256_hex(event_id_preimage(
+    let Ok(preimage) = event_id_preimage(
         &event.pubkey,
         event.created_at,
         event.kind,
         &event.tags,
         &event.content,
-    ));
+    ) else {
+        return false;
+    };
+    let expected_id = crypto::sha256_hex(preimage);
     if expected_id != event.id {
         return false;
     }
@@ -137,14 +143,14 @@ pub fn build_descriptor_summary_event(
         tags.push(vec!["t".to_string(), runtime.clone()]);
     }
 
-    Ok(build_event(
+    build_event(
         publication_pubkey,
         descriptor.created_at,
         KIND_FROGLET_DESCRIPTOR_SUMMARY,
         tags,
         content,
         sign_message_hex,
-    ))
+    )
 }
 
 pub fn build_offer_summary_event(
@@ -206,14 +212,14 @@ pub fn build_offer_summary_event(
         tags.push(vec!["expiration".to_string(), expires_at.to_string()]);
     }
 
-    Ok(build_event(
+    build_event(
         publication_pubkey,
         offer.created_at,
         KIND_FROGLET_OFFER_SUMMARY,
         tags,
         content,
         sign_message_hex,
-    ))
+    )
 }
 
 pub fn build_receipt_summary_event(
@@ -241,14 +247,14 @@ pub fn build_receipt_summary_event(
         tags.push(vec!["t".to_string(), failure_code.clone()]);
     }
 
-    Ok(build_event(
+    build_event(
         publication_pubkey,
         receipt.created_at,
         KIND_FROGLET_RECEIPT_SUMMARY,
         tags,
         content,
         sign_message_hex,
-    ))
+    )
 }
 
 fn canonical_content<T: Serialize>(value: &T) -> Result<String, String> {
@@ -286,9 +292,8 @@ fn event_id_preimage(
     kind: u32,
     tags: &[Vec<String>],
     content: &str,
-) -> Vec<u8> {
+) -> serde_json::Result<Vec<u8>> {
     serde_json::to_vec(&json!([0, pubkey, created_at, kind, tags, content]))
-        .expect("nostr event preimage should serialize")
 }
 
 #[cfg(test)]
@@ -307,7 +312,8 @@ mod tests {
             vec![vec!["d".to_string(), "froglet".to_string()]],
             "{\"hello\":\"world\"}".to_string(),
             |message| crypto::sign_message_hex(&signing_key, message),
-        );
+        )
+        .expect("build event");
 
         assert!(verify_event(&event));
     }
@@ -323,7 +329,8 @@ mod tests {
             vec![vec!["d".to_string(), "froglet".to_string()]],
             "{\"hello\":\"world\"}".to_string(),
             |message| crypto::sign_message_hex(&signing_key, message),
-        );
+        )
+        .expect("build event");
         event.content = "{\"hello\":\"froglet\"}".to_string();
 
         assert!(!verify_event(&event));

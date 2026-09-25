@@ -42,6 +42,40 @@ pub struct IncomingPayment {
     pub received_sat: u64,
 }
 
+/// Verify the provider-side proof for a prepaid invoice before admission or
+/// Receipt construction. `is_paid` alone is insufficient: phoenixd also has
+/// to report the exact contracted amount and a 32-byte preimage bound to the
+/// watched payment hash.
+pub(crate) fn validate_prepaid_payment_proof(
+    expected_payment_hash: &str,
+    expected_amount_sat: u64,
+    payment: &IncomingPayment,
+) -> Result<(), String> {
+    if !payment.is_paid {
+        return Err("prepaid invoice is not paid".to_string());
+    }
+    if payment.received_sat != expected_amount_sat {
+        return Err(format!(
+            "prepaid received amount {} sat does not match expected amount {expected_amount_sat} sat",
+            payment.received_sat
+        ));
+    }
+    let expected_hash = hex::decode(expected_payment_hash)
+        .map_err(|_| "prepaid payment hash is not valid hex".to_string())?;
+    if expected_hash.len() != 32 {
+        return Err("prepaid payment hash must be exactly 32 bytes".to_string());
+    }
+    let preimage = hex::decode(&payment.preimage_hex)
+        .map_err(|_| "prepaid payment preimage is not valid hex".to_string())?;
+    if preimage.len() != 32 {
+        return Err("prepaid payment preimage must be exactly 32 bytes".to_string());
+    }
+    if crate::crypto::sha256_hex(preimage) != hex::encode(expected_hash) {
+        return Err("prepaid payment preimage does not match the payment hash".to_string());
+    }
+    Ok(())
+}
+
 /// Result of paying a BOLT11 invoice via phoenixd (buyer side).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SentPayment {
@@ -96,7 +130,6 @@ impl std::fmt::Debug for PhoenixdClient {
 
 impl PhoenixdClient {
     pub fn from_config(config: &LightningPhoenixdConfig) -> Result<Self, PhoenixdError> {
-        crate::tls::ensure_rustls_crypto_provider();
         let base_url = Url::parse(&config.url)
             .map_err(|error| PhoenixdError::Config(format!("invalid phoenixd url: {error}")))?;
         match base_url.scheme() {
@@ -113,7 +146,7 @@ impl PhoenixdClient {
                 )));
             }
         }
-        let client = Client::builder()
+        let client = crate::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(config.request_timeout_secs))
             .build()
             .map_err(|error| PhoenixdError::Client(error.to_string()))?;
@@ -161,6 +194,117 @@ impl PhoenixdClient {
             payment_request: response.serialized,
             payment_hash_hex: response.payment_hash,
         })
+    }
+
+    /// Recover the unique active or paid invoice associated with Froglet's
+    /// durable external ID. phoenixd records `externalId` as metadata rather
+    /// than using it as an idempotency key, so callers must reconcile before
+    /// minting and after any ambiguous create response.
+    pub async fn find_invoice_by_external_id(
+        &self,
+        external_id: &str,
+        expected_amount_sat: u64,
+        expected_description: &str,
+    ) -> Result<Option<CreatedInvoice>, PhoenixdError> {
+        if external_id.trim().is_empty() {
+            return Err(PhoenixdError::Config(
+                "phoenixd invoice external ID must not be empty".to_string(),
+            ));
+        }
+        let url = self.join("/payments/incoming")?;
+        let response = self
+            .client
+            .get(url)
+            .basic_auth("", Some(self.http_password.as_str()))
+            .query(&[
+                ("externalId", external_id),
+                ("all", "true"),
+                ("limit", "100"),
+            ])
+            .send()
+            .await
+            .map_err(|error| PhoenixdError::Http(format_reqwest_error(&error)))?;
+        let payments: Vec<IncomingInvoiceResponse> = parse_response(response).await?;
+        let mut paid = Vec::new();
+        let mut active = Vec::new();
+
+        for payment in payments
+            .into_iter()
+            .filter(|payment| payment.external_id.as_deref() == Some(external_id))
+        {
+            if payment.requested_sat != Some(expected_amount_sat)
+                || payment.description.as_deref() != Some(expected_description)
+            {
+                return Err(PhoenixdError::Decode(format!(
+                    "phoenixd external ID {external_id} is bound to different invoice metadata"
+                )));
+            }
+            if hex::decode(&payment.payment_hash).map_or(true, |bytes| bytes.len() != 32) {
+                return Err(PhoenixdError::Decode(format!(
+                    "phoenixd external ID {external_id} returned an invalid payment hash"
+                )));
+            }
+            let invoice = payment.invoice.ok_or_else(|| {
+                PhoenixdError::Decode(format!(
+                    "phoenixd external ID {external_id} returned no BOLT11 invoice"
+                ))
+            })?;
+            let created = CreatedInvoice {
+                payment_request: invoice,
+                payment_hash_hex: payment.payment_hash,
+            };
+            if payment.is_paid {
+                paid.push(created);
+            } else if !payment.is_expired {
+                active.push(created);
+            }
+        }
+
+        match (paid.len(), active.len()) {
+            (0, 0) => Ok(None),
+            (1, _) => Ok(paid.pop()),
+            (0, 1) => Ok(active.pop()),
+            _ => Err(PhoenixdError::Decode(format!(
+                "phoenixd external ID {external_id} matches multiple usable invoices"
+            ))),
+        }
+    }
+
+    pub async fn create_or_recover_invoice_with_external_id(
+        &self,
+        amount_sat: u64,
+        description: &str,
+        expiry_secs: u64,
+        external_id: &str,
+    ) -> Result<CreatedInvoice, PhoenixdError> {
+        if let Some(existing) = self
+            .find_invoice_by_external_id(external_id, amount_sat, description)
+            .await?
+        {
+            return Ok(existing);
+        }
+
+        match self
+            .create_invoice_with_external_id(
+                amount_sat,
+                description,
+                expiry_secs,
+                Some(external_id),
+            )
+            .await
+        {
+            Ok(created) => Ok(created),
+            Err(create_error) => match self
+                .find_invoice_by_external_id(external_id, amount_sat, description)
+                .await
+            {
+                Ok(Some(existing)) => Ok(existing),
+                Ok(None) => Err(create_error),
+                Err(reconcile_error) => Err(PhoenixdError::Http(format!(
+                    "{create_error}; external-ID reconciliation also failed: {reconcile_error}"
+                ))),
+            },
+        }
     }
 
     /// Look up an incoming payment by payment hash.
@@ -350,6 +494,22 @@ struct IncomingPaymentResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct IncomingInvoiceResponse {
+    #[serde(rename = "paymentHash")]
+    payment_hash: String,
+    #[serde(rename = "externalId")]
+    external_id: Option<String>,
+    description: Option<String>,
+    invoice: Option<String>,
+    #[serde(rename = "isPaid")]
+    is_paid: bool,
+    #[serde(rename = "isExpired")]
+    is_expired: bool,
+    #[serde(rename = "requestedSat")]
+    requested_sat: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct PayInvoiceResponse {
     #[serde(rename = "paymentHash")]
     payment_hash: String,
@@ -401,14 +561,18 @@ mod tests {
     use super::*;
     use axum::{
         Json, Router,
-        extract::{Path, State},
+        extract::{Path, Query, State},
         http::{HeaderMap, StatusCode},
         routing::{get, post},
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::{Value, json};
+    use std::collections::HashMap;
     use std::net::SocketAddr;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     use tokio::net::TcpListener;
 
     const TEST_PASSWORD: &str = "test-http-password";
@@ -506,12 +670,40 @@ mod tests {
         )
     }
 
+    async fn incoming_by_external_id(
+        State(state): State<TestState>,
+        headers: HeaderMap,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> (StatusCode, Json<Value>) {
+        assert_basic_auth(&headers);
+        let external_id = query.get("externalId").cloned().unwrap_or_default();
+        state
+            .requests
+            .lock()
+            .unwrap()
+            .push(("incoming_by_external_id".to_string(), external_id.clone()));
+        (
+            StatusCode::OK,
+            Json(json!([{
+                "paymentHash": "cc".repeat(32),
+                "externalId": external_id,
+                "description": "deal-recover",
+                "invoice": "lnbc300n1recoveredinvoice",
+                "isPaid": false,
+                "isExpired": false,
+                "requestedSat": 30,
+                "receivedSat": 0
+            }])),
+        )
+    }
+
     async fn start_server() -> (SocketAddr, TestState) {
         let state = TestState::default();
         let router = Router::new()
             .route("/getinfo", get(getinfo))
             .route("/createinvoice", post(createinvoice))
             .route("/payinvoice", post(payinvoice))
+            .route("/payments/incoming", get(incoming_by_external_id))
             .route("/payments/incoming/:payment_hash", get(incoming))
             .with_state(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -576,6 +768,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_id_lookup_recovers_an_existing_invoice_without_minting() {
+        let (addr, state) = start_server().await;
+        let client = PhoenixdClient::from_config(&test_config(format!("http://{addr}"))).unwrap();
+
+        let recovered = client
+            .find_invoice_by_external_id("recover-id", 30, "deal-recover")
+            .await
+            .expect("external ID lookup")
+            .expect("matching invoice");
+
+        assert_eq!(recovered.payment_hash_hex, "cc".repeat(32));
+        assert_eq!(recovered.payment_request, "lnbc300n1recoveredinvoice");
+        let requests = state.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests,
+            vec![(
+                "incoming_by_external_id".to_string(),
+                "recover-id".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn lost_create_response_is_recovered_by_external_id_without_a_second_mint() {
+        #[derive(Clone, Default)]
+        struct LostResponseState {
+            available: Arc<AtomicBool>,
+            create_calls: Arc<AtomicUsize>,
+            lookup_calls: Arc<AtomicUsize>,
+        }
+
+        async fn list(
+            State(state): State<LostResponseState>,
+            headers: HeaderMap,
+        ) -> (StatusCode, Json<Value>) {
+            assert_basic_auth(&headers);
+            state.lookup_calls.fetch_add(1, Ordering::SeqCst);
+            let body = if state.available.load(Ordering::SeqCst) {
+                json!([{
+                    "paymentHash": "dd".repeat(32),
+                    "externalId": "lost-response-id",
+                    "description": "deal-lost-response",
+                    "invoice": "lnbc300n1lostresponse",
+                    "isPaid": false,
+                    "isExpired": false,
+                    "requestedSat": 30,
+                    "receivedSat": 0
+                }])
+            } else {
+                json!([])
+            };
+            (StatusCode::OK, Json(body))
+        }
+
+        async fn create(
+            State(state): State<LostResponseState>,
+            headers: HeaderMap,
+        ) -> (StatusCode, Json<Value>) {
+            assert_basic_auth(&headers);
+            state.create_calls.fetch_add(1, Ordering::SeqCst);
+            state.available.store(true, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "paymentHash": "dd".repeat(32),
+                    "serialized": "lnbc300n1lostresponse"
+                })),
+            )
+        }
+
+        let state = LostResponseState::default();
+        let router = Router::new()
+            .route("/payments/incoming", get(list))
+            .route("/createinvoice", post(create))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mut config = test_config(format!("http://{addr}"));
+        config.request_timeout_secs = 1;
+        let client = PhoenixdClient::from_config(&config).unwrap();
+
+        let recovered = client
+            .create_or_recover_invoice_with_external_id(
+                30,
+                "deal-lost-response",
+                300,
+                "lost-response-id",
+            )
+            .await
+            .expect("lost response should reconcile");
+
+        assert_eq!(recovered.payment_hash_hex, "dd".repeat(32));
+        assert_eq!(state.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(state.lookup_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn hold_operations_are_unsupported() {
         let (addr, _state) = start_server().await;
         let client = PhoenixdClient::from_config(&test_config(format!("http://{addr}"))).unwrap();
@@ -599,5 +892,60 @@ mod tests {
         let err = PhoenixdClient::from_config(&test_config("http://10.0.0.5:9740".to_string()))
             .unwrap_err();
         assert!(err.to_string().contains("loopback"));
+    }
+
+    #[test]
+    fn prepaid_payment_proof_binds_paid_amount_preimage_and_hash() {
+        let preimage = [0x42; 32];
+        let payment_hash = crate::crypto::sha256_hex(preimage);
+        validate_prepaid_payment_proof(
+            &payment_hash,
+            30,
+            &IncomingPayment {
+                is_paid: true,
+                preimage_hex: hex::encode(preimage),
+                received_sat: 30,
+            },
+        )
+        .expect("valid proof");
+
+        for (label, payment) in [
+            (
+                "unpaid",
+                IncomingPayment {
+                    is_paid: false,
+                    preimage_hex: hex::encode(preimage),
+                    received_sat: 30,
+                },
+            ),
+            (
+                "underpaid",
+                IncomingPayment {
+                    is_paid: true,
+                    preimage_hex: hex::encode(preimage),
+                    received_sat: 29,
+                },
+            ),
+            (
+                "malformed preimage",
+                IncomingPayment {
+                    is_paid: true,
+                    preimage_hex: "not-hex".to_string(),
+                    received_sat: 30,
+                },
+            ),
+            (
+                "wrong preimage",
+                IncomingPayment {
+                    is_paid: true,
+                    preimage_hex: "43".repeat(32),
+                    received_sat: 30,
+                },
+            ),
+        ] {
+            let error =
+                validate_prepaid_payment_proof(&payment_hash, 30, &payment).expect_err(label);
+            assert!(!error.is_empty(), "{label}");
+        }
     }
 }

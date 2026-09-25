@@ -2,7 +2,7 @@
 
 # Froglet
 
-**A protocol and node for a bot economy.**
+**The rail-neutral evidence layer for agent transactions.**
 
 [![CI](https://github.com/armanas/froglet/actions/workflows/ci.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/ci.yml)
 [![Release](https://github.com/armanas/froglet/actions/workflows/release.yml/badge.svg)](https://github.com/armanas/froglet/actions/workflows/release.yml)
@@ -11,7 +11,15 @@
 [![Edition](https://img.shields.io/badge/Edition-2024-purple.svg)](https://doc.rust-lang.org/edition-guide/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED.svg)](https://github.com/armanas/froglet/pkgs/container/froglet-provider)
 
-Lets bots create, publish, discover, buy, sell, and compose remote resources for value.
+Whatever rail moves the money, Froglet produces a signed, hash-linked record of
+what was authorised, under which limits, and what the executing party attested
+to — verifiable offline by anyone, with no node and no account.
+
+Verify a chain yourself in one command:
+
+```bash
+cargo run -p froglet-verify -- conformance/kernel_v1.json
+```
 
 Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
@@ -34,6 +42,18 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Overview
 
+The current product candidate starts with **“Make this catalog usable by another
+agent.”** Codex or Claude Code can prepare selected JSON, typed CSV, or SQLite
+data, or a small Wasm function; run a local example; ask for exact publication
+approval; and return a provider/service share link. Native setup preserves
+existing agent settings. Recipients use the same native integration without npm.
+
+See [the publishing workflow](docs-site/src/content/docs/learn/share-services.mdx)
+and [the qualification gates](docs/RELEASE.md#effortless-publishing-qualification).
+This is an uncommitted candidate: clean-machine agent tests, the real public
+relay journey, and first-time-user acceptance remain release gates. Supported
+targets are Apple Silicon macOS and Linux x86_64/arm64. The host must stay online.
+
 Froglet gives one signed economic primitive for three product shapes:
 
 | Shape | Description |
@@ -46,18 +66,18 @@ The primary bot-facing integration surfaces are intentionally simple:
 
 - One OpenClaw/NemoClaw plugin id: `froglet` (at `integrations/openclaw/froglet/`)
 - One MCP server under `integrations/mcp/froglet/`, published as
-  `froglet-mcp` for `npx froglet-mcp`
+  `froglet-mcp` for `npx froglet-mcp`, plus a dependency-minimal native
+  bridge in `froglet-node mcp`
 - Both surfaces register a single agent-facing tool named `froglet` to
   the host (Claude Code, Codex, Cursor, Windsurf, etc.). The headline
-  action is `marketplace_publish`: one MCP call turns a user prompt
-  ("publish a service that does X") into a live marketplace offer in
-  seconds. Behind the scenes it shells out to `froglet-node publish`,
-  the CLI subcommand that humans use for the same flow. One pipeline,
-  two surfaces, one source of truth.
+  action is two-step `marketplace_publish`: the first call is a
+  non-mutating plan, and the second must carry the exact approved
+  `consent_hash`. Both native and JavaScript adapters delegate to the same
+  Rust publication module and provider-control contract.
 - The `froglet-node` binary is both the daemon (running as a provider)
   and the author CLI (`froglet-node init` / `build` / `publish` /
-  `whoami`). A separate `froglet` CLI binary is deferred to v0.3+; the
-  split is unnecessary today.
+  `whoami`, `prepare-service`, `invoke`, `doctor`, and `check-updates`).
+  `status --open --json` returns a short-lived read-only local status URL.
 
 Bots should be able to create small scriptable services directly, validate them
 locally, and publish them without starting from OCI images.
@@ -73,18 +93,24 @@ OCI containers remain a supported packaging and deployment path.
 - Easy bot authoring and local checking of scriptable services is a core
   product requirement
 - Identity is first-class in signed artifacts
-- Clearnet HTTPS and Tor v3 onion transport are supported registration paths
-  for self-hosted providers. The first-party hosted MVP does not publish an
-  onion endpoint until that endpoint is separately deployed and verified.
+- Clearnet HTTPS, outbound relay HTTPS, and Tor v3 onion transport are
+  supported registration paths for self-hosted providers. Bootstrap plans the
+  official relay URL and suffix by default but keeps them dormant; publication
+  fails closed until an exact durable grant makes the endpoint ready. Planned
+  configuration is not a claim that its public operator service is deployed.
 
 > [!NOTE]
 > Marketplace, ranking, incentive, and broker policy live above the protocol.
 > Payment rails are adapter-level surfaces for local or self-hosted operators,
 > not normal buyer onboarding.
-> Lightning, Stripe, and x402 are the launch adapters in this repo. Only
-> Lightning currently extends into the standardized signed
-> quote/deal/invoice-bundle flow; Stripe and x402 are local runtime settlement
-> adapters. The first-party hosted `try.froglet.dev` trial is free-only: it
+> Lightning, Stripe, and x402 are the launch adapters in this repo. Lightning
+> and x402 have standardized kernel settlement methods with conformance
+> vectors; Stripe's `stripe_mpp.v1` receipt shape is standardized but attested
+> rather than cryptographic. Only Lightning escrow uses the signed
+> invoice-bundle flow. x402's wire format is settled
+> (`x402.eip3009.v1`, [`conformance/x402_v1.json`](conformance/x402_v1.json))
+> but its rail is not: no publish-path exposure and no live transcript on any
+> network. The first-party hosted `try.froglet.dev` trial is free-only: it
 > uses `demo.add` as the canonical proof and exposes optional
 > `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize` follow-ups for
 > stronger evidence. Hosted paid rails must not be claimed live until Lightning
@@ -116,8 +142,9 @@ The reference implementation exposes these binaries:
 > [!TIP]
 > Marketplace integration is part of the public Froglet surface. Runtimes can
 > point at the default public marketplace with `FROGLET_MARKETPLACE_URL`;
-> providers can self-register there after exposing a public HTTPS URL, Tor v3
-> onion URL, or claimed `*.providers.froglet.dev` hostname. See
+> providers can self-register there after exposing a public HTTPS URL,
+> identity-assigned relay URL, Tor v3 onion URL, or claimed
+> `*.providers.froglet.dev` hostname. See
 > [docs/MARKETPLACE.md](docs/MARKETPLACE.md).
 
 ---
@@ -130,7 +157,7 @@ Supported: Linux x86_64/arm64, macOS arm64.
 **Build from source:** Rust 1.91+, Python 3.12+ (for tests), Node 18+ with npm
 (for Claude Code/Codex MCP setup and integration tests).
 
-**Docker:** Docker with Compose v2.
+**Docker (optional fallback/contributor stack):** Docker with Compose v2.
 
 ## Quick Start
 
@@ -174,25 +201,78 @@ The public launch story still has exactly two entry points:
 Minimal full local stack from zero:
 
 ```bash
-curl -fsSL https://froglet.dev/agent | bash
+set -eu
+repo=armanas/froglet
+metadata="$(mktemp "${TMPDIR:-/tmp}/froglet-release.XXXXXX")"
+bootstrap="$(mktemp "${TMPDIR:-/tmp}/froglet-agent-bootstrap.XXXXXX")"
+release_url="$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")"
+tag="${release_url%/}"; tag="${tag##*/}"
+printf '%s' "$tag" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+-]*$'
+curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2026-03-10' \
+  "https://api.github.com/repos/$repo/releases/tags/$tag" -o "$metadata"
+[ "$(sed -n 's/^  "immutable": \([a-z]*\),*$/\1/p' "$metadata")" = true ]
+[ "$(sed -n 's/^  "tag_name": "\([^"]*\)",*$/\1/p' "$metadata")" = "$tag" ]
+asset_record="$(awk '
+  /^    \{/ { in_asset=1; name=digest=state=""; next }
+  in_asset && /^      "name":/ { v=$0; sub(/^      "name": "/,"",v); sub(/",*$/,"",v); name=v }
+  in_asset && /^      "digest":/ { v=$0; sub(/^      "digest": "/,"",v); sub(/",*$/,"",v); digest=v }
+  in_asset && /^      "state":/ { v=$0; sub(/^      "state": "/,"",v); sub(/",*$/,"",v); state=v }
+  in_asset && /^    \},*$/ { if (name=="agent-bootstrap.sh") print digest "|" state; in_asset=0 }
+' "$metadata")"
+[ "$(printf '%s\n' "$asset_record" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ]
+bootstrap_digest="${asset_record%%|*}"; asset_state="${asset_record#*|}"
+[ "$asset_state" = uploaded ]
+printf '%s' "$bootstrap_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+bootstrap_digest="${bootstrap_digest#sha256:}"
+curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  "https://github.com/$repo/releases/download/$tag/agent-bootstrap.sh" -o "$bootstrap"
+if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$bootstrap" | awk '{print $1}')";
+elif command -v shasum >/dev/null 2>&1; then actual="$(shasum -a 256 "$bootstrap" | awk '{print $1}')";
+else actual="$(openssl dgst -sha256 "$bootstrap" | sed 's/^.*= //')"; fi
+[ "$actual" = "$bootstrap_digest" ]
+chmod 0700 "$bootstrap"
+VERSION="$tag" sh "$bootstrap" plan
+# Show the complete plan and wait for approval. Then copy its exact hash:
+VERSION="$tag" sh "$bootstrap" execute '<install_approval_hash>'
+rm -f "$bootstrap" "$metadata"
 ```
 
-The agent bootstrap installs the signed `froglet-node`, starts provider/runtime
-from published GHCR images under `~/.froglet/agent`, writes MCP config, and
-leaves payments/public registration for the installed `froglet-mcp` flow after
-local health checks pass.
+`plan` is the safe default and writes nothing outside its temporary workspace.
+It resolves the immutable release, verified manifest and target-platform binary
+asset digests, exact bootstrap/install/configuration script digests, persistent
+paths, and service-manager impact into one canonical approval hash. `execute`
+recomputes that contract and stops before any persistent write if the release,
+script bytes, profile, paths, or supplied hash changed.
 
-Disposable-host proof runner:
+After approval, the agent bootstrap verifies a Release Bundle, installs the checksum-verified
+`froglet-node`, starts the native dual-role service through launchd/systemd,
+writes native MCP config, and returns only after health plus a non-seeding MCP
+status proof and a transient read-only data proof that is confirmed-unpublished.
+The proof first requires an empty active-offer feed and no lifecycle for its
+exact service ID, records a private cleanup intent before publishing, and
+removes both its offer and authoring directory only after an empty-feed check.
+A failed proof attempts exact unpublish while the service is still live and
+preserves a recovery marker if cleanup cannot be proved.
+A digest-pinned dual-role GHCR image is the fallback
+when native service management is unavailable.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
-```
+The approval plan includes the official relay endpoint and DNS suffix by
+default. This is dormant configuration: it derives an exact planned HTTPS URL
+but opens no WSS connection and exposes no service before an exact durable
+publication grant. Set both `FROGLET_RELAY_URL=''` and
+`FROGLET_RELAY_PUBLIC_SUFFIX=''` before `plan` to opt out. The first-party
+DNS/TLS endpoint is not yet live-proven, so relay publication remains an
+explicit external gate rather than an install success claim. See
+[docs/RELAY.md](docs/RELAY.md). The implementation/evidence matrix in
+[docs/AGENT_FIRST_PUBLICATION_PLAN.md](docs/AGENT_FIRST_PUBLICATION_PLAN.md)
+tracks which clean-host and external gates remain open.
 
-If you only want the signed binary:
+From a trusted checkout, run the disposable-host proof with
+`bash scripts/fresh_host_quickstart_smoke.sh`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/install.sh | sh
-```
+The lower-level `scripts/install.sh` is an internal release-bundle installer;
+agents should use the approval-gated bootstrap above.
 
 Source-checkout Compose and generated host-side agent configs depend on
 `FROGLET_HOST_READABLE_CONTROL_TOKEN=true`; the default user path is the
@@ -226,8 +306,8 @@ remote ones.
 
 Set `FROGLET_MARKETPLACE_URL` on runtime nodes to search through an external
 marketplace. Providers can self-register with the default public marketplace
-after they advertise a matching public HTTPS origin, Tor v3 onion URL, or
-claimed `*.providers.froglet.dev` hostname.
+after they advertise a matching public HTTPS origin, assigned relay HTTPS URL,
+Tor v3 onion URL, or claimed `*.providers.froglet.dev` hostname.
 
 </details>
 
@@ -277,7 +357,8 @@ The one `froglet` tool covers:
 - Local artifact publication via `publish_artifact`
 - Settlement visibility and current marketplace wrappers
 - Status and task polling
-- Install planning via `plan_install`, then command generation via `get_install_guide`
+- Exact install approval via non-mutating `plan_install`, then approved command
+  generation via `get_install_guide`
 - Post-install workflow planning via `plan_use_case`
 - Raw compute
 
@@ -293,10 +374,27 @@ The one `froglet` tool covers:
 
 </details>
 
-### MCP Server
+### MCP: native default and JavaScript compatibility
 
-External bot hosts and automation systems can use the MCP server instead of
-the OpenClaw or NemoClaw plugin:
+The no-clone native install configures the released binary directly:
+
+```text
+froglet-node mcp
+```
+
+This bridge needs no Node.js runtime. Its deliberately focused `froglet` tool
+supports `status`, `invoke_service`, two-step
+`marketplace_publish`, and publication status/logs/pause/resume/rollback/
+confirmed-unpublish. Durable cloud-adapter work is separately visible through
+managed-operation status, confirmed reconciliation, and confirmed compensation.
+`local_proof` is available only when an operator has
+deliberately enabled the bundled demo catalog; clean installation does not.
+Publication delegates to the same canonical project
+loader, consent logic, and provider-control API as the CLI.
+
+The JavaScript MCP package is the broader compatibility and contributor
+surface for discovery, settlement, install planning, raw compute, and existing
+host integrations:
 
 ```bash
 npx froglet-mcp
@@ -304,9 +402,13 @@ npx froglet-mcp
 
 The npm package defaults to `FROGLET_PROFILE=local`, with provider/runtime URLs
 pointing at `http://127.0.0.1:8080` and `http://127.0.0.1:8081`. Agents should
-call `status` first. If the local node or token files are missing, use
-`plan_install` and `get_install_guide` before running setup commands through
-the host shell. After local health is verified, use `plan_use_case` before
+call `status` first. If the local node or token files are missing, call
+`plan_install`, show its immutable release tag, manifest/bootstrap SHA-256
+values, persistent paths, process-manager impact, and exact command preview,
+then wait for approval. Only after approval, pass the returned `release_tag`
+and `install_approval_hash` unchanged to `get_install_guide` and run its
+verified-temp-file command through the host shell. After local health is
+verified, use `plan_use_case` before
 implementing consumer, provider, evidence, payments, batch, or GPU workflows.
 Batch and GPU planning stays truthful: current MCP can plan and verify
 boundaries. GPU capability advertisement, generic-compute offer metadata,
@@ -334,7 +436,10 @@ npm ci --prefix integrations/mcp/froglet
 node integrations/mcp/froglet/server.js
 ```
 
-All three launch modes expose the same Froglet control surface over MCP stdio.
+The npm, source-checkout, and digest-pinned MCP-image modes expose the broader
+JavaScript surface over MCP stdio. The native mode exposes the smaller
+dependency-free publication/lifecycle surface above; it does not claim action
+parity with JavaScript.
 
 For normal users, the `/agent` bootstrap writes the local MCP config without a
 repo clone. From a source checkout, contributors can still generate the exact
@@ -347,7 +452,58 @@ cd froglet && ./scripts/setup-agent.sh --target codex
 
 ---
 
+## Portable Managed Hosting and OCI Isolation
+
+`froglet-service/v4` expresses managed hosting as a provider-neutral
+`target`/`profile`. It does not contain AWS regions, Lightsail names, Fly apps,
+ECR repositories, or cloud SDK types. The sibling
+[Managed Deployment operator](https://github.com/armanas/froglet-services/tree/main/services/operator)
+implements the corresponding portable desired-state lifecycle through the
+current Lightsail compatibility adapter or generic SSH + OCI adapter and
+returns the same normalized result shape. Publish-engine-to-operator wiring
+and credentialed live canaries remain separate open gates.
+
+V3 manifests remain readable. `hosting.default = "fly"` and `hosting.fly.*`
+are deprecated compatibility inputs only; new authoring uses v4 `managed`, and
+provider selection belongs in operator-owned adapter configuration. See
+[docs/PUBLICATION_CONTRACT.md](docs/PUBLICATION_CONTRACT.md#service-manifest-v4-and-hosting-portability).
+
+Arbitrary OCI execution does not give the Froglet Node a Docker/Podman socket.
+The node sends a digest-only, bounded, capability-reduced request to an
+authenticated worker endpoint configured by `FROGLET_OCI_WORKER_URL` and
+`FROGLET_OCI_WORKER_TOKEN_PATH`. The reference
+[OCI worker](https://github.com/armanas/froglet-services/tree/main/services/oci-worker)
+owns rootless engine access and defaults to read-only, non-root, no-network
+execution. With no worker configured, OCI execution fails closed.
+
+---
+
 ## Verification
+
+### Verifying artifact chains (what a counterparty does)
+
+`froglet-verify` is a standalone offline verifier: no node, no network, no
+account, and no clock unless you supply one. Point it at a chain and it checks
+every envelope signature, every per-artifact semantic rule, and every hash link
+between artifacts.
+
+```bash
+cargo run -p froglet-verify -- conformance/kernel_v1.json
+```
+
+It accepts a single artifact, a JSON array, a `/v1/feed` page, or a conformance
+fixture, from a file or stdin; `--json` emits a machine-readable report and
+`--now <unix>` turns on expiry checks. Exit codes: `0` valid, `1` invalid,
+`2` usage error.
+
+The Rust facade, browser WASM build, and in-repo Rust conformance runners share
+the `froglet-protocol` implementation. [python/froglet-verify](python/froglet-verify)
+is independently implemented and checks the same public vectors. Multiple Rust
+runners exercise distribution paths; they do not provide implementation diversity. See
+[conformance/README.md](conformance/README.md) for what a conforming runner must
+assert, and [docs/SPEC.md](docs/SPEC.md) for the normative rules.
+
+### Build and repo checks
 
 **Targeted checks:**
 
@@ -404,7 +560,8 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
   and `froglet-runtime` container images)
 - OpenClaw source-plugin integration and shared NemoClaw plugin code, with
   host-specific verification status documented separately
-- MCP server for external agent hosts and automations
+- Native dependency-minimal MCP bridge plus the broader JavaScript MCP server
+  for external agent hosts and automations
 - Python-backed helpers and tests for the public node and protocol surface
 - Local project authoring, build, test, and publish flows for bot-authored
   services
@@ -413,8 +570,9 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
   execution paths
 - Local/self-hosted reference settlement support for operator-controlled
   Lightning, Stripe, and x402
-- Clearnet launch transport plus optional self-hosted Tor and Nostr-facing
-  adapter support
+- Clearnet and outbound relay transports plus optional self-hosted Tor and
+  Nostr-facing adapter support; live public relay readiness is an external
+  deployment gate, not inferred from the client implementation
 - Tests, validation scripts, and release docs for the public repo surface
 - Public-facing self-host documentation and examples
 
@@ -426,15 +584,20 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 - Higher-layer marketplace ranking, reputation, and policy services
 - Long-running batch orchestration, which remains out of scope for the current
   v1 runtime surface
-- Native deployment adapters for AWS, GCP, OVH, and similar cloud providers
+- Credentialed live proof for the provider-neutral Lightsail and generic SSH +
+  OCI Managed Deployment adapters maintained in `froglet-services`
+- Additional provisioning adapters for GCP, OVH, and similar providers when
+  demand justifies them; no new provider enum belongs in the manifest
 - Zip or archive packaging as a first-class execution submission format
 - First-party hosted control-plane operations and runbooks
 
 > [!WARNING]
 > Execution hardening is not uniform across all runtimes.
-> The strongest isolation paths are Wasm sandbox execution and confidential/TEE
-> profiles; Python and OCI/container execution inherit host or container
-> isolation characteristics.
+> Wasm is the strongest runnable in-process isolation path. Confidential/TEE
+> artifact types remain protocol scaffolding only: this build rejects mock
+> attestation/key-release policies and does not advertise `tee.*` runtimes.
+> Python requires Linux Landlock ABI v3 plus seccomp; OCI/container execution
+> inherits the separately configured worker's isolation characteristics.
 
 ---
 

@@ -7,36 +7,66 @@ description: Connect Froglet to Claude Code, Codex, OpenClaw, and other MCP host
   <div>
     <div class="learn-pill">Agent setup</div>
     <p class="learn-lead">Connect agents to a real local or self-hosted Froglet node.</p>
-    <p class="learn-sublead">The npm MCP package is local/actionable-first. Use `llms.txt` for the no-install hosted proof; use MCP when the agent needs provider/runtime access, token files, payment rails, or service publication.</p>
+    <p class="learn-sublead">The no-clone install configures the native MCP bridge in the checksum-verified Froglet binary. Use `llms.txt` for the no-install hosted proof; use the npm server only when you need its broader compatibility actions.</p>
   </div>
 </div>
 
 ## No-Clone Agent Bootstrap
 
-For a user who wants a local Froglet node, start with the bootstrap:
+For a user who wants a local Froglet node, use the copyable immutable-release
+resolver in [Quickstart](/learn/quickstart/). It verifies the uploaded
+`agent-bootstrap.sh` digest before running its non-mutating plan. Present that
+plan and wait before running the returned exact execute command.
 
-```bash
-curl -fsSL https://froglet.dev/agent | bash
-```
+The plan binds the immutable Release Bundle, exact platform `froglet-node`
+asset, bootstrap/install/configuration script bytes, filesystem impact, and
+service-manager changes before any persistent write. Execution recomputes and
+requires the exact approval hash. It then verifies the exact `froglet-node`
+asset checksum, starts one dual-role native service through launchd or user
+systemd, writes an MCP config that runs `froglet-node mcp`, and exits only after
+a non-seeding MCP status proof plus transient read-only data
+publication/invocation/confirmed-unpublish evidence. No
+Node.js, npm, Python, Docker, or `jq` is required on this default lane. A
+digest-pinned image is the fallback only when native service management is
+unavailable.
 
-The bootstrap installs the signed node, starts provider/runtime from published
-images, and writes an MCP config backed by the published `froglet-mcp` image.
-After that, the agent should use MCP actions for everything else.
+Branch on the bootstrap's `install_mode`. Native mode emits the focused actions
+documented below. Docker fallback configures the image-backed compatibility
+bridge and emits its own `next_mcp_actions`; do not assume native publication
+lifecycle actions are present there.
 
 Use Codex instead of Claude Code:
 
 ```bash
-FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash
+FROGLET_AGENT_TARGET=codex sh "$bootstrap" plan
+FROGLET_AGENT_TARGET=codex sh "$bootstrap" execute '<install_approval_hash>'
 ```
 
 OpenClaw no-clone setup is not the default today because OpenClaw still loads a
 repo-local plugin folder. Use the MCP path above for normal users and source
 mode only for OpenClaw plugin development.
 
-## MCP From npm
+## Native MCP installed by bootstrap
 
-Use the published MCP package when the agent should operate an existing local
-or self-hosted Froglet node:
+The generated Claude Code or Codex config runs the installed binary directly:
+
+```text
+froglet-node mcp
+```
+
+Its focused clean-install tool supports `status`, `invoke_service`, two-step
+`marketplace_publish`, and exact publication status/logs/pause/resume/rollback/
+confirmed-unpublish. For public publication, the first call is non-mutating and
+the second must carry the exact user-approved `consent_hash`.
+
+`local_proof` invokes the bundled demo only when an operator deliberately
+enables that catalog. Clean installation does not seed it.
+
+## Broader compatibility MCP from npm
+
+Use the published JavaScript MCP package when an existing local or self-hosted
+node needs broader discovery, settlement, installation-planning, or legacy
+integration actions:
 
 ```bash
 npx froglet-mcp
@@ -51,9 +81,14 @@ call:
   token files or local services plainly
 - `plan_install` if the local node is missing and the target agent, footprint,
   role, payment rail, network, marketplace, or first use case is still
-  ambiguous. If it returns `decision_required`, ask the user to pick a payment
-  rail and recommend `none` for the first free demo
-- `get_install_guide` only after the install profile is confirmed
+  ambiguous. Prefer footprint `auto` for the native-first no-clone path; use
+  `native` to require the user service and `docker` only when explicitly
+  selected. If it returns `decision_required`, ask the user to pick a payment
+  rail and recommend `none` for the first local proof. When complete, present its
+  immutable release, manifest/bootstrap hashes, persistent paths,
+  process-manager impact, exact command preview, and approval hash
+- `get_install_guide` only after explicit approval, with the exact returned
+  `release_tag` and `install_approval_hash` plus the unchanged profile
 - `plan_use_case` after local health is verified and before implementing the
   user's first consumer, provider, evidence, payments, batch, or GPU workflow
 - service, settlement, marketplace, and publication actions only after the
@@ -188,9 +223,11 @@ FROGLET_RUNTIME_AUTH_TOKEN_PATH=/absolute/path/to/froglet/data/runtime/auth.toke
   npx froglet-mcp
 ```
 
-## Marketplace Registration
+## Marketplace publication and registration
 
-Use MCP wrappers instead of ad hoc HTTP when an agent is setting up discovery:
+On the native lane, use two-step `marketplace_publish`; it performs exact
+registration only after provider-local verification and user approval. On the
+broader JavaScript compatibility lane, use wrappers instead of ad hoc HTTP:
 
 - `marketplace_register` for public HTTPS or Tor registration
 - `marketplace_domain_claim` and `marketplace_domain_complete` for

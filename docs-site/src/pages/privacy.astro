@@ -104,8 +104,10 @@ const UPDATED = 'April 29, 2026';
         <h3><code class="inline">plan_install</code></h3>
         <p>
           Uses install preferences such as target agent, Docker/source/binary
-          footprint, Tor or clearnet, and payment rail choice. It returns a
-          plan; it does not run shell commands and does not need your secrets.
+          footprint, Tor or clearnet, and payment rail choice. It reads public
+          GitHub release metadata and the tag-specific bootstrap bytes to bind
+          their hashes. It returns a plan; it does not write to your machine,
+          run shell commands, or need your secrets.
         </p>
       </div>
       <div>

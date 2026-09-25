@@ -533,7 +533,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         )
         .expect("cached lnd client"),
     );
-    let settlement_registry = froglet::settlement::SettlementRegistry::new(&node_config);
+    let settlement_registry =
+        froglet::settlement::SettlementRegistry::new(&node_config).expect("settlement registry");
 
     AppState {
         db: pool,
@@ -542,7 +543,9 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::new(),
+        http_client: froglet::tls::reqwest_client_builder()
+            .build()
+            .expect("reqwest client"),
         wasm_host: None,
         confidential_policy: None,
         runtime_auth_token: "test-runtime-token".to_string(),
@@ -553,6 +556,8 @@ fn lnd_rest_state(fake_lnd: &FakeLndHandle) -> AppState {
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -946,7 +951,7 @@ async fn lnd_rest_bundle_creation_cancels_issued_invoices_when_local_persistence
 async fn remote_recovery_cancels_orphaned_materialization_invoices() {
     let fake_lnd = spawn_fake_lnd().await;
     let state = Arc::new(lnd_rest_state(&fake_lnd));
-    let now = settlement::current_unix_timestamp() + 2;
+    let now = settlement::current_unix_timestamp();
     let success_payment_hash = crypto::sha256_hex([0x66; 32]);
     let deal_id = protocol::new_artifact_id();
 
@@ -1023,6 +1028,57 @@ async fn remote_recovery_cancels_orphaned_materialization_invoices() {
         .await
         .expect("seed orphaned materialization");
 
+    state
+        .db
+        .with_write_conn({
+            let deal_id = deal_id.clone();
+            move |conn| {
+                db::claim_deal_settlement_materialization(
+                    conn,
+                    &deal_id,
+                    "current-live-owner",
+                    settlement::current_unix_timestamp() + 300,
+                    settlement::current_unix_timestamp(),
+                )
+                .map(|record| record.map(|_| ()))
+            }
+        })
+        .await
+        .expect("seed current owner")
+        .expect("materialization claimed");
+
+    api::recover_runtime_state_remote(state.clone())
+        .await
+        .expect("competing remote recovery");
+    assert_eq!(
+        fake_lnd
+            .get_invoice_state(&issued.bundle.payload.base_fee.payment_hash)
+            .await,
+        Some(InvoiceState::Open),
+        "a recovery worker that cannot acquire the exact claim must not cancel the winner's invoice"
+    );
+    let owned = state
+        .db
+        .with_read_conn({
+            let deal_id = deal_id.clone();
+            move |conn| db::get_deal_settlement_materialization(conn, &deal_id)
+        })
+        .await
+        .expect("read current owner")
+        .expect("materialization remains");
+    assert_eq!(owned.claim_token.as_deref(), Some("current-live-owner"));
+    state
+        .db
+        .with_write_conn(|conn| {
+            db::reset_deal_settlement_materialization_claims(
+                conn,
+                settlement::current_unix_timestamp(),
+            )
+            .map(|_| ())
+        })
+        .await
+        .expect("simulate pre-listener dead-claim reset");
+
     api::recover_runtime_state_remote(state.clone())
         .await
         .expect("remote recovery");
@@ -1050,12 +1106,16 @@ async fn remote_recovery_cancels_orphaned_materialization_invoices() {
         .expect("load recovered deal")
         .expect("deal");
     assert_eq!(recovered_deal.status, deals::DEAL_STATUS_FAILED);
-    assert_eq!(
+    assert!(
+        recovered_deal.receipt.is_none(),
+        "unadmitted attempts must not fabricate a paid Receipt without a committed invoice bundle"
+    );
+    assert!(
         recovered_deal
-            .receipt
-            .as_ref()
-            .and_then(|receipt| receipt.payload.failure_code.as_deref()),
-        Some("settlement_materialization_interrupted_during_recovery")
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("settlement materialization did not complete")
     );
 
     let remaining_materialization = state

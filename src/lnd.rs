@@ -75,7 +75,6 @@ pub struct LndRestClient {
 
 impl LndRestClient {
     pub fn from_config(config: &LightningLndRestConfig) -> Result<Self, LndRestError> {
-        crate::tls::ensure_rustls_crypto_provider();
         let base_url = Url::parse(&config.rest_url)
             .map_err(|error| LndRestError::Config(format!("invalid rest url: {error}")))?;
         match base_url.scheme() {
@@ -92,8 +91,8 @@ impl LndRestClient {
                 )));
             }
         }
-        let mut builder =
-            Client::builder().timeout(Duration::from_secs(config.request_timeout_secs));
+        let mut builder = crate::tls::reqwest_client_builder()
+            .timeout(Duration::from_secs(config.request_timeout_secs));
 
         if base_url.scheme() == "https" {
             let Some(tls_cert_path) = config.tls_cert_path.as_ref() else {

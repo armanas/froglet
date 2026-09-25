@@ -29,10 +29,15 @@ class RuntimeApiTests(FrogletAsyncTestCase):
         data_dir = temp_root / "data"
         identity_dir = data_dir / "identity"
         identity_dir.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix":
+            identity_dir.chmod(0o700)
+        seed_path = identity_dir / "secp256k1.seed"
         shutil.copy2(
             provider.data_dir / "identity" / "secp256k1.seed",
-            identity_dir / "secp256k1.seed",
+            seed_path,
         )
+        if os.name == "posix":
+            seed_path.chmod(0o600)
         return await self.start_runtime(data_dir=data_dir, extra_env=extra_env)
 
     async def wait_for_runtime_deal(

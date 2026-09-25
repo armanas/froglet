@@ -1,5 +1,4 @@
 use crate::{ExecutionRuntime, canonical_json, crypto};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -30,6 +29,16 @@ pub const PAYMENT_METHOD_FREE: &str = "free";
 pub const PAYMENT_METHOD_LIGHTNING: &str = "lightning";
 pub const PAYMENT_METHOD_X402_USDC: &str = "x402_usdc";
 pub const PAYMENT_METHOD_STRIPE_MPP: &str = "stripe_mpp";
+
+// Settlement method identifiers: the values carried in
+// offer.settlement_method, quote.settlement_terms.method, and
+// receipt.settlement_refs.method. See docs/KERNEL.md §5 and the
+// per-method receipt rules in `validate_receipt_artifact`.
+pub const SETTLEMENT_METHOD_NONE: &str = "none";
+pub const SETTLEMENT_METHOD_LIGHTNING_ESCROW: &str = "lightning.base_fee_plus_success_fee.v1";
+pub const SETTLEMENT_METHOD_STRIPE_MPP: &str = "stripe_mpp.v1";
+pub const SETTLEMENT_METHOD_LIGHTNING_PREPAID: &str = "lightning.prepaid.v1";
+pub const SETTLEMENT_METHOD_X402_EIP3009: &str = "x402.eip3009.v1";
 
 pub const LINKED_IDENTITY_KIND_NOSTR: &str = "nostr";
 pub const LINKED_IDENTITY_SCOPE_PUBLICATION_NOSTR: &str = "publication.nostr";
@@ -441,6 +450,56 @@ pub fn linked_identity_has_scope(identity: &LinkedIdentity, required_scope: &str
     identity.scope.iter().any(|scope| scope == required_scope)
 }
 
+fn validate_linked_nostr_identity(
+    provider_id: &str,
+    identity: &LinkedIdentity,
+) -> Result<(), String> {
+    if !is_lower_hex_len(&identity.identity, 64) {
+        return Err(
+            "descriptor linked Nostr identity must be a 32-byte lowercase hex key".to_string(),
+        );
+    }
+    if identity.signature_algorithm != LINKED_IDENTITY_SIGNATURE_ALGORITHM_BIP340 {
+        return Err("descriptor linked Nostr identity signature_algorithm is invalid".to_string());
+    }
+    if identity.scope.is_empty()
+        || identity
+            .scope
+            .iter()
+            .any(|scope| !scope.starts_with("publication."))
+    {
+        return Err(
+            "descriptor linked Nostr identity scope must contain only publication scopes"
+                .to_string(),
+        );
+    }
+    if identity
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= identity.created_at)
+    {
+        return Err(
+            "descriptor linked Nostr identity expires_at must be later than created_at".to_string(),
+        );
+    }
+    if !is_lower_hex_len(&identity.linked_signature, 128) {
+        return Err(
+            "descriptor linked Nostr identity signature must be 64-byte lowercase hex".to_string(),
+        );
+    }
+    let challenge = linked_identity_challenge_bytes(
+        provider_id,
+        &identity.identity_kind,
+        &identity.identity,
+        &identity.scope,
+        identity.created_at,
+        identity.expires_at,
+    )?;
+    if !crypto::verify_message(&identity.identity, &identity.linked_signature, &challenge) {
+        return Err("descriptor linked Nostr identity signature is invalid".to_string());
+    }
+    Ok(())
+}
+
 pub fn verify_artifact<T: Serialize>(artifact: &SignedArtifact<T>) -> bool {
     if artifact.schema_version != FROGLET_SCHEMA_V1 {
         return false;
@@ -486,6 +545,13 @@ fn receipt_leg_is_empty_canceled(leg: &ReceiptSettlementLeg) -> bool {
 /// a Lightning preimage).  Returns `None` for invalid hex or wrong length.
 fn decode_hash32(value: &str) -> Option<Vec<u8>> {
     hex::decode(value).ok().filter(|bytes| bytes.len() == 32)
+}
+
+pub(crate) fn is_lower_hex_len(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Result<(), String> {
@@ -570,6 +636,12 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
 
             match payload.settlement_state.as_str() {
                 "settled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Settled {
+                        return Err(
+                            "lightning receipt settlement_state settled requires base_fee.state settled"
+                                .to_string(),
+                        );
+                    }
                     if payload.settlement_refs.success_fee.state != ReceiptLegState::Settled {
                         return Err(
                             "lightning receipt settlement_state settled requires success_fee.state settled"
@@ -688,7 +760,8 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
         // Interop note: lightning.prepaid.v1 is the prepaid, non-escrow Lightning
         // method backed by phoenixd.  Like stripe_mpp.v1 it reuses the
         // ReceiptSettlementRefs shape without hold invoices (no bundle_hash,
-        // empty destination_identity, empty-canceled success_fee).  Unlike
+        // empty-canceled success_fee). destination_identity carries the signed
+        // quote's compressed Lightning payee key. Unlike
         // Stripe, a settled receipt carries a CRYPTOGRAPHIC proof of payment:
         // base_fee.payment_hash is the Lightning payment hash and
         // base_fee.invoice_hash carries the preimage, with
@@ -697,9 +770,10 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
             if payload.settlement_refs.bundle_hash.is_some() {
                 return Err("lightning.prepaid.v1 receipt must not include bundle_hash".to_string());
             }
-            if !payload.settlement_refs.destination_identity.is_empty() {
+            if !is_lower_hex_len(&payload.settlement_refs.destination_identity, 66) {
                 return Err(
-                    "lightning.prepaid.v1 receipt destination_identity must be empty".to_string(),
+                    "lightning.prepaid.v1 receipt destination_identity must be compressed secp256k1 lowercase hex"
+                        .to_string(),
                 );
             }
             if !receipt_leg_is_empty_canceled(&payload.settlement_refs.success_fee) {
@@ -774,6 +848,107 @@ pub fn validate_receipt_artifact(receipt: &SignedArtifact<ReceiptPayload>) -> Re
                 );
             }
         }
+        // Interop note: x402.eip3009.v1 is the EVM stablecoin rail settled via
+        // an EIP-3009 TransferWithAuthorization (x402). Like lightning.prepaid.v1
+        // it reuses the ReceiptSettlementRefs shape without hold invoices, but
+        // unlike the other methods destination_identity carries the payee's EVM
+        // address (20-byte lowercase hex, no 0x prefix) and bundle_hash is
+        // REQUIRED on settlement: it commits to a content-addressed evidence
+        // bundle carrying the payer-signed EIP-712 authorization plus the
+        // settlement transaction reference. base_fee.payment_hash carries the
+        // EIP-3009 authorization nonce (32-byte hex); base_fee.invoice_hash
+        // carries the on-chain settle transaction hash (32-byte hex). The
+        // payer's EIP-712 signature in the evidence bundle is offline-verifiable
+        // (cryptographic); transaction inclusion is attested and checkable on
+        // any chain view, not proven by this artifact alone.
+        "x402.eip3009.v1" => {
+            if !is_lower_hex_len(&payload.settlement_refs.destination_identity, 40) {
+                return Err(
+                    "x402.eip3009.v1 receipt destination_identity must be a 20-byte lowercase hex EVM address"
+                        .to_string(),
+                );
+            }
+            if !receipt_leg_is_empty_canceled(&payload.settlement_refs.success_fee) {
+                return Err(
+                    "x402.eip3009.v1 receipt success_fee must be a zero-valued canceled placeholder"
+                        .to_string(),
+                );
+            }
+            if matches!(
+                payload.settlement_refs.base_fee.state,
+                ReceiptLegState::Open | ReceiptLegState::Accepted
+            ) {
+                return Err(
+                    "x402.eip3009.v1 receipt base_fee.state must be terminal (settled or canceled)"
+                        .to_string(),
+                );
+            }
+            match payload.settlement_state.as_str() {
+                "settled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Settled {
+                        return Err(
+                            "x402.eip3009.v1 receipt settlement_state settled requires base_fee.state settled"
+                                .to_string(),
+                        );
+                    }
+                    let bundle_hash = payload
+                        .settlement_refs
+                        .bundle_hash
+                        .as_deref()
+                        .unwrap_or_default();
+                    if !is_lower_hex_len(bundle_hash, 64) {
+                        return Err(
+                            "x402.eip3009.v1 settled receipt must include a 32-byte lowercase hex bundle_hash"
+                                .to_string(),
+                        );
+                    }
+                    if !is_lower_hex_len(&payload.settlement_refs.base_fee.payment_hash, 64) {
+                        return Err(
+                            "x402.eip3009.v1 settled receipt payment_hash must carry the 32-byte hex EIP-3009 authorization nonce"
+                                .to_string(),
+                        );
+                    }
+                    if !is_lower_hex_len(&payload.settlement_refs.base_fee.invoice_hash, 64) {
+                        return Err(
+                            "x402.eip3009.v1 settled receipt invoice_hash must carry the 32-byte hex settle transaction hash"
+                                .to_string(),
+                        );
+                    }
+                }
+                "canceled" => {
+                    if payload.settlement_refs.base_fee.state != ReceiptLegState::Canceled {
+                        return Err(
+                            "x402.eip3009.v1 receipt settlement_state canceled requires base_fee.state canceled"
+                                .to_string(),
+                        );
+                    }
+                    if payload.settlement_refs.bundle_hash.is_some() {
+                        return Err(
+                            "x402.eip3009.v1 canceled receipt must not include bundle_hash"
+                                .to_string(),
+                        );
+                    }
+                    if !payload.settlement_refs.base_fee.invoice_hash.is_empty() {
+                        return Err(
+                            "x402.eip3009.v1 canceled receipt must not carry a settle transaction hash"
+                                .to_string(),
+                        );
+                    }
+                }
+                _ => {
+                    return Err(
+                        "x402.eip3009.v1 receipt settlement_state must be settled or canceled"
+                            .to_string(),
+                    );
+                }
+            }
+            if payload.deal_state == "succeeded" && payload.settlement_state != "settled" {
+                return Err(
+                    "successful x402.eip3009.v1 receipt must have settlement_state settled"
+                        .to_string(),
+                );
+            }
+        }
         _ => return Err("receipt settlement_refs.method is invalid".to_string()),
     }
 
@@ -793,8 +968,14 @@ pub fn validate_descriptor_artifact(
         return Err("descriptor signer does not match provider_id".to_string());
     }
 
-    if descriptor.payload.protocol_version.trim().is_empty() {
-        return Err("descriptor protocol_version must be non-empty".to_string());
+    if descriptor.payload.protocol_version != FROGLET_SCHEMA_V1 {
+        return Err("descriptor protocol_version must be froglet/v1".to_string());
+    }
+
+    for identity in &descriptor.payload.linked_identities {
+        if identity.identity_kind == LINKED_IDENTITY_KIND_NOSTR {
+            validate_linked_nostr_identity(&descriptor.payload.provider_id, identity)?;
+        }
     }
 
     Ok(())
@@ -819,6 +1000,216 @@ pub fn validate_offer_artifact(offer: &SignedArtifact<OfferPayload>) -> Result<(
         return Err("offer descriptor_hash must be non-empty".to_string());
     }
 
+    let price = &offer.payload.price_schedule;
+    let is_free = price.base_fee_msat == 0 && price.success_fee_msat == 0;
+    if is_free {
+        if offer.payload.settlement_method != SETTLEMENT_METHOD_NONE {
+            return Err("free offer settlement_method must be none".to_string());
+        }
+        return Ok(());
+    }
+
+    if !matches!(
+        offer.payload.settlement_method.as_str(),
+        SETTLEMENT_METHOD_LIGHTNING_ESCROW
+            | SETTLEMENT_METHOD_STRIPE_MPP
+            | SETTLEMENT_METHOD_LIGHTNING_PREPAID
+            | SETTLEMENT_METHOD_X402_EIP3009
+    ) {
+        return Err("paid offer settlement_method is unsupported".to_string());
+    }
+
+    if offer.payload.settlement_method != SETTLEMENT_METHOD_LIGHTNING_ESCROW
+        && price.success_fee_msat != 0
+    {
+        return Err("single-leg paid offer success_fee_msat must be zero".to_string());
+    }
+
+    Ok(())
+}
+
+/// Validate a quote artifact beyond its cryptographic signature.
+///
+/// Enforces `signer == payload.provider_id` plus required identifiers and
+/// per-method settlement terms. Mirrors `validate_receipt_artifact`. Always
+/// call this after `verify_artifact`.
+pub fn validate_quote_artifact(quote: &SignedArtifact<QuotePayload>) -> Result<(), String> {
+    let payload = &quote.payload;
+    if quote.signer != payload.provider_id {
+        return Err("quote signer does not match provider_id".to_string());
+    }
+    if payload.requester_id.trim().is_empty() {
+        return Err("quote requester_id must be non-empty".to_string());
+    }
+    if payload.descriptor_hash.trim().is_empty() {
+        return Err("quote descriptor_hash must be non-empty".to_string());
+    }
+    if payload.offer_hash.trim().is_empty() {
+        return Err("quote offer_hash must be non-empty".to_string());
+    }
+    if payload.workload_kind.trim().is_empty() {
+        return Err("quote workload_kind must be non-empty".to_string());
+    }
+    if payload.workload_hash.trim().is_empty() {
+        return Err("quote workload_hash must be non-empty".to_string());
+    }
+    validate_quote_settlement_terms(&payload.settlement_terms)?;
+    Ok(())
+}
+
+/// Validate a deal artifact beyond its cryptographic signature.
+///
+/// The deal is the only requester-signed artifact: enforces
+/// `signer == payload.requester_id`, required hashes, and the
+/// admission < completion <= acceptance deadline ordering. Always call this
+/// after `verify_artifact`.
+pub fn validate_deal_artifact(deal: &SignedArtifact<DealPayload>) -> Result<(), String> {
+    let payload = &deal.payload;
+    if deal.signer != payload.requester_id {
+        return Err("deal signer does not match requester_id".to_string());
+    }
+    if payload.provider_id.trim().is_empty() {
+        return Err("deal provider_id must be non-empty".to_string());
+    }
+    if payload.quote_hash.trim().is_empty() {
+        return Err("deal quote_hash must be non-empty".to_string());
+    }
+    if payload.workload_hash.trim().is_empty() {
+        return Err("deal workload_hash must be non-empty".to_string());
+    }
+    if !is_lower_hex_len(&payload.success_payment_hash, 64) {
+        return Err("deal success_payment_hash must be lowercase 32-byte hex".to_string());
+    }
+    if payload.completion_deadline <= payload.admission_deadline {
+        return Err("deal completion_deadline must be greater than admission_deadline".to_string());
+    }
+    if payload.acceptance_deadline < payload.completion_deadline {
+        return Err(
+            "deal acceptance_deadline must be greater than or equal to completion_deadline"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate an invoice-bundle transport document beyond its cryptographic
+/// signature: signer binding, required links, leg shape, and issuance-state
+/// rules. Always call this after `verify_artifact`.
+pub fn validate_invoice_bundle_artifact(
+    invoice_bundle: &SignedArtifact<InvoiceBundlePayload>,
+) -> Result<(), String> {
+    let payload = &invoice_bundle.payload;
+    if invoice_bundle.signer != payload.provider_id {
+        return Err("invoice_bundle signer does not match provider_id".to_string());
+    }
+    if payload.requester_id.trim().is_empty() {
+        return Err("invoice_bundle requester_id must be non-empty".to_string());
+    }
+    if payload.quote_hash.trim().is_empty() {
+        return Err("invoice_bundle quote_hash must be non-empty".to_string());
+    }
+    if payload.deal_hash.trim().is_empty() {
+        return Err("invoice_bundle deal_hash must be non-empty".to_string());
+    }
+    if !is_lower_hex_len(&payload.destination_identity, 66) {
+        return Err(
+            "invoice_bundle destination_identity must be compressed secp256k1 lowercase hex"
+                .to_string(),
+        );
+    }
+    validate_invoice_leg("base_fee", &payload.base_fee)?;
+    validate_invoice_leg("success_fee", &payload.success_fee)?;
+    if payload.success_fee.state != InvoiceBundleLegState::Open {
+        return Err("invoice_bundle success_fee.state must be open at issuance".to_string());
+    }
+    if payload.base_fee.state != InvoiceBundleLegState::Open
+        && !(payload.base_fee.amount_msat == 0
+            && payload.base_fee.state == InvoiceBundleLegState::Settled)
+    {
+        return Err(
+            "invoice_bundle base_fee.state must be open unless zero-valued and settled".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_invoice_leg(name: &str, leg: &InvoiceBundleLeg) -> Result<(), String> {
+    if leg.invoice_bolt11.trim().is_empty() {
+        return Err(format!(
+            "invoice_bundle {name}.invoice_bolt11 must be non-empty"
+        ));
+    }
+    if !is_lower_hex_len(&leg.invoice_hash, 64) {
+        return Err(format!(
+            "invoice_bundle {name}.invoice_hash must be lowercase 32-byte hex"
+        ));
+    }
+    if !is_lower_hex_len(&leg.payment_hash, 64) {
+        return Err(format!(
+            "invoice_bundle {name}.payment_hash must be lowercase 32-byte hex"
+        ));
+    }
+    let invoice_hash = crypto::sha256_hex(leg.invoice_bolt11.as_bytes());
+    if leg.invoice_hash != invoice_hash {
+        return Err(format!(
+            "invoice_bundle {name}.invoice_hash must equal SHA256(invoice_bolt11)"
+        ));
+    }
+    Ok(())
+}
+
+/// Per-method invariants for quote settlement terms. Shared by
+/// `validate_quote_artifact` and manifest/publish-path checks.
+pub fn validate_quote_settlement_terms(terms: &QuoteSettlementTerms) -> Result<(), String> {
+    match terms.method.as_str() {
+        SETTLEMENT_METHOD_NONE => {
+            if !terms.destination_identity.is_empty() {
+                return Err("free quote destination_identity must be empty".to_string());
+            }
+            if terms.base_fee_msat != 0 || terms.success_fee_msat != 0 {
+                return Err("free quote fee amounts must be zero".to_string());
+            }
+        }
+        SETTLEMENT_METHOD_LIGHTNING_ESCROW => {
+            if !is_lower_hex_len(&terms.destination_identity, 66) {
+                return Err(
+                    "lightning quote destination_identity must be compressed secp256k1 lowercase hex"
+                        .to_string(),
+                );
+            }
+        }
+        SETTLEMENT_METHOD_STRIPE_MPP => {
+            if !terms.destination_identity.is_empty() {
+                return Err("non-escrow quote destination_identity must be empty".to_string());
+            }
+            if terms.success_fee_msat != 0 {
+                return Err("non-escrow quote success_fee_msat must be zero".to_string());
+            }
+        }
+        SETTLEMENT_METHOD_LIGHTNING_PREPAID => {
+            if !is_lower_hex_len(&terms.destination_identity, 66) {
+                return Err(
+                    "lightning prepaid quote destination_identity must be compressed secp256k1 lowercase hex"
+                        .to_string(),
+                );
+            }
+            if terms.success_fee_msat != 0 {
+                return Err("non-escrow quote success_fee_msat must be zero".to_string());
+            }
+        }
+        SETTLEMENT_METHOD_X402_EIP3009 => {
+            if !is_lower_hex_len(&terms.destination_identity, 40) {
+                return Err(
+                    "x402 quote destination_identity must be a 20-byte lowercase hex EVM address"
+                        .to_string(),
+                );
+            }
+            if terms.success_fee_msat != 0 {
+                return Err("x402 quote success_fee_msat must be zero".to_string());
+            }
+        }
+        _ => return Err("quote settlement_terms.method is invalid".to_string()),
+    }
     Ok(())
 }
 
@@ -827,16 +1218,19 @@ pub fn validate_offer_artifact(offer: &SignedArtifact<OfferPayload>) -> Result<(
 /// (`signer == payload.provider_id` plus the per-kind invariants in
 /// `docs/KERNEL.md`). Returned by [`verify_typed_document`].
 ///
-/// This is exhaustive over the artifact kinds that have semantic validators
-/// today: descriptor, offer, and receipt. New kinds added to the kernel
-/// (quote, deal, invoice_bundle, …) will need a new variant here AND a
-/// corresponding `validate_*_artifact` — the typed enum forces that link
+/// This is exhaustive over the artifact kinds that have semantic validators:
+/// descriptor, offer, quote, deal, invoice_bundle, and receipt — the full
+/// evidence chain. New kinds added to the kernel will need a new variant here
+/// AND a corresponding `validate_*_artifact` — the typed enum forces that link
 /// at compile time, so a consuming service cannot silently fall back to
 /// signature-only verification when a new kind appears.
 #[derive(Debug)]
 pub enum VerifiedArtifact {
     Descriptor(Box<SignedArtifact<DescriptorPayload>>),
     Offer(Box<SignedArtifact<OfferPayload>>),
+    Quote(Box<SignedArtifact<QuotePayload>>),
+    Deal(Box<SignedArtifact<DealPayload>>),
+    InvoiceBundle(Box<SignedArtifact<InvoiceBundlePayload>>),
     /// Boxed: `ReceiptPayload` has many optional fields and lifts the enum's
     /// stack size to ~1 KiB without it. Boxing makes all variants the same
     /// pointer-sized payload (clippy::large_enum_variant).
@@ -884,6 +1278,18 @@ impl std::fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
+fn require_typed_artifact_kind<T>(
+    artifact: &SignedArtifact<T>,
+    expected: &str,
+) -> Result<(), VerifyError> {
+    if artifact.artifact_type != expected {
+        return Err(VerifyError::Semantic(format!(
+            "{expected} artifact_type must be {expected}"
+        )));
+    }
+    Ok(())
+}
+
 /// Verify a signed artifact JSON document end to end:
 ///
 /// 1. Parse the document into the typed `SignedArtifact<T>` for `artifact_kind`.
@@ -901,9 +1307,9 @@ impl std::error::Error for VerifyError {}
 /// receipt-attribution bug in marketplace-node) becomes a compile error
 /// rather than a silent verification gap.
 ///
-/// `artifact_kind` must match one of the `ARTIFACT_KIND_*` constants. Kinds
-/// not yet covered by the typed enum (quote, deal, invoice_bundle,
-/// curated_list, confidential_*) return `VerifyError::UnknownKind` —
+/// `artifact_kind` must match one of the `ARTIFACT_KIND_*` constants (or
+/// `TRANSPORT_KIND_INVOICE_BUNDLE`). Kinds not covered by the typed enum
+/// (curated_list, confidential_*) return `VerifyError::UnknownKind` —
 /// callers must either add a `VerifiedArtifact` variant or handle those
 /// kinds explicitly via the legacy API.
 pub fn verify_typed_document(
@@ -918,6 +1324,7 @@ pub fn verify_typed_document(
             if !verify_artifact(&artifact) {
                 return Err(VerifyError::SignatureFailed);
             }
+            require_typed_artifact_kind(&artifact, ARTIFACT_TYPE_DESCRIPTOR)?;
             validate_descriptor_artifact(&artifact).map_err(VerifyError::Semantic)?;
             Ok(VerifiedArtifact::Descriptor(Box::new(artifact)))
         }
@@ -928,8 +1335,41 @@ pub fn verify_typed_document(
             if !verify_artifact(&artifact) {
                 return Err(VerifyError::SignatureFailed);
             }
+            require_typed_artifact_kind(&artifact, ARTIFACT_TYPE_OFFER)?;
             validate_offer_artifact(&artifact).map_err(VerifyError::Semantic)?;
             Ok(VerifiedArtifact::Offer(Box::new(artifact)))
+        }
+        ARTIFACT_KIND_QUOTE => {
+            let artifact: SignedArtifact<QuotePayload> =
+                serde_json::from_value(document.clone())
+                    .map_err(|error| VerifyError::Decode(error.to_string()))?;
+            if !verify_artifact(&artifact) {
+                return Err(VerifyError::SignatureFailed);
+            }
+            require_typed_artifact_kind(&artifact, ARTIFACT_TYPE_QUOTE)?;
+            validate_quote_artifact(&artifact).map_err(VerifyError::Semantic)?;
+            Ok(VerifiedArtifact::Quote(Box::new(artifact)))
+        }
+        ARTIFACT_KIND_DEAL => {
+            let artifact: SignedArtifact<DealPayload> = serde_json::from_value(document.clone())
+                .map_err(|error| VerifyError::Decode(error.to_string()))?;
+            if !verify_artifact(&artifact) {
+                return Err(VerifyError::SignatureFailed);
+            }
+            require_typed_artifact_kind(&artifact, ARTIFACT_TYPE_DEAL)?;
+            validate_deal_artifact(&artifact).map_err(VerifyError::Semantic)?;
+            Ok(VerifiedArtifact::Deal(Box::new(artifact)))
+        }
+        TRANSPORT_KIND_INVOICE_BUNDLE => {
+            let artifact: SignedArtifact<InvoiceBundlePayload> =
+                serde_json::from_value(document.clone())
+                    .map_err(|error| VerifyError::Decode(error.to_string()))?;
+            if !verify_artifact(&artifact) {
+                return Err(VerifyError::SignatureFailed);
+            }
+            require_typed_artifact_kind(&artifact, TRANSPORT_TYPE_INVOICE_BUNDLE)?;
+            validate_invoice_bundle_artifact(&artifact).map_err(VerifyError::Semantic)?;
+            Ok(VerifiedArtifact::InvoiceBundle(Box::new(artifact)))
         }
         ARTIFACT_KIND_RECEIPT => {
             let artifact: SignedArtifact<ReceiptPayload> = serde_json::from_value(document.clone())
@@ -937,6 +1377,7 @@ pub fn verify_typed_document(
             if !verify_artifact(&artifact) {
                 return Err(VerifyError::SignatureFailed);
             }
+            require_typed_artifact_kind(&artifact, ARTIFACT_TYPE_RECEIPT)?;
             validate_receipt_artifact(&artifact).map_err(VerifyError::Semantic)?;
             Ok(VerifiedArtifact::Receipt(Box::new(artifact)))
         }
@@ -985,7 +1426,9 @@ pub fn canonical_signing_bytes<T: Serialize>(
     .map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "generate", test))]
 pub fn new_artifact_id() -> String {
+    use rand::RngCore;
     let mut bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
@@ -1359,6 +1802,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn settled_lightning_receipt_requires_both_legs_settled() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_free_receipt_payload(&signer);
+        payload.settlement_state = "settled".to_string();
+        payload.settlement_refs.method = SETTLEMENT_METHOD_LIGHTNING_ESCROW.to_string();
+        payload.settlement_refs.bundle_hash = Some("66".repeat(32));
+        payload.settlement_refs.destination_identity = format!("02{}", "77".repeat(32));
+        payload.settlement_refs.base_fee = ReceiptSettlementLeg {
+            amount_msat: 1_000,
+            invoice_hash: "88".repeat(32),
+            payment_hash: "99".repeat(32),
+            state: ReceiptLegState::Canceled,
+        };
+        payload.settlement_refs.success_fee = ReceiptSettlementLeg {
+            amount_msat: 9_000,
+            invoice_hash: "aa".repeat(32),
+            payment_hash: "bb".repeat(32),
+            state: ReceiptLegState::Settled,
+        };
+        let receipt = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&receipt));
+        assert_eq!(
+            validate_receipt_artifact(&receipt).unwrap_err(),
+            "lightning receipt settlement_state settled requires base_fee.state settled"
+        );
+    }
+
     fn valid_descriptor_payload(provider_id: &str) -> DescriptorPayload {
         DescriptorPayload {
             provider_id: provider_id.to_string(),
@@ -1373,6 +1853,32 @@ mod tests {
                 max_concurrent_deals: None,
             },
             accepted_payment_methods: vec![PAYMENT_METHOD_FREE.to_string()],
+        }
+    }
+
+    fn linked_nostr_identity(
+        provider_id: &str,
+        publication_key: &crypto::NodeSigningKey,
+    ) -> LinkedIdentity {
+        let identity = crypto::public_key_hex(publication_key);
+        let scope = vec![LINKED_IDENTITY_SCOPE_PUBLICATION_NOSTR.to_string()];
+        let challenge = linked_identity_challenge_bytes(
+            provider_id,
+            LINKED_IDENTITY_KIND_NOSTR,
+            &identity,
+            &scope,
+            122,
+            Some(456),
+        )
+        .expect("linked-identity challenge");
+        LinkedIdentity {
+            identity_kind: LINKED_IDENTITY_KIND_NOSTR.to_string(),
+            identity,
+            scope,
+            created_at: 122,
+            expires_at: Some(456),
+            signature_algorithm: LINKED_IDENTITY_SIGNATURE_ALGORITHM_BIP340.to_string(),
+            linked_signature: crypto::sign_message_hex(publication_key, &challenge),
         }
     }
 
@@ -1469,7 +1975,74 @@ mod tests {
         assert!(verify_artifact(&descriptor));
         assert_eq!(
             validate_descriptor_artifact(&descriptor).unwrap_err(),
-            "descriptor protocol_version must be non-empty"
+            "descriptor protocol_version must be froglet/v1"
+        );
+    }
+
+    #[test]
+    fn descriptor_with_wrong_protocol_version_fails_validation() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let mut payload = valid_descriptor_payload(&signer);
+        payload.protocol_version = "froglet/v999".to_string();
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&descriptor));
+        assert_eq!(
+            validate_descriptor_artifact(&descriptor).unwrap_err(),
+            "descriptor protocol_version must be froglet/v1"
+        );
+    }
+
+    #[test]
+    fn descriptor_verifies_linked_nostr_identity_proof() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let publication_key = crypto::generate_signing_key();
+        let mut payload = valid_descriptor_payload(&signer);
+        payload.linked_identities = vec![linked_nostr_identity(&signer, &publication_key)];
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&descriptor));
+        assert!(validate_descriptor_artifact(&descriptor).is_ok());
+    }
+
+    #[test]
+    fn descriptor_rejects_forged_linked_nostr_identity_proof() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let publication_key = crypto::generate_signing_key();
+        let mut linked = linked_nostr_identity(&signer, &publication_key);
+        linked.linked_signature = "00".repeat(64);
+        let mut payload = valid_descriptor_payload(&signer);
+        payload.linked_identities = vec![linked];
+        let descriptor = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_DESCRIPTOR,
+            123,
+            payload,
+        )
+        .unwrap();
+
+        assert!(verify_artifact(&descriptor));
+        assert_eq!(
+            validate_descriptor_artifact(&descriptor).unwrap_err(),
+            "descriptor linked Nostr identity signature is invalid"
         );
     }
 
@@ -1556,6 +2129,100 @@ mod tests {
             validate_offer_artifact(&offer).unwrap_err(),
             "offer descriptor_hash must be non-empty"
         );
+    }
+
+    #[test]
+    fn offer_rejects_unknown_or_fee_inconsistent_settlement_method() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+
+        let mut unknown_payload = valid_offer_payload(&signer);
+        unknown_payload.price_schedule.base_fee_msat = 1;
+        unknown_payload.settlement_method = "future.rail.v9".to_string();
+        let unknown = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            unknown_payload,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_offer_artifact(&unknown).unwrap_err(),
+            "paid offer settlement_method is unsupported"
+        );
+
+        let mut free_payload = valid_offer_payload(&signer);
+        free_payload.settlement_method = SETTLEMENT_METHOD_STRIPE_MPP.to_string();
+        let free = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            free_payload,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_offer_artifact(&free).unwrap_err(),
+            "free offer settlement_method must be none"
+        );
+
+        let mut paid_none_payload = valid_offer_payload(&signer);
+        paid_none_payload.price_schedule.base_fee_msat = 1;
+        let paid_none = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_OFFER,
+            123,
+            paid_none_payload,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_offer_artifact(&paid_none).unwrap_err(),
+            "paid offer settlement_method is unsupported"
+        );
+    }
+
+    #[test]
+    fn prepaid_quote_requires_signed_lightning_destination() {
+        let mut terms = QuoteSettlementTerms {
+            method: SETTLEMENT_METHOD_LIGHTNING_PREPAID.to_string(),
+            destination_identity: String::new(),
+            base_fee_msat: 30_000,
+            success_fee_msat: 0,
+            max_base_invoice_expiry_secs: 300,
+            max_success_hold_expiry_secs: 0,
+            min_final_cltv_expiry: 18,
+        };
+        assert_eq!(
+            validate_quote_settlement_terms(&terms).unwrap_err(),
+            "lightning prepaid quote destination_identity must be compressed secp256k1 lowercase hex"
+        );
+
+        terms.destination_identity = format!("02{}", "55".repeat(32));
+        assert!(validate_quote_settlement_terms(&terms).is_ok());
+    }
+
+    #[test]
+    fn typed_verifier_rejects_valid_envelope_under_wrong_expected_kind() {
+        let signing_key = crypto::generate_signing_key();
+        let signer = crypto::public_key_hex(&signing_key);
+        let artifact = sign_artifact(
+            &signer,
+            |message| crypto::sign_message_hex(&signing_key, message),
+            ARTIFACT_TYPE_RECEIPT,
+            123,
+            valid_offer_payload(&signer),
+        )
+        .unwrap();
+        let document = serde_json::to_value(artifact).unwrap();
+
+        match verify_typed_document(&document, ARTIFACT_KIND_OFFER) {
+            Err(VerifyError::Semantic(message)) => {
+                assert_eq!(message, "offer artifact_type must be offer")
+            }
+            other => panic!("expected semantic artifact-type rejection, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1660,12 +2327,13 @@ mod tests {
 
     #[test]
     fn verify_typed_document_rejects_unknown_kind() {
-        // Quote / deal / invoice_bundle don't have typed-projection support
-        // yet. Calling for an unsupported kind must return UnknownKind so
-        // consumers do NOT silently fall back to signature-only verification.
+        // curated_list (and confidential_*) deliberately have no typed
+        // projection. Calling for an unsupported kind must return UnknownKind
+        // so consumers do NOT silently fall back to signature-only
+        // verification.
         let document = serde_json::json!({});
-        match verify_typed_document(&document, ARTIFACT_KIND_QUOTE) {
-            Err(VerifyError::UnknownKind(kind)) => assert_eq!(kind, ARTIFACT_KIND_QUOTE),
+        match verify_typed_document(&document, ARTIFACT_KIND_CURATED_LIST) {
+            Err(VerifyError::UnknownKind(kind)) => assert_eq!(kind, ARTIFACT_KIND_CURATED_LIST),
             other => panic!("expected Err(UnknownKind), got {other:?}"),
         }
     }
@@ -1979,7 +2647,7 @@ mod tests {
             settlement_refs: ReceiptSettlementRefs {
                 method: "lightning.prepaid.v1".to_string(),
                 bundle_hash: None,
-                destination_identity: String::new(),
+                destination_identity: format!("02{}", "55".repeat(32)),
                 base_fee: ReceiptSettlementLeg {
                     amount_msat: 30_000,
                     // invoice_hash carries the preimage (the proof).
@@ -2098,13 +2766,13 @@ mod tests {
     }
 
     #[test]
-    fn lightning_prepaid_v1_receipt_with_non_empty_destination_fails_validation() {
+    fn lightning_prepaid_v1_receipt_with_empty_destination_fails_validation() {
         let mut payload = valid_prepaid_receipt_payload("placeholder", true);
-        payload.settlement_refs.destination_identity = "02".to_string() + &"55".repeat(32);
+        payload.settlement_refs.destination_identity.clear();
         let receipt = sign_prepaid(payload);
         assert_eq!(
             validate_receipt_artifact(&receipt).unwrap_err(),
-            "lightning.prepaid.v1 receipt destination_identity must be empty"
+            "lightning.prepaid.v1 receipt destination_identity must be compressed secp256k1 lowercase hex"
         );
     }
 

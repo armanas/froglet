@@ -125,6 +125,9 @@ function renderProviderRow(provider: MarketplaceProviderSummary): HTMLTableRowEl
 
 function renderOfferRow(offer: MarketplaceOfferSummary): HTMLTableRowElement {
 	const row = document.createElement('tr');
+	row.dataset.marketplaceSearchRow = '';
+	row.dataset.searchText = `${offer.offerId} ${offer.providerId} ${offer.artifactHash} ${offer.runtime}`;
+	row.title = `artifact_hash: ${offer.artifactHash}`;
 	for (const value of [
 		offer.offerId,
 		offer.runtime || 'n/a',
@@ -259,6 +262,8 @@ function fieldText(root: ParentNode, field: string): string {
 function marketplaceEvidence(root: HTMLElement): string {
 	return [
 		'Froglet marketplace evidence',
+		`status: ${root.dataset.status}`,
+		`scope: sampled provider receipts and offer pricing; provider/offer counts are catalog totals`,
 		`checked_at: ${fieldText(root, 'checkedAt')}`,
 		`providers: ${fieldText(root, 'froglets')}`,
 		`offers: ${fieldText(root, 'offers')}`,
@@ -347,7 +352,7 @@ function renderOfferBook(root: ParentNode, offers: MarketplaceOfferSummary[]): v
 		body.append(row);
 		return;
 	}
-	body.append(...offers.slice(0, 6).map(renderOfferRow));
+	body.append(...offers.map(renderOfferRow));
 }
 
 function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void {
@@ -357,8 +362,8 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 	const freeOffers = snapshot.offers.filter(
 		(offer) => offer.settlementMethod === 'none' && offer.baseFeeMsat === 0 && offer.successFeeMsat === 0,
 	).length;
-	const paidOffers = Math.max(0, snapshot.offerCount - freeOffers);
-	const freeShare = snapshot.offerCount === 0 ? 0 : Math.round((freeOffers / snapshot.offerCount) * 100);
+	const paidOffers = snapshot.offers.length - freeOffers;
+	const freeShare = snapshot.offers.length === 0 ? 0 : Math.round((freeOffers / snapshot.offers.length) * 100);
 	const primaryProvider = snapshot.providers[0];
 	const endpointCount = snapshot.providers.filter((provider) => provider.endpoint.length > 0).length;
 	const totalSettledMsat = snapshot.providers.reduce((sum, provider) => sum + provider.totalSettledMsat, 0);
@@ -371,7 +376,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 	setText(root, '[data-marketplace-field="froglets"]', snapshot.providerCount);
 	setText(root, '[data-marketplace-field="offers"]', snapshot.offerCount);
 	setText(root, '[data-marketplace-field="checkedAt"]', `${formatSnapshotTime(snapshot.checkedAt)} UTC`);
-	setText(root, '[data-marketplace-field="detail"]', snapshot.detail);
+	setText(root, '[data-marketplace-field="detail"]', `${snapshot.detail} Receipt totals cover ${snapshot.providers.length} sampled providers; pricing and runtime breakdown cover ${snapshot.offers.length} sampled offers.`);
 	setText(root, '[data-marketplace-field="freeOffers"]', freeOffers);
 	setText(root, '[data-marketplace-field="paidOffers"]', paidOffers);
 	setText(root, '[data-marketplace-field="freeShare"]', `${freeShare}%`);
@@ -405,27 +410,53 @@ export function initMarketplaceLive(): void {
 	if (!root) return;
 	const applySearch = initMarketplaceSearch(root);
 	initMarketplaceEvidenceActions(root);
+	let lastSnapshot: MarketplaceSnapshot | undefined;
+	let refreshing = false;
 
+	function state(status: 'live' | 'stale' | 'unavailable', detail?: string) {
+		root!.dataset.status = status;
+		const badge = document.querySelector<HTMLElement>('[data-marketplace-field="refresh"]');
+		if (badge) { badge.textContent = status.toUpperCase(); badge.dataset.status = status; }
+		if (detail) setText(root!, '[data-marketplace-field="detail"]', detail);
+		if (!lastSnapshot) {
+			for (const field of ['froglets', 'offers', 'freeOffers', 'paidOffers', 'receipts', 'successRate', 'settledSats']) {
+				setText(root!, `[data-marketplace-field="${field}"]`, '—');
+			}
+			for (const selector of ['[data-marketplace-provider-table]', '[data-marketplace-offer-book]']) {
+				const body = root!.querySelector(selector);
+				if (!body) continue;
+				const row = document.createElement('tr');
+				const cell = document.createElement('td');
+				cell.colSpan = 6; cell.className = 'panel-empty'; cell.textContent = 'Catalog unavailable. Retrying automatically.';
+				row.append(cell); body.replaceChildren(row);
+			}
+		}
+	}
 	const refresh = async () => {
+		if (refreshing) return;
+		refreshing = true;
 		try {
 			const response = await fetch('/api/marketplace-snapshot', {
-				cache: 'no-store',
-				headers: { accept: 'application/json' },
+				cache: 'no-store', signal: AbortSignal.timeout(12_000), headers: { accept: 'application/json' },
 			});
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const snapshot = await response.json() as MarketplaceSnapshot;
+			if (!response.ok || snapshot.status !== 'pass') throw new Error(snapshot.detail || `HTTP ${response.status}`);
+			const age = Date.now() - Date.parse(snapshot.checkedAt);
+			if (!Number.isFinite(age) || age < -60_000 || !Array.isArray(snapshot.providers) || !Array.isArray(snapshot.offers)) {
+				throw new Error('Invalid marketplace snapshot');
+			}
 			renderSnapshot(root, snapshot);
+			lastSnapshot = snapshot;
+			state(age > 90_000 ? 'stale' : 'live');
 			applySearch();
-			setText(root, '[data-marketplace-field="refresh"]', 'LIVE');
 		} catch (error) {
-			setText(
-				root,
-				'[data-marketplace-field="refresh"]',
-				`STATIC ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
+			state(lastSnapshot ? 'stale' : 'unavailable',
+				`${lastSnapshot ? 'Showing the last successful snapshot. ' : ''}${error instanceof Error ? error.message : String(error)}`);
+		} finally { refreshing = false; }
 	};
-
 	void refresh();
-	window.setInterval(refresh, 30_000);
+	window.setInterval(() => {
+		if (lastSnapshot && Date.now() - Date.parse(lastSnapshot.checkedAt) > 90_000) state('stale');
+		void refresh();
+	}, 30_000);
 }

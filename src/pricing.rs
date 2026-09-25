@@ -19,8 +19,17 @@ impl ServiceId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServicePriceInfo {
     pub service_id: String,
+    /// Legacy whole-unit total. Interpret using `price_currency` when present.
     pub price_sats: u64,
     pub payment_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_fee_msat: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_fee_msat: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_method: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +76,10 @@ impl PricingTable {
             service_id: service.as_str().to_string(),
             price_sats,
             payment_required: price_sats > 0,
+            price_currency: Some("sat".to_string()),
+            base_fee_msat: Some(0),
+            success_fee_msat: Some(price_sats.saturating_mul(1_000)),
+            settlement_method: None,
         }
     }
 }

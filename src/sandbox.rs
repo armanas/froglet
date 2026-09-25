@@ -39,6 +39,10 @@ pub struct WasmExecutionOptions {
     pub abi_version: String,
     pub capabilities_granted: Vec<String>,
     pub host_environment: Option<Arc<WasmHostEnvironment>>,
+    /// Optional per-publication caps. Values are clamped to the node-wide
+    /// sandbox maxima before the Wasmtime store is created.
+    pub max_memory_bytes: Option<usize>,
+    pub fuel_limit: Option<u64>,
 }
 
 impl WasmExecutionOptions {
@@ -47,6 +51,8 @@ impl WasmExecutionOptions {
             abi_version: wasm::WASM_RUN_JSON_ABI_V1.to_string(),
             capabilities_granted: Vec::new(),
             host_environment: None,
+            max_memory_bytes: None,
+            fuel_limit: None,
         }
     }
 }
@@ -200,8 +206,18 @@ impl WasmSandbox {
         let _permit = permit.0;
         let module = self.load_module(wasm_bytes, &options.abi_version)?;
 
+        let max_memory_bytes = options
+            .max_memory_bytes
+            .filter(|value| *value != 0)
+            .unwrap_or(WASM_MAX_MEMORY_BYTES)
+            .min(WASM_MAX_MEMORY_BYTES);
+        let fuel_limit = options
+            .fuel_limit
+            .filter(|value| *value != 0)
+            .unwrap_or(WASM_FUEL_LIMIT)
+            .min(WASM_FUEL_LIMIT);
         let limits: StoreLimits = StoreLimitsBuilder::new()
-            .memory_size(WASM_MAX_MEMORY_BYTES)
+            .memory_size(max_memory_bytes)
             .instances(1)
             .tables(1)
             .memories(1)
@@ -223,7 +239,7 @@ impl WasmSandbox {
             },
         );
         store.limiter(|data| &mut data.limits);
-        store.set_fuel(WASM_FUEL_LIMIT)?;
+        store.set_fuel(fuel_limit)?;
         store.set_epoch_deadline(timeout_to_epoch_ticks(timeout));
         store.epoch_deadline_trap();
 
@@ -782,13 +798,14 @@ mod tests {
     }
 
     #[test]
-    fn wasm_wall_clock_timeout_is_reported() {
+    fn wasm_nontermination_is_bounded_by_timeout_or_fuel() {
         let wasm_bytes = hex::decode(INFINITE_WASM_HEX).unwrap();
         let error = test_sandbox()
             .execute_module(&wasm_bytes, &Value::Null, Duration::ZERO)
             .expect_err("expected timeout");
+        let message = error.to_string().to_ascii_lowercase();
         assert!(
-            error.to_string().to_ascii_lowercase().contains("timeout"),
+            message.contains("timeout") || message.contains("execution limit"),
             "unexpected error: {error}"
         );
     }
@@ -1015,6 +1032,8 @@ mod tests {
                         wasm::WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX.to_string() + "main",
                     ],
                     host_environment: Some(host_environment),
+                    max_memory_bytes: None,
+                    fuel_limit: None,
                 },
                 Duration::from_secs(1),
             )

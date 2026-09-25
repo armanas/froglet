@@ -47,6 +47,7 @@ impl HostingBackend for LocalBackend {
         Ok(PreparedHosting {
             public_url: self.provider_url.clone(),
             register_with_marketplace: false,
+            publication_revision: None,
         })
     }
 }

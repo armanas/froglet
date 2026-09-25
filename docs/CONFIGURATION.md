@@ -27,14 +27,25 @@ the `FROGLET_` prefix. Unset variables fall back to sensible defaults.
 | `FROGLET_TOR_BINARY` | `tor` | Path to the Tor binary |
 | `FROGLET_TOR_BACKEND_LISTEN_ADDR` | `127.0.0.1:8082` | Loopback backend listener fronted by the Tor hidden service and the relay tunnel |
 | `FROGLET_TOR_STARTUP_TIMEOUT_SECS` | `90` | Seconds to wait for Tor to bootstrap (5-300) |
-| `FROGLET_RELAY_URL` | *(none)* | Relay ingress tunnel endpoint per [RELAY.md](RELAY.md), e.g. `wss://relay.froglet.dev/v1/tunnel`; must be `wss://` unless loopback `ws://`. Setting it enables the tunnel. |
-| `FROGLET_RELAY_ENABLED` | url set | Explicit on/off for the relay tunnel independent of `FROGLET_RELAY_URL` presence |
+| `FROGLET_RELAY_URL` | *(none at daemon level; bootstrap plans `wss://relay.froglet.dev/v1/tunnel`)* | Relay control endpoint per [RELAY.md](RELAY.md); must be `wss://` unless loopback `ws://`. URL plus suffix reserve an identity-derived endpoint but do not open WSS without an exact durable publication grant. |
+| `FROGLET_RELAY_PUBLIC_SUFFIX` | *(none at daemon level; bootstrap plans `relay.froglet.dev`)* | DNS suffix used to derive the exact public HTTPS endpoint. Configure it together with `FROGLET_RELAY_URL`; set both empty in bootstrap to opt out. |
+| `FROGLET_SHARE_SITE_ORIGIN` | `https://froglet.dev/` | Optional first-party HTTPS site origin for relay publication share links, such as `https://candidate.froglet.dev/` during private qualification. Other origins, credentials, paths, ports, queries, and fragments are ignored. |
 
 ## Identity
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FROGLET_IDENTITY_AUTO_GENERATE` | `true` | Auto-generate a secp256k1 keypair on first run |
+
+The following first-boot inputs are reserved for custody and Managed
+Publication adapters. Existing seed files always win, so a restart cannot
+silently replace an identity:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_IDENTITY_SEED_HEX` | *(none)* | Provider identity seed, exactly 32 bytes as lowercase hex. |
+| `FROGLET_NOSTR_PUBLICATION_IDENTITY_SEED_HEX` | *(none)* | Nostr publication identity seed, exactly 32 bytes as lowercase hex. |
+| `FROGLET_NOSTR_PUBLICATION_CREATED_AT_EPOCH_SECONDS` | *(none)* | Original non-negative creation time for a first-boot Nostr publication seed. Managed handoff binds this value so linked-identity signatures remain stable. |
 
 ## Pricing
 
@@ -77,7 +88,7 @@ conversion from sats into backend-native fiat or token units.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_X402_FACILITATOR_URL` | `https://api.cdp.coinbase.com/platform/v2/x402` | x402 facilitator endpoint for verify/settle |
+| `FROGLET_X402_FACILITATOR_URL` | *(required)* | Authenticated x402 v2 facilitator (or operator-managed authenticated proxy) endpoint for `/verify` and `/settle`. Froglet intentionally has no unauthenticated CDP default: CDP mainnet requires API authentication, while the public x402.org facilitator is testnet-only. |
 | `FROGLET_X402_WALLET_ADDRESS` | *(required)* | Your Base wallet address to receive USDC payments |
 | `FROGLET_X402_NETWORK` | `base` | Chain network identifier (`base` only in the current public implementation) |
 
@@ -86,12 +97,21 @@ conversion from sats into backend-native fiat or token units.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FROGLET_STRIPE_SECRET_KEY` | *(required)* | Stripe secret API key for MPP. Use `sk_test_...` by default; live keys require the explicit confirmation below. |
-| `FROGLET_STRIPE_LIVE_CONFIRM` | *(none)* | Set to `fresh` only for an operator-approved live Stripe setup/proof with `sk_live_...`. Enforced by the daemon itself (fail-closed at startup for both `FROGLET_STRIPE_SECRET_KEY` and `FROGLET_BUYER_STRIPE_SECRET_KEY`), not just by `setup-payment.sh`. |
+| `FROGLET_STRIPE_LIVE_CONFIRM` | *(none)* | Set to `fresh` only for an operator-approved provider-side live Stripe setup/proof with `sk_live_...`. The daemon enforces this for `FROGLET_STRIPE_SECRET_KEY`. The SPT test helper always refuses live keys. |
 | `FROGLET_STRIPE_API_VERSION` | `2026-04-22.preview` | Stripe API version (required for MPP features) |
 | `FROGLET_STRIPE_WEBHOOK_SECRET` | *(none)* | Optional Stripe webhook endpoint signing secret (`whsec_...`) for `POST /v1/webhooks/stripe` |
-| `FROGLET_BUYER_STRIPE_SECRET_KEY` | *(none)* | Buyer-side Stripe secret key used to mint Shared Payment Tokens when this node buys Stripe-priced services |
-| `FROGLET_BUYER_STRIPE_PAYMENT_METHOD` | *(none)* | Buyer funding payment method (`pm_...`); required with buyer Stripe secret unless `FROGLET_BUYER_STRIPE_CUSTOMER` is set |
-| `FROGLET_BUYER_STRIPE_CUSTOMER` | *(none)* | Buyer funding customer (`cus_...`); alternative to `FROGLET_BUYER_STRIPE_PAYMENT_METHOD` |
+| `FROGLET_STRIPE_SPT_TEST_HELPER_ENABLED` | `false` | Explicitly enables Stripe's **seller-side sandbox test helper**. It is not a production buyer credential flow. |
+| `FROGLET_BUYER_STRIPE_SECRET_KEY` | *(none)* | Seller sandbox `sk_test_...` key used only by the explicitly enabled SPT test helper. `sk_live_...` is always rejected. |
+| `FROGLET_BUYER_STRIPE_PAYMENT_METHOD` | *(none)* | Test payment method (`pm_...`) used by the sandbox helper. Stripe's documented helper does not accept Froglet's former customer-ID shortcut. |
+| `FROGLET_BUYER_STRIPE_SELLER_NETWORK_ID` | *(none)* | Required seller network scope for a sandbox SPT, for example `internal`. |
+| `FROGLET_BUYER_STRIPE_SELLER_EXTERNAL_ID` | *(none)* | Optional seller, cart, or connected-account scope for a sandbox SPT. |
+
+For production Stripe-priced deals, the requester or its authorized
+agentic-commerce platform supplies
+`payment: {"kind":"stripe_mpp","token":"spt_..."}`. Froglet never calls the
+seller test-helper endpoint with a live key and does not require a buyer Stripe
+secret for this flow. The provider's configured Stripe account is the direct
+payee; Froglet does not route a marketplace payout or take a platform fee.
 
 ## Execution
 
@@ -104,8 +124,8 @@ conversion from sats into backend-native fiat or token units.
 | `FROGLET_PROCESS_CONCURRENCY` | `4` | Maximum concurrent Python/container process executions |
 | `FROGLET_PROCESS_OUTPUT_MAX_BYTES` | `1048576` | Maximum captured stdout/stderr bytes per process stream |
 | `FROGLET_PROCESS_MEMORY_MAX_BYTES` | `536870912` | Memory cap applied to Python rlimits and container `--memory` |
-| `FROGLET_PROCESS_PIDS_LIMIT` | `128` | PID/process cap applied to Python rlimits and container `--pids-limit` |
-| `FROGLET_PROCESS_CPU_LIMIT` | `1.0` | CPU limit applied to container `--cpus` |
+| `FROGLET_PROCESS_PIDS_LIMIT` | `128` | PID/process cap applied to container `--pids-limit`; sandboxed inline Python is fixed to one process/thread |
+| `FROGLET_PROCESS_CPU_LIMIT` | `1.0` | CPU share limit applied to container `--cpus`; inline Python receives an `RLIMIT_CPU` derived from its execution deadline |
 
 ### GPU
 
@@ -153,7 +173,7 @@ GPU probe output under its printed evidence directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_CONFIDENTIAL_POLICY_PATH` | *(none)* | Path to a TOML confidential policy file |
+| `FROGLET_CONFIDENTIAL_POLICY_PATH` | *(none)* | Reserved confidential-policy path. This build rejects it because only mock attestation/key-release reference providers exist |
 | `FROGLET_CONFIDENTIAL_SESSION_TTL_SECS` | `300` | Confidential session time-to-live (30-3600) |
 | `FROGLET_CONFIDENTIAL_SESSION_QUOTA_PER_IDENTITY` | `20` | Confidential session openings allowed per identity/window |
 
@@ -187,6 +207,122 @@ client-supplied forwarding headers before forwarding to the node.
 `FROGLET_PROVIDER_ARTIFACT_ROOT` is required only for trusted operator workflows
 that intentionally publish daemon-local files. Agent-driven publication should
 send `inline_source` or `wasm_module_hex` instead of absolute host paths.
+
+## Managed Publication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_MANAGED_TARGETS_FILE` | *(none)* | Absolute path to the bounded private target/profile registry used by `hosting.default = "managed"`. |
+| `FROGLET_MANAGED_BUNDLE_PATH` | *(none)* | Managed-runner-only path to the canonical runtime bundle. Must be paired with `FROGLET_MANAGED_CAPSULE_BASE64`. |
+| `FROGLET_MANAGED_CAPSULE_BASE64` | *(none)* | Managed-runner-only, provider-private exact plan/Descriptor/Offer/Revision/fixture capsule. Startup fails closed when only one bundle input is present. |
+
+The target registry is operator-private JSON. Service manifests select only a
+neutral `target` and `profile`; cloud account IDs, hostnames, credentials, DNS
+providers, and adapter configuration do not enter the manifest or Kernel. Each
+profile binds:
+
+- an absolute `froglet-operator` binary and adapter-config path;
+- exact base-runner manifest/config bytes and release digest;
+- one private OCI output repository plus anonymous, Basic, or Bearer registry
+  authentication sourced from environment variables;
+- the exact HTTPS public origin and a provider-neutral deployment template;
+- logical secrets for the capsule, Provider seed, and Nostr publication seed.
+
+A minimal SSH + OCI profile has this shape (digests and absolute paths are
+placeholders, and the separately private operator adapter config owns the SSH
+host, key, remote root, edge image, and logical-secret resolver):
+
+```json
+{
+  "schema_version": "froglet.managed-target-registry.v1",
+  "targets": {
+    "independent-host": {
+      "small": {
+        "operator_binary": "/opt/froglet/bin/froglet-operator",
+        "adapter": "ssh-oci",
+        "adapter_config_path": "/etc/froglet/operator/ssh-small.json",
+        "output_repository": "registry.example/private/services",
+        "base_runner_image": {
+          "repository": "registry.example/private/froglet-runner",
+          "digest": "sha256:<64 lowercase hex>"
+        },
+        "release_bundle_digest": "sha256:<64 lowercase hex>",
+        "base_manifest_path": "/var/lib/froglet/releases/runner-manifest.json",
+        "base_config_path": "/var/lib/froglet/releases/runner-config.json",
+        "public_url": "https://service.example",
+        "provision": false,
+        "deployment": {
+          "deployment_id": "froglet-service",
+          "environment": {
+            "FROGLET_MANAGED_BUNDLE_PATH": "/opt/froglet/managed/bundle.json",
+            "FROGLET_PUBLIC_BASE_URL": "https://service.example"
+          },
+          "secrets": [
+            {
+              "environment_name": "FROGLET_MANAGED_CAPSULE_BASE64",
+              "reference": "secret://froglet/service/capsule"
+            },
+            {
+              "environment_name": "FROGLET_IDENTITY_SEED_HEX",
+              "reference": "secret://froglet/provider/identity"
+            },
+            {
+              "environment_name": "FROGLET_NOSTR_PUBLICATION_IDENTITY_SEED_HEX",
+              "reference": "secret://froglet/provider/nostr-publication-identity"
+            }
+          ],
+          "resources": {
+            "cpu_millis": 500,
+            "memory_bytes": 536870912,
+            "architecture": "amd64"
+          },
+          "ports": [
+            { "name": "froglet", "container_port": 8080, "protocol": "tcp" }
+          ],
+          "persistent_volumes": [],
+          "health_check": {
+            "port_name": "froglet",
+            "path": "/healthz",
+            "interval_seconds": 30,
+            "timeout_seconds": 5
+          },
+          "ingress": {
+            "port_name": "froglet",
+            "transport": "https",
+            "requested_hostname": "service.example"
+          },
+          "observability": { "structured_logs": true },
+          "lifecycle": { "rollback_required": true }
+        },
+        "capsule_source_environment": "FROGLET_MANAGED_CAPSULE_SOURCE",
+        "registry_auth": {
+          "kind": "bearer",
+          "token_environment": "FROGLET_REGISTRY_TOKEN"
+        },
+        "registry_insecure_http": false
+      }
+    }
+  }
+}
+```
+
+The deployment template must set
+`FROGLET_MANAGED_BUNDLE_PATH=/opt/froglet/managed/bundle.json` and
+`FROGLET_PUBLIC_BASE_URL` to the profile's exact `public_url`. Froglet inserts
+the Nostr identity creation time into the approved desired state. Secret values
+never enter the plan, command line, or durable operation record. Base layers
+and the output image must use one registry in schema v1 so the Distribution API
+can mount the digest-pinned layer without downloading it through the authoring
+node.
+
+Planning is read-only. Approval binds the deterministic private OCI manifest,
+operator provision/deploy/compensation plans, endpoint, Provider identity,
+recurring-cost disclosure, and target/profile. Activation durably records each
+external phase, uploads through the registry-neutral OCI Distribution API,
+passes the desired state over bounded stdin to the operator, imports the exact
+paired identity and signed artifact chain, and requires an independently
+verified remote canary before marketplace registration. Interrupted external
+phases require status-based reconciliation; they are never blindly replayed.
 
 ## Marketplace
 
@@ -222,6 +358,10 @@ npx froglet-mcp
 Equivalent explicit local launch: `FROGLET_PROFILE=local npx froglet-mcp`.
 
 `plan_install`, `get_install_guide`, and `plan_use_case` do not require local token files.
+A complete install plan reads public GitHub release metadata and
+the tag-specific bootstrap bytes so it can bind their hashes; it does not write
+to the host. `get_install_guide` repeats those reads before accepting the
+approval hash.
 Provider/runtime actions require the matching URL and token-path configuration.
 The no-install public hosted proof is intentionally outside the installed MCP
 surface; use `https://froglet.dev/llms.txt` for that HTTP flow.

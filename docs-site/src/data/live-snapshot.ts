@@ -63,10 +63,6 @@ function nowIso(): string {
 	return new Date().toISOString();
 }
 
-function shortHash(value: string, length = 12): string {
-	return value.length > length ? `${value.slice(0, length)}...` : value;
-}
-
 export function formatSnapshotTime(value: string): string {
 	return new Intl.DateTimeFormat('en', {
 		dateStyle: 'medium',
@@ -111,7 +107,7 @@ function asNumber(value: unknown): number {
 	return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-function emptyDealFeed(detail = 'Public deal feed activates when the marketplace API exposes /v1/deals.'): MarketplaceDealFeedSnapshot {
+function emptyDealFeed(detail = 'A public deal feed is not available. Catalog counts do not measure customer activity.'): MarketplaceDealFeedSnapshot {
 	return {
 		status: 'pending',
 		detail,
@@ -119,13 +115,12 @@ function emptyDealFeed(detail = 'Public deal feed activates when the marketplace
 	};
 }
 
-async function getMarketplaceDealFeed(): Promise<MarketplaceDealFeedSnapshot> {
+async function getMarketplaceDealFeed(marketplaceUrl: string): Promise<MarketplaceDealFeedSnapshot> {
 	try {
-		const response = await fetchWithTimeout(`${MARKETPLACE_URL}/v1/deals?limit=10`);
+		const response = await fetchWithTimeout(`${marketplaceUrl}/v1/deals?limit=10`);
 		if (response.status === 404 || response.status === 405) {
 			return emptyDealFeed();
 		}
-		const body = asRecord(await response.json());
 		if (!response.ok) {
 			return {
 				status: 'fail',
@@ -133,6 +128,7 @@ async function getMarketplaceDealFeed(): Promise<MarketplaceDealFeedSnapshot> {
 				deals: [],
 			};
 		}
+		const body = asRecord(await response.json());
 
 		const deals = asArray(body.items).map((item): MarketplaceDealSummary => {
 			const row = asRecord(item);
@@ -163,10 +159,12 @@ async function getMarketplaceDealFeed(): Promise<MarketplaceDealFeedSnapshot> {
 	}
 }
 
-export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
+export async function getMarketplaceSnapshot(marketplaceUrl = MARKETPLACE_URL): Promise<MarketplaceSnapshot> {
 	const checkedAt = nowIso();
 	try {
-		const healthResponse = await fetchWithTimeout(`${MARKETPLACE_URL}/healthz`);
+		if (!/^https:\/\/marketplace(?:-[a-z0-9]+)*\.froglet\.dev$/.test(marketplaceUrl)) throw new Error('Invalid first-party marketplace origin.');
+		const healthResponse = await fetchWithTimeout(`${marketplaceUrl}/healthz`);
+		if (!healthResponse.ok) throw new Error(`Marketplace is unavailable (HTTP ${healthResponse.status}). Retrying automatically.`);
 		const health = asRecord(await healthResponse.json());
 		if (!healthResponse.ok || health.status !== 'ok') {
 			return {
@@ -182,13 +180,17 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 		}
 
 		const [providersResponse, offersResponse, dealFeed] = await Promise.all([
-			fetchWithTimeout(`${MARKETPLACE_URL}/v1/providers?limit=12`),
-			fetchWithTimeout(`${MARKETPLACE_URL}/v1/offers?limit=24`),
-			getMarketplaceDealFeed(),
+			fetchWithTimeout(`${marketplaceUrl}/v1/providers?limit=12`),
+			fetchWithTimeout(`${marketplaceUrl}/v1/offers?limit=24`),
+			getMarketplaceDealFeed(marketplaceUrl),
 		]);
+		if (!providersResponse.ok || !offersResponse.ok) throw new Error('Marketplace catalog is unavailable. Retrying automatically.');
 		const providersBody = asRecord(await providersResponse.json());
 		const offersBody = asRecord(await offersResponse.json());
-		const providerItems = asArray(providersBody.items);
+		if (!providersResponse.ok || !offersResponse.ok || !Array.isArray(providersBody.items) || !Array.isArray(offersBody.items)) {
+			throw new Error('Marketplace returned an unavailable or malformed catalog.');
+		}
+		const providerItems = providersBody.items;
 		const offerItems = asArray(offersBody.items);
 		const providerCount = asNumber(asRecord(providersBody.pagination).total) || providerItems.length;
 		const offerCount = asNumber(asRecord(offersBody.pagination).total) || offerItems.length;
@@ -201,7 +203,7 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 			const firstEndpoint = asRecord(endpoints[0]);
 			return {
 				providerId: String(row.provider_id ?? ''),
-				descriptorHash: shortHash(String(row.current_descriptor_hash ?? descriptor.artifact_hash ?? '')),
+				descriptorHash: String(row.current_descriptor_hash ?? descriptor.artifact_hash ?? ''),
 				serviceKinds: asStringArray(descriptor.service_kinds),
 				executionRuntimes: asStringArray(descriptor.execution_runtimes),
 				endpoint: String(firstEndpoint.uri ?? ''),
@@ -223,7 +225,7 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 				settlementMethod: String(row.settlement_method ?? ''),
 				baseFeeMsat: asNumber(row.base_fee_msat),
 				successFeeMsat: asNumber(row.success_fee_msat),
-				artifactHash: shortHash(String(row.artifact_hash ?? '')),
+				artifactHash: String(row.artifact_hash ?? ''),
 			};
 		});
 
@@ -238,15 +240,17 @@ export async function getMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
 			dealFeed,
 		};
 	} catch (error) {
+		const detail = error instanceof SyntaxError ? 'Marketplace returned an unreadable response. Retrying automatically.'
+			: error instanceof Error ? error.message : 'Marketplace is unavailable. Retrying automatically.';
 		return {
 			checkedAt,
 			status: 'fail',
-			detail: error instanceof Error ? error.message : String(error),
+			detail,
 			providerCount: 0,
 			offerCount: 0,
 			providers: [],
 			offers: [],
-			dealFeed: emptyDealFeed(error instanceof Error ? error.message : String(error)),
+			dealFeed: emptyDealFeed(),
 		};
 	}
 }

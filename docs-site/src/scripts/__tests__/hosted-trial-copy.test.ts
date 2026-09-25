@@ -13,8 +13,7 @@ function readRepoFile(path: string): string {
 const strongPrompt =
   'Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.';
 
-const homepagePrompt =
-  'Open https://try.froglet.dev/llms.txt. Run demo.add and one witness/hash follow-up. Report statuses, result, receipt/feed proof, mismatches, and what this proves or does not prove for my projects/data. If unreachable, say so.';
+const homepagePrompt = 'Make this catalog usable by another agent with Froglet.';
 
 const hostedCopyFiles = [
   'docs/HOSTED_TRIAL.md',
@@ -40,7 +39,7 @@ describe('hosted trial docs copy', () => {
   it('uses a compact prompt on the homepage hero', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
     expect(index).toContain(homepagePrompt);
-    expect(index).toContain('live evidence, not a product summary');
+    expect(index).toContain('show a preview before asking to publish');
     expect(index).toContain('hosted-proof-with-witness');
     expect(index).toContain('receipt-feed-check');
     expect(index).toContain('local-install-proposal');
@@ -191,7 +190,7 @@ describe('hosted trial docs copy', () => {
     expect(marketplace).toContain('indexed receipt totals');
     expect(marketplace).toContain('priced');
     expect(marketplace).toContain('data-marketplace-search');
-    expect(marketplace).toContain('data-marketplace-search-row');
+    expect(readRepoFile('docs-site/src/scripts/marketplace-live.ts')).toContain('marketplaceSearchRow');
     expect(marketplace).not.toContain('Volume settled');
     expect(marketplace).not.toContain('lightning + stripe + x402');
   });

@@ -3,6 +3,11 @@ use std::process::ExitCode;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Reqwest is compiled without an implicit crypto provider so the release
+    // carries one Ring-backed Rustls implementation instead of Ring plus
+    // AWS-LC. Install it before any CLI or server path constructs a client.
+    froglet::tls::ensure_rustls_crypto_provider();
+
     let args: Vec<String> = std::env::args().collect();
     let subcommand = args.get(1).map(String::as_str);
 
@@ -14,12 +19,20 @@ async fn main() -> ExitCode {
         && let Some(handler) = lookup_cli_handler(name)
     {
         let rest = args[2..].to_vec();
+        let json_mode = rest.iter().any(|argument| argument == "--json");
         let result = handler.run(rest).await;
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::from(e.exit_code() as u8)
+                let exit_code = e.exit_code() as u8;
+                if json_mode {
+                    let mut report = froglet::cli::doctor::error_report(&e);
+                    report["exit_code"] = serde_json::json!(exit_code);
+                    println!("{report}");
+                } else {
+                    eprintln!("error: {e}");
+                }
+                ExitCode::from(exit_code)
             }
         };
     }
@@ -125,20 +138,34 @@ macro_rules! make_sync_handler {
 }
 
 make_sync_handler!(InitHandler, froglet::cli::init::run);
+make_sync_handler!(ConfigureAgentHandler, froglet::cli::configure_agent::run);
 make_async_handler!(BuildHandler, froglet::cli::build::run);
 make_async_handler!(PublishHandler, froglet::cli::publish::run);
 make_async_handler!(WhoamiHandler, froglet::cli::whoami::run);
 make_async_handler!(InvokeHandler, froglet::cli::invoke::run);
+make_async_handler!(McpHandler, froglet::cli::mcp::run);
+make_async_handler!(PrepareHandler, froglet::cli::prepare::run);
+make_sync_handler!(UpdatesHandler, froglet::cli::prepare::run_updates);
+make_async_handler!(DoctorHandler, froglet::cli::doctor::run);
+make_async_handler!(StatusHandler, froglet::local_status::run);
 make_async_handler!(AttestHandler, froglet::cli::attest::run);
+make_sync_handler!(IdentityHandler, froglet::cli::identity::run);
 
 fn lookup_cli_handler(name: &str) -> Option<Box<dyn CliHandler>> {
     match name {
         "init" => Some(Box::new(InitHandler)),
+        "configure-agent" => Some(Box::new(ConfigureAgentHandler)),
         "build" => Some(Box::new(BuildHandler)),
         "publish" => Some(Box::new(PublishHandler)),
         "whoami" => Some(Box::new(WhoamiHandler)),
         "invoke" => Some(Box::new(InvokeHandler)),
+        "mcp" => Some(Box::new(McpHandler)),
+        "prepare-service" => Some(Box::new(PrepareHandler)),
+        "check-updates" => Some(Box::new(UpdatesHandler)),
+        "doctor" => Some(Box::new(DoctorHandler)),
+        "status" => Some(Box::new(StatusHandler)),
         "attest-dns-record" => Some(Box::new(AttestHandler)),
+        "identity" => Some(Box::new(IdentityHandler)),
         _ => None,
     }
 }
@@ -201,16 +228,25 @@ fn print_help() {
            froglet-node build                    validate manifests + build artifact (no publish)\n  \
            froglet-node publish [--host X]       publish service to marketplace via the local daemon\n  \
            froglet-node whoami                   print identity + daemon info\n  \
-           froglet-node invoke <id> [input]      invoke a service published on the local node\n\
+           froglet-node invoke <id> [input]      invoke a local service or an exact remote provider/service\n\
+           froglet-node mcp [--probe]            native agent MCP bridge / command-line probe\n\
+         \n\
+           froglet-node prepare-service --request FILE  inspect or prepare a selected catalog/Wasm service\n\
+           froglet-node check-updates --json     check registered source files\n\
+           froglet-node doctor --json            diagnose installation, runtime, relay, and agent\n\
+           froglet-node status --open --json     get a read-only local status page link\n\
+           --provider-id ID --provider-url URL   select a remote HTTPS service (invoke)\n\
+           --idempotency-key KEY                 reconcile an uncertain invocation\n\
          \n\
          Identity utilities:\n  \
+           froglet-node identity <command>       generate, back up, restore, rotate, or verify identity custody\n  \
            froglet-node sign-message             read a message from stdin and emit a hex Schnorr signature\n  \
            froglet-node print-identity           print the node's provider_id (pubkey hex)\n  \
            froglet-node attest-dns-record <zone> print the signed _froglet.<zone> TXT record for DNS attestation\n\
          \n\
          Common flags:\n  \
            --json                                emit machine-readable output\n  \
-           --host local|tor|self                 override the manifest's hosting choice (publish only)\n  \
+           --host local|relay|tor|self           override the manifest's hosting choice (publish only)\n  \
            --marketplace URL                     override the marketplace URL (publish only)\n  \
            --no-wait | --timeout-secs N          skip or bound polling for the deal result (invoke only)\n  \
          \n  \

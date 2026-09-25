@@ -42,6 +42,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub mod data_query;
 pub mod demo_add;
 pub mod demo_echo;
 pub mod demo_fetch_witness;
@@ -54,6 +55,12 @@ pub mod demo_notarize;
 // implementation rather than each rolling their own SSRF-protected fetch.
 pub mod safe_fetch;
 
+pub use data_query::{
+    DATA_QUERY_CONTRACT_V1, DATA_QUERY_CSV_CONTRACT_V1, DATA_QUERY_JSON_CONTRACT_V1,
+    DATA_QUERY_SQLITE_CONTRACT_V1, DATA_QUERY_STARTER_V1, DataQueryHandler, DataQueryHandlerCache,
+    DataQueryLimits, DataQueryRequest, DataQuerySourceKind, data_query_csv_output_schema,
+    data_query_input_schema, data_query_output_schema,
+};
 pub use demo_add::AddHandler;
 pub use demo_echo::EchoHandler;
 pub use demo_fetch_witness::FetchWitnessHandler;
@@ -237,12 +244,17 @@ pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
             max_output_bytes: 1_048_576,
             fuel_limit: 0,
             price_sats: 0,
+            base_fee_msat: None,
+            success_fee_msat: None,
+            settlement_method: None,
             price_currency: None, // demo builtins are always free / sat
             publication_state: "active".to_string(),
             starter: Some(spec.starter.to_string()),
             module_hash: None,
+            build_evidence: None,
             module_bytes_hex: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             source_path: None,
@@ -250,6 +262,7 @@ pub async fn register_demo_offers(state: &AppState) -> Result<(), String> {
             summary: Some(spec.summary.to_string()),
             input_schema: Some(spec.input_schema),
             output_schema: Some(spec.output_schema),
+            verification: None,
             terms_hash: None,
             confidential_profile_hash: None,
         };

@@ -20,8 +20,13 @@
 
 pub mod attest;
 pub mod build;
+pub mod configure_agent;
+pub mod doctor;
+pub mod identity;
 pub mod init;
 pub mod invoke;
+pub mod mcp;
+pub mod prepare;
 pub mod publish;
 pub mod whoami;
 
@@ -42,6 +47,11 @@ pub enum CliError {
     Engine(froglet_publish_engine::PublishError),
     /// A daemon HTTP call failed.
     Daemon(String),
+    /// An operation has recovery context that must survive a JSON failure.
+    Structured {
+        report: serde_json::Value,
+        exit_code: i32,
+    },
     /// Other failure with a string message.
     Other(String),
 }
@@ -54,6 +64,7 @@ impl fmt::Display for CliError {
             Self::Manifest(e) => write!(f, "manifest: {e}"),
             Self::Engine(e) => write!(f, "publish engine: {e}"),
             Self::Daemon(s) => write!(f, "daemon: {s}"),
+            Self::Structured { report, .. } => write!(f, "{report}"),
             Self::Other(s) => write!(f, "{s}"),
         }
     }
@@ -94,6 +105,7 @@ impl CliError {
             Self::Manifest(_) => 3,
             Self::Io(_) => 4,
             Self::Daemon(_) => 5,
+            Self::Structured { exit_code, .. } => *exit_code,
             Self::Engine(_) => 6,
             Self::Other(_) => 1,
         }

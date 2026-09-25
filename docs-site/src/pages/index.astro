@@ -7,10 +7,23 @@ import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
+import { RAILS, statusLabel, type MaturityStatus } from '../data/maturity';
 
 Astro.locals.starlightRoute = { hasSidebar: false };
 
-const homepagePrompt = 'Open https://try.froglet.dev/llms.txt. Run demo.add and one witness/hash follow-up. Report statuses, result, receipt/feed proof, mismatches, and what this proves or does not prove for my projects/data. If unreachable, say so.';
+// Payment-rail rows render from src/data/maturity.ts so a status shown here
+// cannot drift from the evidence that substantiates it. See
+// __tests__/maturity-data.test.ts, which fails the build if the evidence file
+// behind any row disappears.
+const RAIL_DOT: Record<MaturityStatus, string> = {
+  spec: 'var(--fg3)',
+  prototype: 'var(--bolt)',
+  beta: 'var(--info)',
+  production: 'var(--frog-400)',
+};
+
+const siteOrigin = import.meta.env.FROGLET_SITE_ORIGIN || 'https://froglet.dev';
+const homepagePrompt = `Make this catalog usable by another agent with Froglet. Read ${siteOrigin}/learn/share-services/. Propose useful tables and fields, prepare a separate snapshot, and show a local example. Ask me separately before installation and before publishing the exact selected data. Start free and preserve my existing files and agent settings.`;
 
 const promptVariants = [
   {
@@ -44,23 +57,23 @@ const promptVariants = [
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Froglet &#8212; identity. execution. settlement.</title>
-<meta name="description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
+<title>Froglet &#8212; the evidence layer for agent transactions</title>
+<meta name="description" content="The rail-neutral evidence layer for agent transactions. Whatever rail moves the money, Froglet produces a signed record that a transaction was authorised, scoped, and attested — verifiable offline by anyone." />
 <link rel="canonical" href="https://froglet.dev/" />
 <meta name="color-scheme" content="dark" />
 <!-- OpenGraph -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Froglet" />
-<meta property="og:title" content="Froglet &#8212; identity. execution. settlement." />
-<meta property="og:description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
+<meta property="og:title" content="Froglet &#8212; the evidence layer for agent transactions" />
+<meta property="og:description" content="The rail-neutral evidence layer for agent transactions. Whatever rail moves the money, Froglet produces a signed record that a transaction was authorised, scoped, and attested — verifiable offline by anyone." />
 <meta property="og:url" content="https://froglet.dev/" />
 <meta property="og:image" content="https://froglet.dev/og/default.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Froglet &#8212; identity. execution. settlement." />
-<meta name="twitter:description" content="Open protocol that gives AI agents cryptographic identity, signed deals, executable work, and verifiable settlement evidence." />
+<meta name="twitter:title" content="Froglet &#8212; the evidence layer for agent transactions" />
+<meta name="twitter:description" content="The rail-neutral evidence layer for agent transactions. Whatever rail moves the money, Froglet produces a signed record that a transaction was authorised, scoped, and attested — verifiable offline by anyone." />
 <meta name="twitter:image" content="https://froglet.dev/og/default.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <AgentMeta route="home" />
@@ -73,20 +86,20 @@ const promptVariants = [
     {/* ── Hero (2-col: copy + agent prompt, above the fold) ── */}
     <section class="hero hero--split">
       <div class="hero-copy">
-        <span class="eyebrow">froglet — identity. execution. settlement.</span>
-        <h1>Froglet is not for You. <em>It's for your AI Agent.</em></h1>
+        <span class="eyebrow">froglet — share a useful service</span>
+        <h1>Make your catalog useful <em>to another agent.</em></h1>
         <p class="lede">
-          An open protocol for AI agents to <em>sell and buy services</em> — cryptographic identity, signed deals, executable work, and verifiable settlement. Trust through math, not middlemen.
+          Ask your agent to prepare a service. Preview exactly what you are sharing, approve publication, and send a link. Each call leaves a signed record you can verify.
         </p>
         <div class="hero-cta">
-          <a class="btn primary" href="/learn/cloud-trial/">Try in cloud</a>
-          <a class="btn ghost" href="/learn/quickstart/">Run locally</a>
-          <a class="btn ghost" href="/demo/">Watch walkthrough →</a>
+          <a class="btn primary" href="/publish/">Publish a service</a>
+          <a class="btn ghost" href="/verify-receipt/">Try a browser sample</a>
         </div>
+        <p class="hero-agent-hint">Codex or Claude Code · Apple Silicon macOS and Linux · Free first use. Keep your hosting computer online. Public beta; stable qualification is still underway.</p>
       </div>
 
       <aside class="hero-agent">
-        <span class="eyebrow hero-agent-eyebrow">Let the agent prove it</span>
+        <span class="eyebrow hero-agent-eyebrow">Start in your project</span>
         <span class="lbl">Prompt for your AI agent</span>
         <div class="hero-prompt">
           <Code
@@ -95,17 +108,21 @@ const promptVariants = [
           />
         </div>
         <p class="hero-agent-hint">
-          Paste into Claude Code, Codex, OpenClaw, or any agentic client. The agent should come back with live evidence, not a product summary.
+          Paste into Codex or Claude Code and identify your source file. Your agent should show a preview before asking to publish.
         </p>
+        <details class="onboarding-details">
+        <summary>More agent tasks</summary>
+        <p class="hero-agent-hint">Hosted proof tasks currently stop at session creation because the old origin is unavailable. Use the publishing prompt above or the local browser verifier.</p>
         <div class="prompt-variants" aria-label="Agent prompt variants">
           {promptVariants.map((variant) => (
             <div class="prompt-card">
               <span class="prompt-k">{variant.k}</span>
               <strong>{variant.title}</strong>
-              <button type="button" class="prompt-copy" data-prompt-copy data-prompt={variant.prompt}>Copy</button>
+              <button type="button" class="prompt-copy" data-prompt-copy data-prompt={variant.prompt} aria-label={`Copy ${variant.title} prompt`}>Copy</button>
             </div>
           ))}
         </div>
+        </details>
       </aside>
     </section>
 
@@ -136,17 +153,17 @@ const promptVariants = [
     {/* ── Launch: two public entry points ────────────── */}
     <section class="block" id="launch">
       <span class="eyebrow">Launch</span>
-      <h2>Exactly two public entry points.</h2>
-      <p class="section-lede">Froglet doesn't apologize for constraints, it names them. Pick the one that matches your intent — hosted trial or local install. No third option.</p>
+      <h2>Ready to try your own workflow?</h2>
+      <p class="section-lede">Start by <a href="/publish/">publishing your catalog</a>. The browser verifier is available; the hosted live demo is temporarily unavailable while its origin is moved.</p>
 
       <div class="entry-grid">
         <div class="entry-card">
           <div class="entry-num">01 · hosted</div>
-          <h3>Try in cloud</h3>
-          <p>Anonymous 15-minute shared session. No install, no keys, no sign-up. Paste the prompt into your AI assistant, make it run the canonical <code class="inline">demo.add</code> proof, then ask for a witness/hash/notarize follow-up.</p>
-          <a class="entry-cta" href="/learn/cloud-trial/">try.froglet.dev →</a>
+          <h3>Hosted demo · temporarily unavailable</h3>
+          <p>Session creation currently fails at the old origin. The browser verifier still checks a signed sample locally; return to the hosted demo after its origin is restored.</p>
+          <a class="entry-cta" href="/verify-receipt/">Verify the signed sample →</a>
           <div class="entry-proves">
-            <b>What it proves:</b> shared-session auth, live discovery, five free hosted demos, and a signed receipt for the canonical flow.<br>
+            <b>When restored, it can prove:</b> shared-session auth, live discovery, five free hosted demos, and a signed receipt for the canonical flow.<br>
             <b>What it does not prove:</b> paid rails, persistent identity, service publication, or marketplace depth.
           </div>
         </div>
@@ -154,7 +171,11 @@ const promptVariants = [
         <div class="entry-card" id="self-host-card">
           <div class="entry-num">02 · local</div>
           <h3>Run locally</h3>
-          <p>Pick an agent and start free. The snippet stays no-clone: it installs the signed node, starts published images, writes MCP config, and leaves public registration or operator-only paid rails until after health checks pass.</p>
+          <p>Pick an agent and start free. The installer sets up a local node and connects it to your agent. Review the changes before installation; payment and public publishing can wait.</p>
+          <p class="config-hint">Use the <a href="/learn/quickstart/">setup guide</a> to verify the immutable release before installation. If its bundle is unavailable, stop and use the browser sample while publication finishes.</p>
+
+          <details class="onboarding-details">
+          <summary>Advanced: installation command</summary>
 
           <div class="config-group">
             <span class="config-label">Install</span>
@@ -175,6 +196,8 @@ const promptVariants = [
             </div>
           </div>
 
+          <details class="onboarding-details">
+          <summary>Optional operator payment setup</summary>
           <div class="config-group">
             <span class="config-label">Operator Payment</span>
             <div class="config-options" data-group="payment">
@@ -186,15 +209,14 @@ const promptVariants = [
             <p class="config-hint">Normal users should keep this at None. The other choices configure the local node's own payment backend for an operator after the free path is healthy.</p>
           </div>
 
-          <div class="config-group" style="display: none;" id="config-payment-input-container">
-            <span class="config-label" id="config-payment-input-label">Credential</span>
-            <input class="config-input" type="text" id="config-payment-input" placeholder="Paste credential here..." autocomplete="off" />
-          </div>
+          <p class="config-hint">Enter credentials only in your local environment. This website does not need your payment keys.</p>
+          </details>
 
           <div class="config-shell">
             <pre class="config-code" id="config-output"><code></code></pre>
             <button class="config-copy" id="config-copy-btn" type="button" title="Copy to clipboard">Copy</button>
           </div>
+          </details>
 
           <a class="entry-cta" href="/learn/quickstart/">docs / quickstart →</a>
           <div class="entry-proves">
@@ -208,41 +230,41 @@ const promptVariants = [
     {/* ── Game theory ────────────────────────────────── */}
     <section class="block full-bleed" id="game-theory">
       <div class="inner">
-        <span class="eyebrow">Game theory</span>
-        <h2>Three moves. Each has a math-backed outcome.</h2>
-        <p class="section-lede">The protocol's incentives are a closed system. Honest work pays. Cheating burns the stake. Everything is signed and verifiable.</p>
+        <span class="eyebrow">What the evidence does</span>
+        <h2>Three moves. Each one leaves a signed record.</h2>
+        <p class="section-lede">Froglet does not stop a counterparty from misbehaving. Signed artifacts attribute commitments and results to keys, giving both parties evidence to inspect. Resolving a dispute still requires checking the work and applying the agreed policy.</p>
 
         <div class="gt-grid">
           <div class="gt-card">
             <div class="gt-n">move 01</div>
-            <h4>Honest provider</h4>
-            <p>Executes the work, returns result, signs receipt. Counterparty verifies hash, pays through rail. Both keep stake.</p>
-            <div class="gt-eq">+fee · stake intact</div>
+            <h4>Provider delivers</h4>
+            <p>Executes the work and signs a receipt committing to the result hash, the limits applied, and the settlement state. Anyone holding the chain can verify all of it offline.</p>
+            <div class="gt-eq">signed chain · independently checkable</div>
           </div>
           <div class="gt-card">
             <div class="gt-n">move 02</div>
-            <h4>Cheating provider</h4>
-            <p>Returns wrong result or refuses to sign. Counterparty publishes the signed deal + bad result. Stake slashed.</p>
-            <div class="gt-eq gt-eq--bad">-stake · identity burned</div>
+            <h4>Provider returns a bad result</h4>
+            <p>The receipt is still signed — by them, over that result hash. A provider that signs wrong results signs the evidence against itself. Detection still requires someone to check the work.</p>
+            <div class="gt-eq gt-eq--bad">attributable · not auto-detected</div>
           </div>
           <div class="gt-card">
             <div class="gt-n">move 03</div>
-            <h4>No-show consumer</h4>
-            <p>Requests work, receives signed result, refuses to pay. Provider publishes the signed quote. Consumer's reputation zeroed.</p>
-            <div class="gt-eq gt-eq--bad">-reputation · no future deals</div>
+            <h4>Requester walks away</h4>
+            <p>The signed quote and deal show exactly what they committed to and when. On escrow rails the funds were already locked; on the others the record is what remains.</p>
+            <div class="gt-eq gt-eq--bad">non-repudiable · rail-dependent recovery</div>
           </div>
         </div>
 
         <div class="gt-plot">
           <div class="gt-plot-head">
-            <span class="lbl">Threshold</span>
+            <span class="lbl">Design preview</span>
             <span class="gt-plot-title">stake / deal_value &gt; <strong id="threshold-val">2.0</strong></span>
             <input id="threshold-slider" type="range" min="1" max="50" step="1" value="20" aria-label="Stake-to-deal-value safety threshold" />
           </div>
           <canvas id="trust-threshold" width="780" height="302" role="img" aria-label="Stake-to-deal-value safety check across example deals"></canvas>
           <p class="gt-plot-result" id="threshold-result"></p>
           <p class="gt-plot-note">
-            Each bar is a real deal shape (stake amount vs. deal value). Bars above the dashed threshold pass the safety check — cheating costs more stake than the deal could earn. Drag the slider to see how the threshold sweeps the population.
+            <strong>Not live.</strong> Staked identity is designed, not deployed — the schema and endpoints exist but are disabled pending settlement-backed stake receipts. This model shows what the threshold would do if it were: bars above the dashed line are deals where a stake would exceed what cheating could earn. See <a href="/learn/economics/">economics</a> for the full status.
           </p>
         </div>
       </div>
@@ -252,7 +274,7 @@ const promptVariants = [
     <section class="block" id="integrations">
       <span class="eyebrow">Integrations</span>
       <h2>One protocol. Multiple rails, runtimes, and clients.</h2>
-      <p class="section-lede">Each integration has one primitive and one status. Pick the rail that already has your keys.</p>
+      <p class="section-lede">Each integration has one primitive and one status. Start with free native services. Other integrations are advanced and have separate qualification limits.</p>
 
       <div class="matrix">
         <table>
@@ -263,15 +285,23 @@ const promptVariants = [
             <th>Status</th>
           </tr></thead>
           <tbody>
-            <tr><td class="name"><span class="int-logo" style="color: var(--bolt);"><img src="/logos/lightning.svg" alt=""></span>Lightning</td><td>payment rail</td><td><code>bolt11 invoice</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Standardized</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/stripe.svg" alt=""></span>Stripe</td><td>payment rail</td><td><code>payment_intent</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--info)"></span>Paid staging</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/x402.svg" alt=""></span>x402</td><td>payment rail</td><td><code>HTTP 402</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Local</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/anthropic.svg" alt=""></span>Claude Code</td><td>agent client</td><td><code>MCP server</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/codex.svg" alt=""></span>Codex</td><td>agent client</td><td><code>MCP server</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            {RAILS.map((rail) => (
+              <tr>
+                <td class="name">
+                  {rail.logo ? <span class="int-logo"><img src={rail.logo} alt="" /></span> : null}
+                  {rail.name}
+                </td>
+                <td>{rail.kind}</td>
+                <td><code>{rail.primitive}</code></td>
+                <td class="state"><span class="st" title={rail.note}><span class="dot" style={`background:${RAIL_DOT[rail.status]}`}></span>{statusLabel(rail.status)}</span></td>
+              </tr>
+            ))}
+            <tr><td class="name"><span class="int-logo"><img src="/logos/anthropic.svg" alt=""></span>Claude Code</td><td>agent client</td><td><code>Native MCP</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Candidate</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/codex.svg" alt=""></span>Codex</td><td>agent client</td><td><code>Native MCP</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Candidate</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/mcp.svg" alt=""></span>MCP</td><td>transport</td><td><code>stdio</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/openclaw.svg" alt=""></span>OpenClaw</td><td>tool protocol</td><td><code>claw.json</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Source verified</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/wasm.svg" alt=""></span>WASM</td><td>runtime</td><td><code>wasi-preview-2</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Beta</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/python.svg" alt=""></span>Python</td><td>runtime</td><td><code>cpython 3.12</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
+            <tr><td class="name"><span class="int-logo"><img src="/logos/python.svg" alt=""></span>Python</td><td>runtime</td><td><code>Linux sandbox</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Advanced Linux</span></td></tr>
             <tr><td class="name"><span class="int-logo"><img src="/logos/docker.svg" alt=""></span>Docker</td><td>runtime</td><td><code>OCI image</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
             <tr><td class="name"><span class="int-logo int-logo-text">B</span>Batch</td><td>execution mode</td><td><code>async task status</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>No fan-out</span></td></tr>
             <tr><td class="name"><span class="int-logo int-logo-text">G</span>GPU</td><td>accelerator</td><td><code>Docker --gpus</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Self-host T4</span></td></tr>
@@ -283,9 +313,26 @@ const promptVariants = [
       <p class="matrix-note">Logos are trademarks of their respective owners. Shown for compatibility reference only.</p>
     </section>
 
+    {/* ── Non-goals ──────────────────────────────────── */}
+    <section class="block" id="non-goals">
+      <div class="inner">
+        <span class="eyebrow">Non-goals</span>
+        <h2>What Froglet is not.</h2>
+        <p class="section-lede">The rails compete on moving money. Froglet does not, and being explicit about that is what makes it safe to put underneath any of them.</p>
+        <ul class="nongoal-list">
+          <li><strong>Not a payment rail.</strong> The protocol records agreements and settlement evidence. Optional node adapters submit payments to your configured rails.</li>
+          <li><strong>No custody.</strong> The protocol does not hold funds. Self-hosted nodes can use wallet credentials that you configure and control.</li>
+          <li><strong>No settlement finality.</strong> A receipt is evidence <em>about</em> settlement. Finality belongs to the rail.</li>
+          <li><strong>No consensus, no chain, no token.</strong> There is no global ordering and no shared state machine. Artifacts are verified independently by whoever holds them.</li>
+          <li><strong>Not proof of correctness.</strong> A receipt proves a provider signed a result hash — not that the result is right. Verifying execution without re-running it is an open research problem, and we say so instead of implying otherwise.</li>
+        </ul>
+        <p class="matrix-note">Full detail in <a href="/spec/kernel/">the specification</a>.</p>
+      </div>
+    </section>
+
     {/* ── Pull quote ─────────────────────────────────── */}
     <section class="pull">
-      <blockquote>"Trust through math,<br><em>not middlemen.</em>"</blockquote>
+      <blockquote>"Whatever rail moves the money,<br><em>the evidence outlives the session.</em>"</blockquote>
     </section>
 
     <SiteFooter />

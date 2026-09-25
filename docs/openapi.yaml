@@ -2,13 +2,14 @@ openapi: 3.1.0
 
 info:
   title: Froglet Node API
-  version: 1.0.0
+  version: 1.1.0
   description: >
     HTTP API for a Froglet node. Froglet is a service-execution framework; the
     node exposes two distinct ports:
 
-    - **Provider port** (default 8080) — unauthenticated endpoints used by
-      requesters to discover offers, create deals, and settle payments.
+    - **Provider port** (default 8080) — public requester endpoints plus
+      Bearer-authenticated local provider-control endpoints. Do not expose a
+      provider-control token to requesters.
 
     - **Runtime port** (default 8081) — Bearer-authenticated endpoints used by
       the local operator to create deals via the marketplace, manage the wallet,
@@ -19,7 +20,7 @@ info:
 
 servers:
   - url: http://localhost:8080
-    description: Provider port (public-facing, no auth required)
+    description: Provider port (public requester routes plus authenticated local control routes)
   - url: http://localhost:8081
     description: Runtime port (local operator, Bearer auth required)
 
@@ -45,9 +46,8 @@ tags:
   - name: Execution
     description: >
       Runtime-port endpoints for synchronous WASM execution and async job
-      management. No Bearer auth is enforced in the handler itself — protect
-      these endpoints at the network layer by exposing them only on the runtime
-      port.
+      management. Runtime routes are Bearer-authenticated and should also be
+      bound or firewalled as an operator-only surface.
   - name: Deals (Runtime)
     description: >
       Runtime-port endpoints for creating and tracking outbound deals through
@@ -59,7 +59,9 @@ tags:
   - name: Feed & Artifacts
     description: Paginated artifact feed and single-artifact retrieval.
   - name: Provider Control
-    description: Bearer-authenticated local provider management endpoints.
+    description: >
+      Bearer-authenticated local provider management endpoints plus the
+      explicitly public, concurrency-bounded signed Publication canary.
   - name: Confidential
     description: TEE confidential-profile and session management.
 
@@ -82,6 +84,63 @@ components:
         Static Bearer token configured via `FROGLET_PROVIDER_CONTROL_AUTH_TOKEN`.
         Pass as `Authorization: Bearer <token>` on provider-control endpoints.
 
+  parameters:
+    PublicationServiceId:
+      name: service_id
+      in: path
+      required: true
+      description: Canonical publication service identifier, 1-128 bytes.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    PublicationRevisionHash:
+      name: revision_hash
+      in: path
+      required: true
+      description: Exact immutable Publication Revision hash.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+    ManagedPublicationOperationId:
+      name: operation_id
+      in: path
+      required: true
+      description: Domain-separated Managed Publication operation identifier.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+
+  responses:
+    ProviderControlUnauthorized:
+      description: Missing or invalid provider-control bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InvalidPublicationIdentifier:
+      description: Invalid service identifier or revision hash.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PublicationLifecycleConflict:
+      description: >
+        Lifecycle transition is not valid for the current state, or a legacy
+        unverified offer must be republished with a fixture first. Exact
+        compensation also returns this response when its revision hash or
+        activation token is stale.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PublicationLifecycleFailure:
+      description: Publication lifecycle storage or mutation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
   schemas:
 
     Error:
@@ -101,6 +160,112 @@ components:
           type: string
           description: >
             Echoed deal ID, present when the error is scoped to a specific deal.
+        service_id:
+          type: string
+          description: Echoed service ID on publication lifecycle errors.
+        revision_hash:
+          type: string
+          description: Echoed immutable revision hash on revision-scoped errors.
+        lifecycle_status:
+          type: string
+          description: Current lifecycle classification when it explains a conflict.
+        remediation:
+          type: string
+          description: Safe next action when the server can provide one.
+        actual_bytes:
+          type: integer
+          description: Observed request size on bounded publication errors.
+        max_bytes:
+          type: integer
+          description: Enforced byte limit paired with `actual_bytes`.
+
+    ManagedPublicationBundle:
+      type: object
+      description: Canonical `froglet.managed-publication.bundle.v1` runtime bundle manifest.
+      additionalProperties: true
+
+    ManagedPublicationPackage:
+      type: object
+      description: Exact deterministic private OCI package contract.
+      additionalProperties: true
+
+    ManagedPublicationPlan:
+      type: object
+      description: >
+        `froglet.managed-publication.plan.v1`; its hash binds the package,
+        target/profile, Provider identity, public URL, portable desired state,
+        operator plans, compensation, and recurring-cost disclosure.
+      required: [plan_hash, payload]
+      properties:
+        plan_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        payload:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+    ManagedPublicationCapsule:
+      type: object
+      description: >
+        Provider-private `froglet.managed-publication.capsule.v1` containing
+        the approved plan, source revision hash, endpoint-specific signed
+        Descriptor/Offer/Revision chain, and private verification fixture.
+      additionalProperties: true
+
+    ManagedPublicationOperationRecord:
+      type: object
+      description: >
+        Durable compare-and-swap operation record containing canonical plan,
+        operation evidence, optional capsule, state version, and creation time.
+      required: [plan, operation, state_version, created_at_epoch_seconds]
+      properties:
+        plan:
+          $ref: '#/components/schemas/ManagedPublicationPlan'
+        operation:
+          type: object
+          additionalProperties: true
+        capsule:
+          $ref: '#/components/schemas/ManagedPublicationCapsule'
+        state_version:
+          type: integer
+          minimum: 1
+        created_at_epoch_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+      additionalProperties: false
+
+    ManagedPublicationRegistration:
+      type: object
+      required:
+        - marketplace_url
+        - status
+        - provider_id
+        - validated_offer_hash
+        - validated_revision_hash
+        - registered_at_epoch_seconds
+      properties:
+        marketplace_url:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum: [active, pending_review]
+        provider_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        validated_offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        validated_revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        registered_at_epoch_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+      additionalProperties: false
 
     SignedArtifact:
       type: object
@@ -108,7 +273,7 @@ components:
         Froglet signed artifact envelope. Every on-chain document is wrapped in
         this envelope. The `payload` field carries the type-specific data.
         `hash` is the SHA-256 of the canonical signing bytes; `signature` is
-        the ed25519 hex signature over those same bytes.
+        the hex BIP340 Schnorr signature over those same bytes.
       required:
         - artifact_type
         - schema_version
@@ -131,7 +296,7 @@ components:
           example: froglet/v1
         signer:
           type: string
-          description: Hex-encoded ed25519 public key of the signing node.
+          description: Hex-encoded 32-byte x-only secp256k1 public key of the signing node.
           example: "abcd1234..."
         created_at:
           type: integer
@@ -151,7 +316,7 @@ components:
           additionalProperties: true
         signature:
           type: string
-          description: Ed25519 signature (hex) over the canonical signing bytes.
+          description: BIP340 Schnorr signature (hex) over the canonical signing bytes.
 
     DescriptorPayload:
       type: object
@@ -702,7 +867,10 @@ components:
       description: >
         Provider-side view of a deal. Returned by the provider-port deal endpoints.
         `status` progresses through: `accepted` -> `payment_pending` ->
-        `running` -> `result_ready` | `succeeded` | `failed` | `rejected`.
+        `running` -> `result_ready` | `settlement_pending` | `succeeded` |
+        `failed` | `rejected`. `settlement_pending` is runtime-local and means
+        execution failed but external settlement is not yet proven terminal;
+        no signed receipt exists in that state.
       required:
         - deal_id
         - status
@@ -723,6 +891,7 @@ components:
             - payment_pending
             - running
             - result_ready
+            - settlement_pending
             - succeeded
             - failed
             - rejected
@@ -781,6 +950,7 @@ components:
             - payment_pending
             - running
             - result_ready
+            - settlement_pending
             - succeeded
             - failed
             - rejected
@@ -1014,6 +1184,25 @@ components:
                   type: string
                 status:
                   type: string
+            relay:
+              type: object
+              required: [enabled, status]
+              properties:
+                enabled:
+                  type: boolean
+                  description: Endpoint planning is configured; this alone does not open a tunnel.
+                control_url:
+                  type: string
+                  format: uri
+                  description: Exact WSS control endpoint bound into publication consent and grants.
+                url:
+                  type: string
+                  format: uri
+                  pattern: '^https://'
+                  description: Deterministic identity-bound public origin planned without network activity.
+                status:
+                  type: string
+                  enum: [disabled, reserved, starting, up, down]
         execution:
           type: object
           properties:
@@ -1105,20 +1294,27 @@ components:
       properties:
         node_id:
           type: string
-          description: Stable node identifier (hex ed25519 public key).
+          description: Stable node identifier (hex 32-byte x-only secp256k1 public key).
         public_key:
           type: string
-          description: Same as `node_id`; the hex-encoded ed25519 public key.
+          description: Same as `node_id`; the hex-encoded x-only secp256k1 public key.
 
     ProviderServiceRecord:
       type: object
-      description: A service as seen from the provider's catalog.
+      description: >
+        A service as seen from the provider's public catalog. Price fields are
+        exposed together so clients do not have to infer the settlement rail
+        or discard either fee leg. Provider-private verification fixtures are
+        never included in this record.
       required:
         - service_id
         - offer_id
         - summary
         - mode
         - price_sats
+        - base_fee_msat
+        - success_fee_msat
+        - settlement_method
         - publication_state
         - provider_id
       properties:
@@ -1148,8 +1344,7 @@ components:
         mounts:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/ExecutionMount'
         capabilities:
           type: array
           description: Provider-required capability strings such as `compute.gpu`; callers must not infer capability support unless listed.
@@ -1161,15 +1356,40 @@ components:
         price_sats:
           type: integer
           format: int64
+          minimum: 0
+          description: >
+            Legacy whole-unit total. Read with `price_currency`; the explicit
+            fee legs and `settlement_method` remain authoritative.
+        base_fee_msat:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Base-fee leg copied from the signed offer price schedule.
+        success_fee_msat:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Success-fee leg copied from the signed offer price schedule.
+        settlement_method:
+          type: string
+          description: >
+            Exact settlement method advertised by the signed offer, such as
+            `none`, `lightning.prepaid.v1`,
+            `lightning.base_fee_plus_success_fee.v1`, or `stripe_mpp.v1`.
+        price_currency:
+          $ref: '#/components/schemas/PublicationCurrency'
         publication_state:
           type: string
           enum: [active, hidden]
         provider_id:
           type: string
+          pattern: '^[0-9a-f]{64}$'
         module_hash:
           type: string
+          pattern: '^[0-9a-f]{64}$'
         binding_hash:
           type: string
+          pattern: '^[0-9a-f]{64}$'
         starter:
           type: string
           description: Compact JSON example input for LLM/client guidance.
@@ -1179,23 +1399,614 @@ components:
         output_schema:
           type: object
           additionalProperties: true
+        module_bytes_hex:
+          type: string
+          description: Present only in authorized views that request executable binding material.
+        inline_source:
+          type: string
+          description: Present only in authorized views that request executable binding material.
+        oci_reference:
+          type: string
+          description: Present only in authorized views that request executable binding material.
+        oci_digest:
+          type: string
+          description: Present only in authorized views that request executable binding material.
+      example:
+        service_id: data-summary
+        offer_id: data-summary-v1
+        summary: Summarize a provider-owned dataset
+        mode: sync
+        price_sats: 500
+        base_fee_msat: 0
+        success_fee_msat: 500000
+        settlement_method: stripe_mpp.v1
+        price_currency: usd
+        publication_state: active
+        provider_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+    PublicationSettlement:
+      type: string
+      enum: [none, lightning, stripe]
+      description: >
+        Authoring-level settlement intent. The provider maps this to the exact
+        method in the signed offer; it is not itself a Kernel settlement
+        method identifier.
+
+    PublicationCurrency:
+      type: string
+      enum: [sat, usd]
+      description: >
+        Whole-unit currency: `sat` means satoshis and `usd` means US cents.
+
+    PublicationMount:
+      type: object
+      additionalProperties: false
+      required:
+        - handle
+        - kind
+      properties:
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z0-9_]+$'
+          example: warehouse
+        kind:
+          type: string
+          enum: [postgres, sqlite, object_store, redis, s3]
+          description: >
+            New authoring uses object_store. The historical s3 value is a
+            compatibility input normalized before a new revision is signed.
+        read_only:
+          type: boolean
+          default: true
+          description: Publication authoring defaults mounts to read-only.
+        binding:
+          type: string
+          readOnly: true
+          description: >
+            Provider-owned binding material. It must be omitted from a
+            PublicationIntent; author-supplied values are rejected.
+
+    ExecutionMount:
+      type: object
+      additionalProperties: false
+      required:
+        - handle
+        - kind
+        - read_only
+      properties:
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z0-9_]+$'
+        kind:
+          type: string
+          enum: [postgres, sqlite, object_store, redis, s3]
+          description: >
+            Runtime records may contain legacy s3. Capability grants remain
+            exact to the record's kind and are not interchangeable aliases.
+        read_only:
+          type: boolean
+        binding:
+          type: string
+          description: Provider-resolved binding; omitted from public catalog views.
+
+    PublicationLimits:
+      type: object
+      additionalProperties: false
+      description: >
+        Requested ceilings. Omitted fields resolve to provider defaults;
+        requests above provider maxima are rejected.
+      properties:
+        max_input_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        max_runtime_ms:
+          type: integer
+          format: int64
+          minimum: 1
+        max_memory_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        max_output_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        fuel_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Zero means no separate fuel ceiling within the runtime limit.
+
+    ResolvedPublicationLimits:
+      type: object
+      additionalProperties: false
+      required:
+        - max_input_bytes
+        - max_runtime_ms
+        - max_memory_bytes
+        - max_output_bytes
+        - fuel_limit
+      properties:
+        max_input_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        max_runtime_ms:
+          type: integer
+          format: int64
+          minimum: 1
+        max_memory_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        max_output_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        fuel_limit:
+          type: integer
+          format: int64
+          minimum: 0
+
+    VerificationFixture:
+      type: object
+      additionalProperties: false
+      description: >
+        Provider-private local invocation fixture. Use exactly one of `input`
+        or the JSON-string compatibility alias `input_json`, and at most one
+        expected-output representation. The fixture is not copied to public
+        catalog records, signed offers, or the artifact feed.
+      oneOf:
+        - required: [input]
+          not:
+            required: [input_json]
+        - required: [input_json]
+          not:
+            required: [input]
+      allOf:
+        - not:
+            required: [expected_output, expected_output_json]
+      properties:
+        input:
+          description: Any JSON value passed to the service.
+        input_json:
+          type: string
+          description: Compatibility form containing a JSON-encoded value.
+        expected_output:
+          description: Optional exact JSON value expected from local execution.
+        expected_output_json:
+          type: string
+          description: Compatibility form containing a JSON-encoded expected value.
+
+    LocalVerificationEvidence:
+      type: object
+      additionalProperties: false
+      required:
+        - input_hash
+        - result_hash
+      description: >
+        Operational evidence returned after provider-local execution. This is
+        not a Kernel artifact and does not prove public reachability,
+        marketplace listing, or payment settlement.
+      properties:
+        input_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the canonical private fixture input; the input itself is not disclosed.
+        result_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        expected_output_matched:
+          type: boolean
+          description: Present only when the fixture supplied an expected output.
+      example:
+        input_hash: 1f64d68ec3c32015b91a00d4f82cfd30f5eb9659407a4ac81e29f5994e135439
+        result_hash: 8e9f9d26d45557be4c981a02c8a8f86b12f5a3a4fa5b4bfb2ca652f91f5f0b31
+        expected_output_matched: true
+
+    PublicationCsvColumn:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        type:
+          type: string
+          enum: [string, integer, number, boolean]
+        nullable:
+          type: boolean
+          default: false
+        indexed:
+          type: boolean
+          default: false
+
+    PublicationCsvSchema:
+      type: object
+      additionalProperties: false
+      required: [collection, columns]
+      properties:
+        collection:
+          type: string
+          minLength: 1
+          maxLength: 128
+        columns:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items:
+            $ref: '#/components/schemas/PublicationCsvColumn'
+          description: Ordered CSV header and types; at least one column must set indexed=true.
+
+    PublicationDataSource:
+      type: object
+      additionalProperties: false
+      required: [format, content_base64]
+      properties:
+        format:
+          type: string
+          enum: [json, csv, sqlite]
+        content_base64:
+          type: string
+          format: byte
+          description: Canonical padded base64; decoded bytes are limited to 16 MiB.
+        csv_schema:
+          $ref: '#/components/schemas/PublicationCsvSchema'
+          description: Required only when format=csv and rejected for JSON/SQLite.
+
+    PythonRuntimeLock:
+      type: object
+      additionalProperties: false
+      required: [implementation, version, abi]
+      properties:
+        implementation:
+          type: string
+          const: cpython
+        version:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+          description: Exact CPython major.minor.patch compatibility identity.
+        abi:
+          type: string
+          minLength: 1
+          maxLength: 32
+          pattern: '^[a-z0-9_-]+$'
+
+    PythonLockedArtifact:
+      type: object
+      additionalProperties: false
+      required: [name, version, filename, sha256]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        filename:
+          type: string
+          pattern: '^[A-Za-z0-9._-]+-none-any\.whl$'
+          description: Pure-Python wheel basename; paths and native wheel tags are rejected.
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+
+    PythonLockManifestV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, source_sha256, runtime]
+      properties:
+        schema_version:
+          type: string
+          const: froglet.python-lock.v1
+        source_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        runtime:
+          $ref: '#/components/schemas/PythonRuntimeLock'
+        artifacts:
+          type: array
+          maxItems: 256
+          description: Sorted, unique, hash-pinned pure-Python wheel declarations.
+          items:
+            $ref: '#/components/schemas/PythonLockedArtifact'
+
+    LockedPythonBundleArtifact:
+      type: object
+      additionalProperties: false
+      required: [locked, content_base64]
+      properties:
+        locked:
+          $ref: '#/components/schemas/PythonLockedArtifact'
+        content_base64:
+          type: string
+          format: byte
+
+    LockedPythonBundleEnvelopeV1:
+      type: object
+      additionalProperties: false
+      description: >
+        Provider-private, resolver-free package containing exact UTF-8 source,
+        its canonical lock, and any hash-pinned pure-Python wheels. The package
+        binding is the SHA-256 of this entire canonical envelope, not a source-only hash.
+      required: [schema_version, lock, lock_sha256, source_base64]
+      properties:
+        schema_version:
+          type: string
+          const: froglet.python-bundle.v1
+        lock:
+          $ref: '#/components/schemas/PythonLockManifestV1'
+        lock_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        source_base64:
+          type: string
+          format: byte
+        artifacts:
+          type: array
+          maxItems: 256
+          items:
+            $ref: '#/components/schemas/LockedPythonBundleArtifact'
+
+    PublicationDependencyComponent:
+      type: object
+      additionalProperties: false
+      required: [role, name, version, digest]
+      properties:
+        role:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        digest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+
+    PublicationBuildEvidenceV1:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - builder
+        - builder_version
+        - source_digest
+        - artifact_digest
+        - dependency_mode
+        - hermetic
+      properties:
+        schema_version:
+          type: string
+          const: froglet.publication-build-evidence.v1
+        builder:
+          type: string
+        builder_version:
+          type: string
+        source_digest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        artifact_digest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Must equal the enclosing revision package_digest.
+        dependency_mode:
+          type: string
+          enum: [none, locked, unresolved]
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicationDependencyComponent'
+          description: Sorted and unique; required for locked and empty otherwise.
+        hermetic:
+          type: boolean
+
+    PublicationRevisionPrice:
+      type: object
+      additionalProperties: false
+      required:
+        - settlement_method
+        - currency
+        - base_amount_minor
+        - success_amount_minor
+        - offer_settlement_method
+      properties:
+        settlement_method:
+          $ref: '#/components/schemas/PublicationSettlement'
+        currency:
+          $ref: '#/components/schemas/PublicationCurrency'
+        base_amount_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Satoshis for `sat`; US cents for `usd`.
+        success_amount_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Satoshis for `sat`; US cents for `usd`.
+        offer_settlement_method:
+          type: string
+          description: Exact method bound into the linked signed offer.
+      example:
+        settlement_method: stripe
+        currency: usd
+        base_amount_minor: 25
+        success_amount_minor: 500
+        offer_settlement_method: stripe_mpp.v1
+
+    PublicationRevisionServiceV1:
+      type: object
+      additionalProperties: false
+      required:
+        - source_kind
+        - entrypoint_kind
+        - entrypoint
+        - contract_version
+        - mode
+      description: >
+        Immutable public service interface and access declaration. It excludes
+        provider-private mount bindings and verification inputs. Capabilities
+        are the effective sorted set, including mount-derived access
+        declarations, and mirror the linked signed offer.
+      properties:
+        project_id:
+          type: string
+          minLength: 1
+        summary:
+          type: string
+          description: At most 16 KiB when UTF-8 encoded.
+        starter:
+          type: string
+          description: At most 16 KiB when UTF-8 encoded.
+        source_kind:
+          type: string
+          minLength: 1
+        entrypoint_kind:
+          type: string
+          minLength: 1
+        entrypoint:
+          type: string
+          minLength: 1
+        contract_version:
+          type: string
+          minLength: 1
+        mode:
+          type: string
+          enum: [sync, async]
+        mounts:
+          type: array
+          maxItems: 64
+          description: Handles are unique and provider-owned bindings are absent.
+          items:
+            $ref: '#/components/schemas/PublicationMount'
+        capabilities:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          description: Sorted, unique capability strings; each is at most 128 bytes.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$'
+        input_schema:
+          description: Optional JSON Schema, capped at 64 KiB of canonical JSON.
+        output_schema:
+          description: Optional JSON Schema, capped at 64 KiB of canonical JSON.
+
+    PublicationRevisionPayloadV1:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - provider_id
+        - service_id
+        - offer_id
+        - offer_hash
+        - binding_hash
+        - package_digest
+        - runtime
+        - package_kind
+        - service
+        - limits
+        - price
+        - local_verification
+      properties:
+        schema_version:
+          type: string
+          const: froglet.publication-revision.v1
+        provider_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        service_id:
+          type: string
+        offer_id:
+          type: string
+        offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        binding_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        package_digest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        runtime:
+          type: string
+        package_kind:
+          type: string
+        build_evidence:
+          $ref: '#/components/schemas/PublicationBuildEvidenceV1'
+        service:
+          $ref: '#/components/schemas/PublicationRevisionServiceV1'
+        limits:
+          $ref: '#/components/schemas/ResolvedPublicationLimits'
+        price:
+          $ref: '#/components/schemas/PublicationRevisionPrice'
+        local_verification:
+          $ref: '#/components/schemas/LocalVerificationEvidence'
+
+    SignedPublicationRevisionV1:
+      type: object
+      additionalProperties: false
+      required:
+        - revision_hash
+        - signer_pubkey
+        - signature
+        - payload
+      description: >
+        Provider-signed, immutable application-layer statement binding an
+        existing signed offer to executable bytes, resolved limits, typed
+        price terms, and successful local verification. It is deliberately
+        not a Kernel artifact.
+      properties:
+        revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the canonical JSON payload bytes.
+        signer_pubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        signature:
+          type: string
+          pattern: '^[0-9a-f]{128}$'
+          description: Hex BIP340 Schnorr signature over the v1 domain-separated payload.
+        payload:
+          $ref: '#/components/schemas/PublicationRevisionPayloadV1'
 
     ProviderControlPublishArtifactRequest:
       type: object
+      additionalProperties: false
       description: >
-        Provider-control request that publishes an artifact-backed service into
-        the local provider catalog. Schemas and `starter` are metadata for
-        clients; handlers remain responsible for enforcing actual input rules.
+        Canonical non-Kernel PublicationIntent v1 request shared by manifests,
+        agent integrations, the publish engine, and this provider-control API.
+        Current adapters emit `schema_version`; omission remains accepted only
+        for compatibility with pre-contract direct clients. Schemas and
+        `starter` guide clients but do not replace handler-side validation.
+        Fee-schedule values must total a multiple of 1000 so the current
+        payment APIs can represent them in whole currency minor units.
       required:
         - service_id
         - price_sats
       properties:
+        schema_version:
+          type: string
+          const: froglet.publication-intent.v1
+          description: Required for current authoring adapters; legacy direct clients may omit it.
         service_id:
           type: string
           description: Named service identifier to expose in the provider catalog.
         offer_id:
           type: string
           description: Optional offer id; defaults to `service_id`.
+        project_id:
+          type: string
+          description: Optional project identifier retained in provider metadata.
         artifact_path:
           type: string
           description: Local artifact path for Wasm modules or Python source.
@@ -1204,7 +2015,19 @@ components:
           description: Inline Wasm module bytes encoded as hex.
         inline_source:
           type: string
-          description: Inline Python source for `runtime=python package_kind=inline_source`.
+          description: >
+            Compatibility-only raw Python source for
+            `runtime=python package_kind=inline_source`. Current authoring
+            adapters submit `python_bundle` instead.
+        python_bundle:
+          $ref: '#/components/schemas/LockedPythonBundleEnvelopeV1'
+          description: >
+            Current provider-private locked Python package. It is mutually
+            exclusive with raw `inline_source`, data, Wasm, and OCI source
+            fields and requires matching `build_evidence`.
+        source_kind:
+          type: string
+          description: Optional informational source classification retained by the provider.
         oci_reference:
           type: string
           description: OCI image reference for `package_kind=oci_image`.
@@ -1219,7 +2042,7 @@ components:
           description: Package kind, for example `inline_module`, `inline_source`, or `oci_image`.
         entrypoint_kind:
           type: string
-          description: Entrypoint kind, for example `handler`, `script`, or `builtin`.
+          description: Entrypoint kind, for example `handler`, `script`, `module`, or `builtin`.
         entrypoint:
           type: string
           description: Entrypoint path or identifier.
@@ -1228,14 +2051,23 @@ components:
           description: Execution contract version for the service.
         mounts:
           type: array
+          description: Authoring mount handles must be unique within the intent.
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/PublicationMount'
         capabilities:
           type: array
           description: Provider-required capability strings such as `compute.gpu`.
           items:
             type: string
+        data_source:
+          $ref: '#/components/schemas/PublicationDataSource'
+          description: >
+            Typed native read-only data snapshot; mutually exclusive with
+            executable artifact fields. CSV package identity binds both bytes
+            and the explicit schema.
+        build_evidence:
+          $ref: '#/components/schemas/PublicationBuildEvidenceV1'
+          description: Local builder evidence validated against the resulting package binding.
         summary:
           type: string
           description: Human-readable service summary.
@@ -1249,6 +2081,29 @@ components:
           type: integer
           format: int64
           minimum: 0
+          description: >
+            Legacy whole-unit success amount. When `success_fee_msat` is also
+            supplied it must equal `price_sats * 1000`.
+        base_fee_msat:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Raw base leg bound into the signed offer. Divide by 1000 for the
+            currency minor-unit amount shown in a Publication Revision.
+        success_fee_msat:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Raw success leg bound into the signed offer. Divide by 1000 for
+            the currency minor-unit amount shown in a Publication Revision.
+        settlement_method:
+          $ref: '#/components/schemas/PublicationSettlement'
+        price_currency:
+          $ref: '#/components/schemas/PublicationCurrency'
+        limits:
+          $ref: '#/components/schemas/PublicationLimits'
         publication_state:
           type: string
           enum: [active, hidden]
@@ -1258,6 +2113,33 @@ components:
         output_schema:
           type: object
           additionalProperties: true
+        verification:
+          $ref: '#/components/schemas/VerificationFixture'
+      example:
+        schema_version: froglet.publication-intent.v1
+        service_id: echo-json
+        runtime: python
+        package_kind: inline_source
+        entrypoint_kind: handler
+        entrypoint: handler
+        contract_version: froglet.python.handler_json.v1
+        inline_source: "def handler(event, context):\n    return event\n"
+        capabilities: []
+        mode: sync
+        price_sats: 0
+        settlement_method: none
+        price_currency: sat
+        limits:
+          max_input_bytes: 16384
+          max_runtime_ms: 5000
+          max_memory_bytes: 16777216
+          max_output_bytes: 16384
+          fuel_limit: 0
+        verification:
+          input:
+            message: hello
+          expected_output:
+            message: hello
 
     ProviderControlOfferRecord:
       type: object
@@ -1285,8 +2167,7 @@ components:
         mounts:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/ExecutionMount'
         capabilities:
           type: array
           description: Provider-required capability strings such as `compute.gpu`.
@@ -1346,25 +2227,441 @@ components:
               hash:
                 type: string
         evidence:
-          type: object
-          required:
-            - provider_id
-            - descriptor_hash
-            - offer_hash
-            - offer_id
-          properties:
-            provider_id:
-              type: string
-            descriptor_hash:
-              type: string
-            offer_hash:
-              type: string
-            offer_id:
-              type: string
-            service_id:
-              type: string
+          $ref: '#/components/schemas/ProviderControlEvidence'
         offer:
           $ref: '#/components/schemas/ProviderControlOfferRecord'
+
+    ProviderControlEvidence:
+      type: object
+      additionalProperties: false
+      required:
+        - provider_id
+        - descriptor_hash
+        - offer_hash
+        - offer_id
+        - lifecycle_status
+      properties:
+        provider_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        descriptor_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        offer_id:
+          type: string
+        lifecycle_status:
+          type: string
+          enum: [active, paused, legacy_unverified]
+          description: >
+            Local immutable-revision lifecycle state after publication.
+            `legacy_unverified` is returned only for compatibility offers that
+            have no lifecycle-eligible verified revision.
+        service_id:
+          type: string
+        local_verification:
+          $ref: '#/components/schemas/LocalVerificationEvidence'
+        publication_revision:
+          $ref: '#/components/schemas/SignedPublicationRevisionV1'
+        activation_token:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: >
+            Opaque identifier for the exact active lifecycle instance created
+            by this verified publish. Present for lifecycle-eligible publishes
+            and omitted for legacy unverified compatibility offers.
+
+    ProviderPublicationStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - service_id
+        - status
+        - active_revision_hash
+        - selected_revision_hash
+        - activation_token
+        - revision_count
+        - created_at
+        - updated_at
+      properties:
+        service_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        status:
+          type: string
+          enum: [active, paused, unpublished]
+          description: >
+            `active` exposes `selected_revision_hash`; `paused` and
+            `unpublished` retain the selected rollback target but remove the
+            offer from the active projection.
+        active_revision_hash:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+          description: Exact active revision, or null unless status is active.
+        selected_revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Revision selected for resume or explicit lifecycle operations.
+        activation_token:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: >
+            Opaque compare-and-swap token for the current activation instance.
+            It changes on every real publish, resume, or rollback activation
+            and is preserved by idempotent calls, pause, and unpublish.
+        revision_count:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    ProviderPublicationRevisionSummary:
+      type: object
+      required:
+        - revision_hash
+        - service_id
+        - offer_id
+        - offer_hash
+        - binding_hash
+        - validation_status
+        - created_at
+      properties:
+        revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        service_id:
+          type: string
+        offer_id:
+          type: string
+        offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        binding_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        validation_status:
+          type: string
+          enum: [validated]
+        created_at:
+          type: integer
+          format: int64
+
+    ProviderPublicationRevisionDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProviderPublicationRevisionSummary'
+        - type: object
+          required: [signed_revision]
+          properties:
+            signed_revision:
+              $ref: '#/components/schemas/SignedPublicationRevisionV1'
+
+    ProviderPublicationsResponse:
+      type: object
+      additionalProperties: false
+      required: [publications]
+      properties:
+        publications:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderPublicationStatus'
+
+    ProviderPublicationResponse:
+      type: object
+      additionalProperties: false
+      required: [publication]
+      properties:
+        publication:
+          $ref: '#/components/schemas/ProviderPublicationStatus'
+
+    ProviderPublicationRevisionsResponse:
+      type: object
+      additionalProperties: false
+      required: [revisions]
+      properties:
+        revisions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderPublicationRevisionSummary'
+
+    ProviderPublicationRevisionResponse:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        revision:
+          $ref: '#/components/schemas/ProviderPublicationRevisionDetail'
+
+    PublicationOperationRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - operation_id
+        - service_id
+        - revision_hash
+        - operation
+        - status
+        - evidence
+        - created_at
+      properties:
+        operation_id:
+          type: integer
+          format: int64
+        service_id:
+          type: string
+        revision_hash:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+        operation:
+          type: string
+          enum: [publish, pause, resume, rollback, unpublish]
+        status:
+          type: string
+          enum: [succeeded]
+        evidence:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: integer
+          format: int64
+
+    ProviderPublicationOperationsResponse:
+      type: object
+      additionalProperties: false
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicationOperationRecord'
+
+    ProviderPublicationMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [operation, publication, relay_withdrawal]
+      properties:
+        operation:
+          type: string
+          enum: [pause, resume, rollback, unpublish]
+        publication:
+          $ref: '#/components/schemas/ProviderPublicationStatus'
+        relay_withdrawal:
+          $ref: '#/components/schemas/RelayWithdrawalResult'
+
+    RelayWithdrawalResult:
+      type: object
+      additionalProperties: false
+      required: [status, remaining_grants]
+      properties:
+        status:
+          type: string
+          enum: [reserved, shared_active]
+          description: >
+            `reserved` means no exact relay grant remains. `shared_active`
+            means this publication was removed from the relay allowlist while
+            another exact publication keeps the node tunnel connected.
+        remaining_grants:
+          type: integer
+          minimum: 0
+
+    RelayTransportActivationRequest:
+      type: object
+      additionalProperties: false
+      required: [service_id, revision_hash, activation_token, public_url, relay_control_url]
+      properties:
+        service_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        activation_token:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        public_url:
+          type: string
+          format: uri
+          pattern: '^https://'
+        relay_control_url:
+          type: string
+          format: uri
+          pattern: '^(wss://|ws://)'
+          description: Exact configured relay control endpoint approved by the caller; non-TLS WS is accepted only for literal loopback development endpoints.
+
+    PublicationTransportGrant:
+      type: object
+      additionalProperties: false
+      required:
+        - transport
+        - service_id
+        - revision_hash
+        - offer_id
+        - offer_hash
+        - activation_token
+        - public_url
+        - relay_control_url
+        - created_at
+        - updated_at
+      properties:
+        transport:
+          type: string
+          const: relay
+        service_id:
+          type: string
+        revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        offer_id:
+          type: string
+        offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        activation_token:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        public_url:
+          type: string
+          format: uri
+        relay_control_url:
+          type: string
+          format: uri
+          description: Exact control endpoint this durable authorization permits the node to dial.
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    RelayTransportActivationResponse:
+      type: object
+      additionalProperties: false
+      required: [status, public_url, grant, remaining_grants]
+      properties:
+        status:
+          type: string
+          const: up
+        public_url:
+          type: string
+          format: uri
+        grant:
+          $ref: '#/components/schemas/PublicationTransportGrant'
+        remaining_grants:
+          type: integer
+          minimum: 1
+
+    RelayTransportDeactivationResponse:
+      type: object
+      additionalProperties: false
+      required: [status, public_url, grant_removed, remaining_grants]
+      properties:
+        status:
+          type: string
+          enum: [reserved, up]
+        public_url:
+          type: string
+          format: uri
+        grant_removed:
+          type: boolean
+        remaining_grants:
+          type: integer
+          minimum: 0
+
+    ExactPublicationPauseRequest:
+      type: object
+      additionalProperties: false
+      required: [activation_token]
+      properties:
+        activation_token:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: >
+            Token returned for the exact revision activation being
+            compensated. A stale token fails with 409 and cannot pause a later
+            activation of the same revision.
+
+    PublicationCanaryRequestV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, revision_hash, offer_hash, challenge, input]
+      properties:
+        schema_version:
+          type: string
+          const: froglet.publication-canary-request.v1
+        revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        challenge:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        input:
+          description: Exact private canary input previously hash-bound by local verification.
+
+    PublicationCanaryResultPayloadV1:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - provider_id
+        - revision_hash
+        - offer_hash
+        - challenge
+        - input_hash
+        - result_hash
+        - status
+      properties:
+        schema_version:
+          type: string
+          const: froglet.publication-canary-result.v1
+        provider_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        revision_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        offer_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        challenge:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        input_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        result_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        status:
+          type: string
+          const: succeeded
+
+    SignedPublicationCanaryResultV1:
+      type: object
+      additionalProperties: false
+      required: [payload_hash, signer_pubkey, signature, payload]
+      properties:
+        payload_hash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        signer_pubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        signature:
+          type: string
+          pattern: '^[0-9a-f]{128}$'
+        payload:
+          $ref: '#/components/schemas/PublicationCanaryResultPayloadV1'
 
     WorkloadSpec:
       type: object
@@ -1534,7 +2831,7 @@ components:
       type: object
       description: >
         Signed node event. Structure mirrors NIP-01 Nostr events but uses
-        froglet-specific kinds and is signed with the node's ed25519 key.
+        froglet-specific kinds and is signed with the node's BIP340 Schnorr key.
       required:
         - id
         - pubkey
@@ -1549,7 +2846,7 @@ components:
           description: Hex SHA-256 event ID computed over the canonical event fields.
         pubkey:
           type: string
-          description: Hex ed25519 public key of the signing node.
+          description: Hex x-only secp256k1 public key of the signing node.
         created_at:
           type: integer
           format: int64
@@ -1567,7 +2864,7 @@ components:
           description: Event content (often a JSON-serialized payload).
         sig:
           type: string
-          description: Ed25519 signature (hex) over the canonical signing bytes.
+          description: BIP340 Schnorr signature (hex) over the canonical signing bytes.
 
     ConfidentialProfilePayload:
       type: object
@@ -1880,7 +3177,7 @@ paths:
     get:
       operationId: getNodeIdentity
       summary: Node identity
-      description: Returns the node's stable identifier and ed25519 public key.
+      description: Returns the node's stable identifier and x-only secp256k1 public key.
       tags: [Common]
       security: []
       responses:
@@ -1891,24 +3188,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/IdentityInfo'
 
-  /v1/openapi.json:
+  /v1/openapi.yaml:
     get:
       operationId: getOpenApiSpec
       summary: OpenAPI specification
       description: >
         Returns the OpenAPI specification for this node's API. The spec is
-        served as JSON (this file is the YAML source). Use this endpoint
-        to discover the exact schema supported by a running node.
+        served as YAML from the same source embedded in the running binary.
+        Use this endpoint to discover the exact schema supported by a node.
       tags: [Common]
       security: []
       responses:
         '200':
           description: OpenAPI 3.1 specification document.
           content:
-            application/json:
+            application/x-yaml:
               schema:
-                type: object
-                additionalProperties: true
+                type: string
 
   # ---------------------------------------------------------------------------
   # Catalog — Provider port
@@ -1943,7 +3239,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
   /v1/provider/offers:
     get:
       operationId: listProviderOffers
@@ -2042,7 +3337,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
   # ---------------------------------------------------------------------------
   # Deals — Provider port
   # ---------------------------------------------------------------------------
@@ -2076,7 +3370,7 @@ paths:
                   example: service.echo
                 requester_id:
                   type: string
-                  description: The requester's node ID (hex ed25519 public key).
+                  description: The requester's node ID (hex x-only secp256k1 public key).
                 max_price_sats:
                   type: integer
                   format: int64
@@ -2447,7 +3741,7 @@ paths:
       operationId: verifyReceipt
       summary: Verify a receipt artifact
       description: >
-        Verifies the ed25519 signature and semantic integrity of a `receipt`
+        Verifies the BIP340 Schnorr signature and semantic integrity of a `receipt`
         SignedArtifact. Returns a simple `{valid: bool}` response plus any
         validation issues.
       tags: [Settlement (Provider)]
@@ -3281,7 +4575,7 @@ paths:
         - name: provider_id
           in: path
           required: true
-          description: Provider node ID (hex ed25519 public key).
+          description: Provider node ID (hex x-only secp256k1 public key).
           schema:
             type: string
       responses:
@@ -3544,8 +4838,13 @@ paths:
       summary: Publish an artifact-backed provider service
       description: >
         Provider-control endpoint for publishing a locally built artifact as a
-        named service. `starter`, `input_schema`, and `output_schema` are
-        client guidance metadata and do not replace handler-side validation.
+        named service through `froglet.publication-intent.v1`. When a private
+        verification fixture is supplied, the provider executes it locally
+        before persistence and returns `LocalVerificationEvidence` plus a
+        `froglet.publication-revision.v1` signed statement. These are
+        application-layer publication records, not Kernel artifacts.
+        `starter`, `input_schema`, and `output_schema` are client guidance
+        metadata and do not replace handler-side validation.
       tags: [Provider Control]
       security:
         - ProviderControlBearerAuth: []
@@ -3557,7 +4856,10 @@ paths:
               $ref: '#/components/schemas/ProviderControlPublishArtifactRequest'
       responses:
         '201':
-          description: Published offer metadata and signed artifact references.
+          description: >
+            Published offer metadata and signed artifact references. Local
+            verification and publication revision evidence are present only
+            when a verification fixture ran successfully.
           content:
             application/json:
               schema:
@@ -3574,8 +4876,868 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '413':
+          description: Verification input or expected output exceeds a publication limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Local verification was unsafe, unavailable, failed, or mismatched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Local verification execution capacity is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/managed-publications/package-request:
+    post:
+      operationId: getManagedPublicationPackageRequest
+      summary: Resolve exact private OCI packaging inputs
+      description: Read-only target/profile lookup returning the canonical package request and digest-verified base OCI manifest/config bytes.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle, target, profile]
+              properties:
+                bundle: { $ref: '#/components/schemas/ManagedPublicationBundle' }
+                target: { type: string }
+                profile: { type: string }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Exact package request plus base manifest/config base64.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '409':
+          description: Target profile or immutable base inputs are unavailable.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/plan:
+    post:
+      operationId: planManagedPublication
+      summary: Plan one provider-neutral Managed Publication
+      description: Read-only external-operator planning; no registry, host, DNS, or cloud mutation is allowed.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle, package, target, profile]
+              properties:
+                bundle: { $ref: '#/components/schemas/ManagedPublicationBundle' }
+                package: { $ref: '#/components/schemas/ManagedPublicationPackage' }
+                target: { type: string }
+                profile: { type: string }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Exact approval-bound plan.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationPlan' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '409':
+          description: Target/profile/package cannot produce a valid mutation-free plan.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/upload:
+    post:
+      operationId: uploadManagedPublicationImage
+      summary: Upload the exact private image through OCI Distribution
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan, layout]
+              properties:
+                plan: { $ref: '#/components/schemas/ManagedPublicationPlan' }
+                layout: { type: object, additionalProperties: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Registry exposes the exact digest-addressed manifest.
+          content: { application/json: { schema: { type: object, additionalProperties: true } } }
+        '400':
+          description: Layout differs from the approved package.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '428':
+          description: Exact plan and consent were not durably prepared before mutation.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '502':
+          description: Registry upload or exact digest verification failed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/prepare:
+    post:
+      operationId: prepareManagedPublicationDurably
+      summary: Persist the exact plan and consent before external mutation
+      description: Idempotent compare-and-match gate required before registry upload; a different plan or consent conflicts.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan, consent_hash]
+              properties:
+                plan: { $ref: '#/components/schemas/ManagedPublicationPlan' }
+                consent_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Exact plan and consent are durable; an existing matching operation returns its current phase for idempotent resume.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '409':
+          description: Existing operation has a different immutable plan or consent.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/capsule:
+    post:
+      operationId: buildManagedPublicationCapsule
+      summary: Build the exact identity and signed-revision handoff
+      description: Read-only derivation of an endpoint-specific Descriptor/Offer/Revision from one exact locally verified source revision.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan, consent_hash, revision_hash]
+              properties:
+                plan: { $ref: '#/components/schemas/ManagedPublicationPlan' }
+                consent_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+                revision_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Self-contained exact managed capsule.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationCapsule' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '409':
+          description: Source revision or exact artifact chain is unavailable.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/import:
+    post:
+      operationId: importManagedPublication
+      summary: Import and reproduce one exact managed Revision
+      description: Managed-runner endpoint. It verifies paired identity, target configuration, private local fixture, Descriptor/Offer binding, and byte-identical Revision before atomic persistence.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle, capsule]
+              properties:
+                bundle: { $ref: '#/components/schemas/ManagedPublicationBundle' }
+                capsule: { $ref: '#/components/schemas/ManagedPublicationCapsule' }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Exact managed Revision is active on this node.
+          content: { application/json: { schema: { type: object, additionalProperties: true } } }
+        '400':
+          description: Bundle or capsule is invalid.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '409':
+          description: Target configuration would materialize a different artifact chain.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '412':
+          description: Managed runner does not hold the approved Provider identity.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422':
+          description: Private fixture did not reproduce the signed evidence.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/activate:
+    post:
+      operationId: activateManagedPublication
+      summary: Durably provision, deploy, and canary a Managed Publication
+      description: Records every external phase before mutation, executes only exact approval hashes, and invokes pre-approved compensation on failure.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle, capsule]
+              properties:
+                bundle: { $ref: '#/components/schemas/ManagedPublicationBundle' }
+                capsule: { $ref: '#/components/schemas/ManagedPublicationCapsule' }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Deployment reached exact remote-canary verification.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '409':
+          description: Durable state, profile, or reconciliation conflict.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '502':
+          description: External operation or canary failed; response records compensation outcome.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/operations/{operation_id}:
+    get:
+      operationId: getManagedPublicationOperation
+      summary: Read one durable Managed Publication operation
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ManagedPublicationOperationId' }]
+      responses:
+        '200':
+          description: Validated durable operation record.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '404':
+          description: Operation not found.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/operations/{operation_id}/reconcile:
+    post:
+      operationId: reconcileManagedPublicationOperation
+      summary: Reconcile an interrupted external mutation
+      description: Uses read-only adapter status; unknown outcomes are not blindly replayed.
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ManagedPublicationOperationId' }]
+      responses:
+        '200':
+          description: Reconciled to a proven canary-verified or compensated state.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '404':
+          description: Operation not found.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '502':
+          description: Status or compensation could not prove a terminal outcome.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/operations/{operation_id}/compensate:
+    post:
+      operationId: compensateManagedPublicationOperation
+      summary: Execute the exact pre-approved compensation plan
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ManagedPublicationOperationId' }]
+      responses:
+        '200':
+          description: Compensation is durably proven or was already complete.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '404':
+          description: Operation not found.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '502':
+          description: Compensation outcome requires reconciliation.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/operations/{operation_id}/registering:
+    post:
+      operationId: beginManagedPublicationRegistration
+      summary: Durably enter marketplace registration
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ManagedPublicationOperationId' }]
+      responses:
+        '200':
+          description: Registration phase is durable and idempotent.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '404':
+          description: Operation not found.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409':
+          description: Remote canary has not been proven.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/managed-publications/operations/{operation_id}/complete:
+    post:
+      operationId: completeManagedPublicationRegistration
+      summary: Persist exact marketplace registration evidence
+      tags: [Provider Control]
+      security: [{ ProviderControlBearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ManagedPublicationOperationId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManagedPublicationRegistration' }
+      responses:
+        '200':
+          description: Operation is active with exact normalized registration evidence.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ManagedPublicationOperationRecord' } } }
+        '400':
+          description: Registration does not match the exact capsule Offer or Revision.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '401': { $ref: '#/components/responses/ProviderControlUnauthorized' }
+        '404':
+          description: Operation not found.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409':
+          description: Operation is not awaiting registration or has different evidence.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/provider/transports/relay/activate:
+    post:
+      operationId: activateExactRelayTransportGrant
+      summary: Activate relay forwarding for one exact publication instance
+      description: >
+        Atomically validates and persists the exact service, revision,
+        activation token, approval-bound public URL, and exact relay control
+        endpoint, then opens or shares the relay tunnel and waits for that exact
+        endpoint to report `up`.
+        Repeating the same request is idempotent. Configuration alone never
+        calls this endpoint and never opens forwarding.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayTransportActivationRequest'
+      responses:
+        '200':
+          description: Exact grant is durable and the endpoint is live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayTransportActivationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '500':
+          description: Grant or gate synchronization entered a reported partial state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Relay activation failed and the attempted exact grant was withdrawn.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/transports/relay/deactivate:
+    post:
+      operationId: deactivateExactRelayTransportGrant
+      summary: Withdraw one exact relay transport grant
+      description: >
+        Compare-and-delete withdrawal for one exact activation. The shared
+        tunnel stays online while any other exact publication grant remains.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayTransportActivationRequest'
+      responses:
+        '200':
+          description: Grant is absent after this idempotent request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayTransportDeactivationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '500':
+          description: Grant withdrawal or activation-gate synchronization failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/publications:
+    get:
+      operationId: listProviderPublications
+      summary: List immutable publication lifecycles
+      description: >
+        Returns the provider-local activation state for services that have a
+        verified immutable Publication Revision. Legacy offers without such a
+        revision are not synthesized into this list.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+      responses:
+        '200':
+          description: Bounded lifecycle list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationsResponse'
+        '401':
+          description: Missing or invalid provider-control bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Publication lifecycle storage failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/publications/{service_id}:
+    get:
+      operationId: getProviderPublication
+      summary: Get a publication lifecycle
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+      responses:
+        '200':
+          description: Exact service lifecycle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Publication lifecycle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Publication lifecycle storage failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/publications/{service_id}/revisions:
+    get:
+      operationId: listProviderPublicationRevisions
+      summary: List immutable revisions for a service
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Newest-first bounded immutable revision history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationRevisionsResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: No immutable lifecycle exists for this service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Publication revision storage failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/publications/{service_id}/revisions/{revision_hash}:
+    get:
+      operationId: getProviderPublicationRevision
+      summary: Get and re-verify one immutable revision
+      description: >
+        Loads the exact revision, verifies its signature and stored metadata,
+        and fails with 500 rather than returning corrupt local state.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+        - $ref: '#/components/parameters/PublicationRevisionHash'
+      responses:
+        '200':
+          description: Verified stored revision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationRevisionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Exact revision not found for this service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Stored revision is unreadable, invalid, or failed verification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/publications/{service_id}/revisions/{revision_hash}/pause:
+    post:
+      operationId: pauseExactProviderPublicationActivation
+      summary: Pause one exact publication activation instance
+      description: >
+        Compensation-only compare-and-swap operation. Both the immutable
+        revision hash and its opaque activation token must match current
+        lifecycle state. A delayed request cannot pause a later resume or
+        rollback activation of the same revision.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+        - $ref: '#/components/parameters/PublicationRevisionHash'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExactPublicationPauseRequest'
+      responses:
+        '200':
+          description: >
+            Current paused lifecycle. Retrying the same exact request is
+            idempotent while the token still identifies current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationMutationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Publication lifecycle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '415':
+          description: Exact-pause compensation requires an application/json body.
+        '422':
+          description: The JSON body is malformed or omits activation_token.
+        '500':
+          $ref: '#/components/responses/PublicationLifecycleFailure'
+
+  /v1/provider/publications/{service_id}/logs:
+    get:
+      operationId: listProviderPublicationOperations
+      summary: List bounded publication lifecycle operations
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Newest-first bounded operation records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationOperationsResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Publication lifecycle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Publication operation storage failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/provider/publications/{service_id}/pause:
+    post:
+      operationId: pauseProviderPublication
+      summary: Remove the selected revision from the active projection
+      description: Idempotent when already paused; cannot pause an unpublished service.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+      responses:
+        '200':
+          description: Current lifecycle after the pause operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationMutationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Publication lifecycle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '500':
+          $ref: '#/components/responses/PublicationLifecycleFailure'
+
+  /v1/provider/publications/{service_id}/resume:
+    post:
+      operationId: resumeProviderPublication
+      summary: Reactivate the selected paused revision
+      description: Idempotent when already active; cannot resume an unpublished service.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+      responses:
+        '200':
+          description: Current lifecycle after the resume operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationMutationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Publication lifecycle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '500':
+          $ref: '#/components/responses/PublicationLifecycleFailure'
+
+  /v1/provider/publications/{service_id}/unpublish:
+    post:
+      operationId: unpublishProviderPublication
+      summary: Unpublish a service while retaining immutable history
+      description: >
+        Clears the active revision and retains the selected revision for audit
+        and explicit rollback. Direct HTTP calls carry no generic confirmation
+        flag; the native MCP adapter requires `confirm_service_id` to equal the
+        exact service ID before it sends this request.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+      responses:
+        '200':
+          description: Current unpublished lifecycle; repeated calls are idempotent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationMutationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Publication lifecycle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '500':
+          $ref: '#/components/responses/PublicationLifecycleFailure'
+
+  /v1/provider/publications/{service_id}/rollback/{revision_hash}:
+    post:
+      operationId: rollbackProviderPublication
+      summary: Activate an exact prior validated revision
+      description: >
+        Moves only the activation pointer and restores the provider definition
+        stored with the target revision. It never accepts an unvalidated or
+        cross-service revision.
+      tags: [Provider Control]
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationServiceId'
+        - $ref: '#/components/parameters/PublicationRevisionHash'
+      responses:
+        '200':
+          description: Active lifecycle with the exact target selected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPublicationMutationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidPublicationIdentifier'
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '404':
+          description: Lifecycle or validated target revision not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/PublicationLifecycleConflict'
+        '500':
+          $ref: '#/components/responses/PublicationLifecycleFailure'
+
+  /v1/publications/{revision_hash}/canary:
+    post:
+      operationId: invokePublicationCanary
+      summary: Execute and sign a fresh challenge for an exact active revision
+      description: >
+        Public, concurrency-bounded marketplace/requester canary. The request must
+        identify the exact active offer and revision and provide the exact
+        private fixture input already bound by `local_verification.input_hash`.
+        A successful result is provider-signed and challenge-bound; it is not a
+        Kernel artifact and does not by itself prove marketplace activation.
+      tags: [Provider Control]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationRevisionHash'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicationCanaryRequestV1'
+      responses:
+        '200':
+          description: Fresh provider-signed external invocation evidence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedPublicationCanaryResultV1'
+        '400':
+          description: Invalid request, non-canonical input, or path/body revision mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Exact active offer or its local definition was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Missing fixture/evidence, fixture mismatch, or revision is not exact and active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: Canary input exceeds the node body limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Local canary execution was unsafe, unavailable, failed, or mismatched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Stored state, local verification, or signing failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Local canary execution capacity is unavailable.
           content:
             application/json:
               schema:
@@ -3622,6 +5784,7 @@ paths:
                 type: object
                 required:
                   - artifacts
+                  - active_offer_hashes
                   - cursor_type
                   - cursor_semantics
                   - applied_cursor
@@ -3632,6 +5795,18 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/LedgerArtifact'
+                  active_offer_hashes:
+                    type: array
+                    uniqueItems: true
+                    description: >
+                      Complete deterministic snapshot of exact signed Offer
+                      hashes active at response time. Consumers use this
+                      higher-layer projection to expire publication health
+                      when a revision is paused or unpublished; it is not a
+                      Kernel tombstone.
+                    items:
+                      type: string
+                      pattern: '^[0-9a-f]{64}$'
                   cursor_type:
                     type: string
                     description: Cursor type identifier (always `artifact_sequence`).

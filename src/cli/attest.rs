@@ -67,10 +67,9 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     };
 
     if json_mode {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).expect("report serializes")
-        );
+        let encoded = serde_json::to_string_pretty(&report)
+            .map_err(|error| CliError::Other(format!("failed to serialize report: {error}")))?;
+        println!("{encoded}");
     } else {
         println!("Create this DNS TXT record (TTL 300 is a reasonable default):");
         println!();

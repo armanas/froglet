@@ -1,7 +1,16 @@
 pub mod canonical_json;
 pub mod crypto;
+#[cfg(feature = "managed")]
+pub mod managed_deployment;
+#[cfg(feature = "managed")]
+pub mod managed_publication;
+#[cfg(feature = "manifest")]
 pub mod manifest;
+#[cfg(feature = "managed")]
+pub mod oci_worker;
 pub mod protocol;
+#[cfg(feature = "publication")]
+pub mod publication;
 
 use serde::{Deserialize, Serialize};
 

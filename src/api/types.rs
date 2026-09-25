@@ -1,4 +1,8 @@
 use super::*;
+use froglet_protocol::publication::{
+    LocalVerificationEvidence, LockedPythonBundleEnvelope, PublicationBuildEvidence,
+    PublicationSettlement, SignedPublicationRevision, VerificationFixture,
+};
 
 #[derive(Debug, Serialize)]
 pub struct NodeCapabilities {
@@ -50,6 +54,8 @@ pub struct TorInfo {
 #[derive(Debug, Serialize)]
 pub struct RelayInfo {
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     pub status: String,
@@ -136,7 +142,7 @@ pub struct NodeEventEnvelope {
 }
 
 impl NodeEventEnvelope {
-    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+    pub fn canonical_signing_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         canonical_json::to_vec(&json!([
             self.id,
             self.pubkey,
@@ -145,7 +151,6 @@ impl NodeEventEnvelope {
             self.tags,
             self.content
         ]))
-        .expect("node event signing bytes should serialize canonically")
     }
 }
 
@@ -435,6 +440,12 @@ pub struct ProviderManagedOfferDefinition {
     pub max_output_bytes: usize,
     pub fuel_limit: u64,
     pub price_sats: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_fee_msat: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_fee_msat: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_method: Option<PublicationSettlement>,
     /// Currency unit for `price_sats`. `"sat"` (default) = satoshis, settled
     /// via Lightning. `"usd"` = US cents, settled via Stripe. Absent means
     /// `"sat"`. Lives in the node-side definition only; not part of the signed
@@ -447,10 +458,18 @@ pub struct ProviderManagedOfferDefinition {
     pub starter: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_hash: Option<String>,
+    /// Validated higher-layer build/dependency evidence. Never enters Kernel
+    /// offer bytes; it is carried into the signed Publication Revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_evidence: Option<PublicationBuildEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_bytes_hex: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_source: Option<String>,
+    /// Provider-private canonical package. Persisted in the managed definition
+    /// but never copied into public descriptor/offer/service documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_bundle: Option<LockedPythonBundleEnvelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci_reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -465,6 +484,10 @@ pub struct ProviderManagedOfferDefinition {
     pub input_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// Provider-private authoring fixture. Never copy this into public service
+    /// records, descriptor/feed documents, or signed offer payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationFixture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terms_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -509,53 +532,7 @@ pub struct ProviderControlOfferRecord {
     pub offer: SignedArtifact<OfferPayload>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ProviderControlPublishArtifactRequest {
-    pub service_id: String,
-    #[serde(default)]
-    pub offer_id: Option<String>,
-    #[serde(default)]
-    pub artifact_path: Option<String>,
-    #[serde(default)]
-    pub wasm_module_hex: Option<String>,
-    #[serde(default)]
-    pub oci_reference: Option<String>,
-    #[serde(default)]
-    pub oci_digest: Option<String>,
-    #[serde(default)]
-    pub runtime: Option<String>,
-    #[serde(default)]
-    pub package_kind: Option<String>,
-    #[serde(default)]
-    pub entrypoint_kind: Option<String>,
-    #[serde(default)]
-    pub entrypoint: Option<String>,
-    #[serde(default)]
-    pub contract_version: Option<String>,
-    #[serde(default)]
-    pub mounts: Option<Vec<ExecutionMount>>,
-    #[serde(default)]
-    pub capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    pub inline_source: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub starter: Option<String>,
-    #[serde(default)]
-    pub mode: Option<String>,
-    pub price_sats: u64,
-    /// Currency unit for `price_sats`: `"sat"` (satoshis, Lightning) or
-    /// `"usd"` (US cents, Stripe). Defaults to `"sat"` when absent.
-    #[serde(default)]
-    pub price_currency: Option<String>,
-    #[serde(default)]
-    pub publication_state: Option<String>,
-    #[serde(default)]
-    pub input_schema: Option<Value>,
-    #[serde(default)]
-    pub output_schema: Option<Value>,
-}
+pub use froglet_protocol::publication::PublicationIntent as ProviderControlPublishArtifactRequest;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderControlArtifactRef {
@@ -569,8 +546,30 @@ pub struct ProviderControlEvidence {
     pub descriptor_hash: String,
     pub offer_hash: String,
     pub offer_id: String,
+    /// Normalized local lifecycle status. `legacy_unverified` means this
+    /// local-only offer predates or is ineligible for immutable revisions.
+    pub lifecycle_status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
+    /// Present only when the provider executed the private verification
+    /// fixture successfully before persisting and exposing this offer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_verification: Option<LocalVerificationEvidence>,
+    /// Provider-signed higher-layer binding of offer, executable, currency,
+    /// limits, and local verification. Not a Kernel artifact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_revision: Option<SignedPublicationRevision>,
+    /// Opaque lifecycle-instance compare-and-swap token. Verified publishes
+    /// always return it; legacy unverified compatibility mutations do not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation_token: Option<String>,
+    /// Lifecycle record selected before this revision was committed. Public
+    /// completion compensation uses it to restore a replaced route instead
+    /// of merely pausing the newly failed revision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_publication: Option<ProviderPublicationStatus>,
+    #[serde(default)]
+    pub previous_transport_grants: Vec<db::PublicationTransportGrantRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -583,6 +582,97 @@ pub struct ProviderControlMutationResponse {
     pub artifacts: Vec<ProviderControlArtifactRef>,
     pub evidence: ProviderControlEvidence,
     pub offer: ProviderControlOfferRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderPublicationStatus {
+    pub service_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_revision_hash: Option<String>,
+    pub selected_revision_hash: String,
+    pub activation_token: String,
+    pub revision_count: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderPublicationRevisionSummary {
+    pub revision_hash: String,
+    pub service_id: String,
+    pub offer_id: String,
+    pub offer_hash: String,
+    pub binding_hash: String,
+    pub validation_status: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderPublicationRevisionDetail {
+    #[serde(flatten)]
+    pub summary: ProviderPublicationRevisionSummary,
+    pub signed_revision: SignedPublicationRevision,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderPublicationsResponse {
+    pub publications: Vec<ProviderPublicationStatus>,
+    #[serde(default)]
+    pub last_successful_calls: std::collections::BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderPublicationResponse {
+    pub publication: ProviderPublicationStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderPublicationRevisionsResponse {
+    pub revisions: Vec<ProviderPublicationRevisionSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderPublicationRevisionResponse {
+    pub revision: ProviderPublicationRevisionDetail,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderPublicationOperationsResponse {
+    pub operations: Vec<db::PublicationOperationRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderPublicationMutationResponse {
+    pub operation: String,
+    pub publication: ProviderPublicationStatus,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExactPublicationPauseRequest {
+    pub activation_token: String,
+    #[serde(default)]
+    pub previous_publication: Option<ProviderPublicationStatus>,
+    #[serde(default)]
+    pub previous_transport_grants: Vec<db::PublicationTransportGrantRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayTransportActivationRequest {
+    pub service_id: String,
+    pub revision_hash: String,
+    pub activation_token: String,
+    pub public_url: String,
+    pub relay_control_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayTransportActivationResponse {
+    pub status: String,
+    pub public_url: String,
+    pub grant: db::PublicationTransportGrantRecord,
+    pub remaining_grants: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,7 +701,17 @@ pub struct ProviderServiceRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
     pub mode: String,
+    /// Legacy whole-unit total used by existing clients. Read together with
+    /// `price_currency`; full fee legs remain authoritative.
     pub price_sats: u64,
+    #[serde(default)]
+    pub base_fee_msat: u64,
+    #[serde(default)]
+    pub success_fee_msat: u64,
+    #[serde(default)]
+    pub settlement_method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_currency: Option<String>,
     pub publication_state: String,
     pub provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -628,6 +728,10 @@ pub struct ProviderServiceRecord {
     pub module_bytes_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inline_source: Option<String>,
+    /// Internal execution material only. `serde(skip)` prevents even
+    /// authenticated service responses from returning source/dependency bytes.
+    #[serde(skip)]
+    pub python_bundle: Option<LockedPythonBundleEnvelope>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oci_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -642,6 +746,10 @@ pub struct ProviderServicesResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProviderServiceResponse {
     pub service: ProviderServiceRecord,
+    /// Public, provider-signed evidence for the currently active revision.
+    /// Private verification inputs and authoring metadata are never included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_revision: Option<SignedPublicationRevision>,
 }
 
 #[cfg(test)]

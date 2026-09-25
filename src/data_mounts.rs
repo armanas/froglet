@@ -2,13 +2,15 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 use crate::execution::ExecutionWorkload;
+use froglet_protocol::publication::{
+    LEGACY_S3_MOUNT_KIND, OBJECT_STORE_MOUNT_KIND, canonical_mount_kind,
+};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct DataMountPlan {
     pub env: Vec<(String, String)>,
     pub readonly_paths: Vec<PathBuf>,
     pub writable_paths: Vec<PathBuf>,
-    pub needs_network: bool,
 }
 
 pub(crate) fn collect_data_mount_plan(
@@ -18,13 +20,14 @@ pub(crate) fn collect_data_mount_plan(
     let mut plan = DataMountPlan::default();
 
     for mount in &execution.mounts {
-        let kind = mount.kind.to_ascii_lowercase();
-        let Some(kind_policy) = MountKindPolicy::for_kind(&kind) else {
+        let Some(kind) = canonical_mount_kind(&mount.kind) else {
             return Err(format!(
-                "unsupported mount kind: {}; allowed: postgres, sqlite, s3, redis",
+                "unsupported mount kind: {}; allowed: postgres, sqlite, object_store, redis (legacy alias: s3)",
                 mount.kind
             ));
         };
+        let kind_policy = MountKindPolicy::for_kind(kind)
+            .ok_or_else(|| format!("mount kind {kind} has no configured runtime policy"))?;
         let capability = format!(
             "mount.{}.{}.{}",
             mount.kind,
@@ -35,19 +38,17 @@ pub(crate) fn collect_data_mount_plan(
             continue;
         }
 
-        let env_key = format!("FROGLET_MOUNT_{kind}_{}", mount.handle);
-        let binding = match std::env::var(&env_key) {
-            Ok(binding) if !binding.trim().is_empty() => binding,
-            _ if kind_policy.requires_configured_binding => {
-                return Err(format!(
-                    "granted {kind} mount '{}' is not configured; set {env_key}",
-                    mount.handle
-                ));
-            }
-            _ => continue,
+        let Some(binding) = configured_binding(
+            &mount.kind,
+            kind,
+            &mount.handle,
+            kind_policy.requires_configured_binding,
+        )?
+        else {
+            continue;
         };
 
-        validate_binding(&kind, &binding)?;
+        validate_binding(kind, &binding)?;
         let safe_handle = mount.handle.to_ascii_uppercase();
         plan.env
             .push((format!("FROGLET_MOUNT_{safe_handle}_URL"), binding.clone()));
@@ -128,7 +129,7 @@ struct MountKindPolicy {
 impl MountKindPolicy {
     fn for_kind(kind: &str) -> Option<Self> {
         match kind {
-            "postgres" | "s3" | "redis" => Some(Self {
+            "postgres" | OBJECT_STORE_MOUNT_KIND | "redis" => Some(Self {
                 access: MountAccessPolicy::Network,
                 requires_configured_binding: true,
             }),
@@ -150,11 +151,11 @@ fn validate_binding(kind: &str, binding: &str) -> Result<(), String> {
                 Err("postgres mount bindings must use postgres:// or postgresql://".to_string())
             }
         }
-        "s3" => {
+        OBJECT_STORE_MOUNT_KIND => {
             if binding.starts_with("s3://") {
                 Ok(())
             } else {
-                Err("s3 mount bindings must use s3://".to_string())
+                Err("object_store mount bindings must use s3://".to_string())
             }
         }
         "redis" => {
@@ -167,6 +168,45 @@ fn validate_binding(kind: &str, binding: &str) -> Result<(), String> {
         "sqlite" => Ok(()),
         _ => Ok(()),
     }
+}
+
+fn configured_binding(
+    requested_kind: &str,
+    canonical_kind: &str,
+    handle: &str,
+    required: bool,
+) -> Result<Option<String>, String> {
+    if canonical_kind != OBJECT_STORE_MOUNT_KIND {
+        let env_key = format!("FROGLET_MOUNT_{canonical_kind}_{handle}");
+        return match nonempty_env(&env_key) {
+            Some(binding) => Ok(Some(binding)),
+            None if required => Err(format!(
+                "granted {canonical_kind} mount '{handle}' is not configured; set {env_key}"
+            )),
+            None => Ok(None),
+        };
+    }
+
+    let canonical_key = format!("FROGLET_MOUNT_{OBJECT_STORE_MOUNT_KIND}_{handle}");
+    let legacy_key = format!("FROGLET_MOUNT_{LEGACY_S3_MOUNT_KIND}_{handle}");
+    let canonical = nonempty_env(&canonical_key);
+    let legacy = nonempty_env(&legacy_key);
+    match (canonical, legacy) {
+        (Some(canonical), Some(legacy)) if canonical != legacy => Err(format!(
+            "object-store mount '{handle}' has conflicting bindings in {canonical_key} and {legacy_key}"
+        )),
+        (Some(binding), _) | (None, Some(binding)) => Ok(Some(binding)),
+        (None, None) if required => Err(format!(
+            "granted {requested_kind} mount '{handle}' is not configured; set {canonical_key} (preferred) or {legacy_key} (compatibility)"
+        )),
+        (None, None) => Ok(None),
+    }
+}
+
+fn nonempty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|binding| !binding.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -255,7 +295,86 @@ mod tests {
         let plan = collect_data_mount_plan(&execution, &[]).expect("no granted mount");
 
         assert!(plan.env.is_empty());
-        assert!(!plan.needs_network);
+    }
+
+    #[test]
+    fn canonical_object_store_mount_accepts_legacy_binding_without_legacy_grant() {
+        let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _canonical = ScopedEnvVar::unset("FROGLET_MOUNT_object_store_archive");
+        let _legacy = ScopedEnvVar::set(
+            "FROGLET_MOUNT_s3_archive",
+            "s3://key:secret@objects.example/archive",
+        );
+        let execution = ExecutionWorkload {
+            mounts: vec![crate::execution::ExecutionMount {
+                handle: "archive".to_string(),
+                kind: "object_store".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+
+        let ignored = collect_data_mount_plan(&execution, &["mount.s3.read.archive".to_string()])
+            .expect("legacy capability must not grant a canonical mount");
+        assert!(ignored.env.is_empty());
+
+        let error =
+            collect_data_mount_plan(&execution, &["mount.object_store.read.archive".to_string()])
+                .expect_err("configured network mount remains disabled");
+        assert!(error.contains("object_store mount 'archive' is network-backed"));
+    }
+
+    #[test]
+    fn legacy_s3_mount_accepts_canonical_binding_with_its_exact_legacy_grant() {
+        let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _canonical = ScopedEnvVar::set(
+            "FROGLET_MOUNT_object_store_archive",
+            "s3://key:secret@objects.example/archive",
+        );
+        let _legacy = ScopedEnvVar::unset("FROGLET_MOUNT_s3_archive");
+        let execution = ExecutionWorkload {
+            mounts: vec![crate::execution::ExecutionMount {
+                handle: "archive".to_string(),
+                kind: "s3".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+
+        let error = collect_data_mount_plan(&execution, &["mount.s3.read.archive".to_string()])
+            .expect_err("configured network mount remains disabled");
+        assert!(error.contains("object_store mount 'archive' is network-backed"));
+    }
+
+    #[test]
+    fn object_store_binding_aliases_fail_when_they_conflict() {
+        let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _canonical = ScopedEnvVar::set(
+            "FROGLET_MOUNT_object_store_archive",
+            "s3://key:secret@objects.example/archive-a",
+        );
+        let _legacy = ScopedEnvVar::set(
+            "FROGLET_MOUNT_s3_archive",
+            "s3://key:secret@objects.example/archive-b",
+        );
+        let execution = ExecutionWorkload {
+            mounts: vec![crate::execution::ExecutionMount {
+                handle: "archive".to_string(),
+                kind: "object_store".to_string(),
+                read_only: true,
+                binding: None,
+            }],
+            ..execution_for_mount_tests()
+        };
+
+        let error =
+            collect_data_mount_plan(&execution, &["mount.object_store.read.archive".to_string()])
+                .expect_err("conflicting aliases must fail closed");
+        assert!(error.contains("conflicting bindings"));
+        assert!(error.contains("FROGLET_MOUNT_object_store_archive"));
+        assert!(error.contains("FROGLET_MOUNT_s3_archive"));
     }
 
     #[test]
@@ -353,6 +472,7 @@ mod tests {
             security: ExecutionSecurity::default(),
             mounts: Vec::new(),
             inline_source: Some("def handler(event, ctx):\n    return event\n".to_string()),
+            python_bundle: None,
             module_hash: None,
             module_bytes_hex: None,
             source_hash: None,

@@ -25,6 +25,12 @@ htmlcov/
 venv/
 .python-version
 
+# Python packaging outputs
+*.egg-info/
+.eggs/
+/build/
+python/froglet-verify/build/
+
 # Node dependencies and logs
 node_modules/
 .npm/
@@ -75,3 +81,6 @@ docs-site/.wrangler/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Rebuilt from the locked Rust verifier by docs-site/scripts/build-verifier.mjs
+docs-site/src/generated/

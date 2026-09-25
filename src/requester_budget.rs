@@ -11,10 +11,12 @@
 //! is never released this over-counts conservatively; receipt-based
 //! reconciliation is deliberately out of scope.
 //!
-//! Row states: `reserved` (deal admission in flight), `committed` (deal
-//! persisted; counts against the budget), `archived` (cleared by an explicit
-//! budget reset; no longer counted). Reserved and committed rows both count
-//! against the budget; archived rows are kept for audit.
+//! Row states: `reserved` (no external side effect yet), `external_pending`
+//! (the request may already have created a remote contract or moved money),
+//! `committed` (deal persisted), and `archived` (cleared by an explicit budget
+//! reset). The first three states count against the budget. Only `reserved`
+//! rows may be released automatically; `external_pending` is fail-closed across
+//! errors and process restarts until it is bound to the persisted deal.
 
 use crate::config::RequesterSpendConfig;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -49,12 +51,12 @@ fn outstanding_msat(conn: &Connection) -> Result<u64, String> {
     let sum: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(amount_msat), 0) FROM requester_spend_ledger \
-             WHERE state IN ('reserved', 'committed')",
+             WHERE state IN ('reserved', 'external_pending', 'committed')",
             [],
             |row| row.get(0),
         )
         .map_err(|e| format!("spend ledger sum failed: {e}"))?;
-    Ok(sum.max(0) as u64)
+    u64::try_from(sum).map_err(|_| "spend ledger contains a negative outstanding total".to_string())
 }
 
 /// Atomically check the spend policy and reserve `amount_msat` for
@@ -72,6 +74,8 @@ pub fn try_reserve_spend(
     settlement_method: &str,
     now: i64,
 ) -> Result<SpendDecision, String> {
+    let amount_msat_i64 = i64::try_from(amount_msat)
+        .map_err(|_| "spend amount exceeds the signed SQLite range".to_string())?;
     let Some(budget) = policy.spend_budget_msat else {
         return Ok(SpendDecision::Unconfigured);
     };
@@ -90,16 +94,7 @@ pub fn try_reserve_spend(
         )
         .optional()
         .map_err(|e| format!("spend ledger lookup failed: {e}"))?;
-    if let Some(state) = existing {
-        if state == "archived" {
-            // A reset archived this hash; treat the replay as a fresh spend.
-            conn.execute(
-                "UPDATE requester_spend_ledger \
-                 SET state = 'reserved', updated_at = ?2 WHERE deal_hash = ?1",
-                params![deal_hash, now],
-            )
-            .map_err(|e| format!("spend ledger re-reserve failed: {e}"))?;
-        }
+    if existing.as_deref().is_some_and(|state| state != "archived") {
         return Ok(SpendDecision::Reserved);
     }
 
@@ -113,11 +108,37 @@ pub fn try_reserve_spend(
         });
     }
 
+    if existing.as_deref() == Some("archived") {
+        // A reset archived this hash; replay is a fresh spend and therefore
+        // must pass the current cumulative budget before it is counted again.
+        conn.execute(
+            "UPDATE requester_spend_ledger \
+             SET deal_id = NULL, provider_id = ?2, amount_msat = ?3, \
+                 settlement_method = ?4, state = 'reserved', updated_at = ?5 \
+             WHERE deal_hash = ?1 AND state = 'archived'",
+            params![
+                deal_hash,
+                provider_id,
+                amount_msat_i64,
+                settlement_method,
+                now
+            ],
+        )
+        .map_err(|e| format!("spend ledger re-reserve failed: {e}"))?;
+        return Ok(SpendDecision::Reserved);
+    }
+
     conn.execute(
         "INSERT INTO requester_spend_ledger \
          (deal_hash, deal_id, provider_id, amount_msat, settlement_method, state, created_at, updated_at) \
          VALUES (?1, NULL, ?2, ?3, ?4, 'reserved', ?5, ?5)",
-        params![deal_hash, provider_id, amount_msat as i64, settlement_method, now],
+        params![
+            deal_hash,
+            provider_id,
+            amount_msat_i64,
+            settlement_method,
+            now
+        ],
     )
     .map_err(|e| format!("spend ledger reserve failed: {e}"))?;
     Ok(SpendDecision::Reserved)
@@ -134,11 +155,48 @@ pub fn commit_spend(
     conn.execute(
         "UPDATE requester_spend_ledger \
          SET state = 'committed', deal_id = ?2, updated_at = ?3 \
-         WHERE deal_hash = ?1 AND state = 'reserved'",
+         WHERE deal_hash = ?1 AND state IN ('reserved', 'external_pending')",
         params![deal_hash, deal_id, now],
     )
     .map_err(|e| format!("spend ledger commit failed: {e}"))?;
     Ok(())
+}
+
+/// Durably mark that a deal-creation attempt is crossing its first external
+/// side-effect boundary. From this point onward the reservation must remain
+/// counted even if the HTTP attempt errors or the process crashes.
+pub fn mark_spend_external_pending(
+    conn: &Connection,
+    deal_hash: &str,
+    now: i64,
+) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE requester_spend_ledger \
+             SET state = 'external_pending', updated_at = ?2 \
+             WHERE deal_hash = ?1 AND state = 'reserved'",
+            params![deal_hash, now],
+        )
+        .map_err(|e| format!("spend ledger external-pending transition failed: {e}"))?;
+    if changed == 1 {
+        return Ok(());
+    }
+
+    let state: Option<String> = conn
+        .query_row(
+            "SELECT state FROM requester_spend_ledger WHERE deal_hash = ?1",
+            params![deal_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("spend ledger external-pending lookup failed: {e}"))?;
+    match state.as_deref() {
+        Some("external_pending" | "committed") => Ok(()),
+        Some(other) => Err(format!(
+            "spend ledger cannot cross external boundary from state {other}"
+        )),
+        None => Err("spend ledger reservation disappeared before external effect".to_string()),
+    }
 }
 
 /// Drop a reservation after a failed deal-creation attempt, freeing the
@@ -170,7 +228,7 @@ pub fn spend_totals(conn: &Connection) -> Result<SpendTotals, String> {
     let mut stmt = conn
         .prepare(
             "SELECT state, COALESCE(SUM(amount_msat), 0) FROM requester_spend_ledger \
-             WHERE state IN ('reserved', 'committed') GROUP BY state",
+             WHERE state IN ('reserved', 'external_pending', 'committed') GROUP BY state",
         )
         .map_err(|e| format!("spend ledger totals failed: {e}"))?;
     let rows = stmt
@@ -180,9 +238,12 @@ pub fn spend_totals(conn: &Connection) -> Result<SpendTotals, String> {
         .map_err(|e| format!("spend ledger totals failed: {e}"))?;
     for row in rows {
         let (state, sum) = row.map_err(|e| format!("spend ledger totals failed: {e}"))?;
-        let sum = sum.max(0) as u64;
+        let sum = u64::try_from(sum)
+            .map_err(|_| format!("spend ledger contains a negative {state} total"))?;
         match state.as_str() {
-            "reserved" => totals.reserved_msat = sum,
+            "reserved" | "external_pending" => {
+                totals.reserved_msat = totals.reserved_msat.saturating_add(sum)
+            }
             "committed" => totals.committed_msat = sum,
             _ => {}
         }
@@ -230,6 +291,25 @@ mod tests {
             .expect("reserve");
         assert_eq!(decision, SpendDecision::Unconfigured);
         assert_eq!(spend_totals(&conn).unwrap().reserved_msat, 0);
+    }
+
+    #[test]
+    fn amount_above_sqlite_signed_range_is_rejected() {
+        let conn = test_conn();
+        let error = try_reserve_spend(
+            &conn,
+            &policy(None, Some(i64::MAX as u64)),
+            "h-overflow",
+            "p1",
+            i64::MAX as u64 + 1,
+            "lightning.prepaid.v1",
+            0,
+        )
+        .expect_err("unsigned amount must not wrap through SQLite's signed integer range");
+        assert!(error.contains("signed SQLite range"), "error: {error}");
+        let totals = spend_totals(&conn).unwrap();
+        assert_eq!(totals.reserved_msat, 0);
+        assert_eq!(totals.committed_msat, 0);
     }
 
     #[test]
@@ -309,6 +389,35 @@ mod tests {
     }
 
     #[test]
+    fn externally_pending_spend_cannot_be_released_swept_or_reset() {
+        let conn = test_conn();
+        let p = policy(None, Some(500));
+        try_reserve_spend(
+            &conn,
+            &p,
+            "h-external",
+            "p1",
+            500,
+            "lightning.prepaid.v1",
+            0,
+        )
+        .unwrap();
+        mark_spend_external_pending(&conn, "h-external", 1).unwrap();
+
+        release_spend(&conn, "h-external").unwrap();
+        assert_eq!(sweep_stale_reservations(&conn, 1, 10_000).unwrap(), 0);
+        assert_eq!(reset_spend(&conn, 10_000).unwrap(), 0);
+        let totals = spend_totals(&conn).unwrap();
+        assert_eq!(totals.reserved_msat, 500);
+        assert_eq!(totals.committed_msat, 0);
+
+        commit_spend(&conn, "h-external", "deal-external", 10_001).unwrap();
+        let totals = spend_totals(&conn).unwrap();
+        assert_eq!(totals.reserved_msat, 0);
+        assert_eq!(totals.committed_msat, 500);
+    }
+
+    #[test]
     fn same_deal_hash_does_not_double_count() {
         let conn = test_conn();
         let p = policy(None, Some(1_000));
@@ -320,6 +429,29 @@ mod tests {
         );
         // …and held only once.
         assert_eq!(spend_totals(&conn).unwrap().reserved_msat, 600);
+    }
+
+    #[test]
+    fn archived_deal_replay_rechecks_current_budget() {
+        let conn = test_conn();
+        let p = policy(None, Some(1_000));
+        try_reserve_spend(&conn, &p, "h-archived", "p1", 600, "lightning", 0).unwrap();
+        commit_spend(&conn, "h-archived", "deal-1", 1).unwrap();
+        assert_eq!(reset_spend(&conn, 2).unwrap(), 1);
+
+        try_reserve_spend(&conn, &p, "h-current", "p2", 800, "lightning", 3).unwrap();
+        assert_eq!(
+            try_reserve_spend(&conn, &p, "h-archived", "p1", 600, "lightning", 4).unwrap(),
+            SpendDecision::BudgetExceeded {
+                spend_budget_msat: 1_000,
+                spent_msat: 800,
+                remaining_msat: 200,
+            }
+        );
+
+        let totals = spend_totals(&conn).unwrap();
+        assert_eq!(totals.reserved_msat, 800);
+        assert_eq!(totals.committed_msat, 0);
     }
 
     #[test]

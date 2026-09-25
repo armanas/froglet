@@ -1,72 +1,71 @@
 # Provider onboarding
 
-Two paths, depending on who's typing:
+Two surfaces share one implementation:
 
-- **Agent-driven**: an LLM (Claude Code, Codex, etc.) with the Froglet
-  MCP attached calls `marketplace_publish` once. The user gets a live
-  marketplace offer in seconds.
-- **Human-driven**: `froglet-node init` + `froglet-node publish` in a
-  shell.
+- **Agent-driven**: Claude Code, Codex, or another MCP host calls the native
+  `marketplace_publish` action with an authored `project_dir`.
+- **Human-driven**: `froglet-node init` plus `froglet-node publish` in a shell.
 
-Both surfaces run the same `froglet-publish-engine` pipeline: build →
-host → sign → register → verify. One source of truth.
-
-This document leads with the easy paths. The four DNS-free hosting
-backends (Tor, managed subdomain, PaaS, key-only) are documented in the
-[Hosting backends](#hosting-backends) appendix; you almost never need
-to think about them directly.
+Every public publication is deliberately two-call. The first call builds the
+exact package and returns a non-mutating consent summary. The second rebuilds
+once and proceeds only with the exact user-approved `consent_hash`. Both
+surfaces run the same `froglet-publish-engine` implementation: build exact plan
+→ approval → rebuild and provider-private verification → signed immutable
+revision → prepare the approved transport → exact registration → conditional
+marketplace/requester canaries. Local-only publication does not open a
+transport or register a listing.
 
 ---
 
-## The agent-driven flow (one MCP call)
+## The agent-driven flow (plan, then exact approval)
 
 ```
-User: "Publish a Froglet service that translates English to Spanish."
+User: "Publish the service in /home/me/translator through the relay."
 
-Claude (with froglet MCP):
-  Calls marketplace_publish:
-    name: "translator-en-es"
-    source_inline: "<generated Python source defining handler(event, context)>"
-    hosting: { kind: "tor" }
-    summary: "Translate EN→ES"
+Agent call 1:
+  {"action":"marketplace_publish",
+   "project_dir":"/home/me/translator",
+   "host":"relay"}
 
-→ Returns:
-    provider_id:            c9ecac3a…
-    public_url:             http://abc123…onion
-    marketplace_offer_url:  https://marketplace.froglet.dev/v1/offers/…
-    invoke_command:         froglet-node invoke translator-en-es '<json_input>' (or MCP froglet action invoke_service {"service_id": "translator-en-es", …})
+→ Returns status=approval_required, consent_hash, and the exact package,
+  schema, capability, limit, provider, endpoint, relay, price, and commerce
+  disclosure. Nothing has been published.
 
-Claude: "Your service is live at marketplace.froglet.dev/v1/offers/…
-        Call it with the froglet invoke_service action."
+Agent shows that summary to the user.
+
+Agent call 2, only after approval:
+  {"action":"marketplace_publish",
+   "project_dir":"/home/me/translator",
+   "host":"relay",
+   "consent_hash":"<exact approved hash>"}
+
+→ Returns the signed Publication Revision and public URL. An exact offer URL,
+  marketplace activation evidence, and independent requester canary are present
+  only when the marketplace activates the exact candidate; policy-held
+  candidates return pending-review evidence instead.
 ```
 
-That's the whole flow. Behind the scenes the MCP handler shells out to
-`froglet-node publish --json`, which scaffolds manifests in a temp
-directory, builds the artifact, posts to the local daemon's
-`/v1/provider/artifacts/publish` (daemon signs + persists), POSTs
-`/v1/registrations` on the marketplace, and polls
-`/v1/providers/<id>` until the indexer projects the offer. Failure
-modes are typed; the LLM gets back a structured error it can act on
-("set FROGLET_NETWORK_MODE=tor and retry") rather than a stack trace.
+The first call never posts to provider control, prepares hosting, or submits a
+marketplace candidate. Private source/data/fixture bytes remain private and
+are represented by exact hashes in consent. If anything material changes, the
+second call computes a different hash and stops before publication.
 
-**MCP input shape (Phase 1A scope):**
+**Native MCP input shape:**
 
 ```json
 {
   "action": "marketplace_publish",
-  "name": "<lowercase-hyphenated-name>",
-  "source_inline": "<full Python source defining handler(event, context)>",
-  "hosting": { "kind": "local|tor|self", "url": "<required if self>" },
-  "settlement": { "method": "none|lightning|stripe" },
-  "marketplace_url": "https://marketplace.froglet.dev"
+  "project_dir": "/absolute/path/containing/froglet-service.toml",
+  "host": "local|relay|tor|self",
+  "marketplace_url": "https://marketplace.froglet.dev",
+  "consent_hash": "<omit on plan; exact approved hash on call 2>"
 }
 ```
 
-Runtime is Python `inline_source` only in Phase 1A. WASM and OCI publication
-are lower-level `publish_artifact` paths today and move to `marketplace_publish`
-in a later phase. Settlement = `"none"` (free), `"lightning"` (paid, requires a
-Lightning backend + `price.currency="sat"`), or `"stripe"` (Stripe MPP,
-requires a Stripe backend + `price.currency="usd"`).
+Native authoring supports read-only JSON/CSV/SQLite data, embedded WAT/Wasm,
+and resolver-free locked Python. Digest-pinned OCI execution is an advanced
+isolated-worker path. Settlement is authored in the manifest: `none` is the
+default; `lightning` and `stripe` require explicit paid terms and rail setup.
 
 ---
 
@@ -75,8 +74,9 @@ requires a Stripe backend + `price.currency="usd"`).
 For when you're typing directly, not driving through an LLM:
 
 ```bash
-# 1. Install the daemon + CLI (one binary; init runs the CLI mode):
-curl -fsSL https://froglet.dev/agent | bash
+# 1. Run the immutable-release download + digest check from the Quickstart,
+#    review its non-mutating plan, then run its exact approved execute command.
+#    https://froglet.dev/learn/quickstart/
 
 # 2. Scaffold a new service:
 froglet-node init my-translator
@@ -85,20 +85,25 @@ cd my-translator
 # 3. Edit handler.py to do real work:
 $EDITOR handler.py
 
-# 4. Publish:
-froglet-node publish --host tor
+# 4. Produce the non-mutating public plan:
+froglet-node publish --host relay --plan --json
+
+# 5. Review it, then approve the exact returned hash:
+froglet-node publish --host relay --approve-consent <hash> --json
 ```
 
 `froglet-node init` writes four files: `froglet.toml` (project),
-`froglet-service.toml` (per-service, v3 schema), `handler.py` (Python
+`froglet-service.toml` (per-service, v4 schema), `handler.py` (Python
 skeleton), and `.gitignore`. See [docs/MANIFEST.md](./MANIFEST.md) for
 the manifest spec.
 
-`froglet-node publish` reads both manifests, builds the artifact, and
-runs the same engine pipeline the MCP tool does. It accepts:
+`froglet-node publish` reads both manifests and runs the same engine pipeline
+as native MCP. It accepts:
 
-- `--host local|tor|self` to override the manifest's `[hosting] default`
+- `--host local|relay|tor|self` to override `[hosting] default`
 - `--marketplace URL` to override the manifest's marketplace
+- `--plan` for the non-mutating consent summary
+- `--approve-consent HASH` for the exact approved public plan
 - `--json` to emit machine-readable output
 
 Other useful subcommands:
@@ -112,14 +117,32 @@ Other useful subcommands:
 
 ## Hosting backends
 
-The publish pipeline supports five hosting choices. Phase 1A ships
-three; Phase 1B adds the other two. The right answer for most users is
-**Tor**.
+The v4 authoring contract exposes provider-neutral choices. Local, Relay, Tor,
+and self-hosted are executable today; managed authoring is validatable but its
+publish-engine deployment orchestration is not yet implemented. Relay is the
+dependency-minimal public design when a live operator endpoint is configured.
 
-### Tor (`--host tor`, Phase 1A) — default
+### Relay (`--host relay`) — public default design
+
+The node dials outbound WSS and receives an identity-derived HTTPS origin. No
+inbound port, user-owned DNS account, or local certificate is needed. The relay
+terminates TLS, can observe plaintext, and applies quotas, so those facts are
+approval-bound. Bootstrap plans the official URL and suffix dormant by default,
+opening no WSS without an exact durable grant. Public publication still fails
+before approval unless the configured relay reports `status=up`, the exact
+public URL, and provider identity. Consult the implementation evidence matrix
+before claiming the first-party relay deployment is online. This preflight
+proves the configured node-to-relay session only; it does not itself prove
+public DNS, trusted TLS, or external Internet ingress.
+
+### Tor (`--host tor`)
 
 The daemon spawns a Tor hidden service; the `.onion` URL is your public
 address. No DNS, no TLS, no port-forwarding, works behind any NAT.
+Planning is read-only and fail-closed: capabilities must report Tor enabled,
+the daemon's 64-hex provider identity, and an exact credential-free
+`http://<56-char-v3>.onion` origin. That identity and endpoint enter the consent
+hash, and the prepared endpoint must match the approved origin.
 
 Requires:
 
@@ -143,9 +166,12 @@ self-hosted when ready.
 You deploy the daemon somewhere with a public HTTPS URL (Fly, Render,
 Railway, your VPS) and supply the URL in the manifest. The CLI and MCP
 front-ends reject loopback, private-network, `.local`, `.internal`, and
-plain-public-HTTP URLs before publish. The marketplace's `/v1/registrations`
-then performs the external validation: the URL must serve `/v1/feed` with a
-signed descriptor plus an offer matching your provider key.
+plain-public-HTTP URLs before publish. The shared publish engine independently
+requires a credential-free HTTPS root origin with no path, query, or fragment;
+it also rejects `.onion` and local/private numeric IP literals. DNS resolution
+and external reachability remain the marketplace canary's responsibility. The
+marketplace's `/v1/registrations` then verifies that the URL serves `/v1/feed`
+with a signed descriptor plus an offer matching your provider key.
 
 ```toml
 [hosting]
@@ -155,26 +181,33 @@ default = "self"
 url = "https://my-translator.fly.dev"
 ```
 
-### Managed (`--host managed`, Phase 1B)
+### Managed (`--host managed`, adapter pending)
 
-Marketplace allocates `<slug>.providers.froglet.dev` and creates the
-Cloudflare DNS record. You run Caddy or a similar proxy for TLS. Needs
-a public IP. Lands in Phase 1B.
+V4 represents managed hosting with non-empty provider-neutral `target` and
+`profile` fields. Provider-specific account, region, DNS, and platform state
+belong behind the operator adapter, not in the service manifest. The current
+publish engine returns a not-implemented error for this choice; successful
+manifest validation is not deployment proof. See
+[PUBLICATION_CONTRACT.md](./PUBLICATION_CONTRACT.md#service-manifest-v4-and-hosting-portability).
 
-### Fly (`--host fly`, Phase 1B)
+### Fly (v3 compatibility only)
 
-Engine wraps `flyctl deploy` to deploy your service to Fly.io,
-then registers the `*.fly.dev` URL with the marketplace. Lands in
-Phase 1B.
+A v3 `hosting.default = "fly"` manifest remains readable and emits a
+deprecation warning. V4 rejects Fly as a first-class authoring choice. Migrate
+to `managed` and select Fly, if desired, behind a future deployment adapter.
 
 ---
 
 ## Pricing and currency
 
-The `[price]` section in `froglet-service.toml` accepts two fields:
+The `[price]` section in `froglet-service.toml` accepts the legacy whole-unit
+amount plus optional explicit fee legs:
 
 - `sats` — the price integer (default `0` = free)
 - `currency` — the unit for that integer (default `"sat"`)
+- `base_fee_msat` — optional explicit base-fee leg
+- `success_fee_msat` — optional explicit success-fee leg; when present it must
+  equal `sats * 1000`
 
 **Allowed values for `currency`:**
 
@@ -184,7 +217,7 @@ The `[price]` section in `froglet-service.toml` accepts two fields:
 | `"usd"` | US cents (e.g. `500` = $5.00) | Stripe rail |
 
 ```toml
-# Lightning-priced: 1000 satoshis (~$0.40 at time of writing)
+# Lightning-priced: 1000 satoshis
 [price]
 sats = 1000
 currency = "sat"   # or omit — "sat" is the default
@@ -200,11 +233,12 @@ backend configured. Attempting to publish a USD-priced service on a
 Lightning-only node returns a clear error at publish time — the node rejects
 the offer before signing it.
 
-The `currency` field lives only in the manifest (provider configuration). The
-signed offer and receipt carry the raw integer; each settlement rail
-interprets it according to its own rules, which is also why the field name
-`price.sats` is misleading on the Stripe rail — treat `sats` as "price units"
-and let `currency` disambiguate.
+The existing signed offer retains its Kernel-compatible fee schedule and exact
+settlement method. The higher-layer provider service record exposes currency
+alongside both fee legs, and a verified Publication Revision binds unambiguous
+currency-aware minor units. The field name `price.sats` remains a compatibility
+name on the Stripe rail; treat it as whole price units and let `currency`
+disambiguate. See [PUBLICATION_CONTRACT.md](./PUBLICATION_CONTRACT.md#public-provider-service-pricing).
 
 ---
 
@@ -228,13 +262,11 @@ When you eventually want one:
 
 ---
 
-## What's deliberately not here
+## What's deliberately not hidden
 
-This document used to enumerate four "DNS-free paths" (A/B/D/E) as the
-top-level surface. They're now backend implementation details of a
-single `marketplace_publish` call — you tell the engine `hosting.kind`
-and it picks the right backend. The four-path framing is preserved in
-git history at `docs/PROVIDER_ONBOARDING.md@a5799dc` for reference.
+This document used to describe a one-call publish flow. Public mutation is now
+explicitly separated from planning: an agent selects a transport, but it cannot
+consume the returned approval hash until the user approves the exact summary.
 
 If you're an operator running your own marketplace, the engine talks
 to a configured `froglet-node` daemon (`FROGLET_DAEMON_URL`, default

@@ -6,6 +6,9 @@ use froglet::{
     },
     settlement,
 };
+use k256::schnorr::{
+    Signature as SchnorrSignature, VerifyingKey, signature::hazmat::PrehashVerifier,
+};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -104,6 +107,20 @@ struct ConformancePath {
     description: String,
 }
 
+fn assert_bip340_signature_over_digest(pubkey: &str, signature: &str, digest: &[u8]) {
+    let verifying_key = VerifyingKey::from_bytes(&hex::decode(pubkey).expect("x-only signer key"))
+        .expect("valid x-only signer key");
+    let signature = SchnorrSignature::try_from(
+        hex::decode(signature)
+            .expect("Schnorr signature hex")
+            .as_slice(),
+    )
+    .expect("valid Schnorr signature");
+    verifying_key
+        .verify_prehash(digest, &signature)
+        .expect("signature must verify over the SHA-256 digest");
+}
+
 fn assert_artifact_vector<T>(vector: &ArtifactVector<T>)
 where
     T: Serialize,
@@ -128,6 +145,12 @@ where
     assert_eq!(
         protocol::artifact_hash(&vector.artifact).expect("artifact hash"),
         vector.artifact_hash
+    );
+    let artifact_digest = hex::decode(&vector.artifact_hash).expect("artifact hash hex");
+    assert_bip340_signature_over_digest(
+        &vector.artifact.signer,
+        &vector.artifact.signature,
+        &artifact_digest,
     );
     assert!(protocol::verify_artifact(&vector.artifact));
 }
@@ -456,6 +479,23 @@ fn kernel_conformance_linked_identity_challenge_is_stable() {
         hex::encode(challenge),
         fixture.linked_identity.challenge_hex
     );
+    assert!(
+        crypto::verify_message(
+            &fixture.linked_identity.identity,
+            &fixture.linked_identity.linked_signature,
+            fixture.linked_identity.challenge_utf8.as_bytes(),
+        ),
+        "linked identity proof must verify under the linked Nostr key"
+    );
+    let challenge_digest = hex::decode(crypto::sha256_hex(
+        fixture.linked_identity.challenge_utf8.as_bytes(),
+    ))
+    .expect("challenge digest hex");
+    assert_bip340_signature_over_digest(
+        &fixture.linked_identity.identity,
+        &fixture.linked_identity.linked_signature,
+        &challenge_digest,
+    );
     assert_eq!(
         fixture
             .artifacts
@@ -476,6 +516,8 @@ fn kernel_conformance_linked_identity_challenge_is_stable() {
             .identity,
         fixture.keys.nostr_publication_id
     );
+    protocol::validate_descriptor_artifact(&fixture.artifacts.descriptor.artifact)
+        .expect("the canonical descriptor's linked identity proof must validate");
 }
 
 #[test]

@@ -6,6 +6,7 @@ import { join, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 import { promisify } from "node:util"
+import { createHash } from "node:crypto"
 
 import { buildToolDefinitions, handleToolCall } from "../lib/tools.js"
 
@@ -13,6 +14,35 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const REPO_ROOT = resolve(__dirname, "../../../../")
 const execFile = promisify(execFileCb)
+const INSTALL_TAG = "v0.1.0-alpha.1"
+const INSTALL_MANIFEST_SHA256 = "a".repeat(64)
+const INSTALL_BOOTSTRAP = "#!/bin/sh\nset -eu\nprintf 'fixture bootstrap\\n'\n"
+const INSTALL_BOOTSTRAP_SHA256 = createHash("sha256").update(INSTALL_BOOTSTRAP).digest("hex")
+
+function immutableReleaseFixture(overrides = {}) {
+  return {
+    tag_name: INSTALL_TAG,
+    immutable: true,
+    draft: false,
+    assets: [
+      {
+        name: "release-manifest.json",
+        digest: `sha256:${INSTALL_MANIFEST_SHA256}`,
+        state: "uploaded"
+      },
+      {
+        name: "agent-bootstrap.sh",
+        digest: `sha256:${INSTALL_BOOTSTRAP_SHA256}`,
+        state: "uploaded"
+      }
+    ],
+    ...overrides
+  }
+}
+
+function releaseResponseFor(url, release = immutableReleaseFixture()) {
+  return url.includes("?per_page=1") ? [release] : release
+}
 
 let tmpDir
 let tokenPath
@@ -77,6 +107,7 @@ function providerSearchResponse() {
         offers: [
           {
             offer_hash: "offer-hash-1",
+            service_id: "svc-1",
             offer_id: "svc-1",
             offer_kind: "execution",
             runtime: "python",
@@ -126,10 +157,51 @@ before(async () => {
           lookup: async () => [{ address: "93.184.216.34", family: 4 }]
         },
         marketplaceJsonRequest: mockMarketplaceJsonRequest
+      },
+      install: {
+        fetchReleaseMetadata: async (url) => releaseResponseFor(url),
+        fetchBootstrap: async () => INSTALL_BOOTSTRAP
       }
     }
   }
 })
+
+function exactTextField(text, field) {
+  const match = text.match(new RegExp(`^${field}: (.+)$`, "m"))
+  assert.ok(match, `missing ${field} in:\n${text}`)
+  return match[1]
+}
+
+async function approvedInstallGuide(args, testConfig = config) {
+  const plan = await handleToolCall(
+    "froglet",
+    { ...args, action: "plan_install" },
+    testConfig
+  )
+  assert.equal(plan.isError, undefined)
+  const planText = plan.content[0].text
+  assert.match(planText, /status: approval_required/)
+  return handleToolCall(
+    "froglet",
+    {
+      ...args,
+      action: "get_install_guide",
+      release_tag: exactTextField(planText, "release_tag"),
+      install_approval_hash: exactTextField(planText, "install_approval_hash")
+    },
+    testConfig
+  )
+}
+
+function withInstallDeps(install) {
+  return {
+    ...config,
+    _deps: {
+      ...config._deps,
+      install
+    }
+  }
+}
 
 after(async () => {
   if (tmpDir) await rm(tmpDir, { recursive: true, force: true })
@@ -176,15 +248,41 @@ describe("tool definitions", () => {
     assert.match(tools[0].description, /status/)
     assert.equal(tools[0].inputSchema.properties.starter.type, "string")
     assert.deepEqual(tools[0].inputSchema.properties.footprint.enum, [
+      "auto",
+      "native",
       "docker",
       "binary",
       "source"
     ])
+    assert.equal(tools[0].inputSchema.properties.release_tag.type, "string")
+    assert.equal(
+      tools[0].inputSchema.properties.install_approval_hash.pattern,
+      "^[0-9a-f]{64}$"
+    )
+    assert.match(tools[0].inputSchema.properties.action.description, /two-call flow/)
+    assert.doesNotMatch(tools[0].inputSchema.properties.action.description, /one-call/)
     assert.deepEqual(tools[0].inputSchema.properties.network_mode.enum, [
       "clearnet",
       "tor",
       "dual"
     ])
+    assert.deepEqual(tools[0].inputSchema.properties.hosting.properties.kind.enum, [
+      "local",
+      "relay",
+      "tor",
+      "self"
+    ])
+    assert.deepEqual(tools[0].inputSchema.properties.mounts.items.properties.kind.enum, [
+      "postgres",
+      "sqlite",
+      "object_store",
+      "s3",
+      "redis"
+    ])
+    assert.match(
+      tools[0].inputSchema.properties.mounts.items.properties.kind.description,
+      /compatibility alias/
+    )
     assert.deepEqual(tools[0].inputSchema.properties.workload_profile.enum, [
       "consumer",
       "provider",
@@ -310,12 +408,15 @@ describe("froglet MCP actions", () => {
     }
   })
 
-  it("publish_artifact forwards starter and schema metadata", async () => {
+  it("publish_artifact forwards the complete canonical publication intent", async () => {
     const restore = mockFetch(async (url, options = {}) => {
       assert.equal(String(url), "http://127.0.0.1:8080/v1/provider/artifacts/publish")
       const body = JSON.parse(options.body)
       assert.equal(body.service_id, "svc-1")
+      assert.equal(body.schema_version, "froglet.publication-intent.v1")
+      assert.equal(body.project_id, "project-1")
       assert.equal(body.wasm_module_hex, "0061736d01000000")
+      assert.equal(body.source_kind, "generated")
       assert.equal(body.starter, "{\"a\":7,\"b\":5}")
       assert.deepEqual(body.input_schema, {
         type: "object",
@@ -325,6 +426,22 @@ describe("froglet MCP actions", () => {
         type: "object",
         required: ["sum"]
       })
+      assert.deepEqual(body.limits, {
+        max_input_bytes: 4096,
+        max_runtime_ms: 2500,
+        max_memory_bytes: 8388608,
+        max_output_bytes: 2048,
+        fuel_limit: 50000
+      })
+      assert.deepEqual(body.verification, {
+        input: null,
+        expected_output: 42
+      })
+      assert.equal(body.price_sats, 2)
+      assert.equal(body.base_fee_msat, 1000)
+      assert.equal(body.success_fee_msat, 2000)
+      assert.equal(body.settlement_method, "lightning")
+      assert.equal(body.price_currency, "sat")
       return new Response(JSON.stringify({ status: "published" }), {
         status: 201,
         headers: { "Content-Type": "application/json" }
@@ -336,12 +453,27 @@ describe("froglet MCP actions", () => {
         {
           action: "publish_artifact",
           service_id: "svc-1",
+          project_id: "project-1",
           runtime: "wasm",
           package_kind: "inline_module",
           wasm_module_hex: "0061736d01000000",
+          source_kind: "generated",
           starter: "{\"a\":7,\"b\":5}",
           input_schema: { type: "object", required: ["a", "b"] },
-          output_schema: { type: "object", required: ["sum"] }
+          output_schema: { type: "object", required: ["sum"] },
+          limits: {
+            max_input_bytes: 4096,
+            max_runtime_ms: 2500,
+            max_memory_bytes: 8388608,
+            max_output_bytes: 2048,
+            fuel_limit: 50000
+          },
+          verification: { input: null, expected_output: 42 },
+          price_sats: 2,
+          base_fee_msat: 1000,
+          success_fee_msat: 2000,
+          settlement_method: "lightning",
+          price_currency: "sat"
         },
         config
       )
@@ -408,36 +540,56 @@ describe("froglet MCP actions", () => {
     assert.match(text, /status: decision_required/)
     assert.match(text, /decision: payment_rail/)
     assert.match(text, /recommended_for_first_install: none/)
+    assert.match(text, /lightning-phoenixd/)
   })
 
-  it("returns the no-clone agent bootstrap for claude-code + no payment", async () => {
-    const result = await handleToolCall(
+  it("withholds executable commands until the exact install plan is approved", async () => {
+    const withheld = await handleToolCall(
       "froglet",
       { action: "get_install_guide", payment_rail: "none" },
       config
     )
+    assert.equal(withheld.isError, undefined)
+    assert.match(withheld.content[0].text, /status: approval_required/)
+    assert.doesNotMatch(withheld.content[0].text, /bootstrap_tmp=/)
+
+    const result = await approvedInstallGuide({ payment_rail: "none" })
     assert.equal(result.isError, undefined)
     const text = result.content[0].text
+    assert.match(text, /status: approved/)
     assert.match(text, /target_agent: claude-code/)
     assert.match(text, /payment_rail: none/)
     assert.match(text, /run_as: user-host-shell/)
-    assert.match(text, /curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
+    assert.match(text, /footprint: auto/)
+    assert.match(text, new RegExp(`release_tag: ${INSTALL_TAG.replaceAll(".", "\\.")}`))
+    assert.match(text, new RegExp(`release_manifest_sha256: ${INSTALL_MANIFEST_SHA256}`))
+    assert.match(text, new RegExp(`bootstrap_sha256: ${INSTALL_BOOTSTRAP_SHA256}`))
+    assert.match(text, /mktemp .*froglet-agent-bootstrap/)
+    assert.match(text, /approved bootstrap SHA-256 mismatch/)
+    assert.match(text, new RegExp(`VERSION='${INSTALL_TAG.replaceAll(".", "\\.")}'`))
+    assert.match(text, new RegExp(`FROGLET_RELEASE_MANIFEST_SHA256='${INSTALL_MANIFEST_SHA256}'`))
+    assert.match(text, /sh "\$bootstrap_tmp"/)
     assert.doesNotMatch(text, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
     assert.doesNotMatch(text, /npm ci --prefix integrations\/mcp\/froglet/)
+    const command = text
+      .split("\n")
+      .find((line) => /^\s*1\.\s+/.test(line))
+      .replace(/^\s*1\.\s+/, "")
+    await execFile("sh", ["-n", "-c", command])
   })
 
-  it("swaps the agent and rail placeholders when the LLM picks different targets", async () => {
-    const result = await handleToolCall(
-      "froglet",
-      { action: "get_install_guide", target_agent: "codex", payment_rail: "stripe-test" },
-      config
-    )
+  it("binds agent choice and paid-rail host inputs without embedding secrets", async () => {
+    const result = await approvedInstallGuide({ target_agent: "codex", payment_rail: "stripe-test" })
     assert.equal(result.isError, undefined)
     const text = result.content[0].text
     assert.match(text, /target_agent: codex/)
     assert.match(text, /payment_rail: stripe-test/)
-    assert.match(text, /FROGLET_AGENT_TARGET=codex curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
-    assert.match(text, /Stripe: replace <stripe-test-secret-key>/)
+    assert.match(text, /FROGLET_AGENT_TARGET='codex'/)
+    assert.match(text, /FROGLET_PAYMENT_BACKEND='stripe'/)
+    assert.match(text, /FROGLET_STRIPE_SECRET_KEY="\$\{FROGLET_STRIPE_SECRET_KEY:\?set FROGLET_STRIPE_SECRET_KEY/)
+    assert.doesNotMatch(text, /<stripe-test-secret-key>|sk_test_fixture_secret/)
+    assert.match(text, /verifies and persists the selected stripe-test rail/)
+    assert.match(text, /Stripe: set FROGLET_STRIPE_SECRET_KEY/)
   })
 
   it("plans a local install before commands are executed", async () => {
@@ -457,18 +609,161 @@ describe("froglet MCP actions", () => {
     )
     assert.equal(result.isError, undefined)
     const text = result.content[0].text
+    assert.match(text, /status: approval_required/)
+    assert.match(text, /^install_approval_hash: [0-9a-f]{64}$/m)
+    assert.match(text, new RegExp(`release_tag: ${INSTALL_TAG.replaceAll(".", "\\.")}`))
+    assert.match(text, new RegExp(`bootstrap_sha256: ${INSTALL_BOOTSTRAP_SHA256}`))
     assert.match(text, /install_profile:/)
     assert.match(text, /target_agent: codex/)
     assert.match(text, /payment_rail: lightning-lnd-rest/)
     assert.match(text, /lightning_mode: lnd_rest/)
     assert.match(text, /network_mode: tor/)
     assert.match(text, /Questions to ask before running commands:\n  - None/)
-    assert.match(text, /FROGLET_NETWORK_MODE=tor/)
+    assert.match(text, /FROGLET_NETWORK_MODE='tor'/)
     assert.match(text, /FROGLET_MARKETPLACE_URL='https:\/\/marketplace\.froglet\.dev'/)
-    assert.match(text, /curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
+    assert.match(text, /FROGLET_AGENT_TARGET='codex'/)
+    assert.match(text, /FROGLET_BOOTSTRAP_MODE='docker'/)
+    assert.match(text, /FROGLET_PAYMENT_BACKEND='lightning'/)
+    assert.match(text, /FROGLET_LIGHTNING_MODE='lnd_rest'/)
+    assert.match(text, /FROGLET_LIGHTNING_REST_URL="\$\{FROGLET_LIGHTNING_REST_URL:\?set/)
+    assert.match(text, /process_manager_impact: Create the approved Compose file/)
+    assert.match(text, /\$HOME\/\.froglet\/data/)
     assert.match(text, /Post-install playbooks:/)
     assert.match(text, /provider-first/)
-    assert.match(text, /Safety: Ask before running install scripts/)
+    assert.match(text, /Safety: This plan is non-mutating/)
+  })
+
+  it("resolves immutable release metadata and bootstrap bytes through injected read-only dependencies", async () => {
+    const calls = []
+    const testConfig = withInstallDeps({
+      fetchReleaseMetadata: async (url) => {
+        calls.push(["release", url])
+        return releaseResponseFor(url)
+      },
+      fetchBootstrap: async (url) => {
+        calls.push(["bootstrap", url])
+        return Buffer.from(INSTALL_BOOTSTRAP)
+      }
+    })
+    const plan = await handleToolCall(
+      "froglet",
+      { action: "plan_install", payment_rail: "none" },
+      testConfig
+    )
+    assert.equal(plan.isError, undefined)
+    assert.deepEqual(calls, [
+      ["release", "https://api.github.com/repos/armanas/froglet/releases?per_page=1"],
+      ["bootstrap", `https://github.com/armanas/froglet/releases/download/${INSTALL_TAG}/agent-bootstrap.sh`]
+    ])
+    assert.match(plan.content[0].text, /Exact command preview \(not authorized for execution\):/)
+  })
+
+  it("rejects stale install approval after profile or bootstrap drift", async () => {
+    const plan = await handleToolCall(
+      "froglet",
+      { action: "plan_install", payment_rail: "none", footprint: "auto" },
+      config
+    )
+    const planText = plan.content[0].text
+    const approved = {
+      release_tag: exactTextField(planText, "release_tag"),
+      install_approval_hash: exactTextField(planText, "install_approval_hash")
+    }
+
+    const changedProfile = await handleToolCall(
+      "froglet",
+      {
+        action: "get_install_guide",
+        payment_rail: "none",
+        footprint: "docker",
+        ...approved
+      },
+      config
+    )
+    assert.equal(changedProfile.isError, true)
+    assert.match(changedProfile.content[0].text, /does not match the current immutable release/)
+
+    const changedBootstrapConfig = withInstallDeps({
+      fetchReleaseMetadata: async (url) => releaseResponseFor(url),
+      fetchBootstrap: async () => `${INSTALL_BOOTSTRAP}# changed\n`
+    })
+    const changedBootstrap = await handleToolCall(
+      "froglet",
+      {
+        action: "get_install_guide",
+        payment_rail: "none",
+        footprint: "auto",
+        ...approved
+      },
+      changedBootstrapConfig
+    )
+    assert.equal(changedBootstrap.isError, true)
+    assert.match(
+      changedBootstrap.content[0].text,
+      /does not match the immutable GitHub asset digest/
+    )
+  })
+
+  it("fails closed on mutable releases and malformed trust hashes", async () => {
+    const mutable = await handleToolCall(
+      "froglet",
+      { action: "plan_install", payment_rail: "none" },
+      withInstallDeps({
+        fetchReleaseMetadata: async (url) => releaseResponseFor(
+          url,
+          immutableReleaseFixture({ immutable: false })
+        ),
+        fetchBootstrap: async () => INSTALL_BOOTSTRAP
+      })
+    )
+    assert.equal(mutable.isError, true)
+    assert.match(mutable.content[0].text, /is mutable/)
+
+    const malformedManifest = await handleToolCall(
+      "froglet",
+      { action: "plan_install", payment_rail: "none" },
+      withInstallDeps({
+        fetchReleaseMetadata: async (url) => releaseResponseFor(
+          url,
+          immutableReleaseFixture({
+            assets: [{ name: "release-manifest.json", digest: "sha256:ABC", state: "uploaded" }]
+          })
+        ),
+        fetchBootstrap: async () => INSTALL_BOOTSTRAP
+      })
+    )
+    assert.equal(malformedManifest.isError, true)
+    assert.match(malformedManifest.content[0].text, /64-character lowercase SHA-256/)
+
+    const malformedBootstrap = await handleToolCall(
+      "froglet",
+      { action: "plan_install", payment_rail: "none" },
+      withInstallDeps({
+        fetchReleaseMetadata: async (url) => releaseResponseFor(url),
+        fetchBootstrap: async () => "echo unapproved-interpreter\n"
+      })
+    )
+    assert.equal(malformedBootstrap.isError, true)
+    assert.match(malformedBootstrap.content[0].text, /non-binary #!\/bin\/sh script/)
+
+    let fetched = false
+    const malformedApproval = await handleToolCall(
+      "froglet",
+      {
+        action: "get_install_guide",
+        payment_rail: "none",
+        install_approval_hash: "not-a-hash"
+      },
+      withInstallDeps({
+        fetchReleaseMetadata: async (url) => {
+          fetched = true
+          return releaseResponseFor(url)
+        },
+        fetchBootstrap: async () => INSTALL_BOOTSTRAP
+      })
+    )
+    assert.equal(malformedApproval.isError, true)
+    assert.equal(fetched, false)
   })
 
   it("plans post-install use cases without claiming batch or GPU support is complete", async () => {
@@ -501,18 +796,13 @@ describe("froglet MCP actions", () => {
   })
 
   it("threads expanded install profile choices into the command guide", async () => {
-    const result = await handleToolCall(
-      "froglet",
-      {
-        action: "get_install_guide",
-        target_agent: "manual",
-        payment_rail: "none",
-        footprint: "docker",
-        network_mode: "dual",
-        role: "consumer"
-      },
-      config
-    )
+    const result = await approvedInstallGuide({
+      target_agent: "manual",
+      payment_rail: "none",
+      footprint: "docker",
+      network_mode: "dual",
+      role: "consumer"
+    })
     assert.equal(result.isError, undefined)
     const text = result.content[0].text
     assert.match(text, /target_agent: manual/)
@@ -520,8 +810,9 @@ describe("froglet MCP actions", () => {
     assert.match(text, /role: consumer/)
     assert.doesNotMatch(text, /npm ci --prefix integrations\/mcp\/froglet/)
     assert.doesNotMatch(text, /setup-agent\.sh --target manual/)
-    assert.match(text, /FROGLET_AGENT_TARGET=manual FROGLET_NETWORK_MODE=dual curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
-    assert.match(text, /FROGLET_NETWORK_MODE=dual/)
+    assert.match(text, /FROGLET_AGENT_TARGET='manual'/)
+    assert.match(text, /FROGLET_BOOTSTRAP_MODE='docker'/)
+    assert.match(text, /FROGLET_NETWORK_MODE='dual'/)
     assert.match(text, /Manual target selected/)
   })
 
@@ -551,16 +842,8 @@ describe("froglet MCP actions", () => {
     assert.match(badNetwork.content[0].text, /network_mode must be one of/)
   })
 
-  it("keeps the install guide synchronized with README, quickstart, and the landing-page configurator", async () => {
-    // The canonical copy-paste block lives in four places today: the MCP
-    // action response, README.md, docs-site/.../quickstart.mdx, and the
-    // landing-page configurator. If any one drifts, humans and LLMs will
-    // disagree about what to run.
-    const result = await handleToolCall(
-      "froglet",
-      { action: "get_install_guide", payment_rail: "none" },
-      config
-    )
+  it("keeps public and compatibility install paths approval-gated", async () => {
+    const result = await approvedInstallGuide({ payment_rail: "none" })
     const text = result.content[0].text
     const steps = text
       .split("\n")
@@ -568,24 +851,27 @@ describe("froglet MCP actions", () => {
       .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
     assert.equal(steps.length, 1, `expected 1 command, got ${steps.length}`)
 
+    assert.match(
+      steps[0],
+      /github\.com\/armanas\/froglet\/releases\/download\/v0\.1\.0-alpha\.1\/agent-bootstrap\.sh/
+    )
+    assert.match(steps[0], /approved bootstrap SHA-256 mismatch/)
+    assert.match(steps[0], /sh "\$bootstrap_tmp" plan/)
+    assert.match(steps[0], /sh "\$bootstrap_tmp" execute "\$native_approval_hash"/)
+    assert.doesNotMatch(steps[0], /froglet\.dev\/agent/)
+
     const readme = await readFile(join(REPO_ROOT, "README.md"), "utf8")
-    for (const step of steps) {
-      assert.ok(
-        readme.includes(step),
-        `README.md is missing install-guide step: ${step}`
-      )
-    }
+    assert.match(readme, /sh "\$bootstrap" plan/)
+    assert.match(readme, /sh "\$bootstrap" execute '<install_approval_hash>'/)
+    assert.doesNotMatch(readme, /froglet\.dev\/agent \| bash/)
 
     const quickstart = await readFile(
       join(REPO_ROOT, "docs-site/src/content/docs/learn/quickstart.mdx"),
       "utf8"
     )
-    for (const step of steps) {
-      assert.ok(
-        quickstart.includes(step),
-        `docs-site quickstart is missing install-guide step: ${step}`
-      )
-    }
+    assert.match(quickstart, /sh "\$bootstrap" plan/)
+    assert.match(quickstart, /sh "\$bootstrap" execute '<install_approval_hash>'/)
+    assert.doesNotMatch(quickstart, /froglet\.dev\/agent \| bash/)
 
     const landingPage = await readFile(
       join(REPO_ROOT, "docs-site/src/pages/index.astro"),
@@ -598,7 +884,9 @@ describe("froglet MCP actions", () => {
       join(REPO_ROOT, "docs-site/src/scripts/self-host-configurator.ts"),
       "utf8"
     )
-    assert.match(configurator, /curl -fsSL https:\/\/froglet\.dev\/agent \| bash/)
+    assert.match(configurator, /releases\/download\/\$tag\/agent-bootstrap\.sh/)
+    assert.match(configurator, /X-GitHub-Api-Version: 2026-03-10/)
+    assert.match(configurator, /\$\{bootstrapEnv\}sh "\$bootstrap" plan/)
     assert.doesNotMatch(configurator, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
     assert.doesNotMatch(configurator, /npm ci --prefix integrations\/mcp\/froglet/)
     assert.doesNotMatch(configurator, /docker compose up --build -d/)
@@ -606,18 +894,51 @@ describe("froglet MCP actions", () => {
   })
 
   it("keeps the default install command independent of a repo clone", async () => {
-    const result = await handleToolCall(
-      "froglet",
-      { action: "get_install_guide", payment_rail: "none" },
-      config
-    )
+    const result = await approvedInstallGuide({ payment_rail: "none" })
     const text = result.content[0].text
     const steps = text
       .split("\n")
       .filter((line) => /^\s*\d+\.\s+/.test(line))
       .map((line) => line.replace(/^\s*\d+\.\s+/, "").trim())
 
-    assert.deepEqual(steps, ["curl -fsSL https://froglet.dev/agent | bash"])
+    assert.equal(steps.length, 1)
+    assert.doesNotMatch(steps[0], /git clone/)
+    assert.match(steps[0], /FROGLET_BOOTSTRAP_MODE='auto'/)
+  })
+
+  it("maps native and Docker footprints into the approved bootstrap environment", async () => {
+    for (const [footprint, expected] of [
+      ["native", "FROGLET_BOOTSTRAP_MODE='native'"],
+      ["docker", "FROGLET_BOOTSTRAP_MODE='docker'"]
+    ]) {
+      const result = await approvedInstallGuide({ payment_rail: "none", footprint })
+      const text = result.content[0].text
+      assert.match(text, new RegExp(expected))
+      assert.match(text, /approved bootstrap SHA-256 mismatch/)
+    }
+  })
+
+  it("passes every paid no-clone rail through exact host-environment references", async () => {
+    const expectations = [
+      ["lightning-mock", /FROGLET_PAYMENT_BACKEND='lightning' FROGLET_LIGHTNING_MODE='mock'/],
+      ["lightning-lnd-rest", /FROGLET_LIGHTNING_REST_URL="\$\{FROGLET_LIGHTNING_REST_URL:\?set/],
+      ["lightning-phoenixd", /FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD="\$\{FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD:\?set/],
+      ["stripe-test", /FROGLET_STRIPE_SECRET_KEY="\$\{FROGLET_STRIPE_SECRET_KEY:\?set/],
+      ["stripe-live", /FROGLET_STRIPE_LIVE_CONFIRM='fresh'/],
+      ["x402", /FROGLET_X402_WALLET_ADDRESS="\$\{FROGLET_X402_WALLET_ADDRESS:\?set/]
+    ]
+    for (const [paymentRail, expected] of expectations) {
+      const result = await approvedInstallGuide({ payment_rail: paymentRail, footprint: "native" })
+      const command = result.content[0].text
+        .split("\n")
+        .find((line) => /^\s*1\.\s+/.test(line))
+      assert.match(command, /^\s*1\. bootstrap_tmp=/)
+      assert.match(command, expected)
+      if (paymentRail === "x402") {
+        assert.match(command, /FROGLET_X402_FACILITATOR_URL="\$\{FROGLET_X402_FACILITATOR_URL:\?set/)
+      }
+      assert.doesNotMatch(command, /<[^>]+>/)
+    }
   })
 
   it("repo-local onboarding helpers work from a clean temp checkout", async () => {
@@ -645,14 +966,22 @@ describe("froglet MCP actions", () => {
       }
     }
 
-    await execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code"], {
-      cwd: checkoutDir
+    // The checked-in config is existing user state from setup's perspective.
+    // Repository-only setup without the native merger must preserve it.
+    const originalConfig = await readFile(join(checkoutDir, ".mcp.json"), "utf8")
+    await assert.rejects(execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code"], {
+      cwd: checkoutDir, timeout: 10000
+    }), /existing agent config requires/)
+    assert.equal(await readFile(join(checkoutDir, ".mcp.json"), "utf8"), originalConfig)
+    const generatedConfig = join(checkoutDir, ".mcp-generated.json")
+    await execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code", "--out", generatedConfig], {
+      cwd: checkoutDir, timeout: 10000
     })
     await execFile("bash", ["scripts/setup-payment.sh", "lightning"], {
       cwd: checkoutDir
     })
 
-    const mcpConfig = JSON.parse(await readFile(join(checkoutDir, ".mcp.json"), "utf8"))
+    const mcpConfig = JSON.parse(await readFile(generatedConfig, "utf8"))
     assert.equal(mcpConfig.mcpServers.froglet.command, "node")
 
     const paymentEnv = await readFile(
@@ -763,6 +1092,7 @@ describe("froglet MCP actions", () => {
                 offers: [
                   {
                     offer_hash: "marketplace-search-hash",
+                    service_id: "marketplace.search",
                     offer_id: "marketplace.search",
                     offer_kind: "builtin",
                     runtime: "builtin"
@@ -1013,7 +1343,6 @@ describe("froglet MCP actions", () => {
             provider_id: "a".repeat(64),
             hostname: "demo-1.providers.froglet.dev",
             public_ip: "8.8.8.8",
-            dns_record_id: null,
             dns_required: true
           }),
           { status: 200 }
@@ -1391,6 +1720,12 @@ describe("froglet MCP actions", () => {
     let runtimeDealBody = null
     const restore = mockFetch(async (url, opts) => {
       const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/local-provider") {
+        return new Response(JSON.stringify({ error: "provider not found" }), { status: 404 })
+      }
+      if (urlStr === "http://127.0.0.1:8080/v1/node/identity") {
+        return new Response(JSON.stringify({ node_id: "local-provider" }))
+      }
       if (urlStr === "http://127.0.0.1:8080/v1/provider/services/demo.add.local") {
         return new Response(
           JSON.stringify({
@@ -1447,6 +1782,12 @@ describe("froglet MCP actions", () => {
     let runtimeDealBody = null
     const restore = mockFetch(async (url, opts) => {
       const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/prov-1") {
+        return new Response(JSON.stringify({ error: "provider not found" }), { status: 404 })
+      }
+      if (urlStr === "http://127.0.0.1:8080/v1/node/identity") {
+        return new Response(JSON.stringify({ node_id: "prov-1" }))
+      }
       if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
         runtimeDealBody = JSON.parse(opts.body)
         return new Response(
@@ -1490,6 +1831,12 @@ describe("froglet MCP actions", () => {
     let runtimeDealBody = null
     const restore = mockFetch(async (url, opts) => {
       const urlStr = String(url)
+      if (urlStr === "http://127.0.0.1:8081/v1/runtime/providers/prov-1") {
+        return new Response(JSON.stringify({ error: "provider not found" }), { status: 404 })
+      }
+      if (urlStr === "http://127.0.0.1:8080/v1/node/identity") {
+        return new Response(JSON.stringify({ node_id: "prov-1" }))
+      }
       if (urlStr === "http://127.0.0.1:8081/v1/runtime/deals") {
         runtimeDealBody = JSON.parse(opts.body)
         return new Response(

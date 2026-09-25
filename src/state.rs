@@ -1,12 +1,12 @@
 use crate::{
-    confidential::ConfidentialPolicy, config::NodeConfig, db, db::DbPool,
-    execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
+    builtins::DataQueryHandlerCache, confidential::ConfidentialPolicy, config::NodeConfig, db,
+    db::DbPool, execution::BuiltinServiceHandler, identity::NodeIdentity, lnd::LndRestClient,
     pricing::PricingTable, public_quota::IdentityQuota, runtime_auth, sandbox::WasmSandbox,
     settlement::SettlementRegistry, tls, wasm_host::WasmHostEnvironment,
 };
 use serde::Serialize;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
-use tokio::sync::{Mutex as TokioMutex, OnceCell, Semaphore};
+use tokio::sync::{Mutex as TokioMutex, OnceCell, RwLock, Semaphore, watch};
 
 fn advertiseable_clearnet_url(addr: SocketAddr) -> Option<String> {
     (!addr.ip().is_unspecified()).then(|| format!("http://{}", addr))
@@ -46,6 +46,17 @@ pub struct TransportStatus {
     pub relay_enabled: bool,
     pub relay_url: Option<String>,
     pub relay_status: String,
+    /// Desired connection state derived only from durable exact publication
+    /// grants. Skipped from capability serialization; callers see the
+    /// resulting `reserved`/`starting`/`up`/`down` status instead.
+    #[serde(skip)]
+    relay_activation_tx: watch::Sender<bool>,
+    /// Linearizes relay-origin request admission against exact grant and
+    /// lifecycle changes. Request middleware holds a read guard through the
+    /// complete response; revocation/publish/activation holds a write guard
+    /// through database commit and activation-gate synchronization.
+    #[serde(skip)]
+    relay_publication_gate: Arc<RwLock<()>>,
     /// Self-dialable address of this node's own provider (public router)
     /// listener, recorded at bind time. Lets the runtime half of a dual
     /// node resolve itself as a provider without the operator setting
@@ -59,6 +70,7 @@ pub struct TransportStatus {
 impl TransportStatus {
     pub fn from_config(config: &NodeConfig) -> Self {
         let clearnet_enabled = config.network_mode.should_start_clearnet();
+        let (relay_activation_tx, _relay_activation_rx) = watch::channel(false);
         Self {
             clearnet_enabled,
             clearnet_url: clearnet_enabled
@@ -74,12 +86,49 @@ impl TransportStatus {
             relay_enabled: config.relay.enabled,
             relay_url: None,
             relay_status: if config.relay.enabled {
-                "starting".to_string()
+                "reserved".to_string()
             } else {
                 "disabled".to_string()
             },
+            relay_activation_tx,
+            relay_publication_gate: Arc::new(RwLock::new(())),
             local_provider_bound_addr: None,
         }
+    }
+
+    /// Bind relay planning to the current provider identity. This derives the
+    /// exact public URL locally and opens no network connection.
+    pub fn configure_relay_planning(
+        &mut self,
+        config: &NodeConfig,
+        provider_id: &str,
+        has_matching_grant: bool,
+    ) -> Result<(), String> {
+        self.relay_url = config.relay.planned_public_url(provider_id)?;
+        if !self.relay_enabled {
+            self.relay_status = "disabled".to_string();
+            self.relay_activation_tx.send_replace(false);
+            return Ok(());
+        }
+        self.relay_status = if has_matching_grant {
+            "starting".to_string()
+        } else {
+            "reserved".to_string()
+        };
+        self.relay_activation_tx.send_replace(has_matching_grant);
+        Ok(())
+    }
+
+    pub(crate) fn relay_activation_receiver(&self) -> watch::Receiver<bool> {
+        self.relay_activation_tx.subscribe()
+    }
+
+    pub(crate) fn set_relay_activation_desired(&self, active: bool) {
+        self.relay_activation_tx.send_replace(active);
+    }
+
+    pub(crate) fn relay_publication_gate(&self) -> Arc<RwLock<()>> {
+        self.relay_publication_gate.clone()
     }
 
     pub fn update_clearnet_bound_addr(
@@ -131,6 +180,13 @@ pub struct AppState {
     pub provider_control_auth_token_path: PathBuf,
     pub events_query_semaphore: Arc<Semaphore>,
     pub process_execution_semaphore: Arc<Semaphore>,
+    /// Lazily validated native data-query handlers, isolated to this node and
+    /// keyed by the signed contract plus content/package digest.
+    pub native_data_query_handlers: DataQueryHandlerCache,
+    /// Serializes native-data publication through verification and lifecycle
+    /// commit. A failed request must never remove a content-addressed file
+    /// adopted by another successful request on the same Froglet Node.
+    pub native_data_publication_lock: TokioMutex<()>,
     pub hosted_trial_deal_quota: Option<Arc<IdentityQuota>>,
     pub hosted_trial_session_quota: Arc<IdentityQuota>,
     pub event_publish_quota: Arc<IdentityQuota>,
@@ -173,12 +229,15 @@ pub fn ensure_storage_dirs(config: &NodeConfig) -> Result<(), String> {
 
 pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
     tls::ensure_rustls_crypto_provider();
+    // Identity recovery deliberately precedes general directory creation:
+    // a journaled restore owns the not-yet-installed identity directory and
+    // must be completed before `load_or_create` is allowed to generate keys.
+    let identity = Arc::new(NodeIdentity::load_or_create(&config)?);
     ensure_storage_dirs(&config)?;
 
     let wasm_sandbox = Arc::new(WasmSandbox::from_env()?);
     wasm_sandbox.warm_up();
 
-    let identity = Arc::new(NodeIdentity::load_or_create(&config)?);
     let runtime_auth = runtime_auth::load_or_create_local_runtime_auth(&config)?;
     let consumer_control_auth_token = runtime_auth::load_or_create_local_token(
         &config.storage.runtime_dir,
@@ -196,6 +255,36 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
     )?;
     let db_pool = DbPool::open(&config.storage.db_path)
         .map_err(|error| format!("failed to initialize SQLite DB pool: {error}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("system clock is before Unix epoch: {error}"))?
+        .as_secs()
+        .try_into()
+        .map_err(|_| "system clock exceeds SQLite timestamp range".to_string())?;
+    let paused_publications = db_pool
+        .pause_publications_for_provider_identity(identity.node_id(), now)
+        .map_err(|error| format!("failed to reconcile publication identity: {error}"))?;
+    if !paused_publications.is_empty() {
+        tracing::warn!(
+            provider_id = %identity.node_id(),
+            services = ?paused_publications,
+            "paused active publications signed by a different provider identity; republish is required"
+        );
+    }
+    let planned_relay_url = config.relay.planned_public_url(identity.node_id())?;
+    let expected_relay = planned_relay_url
+        .as_deref()
+        .zip(config.relay.url.as_deref());
+    let relay_grants = db_pool
+        .reconcile_publication_transport_grants(expected_relay)
+        .map_err(|error| format!("failed to reconcile publication transport grants: {error}"))?;
+    let has_matching_relay_grant = !relay_grants.is_empty();
+    let mut transport_status = TransportStatus::from_config(&config);
+    transport_status.configure_relay_planning(
+        &config,
+        identity.node_id(),
+        has_matching_relay_grant,
+    )?;
     let events_query_capacity = db_pool.read_connection_count().max(1);
     let http_client = tls::build_reqwest_client(config.http_ca_cert_path.as_deref())
         .map_err(|error| format!("failed to initialize shared HTTP client: {error}"))?;
@@ -238,7 +327,8 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
                 .map(|client| Arc::clone(client) as crate::settlement::wallet::ArcLightningWallet)
         };
 
-    let settlement_registry = SettlementRegistry::new(&config);
+    let settlement_registry = SettlementRegistry::new(&config)
+        .map_err(|error| format!("failed to initialize settlement drivers: {error}"))?;
 
     let session_pool = if config.session_pool.enabled {
         Some(crate::session_pool::SessionPool::new(
@@ -275,7 +365,7 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
 
     Ok(Arc::new(AppState {
         db: db_pool,
-        transport_status: Arc::new(TokioMutex::new(TransportStatus::from_config(&config))),
+        transport_status: Arc::new(TokioMutex::new(transport_status)),
         wasm_sandbox,
         pricing: PricingTable::from_config(config.pricing),
         identity,
@@ -291,6 +381,8 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         provider_control_auth_token_path: config.storage.provider_control_auth_token_path.clone(),
         events_query_semaphore: Arc::new(Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(Semaphore::new(config.process_limits.concurrency)),
+        native_data_query_handlers: DataQueryHandlerCache::default(),
+        native_data_publication_lock: TokioMutex::const_new(()),
         hosted_trial_deal_quota,
         hosted_trial_session_quota,
         event_publish_quota,
@@ -392,6 +484,66 @@ mod tests {
         }
     }
 
+    fn signed_test_publication_revision(
+        identity: &NodeIdentity,
+    ) -> froglet_protocol::publication::SignedPublicationRevision {
+        use froglet_protocol::publication::{
+            LocalVerificationEvidence, PUBLICATION_REVISION_SCHEMA_V1, PublicationCurrency,
+            PublicationRevisionPayload, PublicationRevisionPrice, PublicationRevisionService,
+            PublicationSettlement, ResolvedPublicationLimits, sign_publication_revision,
+        };
+
+        sign_publication_revision(
+            PublicationRevisionPayload {
+                schema_version: PUBLICATION_REVISION_SCHEMA_V1.to_string(),
+                provider_id: identity.node_id().to_string(),
+                service_id: "identity-restart-service".to_string(),
+                offer_id: "identity-restart-offer".to_string(),
+                offer_hash: "11".repeat(32),
+                binding_hash: "22".repeat(32),
+                package_digest: "33".repeat(32),
+                runtime: "wasm".to_string(),
+                package_kind: "inline_module".to_string(),
+                build_evidence: None,
+                service: PublicationRevisionService {
+                    project_id: None,
+                    summary: None,
+                    starter: None,
+                    source_kind: "artifact".to_string(),
+                    entrypoint_kind: "handler".to_string(),
+                    entrypoint: "run".to_string(),
+                    contract_version: "froglet.wasm.run_json.v1".to_string(),
+                    mode: "sync".to_string(),
+                    mounts: Vec::new(),
+                    capabilities: Vec::new(),
+                    input_schema: None,
+                    output_schema: None,
+                },
+                limits: ResolvedPublicationLimits {
+                    max_input_bytes: 4096,
+                    max_runtime_ms: 1000,
+                    max_memory_bytes: 8 * 1024 * 1024,
+                    max_output_bytes: 4096,
+                    fuel_limit: 50_000,
+                },
+                price: PublicationRevisionPrice {
+                    settlement_method: PublicationSettlement::None,
+                    currency: PublicationCurrency::Sat,
+                    base_amount_minor: 0,
+                    success_amount_minor: 0,
+                    offer_settlement_method: "none".to_string(),
+                },
+                local_verification: LocalVerificationEvidence {
+                    input_hash: "44".repeat(32),
+                    result_hash: "55".repeat(32),
+                    expected_output_matched: Some(true),
+                },
+            },
+            |message| identity.sign_message_hex(message),
+        )
+        .expect("valid test publication revision")
+    }
+
     #[test]
     fn transport_status_uses_public_base_url_override() {
         let status = TransportStatus::from_config(&test_config(
@@ -402,6 +554,219 @@ mod tests {
         assert_eq!(
             status.clearnet_url.as_deref(),
             Some("http://127.0.0.1:8080")
+        );
+    }
+
+    #[test]
+    fn restart_after_identity_rotation_pauses_old_active_publication() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("valid time")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "froglet-state-identity-restart-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let mut config = test_config(NetworkMode::Clearnet, None);
+        config.storage = StorageConfig {
+            data_dir: temp_dir.clone(),
+            db_path: temp_dir.join("node.db"),
+            identity_dir: temp_dir.join("identity"),
+            identity_seed_path: temp_dir.join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir.join("identity/nostr-publication.secp256k1.seed"),
+            runtime_dir: temp_dir.join("runtime"),
+            runtime_auth_token_path: temp_dir.join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
+            tor_dir: temp_dir.join("tor"),
+            host_readable_control_token: false,
+        };
+
+        let first = build_app_state(config.clone()).expect("first startup");
+        let old_provider_id = first.identity.node_id().to_string();
+        let signed_revision = signed_test_publication_revision(&first.identity);
+        let revision_hash = signed_revision.revision_hash.clone();
+        drop(first);
+
+        let conn = db::initialize_db(&config.storage.db_path).expect("open publication db");
+        db::persist_and_activate_publication_revision(
+            &conn,
+            &db::NewPublicationRevision {
+                revision_hash: revision_hash.clone(),
+                service_id: "identity-restart-service".to_string(),
+                offer_id: "identity-restart-offer".to_string(),
+                offer_hash: signed_revision.payload.offer_hash.clone(),
+                binding_hash: signed_revision.payload.binding_hash.clone(),
+                signed_revision_json: serde_json::to_string(&signed_revision)
+                    .expect("signed revision JSON"),
+                definition_json: serde_json::json!({
+                    "offer_id": "identity-restart-offer",
+                    "service_id": "identity-restart-service",
+                })
+                .to_string(),
+            },
+            "active",
+            r#"{"operation":"publish"}"#,
+            1,
+        )
+        .expect("persist old-identity publication");
+        drop(conn);
+
+        let paths = crate::identity_custody::IdentityPaths::from(&config);
+        let backup_path = temp_dir.join("identity-backup.json");
+        let recovery_key_path = temp_dir.join("identity-recovery.key");
+        let adapter = crate::identity_custody::RecoveryKeyFileAdapter::create(&recovery_key_path)
+            .expect("recovery key");
+        crate::identity_custody::create_backup(&paths, &backup_path, &adapter, None)
+            .expect("current backup");
+        let rotation = crate::identity_custody::rotate_node_identity(
+            &paths,
+            &adapter,
+            None,
+            "restart reconciliation test",
+        )
+        .expect("rotate identity");
+        assert_eq!(rotation.old_node_id, old_provider_id);
+
+        let second = build_app_state(config.clone()).expect("restart after rotation");
+        assert_eq!(second.identity.node_id(), rotation.new_node_id);
+        drop(second);
+
+        let conn = db::initialize_db(&config.storage.db_path).expect("reopen publication db");
+        let lifecycle = db::get_publication_lifecycle(&conn, "identity-restart-service")
+            .expect("lifecycle lookup")
+            .expect("lifecycle exists");
+        assert_eq!(lifecycle.status, "paused");
+        assert!(lifecycle.active_revision_hash.is_none());
+        assert_eq!(lifecycle.selected_revision_hash, revision_hash);
+        assert_eq!(lifecycle.revision_count, 1);
+        let revision = db::get_publication_revision(
+            &conn,
+            "identity-restart-service",
+            &lifecycle.selected_revision_hash,
+        )
+        .expect("revision lookup")
+        .expect("revision remains");
+        assert_eq!(
+            revision.signed_revision["payload"]["provider_id"],
+            old_provider_id
+        );
+        let operations = db::list_publication_operations(&conn, "identity-restart-service", 10)
+            .expect("operation log");
+        assert!(operations.iter().any(|operation| {
+            operation.operation == "pause"
+                && operation.evidence["reason"] == "provider_identity_changed"
+                && operation.evidence["required_action"] == "republish"
+        }));
+        drop(conn);
+        std::fs::remove_dir_all(&temp_dir).expect("clean test directory");
+    }
+
+    #[test]
+    fn restart_after_relay_control_url_change_removes_old_grant() {
+        let temp_dir = tempfile::tempdir().expect("temporary directory");
+        let mut config = test_config(NetworkMode::Clearnet, None);
+        config.storage = StorageConfig {
+            data_dir: temp_dir.path().to_path_buf(),
+            db_path: temp_dir.path().join("node.db"),
+            identity_dir: temp_dir.path().join("identity"),
+            identity_seed_path: temp_dir.path().join("identity/secp256k1.seed"),
+            nostr_publication_seed_path: temp_dir
+                .path()
+                .join("identity/nostr-publication.secp256k1.seed"),
+            runtime_dir: temp_dir.path().join("runtime"),
+            runtime_auth_token_path: temp_dir.path().join("runtime/auth.token"),
+            consumer_control_auth_token_path: temp_dir.path().join("runtime/consumerctl.token"),
+            provider_control_auth_token_path: temp_dir.path().join("runtime/froglet-control.token"),
+            tor_dir: temp_dir.path().join("tor"),
+            host_readable_control_token: false,
+        };
+        config.relay = crate::config::RelayConfig {
+            url: Some("wss://control-a.relay.example/v1/tunnel".to_string()),
+            public_suffix: Some("relay.example".to_string()),
+            enabled: true,
+        };
+
+        let first = build_app_state(config.clone()).expect("first startup");
+        let public_url = config
+            .relay
+            .planned_public_url(first.identity.node_id())
+            .expect("planned relay URL")
+            .expect("enabled relay URL");
+        let signed_revision = signed_test_publication_revision(&first.identity);
+        let revision_hash = signed_revision.revision_hash.clone();
+        drop(first);
+
+        let conn = db::initialize_db(&config.storage.db_path).expect("open publication db");
+        let lifecycle = db::persist_and_activate_publication_revision(
+            &conn,
+            &db::NewPublicationRevision {
+                revision_hash: revision_hash.clone(),
+                service_id: "identity-restart-service".to_string(),
+                offer_id: "identity-restart-offer".to_string(),
+                offer_hash: signed_revision.payload.offer_hash.clone(),
+                binding_hash: signed_revision.payload.binding_hash.clone(),
+                signed_revision_json: serde_json::to_string(&signed_revision)
+                    .expect("signed revision JSON"),
+                definition_json: serde_json::json!({
+                    "offer_id": "identity-restart-offer",
+                    "service_id": "identity-restart-service",
+                })
+                .to_string(),
+            },
+            "active",
+            r#"{"operation":"publish"}"#,
+            1,
+        )
+        .expect("persist publication");
+        db::persist_publication_transport_grant(
+            &conn,
+            &db::NewPublicationTransportGrant {
+                transport: "relay",
+                service_id: "identity-restart-service",
+                revision_hash: &revision_hash,
+                activation_token: &lifecycle.activation_token,
+                public_url: &public_url,
+                relay_control_url: "wss://control-a.relay.example/v1/tunnel",
+                now: 2,
+            },
+        )
+        .expect("persist relay grant");
+        drop(conn);
+
+        let matching = build_app_state(config.clone()).expect("matching restart");
+        {
+            let transport = matching
+                .transport_status
+                .try_lock()
+                .expect("uncontended transport status");
+            assert_eq!(transport.relay_status, "starting");
+            let desired = transport.relay_activation_receiver();
+            assert!(*desired.borrow());
+        }
+        drop(matching);
+
+        config.relay.url = Some("wss://control-b.relay.example/v1/tunnel".to_string());
+        let changed = build_app_state(config.clone()).expect("changed-control restart");
+        {
+            let transport = changed
+                .transport_status
+                .try_lock()
+                .expect("uncontended transport status");
+            assert_eq!(transport.relay_status, "reserved");
+            assert_eq!(transport.relay_url.as_deref(), Some(public_url.as_str()));
+            let desired = transport.relay_activation_receiver();
+            assert!(!*desired.borrow());
+        }
+        drop(changed);
+
+        let conn = db::initialize_db(&config.storage.db_path).expect("reopen publication db");
+        assert!(
+            db::list_publication_transport_grants(&conn, "relay")
+                .expect("relay grants")
+                .is_empty(),
+            "a grant for the old WSS endpoint must not reconnect after restart"
         );
     }
 
@@ -471,11 +836,24 @@ mod tests {
                 .expect("provider control token metadata");
         let runtime_token_mode = std::fs::metadata(&state.config.storage.runtime_auth_token_path)
             .expect("runtime token metadata");
+        let database_mode =
+            std::fs::metadata(&state.config.storage.db_path).expect("database metadata");
+        let mut wal_path = state.config.storage.db_path.as_os_str().to_os_string();
+        wal_path.push("-wal");
+        let wal_mode =
+            std::fs::metadata(std::path::PathBuf::from(wal_path)).expect("database WAL metadata");
+        let mut shm_path = state.config.storage.db_path.as_os_str().to_os_string();
+        shm_path.push("-shm");
+        let shm_mode =
+            std::fs::metadata(std::path::PathBuf::from(shm_path)).expect("database SHM metadata");
 
         assert_eq!(data_mode.permissions().mode() & 0o777, 0o755);
         assert_eq!(runtime_mode.permissions().mode() & 0o777, 0o755);
         assert_eq!(provider_token_mode.permissions().mode() & 0o777, 0o644);
         assert_eq!(runtime_token_mode.permissions().mode() & 0o777, 0o600);
+        assert_eq!(database_mode.permissions().mode() & 0o777, 0o600);
+        assert_eq!(wal_mode.permissions().mode() & 0o777, 0o600);
+        assert_eq!(shm_mode.permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

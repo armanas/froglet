@@ -23,6 +23,7 @@ Public launch entry points:
 
 ## Specifications
 
+- [SPEC.md](SPEC.md): protocol specification umbrella — verification algorithm, chain validation and issue-code registry, settlement-method registry (what each rail proves vs attests), conformance, non-goals
 - [KERNEL.md](KERNEL.md): normative kernel specification — signed artifacts, settlement, state machines
 - [VERSIONING.md](VERSIONING.md): stability policy — what is frozen, what may change, how `froglet/v2` would happen
 - [THREAT_MODEL.md](THREAT_MODEL.md): assets, trust boundaries, key-compromise runbook, accepted risks
@@ -33,6 +34,8 @@ Public launch entry points:
 ## Architecture
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): system layering — kernel, adapters, runtime, services
+- [AGENT_FIRST_PUBLICATION_PLAN.md](AGENT_FIRST_PUBLICATION_PLAN.md): two-approval implementation/evidence matrix, dependency budget, and remaining external gates
+- [PUBLICATION_CONTRACT.md](PUBLICATION_CONTRACT.md): versioned non-Kernel publication, lifecycle/native MCP, reachability, portable hosting, and Release Bundle contracts
 - [MARKETPLACE.md](MARKETPLACE.md): marketplace integration and the default public marketplace
 - [ARBITER.md](ARBITER.md): MVP complaint and marketplace enforcement boundary
 - [RELAY.md](RELAY.md): relay ingress v1 contract (outbound tunnel, zero-DNS public HTTPS)
@@ -53,6 +56,7 @@ Public launch entry points:
 - [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md): publish path and provider onboarding
 - [PAYMENT_MATRIX.md](PAYMENT_MATRIX.md): payment rails and verification coverage
 - [IDENTITY_ATTESTATION.md](IDENTITY_ATTESTATION.md): optional DNS + OAuth identity bindings
+- [IDENTITY_CUSTODY.md](IDENTITY_CUSTODY.md): encrypted backup, fail-closed restore, signed rotation continuity, and KMS/HSM custody adapters
 - [DOCKER.md](DOCKER.md): local compose and container deployment
 - [GCP_SINGLE_VM.md](GCP_SINGLE_VM.md): single-VM self-host deployment wrapper
 - [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the hosted trial

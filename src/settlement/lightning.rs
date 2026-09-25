@@ -6,13 +6,13 @@ use crate::{
     protocol::{
         DealPayload, InvoiceBundleLeg, InvoiceBundleLegState, InvoiceBundlePayload, QuotePayload,
         QuoteSettlementTerms, SignedArtifact, TRANSPORT_KIND_INVOICE_BUNDLE, sign_artifact,
-        verify_artifact,
+        validate_quote_artifact, verify_artifact,
     },
     settlement::wallet::{LightningWallet, WalletError},
     state::AppState,
 };
 use futures::future::BoxFuture;
-use lightning_invoice::Bolt11Invoice;
+use lightning_invoice::{Bolt11Invoice, Currency};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -117,6 +117,24 @@ pub struct LightningWalletIntent {
     pub release_action: Option<LightningWalletReleaseAction>,
 }
 
+/// Inputs required to bind a provider-returned prepaid invoice to the signed
+/// quote before the requester gives the invoice to its wallet.
+pub(crate) struct PrepaidLightningInvoiceValidation<'a> {
+    pub invoice_bolt11: &'a str,
+    pub expected_payment_hash: &'a str,
+    pub expected_amount_sat: u64,
+    /// Enforce the invoice payee when the requester has a trusted destination.
+    /// Production prepaid callers must pass the destination signed in the quote;
+    /// `None` exists only for payment-free mock validation.
+    pub expected_destination_identity: Option<&'a str>,
+    /// Enforce the BOLT11 network when the paying wallet's network is known.
+    /// Phoenixd production callers should pass [`Currency::Bitcoin`].
+    pub expected_network: Option<Currency>,
+    pub now: i64,
+    pub deal_admission_deadline: i64,
+    pub quote: &'a SignedArtifact<QuotePayload>,
+}
+
 // ─── Private internal types ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +150,9 @@ struct DecodedLightningInvoice {
     amount_msat: u64,
     payment_hash: String,
     expires_at: i64,
+    expiry_secs: Option<u64>,
     destination_identity: String,
+    network: Option<Currency>,
     min_final_cltv_expiry: u32,
 }
 
@@ -224,7 +244,9 @@ fn decode_lightning_invoice(invoice: &str) -> Result<DecodedLightningInvoice, St
             amount_msat: mock.amount_msat,
             payment_hash: mock.payment_hash,
             expires_at: mock.expires_at,
+            expiry_secs: None,
             destination_identity: String::new(),
+            network: None,
             min_final_cltv_expiry: 0,
         });
     }
@@ -238,16 +260,132 @@ fn decode_lightning_invoice(invoice: &str) -> Result<DecodedLightningInvoice, St
     let expires_at = invoice
         .expires_at()
         .ok_or_else(|| "invoice expiry overflowed".to_string())?
-        .as_secs() as i64;
+        .as_secs()
+        .try_into()
+        .map_err(|_| "invoice expiry exceeds the supported timestamp range".to_string())?;
     let destination_identity = hex::encode(invoice.get_payee_pub_key().serialize());
 
     Ok(DecodedLightningInvoice {
         amount_msat,
         payment_hash: invoice.payment_hash().to_string(),
         expires_at,
+        expiry_secs: Some(invoice.expiry_time().as_secs()),
         destination_identity,
+        network: Some(invoice.currency()),
         min_final_cltv_expiry: invoice.min_final_cltv_expiry_delta() as u32,
     })
+}
+
+pub(crate) fn validate_prepaid_lightning_invoice(
+    request: PrepaidLightningInvoiceValidation<'_>,
+) -> Result<(), String> {
+    let PrepaidLightningInvoiceValidation {
+        invoice_bolt11,
+        expected_payment_hash,
+        expected_amount_sat,
+        expected_destination_identity,
+        expected_network,
+        now,
+        deal_admission_deadline,
+        quote,
+    } = request;
+    if quote.artifact_type != crate::protocol::ARTIFACT_KIND_QUOTE {
+        return Err("prepaid settlement terms must come from a quote artifact".to_string());
+    }
+    if !verify_artifact(quote) {
+        return Err("prepaid quote signature is invalid".to_string());
+    }
+    validate_quote_artifact(quote).map_err(|error| format!("prepaid quote is invalid: {error}"))?;
+    if quote.payload.settlement_terms.method != "lightning.prepaid.v1" {
+        return Err("signed quote does not use lightning.prepaid.v1".to_string());
+    }
+    let decoded = decode_lightning_invoice(invoice_bolt11)?;
+    let expected_amount_msat = expected_amount_sat
+        .checked_mul(1_000)
+        .ok_or_else(|| "prepaid invoice amount overflowed millisatoshis".to_string())?;
+    if quote.payload.settlement_terms.base_fee_msat != expected_amount_msat {
+        return Err("provider prepaid amount does not match the signed quote amount".to_string());
+    }
+    if decoded.amount_msat != expected_amount_msat {
+        return Err("prepaid invoice amount does not match the expected amount".to_string());
+    }
+    let expected_payment_hash_bytes = hex::decode(expected_payment_hash)
+        .map_err(|_| "expected prepaid payment hash is not valid hex".to_string())?;
+    if expected_payment_hash_bytes.len() != 32 {
+        return Err("expected prepaid payment hash must be 32 bytes".to_string());
+    }
+    if decoded.payment_hash != hex::encode(expected_payment_hash_bytes) {
+        return Err(
+            "prepaid invoice payment hash does not match the expected payment hash".to_string(),
+        );
+    }
+    if let Some(expected_network) = expected_network
+        && decoded.network != Some(expected_network)
+    {
+        return Err("prepaid invoice network does not match the paying wallet network".to_string());
+    }
+    if let Some(expected_destination) = expected_destination_identity {
+        let quoted_destination = normalize_lightning_destination_identity(
+            &quote.payload.settlement_terms.destination_identity,
+        )?;
+        let expected_destination = normalize_lightning_destination_identity(expected_destination)?;
+        if expected_destination != quoted_destination {
+            return Err(
+                "expected prepaid destination does not match the signed quote destination"
+                    .to_string(),
+            );
+        }
+        if decoded.destination_identity != expected_destination {
+            return Err(
+                "prepaid invoice destination does not match the expected destination".to_string(),
+            );
+        }
+    }
+    if request_time_has_reached_invoice_expiry(now, decoded.expires_at) {
+        return Err("prepaid invoice is expired".to_string());
+    }
+    let quoted_expiry_secs: i64 = quote
+        .payload
+        .settlement_terms
+        .max_base_invoice_expiry_secs
+        .try_into()
+        .map_err(|_| "quoted prepaid invoice expiry is out of range".to_string())?;
+    if decoded.expiry_secs.is_some_and(|expiry_secs| {
+        expiry_secs > quote.payload.settlement_terms.max_base_invoice_expiry_secs
+    }) {
+        return Err("prepaid invoice exceeds the quoted expiry window".to_string());
+    }
+    let latest_expiry_from_now = now
+        .checked_add(quoted_expiry_secs)
+        .ok_or_else(|| "quoted prepaid invoice expiry overflowed".to_string())?;
+    if decoded.expires_at > latest_expiry_from_now {
+        return Err("prepaid invoice exceeds the quoted expiry window".to_string());
+    }
+    if now >= quote.payload.expires_at {
+        return Err("signed prepaid quote is expired".to_string());
+    }
+    if decoded.expires_at > quote.payload.expires_at {
+        return Err("prepaid invoice expires after the signed quote deadline".to_string());
+    }
+    if now >= deal_admission_deadline {
+        return Err("prepaid deal admission deadline has elapsed".to_string());
+    }
+    if decoded.expires_at > deal_admission_deadline {
+        return Err("prepaid invoice expires after the deal admission deadline".to_string());
+    }
+    Ok(())
+}
+
+fn request_time_has_reached_invoice_expiry(now: i64, expires_at: i64) -> bool {
+    now >= expires_at
+}
+
+fn normalize_lightning_destination_identity(value: &str) -> Result<String, String> {
+    let bytes = hex::decode(value)
+        .map_err(|_| "expected prepaid destination is not valid hex".to_string())?;
+    let public_key = k256::PublicKey::from_sec1_bytes(&bytes)
+        .map_err(|_| "expected prepaid destination is not a secp256k1 public key".to_string())?;
+    Ok(hex::encode(public_key.to_sec1_bytes()))
 }
 
 fn map_invoice_state(state: crate::lnd::InvoiceState) -> InvoiceBundleLegState {
@@ -1127,16 +1265,20 @@ pub fn validate_lightning_invoice_bundle(
         match decode_lightning_invoice(&leg.invoice_bolt11) {
             Ok(decoded) => {
                 if leg.invoice_bolt11.starts_with("lnmock-") {
-                    let mock = parse_mock_bolt11(&leg.invoice_bolt11)
-                        .expect("mock invoices were decoded successfully above");
-                    if mock.prefix != expected_prefix {
-                        push_bundle_issue(
+                    match parse_mock_bolt11(&leg.invoice_bolt11) {
+                        Ok(mock) if mock.prefix != expected_prefix => push_bundle_issue(
                             &mut issues,
                             "invoice_prefix_mismatch",
                             format!(
                                 "{leg_name} invoice prefix does not match the expected leg type"
                             ),
-                        );
+                        ),
+                        Ok(_) => {}
+                        Err(error) => push_bundle_issue(
+                            &mut issues,
+                            "invalid_invoice_encoding",
+                            format!("{leg_name}: {error}"),
+                        ),
                     }
                 }
                 if decoded.amount_msat != leg.amount_msat {
@@ -1568,5 +1710,473 @@ impl SettlementDriver for LightningDriver {
         _reservation: &'a PaymentReservation,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move { Ok(()) })
+    }
+}
+
+#[cfg(test)]
+mod prepaid_invoice_validation_tests {
+    use super::*;
+    use crate::protocol::{ARTIFACT_KIND_QUOTE, ExecutionLimits};
+    use bitcoin::{
+        hashes::{Hash as _, sha256},
+        secp256k1::{PublicKey, Secp256k1, SecretKey},
+    };
+    use lightning_invoice::{InvoiceBuilder, PaymentSecret};
+    use std::time::Duration;
+
+    const NOW: i64 = 1_700_000_010;
+    const QUOTE_CREATED_AT: i64 = 1_700_000_000;
+    const QUOTE_EXPIRES_AT: i64 = 1_700_000_180;
+    const DEAL_ADMISSION_DEADLINE: i64 = 1_700_000_150;
+    const MOCK_QUOTE_DESTINATION: &str =
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+    fn signed_prepaid_quote(
+        amount_msat: u64,
+        destination_identity: impl Into<String>,
+        max_invoice_expiry_secs: u64,
+    ) -> SignedArtifact<QuotePayload> {
+        let provider_key = crypto::generate_signing_key();
+        let provider_id = crypto::public_key_hex(&provider_key);
+        sign_artifact(
+            &provider_id,
+            |message| crypto::sign_message_hex(&provider_key, message),
+            ARTIFACT_KIND_QUOTE,
+            QUOTE_CREATED_AT,
+            QuotePayload {
+                provider_id: provider_id.clone(),
+                requester_id: "requester".to_string(),
+                descriptor_hash: "aa".repeat(32),
+                offer_hash: "bb".repeat(32),
+                expires_at: QUOTE_EXPIRES_AT,
+                workload_kind: "compute.wasm.v1".to_string(),
+                workload_hash: "cc".repeat(32),
+                confidential_session_hash: None,
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
+                settlement_terms: QuoteSettlementTerms {
+                    method: "lightning.prepaid.v1".to_string(),
+                    destination_identity: destination_identity.into(),
+                    base_fee_msat: amount_msat,
+                    success_fee_msat: 0,
+                    max_base_invoice_expiry_secs: max_invoice_expiry_secs,
+                    max_success_hold_expiry_secs: 0,
+                    min_final_cltv_expiry: 0,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1,
+                    max_runtime_ms: 1,
+                    max_memory_bytes: 1,
+                    max_output_bytes: 1,
+                    fuel_limit: 1,
+                },
+            },
+        )
+        .expect("sign prepaid quote")
+    }
+
+    fn real_bolt11_invoice(
+        currency: Currency,
+        payee_secret_byte: u8,
+        payment_hash_hex: &str,
+        amount_msat: Option<u64>,
+        expiry_secs: u64,
+    ) -> (String, String) {
+        let secp = Secp256k1::new();
+        let payee_secret = SecretKey::from_slice(&[payee_secret_byte; 32]).expect("payee secret");
+        let payee = PublicKey::from_secret_key(&secp, &payee_secret);
+        let payment_hash = sha256::Hash::from_slice(
+            &hex::decode(payment_hash_hex).expect("valid payment hash hex"),
+        )
+        .expect("32-byte payment hash");
+        let payment_secret =
+            PaymentSecret(sha256::Hash::hash(payment_hash_hex.as_bytes()).to_byte_array());
+        let invoice = InvoiceBuilder::new(currency)
+            .description("froglet prepaid test".to_string())
+            .payment_hash(payment_hash)
+            .payment_secret(payment_secret)
+            .duration_since_epoch(Duration::from_secs(QUOTE_CREATED_AT as u64))
+            .expiry_time(Duration::from_secs(expiry_secs))
+            .min_final_cltv_expiry_delta(18)
+            .payee_pub_key(payee);
+        let invoice = match amount_msat {
+            Some(amount_msat) => invoice.amount_milli_satoshis(amount_msat),
+            None => invoice,
+        }
+        .build_signed(|hash| secp.sign_ecdsa_recoverable(hash, &payee_secret))
+        .expect("build signed BOLT11 invoice")
+        .to_string();
+        (invoice, hex::encode(payee.serialize()))
+    }
+
+    #[test]
+    fn prepaid_validator_accepts_a_mock_invoice_bound_to_the_quote() {
+        let payment_hash = "11".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+        let invoice = mock_bolt11("prepaid", 7_000, &payment_hash, NOW + 90);
+
+        validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect("valid prepaid invoice");
+    }
+
+    #[test]
+    fn prepaid_validator_accepts_a_real_mainnet_invoice_with_the_expected_payee() {
+        let payment_hash = "12".repeat(32);
+        let (invoice, payee) =
+            real_bolt11_invoice(Currency::Bitcoin, 7, &payment_hash, Some(7_000), 120);
+        let quote = signed_prepaid_quote(7_000, &payee, 120);
+
+        validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: Some(&payee),
+            expected_network: Some(Currency::Bitcoin),
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect("valid real prepaid invoice");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_invoice_with_the_wrong_amount() {
+        let payment_hash = "22".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+        let invoice = mock_bolt11("prepaid", 8_000, &payment_hash, NOW + 90);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("wrong invoice amount must be rejected");
+
+        assert!(error.contains("amount"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_provider_amount_above_the_signed_quote() {
+        let payment_hash = "23".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+        let invoice = mock_bolt11("prepaid", 8_000, &payment_hash, NOW + 90);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 8,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("provider amount above the signed quote must be rejected");
+
+        assert!(
+            error.contains("signed quote amount"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_invoice_with_the_wrong_payment_hash() {
+        let quoted_hash = "33".repeat(32);
+        let invoice_hash = "44".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+        let invoice = mock_bolt11("prepaid", 7_000, &invoice_hash, NOW + 90);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &quoted_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("wrong invoice payment hash must be rejected");
+
+        assert!(error.contains("payment hash"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_real_invoice_for_the_wrong_payee() {
+        let payment_hash = "45".repeat(32);
+        let (invoice, _) =
+            real_bolt11_invoice(Currency::Bitcoin, 7, &payment_hash, Some(7_000), 120);
+        let (_, expected_payee) =
+            real_bolt11_invoice(Currency::Bitcoin, 8, &payment_hash, Some(7_000), 120);
+        let quote = signed_prepaid_quote(7_000, &expected_payee, 120);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: Some(&expected_payee),
+            expected_network: Some(Currency::Bitcoin),
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("wrong invoice payee must be rejected");
+
+        assert!(error.contains("destination"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_destination_not_authorized_by_the_signed_quote() {
+        let payment_hash = "4a".repeat(32);
+        let (invoice, invoice_payee) =
+            real_bolt11_invoice(Currency::Bitcoin, 7, &payment_hash, Some(7_000), 120);
+        let (_, quoted_payee) =
+            real_bolt11_invoice(Currency::Bitcoin, 8, &payment_hash, Some(7_000), 120);
+        let quote = signed_prepaid_quote(7_000, &quoted_payee, 120);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: Some(&invoice_payee),
+            expected_network: Some(Currency::Bitcoin),
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("expected payee must be authorized by the signed quote");
+
+        assert!(error.contains("destination"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_real_invoice_for_the_wrong_network() {
+        let payment_hash = "46".repeat(32);
+        let (invoice, payee) =
+            real_bolt11_invoice(Currency::Regtest, 7, &payment_hash, Some(7_000), 120);
+        let quote = signed_prepaid_quote(7_000, &payee, 120);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: Some(&payee),
+            expected_network: Some(Currency::Bitcoin),
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("wrong BOLT11 network must be rejected");
+
+        assert!(error.contains("network"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_amountless_real_invoice() {
+        let payment_hash = "47".repeat(32);
+        let (invoice, payee) = real_bolt11_invoice(Currency::Bitcoin, 7, &payment_hash, None, 120);
+        let quote = signed_prepaid_quote(7_000, &payee, 120);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: Some(&payee),
+            expected_network: Some(Currency::Bitcoin),
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("amountless BOLT11 must be rejected");
+
+        assert!(error.contains("amount"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_missing_invoice() {
+        let payment_hash = "48".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+
+        validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: "",
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("missing BOLT11 must be rejected");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_malformed_mock_invoice() {
+        let payment_hash = "49".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+
+        validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: "lnmock-prepaid-not-an-amount",
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("malformed mock BOLT11 must be rejected");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_terms_from_a_tampered_quote() {
+        let payment_hash = "55".repeat(32);
+        let mut quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+        quote.payload.workload_hash = "ff".repeat(32);
+        let invoice = mock_bolt11("prepaid", 7_000, &payment_hash, NOW + 90);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("unsigned quote terms must be rejected");
+
+        assert!(
+            error.contains("quote signature"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_expired_invoice() {
+        let payment_hash = "66".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 120);
+        let invoice = mock_bolt11("prepaid", 7_000, &payment_hash, NOW);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("expired invoice must be rejected");
+
+        assert!(error.contains("expired"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_invoice_beyond_the_quoted_expiry_window() {
+        let payment_hash = "77".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 60);
+        let invoice = mock_bolt11("prepaid", 7_000, &payment_hash, NOW + 61);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("overlong invoice must be rejected");
+
+        assert!(error.contains("quoted expiry"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_a_real_invoice_with_an_overlong_declared_expiry() {
+        let payment_hash = "78".repeat(32);
+        let (invoice, payee) =
+            real_bolt11_invoice(Currency::Bitcoin, 7, &payment_hash, Some(7_000), 121);
+        let quote = signed_prepaid_quote(7_000, &payee, 120);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: Some(&payee),
+            expected_network: Some(Currency::Bitcoin),
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("overlong declared BOLT11 expiry must be rejected");
+
+        assert!(error.contains("quoted expiry"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_invoice_expiring_after_the_quote() {
+        let payment_hash = "88".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 300);
+        let invoice = mock_bolt11("prepaid", 7_000, &payment_hash, QUOTE_EXPIRES_AT + 1);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: QUOTE_EXPIRES_AT + 20,
+            quote: &quote,
+        })
+        .expect_err("invoice beyond the quote deadline must be rejected");
+
+        assert!(
+            error.contains("quote deadline"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn prepaid_validator_rejects_an_invoice_expiring_after_deal_admission() {
+        let payment_hash = "99".repeat(32);
+        let quote = signed_prepaid_quote(7_000, MOCK_QUOTE_DESTINATION, 300);
+        let invoice = mock_bolt11("prepaid", 7_000, &payment_hash, DEAL_ADMISSION_DEADLINE + 1);
+
+        let error = validate_prepaid_lightning_invoice(PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &invoice,
+            expected_payment_hash: &payment_hash,
+            expected_amount_sat: 7,
+            expected_destination_identity: None,
+            expected_network: None,
+            now: NOW,
+            deal_admission_deadline: DEAL_ADMISSION_DEADLINE,
+            quote: &quote,
+        })
+        .expect_err("invoice beyond admission must be rejected");
+
+        assert!(
+            error.contains("admission deadline"),
+            "unexpected error: {error}"
+        );
     }
 }

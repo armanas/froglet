@@ -181,9 +181,9 @@ if [[ $run_package == 1 ]]; then
         --out-dir '$assets_dir'
       asset_name='froglet-node-${package_version}-${package_platform}-${package_arch}.tar.gz'
       if command -v sha256sum >/dev/null 2>&1; then
-        (cd '$assets_dir' && sha256sum \"\$asset_name\" > SHA256SUMS)
+        (cd '$assets_dir' && sha256sum \"\$asset_name\" agent-bootstrap.sh > SHA256SUMS)
       elif command -v shasum >/dev/null 2>&1; then
-        (cd '$assets_dir' && shasum -a 256 \"\$asset_name\" > SHA256SUMS)
+        (cd '$assets_dir' && shasum -a 256 \"\$asset_name\" agent-bootstrap.sh > SHA256SUMS)
       else
         echo 'missing required checksum tool: sha256sum or shasum' >&2
         exit 1

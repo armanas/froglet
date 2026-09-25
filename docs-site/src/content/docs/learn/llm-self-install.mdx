@@ -8,15 +8,19 @@ This page is for LLM readers. Human readers should start with
 
 ## Prime Rule
 
-There is one maintained automation surface: `froglet-mcp`.
+There is one canonical native clean-host surface: the `froglet` tool served by
+the installed `froglet-node mcp` binary. The JavaScript `froglet-mcp` package
+remains a broader compatibility surface for existing nodes and host products.
 
-Use the shell only for the setup bootstrap. After the node is running, do not
-invent separate CLI flows. Use MCP actions for status, service publication,
-invocation, public registration, payment planning, and marketplace operations.
+Prefer the native MCP after bootstrap. Its CLI equivalents use the same implementation; do not invent manifests or a second publication policy. See [Publish and share](/learn/share-services/) for `prepare_service`, `doctor`, `check_updates`, and `open_status`. The native bridge handles status, invocation,
+two-call service publication, and publication lifecycle operations. Install and
+payment planning plus legacy standalone registration actions exist only on the
+optional JavaScript compatibility MCP; do not claim they are native actions.
 
 If the user only wants the hosted no-install proof, use
-`https://froglet.dev/llms.txt` instead of `froglet-mcp`. If the user already has
-a local Froglet node and only needs the MCP stdio server, use:
+`https://froglet.dev/llms.txt` instead of installing anything. If the user
+already has a local Froglet node and explicitly needs the broader JavaScript
+MCP stdio server, use:
 
 ```bash
 npx froglet-mcp
@@ -24,81 +28,143 @@ npx froglet-mcp
 
 ## Bootstrap
 
-If the user asks to run Froglet locally and has approved host-shell setup, run:
+If the user asks to run Froglet locally, use the exact copyable shell block in
+[Quickstart](/learn/quickstart/). It resolves an immutable GitHub release,
+verifies the uploaded `agent-bootstrap.sh` API digest before execution, and
+then requests the bootstrap's non-mutating plan. Do not shorten that trust
+bootstrap to a mutable-branch download.
 
-```bash
-curl -fsSL https://froglet.dev/agent | bash
-```
+Read the full plan to the user. It includes the exact immutable release,
+release-manifest and target binary asset digests, bootstrap/install/configuration
+script digests, profile, persistent paths, process-manager impact, execution
+command, and `install_approval_hash`. Do not execute until the user approves
+that complete plan. Then pass the exact hash while keeping every profile input
+unchanged:
 
-Use target overrides only when needed:
+Run the exact `execute_command` returned by the approved plan.
 
-```bash
-FROGLET_AGENT_TARGET=codex curl -fsSL https://froglet.dev/agent | bash
-FROGLET_AGENT_TARGET=manual curl -fsSL https://froglet.dev/agent | bash
-```
+For Codex or manual setup, set `FROGLET_AGENT_TARGET=codex` or
+`FROGLET_AGENT_TARGET=manual` on both `plan` and `execute`. A changed release,
+script, platform asset, target, path, payment/network profile, or impact makes
+the old hash invalid; plan again. Never pipe the bootstrap into a shell because
+the executable bootstrap bytes themselves are part of the approval contract.
 
 The bootstrap prints JSON. Read these fields back to the user:
 
+- `bootstrap_dir`
+- `release`
+- `source_revision`
+- `install_mode`
+- `data_dir`
 - `provider_url`
 - `runtime_url`
 - `mcp_config_path`
-- `compose_file`
+- `lifecycle_command`
+- `service_started`
+- `local_proof` (health and command-line MCP probe; it does not prove agent attachment)
+- `data_proof` (boolean)
+- `data_proof_path`
+- `data_service_id`
+- `relay_url`, `relay_public_suffix`, `relay_configured`, and
+  `relay_connected` (false until an exact durable grant activates transport)
 - `next_mcp_actions`
 
-Then restart or point the agent at the printed MCP config path.
-The default footprint is docker-backed provider/runtime from published images;
-source checkout is contributor mode only.
+When `data_proof` is true, read the detailed signed-revision and invocation
+evidence from `data_proof_path`; the booleans are gates, not embedded proof
+objects. The native local proof file is
+`<bootstrap_dir>/local-proof.json`. Then restart or point the agent at the
+printed MCP config path. The default footprint is one checksum-verified native
+binary plus launchd/user-systemd; the digest-pinned Docker image is a fallback.
+Source checkout is contributor mode only.
+
+If `install_mode` is `native`, the focused action set is `status`,
+`invoke_service`, `marketplace_publish`, and the six publication
+lifecycle actions printed in `next_mcp_actions`. If `install_mode` is `docker`,
+follow the emitted compatibility actions instead; do not invent native actions
+that the fallback output did not advertise.
 
 ## First MCP Sequence
 
 After MCP is connected:
 
 1. Call `status`.
-2. Call `publish_artifact` with `template: "demo.add"`.
-3. Call `list_local_services`.
-4. Call `invoke_service` for `demo.add.local` with `{"a":7,"b":5}`.
-5. Report the result, service metadata, receipt evidence, and any missing
-   proof. Do not claim public reachability or paid settlement yet.
-6. Call `plan_use_case` before implementing the user's real workflow.
+2. Read `<bootstrap_dir>/local-proof.json`; require status `ok` and
+   `native_mcp=true`.
+3. Read `data_proof_path`; require a successful transient invocation,
+   confirmed unpublish, and restoration of the original `final_feed.active_offer_hashes` baseline. Reconnecting an existing installation does not repeat the transient publication; report the actual stage fields.
+4. Report those results, the exact release/state path, cleanup evidence, and
+   any missing proof. Do not claim public reachability or paid settlement yet.
+5. For a new catalog or Wasm service, call `prepare_service` with its source, explicit destination, selected fields, and meaningful example. Show the generated preview, then call `marketplace_publish` with that absolute `project_dir`.
+   Public hosting first returns a consent plan; show it to the user and repeat
+   with the exact `consent_hash` only after approval.
+6. Use the broader JavaScript MCP's `plan_use_case` only when that compatibility
+   surface is installed and the user needs its wider planning actions.
 
 ## Install Planning
 
-If the user asks for options before running setup, call:
+The native clean-host bridge does not expose install-planning actions. If the
+broader JavaScript compatibility MCP is already available and the user asks for
+options before running setup, call:
 
 ```text
 action: plan_install
 ```
 
-If `payment_rail` is omitted, MCP should return `decision_required`. Recommend
-`none` for the first install, normal evaluation, and any buyer-facing demo. Paid
-rails are operator-only choices unless a managed Froglet surface is handling the
-payment backend for the user.
-After the profile is confirmed, call `get_install_guide` before executing host
-shell commands.
+If `payment_rail` is omitted, that compatibility surface should return
+`decision_required`. Recommend `none` for the first install, normal evaluation,
+and any buyer-facing demo. Paid rails are operator-only choices unless a
+managed Froglet surface is handling the payment backend for the user. A
+complete plan resolves one published immutable GitHub release and returns its
+tag, release-manifest and bootstrap SHA-256 values, exact filesystem/process
+impact, command preview, and `install_approval_hash` without changing the host.
+Show that plan and wait. Only after explicit approval, call
+`get_install_guide` with the exact returned `release_tag` and
+`install_approval_hash` plus the unchanged profile. The returned default
+command verifies the tag-specific bootstrap in a temporary file and passes the
+approved release and manifest pin before executing it. Without that optional
+MCP, ask the same choices conversationally and use the native `plan`/`execute`
+contract above. It provides the essential pre-execution stop itself: no
+persistent write occurs before the exact approval hash is recomputed.
+
+For its `footprint` choice, recommend `auto`: it is the native-first no-clone
+contract and falls back to the digest-pinned Docker lane only when native
+service management is unavailable. Use `native` to require launchd/user
+systemd, `docker` only when explicitly selected, and `binary` or `source` only
+for their narrower operator/contributor cases.
 
 Current payment options:
 
 - `none`
+- `lightning-phoenixd`
 - `lightning-lnd-rest`
 - `stripe-test`
 - `stripe-live`
 - `x402`
 
 Do not ask for live Stripe keys, LND credentials, or wallet/facilitator inputs
-until local health and the free demo have passed, and do not ask ordinary buyers
+until local health and the transient local data proof have passed, and do not ask ordinary buyers
 for those inputs at all.
 
 ## Public Reachability
 
-Local health is not public reachability. If the user wants to appear in the
-marketplace, choose one of these paths:
+Local health is not public reachability. Native public publication uses
+two-call `marketplace_publish` with `host: "relay"`, `"tor"`, or `"self"`.
+If the user wants to appear in the marketplace, choose one of these paths:
 
-- **Tor**: zero-cost and NAT-friendly. Use `registration_transport=tor`.
+- **Tor**: zero-cost and NAT-friendly. Use native `marketplace_publish` with
+  `host: "tor"`; `registration_transport=tor` belongs to the broader
+  standalone-registration compatibility action.
+- **Outbound relay**: NAT-friendly identity-assigned HTTPS with no user-owned
+  DNS/certificate. Bootstrap plans the official URL and suffix dormant by
+  default, opening no WSS until an exact durable grant; set both empty to opt
+  out. Never claim the official endpoint is live without external proof.
 - **Froglet-managed subdomain**: zero-cost clearnet, but requires public
-  inbound connectivity. Use `marketplace_domain_claim`, then
-  `marketplace_domain_complete`, then `marketplace_register`.
-- **Own HTTPS domain**: advanced/operator path. Register only after the
-  provider advertises the exact public HTTPS origin.
+  inbound connectivity. The `marketplace_domain_claim`,
+  `marketplace_domain_complete`, and standalone `marketplace_register` actions
+  are on the optional JavaScript compatibility MCP, not the native bridge.
+- **Own HTTPS domain**: advanced/operator path. Use native
+  `marketplace_publish` with `host: "self"` only after the provider advertises
+  the exact public HTTPS origin.
 
 Reject raw IP and self-signed clearnet marketplace registration. For local dev,
 keep the node unregistered.
@@ -129,12 +195,11 @@ shell exposed by Claude Code, Codex, or the user's agent host.
 
 For an isolated no-clone proof:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash
-```
+From a trusted checkout, run
+`bash scripts/fresh_host_quickstart_smoke.sh`.
 
-Use `--skip-start` when Docker images are not expected to be pullable in the
-current environment but the installer/config path still needs evidence.
+Use `--skip-start` only for setup evidence when the host cannot or must not
+start either its native user service or an explicitly selected Docker fallback.
 
 ## Residual Limits
 

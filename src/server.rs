@@ -5,6 +5,7 @@ use crate::{
     state::{self, AppState},
     tls, tor,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::FutureExt;
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -20,7 +21,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex as TokioMutex, Semaphore};
-use tower::Service;
+use tower::{Service, ServiceExt};
 use tracing::{error, info, warn};
 
 const SUPERVISOR_RESTART_MIN_DELAY_SECS: u64 = 1;
@@ -34,6 +35,7 @@ const HTTP_HEADER_READ_TIMEOUT_SECS: u64 = 10;
 const HTTP_IO_STALL_TIMEOUT_SECS: u64 = 120;
 const HTTP_ACCEPT_BACKOFF_MIN_MS: u64 = 50;
 const HTTP_ACCEPT_BACKOFF_MAX_MS: u64 = 5_000;
+const MANAGED_STARTUP_DOCUMENT_MAX_BYTES: usize = 24 * 1024 * 1024;
 #[cfg(unix)]
 const ENFILE_ERRNO: i32 = 23;
 #[cfg(unix)]
@@ -186,12 +188,33 @@ async fn run(
         "Froglet control auth token file: {}",
         state.provider_control_auth_token_path.display()
     );
-    set_mode(&node_config.storage.db_path, 0o600)?;
-
     sanitize_persisted_deals(state.clone()).await?;
     log_startup_db_metrics(state.clone(), &node_config.storage.db_path).await?;
     audit_duplicate_deal_hashes(state.clone()).await?;
     audit_duplicate_quote_hashes(state.clone()).await?;
+    if service_role.is_provider() {
+        // Reconcile crash-interrupted local work before any provider listener
+        // can admit a new deal. In particular, this makes a persisted Stripe
+        // `running` row unambiguously attributable to the previous process.
+        api::recover_runtime_state_local(state.clone()).await?;
+        let recovered = state
+            .db
+            .with_write_conn(|conn| {
+                crate::managed_publication::recover_interrupted(
+                    conn,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await?;
+        for record in recovered {
+            warn!(
+                operation_id = %record.operation.operation_id,
+                service_id = %record.plan.payload.service_id,
+                "Managed Publication requires reconciliation after an interrupted external phase"
+            );
+        }
+        import_managed_startup_publication(state.clone()).await?;
+    }
 
     let restart_policy = SupervisionPolicy::Restart {
         min_delay: Duration::from_secs(SUPERVISOR_RESTART_MIN_DELAY_SECS),
@@ -269,6 +292,7 @@ async fn run(
         None
     };
 
+    let mut status_runtime_addr = None;
     if service_role.is_runtime() {
         let runtime_addr: SocketAddr = node_config
             .runtime_listen_addr
@@ -290,6 +314,7 @@ async fn run(
 
         let runtime_listener = tokio::net::TcpListener::bind(runtime_addr).await?;
         let bound_runtime_addr = runtime_listener.local_addr()?;
+        status_runtime_addr = Some(bound_runtime_addr);
         let initial_runtime_listener = Arc::new(TokioMutex::new(Some(runtime_listener)));
         if runtime_addr.ip().is_loopback() {
             println!(" 🔒 Local Runtime API: http://{}", bound_runtime_addr);
@@ -366,8 +391,10 @@ async fn run(
         info!("Running in Tor-only mode. No clearnet server started.");
     }
 
-    if service_role.is_provider() {
-        api::recover_runtime_state_local(state.clone()).await?;
+    // This listener is deliberately separate from provider/runtime routers:
+    // it is never reachable through a publication grant or relay tunnel.
+    if let Err(error) = crate::local_status::start(state.clone(), status_runtime_addr).await {
+        warn!("Local status page unavailable; CLI doctor remains available: {error}");
     }
 
     // Register with marketplace if configured (non-blocking — failures are logged, not fatal)
@@ -383,6 +410,21 @@ async fn run(
                 }
             }
         });
+    }
+
+    if service_role.is_provider() {
+        let materialization_state = state.clone();
+        spawn_supervised_task(
+            "settlement-materialization-loop",
+            restart_policy,
+            Arc::new(move || {
+                let materialization_state = materialization_state.clone();
+                Box::pin(async move {
+                    api::run_settlement_materialization_loop(materialization_state).await;
+                    Err("settlement materialization loop exited unexpectedly".to_string())
+                })
+            }),
+        );
     }
 
     if service_role.is_provider()
@@ -420,6 +462,25 @@ async fn run(
                 Box::pin(async move {
                     api::run_lightning_settlement_loop(settlement_state).await;
                     Err("lightning settlement loop exited unexpectedly".to_string())
+                })
+            }),
+        );
+    }
+
+    if service_role.is_provider()
+        && node_config
+            .payment_backends
+            .contains(&PaymentBackend::Stripe)
+    {
+        let settlement_state = state.clone();
+        spawn_supervised_task(
+            "stripe-settlement-loop",
+            restart_policy,
+            Arc::new(move || {
+                let settlement_state = settlement_state.clone();
+                Box::pin(async move {
+                    api::run_stripe_settlement_loop(settlement_state).await;
+                    Err("stripe settlement loop exited unexpectedly".to_string())
                 })
             }),
         );
@@ -493,15 +554,22 @@ async fn run(
         );
     }
 
-    // Relay ingress tunnel (docs/RELAY.md): outbound WSS to the relay,
-    // forwarding public HTTPS traffic to the same loopback backend the Tor
-    // hidden service uses. One run_tunnel_once call per supervisor iteration;
-    // the restart policy provides the spec's reconnect-with-backoff.
+    // Relay ingress tunnel (docs/RELAY.md): configuration alone only derives
+    // the exact endpoint. The supervisor receives a durable-grant gate and
+    // does not open WSS until an exact persisted publication activates it.
     if service_role.is_provider()
         && node_config.relay.enabled
         && let (Some(relay_url), Some(relay_backend_addr)) =
             (node_config.relay.url.clone(), tor_backend_addr)
     {
+        let (expected_public_url, relay_activation) = {
+            let status = state.transport_status.lock().await;
+            let expected_public_url = status
+                .relay_url
+                .clone()
+                .ok_or("enabled relay has no planned public URL")?;
+            (expected_public_url, status.relay_activation_receiver())
+        };
         let relay_state = state.clone();
         spawn_supervised_task(
             "relay-tunnel",
@@ -509,8 +577,17 @@ async fn run(
             Arc::new(move || {
                 let relay_state = relay_state.clone();
                 let relay_url = relay_url.clone();
+                let expected_public_url = expected_public_url.clone();
+                let relay_activation = relay_activation.clone();
                 Box::pin(async move {
-                    relay_tunnel::run_tunnel_once(relay_state, &relay_url, relay_backend_addr).await
+                    relay_tunnel::run_activation_gated_tunnel(
+                        relay_state,
+                        &relay_url,
+                        relay_backend_addr,
+                        &expected_public_url,
+                        relay_activation,
+                    )
+                    .await
                 })
             }),
         );
@@ -521,20 +598,87 @@ async fn run(
     Ok(())
 }
 
-fn init_logging() {
-    crate::init_logging();
+pub(crate) async fn import_managed_startup_publication(
+    state: Arc<AppState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let capsule_base64 = std::env::var(crate::managed_publication::MANAGED_CAPSULE_ENV).ok();
+    let bundle_path = std::env::var_os("FROGLET_MANAGED_BUNDLE_PATH").map(std::path::PathBuf::from);
+    match (&capsule_base64, &bundle_path) {
+        (None, None) => return Ok(()),
+        (Some(_), None) => {
+            return Err(
+                "FROGLET_MANAGED_CAPSULE_BASE64 requires FROGLET_MANAGED_BUNDLE_PATH".into(),
+            );
+        }
+        (None, Some(_)) => {
+            return Err(
+                "FROGLET_MANAGED_BUNDLE_PATH requires FROGLET_MANAGED_CAPSULE_BASE64".into(),
+            );
+        }
+        (Some(_), Some(_)) => {}
+    }
+    let capsule_bytes = STANDARD
+        .decode(capsule_base64.as_deref().unwrap_or_default())
+        .map_err(|_| "FROGLET_MANAGED_CAPSULE_BASE64 is not valid base64")?;
+    if capsule_bytes.len() > MANAGED_STARTUP_DOCUMENT_MAX_BYTES {
+        return Err("managed startup capsule exceeds the input limit".into());
+    }
+    let capsule: froglet_protocol::managed_publication::ManagedPublicationCapsuleV1 =
+        serde_json::from_slice(&capsule_bytes)
+            .map_err(|error| format!("managed startup capsule is invalid JSON: {error}"))?;
+    capsule
+        .validate()
+        .map_err(|error| format!("managed startup capsule failed validation: {error}"))?;
+    let bundle_path = bundle_path.expect("validated managed bundle path");
+    let metadata =
+        std::fs::metadata(&bundle_path).map_err(|_| "managed startup bundle is unavailable")?;
+    if !metadata.is_file() || metadata.len() > MANAGED_STARTUP_DOCUMENT_MAX_BYTES as u64 {
+        return Err("managed startup bundle must be a bounded regular file".into());
+    }
+    let bundle_bytes =
+        std::fs::read(&bundle_path).map_err(|_| "managed startup bundle could not be read")?;
+    let bundle: froglet_protocol::managed_publication::ManagedPublicationBundleManifestV1 =
+        serde_json::from_slice(&bundle_bytes)
+            .map_err(|error| format!("managed startup bundle is invalid JSON: {error}"))?;
+    bundle
+        .validate()
+        .map_err(|error| format!("managed startup bundle failed validation: {error}"))?;
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "bundle": bundle,
+        "capsule": capsule,
+    }))?;
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/v1/provider/managed-publications/import")
+        .header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", state.provider_control_auth_token),
+        )
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body))?;
+    let response = api::public_router(state)
+        .oneshot(request)
+        .await
+        .map_err(|error| format!("managed startup import request failed: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .map_err(|error| format!("managed startup import error body failed: {error}"))?;
+        let details = String::from_utf8_lossy(&body);
+        return Err(format!("managed startup import returned HTTP {status}: {details}").into());
+    }
+    info!(
+        operation_id = %capsule.operation_id,
+        revision_hash = %capsule.revision.revision_hash,
+        "Imported exact Managed Publication before opening provider listeners"
+    );
+    Ok(())
 }
 
-fn set_mode(path: &std::path::Path, mode: u32) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::metadata(path)?;
-        let mut perms = metadata.permissions();
-        perms.set_mode(mode);
-        std::fs::set_permissions(path, perms)?;
-    }
-    Ok(())
+fn init_logging() {
+    crate::init_logging();
 }
 
 async fn log_startup_db_metrics(
@@ -766,13 +910,12 @@ impl IdleTimeoutStream {
         if deadline.is_none() {
             *deadline = Some(Box::pin(tokio::time::sleep(idle_timeout)));
         }
-        if deadline
-            .as_mut()
-            .expect("idle timeout deadline must be initialized")
-            .as_mut()
-            .poll(cx)
-            .is_ready()
-        {
+        let Some(active_deadline) = deadline.as_mut() else {
+            return Poll::Ready(Err(std::io::Error::other(
+                "idle timeout deadline initialization failed",
+            )));
+        };
+        if active_deadline.as_mut().poll(cx).is_ready() {
             *deadline = None;
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,

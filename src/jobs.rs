@@ -17,19 +17,18 @@ pub struct FaaSDescriptor {
 }
 
 impl FaaSDescriptor {
-    pub fn standard() -> Self {
+    pub fn available(python: bool, container: bool) -> Self {
+        let mut runtimes = vec!["wasm".to_string(), "builtin".to_string()];
+        if python {
+            runtimes.push("python".to_string());
+        }
+        if container {
+            runtimes.push("container".to_string());
+        }
         Self {
             jobs_api: true,
             idempotency_keys: true,
-            runtimes: vec![
-                "wasm".to_string(),
-                "python".to_string(),
-                "container".to_string(),
-                "builtin".to_string(),
-                "tee.service".to_string(),
-                "tee.wasm".to_string(),
-                "tee.python".to_string(),
-            ],
+            runtimes,
         }
     }
 }

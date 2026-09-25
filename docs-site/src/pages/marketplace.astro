@@ -4,106 +4,6 @@ import '../styles/index-page.css';
 import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
-import { compactId, formatSnapshotTime, getMarketplaceSnapshot } from '../data/live-snapshot';
-import type { MarketplaceSnapshot } from '../data/live-snapshot';
-
-const marketplace = await getMarketplaceSnapshot();
-
-function compactEndpoint(value: string | undefined | null): string {
-  if (!value) return 'n/a';
-  try {
-    return new URL(value).host;
-  } catch {
-    return value;
-  }
-}
-
-function topServiceKind(kinds: string[] | undefined): string {
-  if (!kinds || kinds.length === 0) return 'n/a';
-  return kinds[0];
-}
-
-function avatarInitials(id: string): string {
-  const compact = compactId(id);
-  return compact.slice(0, 2);
-}
-
-function providerEvidence(p: MarketplaceSnapshot['providers'][number]): string {
-  return [
-    `provider_id: ${p.providerId}`,
-    `descriptor_hash: ${p.descriptorHash}`,
-    `endpoint: ${p.endpoint || 'n/a'}`,
-    `services: ${p.serviceKinds.join(', ') || 'n/a'}`,
-    `ok: ${p.successCount}`,
-    `fail: ${p.failureCount}`,
-    `receipts: ${p.successCount + p.failureCount}`,
-    `settled_msat: ${p.totalSettledMsat}`,
-  ].join('\n');
-}
-
-function dashboardStats(snapshot: MarketplaceSnapshot) {
-  const successCount = snapshot.providers.reduce((sum, p) => sum + p.successCount, 0);
-  const failureCount = snapshot.providers.reduce((sum, p) => sum + p.failureCount, 0);
-  const totalReceipts = successCount + failureCount;
-  const totalSettledSats = Math.round(
-    snapshot.providers.reduce((sum, p) => sum + p.totalSettledMsat, 0) / 1000,
-  );
-  const freeOffers = snapshot.offers.filter(
-    (o) => o.settlementMethod === 'none' && o.baseFeeMsat === 0 && o.successFeeMsat === 0,
-  ).length;
-  const paidOffers = Math.max(0, snapshot.offerCount - freeOffers);
-  const successRate =
-    totalReceipts === 0 ? '—' : `${Math.round((successCount / totalReceipts) * 100)}%`;
-  return {
-    successCount,
-    failureCount,
-    totalReceipts,
-    totalSettledSats,
-    freeOffers,
-    paidOffers,
-    successRate,
-  };
-}
-
-const stats = dashboardStats(marketplace);
-
-// Top providers by deal count — we approximate using success + failure.
-const topProviders = [...marketplace.providers]
-  .sort((a, b) => b.successCount + b.failureCount - (a.successCount + a.failureCount))
-  .slice(0, 8);
-
-// Services breakdown — aggregate offers by runtime (or kind fallback).
-const serviceBreakdownMap = new Map<string, number>();
-for (const offer of marketplace.offers) {
-  const key = offer.runtime || offer.offerKind || 'other';
-  serviceBreakdownMap.set(key, (serviceBreakdownMap.get(key) ?? 0) + 1);
-}
-const serviceBreakdown = Array.from(serviceBreakdownMap.entries())
-  .map(([name, count]) => ({ name, count }))
-  .sort((a, b) => b.count - a.count)
-  .slice(0, 6);
-const maxServiceCount = serviceBreakdown[0]?.count ?? 1;
-
-// Live feed rows from deal feed.
-const feedRows = marketplace.dealFeed.deals.slice(0, 14);
-
-function formatAmount(sats: number): string {
-  if (sats === 0) return '+0';
-  return sats > 0 ? `+${sats.toLocaleString()}` : sats.toLocaleString();
-}
-
-function formatFeedTime(iso: string | undefined): string {
-  if (!iso) return '--:--:--';
-  try {
-    const d = new Date(iso);
-    const hh = d.getUTCHours().toString().padStart(2, '0');
-    const mm = d.getUTCMinutes().toString().padStart(2, '0');
-    const ss = d.getUTCSeconds().toString().padStart(2, '0');
-    return `${hh}:${mm}:${ss}`;
-  } catch {
-    return '--:--:--';
-  }
-}
 ---
 <html lang="en">
 <head>
@@ -133,166 +33,57 @@ function formatFeedTime(iso: string | undefined): string {
 </head>
 <body data-screen-label="Marketplace · Index">
 <SiteHeader currentPath={Astro.url.pathname}>
-  <span slot="tools" class="live">
-    <span class="pulse" aria-hidden="true"></span>
-    LIVE · marketplace.froglet.dev
-  </span>
+  <span slot="tools" class="marketplace-status" data-marketplace-field="refresh" data-status="pending" role="status">CHECKING</span>
 </SiteHeader>
-
-<main class="mkt-shell" data-marketplace-live data-status={marketplace.status}>
+<main class="mkt-shell" data-marketplace-live data-status="pending">
   <div class="mkt-title">
-    <div class="mkt-title-main">
-      <h1>Marketplace</h1>
-      <button type="button" class="mkt-action" data-marketplace-copy-summary>Copy evidence</button>
-    </div>
-    <div class="search" role="search" aria-label="Marketplace search" tabindex="0" data-marketplace-search-form>
-      <label class="sr-only" for="marketplace-search">Search providers, services, or descriptors</label>
-      <span class="search-icon" aria-hidden="true">🔍</span>
-      <input id="marketplace-search" type="search" placeholder="Search providers, services, or descriptors…" autocomplete="off" spellcheck="false" data-marketplace-search />
-      <output class="search-count" for="marketplace-search" data-marketplace-search-count>All indexed rows</output>
+    <div class="mkt-title-main"><h1>Marketplace</h1><button type="button" class="mkt-action" data-marketplace-copy-summary>Copy evidence</button></div>
+    <div class="search" role="search" aria-label="Marketplace search" data-marketplace-search-form>
+      <label class="sr-only" for="marketplace-search">Search loaded providers and offers</label>
+      <input id="marketplace-search" type="search" placeholder="Search loaded providers and offers…" autocomplete="off" spellcheck="false" data-marketplace-search />
+      <output class="search-count" for="marketplace-search" data-marketplace-search-count>Loading</output>
     </div>
   </div>
-  <p class="mkt-sub">
-    Live counts of registered froglets, offers, and receipts on
-    <code class="inline">marketplace.froglet.dev</code> — snapshot
-    <strong data-marketplace-field="checkedAt">{formatSnapshotTime(marketplace.checkedAt)} UTC</strong>.
-  </p>
-
+  <p class="mkt-sub">Catalog from <code class="inline">marketplace.froglet.dev</code>. Last successful check: <strong data-marketplace-field="checkedAt">waiting</strong>.</p>
+  <noscript><p>JavaScript is required for current catalog data. Use the Providers JSON and Offers JSON links below.</p></noscript>
   <div class="metrics">
-    <div class="metric">
-      <div class="k">Registered froglets</div>
-      <div class="v" data-marketplace-field="froglets">{marketplace.providerCount.toLocaleString()}</div>
-      <div class="d">indexed providers</div>
-    </div>
-    <div class="metric">
-      <div class="k">Offers</div>
-      <div class="v" data-marketplace-field="offers">{marketplace.offerCount.toLocaleString()}</div>
-      <div class="d"><span data-marketplace-field="freeOffers">{stats.freeOffers}</span> free · <span data-marketplace-field="paidOffers">{stats.paidOffers}</span> priced</div>
-    </div>
-    <div class="metric">
-      <div class="k">Receipts</div>
-      <div class="v" data-marketplace-field="receipts">{stats.totalReceipts.toLocaleString()}</div>
-      <div class="d"><span data-marketplace-field="successRate">{stats.successRate}</span> success rate</div>
-    </div>
-    <div class="metric">
-      <div class="k">Receipt value</div>
-      <div class="v" data-marketplace-field="settledSats">{stats.totalSettledSats.toLocaleString()}<span class="u">sats</span></div>
-      <div class="d">indexed receipt totals</div>
-    </div>
+    <div class="metric"><div class="k">Registered froglets</div><div class="v" data-marketplace-field="froglets">—</div><div class="d">indexed providers</div></div>
+    <div class="metric"><div class="k">Offers</div><div class="v" data-marketplace-field="offers">—</div><div class="d">Sample: <span data-marketplace-field="freeOffers">—</span> free · <span data-marketplace-field="paidOffers">—</span> priced</div></div>
+    <div class="metric"><div class="k">Receipts in sample</div><div class="v" data-marketplace-field="receipts">—</div><div class="d"><span data-marketplace-field="successRate">—</span> reported success rate</div></div>
+    <div class="metric"><div class="k">Receipt value</div><div class="v" data-marketplace-field="settledSats">—</div><div class="d">sampled indexed receipt totals</div></div>
   </div>
-
-  <div class="mkt-grid">
-    <div class="panel panel--table">
-      <div class="panel-head">
-        <h3>Top froglets</h3>
-        <div class="filt" aria-hidden="true">
-          <span class="on">All</span>
-          <span>24h</span>
-          <span>7d</span>
-          <span>30d</span>
-        </div>
-        <button type="button" class="panel-action" data-marketplace-copy-provider>Copy top provider</button>
-      </div>
-      <table class="providers">
-        <thead><tr>
-          <th>Identity</th>
-          <th>Endpoint</th>
-          <th>Services</th>
-          <th>OK</th>
-          <th>Fail</th>
-          <th>Receipts</th>
-        </tr></thead>
-        <tbody data-marketplace-provider-table>
-          {topProviders.length > 0 ? (
-            topProviders.map((p) => (
-              <tr class="row" data-marketplace-search-row data-marketplace-kind="provider" data-provider-summary={providerEvidence(p)} data-search-text={`${p.providerId} ${compactId(p.providerId)} ${p.descriptorHash} ${p.endpoint ?? ''} ${p.serviceKinds.join(' ')}`}>
-                <td class="name">
-                  <span class="av">{avatarInitials(p.providerId)}</span>
-                  {compactId(p.providerId)}
-                </td>
-                <td class="endp">{compactEndpoint(p.endpoint)}</td>
-                <td class="svc">{topServiceKind(p.serviceKinds)}</td>
-                <td class="ok">{p.successCount}</td>
-                <td class="fail">{p.failureCount}</td>
-                <td class="vol">{p.successCount + p.failureCount}</td>
-              </tr>
-            ))
-          ) : (
-            <tr>
-              <td colspan="6" class="panel-empty">No providers indexed yet.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="mkt-side">
-      <div class="panel">
-        <div class="panel-head">
-          <h3>Live feed</h3>
-          <div class="filt" aria-hidden="true">
-            <span class="on">All</span>
-            <span>Deals</span>
-          </div>
-        </div>
-        {feedRows.length > 0 ? (
-          <div class="feed">
-            {feedRows.map((deal) => {
-              const totalSats = Math.round((deal.baseFeeMsat + deal.successFeeMsat) / 1000);
-              const statusOk = deal.status === 'succeeded' || deal.status === 'running';
-              return (
-                <div class="row" data-marketplace-search-row data-marketplace-kind="feed" data-search-text={`${deal.providerId} ${deal.offerId} ${deal.status} ${deal.updatedAt ?? ''}`}>
-                  <span class="ts">{formatFeedTime(deal.updatedAt)}</span>
-                  <span class="msg">
-                    <b>deal</b> {compactId(deal.providerId)} · <span class="svc">{deal.offerId}</span>
-                  </span>
-                  <span class:list={['amt', statusOk ? 'ok' : 'warn']}>
-                    {formatAmount(totalSats)}<span class="u">sats</span>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div class="panel-empty">
-            {marketplace.dealFeed.detail || 'No public deals surfaced.'}
-          </div>
-        )}
-      </div>
-
-      <div class="panel section-gap">
-        <div class="panel-head">
-          <h3>Services breakdown</h3>
-        </div>
-        <div class="svc-break" data-marketplace-services-breakdown>
-          {serviceBreakdown.length > 0 ? (
-            serviceBreakdown.map((s) => (
-              <div class="svc-row" data-marketplace-search-row data-marketplace-kind="service" data-search-text={s.name}>
-                <span class="nm">{s.name}</span>
-                <span class="bar">
-                  <span class="fill" style={`width: ${Math.round((s.count / maxServiceCount) * 100)}%`}></span>
-                </span>
-                <span class="ct">{s.count}</span>
-              </div>
-            ))
-          ) : (
-            <div class="panel-empty">No indexed offers yet.</div>
-          )}
-        </div>
-      </div>
-    </div>
+  <p class="mkt-sub">Receipts record provider statements, not independently assessed quality or unique buyers. Pricing alone does not establish that a paid route is live.</p>
+  <div class="panel panel--table">
+    <div class="panel-head"><h3>Providers by reported receipts</h3><button type="button" class="panel-action" data-marketplace-copy-provider>Copy top provider</button></div>
+    <table class="providers"><thead><tr><th>Identity</th><th>Endpoint</th><th>Services</th><th>OK</th><th>Fail</th><th>Receipts</th></tr></thead>
+      <tbody data-marketplace-provider-table><tr><td colspan="6" class="panel-empty">Checking catalog…</td></tr></tbody>
+    </table>
   </div>
-
+  <div class="panel panel--table section-gap">
+    <div class="panel-head"><h3>Indexed offers · up to 24</h3></div>
+    <table class="providers offer-book"><thead><tr><th>Offer</th><th>Runtime</th><th>Settlement</th><th>Base + success fee (msat)</th><th>Provider</th></tr></thead>
+      <tbody data-marketplace-offer-book><tr><td colspan="5" class="panel-empty">Checking catalog…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="panel section-gap"><div class="panel-head"><h3>Runtimes in offer sample</h3></div><div class="svc-break" data-marketplace-services-breakdown></div></div>
+  <p class="mkt-sub" data-marketplace-field="dealFeedDetail">A public deal feed is not available. Catalog counts do not measure customer activity.</p>
   <div class="mkt-footer">
-    <span data-marketplace-field="detail">{marketplace.detail}</span>
+    <span data-marketplace-field="detail" role="status">Checking the read API…</span>
     <nav aria-label="Marketplace data">
-	      <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
-	      <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>
-	      <a href="/verify-receipt/">Verify receipt</a>
-	      <a href="/marketplace/overview/">Marketplace docs</a>
+      <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
+      <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>
+      <a href="/verify-receipt/">Verify receipt</a><a href="/marketplace/overview/">Marketplace docs</a>
     </nav>
   </div>
 </main>
+<style>
+.marketplace-status { color: var(--muted, #b0b8c2); font: 12px monospace; }
+.marketplace-status[data-status="live"] { color: #7bdf9c; }
+.marketplace-status[data-status="stale"], .marketplace-status[data-status="unavailable"] { color: #f2c879; }
+.panel--table { overflow-x: auto; }
+table.providers.offer-book th:nth-child(n), table.providers.offer-book td:nth-child(n) { width: 20%; }
+:global(.mkt-sub), :global(.metric .k), :global(table.providers th), :global(.search-count) { color: var(--fg2); }
+</style>
 <script>
   import { initMarketplaceLive } from '../scripts/marketplace-live';
   initMarketplaceLive();

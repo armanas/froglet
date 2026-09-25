@@ -1,7 +1,7 @@
 {
   "schema_version": "froglet.agent-tasks.v1",
   "name": "Froglet public agent task manifest",
-  "updated": "2026-06-01",
+  "updated": "2026-09-24",
   "purpose": "Give HTTP-capable agents exact Froglet task contracts, evidence boundaries, and report fields before they run or recommend a hosted or local Froglet workflow.",
   "canonical_sources": [
     "https://froglet.dev/llms.txt",
@@ -9,8 +9,83 @@
     "https://froglet.dev/learn/cloud-trial/",
     "https://froglet.dev/agent-tasks.json"
   ],
-  "default_task_id": "hosted-proof",
+  "default_task_id": "publish-service",
   "task_contracts": [
+    {
+      "task_id": "publish-service",
+      "title": "Publish a selected catalog or Wasm function",
+      "kind": "native_agent_publication",
+      "when_to_use": "The user wants their data or a small function usable by another agent.",
+      "entrypoint": "https://froglet.dev/learn/share-services/",
+      "supported_agents": [
+        "Codex",
+        "Claude Code"
+      ],
+      "supported_platforms": [
+        "darwin-arm64",
+        "linux-x86_64",
+        "linux-arm64"
+      ],
+      "release_status": "candidate_under_qualification",
+      "steps": [
+        "Inspect installation and current agent settings; use the exact immutable-release installation plan and separate approval if needed.",
+        "Call native status from the actual agent; shell probes are not agent attachment.",
+        "Inspect source with prepare_service, propose relevant fields, clarify CSV types, and request an explicit destination.",
+        "Prepare a selected snapshot and show included and omitted fields, source fingerprint, public example, and local result.",
+        "Call marketplace_publish to obtain exact consent, then wait for publication approval.",
+        "Publish with that consent hash. Report local verification, public reachability, marketplace activation, and requester execution separately.",
+        "Return share_url with observed availability. Explain sleep/offline behavior and check_updates/open_status."
+      ],
+      "expected_report_fields": [
+        "source",
+        "included",
+        "omitted",
+        "example_input",
+        "example_result",
+        "snapshot_sha256",
+        "consent_hash",
+        "progress",
+        "share_url",
+        "unverified"
+      ],
+      "must_not_claim": [
+        "public success while pending review",
+        "shell probe proves actual agent attachment",
+        "excluded data is absent without inspecting the snapshot",
+        "clean-machine or human qualification before it is run",
+        "automatic republication",
+        "managed always-on hosting"
+      ]
+    },
+    {
+      "task_id": "consume-service",
+      "title": "Use a shared service",
+      "kind": "native_agent_invocation",
+      "when_to_use": "The user provides a Froglet provider/service share link.",
+      "entrypoint": "https://froglet.dev/learn/share-services/",
+      "steps": [
+        "Use the same native installation and separate installation approval if missing.",
+        "Resolve exact provider/service, validate HTTPS endpoint and signed offer, and obtain current public example input.",
+        "Call invoke_service with provider_id and service_id. Refuse paid offers.",
+        "Reconcile uncertain calls using the same idempotency_key and exact input.",
+        "Report result, receipt verification, and remaining uncertainty."
+      ],
+      "expected_report_fields": [
+        "provider_id",
+        "service_id",
+        "deal_id",
+        "idempotency_key",
+        "status",
+        "result",
+        "result_hash",
+        "receipt_verification"
+      ],
+      "must_not_claim": [
+        "webpage reachability proves recipient execution",
+        "marketplace data is live when stale",
+        "payment success on the free first-use path"
+      ]
+    },
     {
       "task_id": "hosted-proof",
       "title": "Hosted proof",
@@ -133,17 +208,17 @@
         "items-collection semantics",
         "feed match by runtime deal_id"
       ],
-      "next_step": "Use /verify-receipt/ for structural inspection if the user pastes a receipt artifact, while stating that browser inspection is not cryptographic signature verification."
+      "next_step": "Use /verify-receipt/ to verify supplied artifacts locally, then report missing chain members and verification limits."
     },
     {
       "task_id": "receipt-artifact-verify",
-      "title": "Receipt artifact structural verification",
-      "kind": "offline_browser_inspection",
-      "when_to_use": "Use when the user pastes a receipt or artifact envelope and wants to understand whether it has the expected Froglet receipt fields.",
+      "title": "Local artifact and chain verification",
+      "kind": "offline_browser_verification",
+      "when_to_use": "Use when the user provides signed Froglet artifacts and wants local cryptographic verification.",
       "required_capabilities": [
-        "parse JSON",
-        "inspect artifact envelopes",
-        "state cryptographic limits clearly"
+        "local WebAssembly execution",
+        "paste JSON",
+        "report verification scope"
       ],
       "entrypoint": "https://froglet.dev/verify-receipt/",
       "allowed_hosts": [
@@ -151,28 +226,25 @@
         "https://froglet.dev"
       ],
       "steps": [
-        "Paste the receipt JSON or feed artifact envelope",
-        "Run structural inspection",
-        "Report receipt-like fields, signature presence, hash presence, deal_hash, and quote_hash",
-        "State what remains unverified"
+        "Paste an artifact, array, or artifacts envelope",
+        "Run Verify evidence",
+        "Report every canonical artifact_type and its verification status",
+        "Report chain_evaluated, valid, and any structure_errors"
       ],
       "expected_report_fields": [
-        "parsed_json",
-        "artifact_envelope",
-        "receipt_like_artifact",
-        "signature_present",
-        "artifact_hash_present",
-        "deal_hash",
-        "quote_hash",
-        "not_cryptographically_verified"
+        "valid",
+        "chain_evaluated",
+        "structure_errors",
+        "artifacts",
+        "verification_scope"
       ],
       "must_not_claim": [
-        "signature validity",
-        "canonical JCS hash validity",
-        "provider identity validity",
-        "payment settlement validity"
+        "real-world provider identity",
+        "truthful execution or correct output",
+        "external payment settlement",
+        "current expiry unless explicitly checked"
       ],
-      "next_step": "For cryptographic verification, use the kernel/conformance verifier path from the repository rather than the browser helper."
+      "next_step": "Checks signatures, canonical hashes, artifact semantics, and supplied chain links locally using WASM. Does not prove external settlement, real-world identity, truthful execution, or current expiry."
     },
     {
       "task_id": "marketplace-evidence",

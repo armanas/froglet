@@ -217,10 +217,17 @@ mod tests {
 
     #[test]
     fn reap_expired_counts_swept_slots() {
-        let pool = SessionPool::new(3, Duration::from_millis(1));
+        let pool = SessionPool::new(3, Duration::from_secs(60));
         let _ = pool.assign();
         let _ = pool.assign();
-        std::thread::sleep(Duration::from_millis(5));
+
+        {
+            let mut slots = pool.lock();
+            for slot in slots.iter_mut().flatten() {
+                slot.expires_at = Instant::now() - Duration::from_secs(1);
+            }
+        }
+
         assert_eq!(pool.reap_expired(), 2);
         assert_eq!(pool.reap_expired(), 0, "idempotent after sweep");
     }

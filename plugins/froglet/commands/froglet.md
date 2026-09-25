@@ -22,12 +22,16 @@ Flow:
    `plan_install` before suggesting shell commands. Ask for missing choices:
    target agent, install footprint, node role, network mode, payment rail,
    marketplace URL, and first use case.
-4. If the install profile is complete, call `get_install_guide` and tell the
-   user that shell commands run through the host agent shell, not through the
-   Froglet runtime.
-5. If Froglet is already reachable, call `plan_use_case` before implementing
+4. If the install profile is complete, present the exact immutable plan,
+   command preview, host impact, release tag, and approval hash. Stop and wait
+   for the user to approve it explicitly; do not call `get_install_guide` in
+   the same turn or automatically relay the approval hash.
+5. After explicit approval, call `get_install_guide` with the exact returned
+   `release_tag` and `install_approval_hash`. Tell the user that shell commands
+   run through the host agent shell, not through the Froglet runtime.
+6. If Froglet is already reachable, call `plan_use_case` before implementing
    the user's first workflow, especially for batch or GPU requests.
-6. Use the MCP actions for real local work:
+7. Use the MCP actions for real local work:
    service discovery, invocation, artifacts, settlement inspection, marketplace
    operations, or the requested use-case implementation.
 

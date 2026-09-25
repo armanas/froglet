@@ -1,11 +1,12 @@
 # Relay Ingress (v1 contract)
 
-Status: contract specification — the relay **service** implementation lives in
-the closed-source marketplace services workspace; the **node-side tunnel
-client** is implemented in this repo (`src/relay_tunnel.rs`, configured via
-`FROGLET_RELAY_URL` / `FROGLET_RELAY_ENABLED`, end-to-end tested against a
-stub relay in `tests/relay_tunnel.rs`). This document is the interface both
-sides build against.
+Status: implemented non-Kernel transport contract. The **node-side tunnel
+client** lives in this repo (`src/relay_tunnel.rs`, configured via
+`FROGLET_RELAY_URL` / `FROGLET_RELAY_PUBLIC_SUFFIX`, tested in
+`tests/relay_tunnel.rs`). The matching relay service and cross-side tests live
+in the
+[sibling services workspace](https://github.com/armanas/froglet-services/tree/main/services/relay).
+This document is the v1 interface both sides implement.
 
 Relay ingress gives a froglet provider a public HTTPS address without DNS
 setup, TLS certificates, port forwarding, or NAT traversal: the node dials
@@ -20,6 +21,22 @@ kernel: signed artifacts simply advertise the relay URL as their
 `provider_url`, exactly as clearnet or onion URLs are advertised today.
 `provider_resolution` already classifies `https://*.relay.froglet.dev` as
 public clearnet HTTPS; no consumer-side changes are required.
+
+## Reachability lease semantics
+
+The v1 Reachability Lease is the authenticated live tunnel itself. It is not a
+separate stored JSON record and has no lease identifier, expiry field, or
+renewal endpoint. A successful `ready` frame activates the identity-derived
+route while the WebSocket session remains live. A newer authenticated session
+for the same provider identity replaces the previous one. Disconnect or
+liveness eviction removes the route, after which the provider hostname returns
+`503 {"error":"provider_offline"}` until the node reconnects.
+
+The versioned surfaces are the `froglet-relay-auth/v1` signature domain,
+`frame.v1` capability, and `x-froglet-relay: v1` forwarding header. This lease
+is operational reachability state, not a signed Froglet artifact. See
+[`PUBLICATION_CONTRACT.md`](PUBLICATION_CONTRACT.md#relay-reachability-lease-v1)
+for its relationship to publication evidence.
 
 ## 1. Addressing
 
@@ -82,8 +99,11 @@ client → relay   {"id": "<opaque>", "type": "response", "status": 200,
                   "body_b64": "<base64>"}
 ```
 
-- Bodies are capped at `max_body_bytes` (10 MiB v1, matching the daemon's
-  HTTP body limits); oversized requests get a relay-generated 413.
+- Bodies are capped at `max_body_bytes` (10 MiB in relay v1); oversized
+  requests get a relay-generated 413. This is a transport ceiling, not an
+  endpoint allowance: the node's default API body limit is lower and special
+  endpoints may enforce their own limits, so forwarded requests can still
+  receive a node-generated 413 below 10 MiB.
 - Header forwarding is allowlist-based in both directions (content-type,
   accept, authorization, content-length, plus `x-froglet-*`). The relay adds
   `x-forwarded-for` and `x-froglet-relay: v1`.
@@ -96,16 +116,66 @@ client → relay   {"id": "<opaque>", "type": "response", "status": 200,
 
 - Config (naming follows existing `FROGLET_TOR_*` patterns):
   - `FROGLET_RELAY_URL` — relay endpoint, e.g. `wss://relay.froglet.dev/v1/tunnel`;
-    unset disables the tunnel.
-  - `FROGLET_RELAY_ENABLED` — explicit on/off independent of URL presence
-    (bootstrap sets both).
+    configure it together with the suffix. This exact control endpoint is
+    included in consent and in the durable grant.
+  - `FROGLET_RELAY_PUBLIC_SUFFIX` — DNS-only public suffix, e.g.
+    `relay.froglet.dev`, used for deterministic endpoint planning.
+- Froglet has no hard-coded production relay. Both values are empty until an
+  operator or installer supplies a verified pair. Configuration alone remains
+  dormant (`status=reserved`): it derives the exact identity-bound HTTPS URL
+  locally but opens no WSS connection. Public control endpoints require WSS;
+  only literal loopback WS is accepted for local tests.
 - The tunnel client forwards decoded requests to the local provider listener
   (same loopback backend the Tor hidden service uses).
-- On `ready`, the node records the relay `public_url` in `TransportStatus`
-  alongside `clearnet_url` / `tor_onion_url`; registration and the publish
-  engine pick it up through the existing `/v1/node/capabilities` surface.
-- On eviction or disconnect, the node clears the relay URL from
-  `TransportStatus` and reconnects per § 2.
+- `/v1/node/capabilities` advertises the locally planned HTTPS `url`, the exact
+  configured WSS `control_url`, and status. On `ready`, the returned URL must
+  equal the planned URL before status becomes `up`.
+- On eviction or disconnect, the planned URL remains visible and status moves
+  to `down`. The supervisor reconnects only while at least one matching durable
+  grant remains. With no grants, status is `reserved` and no socket is open.
+
+### Publication readiness
+
+Selecting relay hosting is not sufficient to activate it. The first
+`marketplace_publish` call is read-only and checks
+`/v1/node/capabilities`. It returns a consent hash only when all of the
+following are true:
+
+1. relay endpoint planning is configured;
+2. status is `reserved`, `starting`, `up`, or `down`;
+3. the daemon reports its provider identity;
+4. the daemon reports an exact credential-free HTTPS origin and exact
+   credential-free WSS control endpoint (loopback WS is test-only); and
+5. the consent summary binds both endpoints and discloses outbound WSS, TLS
+   termination, plaintext visibility, and operator quotas.
+
+After approval, the node first persists and locally verifies the exact
+Publication Revision. Only then does the provider-control activation endpoint
+compare the service ID, revision hash, activation token, public URL, and WSS
+control URL against current lifecycle and configuration, persist the grant,
+and allow the supervisor to dial. It waits for a `ready` frame with the exact
+approved public URL. A disabled, URL-less, or changed relay fails closed; the
+engine does not fabricate an endpoint or reuse approval for another control
+server.
+
+The grant is durable non-Kernel authorization scoped to one exact publication
+instance. Multiple services may share one tunnel. Pausing one removes only its
+grant and relay-visible offers; the tunnel remains while another grant exists.
+Pause, unpublish, resume, rollback, identity rotation, and endpoint drift all
+invalidate stale grants. Startup reconciles both approved URLs before any
+tunnel task can reconnect.
+
+Relay-origin request admission is also grant-scoped. The relay removes any
+caller-supplied `x-froglet-relay`, writes the fixed `x-froglet-relay: v1`
+marker, and the node holds a read-side admission guard through the complete
+response. It exposes only exact granted services, offers, revisions, and
+deal-linked artifacts. Lifecycle/grant mutation holds the corresponding write
+guard, so a revoked service cannot be newly admitted after the revocation
+commit. Direct local and Tor access retain their existing scopes.
+
+Once the exact relay endpoint is live, the publish engine runs an independent
+requester-side canary before marketplace registration. Registration and later
+marketplace projection remain separate gates from reachability.
 
 ## 6. Trust boundary and limits
 
@@ -124,7 +194,7 @@ client → relay   {"id": "<opaque>", "type": "response", "status": 200,
   public traffic; the node must still treat every forwarded request as
   untrusted public input.
 
-## 7. Open questions (settle before service build)
+## 7. Future-version questions
 
 1. Hostname reuse after long offline periods — reserve labels indefinitely
    (they are identity-derived, so yes by default) vs. quota-expire mappings.

@@ -97,6 +97,8 @@ class PaymentEnforcementTests(FrogletAsyncTestCase):
                 "FROGLET_PRICE_EXEC_WASM": "10",
                 "FROGLET_PAYMENT_BACKEND": "x402",
                 "FROGLET_X402_WALLET_ADDRESS": "0x1111111111111111111111111111111111111111",
+                # This test rejects async jobs before any facilitator call.
+                "FROGLET_X402_FACILITATOR_URL": "http://127.0.0.1:1",
             }
         )
 

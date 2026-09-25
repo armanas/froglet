@@ -51,6 +51,16 @@ A `service_id` MUST be unique per provider but MAY collide across providers.
 An `offer_id` identifies the underlying kernel offer that backs a service.
 Multiple services MAY share the same `offer_id` (e.g., a generic compute offer backing several named services), but in practice most named services have a 1:1 mapping.
 
+Sharing is exact, not merely nominal. Every simultaneously active service bound
+to one `offer_id` MUST project the same Kernel Offer terms and execution profile,
+and MUST reference the same exact signed Offer artifact. Provider-private
+bindings such as module bytes, source bundles, OCI digests, entrypoints,
+summaries, and verification fixtures MAY differ because the signed Publication
+Revision binds those per-service details above the Kernel. The node therefore
+keeps one service record per `service_id`, emits one active Kernel Offer hash for
+the shared `offer_id`, reuses that artifact when another compatible binding is
+published, and rejects incompatible publish, resume, or rollback operations.
+
 **`offer_kind`** — The workload kind identifier placed in the kernel `Offer.payload.offer_kind` field.
 It declares the execution contract family for the offer.
 Standard v1 values include:
@@ -59,8 +69,8 @@ Standard v1 values include:
 - `compute.wasm.v1` — inline Wasm module execution
 - `compute.wasm.oci.v1` — OCI-referenced Wasm execution
 - `events.query` — builtin data service (event log queries)
-- `confidential.service.v1` — confidential TEE service execution
-- `compute.wasm.attested.v1` — attested Wasm in confidential enclave
+- `confidential.service.v1` — reserved confidential TEE service contract (not runnable in this build)
+- `compute.wasm.attested.v1` — reserved attested Wasm contract (not runnable in this build)
 
 **`resource_kind`** — A coarse classification of the resource a service provides.
 It is a convenience field on the discovery record so that bot hosts do not need to infer the resource category from runtime fields alone.
@@ -71,14 +81,14 @@ Standard v1 values:
 | `"service"` | Named service or generic compute (default) |
 | `"data"` | Data service (e.g., event log queries) |
 | `"compute"` | Direct compute (raw Wasm submission) |
-| `"confidential"` | Confidential/TEE execution |
+| `"confidential"` | Reserved confidential/TEE classification; not advertised as runnable in this build |
 
 ### 2.2 Derivation Rules
 
 `resource_kind` is derived from the service's runtime and offer_kind:
 
 - `runtime = "builtin"` and `offer_kind = "events.query"` → `resource_kind = "data"`
-- `runtime` in `{"tee.service", "tee.wasm", "tee.python"}` → `resource_kind = "confidential"`
+- reserved `runtime` values in `{"tee.service", "tee.wasm", "tee.python"}` → `resource_kind = "confidential"` (validation does not advertise them as runnable)
 - All other combinations → `resource_kind = "service"` (the default)
 
 When a requester submits a direct compute workload (raw Wasm or inline source without a service manifest), the workload-level `resource_kind` is `"compute"`.
@@ -153,7 +163,10 @@ Every discovery record MUST contain:
 | `offer_id` | string | Kernel offer identifier backing this service |
 | `summary` | string | Human-readable description of the service |
 | `mode` | string | Execution mode: `"sync"` or `"async"` |
-| `price_sats` | integer | Price in satoshis (0 for free services) |
+| `price_sats` | integer | Legacy whole-unit total; interpret with `price_currency` |
+| `base_fee_msat` | integer | Base-fee leg copied from the linked signed offer |
+| `success_fee_msat` | integer | Success-fee leg copied from the linked signed offer |
+| `settlement_method` | string | Exact settlement method from the linked signed offer |
 | `publication_state` | string | Publication state: `"active"` or `"hidden"` |
 | `provider_id` | string | Froglet application identity of the provider |
 
@@ -171,6 +184,7 @@ These fields are present when non-empty and provide classification and execution
 | `entrypoint` | string | Entrypoint value (e.g., `"handler"`, `"main.py"`) |
 | `contract_version` | string | Execution contract version string |
 | `mounts` | array | Execution mount specifications |
+| `capabilities` | array | Effective capability and mount-access declarations |
 
 ### 4.3 Optional Fields
 
@@ -179,7 +193,9 @@ These fields MAY be present and provide additional metadata or binding material:
 | Field | Type | Description |
 |---|---|---|
 | `project_id` | string or null | Local project identifier (if service is project-backed) |
+| `price_currency` | `"sat"`, `"usd"`, or null | Currency for the legacy whole-unit total; null is compatibility-only |
 | `module_hash` | string or null | Hash of the compiled execution module |
+| `binding_hash` | string or null | Immutable execution binding hash |
 | `starter` | string or null | Compact JSON example input for LLM/client guidance |
 | `input_schema` | object or null | JSON Schema for the service's expected input |
 | `output_schema` | object or null | JSON Schema for the service's expected output |
@@ -192,7 +208,14 @@ These fields MAY be present and provide additional metadata or binding material:
 
 Fields such as `module_bytes_hex`, `inline_source`, `oci_reference`, and `oci_digest` are **binding material**: they are used by the operator to compile an invocation into a kernel workload. They are not part of the interoperable discovery contract — a requester does not need to interpret these fields directly. The operator handles the translation.
 
-Fields such as `service_id`, `offer_id`, `summary`, `resource_kind`, `price_sats`, `starter`, `input_schema`, and `output_schema` are **interop fields**: a requester or bot host uses them to decide whether and how to invoke a service. `starter` is only an example request shape; schemas remain the contract metadata.
+Fields such as `service_id`, `offer_id`, `summary`, `resource_kind`,
+`price_sats`, `price_currency`, `base_fee_msat`, `success_fee_msat`,
+`settlement_method`, `starter`, `input_schema`, and `output_schema` are
+**interop fields**: a requester or bot host uses them to decide whether and how
+to invoke a service. `starter` is only an example request shape; schemas remain
+the contract metadata. Currency-aware publication approval and verification
+uses the minor-unit price terms in
+[`SignedPublicationRevision`](PUBLICATION_CONTRACT.md#signedpublicationrevision-v1).
 
 ## 5. Service Invocation Resolution
 
@@ -220,7 +243,29 @@ When a requester invokes a service by `service_id`, the operator resolves the in
 
 6. **Poll for completion.** For synchronous services (`mode: "sync"`), the operator polls the deal status until it reaches a terminal state or a timeout expires. For asynchronous services, the operator returns the deal immediately and the requester polls separately.
 
-### 5.2 `run_compute` Flow
+### 5.2 `froglet.wasm.run_json.v1`
+
+The dependency-minimal Wasm service contract accepts any JSON value and
+returns one JSON value. Froglet canonicalizes the request as UTF-8 JCS JSON,
+calls the module, bounds memory/fuel/wall-clock/output, validates UTF-8, and
+parses the returned bytes as exactly one JSON value.
+
+The module must export:
+
+- `memory` — 32-bit, unshared Wasm memory within the publication limit;
+- `alloc(len: i32) -> i32` — writable input allocation;
+- `run(ptr: i32, len: i32) -> i64` — high 32 bits are result pointer, low
+  32 bits are result length;
+- optional `dealloc(ptr: i32, len: i32)`.
+
+`froglet.wasm.run_json.v1` permits no imports or requested capabilities. Host
+calls belong to the separate `froglet.wasm.host_json.v1` contract and require
+explicit capabilities. For the few-approval clean-host lane, `.wat` is built
+by the version-pinned compiler embedded in `froglet-node`, while `.wasm` is
+accepted as a prebuilt immutable module. Both paths validate the resulting
+module against the same Wasmtime policy before local verification or exposure.
+
+### 5.3 `run_compute` Flow
 
 Direct compute follows a similar path but skips the service record lookup:
 
@@ -230,7 +275,7 @@ Direct compute follows a similar path but skips the service record lookup:
    `execute.compute` for `compute.wasm.v1`, and `execute.compute.generic` for `compute.execution.v1`.
 4. The kernel deal flow proceeds identically.
 
-### 5.3 Resolution Invariants
+### 5.4 Resolution Invariants
 
 - The `offer_id` used in the deal request MUST come from the resolved service record (for `invoke_service`) or the workload-compatible direct-compute offer (for `run_compute`).
 - The `WorkloadSpec` MUST be valid for the offer's `offer_kind`. The provider will reject workloads that do not match the offer's execution profile.

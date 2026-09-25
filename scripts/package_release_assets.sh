@@ -8,6 +8,7 @@ version=""
 platform=""
 arch=""
 out_dir=""
+cargo_target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 
 usage() {
   cat <<'EOF'
@@ -55,6 +56,8 @@ if [[ "$version" != v* ]]; then
 fi
 
 mkdir -p "$out_dir"
+cp scripts/agent-bootstrap.sh "$out_dir/agent-bootstrap.sh"
+chmod 0755 "$out_dir/agent-bootstrap.sh"
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/froglet-release-assets.XXXXXX")"
 cleanup() {
   rm -rf "$stage_dir"
@@ -80,4 +83,4 @@ package_binary() {
   rm -rf "$bundle_dir"
 }
 
-package_binary "froglet-node" "$repo_root/target/release/froglet-node"
+package_binary "froglet-node" "$cargo_target_dir/release/froglet-node"

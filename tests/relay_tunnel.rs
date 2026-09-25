@@ -16,16 +16,25 @@ use froglet::config::{
 };
 use froglet::state::{AppState, build_app_state};
 use futures::{SinkExt, StreamExt};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
+
+static TEST_PATH_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn unique_temp_dir() -> std::path::PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("valid time")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("froglet-relay-tunnel-{unique}"));
+    let counter = TEST_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "froglet-relay-tunnel-{}-{unique}-{counter}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).expect("temp dir");
     dir
 }
@@ -48,6 +57,7 @@ fn relay_test_state() -> Arc<AppState> {
             // The URL used by the test goes straight to run_tunnel_once; the
             // config only drives TransportStatus initialization here.
             url: Some("ws://127.0.0.1:0".to_string()),
+            public_suffix: Some("relay.froglet.dev".to_string()),
             enabled: true,
         },
         identity: IdentityConfig {
@@ -234,7 +244,13 @@ async fn tunnel_authenticates_forwards_and_tears_down() {
     // ── Run one tunnel lifecycle ──────────────────────────────────────────
     let tunnel_state = state.clone();
     let tunnel = tokio::spawn(async move {
-        froglet::relay_tunnel::run_tunnel_once(tunnel_state, &relay_url, backend_addr).await
+        froglet::relay_tunnel::run_tunnel_once(
+            tunnel_state,
+            &relay_url,
+            backend_addr,
+            "https://testlabel.relay.froglet.dev",
+        )
+        .await
     });
 
     let response = tokio::time::timeout(Duration::from_secs(10), served_rx)
@@ -273,7 +289,7 @@ async fn tunnel_authenticates_forwards_and_tears_down() {
     }
 
     // Relay closes → the lifecycle returns Err (supervisor would reconnect)
-    // and the transport status is cleared.
+    // and the deterministic planned endpoint remains available.
     close_tx.send(()).expect("signal close");
     let result = tokio::time::timeout(Duration::from_secs(10), tunnel)
         .await
@@ -286,5 +302,195 @@ async fn tunnel_authenticates_forwards_and_tears_down() {
     );
     let transport = state.transport_status.lock().await;
     assert_eq!(transport.relay_status, "down");
-    assert_eq!(transport.relay_url, None);
+    assert_eq!(
+        transport.relay_url.as_deref(),
+        Some("https://testlabel.relay.froglet.dev")
+    );
+}
+
+#[tokio::test]
+async fn deactivation_closes_public_socket_with_hanging_request() {
+    let state = relay_test_state();
+    let provider_id = state.identity.node_id().to_string();
+    let expected_public_url = state
+        .config
+        .relay
+        .planned_public_url(&provider_id)
+        .expect("planned URL")
+        .expect("enabled relay");
+
+    // Accept the local forward but never return an HTTP response. This keeps
+    // one request task alive past deactivation and proves it cannot retain the
+    // WebSocket writer.
+    let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging backend");
+    let backend_addr = backend_listener.local_addr().expect("backend addr");
+    tokio::spawn(async move {
+        let (_stream, _) = backend_listener.accept().await.expect("backend accept");
+        std::future::pending::<()>().await;
+    });
+
+    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind relay");
+    let relay_url = format!("ws://{}", relay_listener.local_addr().expect("relay addr"));
+    let (request_sent_tx, request_sent_rx) = tokio::sync::oneshot::channel();
+    let (peer_closed_tx, peer_closed_rx) = tokio::sync::oneshot::channel();
+    let relay_provider_id = provider_id.clone();
+    let relay_public_url = expected_public_url.clone();
+    tokio::spawn(async move {
+        let (stream, _) = relay_listener.accept().await.expect("relay accept");
+        let mut ws = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("ws accept");
+        let hello = read_text_json(&mut ws).await;
+        assert_eq!(hello["provider_id"], relay_provider_id);
+        ws.send(Message::Text(
+            serde_json::json!({"type":"challenge", "challenge": hex::encode([9u8; 32])})
+                .to_string(),
+        ))
+        .await
+        .expect("challenge");
+        let auth = read_text_json(&mut ws).await;
+        assert_eq!(auth["type"], "auth");
+        ws.send(Message::Text(
+            serde_json::json!({
+                "type": "ready",
+                "public_url": relay_public_url,
+                "max_body_bytes": 1024,
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("ready");
+        ws.send(Message::Text(
+            serde_json::json!({
+                "id": "hanging",
+                "type": "request",
+                "method": "GET",
+                "path": "/hang",
+                "headers": {},
+                "body_b64": "",
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("request");
+        request_sent_tx.send(()).expect("request sent signal");
+        let _ = ws.next().await;
+        let _ = peer_closed_tx.send(());
+    });
+
+    let (activation_tx, activation_rx) = tokio::sync::watch::channel(true);
+    let tunnel_state = state.clone();
+    let tunnel_expected_url = expected_public_url.clone();
+    let tunnel = tokio::spawn(async move {
+        froglet::relay_tunnel::run_activation_gated_tunnel(
+            tunnel_state,
+            &relay_url,
+            backend_addr,
+            &tunnel_expected_url,
+            activation_rx,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), request_sent_rx)
+        .await
+        .expect("request reached node")
+        .expect("relay task alive");
+    activation_tx.send(false).expect("deactivate");
+    tokio::time::timeout(Duration::from_secs(1), peer_closed_rx)
+        .await
+        .expect("deactivation closes peer promptly")
+        .expect("peer close signal");
+    assert_eq!(state.transport_status.lock().await.relay_status, "reserved");
+    tunnel.abort();
+}
+
+#[tokio::test]
+async fn failed_connection_does_not_leave_relay_starting() {
+    let state = relay_test_state();
+    let provider_id = state.identity.node_id().to_string();
+    let expected_public_url = state
+        .config
+        .relay
+        .planned_public_url(&provider_id)
+        .expect("planned URL")
+        .expect("enabled relay");
+    let (_activation_tx, activation_rx) = tokio::sync::watch::channel(true);
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        froglet::relay_tunnel::run_activation_gated_tunnel(
+            state.clone(),
+            "ws://127.0.0.1:0",
+            "127.0.0.1:1".parse().expect("backend address"),
+            &expected_public_url,
+            activation_rx,
+        ),
+    )
+    .await
+    .expect("failed connection returns promptly");
+    assert!(outcome.is_err(), "unreachable relay must fail");
+
+    let transport = state.transport_status.lock().await;
+    assert_eq!(transport.relay_status, "down");
+    assert_eq!(
+        transport.relay_url.as_deref(),
+        Some(expected_public_url.as_str())
+    );
+}
+
+#[tokio::test]
+async fn closed_activation_gate_does_not_leave_relay_starting() {
+    let state = relay_test_state();
+    let provider_id = state.identity.node_id().to_string();
+    let expected_public_url = state
+        .config
+        .relay
+        .planned_public_url(&provider_id)
+        .expect("planned URL")
+        .expect("enabled relay");
+    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stalled relay");
+    let relay_url = format!(
+        "ws://{}",
+        relay_listener.local_addr().expect("relay address")
+    );
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (_stream, _) = relay_listener.accept().await.expect("relay accept");
+        accepted_tx.send(()).expect("accepted signal");
+        std::future::pending::<()>().await;
+    });
+
+    let (activation_tx, activation_rx) = tokio::sync::watch::channel(true);
+    let tunnel_state = state.clone();
+    let tunnel_expected_url = expected_public_url.clone();
+    let tunnel = tokio::spawn(async move {
+        froglet::relay_tunnel::run_activation_gated_tunnel(
+            tunnel_state,
+            &relay_url,
+            "127.0.0.1:1".parse().expect("backend address"),
+            &tunnel_expected_url,
+            activation_rx,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), accepted_rx)
+        .await
+        .expect("node connects to stalled relay")
+        .expect("relay accept task remains alive");
+    assert_eq!(state.transport_status.lock().await.relay_status, "starting");
+
+    drop(activation_tx);
+    let error = tokio::time::timeout(Duration::from_secs(1), tunnel)
+        .await
+        .expect("closed activation gate stops tunnel")
+        .expect("tunnel task does not panic")
+        .expect_err("closed activation gate must fail");
+    assert!(error.contains("activation gate closed"), "error: {error}");
+    assert_eq!(state.transport_status.lock().await.relay_status, "down");
 }

@@ -1,14 +1,17 @@
+# check=skip=InvalidDefaultArgInFrom
 # Froglet MCP Server Docker Image
 #
 # Build from repo root:
-#   docker build -f integrations/mcp/froglet/Dockerfile -t froglet-mcp .
+#   docker build -f integrations/mcp/froglet/Dockerfile \
+#     --build-arg FROGLET_NODE_IMAGE=<provider-image@sha256:digest> \
+#     -t froglet-mcp .
 #
 # The marketplace_publish action shells out to the froglet-node binary, so the
 # image bundles it by copying from a provider image. FROGLET_NODE_IMAGE must
-# point at a froglet-provider image with a matching version; release builds
-# pass the same-version tag pushed earlier in the pipeline:
+# point at the matching froglet-provider image; release builds pass the
+# immutable digest resolved after pushing it earlier in the pipeline:
 #   docker build -f integrations/mcp/froglet/Dockerfile \
-#     --build-arg FROGLET_NODE_IMAGE=ghcr.io/armanas/froglet-provider:<version> \
+#     --build-arg FROGLET_NODE_IMAGE=ghcr.io/armanas/froglet-provider@sha256:<digest> \
 #     -t froglet-mcp .
 #
 # Run:
@@ -17,7 +20,7 @@
 #     -e FROGLET_RUNTIME_URL=http://host.docker.internal:8081 \
 #     froglet-mcp
 
-ARG FROGLET_NODE_IMAGE=ghcr.io/armanas/froglet-provider:latest
+ARG FROGLET_NODE_IMAGE
 FROM ${FROGLET_NODE_IMAGE} AS froglet-node-src
 
 FROM node:22-slim AS build

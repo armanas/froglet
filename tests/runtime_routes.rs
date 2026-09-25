@@ -20,14 +20,14 @@ use froglet::{
     },
     crypto,
     db::DbPool,
-    deals::DealRecord,
+    deals::{self, DealRecord},
     execution::ExecutionRuntime,
     protocol::{
         self, DescriptorCapabilities, DescriptorPayload, ExecutionLimits, OfferExecutionProfile,
         OfferPayload, OfferPriceSchedule, QuotePayload, QuoteSettlementTerms, ReceiptLegState,
         ReceiptPayload, ReceiptSettlementLeg, ReceiptSettlementRefs, SignedArtifact, WorkloadSpec,
     },
-    requester_deals::RequesterDealRecord,
+    requester_deals::{self, RequesterDealRecord},
     settlement::SettlementRegistry,
     state::{AppState, TransportStatus},
     wasm::{
@@ -38,6 +38,8 @@ use froglet::{
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     path::PathBuf,
     sync::{
@@ -219,8 +221,20 @@ fn create_test_state_with_identity_seed_and_public_base_url(
 
     if let Some(seed) = identity_seed {
         std::fs::create_dir_all(&node_config.storage.identity_dir).expect("identity dir");
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &node_config.storage.identity_dir,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .expect("private identity dir");
         std::fs::write(&node_config.storage.identity_seed_path, hex::encode(seed))
             .expect("identity seed");
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &node_config.storage.identity_seed_path,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private identity seed");
     }
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -228,7 +242,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
     let identity = froglet::identity::NodeIdentity::load_or_create(&node_config)
         .expect("create test identity");
     let pricing = froglet::pricing::PricingTable::from_config(node_config.pricing);
-    let settlement_registry = SettlementRegistry::new(&node_config);
+    let settlement_registry = SettlementRegistry::new(&node_config).expect("settlement registry");
 
     AppState {
         db: pool,
@@ -239,7 +253,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::builder()
+        http_client: froglet::tls::reqwest_client_builder()
             .timeout(Duration::from_secs(5))
             .build()
             .expect("reqwest client"),
@@ -253,6 +267,8 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -348,6 +364,7 @@ struct ProviderState {
     tamper_receipt: bool,
     tamper_accept_receipt: bool,
     tamper_accept_receipt_semantics: bool,
+    unsigned_status_change: bool,
     /// Optional attacker key. When present, `/v1/provider/descriptor` returns
     /// a descriptor re-signed by this key while the payload still claims the
     /// original `provider_id` — used to exercise the signer/provider_id
@@ -363,6 +380,7 @@ struct ProviderTamperConfig {
     deal_receipt: bool,
     accept_receipt: bool,
     accept_receipt_semantics: bool,
+    unsigned_status_change: bool,
     /// When true, the descriptor is re-signed by an attacker key while the
     /// payload keeps the legitimate `provider_id`. Signature verification
     /// passes (valid sig for attacker); semantic validation must reject.
@@ -407,6 +425,7 @@ impl ProviderState {
             tamper_receipt: tamper.deal_receipt,
             tamper_accept_receipt: tamper.accept_receipt,
             tamper_accept_receipt_semantics: tamper.accept_receipt_semantics,
+            unsigned_status_change: tamper.unsigned_status_change,
             attacker_key,
         }
     }
@@ -764,6 +783,9 @@ async fn provider_deal(
         .clone();
     assert_eq!(record.deal_id, deal_id);
     let mut record = record;
+    if state.unsigned_status_change {
+        record.status = "succeeded".to_string();
+    }
     if state.tamper_receipt {
         let result = json!({"ok": true});
         let result_hash = Some(crypto::sha256_hex(
@@ -1707,7 +1729,10 @@ async fn runtime_create_deal_rejects_tampered_provider_descriptor() {
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(
         response["error"],
-        Value::String("provider descriptor signature verification failed".to_string())
+        Value::String(
+            "provider descriptor validation failed: artifact signature verification failed"
+                .to_string()
+        )
     );
 }
 
@@ -1799,6 +1824,66 @@ async fn runtime_get_deal_should_reject_tampered_provider_receipt() {
 }
 
 #[tokio::test]
+async fn runtime_get_deal_rejects_unsigned_provider_status_change() {
+    let (provider_server, provider_state) =
+        build_provider_fixture_with_tamper(ProviderTamperConfig {
+            unsigned_status_change: true,
+            ..ProviderTamperConfig::default()
+        })
+        .await;
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::set(
+        "FROGLET_RUNTIME_PROVIDER_BASE_URL",
+        &provider_server.base_url,
+    );
+    let state = Arc::new(create_test_state_with_identity_seed(
+        None,
+        Some(provider_signing_seed(&provider_state)),
+    ));
+    let app = runtime_router(state.clone());
+
+    let create_request = runtime_request(
+        axum::http::Method::POST,
+        "/v1/runtime/deals",
+        Some("Bearer test-runtime-token"),
+        Some(
+            serde_json::to_value(build_runtime_request(RuntimeProviderRef {
+                provider_id: Some(provider_state.provider_id.clone()),
+                provider_url: Some(provider_server.base_url.clone()),
+            }))
+            .expect("serialize request"),
+        ),
+    );
+    let (create_status, response): (StatusCode, RuntimeCreateDealResponseView) =
+        call_json(app.clone(), create_request).await;
+    assert_eq!(create_status, StatusCode::OK);
+
+    let get_request = runtime_request(
+        axum::http::Method::GET,
+        &format!("/v1/runtime/deals/{}", response.deal.deal_id),
+        Some("Bearer test-runtime-token"),
+        None,
+    );
+    let (status, payload): (StatusCode, Value) = call_json(app, get_request).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        payload["error"],
+        Value::String(
+            "provider attempted to change requester state without a signed Receipt".to_string()
+        )
+    );
+    let deal_id = response.deal.deal_id;
+    let stored = state
+        .db
+        .with_read_conn(move |conn| requester_deals::get_requester_deal(conn, &deal_id))
+        .await
+        .expect("read requester deal")
+        .expect("stored requester deal");
+    assert_eq!(stored.status, deals::DEAL_STATUS_ACCEPTED);
+    assert!(stored.receipt.is_none());
+}
+
+#[tokio::test]
 async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
     let (provider_server, provider_state) =
         build_provider_fixture_with_delay(false, false, false, None).await;
@@ -1809,7 +1894,7 @@ async fn runtime_get_deal_allows_provider_sync_beyond_default_timeout() {
     );
     let mut state =
         create_test_state_with_identity_seed(None, Some(provider_signing_seed(&provider_state)));
-    state.http_client = reqwest::Client::builder()
+    state.http_client = froglet::tls::reqwest_client_builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
@@ -1979,7 +2064,7 @@ async fn runtime_accept_deal_rejects_tampered_provider_receipt() {
     assert_eq!(accept_status, StatusCode::BAD_GATEWAY);
     assert_eq!(
         accept_response["error"],
-        Value::String("provider receipt signature verification failed".to_string())
+        Value::String("provider Artifact Chain validation failed: artifact_envelope_invalid: artifact envelope hash, payload hash, schema version, or signature is invalid".to_string())
     );
 }
 
@@ -2071,7 +2156,7 @@ async fn runtime_accept_deal_rejects_provider_receipt_with_invalid_semantics() {
     assert_eq!(
         accept_response["error"],
         Value::String(
-            "provider receipt semantic validation failed: free receipt settlement_state must be none"
+            "provider Artifact Chain validation failed: artifact_semantic_invalid: free receipt settlement_state must be none"
                 .to_string()
         )
     );

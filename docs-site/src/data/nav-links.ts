@@ -1,5 +1,6 @@
 export const navLinks = [
 	{ href: '/', label: 'Home', hideOnMobile: true },
+	{ href: '/publish/', label: 'Publish a service' },
 	{
 		href: '/docs/',
 		label: 'Docs',

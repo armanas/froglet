@@ -13,6 +13,9 @@ pub const DEAL_STATUS_ACCEPTED: &str = "accepted";
 pub const DEAL_STATUS_PAYMENT_PENDING: &str = "payment_pending";
 pub const DEAL_STATUS_RUNNING: &str = "running";
 pub const DEAL_STATUS_RESULT_READY: &str = "result_ready";
+/// Execution has completed, but an external settlement mutation is not yet
+/// proven terminal. No receipt may be emitted while a deal is in this state.
+pub const DEAL_STATUS_SETTLEMENT_PENDING: &str = "settlement_pending";
 pub const DEAL_STATUS_SUCCEEDED: &str = "succeeded";
 pub const DEAL_STATUS_FAILED: &str = "failed";
 pub const DEAL_STATUS_REJECTED: &str = "rejected";
@@ -146,9 +149,14 @@ pub struct InsertDealOutcome {
 
 pub fn insert_quote(conn: &Connection, quote: &SignedArtifact<QuotePayload>) -> Result<(), String> {
     let quote_json = serde_json::to_string(quote).map_err(|e| e.to_string())?;
-    let quoted_total_sats = (quote.payload.settlement_terms.base_fee_msat
-        + quote.payload.settlement_terms.success_fee_msat)
-        / 1_000;
+    let quoted_total_msat = quote
+        .payload
+        .settlement_terms
+        .base_fee_msat
+        .checked_add(quote.payload.settlement_terms.success_fee_msat)
+        .ok_or_else(|| "quote total exceeds the unsigned 64-bit range".to_string())?;
+    let quoted_total_sats =
+        crate::db::u64_to_sqlite_integer(quoted_total_msat / 1_000, "quote price_sats")?;
     conn.execute(
         "INSERT INTO quotes (
             quote_id,
@@ -168,7 +176,7 @@ pub fn insert_quote(conn: &Connection, quote: &SignedArtifact<QuotePayload>) -> 
             quote.payload.workload_kind,
             quote.payload.workload_hash,
             quote.payload.expires_at,
-            quoted_total_sats as i64,
+            quoted_total_sats,
             quote_json,
             quote.created_at
         ],
@@ -212,7 +220,7 @@ pub fn get_quote(conn: &Connection, quote_id: &str) -> Result<Option<StoredQuote
 /// Inserts a new deal if it does not already exist under the canonical artifact hash or
 /// idempotency key.
 ///
-/// Callers are expected to execute this inside the same `BEGIN IMMEDIATE` transaction that
+/// Callers are expected to execute this inside the same immediate writer transaction that
 /// persists any related artifact documents, evidence rows, or settlement side effects. The
 /// helper performs read-then-insert admission checks but does not open its own write
 /// transaction, so calling it outside a serializing transaction weakens the dedupe guarantees.
@@ -258,6 +266,9 @@ pub fn insert_or_get_deal(
         });
     }
 
+    let payment_amount_sats = payment_amount_sats
+        .map(|value| crate::db::u64_to_sqlite_integer(value, "deal payment_amount_sats"))
+        .transpose()?;
     reserve_quote_usage(conn, &quote.hash, &deal_id, &deal_artifact_hash, created_at)?;
 
     let insert_result = conn.execute(
@@ -302,7 +313,7 @@ pub fn insert_or_get_deal(
             &initial_status,
             payment_method.as_deref(),
             payment_token_hash.as_deref(),
-            payment_amount_sats.map(|value| value as i64),
+            payment_amount_sats,
             workload_evidence_hash.as_deref(),
             &deal_artifact_hash,
             created_at,
@@ -632,6 +643,8 @@ pub fn materialize_payment_for_pending_deal(
             "unsupported materialized deal status: {next_status}"
         ));
     }
+    let payment_amount_sats =
+        crate::db::u64_to_sqlite_integer(payment_amount_sats, "deal payment_amount_sats")?;
 
     let updated = conn
         .execute(
@@ -644,7 +657,7 @@ pub fn materialize_payment_for_pending_deal(
             params![
                 deal_id,
                 payment_token_hash,
-                payment_amount_sats as i64,
+                payment_amount_sats,
                 next_status,
                 now,
                 DEAL_STATUS_PAYMENT_PENDING
@@ -801,6 +814,40 @@ pub fn stage_deal_result_ready(
     Ok(updated > 0)
 }
 
+pub fn stage_deal_settlement_pending_failure(
+    conn: &Connection,
+    deal_id: &str,
+    error: &str,
+    failure_evidence_hash: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2,
+                 result_json = NULL,
+                 result_hash = NULL,
+                 error = ?3,
+                 receipt_artifact_json = NULL,
+                 result_evidence_hash = NULL,
+                 failure_evidence_hash = ?4,
+                 receipt_artifact_hash = NULL,
+                 updated_at = ?5
+             WHERE deal_id = ?1 AND status = ?6",
+            params![
+                deal_id,
+                DEAL_STATUS_SETTLEMENT_PENDING,
+                error,
+                failure_evidence_hash,
+                now,
+                DEAL_STATUS_RUNNING,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
+}
+
 pub struct DealTerminalTransition<'a> {
     pub deal_id: &'a str,
     pub expected_status: &'a str,
@@ -809,6 +856,60 @@ pub struct DealTerminalTransition<'a> {
     pub failure_evidence_hash: Option<&'a str>,
     pub receipt_artifact_hash: Option<&'a str>,
     pub now: i64,
+}
+
+/// Exact terminal failure mutation used after recovery classified a persisted
+/// predecessor state. Recovery performs remote I/O before it writes the final
+/// receipt, so the status comparison is part of the `UPDATE`: a newer worker
+/// state must never be overwritten by a stale recovery decision.
+pub struct DealRecoveryFailureTransition<'a> {
+    pub deal_id: &'a str,
+    pub expected_status: &'a str,
+    pub error: &'a str,
+    pub receipt: &'a SignedArtifact<ReceiptPayload>,
+    pub failure_evidence_hash: Option<&'a str>,
+    pub receipt_artifact_hash: Option<&'a str>,
+    /// `result_ready` recovery can fail settlement after execution succeeded;
+    /// those result fields remain authoritative. Failures recovered from
+    /// `accepted`, `payment_pending`, or `running` clear partial result state.
+    pub preserve_result: bool,
+    pub now: i64,
+}
+
+pub fn complete_recovery_failure_if_status(
+    conn: &Connection,
+    update: DealRecoveryFailureTransition<'_>,
+) -> Result<bool, String> {
+    let receipt_json = serde_json::to_string(update.receipt).map_err(|e| e.to_string())?;
+
+    let updated = conn
+        .execute(
+            "UPDATE deals
+             SET status = ?2,
+                 result_json = CASE WHEN ?5 THEN result_json ELSE NULL END,
+                 result_hash = CASE WHEN ?5 THEN result_hash ELSE NULL END,
+                 error = ?3,
+                 receipt_artifact_json = ?4,
+                 result_evidence_hash = CASE WHEN ?5 THEN result_evidence_hash ELSE NULL END,
+                 failure_evidence_hash = ?6,
+                 receipt_artifact_hash = ?7,
+                 updated_at = ?8
+             WHERE deal_id = ?1 AND status = ?9",
+            params![
+                update.deal_id,
+                DEAL_STATUS_FAILED,
+                update.error,
+                receipt_json,
+                update.preserve_result,
+                update.failure_evidence_hash,
+                update.receipt_artifact_hash,
+                update.now,
+                update.expected_status,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(updated > 0)
 }
 
 pub fn reject_deal_if_status(
@@ -903,6 +1004,34 @@ pub fn complete_deal_failure(
     Ok(())
 }
 
+/// Cancel an attempt that never completed payment materialization/admission.
+/// Runtime `failed` also covers cancellation; it does not assert canonical
+/// post-admission execution failure. No signed terminal Receipt is emitted. The caller
+/// must hold the materialization claim and confirm any external cleanup first.
+pub fn cancel_unadmitted_deal(
+    conn: &Connection,
+    deal_id: &str,
+    message: &str,
+    failure_evidence_hash: &str,
+    now: i64,
+) -> Result<bool, String> {
+    conn.execute(
+        "UPDATE deals SET status = ?2, error = ?3, failure_evidence_hash = ?4, updated_at = ?5
+         WHERE deal_id = ?1 AND status = ?6 AND receipt_artifact_json IS NULL
+           AND receipt_artifact_hash IS NULL",
+        params![
+            deal_id,
+            DEAL_STATUS_FAILED,
+            message,
+            failure_evidence_hash,
+            now,
+            DEAL_STATUS_PAYMENT_PENDING
+        ],
+    )
+    .map(|updated| updated > 0)
+    .map_err(|error| error.to_string())
+}
+
 pub fn complete_deal_failure_if_status(
     conn: &Connection,
     update: DealTerminalTransition<'_>,
@@ -980,7 +1109,7 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
                 created_at,
                 updated_at
              FROM deals
-             WHERE status IN (?1, ?2, ?3, ?4)
+             WHERE status IN (?1, ?2, ?3, ?4, ?5)
              ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -991,7 +1120,8 @@ pub fn list_incomplete_deals(conn: &Connection) -> Result<Vec<StoredDeal>, Strin
                 DEAL_STATUS_ACCEPTED,
                 DEAL_STATUS_RUNNING,
                 DEAL_STATUS_PAYMENT_PENDING,
-                DEAL_STATUS_RESULT_READY
+                DEAL_STATUS_RESULT_READY,
+                DEAL_STATUS_SETTLEMENT_PENDING
             ],
             decode_deal_row,
         )
@@ -1199,6 +1329,12 @@ fn decode_deal_row_with_offset(
     };
 
     let payment_amount_sats: Option<i64> = row.get(offset + 15)?;
+    let payment_amount_sats = payment_amount_sats
+        .map(|value| {
+            u64::try_from(value)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(offset + 15, value))
+        })
+        .transpose()?;
 
     Ok(StoredDeal {
         deal_id: row.get(offset)?,
@@ -1212,7 +1348,7 @@ fn decode_deal_row_with_offset(
         error: row.get(offset + 12)?,
         payment_method: row.get(offset + 13)?,
         payment_token_hash: row.get(offset + 14)?,
-        payment_amount_sats: payment_amount_sats.map(|value| value as u64),
+        payment_amount_sats,
         receipt,
         created_at: row.get(offset + 18)?,
         updated_at: row.get(offset + 19)?,
@@ -1223,12 +1359,9 @@ pub fn quarantine_invalid_deals(
     conn: &Connection,
     quarantined_at: i64,
 ) -> Result<Vec<QuarantinedDeal>, String> {
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| e.to_string())?;
-
-    let result = (|| -> Result<Vec<QuarantinedDeal>, String> {
+    crate::db::with_immediate_transaction(conn, |transaction| {
         let quarantine_candidates = {
-            let mut stmt = conn
+            let mut stmt = transaction
                 .prepare(
                     "SELECT
                         rowid,
@@ -1277,8 +1410,9 @@ pub fn quarantine_invalid_deals(
 
         let mut quarantined = Vec::new();
         for (source_rowid, deal_id, status, reason, snapshot_json) in quarantine_candidates {
-            conn.execute(
-                "INSERT INTO deal_quarantine (
+            transaction
+                .execute(
+                    "INSERT INTO deal_quarantine (
                     source_rowid,
                     deal_id,
                     status,
@@ -1286,17 +1420,18 @@ pub fn quarantine_invalid_deals(
                     snapshot_json,
                     quarantined_at
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    source_rowid,
-                    deal_id.as_deref(),
-                    status.as_deref(),
-                    &reason,
-                    &snapshot_json,
-                    quarantined_at,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM deals WHERE rowid = ?1", params![source_rowid])
+                    params![
+                        source_rowid,
+                        deal_id.as_deref(),
+                        status.as_deref(),
+                        &reason,
+                        &snapshot_json,
+                        quarantined_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute("DELETE FROM deals WHERE rowid = ?1", params![source_rowid])
                 .map_err(|e| e.to_string())?;
 
             quarantined.push(QuarantinedDeal {
@@ -1308,23 +1443,13 @@ pub fn quarantine_invalid_deals(
         }
 
         if !quarantined.is_empty() {
-            conn.execute_batch("REINDEX deals;")
+            transaction
+                .execute_batch("REINDEX deals;")
                 .map_err(|e| e.to_string())?;
         }
 
         Ok(quarantined)
-    })();
-
-    match result {
-        Ok(quarantined) => {
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(quarantined)
-        }
-        Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(error)
-        }
-    }
+    })
 }
 
 fn optional_string_from_value_ref(value: ValueRef<'_>) -> Option<String> {
@@ -1393,7 +1518,9 @@ fn deal_row_snapshot(row: &rusqlite::Row<'_>) -> Value {
 mod tests {
     use super::*;
     use crate::protocol::{
-        self, ARTIFACT_KIND_DEAL, ARTIFACT_KIND_QUOTE, ExecutionLimits, QuoteSettlementTerms,
+        self, ARTIFACT_KIND_DEAL, ARTIFACT_KIND_QUOTE, ARTIFACT_KIND_RECEIPT, ExecutionLimits,
+        QuoteSettlementTerms, ReceiptExecutor, ReceiptLegState, ReceiptSettlementLeg,
+        ReceiptSettlementRefs,
     };
 
     fn test_spec() -> WorkloadSpec {
@@ -1477,6 +1604,68 @@ mod tests {
         .expect("deal")
     }
 
+    fn signed_test_failure_receipt(
+        provider_key: &crypto::NodeSigningKey,
+        quote: &SignedArtifact<QuotePayload>,
+        deal: &SignedArtifact<DealPayload>,
+    ) -> SignedArtifact<ReceiptPayload> {
+        protocol::sign_artifact(
+            &quote.payload.provider_id,
+            |message| crypto::sign_message_hex(provider_key, message),
+            ARTIFACT_KIND_RECEIPT,
+            1_700_000_300,
+            ReceiptPayload {
+                provider_id: quote.payload.provider_id.clone(),
+                requester_id: deal.payload.requester_id.clone(),
+                deal_hash: deal.hash.clone(),
+                quote_hash: quote.hash.clone(),
+                extension_refs: Vec::new(),
+                acceptance_ref: None,
+                started_at: Some(1_700_000_200),
+                finished_at: 1_700_000_300,
+                deal_state: DEAL_STATUS_FAILED.to_string(),
+                execution_state: DEAL_STATUS_FAILED.to_string(),
+                settlement_state: "none".to_string(),
+                result_hash: None,
+                confidential_session_hash: None,
+                result_envelope_hash: None,
+                result_format: None,
+                executor: ReceiptExecutor {
+                    runtime: "test".to_string(),
+                    runtime_version: "1".to_string(),
+                    execution_mode: None,
+                    attestation_platform: None,
+                    measurement: None,
+                    abi_version: None,
+                    module_hash: None,
+                    capabilities_granted: Vec::new(),
+                },
+                limits_applied: quote.payload.execution_limits.clone(),
+                settlement_refs: ReceiptSettlementRefs {
+                    method: "none".to_string(),
+                    bundle_hash: None,
+                    destination_identity: String::new(),
+                    base_fee: ReceiptSettlementLeg {
+                        amount_msat: 0,
+                        invoice_hash: String::new(),
+                        payment_hash: String::new(),
+                        state: ReceiptLegState::Canceled,
+                    },
+                    success_fee: ReceiptSettlementLeg {
+                        amount_msat: 0,
+                        invoice_hash: String::new(),
+                        payment_hash: String::new(),
+                        state: ReceiptLegState::Canceled,
+                    },
+                },
+                failure_code: Some("recovery_failed".to_string()),
+                failure_message: Some("recovery failed".to_string()),
+                result_ref: None,
+            },
+        )
+        .expect("failure receipt")
+    }
+
     fn new_test_deal(
         deal_id: &str,
         idempotency_key: Option<&str>,
@@ -1504,19 +1693,89 @@ mod tests {
         conn: &Connection,
         new_deal: NewDeal,
     ) -> Result<InsertDealOutcome, String> {
-        conn.execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| e.to_string())?;
-        let result = insert_or_get_deal(conn, new_deal);
-        match result {
-            Ok(outcome) => {
-                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                Ok(outcome)
-            }
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
+        crate::db::with_immediate_transaction(conn, |transaction| {
+            insert_or_get_deal(transaction, new_deal)
+        })
+    }
+
+    #[test]
+    fn quote_and_deal_amounts_reject_unsigned_values_outside_sqlite_range() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let mut overflowing_quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        overflowing_quote.payload.settlement_terms.base_fee_msat = u64::MAX;
+        overflowing_quote.payload.settlement_terms.success_fee_msat = 1;
+        let error = insert_quote(&conn, &overflowing_quote)
+            .expect_err("overflowing quote total must be rejected");
+        assert!(error.contains("quote total"), "error: {error}");
+
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let deal = signed_test_deal(&requester_key, &quote, "numeric-range");
+        let mut oversized = new_test_deal("numeric-deal", None, &quote, &spec, &deal);
+        oversized.payment_amount_sats = Some(i64::MAX as u64 + 1);
+        let error = match insert_or_get_deal(&conn, oversized) {
+            Ok(_) => panic!("oversized deal payment must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("deal payment_amount_sats"), "error: {error}");
+        let persisted: (i64, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM deals),
+                    (SELECT COUNT(*) FROM quote_usages)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("persistence counts");
+        assert_eq!(persisted, (0, 0));
+    }
+
+    #[test]
+    fn payment_materialization_and_decode_check_sqlite_integer_range() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let deal = signed_test_deal(&requester_key, &quote, "numeric-materialization");
+        let mut pending = new_test_deal("numeric-deal", None, &quote, &spec, &deal);
+        pending.initial_status = DEAL_STATUS_PAYMENT_PENDING.to_string();
+        pending.payment_amount_sats = Some(1);
+        insert_deal_in_transaction(&conn, pending).expect("insert pending deal");
+
+        let error = materialize_payment_for_pending_deal(
+            &conn,
+            "numeric-deal",
+            "payment-token",
+            i64::MAX as u64 + 1,
+            DEAL_STATUS_ACCEPTED,
+            10,
+        )
+        .expect_err("oversized materialized payment must be rejected");
+        assert!(error.contains("deal payment_amount_sats"), "error: {error}");
+        let unchanged = get_deal(&conn, "numeric-deal")
+            .expect("deal lookup")
+            .expect("pending deal");
+        assert_eq!(unchanged.status, DEAL_STATUS_PAYMENT_PENDING);
+        assert_eq!(unchanged.payment_amount_sats, Some(1));
+        assert!(unchanged.payment_token_hash.is_none());
+
+        conn.execute_batch(
+            "DROP TRIGGER deals_validate_payment_amount_update;
+             PRAGMA ignore_check_constraints = ON;
+             UPDATE deals SET payment_amount_sats = -1 WHERE deal_id = 'numeric-deal';
+             PRAGMA ignore_check_constraints = OFF;",
+        )
+        .expect("seed legacy negative payment amount");
+        let error = get_deal(&conn, "numeric-deal")
+            .expect_err("negative legacy payment amount must not wrap to u64");
+        assert!(error.contains("out of range"), "error: {error}");
     }
 
     #[test]
@@ -1713,6 +1972,161 @@ mod tests {
     }
 
     #[test]
+    fn recovery_failure_is_compare_and_set_and_handles_result_fields_explicitly() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        let provider_key = crypto::generate_signing_key();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = test_spec();
+        let quote = signed_test_quote(&provider_key, &requester_id, &spec);
+        let deal = signed_test_deal(&requester_key, &quote, "recovery-cas");
+        let receipt = signed_test_failure_receipt(&provider_key, &quote, &deal);
+
+        insert_deal_in_transaction(
+            &conn,
+            new_test_deal("recovery-deal", None, &quote, &spec, &deal),
+        )
+        .expect("deal insert");
+        conn.execute(
+            "UPDATE deals
+             SET status = ?2,
+                 result_json = '{\"partial\":true}',
+                 result_hash = 'partial-result',
+                 result_evidence_hash = 'partial-result-evidence',
+                 failure_evidence_hash = 'old-failure-evidence',
+                 receipt_artifact_hash = 'old-receipt',
+                 updated_at = 10
+             WHERE deal_id = ?1",
+            params!["recovery-deal", DEAL_STATUS_RUNNING],
+        )
+        .expect("seed interrupted execution");
+
+        assert!(
+            complete_recovery_failure_if_status(
+                &conn,
+                DealRecoveryFailureTransition {
+                    deal_id: "recovery-deal",
+                    expected_status: DEAL_STATUS_RUNNING,
+                    error: "execution interrupted",
+                    receipt: &receipt,
+                    failure_evidence_hash: Some("new-failure-evidence"),
+                    receipt_artifact_hash: Some("new-receipt"),
+                    preserve_result: false,
+                    now: 20,
+                },
+            )
+            .expect("running recovery transition")
+        );
+        type ClearedDealRow = (
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        );
+        let cleared: ClearedDealRow = conn
+            .query_row(
+                "SELECT status, result_json, result_hash, error,
+                        result_evidence_hash, failure_evidence_hash,
+                        receipt_artifact_hash, updated_at
+                 FROM deals WHERE deal_id = ?1",
+                ["recovery-deal"],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .expect("cleared recovery row");
+        assert_eq!(cleared.0, DEAL_STATUS_FAILED);
+        assert_eq!((cleared.1, cleared.2, cleared.4), (None, None, None));
+        assert_eq!(cleared.3, "execution interrupted");
+        assert_eq!(cleared.5.as_deref(), Some("new-failure-evidence"));
+        assert_eq!(cleared.6.as_deref(), Some("new-receipt"));
+        assert_eq!(cleared.7, 20);
+
+        conn.execute(
+            "UPDATE deals
+             SET status = ?2,
+                 result_json = '{\"finished\":true}',
+                 result_hash = 'finished-result',
+                 result_evidence_hash = 'finished-result-evidence',
+                 updated_at = 30
+             WHERE deal_id = ?1",
+            params!["recovery-deal", DEAL_STATUS_RESULT_READY],
+        )
+        .expect("seed result-ready recovery");
+        assert!(
+            complete_recovery_failure_if_status(
+                &conn,
+                DealRecoveryFailureTransition {
+                    deal_id: "recovery-deal",
+                    expected_status: DEAL_STATUS_RESULT_READY,
+                    error: "settlement canceled",
+                    receipt: &receipt,
+                    failure_evidence_hash: Some("settlement-failure-evidence"),
+                    receipt_artifact_hash: Some("settlement-receipt"),
+                    preserve_result: true,
+                    now: 40,
+                },
+            )
+            .expect("result-ready recovery transition")
+        );
+        let preserved: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT result_json, result_hash, result_evidence_hash
+                 FROM deals WHERE deal_id = ?1",
+                ["recovery-deal"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("preserved result fields");
+        assert_eq!(preserved.0.as_deref(), Some("{\"finished\":true}"));
+        assert_eq!(preserved.1.as_deref(), Some("finished-result"));
+        assert_eq!(preserved.2.as_deref(), Some("finished-result-evidence"));
+
+        conn.execute(
+            "UPDATE deals SET status = ?2, error = NULL, updated_at = 50 WHERE deal_id = ?1",
+            params!["recovery-deal", DEAL_STATUS_SUCCEEDED],
+        )
+        .expect("seed newer terminal state");
+        assert!(
+            !complete_recovery_failure_if_status(
+                &conn,
+                DealRecoveryFailureTransition {
+                    deal_id: "recovery-deal",
+                    expected_status: DEAL_STATUS_RESULT_READY,
+                    error: "stale recovery",
+                    receipt: &receipt,
+                    failure_evidence_hash: None,
+                    receipt_artifact_hash: None,
+                    preserve_result: false,
+                    now: 60,
+                },
+            )
+            .expect("stale recovery transition")
+        );
+        let stale: (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT status, error, updated_at FROM deals WHERE deal_id = ?1",
+                ["recovery-deal"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("newer terminal row");
+        assert_eq!(stale, (DEAL_STATUS_SUCCEEDED.to_string(), None, 50));
+    }
+
+    #[test]
     fn quarantine_invalid_deals_removes_unreadable_rows() {
         let conn = Connection::open_in_memory().expect("in-memory db");
         crate::db::initialize_db_for_connection(&conn).expect("configure db");
@@ -1768,5 +2182,81 @@ mod tests {
 
         assert_eq!(deals_count, 0);
         assert_eq!(quarantine_count, 1);
+    }
+
+    #[test]
+    fn quarantine_commit_failure_rolls_back_and_connection_is_reusable() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::initialize_db_for_connection(&conn).expect("configure db");
+        conn.execute(
+            "INSERT INTO deals (
+                deal_id,
+                quote_id,
+                quote_hash,
+                offer_id,
+                service_id,
+                workload_hash,
+                spec_json,
+                quote_json,
+                deal_artifact_json,
+                status,
+                created_at,
+                updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                "invalid-deal",
+                "quote-id",
+                "quote-hash",
+                "offer-id",
+                "service-id",
+                "workload-hash",
+                "{\"schema_version\":\"froglet/v1\"}",
+                "{not-json",
+                "{\"artifact_type\":\"deal\"}",
+                DEAL_STATUS_RUNNING,
+                1_i64,
+                1_i64,
+            ],
+        )
+        .expect("seed invalid deal");
+        conn.execute_batch(
+            "CREATE TABLE quarantine_commit_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE quarantine_commit_child (
+                 parent_id INTEGER NOT NULL,
+                 FOREIGN KEY (parent_id) REFERENCES quarantine_commit_parent(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER quarantine_commit_guard
+             AFTER DELETE ON deals
+             BEGIN
+                 INSERT INTO quarantine_commit_child (parent_id) VALUES (13);
+             END;",
+        )
+        .expect("deferred quarantine fixture");
+
+        let error = quarantine_invalid_deals(&conn, 123)
+            .expect_err("deferred constraint must reject quarantine COMMIT");
+        assert!(error.contains("FOREIGN KEY constraint failed"));
+        assert!(
+            conn.is_autocommit(),
+            "failed quarantine must release transaction"
+        );
+        let deal_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deals", [], |row| row.get(0))
+            .expect("rolled-back deal count");
+        let quarantine_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deal_quarantine", [], |row| row.get(0))
+            .expect("rolled-back quarantine count");
+        let guard_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quarantine_commit_child", [], |row| {
+                row.get(0)
+            })
+            .expect("rolled-back guard count");
+        assert_eq!((deal_count, quarantine_count, guard_count), (1, 0, 0));
+
+        conn.execute("INSERT INTO quarantine_commit_parent (id) VALUES (13)", [])
+            .expect("connection remains writable");
+        let quarantined = quarantine_invalid_deals(&conn, 124).expect("quarantine retry");
+        assert_eq!(quarantined.len(), 1);
     }
 }

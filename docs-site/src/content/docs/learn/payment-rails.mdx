@@ -22,9 +22,12 @@ Customer path:
 
 Operator path:
 
-The no-clone bootstrap starts with `payment_rail=none`. Only after the free demo
-works should an operator ask the Froglet MCP tool to plan a payment rail. It
-must return a decision checkpoint before any real secrets are entered.
+The recommended no-clone default is `payment_rail=none`. When an operator
+explicitly selects a paid rail, the generated bootstrap command carries that
+selection after the pipe, verifies the rail, and persists its private env file
+before activating either launchd/systemd or the Docker fallback. A decision
+checkpoint is still required before any real secrets are entered, and the free
+demo remains the safest first proof.
 
 Use these rail names in MCP:
 

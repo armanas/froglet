@@ -99,7 +99,7 @@ async fn preflight(State(state): State<Arc<AppState>>) -> Response {
             "local_install_handoff": {
                 "when_user_asks": "After reporting hosted evidence, collect the local install profile, call plan_install before get_install_guide, run commands through the user's host shell, verify provider/runtime health, then call plan_use_case.",
                 "mcp_actions": ["plan_install", "get_install_guide", "plan_use_case"],
-                "fresh_host_smoke": "curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash",
+                "fresh_host_smoke": "From a trusted checkout, run: bash scripts/fresh_host_quickstart_smoke.sh. Without a checkout, use the Quickstart immutable-release bootstrap verifier; never pipe mutable branch bytes into a shell.",
                 "boundary": "The hosted trial is free-only and cannot install Froglet on the user's machine; local installation commands must run in the user's own shell."
             },
             "chat_only_fallback": "If this client cannot fetch URLs, POST JSON, send Bearer auth, or poll, report a tool limitation and ask the user to use an HTTP-capable agent or the documented curl flow."
@@ -133,12 +133,9 @@ async fn create_session(
     let Some(info) = pool.assign() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(
-                serde_json::to_value(ErrorResponse {
-                    error: "session pool exhausted — try again shortly",
-                })
-                .expect("ErrorResponse always serializes"),
-            ),
+            Json(ErrorResponse {
+                error: "session pool exhausted — try again shortly",
+            }),
         )
             .into_response();
     };
@@ -161,11 +158,7 @@ async fn create_session(
         "minted session token from pool"
     );
 
-    (
-        StatusCode::OK,
-        Json(serde_json::to_value(body).expect("SessionResponse always serializes")),
-    )
-        .into_response()
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 async fn validate_session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -182,10 +175,7 @@ async fn validate_session(State(state): State<Arc<AppState>>, headers: HeaderMap
 
     (
         StatusCode::OK,
-        Json(
-            serde_json::to_value(SessionValidationResponse { valid: true })
-                .expect("SessionValidationResponse always serializes"),
-        ),
+        Json(SessionValidationResponse { valid: true }),
     )
         .into_response()
 }
@@ -198,12 +188,9 @@ struct SessionValidationResponse {
 fn invalid_session_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        Json(
-            serde_json::to_value(ErrorResponse {
-                error: "invalid or expired session token",
-            })
-            .expect("ErrorResponse always serializes"),
-        ),
+        Json(ErrorResponse {
+            error: "invalid or expired session token",
+        }),
     )
         .into_response()
 }
@@ -211,12 +198,9 @@ fn invalid_session_response() -> Response {
 fn session_pool_not_enabled_response() -> Response {
     (
         StatusCode::NOT_FOUND,
-        Json(
-            serde_json::to_value(ErrorResponse {
-                error: "session pool not enabled on this node",
-            })
-            .expect("ErrorResponse always serializes"),
-        ),
+        Json(ErrorResponse {
+            error: "session pool not enabled on this node",
+        }),
     )
         .into_response()
 }

@@ -108,7 +108,9 @@ describe("marketplace_publish: stub-binary integration", () => {
         name: "translator",
         summary: "EN→ES translator",
         source_inline: "def handler(event, context):\n    return event\n",
+        verification: { input: { text: "hello" } },
         hosting: { kind: "tor" },
+        consent_hash: "ab".repeat(32),
         marketplace_url: "https://marketplace.froglet.dev"
       },
       { _deps: publicUrlDeps }
@@ -119,17 +121,47 @@ describe("marketplace_publish: stub-binary integration", () => {
     // Inspect what the stub recorded: argv must include the publish
     // subcommand + --json, plus the host and marketplace flags.
     const log = await readFile(logFile, "utf8")
-    assert.match(log, /argv: publish --json --host tor --marketplace https:\/\/marketplace\.froglet\.dev/)
+    assert.match(log, /argv: publish --json --host tor --marketplace https:\/\/marketplace\.froglet\.dev --approve-consent (?:ab){32}/)
 
     // The temp dir must have contained all three files with the right
     // shape. (cwd is captured in the log too; we just check contents.)
     assert.match(log, /=== froglet\.toml ===\s+schema_version = "froglet\/v1"/)
-    assert.match(log, /=== froglet-service\.toml ===\s+schema_version = "froglet-service\/v3"/)
+    assert.match(log, /=== froglet-service\.toml ===\s+schema_version = "froglet-service\/v4"/)
     assert.match(log, /service_id = "translator"/)
     assert.match(log, /summary = "EN→ES translator"/)
     assert.match(log, /entrypoint_kind = "handler"/)
     assert.match(log, /default = "tor"/)
     assert.match(log, /=== handler\.py ===\s+def handler\(event, context\)/)
+  })
+
+  it("plans a public publication without opening the tunnel", async () => {
+    const logFile = join(stubDir, `log-plan-${Date.now()}.txt`)
+    const plan = {
+      status: "approval_required",
+      consent_hash: "cd".repeat(32),
+      summary: {
+        hosting: "relay",
+        relay: { relay_can_observe_plaintext: true }
+      }
+    }
+    process.env.FROGLET_NODE_BIN = stubBinary
+    process.env.FROGLET_STUB_LOG = logFile
+    process.env.FROGLET_STUB_RESPONSE = JSON.stringify(plan)
+    process.env.FROGLET_STUB_EXIT = "0"
+
+    const result = await runMarketplacePublish(
+      {
+        name: "planned-svc",
+        source_inline: "x = 1\n",
+        verification: { input: {} },
+        hosting: { kind: "relay" }
+      },
+      { _deps: publicUrlDeps }
+    )
+    assert.deepEqual(result, plan)
+    const log = await readFile(logFile, "utf8")
+    assert.match(log, /argv: publish --json --host relay .* --plan/)
+    assert.doesNotMatch(log, /--approve-consent/)
   })
 
   it("passes --host local when hosting.kind is local", async () => {
@@ -175,6 +207,7 @@ describe("marketplace_publish: stub-binary integration", () => {
       {
         name: "self-svc",
         source_inline: "x = 1\n",
+        verification: { input: {} },
         hosting: { kind: "self", url: "https://my-host.fly.dev" }
       },
       { _deps: publicUrlDeps }
@@ -197,6 +230,7 @@ describe("marketplace_publish: stub-binary integration", () => {
         {
           name: "broken",
           source_inline: "x = 1\n",
+          verification: { input: {} },
           hosting: { kind: "tor" }
         },
         { _deps: publicUrlDeps }
@@ -206,6 +240,27 @@ describe("marketplace_publish: stub-binary integration", () => {
         assert.match(e.message, /manifest: bad entrypoint/)
         return true
       }
+    )
+  })
+
+  it("rejects exit-zero JSON that is not a publication result", async () => {
+    process.env.FROGLET_NODE_BIN = stubBinary
+    process.env.FROGLET_STUB_LOG = join(stubDir, "log-invalid-success.txt")
+    process.env.FROGLET_STUB_RESPONSE = "{}"
+    process.env.FROGLET_STUB_EXIT = "0"
+    delete process.env.FROGLET_STUB_STDERR
+
+    await assert.rejects(
+      runMarketplacePublish(
+        {
+          name: "invalid-result",
+          source_inline: "x = 1\n",
+          verification: { input: {} },
+          hosting: { kind: "local" }
+        },
+        { _deps: publicUrlDeps }
+      ),
+      /publication response is missing provider_id/
     )
   })
 
@@ -226,6 +281,7 @@ describe("marketplace_publish: stub-binary integration", () => {
         {
           name: "cleanup-test",
           source_inline: "x = 1\n",
+          verification: { input: {} },
           hosting: { kind: "tor" }
         },
         { _deps: publicUrlDeps }

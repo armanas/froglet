@@ -1,6 +1,6 @@
 {
   "name": "froglet-mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "MCP server for local Froglet verifiable compute, signed receipts, settlement, and service publication.",
   "license": "Apache-2.0",
@@ -46,7 +46,7 @@
   },
   "scripts": {
     "check:mcp": "node --check integrations/mcp/froglet/server.js",
-    "test:mcp": "node --test integrations/mcp/froglet/test/server.test.mjs integrations/mcp/froglet/test/example-configs.test.mjs integrations/mcp/froglet/test/provider-url-integration.test.mjs integrations/mcp/froglet/test/package.test.mjs integrations/shared/froglet-lib/test/*.test.mjs",
+    "test:mcp": "node --test integrations/mcp/froglet/test/*.test.mjs integrations/shared/froglet-lib/test/*.test.mjs",
     "pack:mcp": "npm pack --dry-run"
   },
   "publishConfig": {

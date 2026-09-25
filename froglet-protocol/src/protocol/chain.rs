@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use super::kernel::{
     ARTIFACT_TYPE_DEAL, ARTIFACT_TYPE_DESCRIPTOR, ARTIFACT_TYPE_OFFER, ARTIFACT_TYPE_QUOTE,
     ARTIFACT_TYPE_RECEIPT, DealPayload, DescriptorPayload, ExecutionLimits, InvoiceBundleLeg,
-    InvoiceBundleLegState, InvoiceBundlePayload, OfferPayload, QuotePayload, ReceiptPayload,
-    SignedArtifact, TRANSPORT_TYPE_INVOICE_BUNDLE, validate_descriptor_artifact,
-    validate_offer_artifact, validate_receipt_artifact, verify_artifact,
+    InvoiceBundlePayload, OfferPayload, QuotePayload, ReceiptLegState, ReceiptPayload,
+    SETTLEMENT_METHOD_LIGHTNING_ESCROW, SETTLEMENT_METHOD_LIGHTNING_PREPAID,
+    SETTLEMENT_METHOD_NONE, SETTLEMENT_METHOD_STRIPE_MPP, SETTLEMENT_METHOD_X402_EIP3009,
+    SignedArtifact, TRANSPORT_TYPE_INVOICE_BUNDLE, validate_deal_artifact,
+    validate_descriptor_artifact, validate_invoice_bundle_artifact, validate_offer_artifact,
+    validate_quote_artifact, validate_receipt_artifact, verify_artifact,
 };
 use crate::crypto;
 
@@ -36,11 +39,11 @@ pub const ISSUE_INVOICE_SUCCESS_PAYMENT_HASH_MISMATCH: &str =
 pub const ISSUE_INVOICE_MIN_CLTV_MISMATCH: &str = "invoice_min_cltv_mismatch";
 pub const ISSUE_INVOICE_HASH_MISMATCH: &str = "invoice_hash_mismatch";
 pub const ISSUE_INVOICE_EXPIRY_EXCEEDS_DEAL: &str = "invoice_expiry_exceeds_deal";
-
-const SETTLEMENT_METHOD_NONE: &str = "none";
-const SETTLEMENT_METHOD_LIGHTNING_ESCROW: &str = "lightning.base_fee_plus_success_fee.v1";
-const SETTLEMENT_METHOD_STRIPE_MPP: &str = "stripe_mpp.v1";
-const SETTLEMENT_METHOD_LIGHTNING_PREPAID: &str = "lightning.prepaid.v1";
+pub const ISSUE_INVOICE_BUNDLE_REQUIRED_FOR_LIGHTNING: &str =
+    "invoice_bundle_required_for_lightning_method";
+pub const ISSUE_RECEIPT_BUNDLE_HASH_MISMATCH: &str = "receipt_bundle_hash_mismatch";
+pub const ISSUE_INVOICE_PAYMENT_HASH_MISMATCH: &str = "invoice_payment_hash_mismatch";
+pub const ISSUE_INVOICE_STATE_MISMATCH: &str = "invoice_state_mismatch";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +67,11 @@ pub struct ChainValidationReport {
     pub path: ChainPath,
     pub valid: bool,
     pub issues: Vec<ChainValidationIssue>,
+    /// Non-fatal findings (for example unresolved evidence refs). Warnings
+    /// never affect `valid`; absent-when-empty keeps the serialized shape of
+    /// pre-warning reports byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ChainValidationIssue>,
 }
 
 impl ChainValidationReport {
@@ -72,6 +80,7 @@ impl ChainValidationReport {
             path,
             valid: true,
             issues: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -181,6 +190,69 @@ pub fn validate_quote_deal_receipt(
     validate_quote_deal_links(&mut report, quote, deal);
     validate_receipt_links(&mut report, quote, deal, receipt);
     report
+}
+
+/// A complete artifact chain for one deal, ready for full validation.
+///
+/// `invoice_bundle` is present only on the Lightning escrow method;
+/// `receipt` is `None` for chains captured before execution finished.
+#[derive(Debug, Clone, Copy)]
+pub struct FullChain<'a> {
+    pub descriptor: &'a SignedArtifact<DescriptorPayload>,
+    pub offer: &'a SignedArtifact<OfferPayload>,
+    pub quote: &'a SignedArtifact<QuotePayload>,
+    pub invoice_bundle: Option<&'a SignedArtifact<InvoiceBundlePayload>>,
+    pub deal: &'a SignedArtifact<DealPayload>,
+    pub receipt: Option<&'a SignedArtifact<ReceiptPayload>>,
+}
+
+/// Aggregation of the pairwise chain validations for a [`FullChain`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FullChainReport {
+    pub valid: bool,
+    pub reports: Vec<ChainValidationReport>,
+}
+
+/// Validate a full chain by composing the pairwise validators:
+/// descriptor→offer, offer→quote, quote→(invoice_bundle→)deal, and
+/// quote→deal→receipt when a receipt is present. Full-chain validation also
+/// enforces settlement-method topology and binds Lightning receipt settlement
+/// references to the signed invoice bundle and deal. `valid` is the
+/// conjunction of the per-path reports.
+pub fn validate_full_chain(chain: &FullChain<'_>, now: Option<i64>) -> FullChainReport {
+    let mut reports = vec![
+        validate_descriptor_offer(chain.descriptor, chain.offer, now),
+        validate_offer_quote(chain.offer, chain.quote, now),
+    ];
+    let uses_lightning_bundle =
+        chain.quote.payload.settlement_terms.method == SETTLEMENT_METHOD_LIGHTNING_ESCROW;
+    match (uses_lightning_bundle, chain.invoice_bundle) {
+        (_, Some(invoice_bundle)) => reports.push(validate_quote_invoice_bundle_deal(
+            chain.quote,
+            invoice_bundle,
+            chain.deal,
+            now,
+        )),
+        (true, None) => {
+            let mut report = validate_quote_deal(chain.quote, chain.deal, now);
+            report.push_issue(
+                ISSUE_INVOICE_BUNDLE_REQUIRED_FOR_LIGHTNING,
+                TRANSPORT_TYPE_INVOICE_BUNDLE,
+                "lightning.base_fee_plus_success_fee.v1 chains require an invoice_bundle",
+            );
+            reports.push(report);
+        }
+        (false, None) => reports.push(validate_quote_deal(chain.quote, chain.deal, now)),
+    }
+    if let Some(receipt) = chain.receipt {
+        let mut report = validate_quote_deal_receipt(chain.quote, chain.deal, receipt, now);
+        if uses_lightning_bundle && let Some(invoice_bundle) = chain.invoice_bundle {
+            validate_receipt_invoice_bundle_links(&mut report, invoice_bundle, chain.deal, receipt);
+        }
+        reports.push(report);
+    }
+    let valid = reports.iter().all(|report| report.valid);
+    FullChainReport { valid, reports }
 }
 
 fn verify_descriptor_envelope(
@@ -371,122 +443,6 @@ fn validate_offer_settlement(
             "paid offers must use a known paid settlement method",
         );
     }
-}
-
-fn validate_quote_artifact(quote: &SignedArtifact<QuotePayload>) -> Result<(), String> {
-    let payload = &quote.payload;
-    if quote.signer != payload.provider_id {
-        return Err("quote signer does not match provider_id".to_string());
-    }
-    if payload.requester_id.trim().is_empty() {
-        return Err("quote requester_id must be non-empty".to_string());
-    }
-    if payload.descriptor_hash.trim().is_empty() {
-        return Err("quote descriptor_hash must be non-empty".to_string());
-    }
-    if payload.offer_hash.trim().is_empty() {
-        return Err("quote offer_hash must be non-empty".to_string());
-    }
-    if payload.workload_kind.trim().is_empty() {
-        return Err("quote workload_kind must be non-empty".to_string());
-    }
-    if payload.workload_hash.trim().is_empty() {
-        return Err("quote workload_hash must be non-empty".to_string());
-    }
-    validate_quote_settlement_terms(&payload.settlement_terms)?;
-    Ok(())
-}
-
-fn validate_deal_artifact(deal: &SignedArtifact<DealPayload>) -> Result<(), String> {
-    let payload = &deal.payload;
-    if deal.signer != payload.requester_id {
-        return Err("deal signer does not match requester_id".to_string());
-    }
-    if payload.provider_id.trim().is_empty() {
-        return Err("deal provider_id must be non-empty".to_string());
-    }
-    if payload.quote_hash.trim().is_empty() {
-        return Err("deal quote_hash must be non-empty".to_string());
-    }
-    if payload.workload_hash.trim().is_empty() {
-        return Err("deal workload_hash must be non-empty".to_string());
-    }
-    if !is_lower_hex_len(&payload.success_payment_hash, 64) {
-        return Err("deal success_payment_hash must be lowercase 32-byte hex".to_string());
-    }
-    if payload.completion_deadline <= payload.admission_deadline {
-        return Err("deal completion_deadline must be greater than admission_deadline".to_string());
-    }
-    if payload.acceptance_deadline < payload.completion_deadline {
-        return Err(
-            "deal acceptance_deadline must be greater than or equal to completion_deadline"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_invoice_bundle_artifact(
-    invoice_bundle: &SignedArtifact<InvoiceBundlePayload>,
-) -> Result<(), String> {
-    let payload = &invoice_bundle.payload;
-    if invoice_bundle.signer != payload.provider_id {
-        return Err("invoice_bundle signer does not match provider_id".to_string());
-    }
-    if payload.requester_id.trim().is_empty() {
-        return Err("invoice_bundle requester_id must be non-empty".to_string());
-    }
-    if payload.quote_hash.trim().is_empty() {
-        return Err("invoice_bundle quote_hash must be non-empty".to_string());
-    }
-    if payload.deal_hash.trim().is_empty() {
-        return Err("invoice_bundle deal_hash must be non-empty".to_string());
-    }
-    if !is_lower_hex_len(&payload.destination_identity, 66) {
-        return Err(
-            "invoice_bundle destination_identity must be compressed secp256k1 lowercase hex"
-                .to_string(),
-        );
-    }
-    validate_invoice_leg("base_fee", &payload.base_fee)?;
-    validate_invoice_leg("success_fee", &payload.success_fee)?;
-    if payload.success_fee.state != InvoiceBundleLegState::Open {
-        return Err("invoice_bundle success_fee.state must be open at issuance".to_string());
-    }
-    if payload.base_fee.state != InvoiceBundleLegState::Open
-        && !(payload.base_fee.amount_msat == 0
-            && payload.base_fee.state == InvoiceBundleLegState::Settled)
-    {
-        return Err(
-            "invoice_bundle base_fee.state must be open unless zero-valued and settled".to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_invoice_leg(name: &str, leg: &InvoiceBundleLeg) -> Result<(), String> {
-    if leg.invoice_bolt11.trim().is_empty() {
-        return Err(format!(
-            "invoice_bundle {name}.invoice_bolt11 must be non-empty"
-        ));
-    }
-    if !is_lower_hex_len(&leg.invoice_hash, 64) {
-        return Err(format!(
-            "invoice_bundle {name}.invoice_hash must be lowercase 32-byte hex"
-        ));
-    }
-    if !is_lower_hex_len(&leg.payment_hash, 64) {
-        return Err(format!(
-            "invoice_bundle {name}.payment_hash must be lowercase 32-byte hex"
-        ));
-    }
-    let invoice_hash = crypto::sha256_hex(leg.invoice_bolt11.as_bytes());
-    if leg.invoice_hash != invoice_hash {
-        return Err(format!(
-            "invoice_bundle {name}.invoice_hash must equal SHA256(invoice_bolt11)"
-        ));
-    }
-    Ok(())
 }
 
 fn validate_offer_quote_links(
@@ -798,37 +754,71 @@ fn validate_receipt_links(
     }
 }
 
-fn validate_quote_settlement_terms(
-    terms: &super::kernel::QuoteSettlementTerms,
-) -> Result<(), String> {
-    match terms.method.as_str() {
-        SETTLEMENT_METHOD_NONE => {
-            if !terms.destination_identity.is_empty() {
-                return Err("free quote destination_identity must be empty".to_string());
-            }
-            if terms.base_fee_msat != 0 || terms.success_fee_msat != 0 {
-                return Err("free quote fee amounts must be zero".to_string());
-            }
-        }
-        SETTLEMENT_METHOD_LIGHTNING_ESCROW => {
-            if !is_lower_hex_len(&terms.destination_identity, 66) {
-                return Err(
-                    "lightning quote destination_identity must be compressed secp256k1 lowercase hex"
-                        .to_string(),
-                );
-            }
-        }
-        SETTLEMENT_METHOD_STRIPE_MPP | SETTLEMENT_METHOD_LIGHTNING_PREPAID => {
-            if !terms.destination_identity.is_empty() {
-                return Err("non-escrow quote destination_identity must be empty".to_string());
-            }
-            if terms.success_fee_msat != 0 {
-                return Err("non-escrow quote success_fee_msat must be zero".to_string());
-            }
-        }
-        _ => return Err("quote settlement_terms.method is invalid".to_string()),
+fn validate_receipt_invoice_bundle_links(
+    report: &mut ChainValidationReport,
+    invoice_bundle: &SignedArtifact<InvoiceBundlePayload>,
+    deal: &SignedArtifact<DealPayload>,
+    receipt: &SignedArtifact<ReceiptPayload>,
+) {
+    let settlement_refs = &receipt.payload.settlement_refs;
+
+    if settlement_refs.bundle_hash.as_deref() != Some(invoice_bundle.hash.as_str()) {
+        report.push_issue(
+            ISSUE_RECEIPT_BUNDLE_HASH_MISMATCH,
+            ARTIFACT_TYPE_RECEIPT,
+            "receipt bundle_hash must match the invoice_bundle hash",
+        );
     }
-    Ok(())
+    if settlement_refs.base_fee.amount_msat != invoice_bundle.payload.base_fee.amount_msat
+        || settlement_refs.success_fee.amount_msat != invoice_bundle.payload.success_fee.amount_msat
+    {
+        report.push_issue(
+            ISSUE_INVOICE_AMOUNT_MISMATCH,
+            ARTIFACT_TYPE_RECEIPT,
+            "receipt settlement amounts must match the invoice_bundle legs",
+        );
+    }
+    if settlement_refs.base_fee.invoice_hash != invoice_bundle.payload.base_fee.invoice_hash
+        || settlement_refs.success_fee.invoice_hash
+            != invoice_bundle.payload.success_fee.invoice_hash
+    {
+        report.push_issue(
+            ISSUE_INVOICE_HASH_MISMATCH,
+            ARTIFACT_TYPE_RECEIPT,
+            "receipt invoice hashes must match the invoice_bundle legs",
+        );
+    }
+    if settlement_refs.base_fee.payment_hash != invoice_bundle.payload.base_fee.payment_hash
+        || settlement_refs.success_fee.payment_hash
+            != invoice_bundle.payload.success_fee.payment_hash
+    {
+        report.push_issue(
+            ISSUE_INVOICE_PAYMENT_HASH_MISMATCH,
+            ARTIFACT_TYPE_RECEIPT,
+            "receipt payment hashes must match the invoice_bundle legs",
+        );
+    }
+    if settlement_refs.success_fee.payment_hash != deal.payload.success_payment_hash {
+        report.push_issue(
+            ISSUE_INVOICE_SUCCESS_PAYMENT_HASH_MISMATCH,
+            ARTIFACT_TYPE_RECEIPT,
+            "receipt success_fee.payment_hash must match deal success_payment_hash",
+        );
+    }
+
+    let base_fee_must_be_settled = receipt.payload.settlement_state == "settled"
+        || receipt.payload.execution_state != "not_started";
+    let success_fee_must_be_settled = receipt.payload.settlement_state == "settled";
+    if (base_fee_must_be_settled && settlement_refs.base_fee.state != ReceiptLegState::Settled)
+        || (success_fee_must_be_settled
+            && settlement_refs.success_fee.state != ReceiptLegState::Settled)
+    {
+        report.push_issue(
+            ISSUE_INVOICE_STATE_MISMATCH,
+            ARTIFACT_TYPE_RECEIPT,
+            "settled or executed lightning receipts require the corresponding invoice legs to be settled",
+        );
+    }
 }
 
 fn limits_within_offer(limits: &ExecutionLimits, offer: &SignedArtifact<OfferPayload>) -> bool {
@@ -853,6 +843,7 @@ fn is_known_paid_settlement_method(method: &str) -> bool {
         SETTLEMENT_METHOD_LIGHTNING_ESCROW
             | SETTLEMENT_METHOD_STRIPE_MPP
             | SETTLEMENT_METHOD_LIGHTNING_PREPAID
+            | SETTLEMENT_METHOD_X402_EIP3009
     )
 }
 
@@ -866,17 +857,10 @@ fn validate_invoice_leg_hash_link(report: &mut ChainValidationReport, leg: &Invo
     }
 }
 
-fn is_lower_hex_len(value: &str, len: usize) -> bool {
-    value.len() == len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use std::{fs, path::PathBuf};
 
     #[derive(Debug, Deserialize)]
@@ -918,6 +902,41 @@ mod tests {
             .iter()
             .map(|issue| issue.code.clone())
             .collect()
+    }
+
+    fn resign_provider_artifact<T: Clone + Serialize>(
+        artifact: &SignedArtifact<T>,
+    ) -> SignedArtifact<T> {
+        let signing_key =
+            crypto::signing_key_from_seed_bytes(&[0x11; 32]).expect("conformance provider seed");
+        super::super::kernel::sign_artifact(
+            &crypto::public_key_hex(&signing_key),
+            |message| crypto::sign_message_hex(&signing_key, message),
+            &artifact.artifact_type,
+            artifact.created_at,
+            artifact.payload.clone(),
+        )
+        .expect("re-sign conformance artifact")
+    }
+
+    fn validate_paid_chain_with_receipt_mutation(
+        artifacts: &ArtifactVectors,
+        mutate: impl FnOnce(&mut ReceiptPayload),
+    ) -> FullChainReport {
+        let mut receipt = artifacts.receipt.artifact.clone();
+        mutate(&mut receipt.payload);
+        let receipt = resign_provider_artifact(&receipt);
+        validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.offer.artifact,
+                quote: &artifacts.quote.artifact,
+                invoice_bundle: Some(&artifacts.invoice_bundle.artifact),
+                deal: &artifacts.deal.artifact,
+                receipt: Some(&receipt),
+            },
+            None,
+        )
     }
 
     #[test]
@@ -1002,6 +1021,236 @@ mod tests {
             quote_deal_receipt.valid,
             "unexpected issues: {:?}",
             quote_deal_receipt.issues
+        );
+    }
+
+    #[test]
+    fn full_paid_chain_requires_invoice_bundle() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+
+        let with_bundle = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.offer.artifact,
+                quote: &artifacts.quote.artifact,
+                invoice_bundle: Some(&artifacts.invoice_bundle.artifact),
+                deal: &artifacts.deal.artifact,
+                receipt: Some(&artifacts.receipt.artifact),
+            },
+            None,
+        );
+        assert!(
+            with_bundle.valid,
+            "unexpected issues: {:?}",
+            with_bundle.reports
+        );
+        assert_eq!(with_bundle.reports.len(), 4);
+
+        let without_bundle = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.offer.artifact,
+                quote: &artifacts.quote.artifact,
+                invoice_bundle: None,
+                deal: &artifacts.deal.artifact,
+                receipt: Some(&artifacts.receipt.artifact),
+            },
+            None,
+        );
+        assert!(!without_bundle.valid);
+        assert!(without_bundle.reports.iter().any(|report| {
+            issue_codes(report).contains(&ISSUE_INVOICE_BUNDLE_REQUIRED_FOR_LIGHTNING.to_string())
+        }));
+        assert_eq!(without_bundle.reports.len(), 4);
+    }
+
+    #[test]
+    fn full_non_lightning_chain_rejects_invoice_bundle() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+
+        let report = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.free_offer.artifact,
+                quote: &artifacts.free_quote.artifact,
+                invoice_bundle: Some(&artifacts.invoice_bundle.artifact),
+                deal: &artifacts.free_deal.artifact,
+                receipt: Some(&artifacts.free_receipt.artifact),
+            },
+            None,
+        );
+
+        assert!(!report.valid);
+        assert!(report.reports.iter().any(|path| {
+            issue_codes(path).contains(&ISSUE_INVOICE_BUNDLE_FOR_NON_LIGHTNING.to_string())
+        }));
+    }
+
+    #[test]
+    fn full_lightning_chain_binds_receipt_to_invoice_bundle_hash() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+        let mut receipt = artifacts.receipt.artifact.clone();
+        receipt.payload.settlement_refs.bundle_hash = Some("aa".repeat(32));
+        let receipt = resign_provider_artifact(&receipt);
+
+        let report = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.offer.artifact,
+                quote: &artifacts.quote.artifact,
+                invoice_bundle: Some(&artifacts.invoice_bundle.artifact),
+                deal: &artifacts.deal.artifact,
+                receipt: Some(&receipt),
+            },
+            None,
+        );
+
+        assert!(!report.valid);
+        assert!(report.reports.iter().any(|path| {
+            issue_codes(path).contains(&ISSUE_RECEIPT_BUNDLE_HASH_MISMATCH.to_string())
+        }));
+    }
+
+    #[test]
+    fn full_lightning_chain_binds_receipt_settlement_legs() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+        let cases = [
+            (
+                "base amount",
+                validate_paid_chain_with_receipt_mutation(artifacts, |payload| {
+                    payload.settlement_refs.base_fee.amount_msat += 1;
+                }),
+                ISSUE_INVOICE_AMOUNT_MISMATCH,
+            ),
+            (
+                "success amount",
+                validate_paid_chain_with_receipt_mutation(artifacts, |payload| {
+                    payload.settlement_refs.success_fee.amount_msat += 1;
+                }),
+                ISSUE_INVOICE_AMOUNT_MISMATCH,
+            ),
+            (
+                "base invoice hash",
+                validate_paid_chain_with_receipt_mutation(artifacts, |payload| {
+                    payload.settlement_refs.base_fee.invoice_hash = "aa".repeat(32);
+                }),
+                ISSUE_INVOICE_HASH_MISMATCH,
+            ),
+            (
+                "success invoice hash",
+                validate_paid_chain_with_receipt_mutation(artifacts, |payload| {
+                    payload.settlement_refs.success_fee.invoice_hash = "bb".repeat(32);
+                }),
+                ISSUE_INVOICE_HASH_MISMATCH,
+            ),
+            (
+                "base payment hash",
+                validate_paid_chain_with_receipt_mutation(artifacts, |payload| {
+                    payload.settlement_refs.base_fee.payment_hash = "cc".repeat(32);
+                }),
+                ISSUE_INVOICE_PAYMENT_HASH_MISMATCH,
+            ),
+            (
+                "success payment hash",
+                validate_paid_chain_with_receipt_mutation(artifacts, |payload| {
+                    payload.settlement_refs.success_fee.payment_hash = "dd".repeat(32);
+                }),
+                ISSUE_INVOICE_PAYMENT_HASH_MISMATCH,
+            ),
+        ];
+
+        for (name, report, expected_code) in cases {
+            let codes: Vec<String> = report.reports.iter().flat_map(issue_codes).collect();
+            assert!(!report.valid, "{name} mutation unexpectedly passed");
+            assert!(
+                codes.contains(&expected_code.to_string()),
+                "{name} mutation did not report {expected_code}: {codes:?}"
+            );
+            if name == "success payment hash" {
+                assert!(
+                    codes.contains(&ISSUE_INVOICE_SUCCESS_PAYMENT_HASH_MISMATCH.to_string()),
+                    "success payment hash mutation did not report the deal mismatch: {codes:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_lightning_chain_requires_both_legs_settled_for_settled_receipt() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+        let mut receipt = artifacts.receipt.artifact.clone();
+        receipt.payload.settlement_refs.base_fee.state = ReceiptLegState::Canceled;
+        let receipt = resign_provider_artifact(&receipt);
+
+        let report = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.offer.artifact,
+                quote: &artifacts.quote.artifact,
+                invoice_bundle: Some(&artifacts.invoice_bundle.artifact),
+                deal: &artifacts.deal.artifact,
+                receipt: Some(&receipt),
+            },
+            None,
+        );
+
+        assert!(!report.valid);
+        assert!(
+            report.reports.iter().any(|path| {
+                issue_codes(path).contains(&ISSUE_INVOICE_STATE_MISMATCH.to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn validates_full_free_chain() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+
+        let report = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.free_offer.artifact,
+                quote: &artifacts.free_quote.artifact,
+                invoice_bundle: None,
+                deal: &artifacts.free_deal.artifact,
+                receipt: Some(&artifacts.free_receipt.artifact),
+            },
+            None,
+        );
+        assert!(report.valid, "unexpected issues: {:?}", report.reports);
+    }
+
+    #[test]
+    fn full_chain_reports_cross_chain_mismatch() {
+        let fixture = load_fixture();
+        let artifacts = &fixture.artifacts;
+
+        let report = validate_full_chain(
+            &FullChain {
+                descriptor: &artifacts.descriptor.artifact,
+                offer: &artifacts.offer.artifact,
+                quote: &artifacts.quote.artifact,
+                invoice_bundle: None,
+                deal: &artifacts.free_deal.artifact,
+                receipt: None,
+            },
+            None,
+        );
+        assert!(!report.valid);
+        let codes: Vec<String> = report
+            .reports
+            .iter()
+            .flat_map(|path_report| path_report.issues.iter().map(|issue| issue.code.clone()))
+            .collect();
+        assert!(
+            codes.contains(&ISSUE_QUOTE_HASH_MISMATCH.to_string()),
+            "expected quote_hash_mismatch, got {codes:?}"
         );
     }
 

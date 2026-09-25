@@ -1,7 +1,8 @@
-//! Hosting backends. Phase 1A ships three: Local, Tor, SelfHosted.
-//! Managed + Fly are Phase 1B.
+//! Hosting backends for local, relay, Tor, and self-hosted reachability.
+//! Provider-neutral managed deployment remains an operator-adapter seam.
 
 pub mod local;
+pub mod relay;
 pub mod self_hosted;
 pub mod tor;
 
@@ -17,11 +18,15 @@ pub struct PreparedHosting {
     /// `true` if the backend wants the engine to register with the
     /// marketplace. `false` for Local (private).
     pub register_with_marketplace: bool,
+    /// Endpoint-specific Revision when a backend must bind a different signed
+    /// Descriptor than the locally verified authoring node. Managed hosting
+    /// uses this to advertise only its approved public URL.
+    pub publication_revision: Option<froglet_protocol::publication::SignedPublicationRevision>,
 }
 
 /// Each hosting backend implements this. The engine drives the pipeline
-/// uniformly; backends own their specifics (Tor process supervision,
-/// URL validation, Fly deploy invocation, etc.).
+/// uniformly; backends own their specifics (transport supervision, URL
+/// validation, managed deployment invocation, etc.).
 #[async_trait]
 pub trait HostingBackend: Send + Sync {
     /// Backend identifier for error messages.

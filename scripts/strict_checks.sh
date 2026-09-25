@@ -4,6 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+strict_rustflags="${RUSTFLAGS:-}"
+case " ${strict_rustflags} " in
+  *" -D warnings "*) ;;
+  *) strict_rustflags="${strict_rustflags:+${strict_rustflags} }-D warnings" ;;
+esac
+
 ensure_mcp_dependencies() {
   local package_dir="integrations/mcp/froglet"
   local marker="${package_dir}/node_modules/@modelcontextprotocol/sdk/package.json"
@@ -25,11 +31,32 @@ echo "[strict] cargo fmt --check"
 cargo fmt --all --check
 
 echo "[strict] cargo test with compiler warnings denied"
-CARGO_INCREMENTAL=0 RUSTFLAGS="${RUSTFLAGS:-} -D warnings" cargo test --all-targets
+CARGO_INCREMENTAL=0 RUSTFLAGS="$strict_rustflags" cargo test --locked --workspace --all-targets
+
+# The offline verifier must keep building without default features, and for
+# wasm32, or the browser/npm distribution silently rots.
+echo "[strict] froglet-protocol builds dependency-light and for wasm32"
+CARGO_INCREMENTAL=0 cargo check -p froglet-protocol --no-default-features
+if rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
+  CARGO_INCREMENTAL=0 cargo check -p froglet-protocol --no-default-features \
+    --target wasm32-unknown-unknown
+else
+  echo "[strict] skipping wasm32 check: target wasm32-unknown-unknown is not installed"
+fi
+
+# conformance/kernel_v1.json is frozen: "signed froglet/v1 artifacts verify
+# forever" is only true while these bytes never change.
+echo "[strict] frozen kernel conformance vectors are unmodified"
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  git diff --exit-code -- conformance/kernel_v1.json
+  git diff --cached --exit-code -- conformance/kernel_v1.json
+else
+  echo "[strict] skipping frozen-fixture check: not a git checkout"
+fi
 
 if cargo clippy --version >/dev/null 2>&1; then
   echo "[strict] cargo clippy -D warnings"
-  cargo clippy --all-targets -- -D warnings
+  cargo clippy --locked --workspace --all-targets -- -D warnings
 else
   echo "[strict] skipping clippy: cargo-clippy is not installed"
 fi
@@ -63,20 +90,16 @@ if command -v node >/dev/null 2>&1; then
     node --check integrations/openclaw/froglet/index.js
     node --check integrations/openclaw/froglet/scripts/doctor.mjs
     node --test integrations/openclaw/froglet/test/plugin.test.js \
-      integrations/openclaw/froglet/test/config-profiles.test.mjs \
-      integrations/openclaw/froglet/test/doctor.test.mjs \
-      integrations/openclaw/froglet/test/froglet-client.test.mjs
+      integrations/openclaw/froglet/test/*.test.mjs
 
     echo "[strict] MCP server checks"
     node --check integrations/mcp/froglet/server.js
-    node --test integrations/mcp/froglet/test/server.test.mjs \
-      integrations/mcp/froglet/test/example-configs.test.mjs
+    node --test integrations/mcp/froglet/test/*.test.mjs
 
     echo "[strict] shared froglet-lib checks"
     node --check integrations/shared/froglet-lib/froglet-client.js
     node --check integrations/shared/froglet-lib/url-safety.js
-    node --test integrations/shared/froglet-lib/test/url-safety.test.mjs \
-      integrations/shared/froglet-lib/test/egress-mode.test.mjs
+    node --test integrations/shared/froglet-lib/test/*.test.mjs
 
     if [[ "${FROGLET_RUN_COMPOSE_SMOKE:-0}" == "1" ]]; then
       if ! command -v docker >/dev/null 2>&1; then
@@ -115,6 +138,14 @@ python3 -W error -m unittest \
   python.tests.test_setup_scripts \
   python.tests.test_conformance_vectors -v
 
+echo "[strict] standalone python verifier package"
+(
+  cd python/froglet-verify
+  python3 -W error -m unittest discover -s tests -v
+)
+echo "[strict] python verifier reproduces every conformance fixture"
+PYTHONPATH="python/froglet-verify" python3 -m froglet_verify.conformance conformance/
+
 if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then
   echo "[strict] tor integration"
   python3 -W error -m unittest -v python.tests.test_tor_integration
@@ -127,8 +158,8 @@ if [[ "${FROGLET_RUN_LINUX_SANDBOX_TESTS:-0}" == "1" ]]; then
   # self-hosted runner, a bare Linux VM, or local Linux with the right
   # priv set — export FROGLET_RUN_LINUX_SANDBOX_TESTS=1 to exercise them.
   echo "[strict] linux sandbox tests (landlock + seccomp)"
-  CARGO_INCREMENTAL=0 RUSTFLAGS="${RUSTFLAGS:-} -D warnings" \
-    cargo test --all-targets -- --ignored \
+  CARGO_INCREMENTAL=0 RUSTFLAGS="$strict_rustflags" \
+    cargo test --locked --workspace --all-targets -- --ignored \
       python_sandbox::tests:: \
       service_addressed_python_execution_runs_from_redacted_service_record
 fi

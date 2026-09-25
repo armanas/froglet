@@ -9,6 +9,7 @@ use axum::{
 };
 use froglet::{
     api::runtime_router,
+    builtins::{DataQueryHandler, DataQuerySourceKind},
     confidential::ConfidentialConfig,
     config::{
         IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig, PaymentBackend,
@@ -161,7 +162,8 @@ fn create_test_state_with_handler(
     let identity =
         froglet::identity::NodeIdentity::load_or_create(&node_config).expect("create identity");
     let pricing = PricingTable::from_config(node_config.pricing);
-    let settlement_registry = froglet::settlement::SettlementRegistry::new(&node_config);
+    let settlement_registry =
+        froglet::settlement::SettlementRegistry::new(&node_config).expect("settlement registry");
 
     let mut builtin_services: HashMap<String, Arc<dyn BuiltinServiceHandler>> = HashMap::new();
     builtin_services.insert(handler_name.to_string(), handler);
@@ -175,7 +177,7 @@ fn create_test_state_with_handler(
         config: node_config,
         identity: Arc::new(identity),
         pricing,
-        http_client: reqwest::Client::builder()
+        http_client: froglet::tls::reqwest_client_builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .expect("reqwest client"),
@@ -189,6 +191,8 @@ fn create_test_state_with_handler(
         provider_control_auth_token_path: temp_dir.join("runtime/froglet-control.token"),
         events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
         process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        native_data_query_handlers: froglet::builtins::DataQueryHandlerCache::default(),
+        native_data_publication_lock: tokio::sync::Mutex::const_new(()),
         hosted_trial_deal_quota: None,
         hosted_trial_session_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -245,6 +249,49 @@ async fn response_json(response: axum::response::Response<Body>) -> (StatusCode,
         )
     });
     (status, payload)
+}
+
+async fn run_job_to_terminal(
+    app: &axum::Router,
+    execution: froglet::execution::ExecutionWorkload,
+    idempotency_key: &str,
+) -> Value {
+    let response = app
+        .clone()
+        .oneshot(runtime_request(
+            axum::http::Method::POST,
+            "/v1/node/jobs",
+            Some(json!({
+                "kind": "execution",
+                "execution": execution,
+                "idempotency_key": idempotency_key,
+            })),
+        ))
+        .await
+        .expect("job create response");
+    let (status, payload) = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "unexpected job: {payload}");
+    let job_id = payload["job_id"].as_str().expect("job_id");
+
+    for _ in 0..100 {
+        let response = app
+            .clone()
+            .oneshot(runtime_request(
+                axum::http::Method::GET,
+                &format!("/v1/node/jobs/{job_id}"),
+                None,
+            ))
+            .await
+            .expect("job status response");
+        let (status, payload) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected job payload: {payload}");
+        match payload["status"].as_str() {
+            Some("succeeded") => return payload["result"].clone(),
+            Some("failed") => panic!("job failed: {payload}"),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+        }
+    }
+    panic!("timed out waiting for job")
 }
 
 /// Test: a registered BuiltinServiceHandler is invoked through the /v1/node/jobs
@@ -378,4 +425,159 @@ async fn unknown_builtin_service_is_rejected() {
         0,
         "echo handler should not be called for unknown service"
     );
+}
+
+/// Proves a user-supplied SQLite file can be invoked locally through the
+/// native builtin job path without Python, Node, OCI, or caller-provided SQL.
+#[tokio::test]
+async fn sqlite_data_query_builtin_invokes_through_jobs_api() {
+    let data_root = tempfile::tempdir().expect("data root");
+    let db_path = data_root.path().join("samples.sqlite");
+    let connection = rusqlite::Connection::open(&db_path).expect("create fixture database");
+    connection
+        .execute_batch(
+            "CREATE TABLE samples (id INTEGER PRIMARY KEY, status TEXT NOT NULL);
+             INSERT INTO samples (id, status) VALUES (1, 'ready');
+             INSERT INTO samples (id, status) VALUES (2, 'pending');",
+        )
+        .expect("seed fixture database");
+    drop(connection);
+
+    let handler = Arc::new(
+        DataQueryHandler::open(
+            data_root.path(),
+            "samples.sqlite",
+            DataQuerySourceKind::Sqlite,
+        )
+        .expect("bind read-only SQLite handler"),
+    );
+    let state = create_test_state_with_handler("data.samples", handler);
+    let app = runtime_router(state);
+    let execution = froglet::execution::ExecutionWorkload::builtin_service(
+        "data.samples".to_string(),
+        json!({
+            "op": "select",
+            "collection": "samples",
+            "columns": ["id"],
+            "equals": {"status": "ready"}
+        }),
+    )
+    .expect("data query execution workload");
+
+    let response = app
+        .clone()
+        .oneshot(runtime_request(
+            axum::http::Method::POST,
+            "/v1/node/jobs",
+            Some(json!({
+                "kind": "execution",
+                "execution": execution,
+                "idempotency_key": "sqlite-data-query-local-invocation",
+            })),
+        ))
+        .await
+        .expect("job create response");
+    let (status, payload) = response_json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "unexpected payload: {payload}"
+    );
+    let job_id = payload["job_id"].as_str().expect("job_id");
+
+    for _ in 0..50 {
+        let response = app
+            .clone()
+            .oneshot(runtime_request(
+                axum::http::Method::GET,
+                &format!("/v1/node/jobs/{job_id}"),
+                None,
+            ))
+            .await
+            .expect("job status response");
+        let (status, payload) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected job payload: {payload}");
+        match payload["status"].as_str() {
+            Some("succeeded") => {
+                assert_eq!(payload["result"]["source_kind"], "sqlite");
+                assert_eq!(payload["result"]["rows"], json!([{"id": 1}]));
+                return;
+            }
+            Some("failed") => panic!("data query job failed: {payload}"),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
+    panic!("timed out waiting for SQLite data query job");
+}
+
+#[tokio::test]
+async fn repeated_csv_native_invocation_reuses_validated_handler() {
+    use froglet_protocol::publication::{
+        PublicationCsvColumn, PublicationCsvColumnType, PublicationCsvSchema,
+        PublicationDataFormat, PublicationDataSource,
+    };
+
+    let state = create_test_state_with_handler("unrelated.echo", Arc::new(EchoHandler::new()));
+    let publication_root = state.config.storage.data_dir.join("publication-data");
+    std::fs::create_dir_all(&publication_root).expect("publication data directory");
+    let source = b"id,name\n1,Ada\n2,Grace\n";
+    let schema = PublicationCsvSchema {
+        collection: "people".to_string(),
+        columns: vec![
+            PublicationCsvColumn {
+                name: "id".to_string(),
+                column_type: PublicationCsvColumnType::Integer,
+                nullable: false,
+                indexed: true,
+            },
+            PublicationCsvColumn {
+                name: "name".to_string(),
+                column_type: PublicationCsvColumnType::String,
+                nullable: false,
+                indexed: true,
+            },
+        ],
+    };
+    let package = PublicationDataSource {
+        format: PublicationDataFormat::Csv,
+        content_base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, source),
+        csv_schema: Some(schema.clone()),
+    };
+    let package_digest = package.csv_package_digest().expect("CSV package digest");
+    let source_path = publication_root.join(format!("{package_digest}.csv"));
+    let schema_path = publication_root.join(format!("{package_digest}.csv.schema.json"));
+    std::fs::write(&source_path, source).expect("write immutable CSV fixture");
+    std::fs::write(
+        &schema_path,
+        froglet::canonical_json::to_vec(&schema).expect("canonical schema"),
+    )
+    .expect("write immutable CSV schema");
+    let app = runtime_router(state);
+
+    let workload = |name: &str| {
+        froglet::execution::ExecutionWorkload::bound_builtin_service(
+            "data.people".to_string(),
+            froglet::builtins::DATA_QUERY_CSV_CONTRACT_V1.to_string(),
+            Some(package_digest.clone()),
+            json!({
+                "op": "select",
+                "collection": "people",
+                "columns": ["name"],
+                "equals": {"name": name},
+                "limit": 1
+            }),
+        )
+        .expect("bound CSV workload")
+    };
+
+    let first = run_job_to_terminal(&app, workload("Ada"), "csv-cache-first").await;
+    assert_eq!(first["rows"], json!([{"name": "Ada"}]));
+
+    // A second invocation can only succeed after these immutable inputs are
+    // removed if the already-validated handler is reused rather than opened
+    // and validated again.
+    std::fs::remove_file(&source_path).expect("remove staged CSV after first invocation");
+    std::fs::remove_file(&schema_path).expect("remove staged schema after first invocation");
+    let second = run_job_to_terminal(&app, workload("Grace"), "csv-cache-second").await;
+    assert_eq!(second["rows"], json!([{"name": "Grace"}]));
 }

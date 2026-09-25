@@ -66,14 +66,15 @@ export function normalizeCommand(value, fieldName) {
   return value.trim()
 }
 
-export function toolTextResult(text) {
+export function toolTextResult(text, { isError = false } = {}) {
   return {
     content: [
       {
         type: "text",
         text
       }
-    ]
+    ],
+    ...(isError ? { isError: true } : {})
   }
 }
 

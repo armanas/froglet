@@ -6,7 +6,7 @@ import process from "node:process"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
-import { checkApis } from "../scripts/doctor.mjs"
+import { checkApis, runtimeHealthCheck } from "../scripts/doctor.mjs"
 
 const doctorPath = fileURLToPath(new URL("../scripts/doctor.mjs", import.meta.url))
 
@@ -134,4 +134,15 @@ test("doctor checkApis probes provider and runtime health", async () => {
     global.fetch = previousFetch
     await rm(tempDir, { recursive: true, force: true })
   }
+})
+
+test("doctor marks an HTTP 200 unhealthy payload as an error", () => {
+  const check = runtimeHealthCheck({
+    healthy: false,
+    provider_healthy: true,
+    runtime_healthy: false,
+    components: {}
+  })
+  assert.equal(check.status, "error")
+  assert.equal(check.details.healthy, false)
 })

@@ -1,15 +1,16 @@
 # Payment Verification Matrix
 
 Status: living document.
-Last refreshed: 2026-07-03 (v0.4.x line; phoenixd row added, MCP action names
-corrected).
+Last refreshed: 2026-07-10 (v0.4.x line; Stripe requester/SPT hardening focused
+gates refreshed).
 
 > [!WARNING]
 > **Staleness advisory (per § 7's own rule):** most 🟢 cells below carry
 > evidence dated 2026-05-15 (v0.2.0 cut) or 2026-04-30, which is more than one
 > release cycle behind the shipping 0.4.x code. Read those cells as 🟡
-> until their commands are re-run and re-dated. Freshly verified on
-> 2026-07-03: `Lightning::Phoenixd` unit + mock-lifecycle rows.
+> until their commands are re-run and re-dated. Freshly verified:
+> `Lightning::Phoenixd` unit + mock-lifecycle rows on 2026-07-03, and the
+> focused Stripe SPT/helper/requester gates described below on 2026-07-10.
 
 This is the single source of truth for **which payment rails Froglet
 supports, in which modes, with which test coverage, and how to re-run any
@@ -28,7 +29,10 @@ narrative) supports **free (`none`), Lightning, and Stripe** settlement:
   hold-invoice escrow (base fee + success fee, preimage as proof). Publishing
   a paid Lightning service requires a Lightning backend on the node
   (`FROGLET_PAYMENT_BACKEND=lightning`). Stripe publish uses Stripe MPP with
-  USD pricing and requires the Stripe backend/configuration on the node.
+  USD pricing and requires the Stripe backend/configuration on the provider
+  node. A production requester must supply an SPT issued by an authorized
+  agentic-commerce platform. The built-in SPT helper is an explicitly enabled
+  seller-side Stripe sandbox simulation and always rejects live keys.
 - x402 is defined in the protocol kernel and supported by its settlement
   driver at runtime, but is **not yet exposed on the publish path**. Operators
   can still issue x402 offers via the lower-level provider API.
@@ -47,7 +51,7 @@ Four payment backends live in [src/config.rs](../src/config.rs)'s
 | `None` | [none.rs](../src/settlement/none.rs) | — | Free-only deals. Used in local compose smoke, conformance tests, and the public `try.froglet.dev` demo catalog. |
 | `Lightning` | [lightning.rs](../src/settlement/lightning.rs) + [phoenixd.rs](../src/settlement/phoenixd.rs) | `Mock`, `LndRest`, `Phoenixd` | BOLT11 invoices for local/self-hosted nodes. `Mock` is deterministic + in-memory for unit tests; `LndRest` talks to any LND REST endpoint and uses **hold-invoice escrow** (`lightning.base_fee_plus_success_fee.v1`, pay-on-success); `Phoenixd` is the self-custodial ACINQ daemon and uses **prepaid** settlement (`lightning.prepaid.v1`, pay-upfront, no escrow). |
 | `X402` | [x402.rs](../src/settlement/x402.rs) | — | Local/self-hosted HTTP 402 challenge/response; a lightweight cryptographic settlement rail suitable for agent-to-agent calls. |
-| `Stripe` | [stripe.rs](../src/settlement/stripe.rs) | — | Local/self-hosted fiat via Stripe PaymentIntents (Multi-Party Payments / Stripe Connect). |
+| `Stripe` | [stripe.rs](../src/settlement/stripe.rs) | — | Local/self-hosted fiat via Shared Payment Tokens and Stripe PaymentIntents. The provider's Stripe account is paid directly; Froglet has no marketplace payout or Connect/platform-fee layer. |
 
 "Modes" are a property of the Lightning backend; the other backends are
 single-mode. The `Mock` Lightning mode is **for tests only**. Production
@@ -89,7 +93,7 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 | `Lightning::LndRest` | 🟢 unit coverage of bundle builder, quote expiry, WALLET INTENT in lightning.rs; verified 2026-05-15 | 🟢 6/6 fake-LND-REST integration tests pass (`tests/lnd_rest_settlement.rs`, verified 2026-05-15) covering BOLT11 invoice issuance, bundle cancellation, backend cancellation reflection, orphaned-materialization recovery, and issue-delay tolerance. **Real-LND regtest** (`python/tests/test_lnd_regtest.py::test_lnd_regtest_hold_invoice_flow_and_restart_recovery`) passed 2026-05-15 in 78.8s end-to-end: Docker + bitcoind + 2 LND nodes (alice + bob, `lightninglabs/lnd:v0.20.0-beta`), hold-invoice issued by bob, paid by alice, success-fee settled through the Froglet provider, restart-recovery semantics verified. See [§ 7. Regtest run log](#7-regtest-run-log). | 🟡 mainnet test harness in place (`python/tests/test_lnd_mainnet.py`, double-gated on `FROGLET_RUN_LND_MAINNET=1` + `~/.froglet/voltage/lightning.env`); blocked on inbound channel liquidity on the Voltage node (`channel_remote_sats = 0` as of 2026-05-15). See [§ 8. Mainnet run log](#8-mainnet-run-log) — empty until first real-money settlement clears. | ⬜ v0.3 publish-path follow-up; daemon supports mainnet Lightning today (`test_lnd_mainnet.py` will prove it once channels open), `marketplace_publish` does not yet | 🟢 timeout + cancellation tested in fake-LND-REST integration; restart-recovery exercised in the live regtest run | 🟢 invoice bundle state + preimage persistence verified across process restart in both `tests/lnd_rest_settlement.rs` and the live regtest (`test_lnd_regtest_hold_invoice_flow_and_restart_recovery`, 2026-05-15) | 🟢 settlement state + invoice-bundle status via MCP |
 | `Lightning::Phoenixd` | 🟢 4 tests in [phoenixd.rs `mod tests`](../src/settlement/phoenixd.rs) (verified 2026-07-03) | 🟢 mock-phoenixd prepaid deal lifecycle + spend-refusal ordering in `tests/full_deal_lifecycle.rs` (`phoenixd_prepaid_full_paid_deal_produces_settled_receipt`, `spend_refusal_precedes_phoenixd_payment`; 2/2 pass, verified 2026-07-03). No live-phoenixd run yet | ⬜ not attempted | ⬜ not attempted; no real-money settlement on this rail yet | 🟡 mock covers invoice-not-paid gating; daemon-down/flaky-peer not simulated | 🟡 prepaid preimage persists in the receipt; restart replay not explicitly exercised | 🟢 wallet/intent/bundle state via the MCP actions in § 4 |
 | `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts (verified 2026-05-15) | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ v0.3 follow-up | ⬜ v0.3 follow-up | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
-| `Stripe` (MPP/Connect) | 🟢 6 tests in [stripe.rs `mod tests`](../src/settlement/stripe.rs) covering intent creation, capture, refund, error mapping (verified 2026-05-15) | 🟡 Stripe driver tested against a **local mock HTTP server**; one operator-run Stripe sandbox smoke on 2026-04-30: local `/v1/node/events/query` returned `stripe_mpp` receipt status `committed` with a `pi_` PaymentIntent reference. Webhook signature verification and event-id dedupe covered in `python/tests/test_payments.py` | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); evidence above is point-in-time and has not been re-run for v0.2. The hosted endpoint is in the private `froglet-services` workspace; re-running requires deployment access | ⬜ v0.3 publish-path follow-up; production live-money Stripe not yet wired to `marketplace_publish` | 🟡 API error mapping exercised; webhook signature failure + duplicate delivery tested locally and on paid-staging as of 2026-04-30 | 🟡 VM-backed restart replay passed 2026-04-30 (replaying `evt_froglet_restart_1777551288` returned `duplicate:true`); not re-verified for v0.2 | 🟢 settlement state via MCP |
+| `Stripe` (SPT/PaymentIntents) | 🟢 Focused hardening gates 4/4 passed on 2026-07-10: strict SPT path-segment validation, explicit sandbox-helper guard, and both caller-SPT runtime branches. The older broad Stripe suite remains subject to the staleness advisory | 🟢 Stripe driver uses a **local mock HTTP server**. On 2026-07-10, the sandbox helper test proved explicit opt-in + `sk_test_` + seller scope and both full-deal tests proved missing-SPT refusal and supplied-SPT settlement without a helper call | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); this point-in-time evidence is stale and predates the current SPT hardening | ⬜ No live-money publication transcript. Stripe Agentic Commerce/SPTs remain private preview, so paid publication must not be presented as generally available | 🟢 Missing/invalid SPT, live-key helper use, non-loopback helper override, and absent caller SPT fail closed before helper I/O in focused 2026-07-10 tests. Post-capture refunds remain an operator action through Stripe, not an automated Froglet flow | 🟡 VM-backed replay evidence from 2026-04-30 has not been re-verified on the current branch | 🟢 settlement state via MCP |
 
 Hosted paid cells are intentionally separate from `try.froglet.dev`. The public
 hosted proof stays free-only; Stripe hosted-sandbox evidence comes from

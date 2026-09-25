@@ -1,12 +1,10 @@
 use crate::{
     canonical_json,
-    confidential::{
-        EncryptedEnvelope, WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1,
-        WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1,
-    },
+    confidential::EncryptedEnvelope,
     crypto,
     wasm::{self, ComputeWasmWorkload, OciWasmSubmission, OciWasmWorkload, WasmSubmission},
 };
+use froglet_protocol::publication::{LockedPythonBundleEnvelope, canonical_mount_kind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -67,6 +65,7 @@ impl ExecutionPackageKind {
 pub enum ExecutionEntrypointKind {
     Handler,
     Script,
+    Module,
     Builtin,
 }
 
@@ -75,6 +74,7 @@ impl ExecutionEntrypointKind {
         match value.trim() {
             "handler" => Ok(Self::Handler),
             "script" => Ok(Self::Script),
+            "module" => Ok(Self::Module),
             "builtin" => Ok(Self::Builtin),
             other => Err(format!("unsupported entrypoint_kind: {other}")),
         }
@@ -84,6 +84,7 @@ impl ExecutionEntrypointKind {
         match self {
             Self::Handler => "handler",
             Self::Script => "script",
+            Self::Module => "module",
             Self::Builtin => "builtin",
         }
     }
@@ -92,6 +93,7 @@ impl ExecutionEntrypointKind {
 pub fn default_entrypoint_kind_for(runtime: &ExecutionRuntime) -> ExecutionEntrypointKind {
     match runtime {
         ExecutionRuntime::Builtin => ExecutionEntrypointKind::Builtin,
+        ExecutionRuntime::Wasm | ExecutionRuntime::TeeWasm => ExecutionEntrypointKind::Module,
         _ => ExecutionEntrypointKind::Handler,
     }
 }
@@ -104,6 +106,7 @@ pub fn default_entrypoint_for(
         (ExecutionRuntime::Builtin, _) => "events.query",
         (ExecutionRuntime::Any, _) => "",
         (_, ExecutionEntrypointKind::Script) => "__main__",
+        (_, ExecutionEntrypointKind::Module) => "run",
         (ExecutionRuntime::Python, _) | (ExecutionRuntime::TeePython, _) => "handler",
         _ => "run",
     }
@@ -180,6 +183,9 @@ impl Default for ExecutionSecurity {
 pub struct ExecutionMount {
     pub handle: String,
     pub kind: String,
+    /// Runtime workload compatibility keeps the historical default (`false`).
+    /// Publication authoring uses a distinct type whose safer default is
+    /// read-only and converts explicitly at the provider boundary.
     #[serde(default)]
     pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,9 +193,9 @@ pub struct ExecutionMount {
 }
 
 pub(crate) fn validate_execution_mount_descriptor(mount: &ExecutionMount) -> Result<(), String> {
-    if !matches!(mount.kind.as_str(), "postgres" | "sqlite" | "s3" | "redis") {
+    if canonical_mount_kind(&mount.kind).is_none() {
         return Err(format!(
-            "unsupported mount kind: {}; allowed: postgres, sqlite, s3, redis",
+            "unsupported mount kind: {}; allowed: postgres, sqlite, object_store, redis (legacy alias: s3)",
             mount.kind
         ));
     }
@@ -235,6 +241,12 @@ pub struct ExecutionWorkload {
     pub source_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_source: Option<String>,
+    /// Provider-private locked package bytes attached only after resolving a
+    /// service-addressed workload. Skipped in both serialization directions;
+    /// the serialized request remains bound by `source_hash`, which is the
+    /// canonical bundle-envelope digest.
+    #[serde(skip)]
+    pub python_bundle: Option<LockedPythonBundleEnvelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci_reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -323,7 +335,10 @@ impl ExecutionWorkload {
             ExecutionPackageKind::InlineModule | ExecutionPackageKind::OciImage => {
                 self.module_hash.as_deref()
             }
-            ExecutionPackageKind::Builtin => None,
+            // Provider-managed builtins (currently immutable native-data
+            // queries) carry their content binding in `module_hash`. Plain
+            // process-local builtins such as `events.query` leave it empty.
+            ExecutionPackageKind::Builtin => self.module_hash.as_deref(),
         }
     }
 
@@ -571,6 +586,7 @@ impl ExecutionWorkload {
             module_bytes_hex: Some(submission.module_bytes_hex),
             source_hash: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             builtin_name: None,
@@ -631,6 +647,7 @@ impl ExecutionWorkload {
             module_bytes_hex: None,
             source_hash: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: Some(workload.oci_reference.clone()),
             oci_digest: Some(workload.oci_digest.clone()),
             builtin_name: None,
@@ -697,6 +714,7 @@ impl ExecutionWorkload {
             module_bytes_hex: None,
             source_hash: Some(source_hash),
             inline_source: Some(source),
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             builtin_name: None,
@@ -727,6 +745,7 @@ impl ExecutionWorkload {
             module_bytes_hex: None,
             source_hash: Some(source_hash),
             inline_source: Some(source),
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             builtin_name: None,
@@ -763,6 +782,7 @@ impl ExecutionWorkload {
             module_bytes_hex: None,
             source_hash: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: Some(oci_reference),
             oci_digest: Some(oci_digest),
             builtin_name: None,
@@ -796,6 +816,7 @@ impl ExecutionWorkload {
             module_bytes_hex: None,
             source_hash: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             builtin_name: Some("events.query".to_string()),
@@ -803,6 +824,20 @@ impl ExecutionWorkload {
     }
 
     pub fn builtin_service(name: String, input: Value) -> Result<Self, String> {
+        let contract_version = format!("froglet.builtin.{name}.v1");
+        Self::bound_builtin_service(name, contract_version, None, input)
+    }
+
+    /// Build a daemon-bound builtin workload with an explicit contract and
+    /// optional immutable content binding. This is used after a
+    /// service-addressed request has been checked against the signed offer;
+    /// callers cannot supply a provider filesystem path.
+    pub fn bound_builtin_service(
+        name: String,
+        contract_version: String,
+        binding_hash: Option<String>,
+        input: Value,
+    ) -> Result<Self, String> {
         let input_hash =
             crypto::sha256_hex(canonical_json::to_vec(&input).map_err(|error| error.to_string())?);
         Ok(Self {
@@ -814,92 +849,22 @@ impl ExecutionWorkload {
                 kind: ExecutionEntrypointKind::Builtin,
                 value: name.clone(),
             },
-            contract_version: format!("froglet.builtin.{name}.v1"),
+            contract_version,
             input_format: wasm::JCS_JSON_FORMAT.to_string(),
             input_hash,
             requested_access: Vec::new(),
             security: ExecutionSecurity::default(),
             mounts: Vec::new(),
             input,
-            module_hash: None,
+            module_hash: binding_hash,
             module_bytes_hex: None,
             source_hash: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             builtin_name: Some(name),
         })
-    }
-
-    pub fn tee_confidential_service(
-        confidential_session_hash: String,
-        service_id: String,
-        request_envelope: EncryptedEnvelope,
-    ) -> Self {
-        Self {
-            schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
-            workload_kind: WORKLOAD_KIND_CONFIDENTIAL_SERVICE_V1.to_string(),
-            runtime: ExecutionRuntime::TeeService,
-            package_kind: ExecutionPackageKind::Builtin,
-            entrypoint: ExecutionEntrypoint {
-                kind: ExecutionEntrypointKind::Builtin,
-                value: service_id.clone(),
-            },
-            contract_version: "froglet.confidential.service.v1".to_string(),
-            input_format: wasm::JCS_JSON_FORMAT.to_string(),
-            input_hash: String::new(),
-            requested_access: Vec::new(),
-            security: ExecutionSecurity {
-                mode: ExecutionSecurityMode::Tee,
-                confidential_session_hash: Some(confidential_session_hash),
-                service_id: Some(service_id),
-                request_envelope: Some(request_envelope),
-            },
-            mounts: Vec::new(),
-            input: Value::Null,
-            module_hash: None,
-            module_bytes_hex: None,
-            source_hash: None,
-            inline_source: None,
-            oci_reference: None,
-            oci_digest: None,
-            builtin_name: Some("confidential.service".to_string()),
-        }
-    }
-
-    pub fn tee_attested_wasm(
-        confidential_session_hash: String,
-        request_envelope: EncryptedEnvelope,
-    ) -> Self {
-        Self {
-            schema_version: wasm::FROGLET_SCHEMA_V1.to_string(),
-            workload_kind: WORKLOAD_KIND_COMPUTE_WASM_ATTESTED_V1.to_string(),
-            runtime: ExecutionRuntime::TeeWasm,
-            package_kind: ExecutionPackageKind::InlineModule,
-            entrypoint: ExecutionEntrypoint {
-                kind: ExecutionEntrypointKind::Handler,
-                value: "run".to_string(),
-            },
-            contract_version: "froglet.confidential.attested_wasm.v1".to_string(),
-            input_format: wasm::JCS_JSON_FORMAT.to_string(),
-            input_hash: String::new(),
-            requested_access: Vec::new(),
-            security: ExecutionSecurity {
-                mode: ExecutionSecurityMode::Tee,
-                confidential_session_hash: Some(confidential_session_hash),
-                service_id: None,
-                request_envelope: Some(request_envelope),
-            },
-            mounts: Vec::new(),
-            input: Value::Null,
-            module_hash: None,
-            module_bytes_hex: None,
-            source_hash: None,
-            inline_source: None,
-            oci_reference: None,
-            oci_digest: None,
-            builtin_name: Some("attested.wasm".to_string()),
-        }
     }
 
     pub fn events_query_params(&self) -> Option<(Vec<String>, Option<usize>)> {
@@ -934,6 +899,10 @@ mod tests {
     use super::{
         ExecutionEntrypointKind, ExecutionMount, ExecutionRuntime, ExecutionWorkload,
         digest_pinned_oci_image_reference,
+    };
+    use froglet_protocol::publication::{
+        LockedPythonBundleEnvelope, PYTHON_BUNDLE_SCHEMA_V1, PYTHON_LOCK_SCHEMA_V1,
+        PythonLockManifest, PythonRuntimeLock,
     };
     use serde_json::Value;
 
@@ -1030,6 +999,41 @@ mod tests {
     }
 
     #[test]
+    fn execution_validation_accepts_canonical_and_legacy_object_store_grants_exactly() {
+        for (kind, capability) in [
+            ("object_store", "mount.object_store.read.archive"),
+            ("s3", "mount.s3.read.archive"),
+        ] {
+            let mut workload = ExecutionWorkload::python_inline_handler(
+                "def handler(event, ctx):\n    return event\n".to_string(),
+                "handler".to_string(),
+                Value::Null,
+            )
+            .expect("python workload");
+            workload.security.service_id = Some("archive-reader".to_string());
+            workload.inline_source = None;
+            workload.mounts.push(ExecutionMount {
+                handle: "archive".to_string(),
+                kind: kind.to_string(),
+                read_only: true,
+                binding: None,
+            });
+            workload.requested_access.push(capability.to_string());
+            workload.validate_basic().expect("compatible mount");
+
+            workload.requested_access = vec![if kind == "s3" {
+                "mount.object_store.read.archive".to_string()
+            } else {
+                "mount.s3.read.archive".to_string()
+            }];
+            let error = workload
+                .validate_basic()
+                .expect_err("aliases must not silently change grants");
+            assert!(error.contains("must include declared mount access"));
+        }
+    }
+
+    #[test]
     fn execution_validation_rejects_invalid_mount_handles() {
         let mut workload = ExecutionWorkload::python_inline_handler(
             "def handler(event, ctx):\n    return event\n".to_string(),
@@ -1051,5 +1055,43 @@ mod tests {
             .validate_basic()
             .expect_err("invalid mount handle must be rejected");
         assert!(error.contains("mount handle"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn private_python_bundle_is_skipped_but_request_hash_binds_its_digest() {
+        let mut workload = ExecutionWorkload::python_inline_handler(
+            "def handler(event, ctx): return event\n".to_string(),
+            "handler".to_string(),
+            Value::Null,
+        )
+        .expect("python workload");
+        workload.source_hash = Some("11".repeat(32));
+        let before = workload.request_hash().unwrap();
+        let lock = PythonLockManifest {
+            schema_version: PYTHON_LOCK_SCHEMA_V1.to_string(),
+            source_sha256: "22".repeat(32),
+            runtime: PythonRuntimeLock {
+                implementation: "cpython".to_string(),
+                version: "3.12.4".to_string(),
+                abi: "cpython-312".to_string(),
+            },
+            artifacts: Vec::new(),
+        };
+        workload.python_bundle = Some(LockedPythonBundleEnvelope {
+            schema_version: PYTHON_BUNDLE_SCHEMA_V1.to_string(),
+            lock,
+            lock_sha256: "33".repeat(32),
+            source_base64: "eA==".to_string(),
+            artifacts: Vec::new(),
+        });
+
+        assert_eq!(workload.request_hash().unwrap(), before);
+        assert!(
+            !serde_json::to_string(&workload)
+                .unwrap()
+                .contains("python_bundle")
+        );
+        workload.source_hash = Some("44".repeat(32));
+        assert_ne!(workload.request_hash().unwrap(), before);
     }
 }

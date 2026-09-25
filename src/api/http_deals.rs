@@ -3,8 +3,11 @@ use super::*;
 pub(crate) fn provider_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/provider/quotes", post(super::create_quote))
-        .route("/v1/provider/deals", post(super::create_deal))
         .route("/v1/provider/deals/:deal_id", get(super::get_deal_status))
+}
+
+pub(crate) fn provider_materialization_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/v1/provider/deals", post(super::create_deal))
 }
 
 pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {

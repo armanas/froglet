@@ -11,6 +11,14 @@ pub fn ensure_rustls_crypto_provider() {
     });
 }
 
+/// Return a Reqwest builder after installing Froglet's explicitly selected
+/// Rustls provider. Reqwest's `rustls-no-provider` feature deliberately has no
+/// fallback provider and will otherwise panic while building a client.
+pub fn reqwest_client_builder() -> ClientBuilder {
+    ensure_rustls_crypto_provider();
+    Client::builder()
+}
+
 fn env_var(names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| {
         std::env::var(name)
@@ -49,9 +57,10 @@ fn apply_env_proxies(builder: ClientBuilder) -> Result<ClientBuilder, String> {
     Ok(builder)
 }
 
-pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<Client, String> {
-    ensure_rustls_crypto_provider();
-    let mut builder = Client::builder()
+pub fn configured_reqwest_client_builder(
+    ca_cert_path: Option<&Path>,
+) -> Result<ClientBuilder, String> {
+    let mut builder = reqwest_client_builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .redirect(RedirectPolicy::none());
@@ -74,7 +83,11 @@ pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<Client, Strin
 
     builder = apply_env_proxies(builder)?;
 
-    builder
+    Ok(builder)
+}
+
+pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<Client, String> {
+    configured_reqwest_client_builder(ca_cert_path)?
         .build()
         .map_err(|error| format!("Failed to build HTTP client: {error}"))
 }
@@ -135,7 +148,11 @@ mod tests {
         let ca_key = KeyPair::generate().unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
 
-        let mut server_params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let mut server_params = CertificateParams::new(vec![
+            "localhost".to_string(),
+            "froglet-pinned.test".to_string(),
+        ])
+        .unwrap();
         server_params
             .subject_alt_names
             .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
@@ -191,6 +208,32 @@ mod tests {
 
         let response = client
             .get(format!("https://{addr}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+
+        handle.abort();
+        let _ = fs::remove_file(ca_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn configured_builder_preserves_custom_ca_with_pinned_dns() {
+        let _guard = PROXY_ENV_LOCK.lock().unwrap();
+        clear_proxy_env();
+        let (addr, ca_path, handle) = spawn_tls_server().await;
+        let client = configured_reqwest_client_builder(Some(&ca_path))
+            .unwrap()
+            .resolve_to_addrs("froglet-pinned.test", &[addr])
+            .build()
+            .unwrap();
+
+        let response = client
+            .get(format!(
+                "https://froglet-pinned.test:{}/health",
+                addr.port()
+            ))
             .send()
             .await
             .unwrap();

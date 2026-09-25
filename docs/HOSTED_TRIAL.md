@@ -211,7 +211,7 @@ context, then ask for the local profile:
 
 - target agent: `claude-code`, `codex`, or `manual` for no-clone setup;
   `openclaw` only when the user accepts source/plugin mode
-- footprint: `binary`, `docker`, or `source`
+- footprint: `auto` (recommended native-first), `native`, `docker`, `binary`, or `source`
 - role: `consumer`, `provider`, or `both`
 - payment rail: `none`, `lightning-phoenixd`, `lightning-lnd-rest`,
   `stripe-test`, `stripe-live`, or `x402`
@@ -221,12 +221,16 @@ context, then ask for the local profile:
   compute, or prepare batch/GPU work later
 
 If the agent has Froglet MCP/OpenClaw tools, it should call `plan_install`
-before `get_install_guide`. `plan_install` returns remaining questions,
-prerequisites, required secrets, command preview, validation checks, and
-post-install playbooks. `get_install_guide` is for confirmed command execution
-through the host shell. A disposable-host proof of the default quickstart is
-available with
-`curl -fsSL https://raw.githubusercontent.com/armanas/froglet/main/scripts/fresh_host_quickstart_smoke.sh | bash`.
+before `get_install_guide`. A complete `plan_install` is non-mutating and
+returns `approval_required` with one immutable release tag, the release
+manifest and bootstrap SHA-256 values, persistent paths, process-manager
+impact, exact command preview, and `install_approval_hash`. Show that complete
+plan to the user. Only after explicit approval, pass its `release_tag` and
+`install_approval_hash` unchanged to `get_install_guide`; it then returns a
+host-shell command that verifies the bootstrap in a temporary file before
+execution. A disposable-host proof of the default quickstart is
+available from a trusted checkout with
+`bash scripts/fresh_host_quickstart_smoke.sh`.
 After local health is verified, call `plan_use_case`
 before implementing consumer, provider, evidence, payments, batch, or GPU
 workflows. Batch starts with the existing async task status primitives but

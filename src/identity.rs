@@ -1,5 +1,9 @@
 use crate::{config::NodeConfig, crypto};
-use std::{fs, path::Path, time::UNIX_EPOCH};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, UNIX_EPOCH},
+};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Env var that, when set on first boot, seeds the node identity from a hex
@@ -7,6 +11,12 @@ use zeroize::{Zeroize, Zeroizing};
 /// seed file already exists — file wins. Expected format: 64 hex chars
 /// (32 bytes).
 pub const NODE_IDENTITY_SEED_ENV: &str = "FROGLET_IDENTITY_SEED_HEX";
+pub const NOSTR_PUBLICATION_IDENTITY_SEED_ENV: &str = "FROGLET_NOSTR_PUBLICATION_IDENTITY_SEED_HEX";
+pub const NOSTR_PUBLICATION_CREATED_AT_ENV: &str =
+    "FROGLET_NOSTR_PUBLICATION_CREATED_AT_EPOCH_SECONDS";
+
+#[cfg(test)]
+pub(crate) static IDENTITY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone)]
 pub struct NodeIdentity {
@@ -20,6 +30,10 @@ pub struct NodeIdentity {
 
 impl NodeIdentity {
     pub fn load_or_create(config: &NodeConfig) -> Result<Self, String> {
+        crate::identity_custody::load_or_create_recovered_identity(config)
+    }
+
+    pub(crate) fn load_or_create_without_recovery(config: &NodeConfig) -> Result<Self, String> {
         ensure_dir(&config.storage.data_dir, config.storage.data_dir_mode())?;
         ensure_dir(&config.storage.identity_dir, 0o700)?;
 
@@ -29,12 +43,16 @@ impl NodeIdentity {
             "node identity",
             Some(NODE_IDENTITY_SEED_ENV),
         )?;
+        let nostr_seed_existed = config.storage.nostr_publication_seed_path.exists();
         let nostr_publication_signing_key = load_or_create_signing_key(
             &config.storage.nostr_publication_seed_path,
             config.identity.auto_generate,
             "Nostr publication identity",
-            None,
+            Some(NOSTR_PUBLICATION_IDENTITY_SEED_ENV),
         )?;
+        if !nostr_seed_existed {
+            apply_seed_creation_time_from_env(&config.storage.nostr_publication_seed_path)?;
+        }
 
         let public_key_hex = crypto::public_key_hex(&signing_key);
         let compressed_public_key_hex = crypto::compressed_public_key_hex(&signing_key);
@@ -91,7 +109,30 @@ impl NodeIdentity {
     }
 }
 
-fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
+fn apply_seed_creation_time_from_env(path: &Path) -> Result<(), String> {
+    let Some(value) = std::env::var_os(NOSTR_PUBLICATION_CREATED_AT_ENV) else {
+        return Ok(());
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| format!("{NOSTR_PUBLICATION_CREATED_AT_ENV} must be UTF-8"))?;
+    let seconds = value.parse::<u64>().map_err(|_| {
+        format!("{NOSTR_PUBLICATION_CREATED_AT_ENV} must be a non-negative integer")
+    })?;
+    let modified = UNIX_EPOCH
+        .checked_add(Duration::from_secs(seconds))
+        .ok_or_else(|| format!("{NOSTR_PUBLICATION_CREATED_AT_ENV} is out of range"))?;
+    fs::File::open(path)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(modified)))
+        .map_err(|error| {
+            format!(
+                "failed to apply {NOSTR_PUBLICATION_CREATED_AT_ENV} to {}: {error}",
+                path.display()
+            )
+        })
+}
+
+pub(crate) fn load_signing_key(path: &Path) -> Result<crypto::NodeSigningKey, String> {
     let mut seed_hex = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read node identity seed {}: {e}", path.display()))?;
     // `trim().to_string()` allocates a fresh String containing the seed
@@ -160,9 +201,9 @@ fn load_or_create_signing_key(
     label: &str,
     env_seed_var: Option<&str>,
 ) -> Result<crypto::NodeSigningKey, String> {
-    // File wins if present. This matches ephemeral-FS deployments (Lightsail
-    // Container Service and similar) where every redeploy starts with a fresh
-    // FS, so the env-var seed re-creates the file each deploy without drift.
+    // File wins if present. This matches ephemeral-filesystem deployments
+    // where every redeploy starts with fresh local storage, so the environment
+    // seed re-creates the file each deploy without identity drift.
     if path.exists() {
         return load_signing_key(path);
     }
@@ -256,14 +297,10 @@ mod tests {
         PricingConfig, StorageConfig, TorSidecarConfig, WasmConfig,
     };
     use std::path::PathBuf;
-    use std::sync::Mutex;
-
     /// Serializes env-var mutations across identity tests. Matches the pattern
     /// used in `src/tls.rs::PROXY_ENV_LOCK`. Required because `cargo test`
     /// runs tests in parallel and `std::env::{set_var,remove_var}` mutate
     /// process-global state.
-    static IDENTITY_ENV_LOCK: Mutex<()> = Mutex::new(());
-
     fn test_temp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "froglet-identity-test-{}-{tag}",
@@ -373,10 +410,9 @@ mod tests {
         }
         let temp_dir = test_temp_dir("env-first-boot");
         let _ = std::fs::remove_dir_all(&temp_dir);
-        // auto_generate=true so the Nostr publication seed (which is NOT
-        // env-driven in this feature) can auto-generate. The node identity
-        // is still driven by the env var; we verify that by comparing
-        // node_id against the deterministic pubkey derived from the seed.
+        // auto_generate=true lets the unrelated Nostr publication seed use
+        // its normal fallback. The node identity is still driven by the env
+        // var; compare it with the deterministic pubkey from the seed.
         let config = test_config(&temp_dir, true);
 
         // Deterministic test seed: 32 bytes, all 0x42.
@@ -420,6 +456,43 @@ mod tests {
             "reload must produce the same identity via the seed file"
         );
 
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn managed_identity_env_preserves_both_keys_and_link_creation_time() {
+        let _guard = IDENTITY_ENV_LOCK.lock().unwrap();
+        let temp_dir = test_temp_dir("managed-paired-identity");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let config = test_config(&temp_dir, true);
+        let node_seed_hex = "42".repeat(32);
+        let nostr_seed_hex = "24".repeat(32);
+        let created_at = 1_720_000_000_i64;
+
+        let nostr_key = crypto::signing_key_from_seed_bytes(&[0x24; 32]).unwrap();
+        let expected_nostr_id = crypto::public_key_hex(&nostr_key);
+        unsafe {
+            std::env::set_var(NODE_IDENTITY_SEED_ENV, &node_seed_hex);
+            std::env::set_var(NOSTR_PUBLICATION_IDENTITY_SEED_ENV, &nostr_seed_hex);
+            std::env::set_var(NOSTR_PUBLICATION_CREATED_AT_ENV, created_at.to_string());
+        }
+        let result = NodeIdentity::load_or_create(&config);
+        unsafe {
+            std::env::remove_var(NODE_IDENTITY_SEED_ENV);
+            std::env::remove_var(NOSTR_PUBLICATION_IDENTITY_SEED_ENV);
+            std::env::remove_var(NOSTR_PUBLICATION_CREATED_AT_ENV);
+        }
+        let identity = result.expect("paired managed identity should load");
+        assert_eq!(identity.nostr_publication_key_hex(), expected_nostr_id);
+        assert_eq!(identity.nostr_publication_created_at(), created_at);
+
+        let reloaded = NodeIdentity::load_or_create(&config).expect("paired identity reload");
+        assert_eq!(identity.node_id(), reloaded.node_id());
+        assert_eq!(
+            identity.nostr_publication_key_hex(),
+            reloaded.nostr_publication_key_hex()
+        );
+        assert_eq!(reloaded.nostr_publication_created_at(), created_at);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 

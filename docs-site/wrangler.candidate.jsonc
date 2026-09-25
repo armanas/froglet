@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "froglet-docs-candidate",
+  "main": "./src/worker.ts",
+  "compatibility_date": "2026-04-22",
+  "workers_dev": false,
+  "vars": {
+    "FROGLET_RELAY_SUFFIX": "relay-candidate.froglet.dev",
+    "FROGLET_MARKETPLACE_URL": "https://marketplace-candidate.froglet.dev"
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+  "routes": [
+    { "pattern": "candidate.froglet.dev", "custom_domain": true }
+  ]
+}

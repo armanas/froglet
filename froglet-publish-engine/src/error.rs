@@ -2,6 +2,24 @@
 
 use thiserror::Error;
 
+/// Structured evidence for an exact registration whose result remains
+/// ambiguous after an idempotent replay. Boxed inside [`PublishError`] so this
+/// evidence-rich edge case does not inflate every publish result.
+#[derive(Debug, Error)]
+#[error(
+    "marketplace state is unknown for service {service_id} offer {offer_hash} revision {revision_hash} at provider {provider_url}: {reason}; listing visibility may persist for at most {visibility_bound_secs}s; local_pause={local_pause_result}; relay_withdrawal={relay_withdrawal_result}"
+)]
+pub struct MarketplaceStateUnknownContext {
+    pub service_id: String,
+    pub offer_hash: String,
+    pub revision_hash: String,
+    pub provider_url: String,
+    pub visibility_bound_secs: u64,
+    pub reason: String,
+    pub local_pause_result: String,
+    pub relay_withdrawal_result: String,
+}
+
 /// Hard failure during the publish pipeline. Each variant has enough
 /// structure for the caller (CLI or MCP) to render an actionable
 /// message without a stack trace.
@@ -36,8 +54,19 @@ pub enum PublishError {
     Io(#[from] std::io::Error),
     #[error("http error: {0}")]
     Http(String),
+    #[error(transparent)]
+    MarketplaceStateUnknown(Box<MarketplaceStateUnknownContext>),
     #[error("not implemented yet: {what}")]
     NotImplemented { what: String },
+    #[error(
+        "public publication entered a partial state for service {service_id} revision {revision_hash}: completion failed: {completion_error}; exact pause compensation failed: {compensation_error}"
+    )]
+    PartialState {
+        service_id: String,
+        revision_hash: String,
+        completion_error: String,
+        compensation_error: String,
+    },
 }
 
 impl From<reqwest::Error> for PublishError {
@@ -56,4 +85,11 @@ pub enum PublishWarning {
     /// Indexer has not yet projected the offer; the offer is signed
     /// and persisted but may take up to ~60s to appear in /v1/providers.
     IndexerLag { seconds_waited: u32 },
+    /// The marketplace already returned exact `active`, but the follow-up
+    /// projection read could not be confirmed. Publication remains successful
+    /// and the exact status URL is returned for later observation.
+    MarketplaceProjectionUnconfirmed { status_url: String, reason: String },
+    /// The publication had no private verification fixture, so the client
+    /// deliberately used the legacy operator-review registration path.
+    PendingMarketplaceReview { status: String },
 }

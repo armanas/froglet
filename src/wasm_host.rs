@@ -111,7 +111,7 @@ enum HostCallRequest {
 }
 
 fn build_http_client(_policy: &WasmHttpPolicy) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::tls::reqwest_client_builder()
         .connect_timeout(Duration::from_secs(5))
         .redirect(RedirectPolicy::none())
         .build()

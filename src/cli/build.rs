@@ -2,8 +2,9 @@
 //! do not publish. Useful as a quick sanity check before `publish`.
 
 use super::{CliError, pop_flag};
-use froglet_protocol::manifest::{ProjectManifest, ServiceManifest};
-use froglet_publish_engine::{SourceLocator, builder::build_python_inline};
+use froglet_protocol::manifest::{ManifestWarning, ProjectManifest, ServiceManifest};
+use froglet_publish_engine::builder::build_python_inline;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
@@ -13,17 +14,7 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     let (project, project_path) = load_project_manifest(&cwd)?;
     let (service, service_path) = load_service_manifest(&cwd)?;
 
-    if json_mode {
-        println!(
-            "{{\"status\":\"manifests-ok\",\"project_manifest\":\"{}\",\"service_manifest\":\"{}\",\"service_id\":\"{}\"}}",
-            project_path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            service_path.display(),
-            service.service_id,
-        );
-    } else {
+    if !json_mode {
         println!("✓ service manifest {} is valid", service_path.display());
         if let Some(p) = &project_path {
             println!("✓ project manifest {} is valid", p.display());
@@ -42,32 +33,45 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
             .entrypoint
             .clone()
             .ok_or_else(|| CliError::Other("service.entrypoint is required".to_string()))?;
-        let path = service_path
-            .parent()
-            .map(|p| p.join(&entrypoint))
-            .unwrap_or_else(|| PathBuf::from(&entrypoint));
-        if !path.exists() {
-            return Err(CliError::Other(format!(
-                "entrypoint {path:?} not found relative to service manifest"
-            )));
-        }
-        let artifact = build_python_inline(&SourceLocator::File(path.clone()), Some(&entrypoint))
+        let service_dir = service_path.parent().unwrap_or_else(|| Path::new("."));
+        let source = super::publish::read_source(&service, service_dir)?;
+        let artifact = build_python_inline(&source, Some(&entrypoint))
             .await
             .map_err(CliError::Engine)?;
         if json_mode {
             println!(
-                "{{\"status\":\"built\",\"source_path\":\"{}\",\"source_hash\":\"{}\",\"source_bytes\":{}}}",
-                path.display(),
-                artifact.source_hash,
-                artifact.source_bytes.len(),
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "built",
+                    "project_manifest": project_path.as_ref().map(|path| path.display().to_string()),
+                    "service_manifest": service_path.display().to_string(),
+                    "service_id": service.service_id,
+                    "source_path": artifact.source_path,
+                    "source_hash": artifact.source_hash,
+                    "source_bytes": artifact.source_bytes.len(),
+                }))
+                .map_err(|error| CliError::Other(format!("serialize build output: {error}")))?
             );
         } else {
             println!("✓ artifact built");
-            println!("  source path:  {}", path.display());
+            println!("  source path:  {}", artifact.source_path);
             println!("  source hash:  {}", artifact.source_hash);
             println!("  source bytes: {}", artifact.source_bytes.len());
         }
-    } else if !json_mode {
+    } else if json_mode {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "manifests-ok",
+                "project_manifest": project_path.as_ref().map(|path| path.display().to_string()),
+                "service_manifest": service_path.display().to_string(),
+                "service_id": service.service_id,
+                "runtime": service.runtime,
+                "package_kind": service.package_kind,
+            }))
+            .map_err(|error| CliError::Other(format!("serialize build output: {error}")))?
+        );
+    } else {
         println!(
             "(skipping artifact build: runtime={} package_kind={} is Phase 1B)",
             service.runtime, service.package_kind
@@ -85,8 +89,34 @@ pub fn load_service_manifest(cwd: &Path) -> Result<(ServiceManifest, PathBuf), C
         )));
     }
     let toml_str = std::fs::read_to_string(&path)?;
-    let (manifest, _warnings) = ServiceManifest::from_toml(&toml_str)?;
+    let (manifest, warnings) = ServiceManifest::from_toml(&toml_str)?;
+    // Warnings go only to stderr so `build --json`, native MCP stdio, and
+    // agent parsers retain a clean machine-readable stdout stream.
+    let _ = write_manifest_warnings(std::io::stderr().lock(), &warnings);
     Ok((manifest, path))
+}
+
+fn write_manifest_warnings(
+    mut writer: impl Write,
+    warnings: &[ManifestWarning],
+) -> std::io::Result<()> {
+    for warning in warnings {
+        let (code, message) = match warning {
+            ManifestWarning::LegacyV2Service { missing_section } => (
+                "legacy_v2_service",
+                format!(
+                    "service manifest v2 omitted {missing_section}; compatibility defaults were applied"
+                ),
+            ),
+            ManifestWarning::DeprecatedFlyHosting => (
+                "deprecated_fly_hosting",
+                "legacy v3 Fly hosting is readable for migration only; import it through a deployment adapter, then author hosting.managed target/profile"
+                    .to_string(),
+            ),
+        };
+        writeln!(writer, "froglet-warning {code}: {message}")?;
+    }
+    Ok(())
 }
 
 /// Walk upward from `cwd` looking for `froglet.toml`. Returns `(None, None)`
@@ -105,4 +135,33 @@ pub fn load_project_manifest(
         dir = d.parent();
     }
     Ok((None, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_warnings_are_stable_single_line_stderr_records() {
+        let warnings = [
+            ManifestWarning::DeprecatedFlyHosting,
+            ManifestWarning::LegacyV2Service {
+                missing_section: "[hosting]",
+            },
+        ];
+        let mut output = Vec::new();
+        write_manifest_warnings(&mut output, &warnings).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0],
+            "froglet-warning deprecated_fly_hosting: legacy v3 Fly hosting is readable for migration only; import it through a deployment adapter, then author hosting.managed target/profile"
+        );
+        assert_eq!(
+            lines[1],
+            "froglet-warning legacy_v2_service: service manifest v2 omitted [hosting]; compatibility defaults were applied"
+        );
+    }
 }

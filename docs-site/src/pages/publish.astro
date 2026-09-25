@@ -1,0 +1,30 @@
+---
+import '../styles/custom.css';
+import '../styles/index-page.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import AgentMeta from '../components/AgentMeta.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+const siteOrigin = import.meta.env.FROGLET_SITE_ORIGIN || 'https://froglet.dev';
+const prompt = `Make this catalog usable by another agent with Froglet. Read ${new URL('/learn/share-services/', siteOrigin)}. Inspect the source and propose useful tables and fields. Show what will be included and omitted, prepare a separate snapshot, and run a local example. Ask me separately before persistent installation and before publishing the exact selected data. Start free. Keep my existing files and agent settings.`;
+---
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Publish a service · Froglet</title><meta name="description" content="Ask your agent to turn a catalog into a service. Preview selected data, approve publication, and share a link."/><link rel="canonical" href="https://froglet.dev/publish/"/><ThemeProvider /><AgentMeta route="publish" /></head>
+<body><SiteHeader currentPath={Astro.url.pathname}/><main class="froglet-home-main publish-page">
+<section class="hero"><span class="eyebrow">Your catalog. Another agent’s tool.</span><h1>Publish a service.</h1><p class="lede">Give your agent a JSON, CSV, or SQLite catalog. Together, choose what to share, test it locally, and approve publication.</p><p class="candidate-note"><strong>Public beta:</strong> verify the immutable release before installing. Clean-machine and first-time-user qualification are still pending; start with a small catalog and review the exact data before publication.</p></section>
+<section class="block"><h2>Start with one prompt</h2><p>Open your project in Codex or Claude Code. Identify the catalog you want to share, then paste this prompt.</p><label for="publisher-prompt">Publishing prompt</label><textarea id="publisher-prompt" readonly rows="7">{prompt}</textarea><button id="copy-publisher-prompt" class="btn primary" type="button">Copy prompt</button><p id="publisher-copy-status" role="status" aria-live="polite"></p><p>Froglet supports Apple Silicon macOS and Linux x86_64/arm64. No separate Node.js, npm, Python, or source checkout is needed for the native journey.</p></section>
+<section class="block"><h2>Know what happens next</h2><div class="entry-grid">
+<article class="entry-card"><span class="entry-num">01 · prepare</span><h3>Choose exactly what is public</h3><p>Your agent proposes useful tables and fields. You see included and omitted fields and a real local result. The generated snapshot contains only the selection.</p></article>
+<article class="entry-card"><span class="entry-num">02 · approve</span><h3>Publish after your review</h3><p>Installing Froglet and publishing a service are separate decisions. Publication approval covers the exact package, public example, identity, limits, and free price.</p></article>
+<article class="entry-card"><span class="entry-num">03 · share</span><h3>Send one link</h3><p>The recipient gives the link to their agent, which checks the provider and runs its own free call. The page distinguishes reachability from marketplace activation.</p></article>
+</div></section>
+<section class="block"><h2>Your computer hosts the service</h2><p>Keep it awake, online, and running Froglet. Sleep or network loss makes the service unavailable. Managed always-on hosting is outside this release.</p><p>When your source changes, Froglet offers a new preview. Nothing is republished automatically. Your agent can pause, resume, select a previously validated revision, or unpublish. Ordinary uninstall preserves identity and service data.</p><p>Ask your agent: <strong>“Open Froglet status.”</strong> Its private, read-only local page shows health, source changes, and recovery steps.</p></section>
+<section class="block"><h2>More ways to explore</h2><p><a href="/verify-receipt/">Try a signed-receipt sample in your browser</a> with no installation. <a href="/learn/share-services/">Read the agent workflow</a> for native preparation and sharing. <a href="/learn/provider-onboarding/">Advanced provider instructions</a> cover payments and other hosting choices, with their current limitations.</p><p>Small Wasm functions use the same preparation flow. Python functions remain an advanced Linux option; macOS does not bypass the Python sandbox.</p></section>
+</main><SiteFooter/>
+<script>
+const prompt = document.getElementById('publisher-prompt') as HTMLTextAreaElement;
+const status = document.getElementById('publisher-copy-status')!;
+document.getElementById('copy-publisher-prompt')!.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(prompt.value); status.textContent = 'Prompt copied.'; }
+  catch { prompt.focus(); prompt.select(); status.textContent = 'Select and copy the prompt above using your device’s copy command.'; }
+});
+</script><style>.publish-page{max-width:1120px;margin:auto;padding:24px}.publish-page .hero{padding:40px 0 24px}.candidate-note{padding:16px;border:1px solid var(--border);border-radius:8px;color:var(--fg2)}.publish-page textarea{display:block;width:100%;margin:12px 0 16px;padding:16px;font:inherit;line-height:1.65;color:var(--fg1);background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;min-height:240px}.publish-page button{min-height:44px}.publish-page :focus-visible{outline:3px solid var(--accent-code);outline-offset:4px}.publish-page .entry-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}</style></body></html>

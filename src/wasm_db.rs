@@ -6,6 +6,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags,
+    limits::Limit,
     types::{Value as SqlValue, ValueRef},
 };
 use serde::Deserialize;
@@ -59,9 +60,21 @@ pub fn query(
     )
     .map_err(|error| format!("failed to open sqlite handle '{}': {error}", request.handle))?;
     if let Some(dl) = deadline {
-        let _ = connection.progress_handler(100, Some(move || Instant::now() >= dl));
+        connection
+            .progress_handler(100, Some(move || Instant::now() >= dl))
+            .map_err(|error| format!("failed to apply sqlite deadline handler: {error}"))?;
     }
     let max_cell_bytes = sqlite_max_cell_bytes(policy);
+    // Enforce the cell ceiling inside SQLite as well as while converting
+    // ValueRef below. Without SQLITE_LIMIT_LENGTH, expressions such as
+    // randomblob(...) allocate their complete native result before Rust can
+    // inspect its length.
+    connection
+        .set_limit(
+            Limit::SQLITE_LIMIT_LENGTH,
+            i32::try_from(max_cell_bytes).unwrap_or(i32::MAX),
+        )
+        .map_err(|error| format!("failed to apply sqlite allocation limit: {error}"))?;
 
     reject_unsafe_sql(&request.sql)?;
 
@@ -402,6 +415,46 @@ mod tests {
 
         assert!(error.contains("deadline"), "unexpected error: {error}");
 
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn sqlite_native_value_allocation_is_bounded_before_materialization() {
+        let temp_dir = unique_temp_dir("native-allocation-limit");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("native-allocation-limit.sqlite");
+        Connection::open(&db_path).unwrap();
+        let policy = WasmSqlitePolicy {
+            max_queries_per_execution: 1,
+            max_rows_per_query: 10,
+            max_result_bytes: 1_024,
+            handles: BTreeMap::from([(
+                "main".to_string(),
+                WasmSqliteHandleConfig {
+                    path: db_path.clone(),
+                },
+            )]),
+        };
+        let mut db_queries_used = 0;
+
+        let error = query(
+            &policy,
+            &[format!("{WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX}main")],
+            &mut db_queries_used,
+            DbQueryRequest {
+                handle: "main".to_string(),
+                sql: "SELECT randomblob(2048)".to_string(),
+                params: Vec::new(),
+            },
+            None,
+        )
+        .expect_err("SQLite must reject the native value allocation");
+
+        assert!(
+            error.contains("too big") || error.contains("string or blob too big"),
+            "unexpected error: {error}"
+        );
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(temp_dir);
     }

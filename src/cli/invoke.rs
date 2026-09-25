@@ -1,24 +1,6 @@
-//! `froglet-node invoke <service_id> [json_input]` — call a service
-//! published on the LOCAL node through the runtime deal flow.
-//!
-//! v1 scope: exactly the flow `froglet-node publish` advertises.
-//!
-//! 1. Fetch the canonical service record from the local provider API
-//!    (`GET /v1/provider/services/:id`).
-//! 2. Build a service-addressed execution workload — the Rust mirror of
-//!    `buildServiceAddressedExecution` in
-//!    `integrations/shared/froglet-lib/froglet-client.js`. That JS
-//!    builder stays the single source of truth for REMOTE resolution;
-//!    this module only covers the local-provider case.
-//! 3. `POST /v1/runtime/deals` on the runtime API (quote → deal →
-//!    execute happens daemon-side).
-//! 4. Poll `GET /v1/runtime/deals/:id` until the deal reaches a
-//!    terminal state (execution is spawned asynchronously provider-side
-//!    even for `mode = "sync"` services).
-//!
-//! Remote providers are intentionally NOT resolved here — marketplace
-//! search, SSRF validation, and transport pinning live in the JS
-//! client; the CLI points users at the MCP `invoke_service` action.
+//! Local and remote service invocation through the existing requester runtime.
+//! Remote metadata is fetched with bounded, DNS-pinned HTTPS; the runtime
+//! remains responsible for signed offers, quotes, deals, and receipt checks.
 
 use super::{CliError, pop_flag, pop_kv};
 use crate::api::{
@@ -62,10 +44,7 @@ const TERMINAL_DEAL_STATUSES: &[&str] = &[
 ];
 const SUCCESS_DEAL_STATUSES: &[&str] = &["succeeded", "completed", "done"];
 
-const REMOTE_INVOKE_HINT: &str = "remote providers are not supported by `froglet-node invoke` \
-     (v1 is local-only); use the MCP `froglet` tool action `invoke_service` with \
-     {\"service_id\": \"...\", \"provider_id\": \"...\"} (Claude Code, Codex, Cursor, etc. via \
-     `npx froglet-mcp`)";
+const REMOTE_INVOKE_HINT: &str = "use --provider-id <identity> --provider-url <https-origin>, or native MCP invoke_service with provider_id and provider_url";
 
 /// Everything `invoke_local_service` needs, resolved from argv + env by
 /// [`run`]. Carried explicitly so integration tests can drive the full
@@ -79,8 +58,11 @@ pub struct InvokeOptions {
     pub runtime_url: String,
     /// Bearer token for the runtime API.
     pub runtime_token: String,
-    /// Caller-asserted provider id; must match the local node identity.
+    /// Caller-asserted provider id; remote calls verify this against the service,
+    /// signed publication revision (when supplied), quote, and receipt.
     pub provider_id_override: Option<String>,
+    /// Reuse this key only to reconcile the same invocation after uncertainty.
+    pub idempotency_key: Option<String>,
     /// How long to poll for a terminal deal state. Zero means "do not
     /// poll" (`--no-wait`).
     pub wait_timeout: Duration,
@@ -91,10 +73,16 @@ pub struct InvokeOptions {
 /// from "still in flight when we stopped polling".
 #[derive(Debug, Serialize)]
 pub struct InvokeReport {
+    pub stage: String,
+    pub code: String,
+    pub retryable: bool,
     pub service_id: String,
     pub provider_id: String,
     pub provider_url: String,
     pub deal_id: String,
+    pub idempotency_key: String,
+    pub receipt_verification: Value,
+    pub next_action: String,
     pub status: String,
     pub terminal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,11 +108,13 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     };
     let provider_id_override = pop_kv(&mut args, "--provider-id");
     let provider_url_override = pop_kv(&mut args, "--provider-url");
+    let idempotency_key = pop_kv(&mut args, "--idempotency-key");
 
     if args.is_empty() || args.len() > 2 || args[0].starts_with("--") {
         return Err(CliError::BadArgs(
             "usage: froglet-node invoke <service_id> [json_input] [--json] [--no-wait] \
-             [--timeout-secs N] [--provider-id ID]\n  json_input defaults to null; pass '-' to \
+             [--timeout-secs N] [--provider-id ID] [--provider-url HTTPS_ORIGIN] \
+             [--idempotency-key KEY]\n  json_input defaults to null; pass '-' to \
              read it from stdin"
                 .to_string(),
         ));
@@ -132,17 +122,11 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     let service_id = args[0].clone();
     let input = parse_input_arg(args.get(1).map(String::as_str))?;
 
-    let daemon_url = base_url_from_env("FROGLET_DAEMON_URL", DEFAULT_DAEMON_URL);
+    let daemon_url = base_url_from_env(
+        "FROGLET_DAEMON_URL",
+        &base_url_from_env("FROGLET_PROVIDER_URL", DEFAULT_DAEMON_URL),
+    );
     let runtime_url = base_url_from_env("FROGLET_RUNTIME_URL", DEFAULT_RUNTIME_URL);
-
-    // Any provider URL other than the local daemon is a remote target.
-    if let Some(url) = provider_url_override
-        && url.trim_end_matches('/') != daemon_url
-    {
-        return Err(CliError::Other(format!(
-            "--provider-url {url} is not the local daemon ({daemon_url}); {REMOTE_INVOKE_HINT}"
-        )));
-    }
 
     let options = InvokeOptions {
         service_id,
@@ -151,6 +135,7 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
         runtime_url,
         runtime_token: resolve_runtime_auth_token().await?,
         provider_id_override,
+        idempotency_key,
         wait_timeout: if no_wait {
             Duration::ZERO
         } else {
@@ -159,15 +144,29 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
         poll_interval: POLL_INTERVAL,
     };
 
-    let report = invoke_local_service(&options).await?;
+    let remote_url = provider_url_override
+        .as_deref()
+        .filter(|url| url.trim_end_matches('/') != options.daemon_url);
+    let report = if remote_url.is_some() || options.provider_id_override.is_some() {
+        invoke_remote_service(&options, remote_url).await?
+    } else {
+        invoke_local_service(&options).await?
+    };
 
     if json_mode {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).expect("report serializes")
-        );
+        if !SUCCESS_DEAL_STATUSES.contains(&report.status.as_str()) && (report.terminal || !no_wait)
+        {
+            return Err(CliError::Structured {
+                report: serde_json::to_value(&report)
+                    .map_err(|e| CliError::Other(e.to_string()))?,
+                exit_code: 1,
+            });
+        }
+        let encoded = serde_json::to_string_pretty(&report)
+            .map_err(|error| CliError::Other(format!("failed to serialize report: {error}")))?;
+        println!("{encoded}");
     } else {
-        print_human_report(&report);
+        print_human_report(&report)?;
     }
 
     if SUCCESS_DEAL_STATUSES.contains(&report.status.as_str()) {
@@ -186,12 +185,13 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     }
     Err(CliError::Other(format!(
         "deal {} did not reach a terminal state within {timeout_secs}s (current status {:?}). \
-         Follow up with GET {}/v1/runtime/deals/{} (runtime Bearer token) or the MCP `get_task` \
-         action{}",
+         Follow up with GET {}/v1/runtime/deals/{} (runtime Bearer token), or repeat the exact \
+         invocation with idempotency key {} to reconcile{}",
         report.deal_id,
         report.status,
         options.runtime_url,
         report.deal_id,
+        report.idempotency_key,
         report
             .payment_intent_path
             .as_deref()
@@ -202,7 +202,7 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
 
 /// Full local invoke: service record → workload → runtime deal → poll.
 pub async fn invoke_local_service(options: &InvokeOptions) -> Result<InvokeReport, CliError> {
-    let http = reqwest::Client::builder()
+    let http = crate::tls::reqwest_client_builder()
         .timeout(HTTP_TIMEOUT)
         .build()
         .map_err(|error| CliError::Other(format!("failed to build HTTP client: {error}")))?;
@@ -229,25 +229,241 @@ pub async fn invoke_local_service(options: &InvokeOptions) -> Result<InvokeRepor
         )));
     }
 
-    let execution = build_service_addressed_execution(&service, options.input.clone())
+    invoke_resolved_service(
+        &http,
+        options,
+        &service,
+        node_id,
+        options.daemon_url.clone(),
+        None,
+    )
+    .await
+}
+
+/// Resolve the selected provider without sending local authentication to it.
+/// Omitting provider_url uses the operator-configured marketplace via runtime.
+pub async fn invoke_remote_service(
+    options: &InvokeOptions,
+    provider_url: Option<&str>,
+) -> Result<InvokeReport, CliError> {
+    let provider_id = options.provider_id_override.as_deref().ok_or_else(|| {
+        CliError::BadArgs("remote invocation requires provider_id from the service link".into())
+    })?;
+    if provider_id.len() != 64
+        || !provider_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(CliError::BadArgs(
+            "provider_id must be a 64-character lowercase hexadecimal identity".into(),
+        ));
+    }
+    let http = crate::tls::reqwest_client_builder()
+        .timeout(HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| CliError::Other(e.to_string()))?;
+    // Preserve explicit references to this node, without treating arbitrary
+    // loopback URLs as trusted remote services.
+    if provider_url.is_none()
+        && fetch_local_node_id(&http, &options.daemon_url)
+            .await
+            .ok()
+            .as_deref()
+            == Some(provider_id)
+    {
+        return invoke_local_service(options).await;
+    }
+    let endpoint = match provider_url {
+        Some(url) => url.to_string(),
+        None => {
+            let response = http
+                .get(format!(
+                    "{}/v1/runtime/providers/{}",
+                    options.runtime_url, provider_id
+                ))
+                .bearer_auth(&options.runtime_token)
+                .send()
+                .await
+                .map_err(|e| CliError::Daemon(e.to_string()))?;
+            if !response.status().is_success() {
+                return Err(CliError::Daemon(format!(
+                    "provider lookup returned {}; supply the provider URL from the service link",
+                    response.status()
+                )));
+            }
+            let detail: Value = crate::http_body::read_json_response_limited(
+                response,
+                1024 * 1024,
+                "provider lookup",
+            )
+            .await
+            .map_err(CliError::Daemon)?;
+            let provider = detail.get("provider").unwrap_or(&detail);
+            if provider.get("provider_id").and_then(Value::as_str) != Some(provider_id) {
+                return Err(CliError::Other(
+                    "provider_identity_mismatch: marketplace returned another provider".into(),
+                ));
+            }
+            select_remote_endpoint(provider.get("transport_endpoints").unwrap_or(&Value::Null))?
+        }
+    };
+    let endpoint = remote_origin(&endpoint)?;
+    let service_url = format!(
+        "{endpoint}/v1/provider/services/{}",
+        urlencoding::encode(&options.service_id)
+    );
+    let response: ProviderServiceResponse = crate::safe_fetch::safe_fetch_json(
+        &service_url,
+        crate::safe_fetch::FetchPolicy {
+            max_bytes: 1024 * 1024,
+            timeout_ms: 15_000,
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|e| CliError::Daemon(format!("provider_unavailable: {e}")))?;
+    validate_remote_service(&response.service, &options.service_id, provider_id)?;
+    if let Some(revision) = &response.publication_revision {
+        revision
+            .verify()
+            .map_err(|e| CliError::Other(format!("invalid_publication_revision: {e}")))?;
+        if revision.payload.provider_id != provider_id
+            || revision.payload.service_id != options.service_id
+            || revision.payload.offer_id != response.service.offer_id
+            || response.service.binding_hash.as_deref()
+                != Some(revision.payload.binding_hash.as_str())
+        {
+            return Err(CliError::Other(
+                "service_identity_mismatch: public revision differs from service metadata".into(),
+            ));
+        }
+    }
+    invoke_resolved_service(
+        &http,
+        options,
+        &response.service,
+        provider_id.to_string(),
+        endpoint,
+        Some(0),
+    )
+    .await
+}
+
+fn select_remote_endpoint(endpoints: &Value) -> Result<String, CliError> {
+    let mut candidates = endpoints
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|ep| {
+            ep["uri"]
+                .as_str()
+                .is_some_and(|uri| remote_origin(uri).is_ok())
+        })
+        .collect::<Vec<_>>();
+    let featured = |ep: &&Value| {
+        ep["features"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|v| v == "quote_http"))
+    };
+    if candidates.iter().any(featured) {
+        candidates.retain(featured);
+    }
+    candidates.sort_by_key(|ep| ep["priority"].as_u64().unwrap_or(u64::MAX));
+    candidates
+        .first()
+        .and_then(|ep| ep["uri"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CliError::Other("provider_unavailable: no public HTTPS service endpoint".into())
+        })
+}
+
+fn remote_origin(raw: &str) -> Result<String, CliError> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| CliError::BadArgs(format!("invalid provider_url: {e}")))?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(CliError::BadArgs("provider_url must be a public HTTPS origin without credentials, path, query, or fragment".into()));
+    }
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
+fn validate_remote_service(
+    service: &ProviderServiceRecord,
+    service_id: &str,
+    provider_id: &str,
+) -> Result<(), CliError> {
+    if service.service_id != service_id || service.provider_id != provider_id {
+        return Err(CliError::Other(
+            "service_identity_mismatch: remote service does not match the shared identity".into(),
+        ));
+    }
+    if service.price_sats != 0
+        || service.base_fee_msat != 0
+        || service.success_fee_msat != 0
+        || service.settlement_method != "none"
+    {
+        return Err(CliError::Other("payment_required: this native sharing journey only invokes free services; no deal was created".into()));
+    }
+    Ok(())
+}
+
+async fn invoke_resolved_service(
+    http: &reqwest::Client,
+    options: &InvokeOptions,
+    service: &ProviderServiceRecord,
+    node_id: String,
+    provider_url: String,
+    max_price_sats: Option<u64>,
+) -> Result<InvokeReport, CliError> {
+    let execution = build_service_addressed_execution(service, options.input.clone())
         .map_err(CliError::Other)?;
 
+    let idempotency_key = options
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| format!("native-{}", hex::encode(rand::random::<[u8; 16]>())));
+    if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
+        return Err(CliError::BadArgs(
+            "idempotency_key must contain 1–256 characters".into(),
+        ));
+    }
     let request = RuntimeCreateDealRequest {
         provider: RuntimeProviderRef {
             provider_id: Some(node_id.clone()),
-            provider_url: Some(options.daemon_url.clone()),
+            provider_url: Some(provider_url),
         },
         offer_id: service.offer_id.clone(),
         spec: WorkloadSpec::Execution {
             execution: Box::new(execution),
         },
-        max_price_sats: None,
-        idempotency_key: None,
+        max_price_sats,
+        idempotency_key: Some(idempotency_key.clone()),
         payment: None,
     };
-    let created = create_runtime_deal(&http, options, &request).await?;
+    let created = create_runtime_deal(http, options, &request).await.map_err(|error| {
+        let mut report = super::doctor::error_report(&error);
+        report["idempotency_key"] = serde_json::json!(idempotency_key);
+        report["stage"] = serde_json::json!("requester_execution");
+        report["retryable"] = serde_json::json!(false);
+        report["next_action"] = serde_json::json!("If the result is uncertain, repeat the exact input with this idempotency_key; the runtime reconciles its durable intent before making a new deal. Never substitute a new key merely to retry.");
+        CliError::Structured { report, exit_code: error.exit_code() }
+    })?;
 
+    let receipt_verification = verify_invocation_receipt(&created.deal, &node_id)?;
     let mut report = InvokeReport {
+        stage: "requester_execution".into(),
+        code: "invocation_pending".into(),
+        retryable: false,
+        receipt_verification,
+        next_action: "If still pending, inspect this deal before retrying; reuse its exact idempotency_key and input to reconcile.".into(),
+        idempotency_key,
         service_id: options.service_id.clone(),
         provider_id: created.provider_id,
         provider_url: created.provider_url,
@@ -260,22 +476,75 @@ pub async fn invoke_local_service(options: &InvokeOptions) -> Result<InvokeRepor
         payment_intent_path: created.payment_intent_path,
     };
     if report.terminal || options.wait_timeout.is_zero() {
-        return Ok(report);
+        return Ok(finalize_report(report));
     }
 
     let deadline = tokio::time::Instant::now() + options.wait_timeout;
     loop {
         tokio::time::sleep(options.poll_interval).await;
-        let deal = poll_runtime_deal(&http, options, &report.deal_id).await?;
+        let deal = match poll_runtime_deal(http, options, &report.deal_id).await {
+            Ok(deal) => deal,
+            Err(error) => {
+                // The mutation already has a durable deal identity. Preserve it
+                // in the report even if subsequent safe reads are unavailable.
+                report.error = Some(error.to_string());
+                report.next_action = "Status could not be refreshed. Reconcile using this exact idempotency_key and input; do not create another invocation key.".into();
+                report.code = "status_unavailable".into();
+                return Ok(report);
+            }
+        };
+        report.receipt_verification = verify_invocation_receipt(&deal, &node_id)?;
         report.status = deal.status;
         report.terminal = is_terminal_deal_status(&report.status);
         report.result = deal.result;
         report.result_hash = deal.result_hash;
         report.error = deal.error;
         if report.terminal || tokio::time::Instant::now() >= deadline {
-            return Ok(report);
+            return Ok(finalize_report(report));
         }
     }
+}
+
+fn finalize_report(mut report: InvokeReport) -> InvokeReport {
+    if SUCCESS_DEAL_STATUSES.contains(&report.status.as_str()) {
+        report.stage = "requester_execution_verified".into();
+        report.code = "ok".into();
+        report.next_action = "Review the result and receipt verification. A signed receipt does not independently establish result quality.".into();
+    } else if report.terminal {
+        report.code = "execution_failed".into();
+        report.next_action = "Inspect the failure and signed evidence before changing the input or starting another call.".into();
+    }
+    report
+}
+
+fn verify_invocation_receipt(
+    deal: &crate::requester_deals::RequesterDealRecord,
+    provider: &str,
+) -> Result<Value, CliError> {
+    let Some(receipt) = &deal.receipt else {
+        if SUCCESS_DEAL_STATUSES.contains(&deal.status.as_str()) {
+            return Err(CliError::Daemon(format!(
+                "receipt_missing: successful deal {} has no receipt; execution is not verified",
+                deal.deal_id
+            )));
+        }
+        return Ok(serde_json::json!({"status":"not_available", "verified":false}));
+    };
+    crate::api::verify_provider_receipt_artifact(
+        receipt,
+        &deal.quote,
+        &deal.deal,
+        provider,
+        &deal.deal.payload.requester_id,
+        deal.result.as_ref(),
+        deal.result_hash.as_deref(),
+    )
+    .map_err(|(_, error)| CliError::Daemon(format!("receipt_verification_failed: {error}")))?;
+    Ok(
+        serde_json::json!({"status":"verified", "verified":true, "receipt_hash":receipt.hash,
+        "checks":["signatures", "quote_deal_receipt_links", "provider_identity", "result_hash"],
+        "boundary":"Does not independently prove output correctness or external settlement."}),
+    )
 }
 
 /// Rust mirror of `buildServiceAddressedExecution` in
@@ -349,6 +618,7 @@ fn build_service_addressed_execution(
         ));
     }
 
+    let bound_builtin = package_kind == ExecutionPackageKind::Builtin && binding_hash.is_some();
     let builtin_name = (package_kind == ExecutionPackageKind::Builtin).then(|| {
         [service.entrypoint.as_str(), service.service_id.as_str()]
             .into_iter()
@@ -407,7 +677,7 @@ fn build_service_addressed_execution(
         security: ExecutionSecurity {
             mode: ExecutionSecurityMode::Standard,
             confidential_session_hash: None,
-            service_id: (package_kind != ExecutionPackageKind::Builtin)
+            service_id: (package_kind != ExecutionPackageKind::Builtin || bound_builtin)
                 .then(|| service.service_id.clone()),
             request_envelope: None,
         },
@@ -417,6 +687,7 @@ fn build_service_addressed_execution(
         module_bytes_hex: None,
         source_hash: None,
         inline_source: None,
+        python_bundle: None,
         oci_reference: None,
         oci_digest: None,
         builtin_name: None,
@@ -426,7 +697,10 @@ fn build_service_addressed_execution(
         ExecutionPackageKind::InlineModule | ExecutionPackageKind::OciImage => {
             workload.module_hash = binding_hash
         }
-        ExecutionPackageKind::Builtin => workload.builtin_name = builtin_name,
+        ExecutionPackageKind::Builtin => {
+            workload.builtin_name = builtin_name;
+            workload.module_hash = binding_hash;
+        }
     }
     Ok(workload)
 }
@@ -466,7 +740,7 @@ fn base_url_from_env(var: &str, default: &str) -> String {
 /// the publish engine resolve their tokens: explicit env value, then an
 /// env-pointed file, then the daemon's `<data-dir>/runtime/auth.token`
 /// convention (probing both the daemon and agent-bootstrap layouts).
-async fn resolve_runtime_auth_token() -> Result<String, CliError> {
+pub(crate) async fn resolve_runtime_auth_token() -> Result<String, CliError> {
     if let Ok(token) = std::env::var("FROGLET_RUNTIME_AUTH_TOKEN") {
         let token = token.trim().to_string();
         if !token.is_empty() {
@@ -672,12 +946,32 @@ async fn poll_runtime_deal(
         options.runtime_url,
         urlencoding::encode(deal_id)
     );
-    let response = http
-        .get(&url)
-        .bearer_auth(&options.runtime_token)
-        .send()
-        .await
-        .map_err(|error| CliError::Daemon(format!("GET {url} failed: {error}")))?;
+    let mut last_error = None;
+    let mut response = None;
+    for attempt in 0..2 {
+        match http
+            .get(&url)
+            .bearer_auth(&options.runtime_token)
+            .send()
+            .await
+        {
+            Ok(value) if !value.status().is_server_error() || attempt == 1 => {
+                response = Some(value);
+                break;
+            }
+            Ok(value) => last_error = Some(format!("HTTP {}", value.status())),
+            Err(error) => last_error = Some(error.to_string()),
+        }
+        if attempt == 0 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+    let response = response.ok_or_else(|| {
+        CliError::Daemon(format!(
+            "GET {url} failed: {}",
+            last_error.unwrap_or_default()
+        ))
+    })?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -691,7 +985,7 @@ async fn poll_runtime_deal(
     Ok(parsed.deal)
 }
 
-fn print_human_report(report: &InvokeReport) {
+fn print_human_report(report: &InvokeReport) -> Result<(), CliError> {
     println!("service:  {}", report.service_id);
     println!("provider: {}", report.provider_id);
     println!("deal:     {}", report.deal_id);
@@ -703,13 +997,13 @@ fn print_human_report(report: &InvokeReport) {
         println!("error:    {error}");
     }
     if let Some(result) = report.result.as_ref() {
-        println!(
-            "result:\n{}",
-            serde_json::to_string_pretty(result).expect("result serializes")
-        );
+        let encoded = serde_json::to_string_pretty(result)
+            .map_err(|error| CliError::Other(format!("failed to serialize result: {error}")))?;
+        println!("result:\n{encoded}");
     } else if !report.terminal {
         println!("result:   (pending — deal has not reached a terminal state)");
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -717,6 +1011,44 @@ mod tests {
     use super::*;
     use crate::execution::ExecutionMount;
     use serde_json::json;
+
+    #[test]
+    fn remote_endpoint_selection_keeps_https_quote_feature_and_priority() {
+        assert_eq!(
+            select_remote_endpoint(&json!([
+                {"uri":"http://plain.example", "priority":0, "features":["quote_http"]},
+                {"uri":"https://other.example", "priority":0},
+                {"uri":"https://slow.example", "priority":9, "features":["quote_http"]},
+                {"uri":"https://fast.example", "priority":1, "features":["quote_http"]}
+            ]))
+            .unwrap(),
+            "https://fast.example"
+        );
+        for invalid in [
+            "http://example.com",
+            "https://user:secret@example.com",
+            "https://example.com/path",
+            "https://example.com/?secret=1",
+        ] {
+            assert!(remote_origin(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_metadata_requires_exact_identity_and_free_terms() {
+        let mut service = python_service_record();
+        service.settlement_method = "none".into();
+        assert!(validate_remote_service(&service, "text.summarize", &"aa".repeat(32)).is_ok());
+        assert!(validate_remote_service(&service, "other", &"aa".repeat(32)).is_err());
+        assert!(validate_remote_service(&service, "text.summarize", &"bb".repeat(32)).is_err());
+        service.success_fee_msat = 1;
+        assert!(
+            validate_remote_service(&service, "text.summarize", &"aa".repeat(32))
+                .unwrap_err()
+                .to_string()
+                .contains("payment_required")
+        );
+    }
 
     fn python_service_record() -> ProviderServiceRecord {
         serde_json::from_value(json!({
@@ -795,6 +1127,55 @@ mod tests {
         // Builtin executions are not service-addressed (no security.service_id).
         assert!(workload.security.service_id.is_none());
         assert!(workload.validate_basic().is_ok());
+    }
+
+    #[test]
+    fn immutable_builtin_service_is_service_addressed_and_keeps_binding() {
+        let binding_hash = "cc".repeat(32);
+        let mut service = python_service_record();
+        service.runtime = "builtin".to_string();
+        service.package_kind = "builtin".to_string();
+        service.entrypoint_kind = "builtin".to_string();
+        service.entrypoint = "data.catalog".to_string();
+        service.service_id = "data.catalog".to_string();
+        service.contract_version = crate::builtins::DATA_QUERY_JSON_CONTRACT_V1.to_string();
+        service.binding_hash = Some(binding_hash.clone());
+
+        let workload =
+            build_service_addressed_execution(&service, json!({"limit": 10})).expect("workload");
+
+        assert_eq!(workload.builtin_name.as_deref(), Some("data.catalog"));
+        assert_eq!(workload.module_hash.as_deref(), Some(binding_hash.as_str()));
+        assert_eq!(workload.binding_hash(), Some(binding_hash.as_str()));
+        assert_eq!(
+            workload.security.service_id.as_deref(),
+            Some("data.catalog")
+        );
+        assert!(workload.is_service_addressed());
+        assert!(workload.validate_basic().is_ok());
+        assert_eq!(
+            workload.request_hash().expect("request hash"),
+            "045a1210bc07d291d91916beb4acfac6a801e1ddc0cbb0f44a0d6728bd7bc67f"
+        );
+    }
+
+    #[test]
+    fn immutable_builtin_service_accepts_legacy_module_hash_field() {
+        let binding_hash = "dd".repeat(32);
+        let mut service = python_service_record();
+        service.runtime = "builtin".to_string();
+        service.package_kind = "builtin".to_string();
+        service.entrypoint_kind = "builtin".to_string();
+        service.entrypoint = "data.legacy".to_string();
+        service.service_id = "data.legacy".to_string();
+        service.contract_version = crate::builtins::DATA_QUERY_JSON_CONTRACT_V1.to_string();
+        service.binding_hash = None;
+        service.module_hash = Some(binding_hash.clone());
+
+        let workload = build_service_addressed_execution(&service, Value::Null).expect("workload");
+
+        assert_eq!(workload.module_hash.as_deref(), Some(binding_hash.as_str()));
+        assert_eq!(workload.security.service_id.as_deref(), Some("data.legacy"));
     }
 
     #[test]

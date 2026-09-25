@@ -25,8 +25,8 @@ use std::{
     time::Duration,
 };
 
-use reqwest::{Client, Proxy, Url, redirect::Policy as RedirectPolicy};
-use serde::de::DeserializeOwned;
+use reqwest::{Method, Proxy, Url, redirect::Policy as RedirectPolicy};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Default response cap for demo fetches. Bigger than a sane web page,
 /// smaller than a download. Callers can override per-request.
@@ -210,6 +210,43 @@ impl FetchPolicy {
 /// are rejected (since a different host would re-enter system DNS and
 /// re-open the rebinding window).
 pub async fn safe_fetch(raw_url: &str, policy: FetchPolicy) -> Result<SafeFetchOutcome, String> {
+    safe_request(raw_url, Method::GET, None, policy).await
+}
+
+/// POST a JSON request through the same SSRF-hardened transport as
+/// [`safe_fetch`] and decode a bounded JSON response.
+///
+/// The initial DNS result is validated and pinned into the HTTP client,
+/// cross-host redirects are rejected, Tor destinations require an explicit
+/// SOCKS proxy, and both request and response bodies are bounded. A request
+/// larger than [`MAX_ALLOWED_BYTES`] is rejected before any network I/O.
+pub async fn safe_post_json<Request, Response>(
+    raw_url: &str,
+    request: &Request,
+    policy: FetchPolicy,
+) -> Result<Response, String>
+where
+    Request: Serialize + ?Sized,
+    Response: DeserializeOwned,
+{
+    let body = serde_json::to_vec(request)
+        .map_err(|error| format!("safe_post_json: encode request JSON: {error}"))?;
+    if body.len() as u64 > MAX_ALLOWED_BYTES {
+        return Err(format!(
+            "safe_post_json: request exceeded max_bytes cap of {MAX_ALLOWED_BYTES}"
+        ));
+    }
+
+    let outcome = safe_request(raw_url, Method::POST, Some(body), policy).await?;
+    decode_json_response("safe_post_json", outcome)
+}
+
+async fn safe_request(
+    raw_url: &str,
+    method: Method,
+    json_body: Option<Vec<u8>>,
+    policy: FetchPolicy,
+) -> Result<SafeFetchOutcome, String> {
     let validated = validate_fetch_url_with_policy(raw_url, policy.allow_private_networks)?;
     let policy = policy.clamped();
 
@@ -241,7 +278,7 @@ pub async fn safe_fetch(raw_url: &str, policy: FetchPolicy) -> Result<SafeFetchO
 
     let initial_host = host.clone();
     let allow_private = policy.allow_private_networks;
-    let mut builder = Client::builder()
+    let mut builder = crate::tls::reqwest_client_builder()
         .timeout(Duration::from_millis(policy.timeout_ms))
         .redirect(RedirectPolicy::custom(move |attempt| {
             if attempt.previous().len() >= 5 {
@@ -277,9 +314,15 @@ pub async fn safe_fetch(raw_url: &str, policy: FetchPolicy) -> Result<SafeFetchO
         .build()
         .map_err(|e| format!("safe_fetch: build client: {e}"))?;
 
-    let response = client
-        .get(validated.clone())
-        .header("user-agent", "froglet-demo-fetch/0.1")
+    let mut request = client
+        .request(method, validated.clone())
+        .header("user-agent", "froglet-demo-fetch/0.1");
+    if let Some(body) = json_body {
+        request = request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body);
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| format!("safe_fetch: request failed: {e}"))?;
@@ -335,22 +378,25 @@ pub async fn safe_fetch_json<T: DeserializeOwned>(
     policy: FetchPolicy,
 ) -> Result<T, String> {
     let outcome = safe_fetch(raw_url, policy).await?;
+    decode_json_response("safe_fetch_json", outcome)
+}
+
+fn decode_json_response<T: DeserializeOwned>(
+    operation: &str,
+    outcome: SafeFetchOutcome,
+) -> Result<T, String> {
     if !(200..300).contains(&outcome.status_code) {
         let preview = String::from_utf8_lossy(&outcome.body)
             .chars()
             .take(200)
             .collect::<String>();
         return Err(format!(
-            "safe_fetch_json: upstream returned {} for {}: {}",
+            "{operation}: upstream returned {} for {}: {}",
             outcome.status_code, outcome.final_url, preview
         ));
     }
-    serde_json::from_slice(&outcome.body).map_err(|e| {
-        format!(
-            "safe_fetch_json: invalid JSON from {}: {e}",
-            outcome.final_url
-        )
-    })
+    serde_json::from_slice(&outcome.body)
+        .map_err(|e| format!("{operation}: invalid JSON from {}: {e}", outcome.final_url))
 }
 
 async fn check_host_resolution(
@@ -391,6 +437,8 @@ async fn check_host_resolution(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, routing::post};
+    use serde_json::{Value, json};
 
     #[test]
     fn rejects_non_http_scheme() {
@@ -532,5 +580,61 @@ mod tests {
             p.tor_socks_proxy.as_deref(),
             Some("socks5h://127.0.0.1:9050")
         );
+    }
+
+    #[tokio::test]
+    async fn safe_post_json_posts_and_decodes_bounded_json() {
+        async fn echo(Json(request): Json<Value>) -> Json<Value> {
+            Json(json!({"received": request}))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("read test address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/canary", post(echo)))
+                .await
+                .expect("test server exits cleanly");
+        });
+
+        let response: Value = safe_post_json(
+            &format!("http://{address}/canary"),
+            &json!({"challenge": "froglet"}),
+            FetchPolicy {
+                max_bytes: 1_024,
+                timeout_ms: 1_000,
+                allow_private_networks: true,
+                ..FetchPolicy::default()
+            },
+        )
+        .await
+        .expect("POST JSON succeeds");
+        assert_eq!(response, json!({"received": {"challenge": "froglet"}}));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn safe_post_json_rejects_private_networks_by_default() {
+        let error = safe_post_json::<_, Value>(
+            "http://127.0.0.1/canary",
+            &json!({"challenge": "froglet"}),
+            FetchPolicy::default(),
+        )
+        .await
+        .expect_err("loopback POST must be rejected before network I/O");
+        assert!(error.contains("private/loopback"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn safe_post_json_rejects_oversized_request_before_network_io() {
+        let error = safe_post_json::<_, Value>(
+            "https://example.com/canary",
+            &json!({"data": "x".repeat(MAX_ALLOWED_BYTES as usize)}),
+            FetchPolicy::default(),
+        )
+        .await
+        .expect_err("oversized JSON request must be rejected before fetch");
+        assert!(error.contains("request exceeded"), "got: {error}");
     }
 }

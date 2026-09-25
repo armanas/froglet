@@ -9,7 +9,8 @@ data-source surface small, declarative, and auditable.
 
 An `ExecutionMount` carries:
 
-- `kind` — data-source family (`postgres`, `sqlite`, `s3`, or `redis`)
+- `kind` — data-source family (`postgres`, `sqlite`, `object_store`, or
+  `redis`)
 - `handle` — operator-chosen name (e.g. `analytics`)
 - `read_only` — whether the workload may write
 - `binding` — source-specific binding value after trusted resolution. Provider
@@ -33,7 +34,7 @@ the workload.
 |---|---|---|---|
 | `postgres` | disabled | none | `postgres://user:pass@host:port/db` |
 | `sqlite` | no | exact DB file | absolute path to the `.sqlite` file |
-| `s3` | disabled | none | `s3://access_key:secret@endpoint/bucket` |
+| `object_store` | disabled | none | `s3://access_key:secret@endpoint/bucket` |
 | `redis` | disabled | none | `redis://user:pass@host:port/db` |
 
 All kinds inject the same env-var shape into the workload:
@@ -48,12 +49,20 @@ offer. It rejects unknown kinds, invalid handles, and caller-supplied
 operator config fails the invocation instead of falling back to a requester- or
 agent-supplied path/DSN.
 
+`s3` is a compatibility alias, not the current authoring name. New publication
+intents normalize it to `object_store` before signing. Already-stored legacy
+workloads retain `s3` and require the exact legacy capability
+`mount.s3.<read|write>.<handle>`; a canonical
+`mount.object_store.<read|write>.<handle>` grant does not silently authorize
+that old workload (and the reverse is also rejected).
+
 Kind-specific sandbox effects are applied by
 [`collect_data_mount_plan`](../src/data_mounts.rs). Network-backed kinds
-(`postgres`, `s3`, `redis`) fail closed until endpoint-scoped proxying is
+(`postgres`, `object_store`, `redis`) fail closed until endpoint-scoped proxying is
 implemented. File-backed `sqlite` mounts grant only the configured database
 file: read mounts are read-only and write mounts are isolated to that exact
-file for the invocation.
+file for the invocation. SQLite operations that need adjacent journal or WAL
+sidecar files fail closed because the database parent directory is not granted.
 
 ## Postgres mount
 
@@ -147,6 +156,9 @@ The path must be absolute and must point at an existing file. Read-only mounts
 grant read access to that exact file. Write mounts grant write access to that
 exact file for the invocation instead of granting the database parent
 directory. This avoids exposing sibling files through SQLite sidecar behavior.
+It also means ordinary SQLite writes that require `-journal`, `-wal`, or `-shm`
+files are not currently supported; use a read-only mount until transactional
+staging/proxying is implemented.
 
 ### Service declaration
 
@@ -180,40 +192,44 @@ def handler(event, ctx):
 SQLite mounts do not open network syscalls; the sandbox's default
 network-deny stays in effect.
 
-## S3 mount
+## Object-store mount
 
-The `s3` mount kind exposes an operator-configured S3-compatible endpoint
-and credentials to the workload as an environment variable. Like Postgres,
-the workload uses its own S3 client (`boto3`, `aiobotocore`, `s3fs`, etc.)
-to make requests.
+The provider-neutral `object_store` mount kind exposes an
+operator-configured object-store endpoint and credentials to the workload as
+an environment variable. The current binding protocol is S3-compatible, so a
+workload can use an S3-protocol client (`boto3`, `aiobotocore`, `s3fs`, etc.)
+without making the publication contract AWS-specific.
 
-Current max-hardening behavior rejects granted S3 mounts at admission time.
+Current max-hardening behavior rejects granted object-store mounts at admission time.
 Operators should wait for endpoint-scoped proxying before publishing services
 that require object-store mounts.
 
 ### Operator configuration
 
 ```
-FROGLET_MOUNT_s3_<handle>=s3://<access_key>:<secret_key>@<endpoint>/<bucket>
+FROGLET_MOUNT_object_store_<handle>=s3://<access_key>:<secret_key>@<endpoint>/<bucket>
 ```
 
 For example:
 
 ```
-FROGLET_MOUNT_s3_backups=s3://AKIA...:wJalrXUt...@s3.us-east-1.amazonaws.com/my-backups
-FROGLET_MOUNT_s3_local=s3://minio:minio123@minio.internal:9000/dev-bucket
+FROGLET_MOUNT_object_store_backups=s3://access:secret@objects.example/my-backups
+FROGLET_MOUNT_object_store_local=s3://minio:minio123@minio.internal:9000/dev-bucket
 ```
 
-The URL form works for AWS S3, MinIO, Cloudflare R2, Backblaze B2, and
-other S3-compatible stores. The workload parses the URL itself; Froglet
-does not proxy object-store calls.
+The legacy `FROGLET_MOUNT_s3_<handle>` name remains readable for existing
+operator configuration. For either a canonical or legacy stored workload,
+Froglet checks both names. If both are non-empty and differ, invocation fails
+closed instead of choosing one credential set. The URL form works with any
+compatible store. The workload parses the URL itself; Froglet does not proxy
+object-store calls.
 
 ### Service declaration
 
 ```json
 {
   "mounts": [
-    { "kind": "s3", "handle": "backups", "read_only": true }
+    { "kind": "object_store", "handle": "backups", "read_only": true }
   ]
 }
 ```
@@ -221,7 +237,7 @@ does not proxy object-store calls.
 Request with `requested_access`:
 
 ```
-["mount.s3.read.backups"]
+["mount.object_store.read.backups"]
 ```
 
 ### Workload usage
@@ -245,7 +261,7 @@ def handler(event, ctx):
     return {"keys": [obj["Key"] for obj in resp.get("Contents", [])]}
 ```
 
-Granted S3 mounts currently fail closed, same as Postgres.
+Granted object-store mounts currently fail closed, same as Postgres.
 
 ## Redis mount
 
@@ -283,7 +299,7 @@ all outbound network syscalls and all filesystem writes outside the
 invocation tempdir by default. Data mounts extend that default only for
 local SQLite files:
 
-- **Network-backed kinds** (`postgres`, `s3`, `redis`) fail closed. The
+- **Network-backed kinds** (`postgres`, `object_store`, `redis`) fail closed. The
   sandbox does not enable outbound sockets for data mounts.
 - **File-backed kinds** (`sqlite`) add the configured database file to the
   sandbox's read-only or writable path set. Parent directories are not
@@ -308,13 +324,13 @@ Follow the existing shape in
 3. Add operator config via `FROGLET_MOUNT_<kind>_<handle>=<binding>`. The
    handle is already parsed uniformly; no additional env-loading code is
    needed.
-4. Add tests in `src/api/mod.rs::tests` mirroring the existing postgres /
-   sqlite / s3 tests.
+4. Add focused tests for descriptor validation, exact capability matching,
+   binding lookup, and sandbox/runtime behavior.
 5. Document the kind in the table + dedicated section above.
 
 Planned follow-ups:
 
-- kinds beyond the current postgres + sqlite + s3 + redis set
+- kinds beyond the current postgres + sqlite + object_store + redis set
   (DynamoDB, GCS, a KV snapshot service, etc.)
 - endpoint-scoped proxying for network-backed mounts, with per-handle
   `host:port` or service-specific allow-lists.

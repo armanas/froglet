@@ -14,32 +14,6 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "anyOf": [
-      {
-        "maxProperties": 0
-      },
-      {
-        "required": [
-          "baseUrl",
-          "authTokenPath"
-        ]
-      },
-      {
-        "required": [
-          "providerUrl",
-          "runtimeUrl",
-          "providerAuthTokenPath",
-          "runtimeAuthTokenPath"
-        ]
-      },
-      {
-        "required": [
-          "providerUrl",
-          "runtimeUrl",
-          "authTokenPath"
-        ]
-      }
-    ],
     "properties": {
       "hostProduct": {
         "type": "string",
@@ -51,34 +25,42 @@
       },
       "providerUrl": {
         "type": "string",
+        "minLength": 1,
         "description": "Froglet provider API base URL."
       },
       "runtimeUrl": {
         "type": "string",
+        "minLength": 1,
         "description": "Froglet runtime API base URL."
       },
       "baseUrl": {
         "type": "string",
+        "minLength": 1,
         "description": "Legacy unified Froglet control API base URL. When set, it is used for both providerUrl and runtimeUrl."
       },
       "marketplaceUrl": {
         "type": "string",
+        "minLength": 1,
         "description": "Froglet marketplace API base URL used by marketplace_register."
       },
       "marketplaceArbiterUrl": {
         "type": "string",
+        "minLength": 1,
         "description": "Froglet marketplace arbiter API base URL used by complaint filing and reads."
       },
       "providerAuthTokenPath": {
         "type": "string",
+        "minLength": 1,
         "description": "Filesystem path to the Froglet provider control API bearer token."
       },
       "runtimeAuthTokenPath": {
         "type": "string",
+        "minLength": 1,
         "description": "Filesystem path to the Froglet runtime API bearer token."
       },
       "authTokenPath": {
         "type": "string",
+        "minLength": 1,
         "description": "Legacy shared bearer token path used as a fallback for both providerAuthTokenPath and runtimeAuthTokenPath."
       },
       "requestTimeoutMs": {

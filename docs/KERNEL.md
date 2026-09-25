@@ -11,7 +11,7 @@ It defines:
 - the six artifact types: Descriptor, Offer, Quote, Deal, InvoiceBundle, and Receipt
 - the hash-chain and verification rules between those artifacts
 - the canonical deal, execution, and settlement states
-- the recognized v1 settlement methods: `none`, `lightning.base_fee_plus_success_fee.v1`, `stripe_mpp.v1`, and `lightning.prepaid.v1`
+- the recognized v1 settlement methods: `none`, `lightning.base_fee_plus_success_fee.v1`, `stripe_mpp.v1`, `lightning.prepaid.v1`, and `x402.eip3009.v1`
 - the invoice bundle immutability model
 - receipt terminal-only semantics
 - expiry ordering constraints
@@ -81,8 +81,12 @@ All six artifact types use the same signed envelope:
 - `signer`: Froglet application identity of the signer
 - `created_at`: Unix timestamp in seconds
 - `payload_hash`: lowercase hex SHA-256 of `JCS(payload)`
+- `hash`: lowercase hex `artifact_hash`; this derived field is carried in the
+  envelope but excluded from `artifact_bytes` to avoid self-reference
 - `payload`: the canonical JSON payload for the artifact type
-- `signature`: BIP340 Schnorr signature by `signer` over the exact `artifact_bytes` defined below
+- `signature`: BIP340 Schnorr signature by `signer` over the 32-byte
+  `SHA256(artifact_bytes)` digest defined below (the digest bytes, not their hex
+  encoding)
 
 The exact signing and artifact-hash preimage is:
 
@@ -110,12 +114,15 @@ Verification order:
 1. Verify that `schema_version` is `froglet/v1`.
 2. Recompute `payload_hash` from `payload`.
 3. Recompute `artifact_bytes` exactly as above.
-4. Recompute `artifact_hash = SHA256(artifact_bytes)`.
-5. Verify `signature` as a BIP340 Schnorr signature by `signer` over the raw `artifact_bytes`.
+4. Recompute `artifact_hash = SHA256(artifact_bytes)` and require the in-band
+   `hash` field to equal it.
+5. Verify `signature` as a BIP340 Schnorr signature by `signer` over the
+   32-byte `SHA256(artifact_bytes)` digest.
 
 `artifact_hash` is a derived content address.
-It is not part of the in-band signed envelope.
-Transport surfaces MAY include it as out-of-band metadata for lookup and indexing.
+It is serialized in the envelope as `hash`, but it is not an input to
+`artifact_bytes` or the BIP340 operation. Transport surfaces MAY also expose it
+as lookup or indexing metadata.
 
 ### 2.3 Linked Publication Identities
 
@@ -160,7 +167,8 @@ Where:
 - `expires_at_or_dash` is the decimal expiry timestamp or `-`
 
 For v1 Nostr linkage, `linked_signature` is a BIP340 Schnorr signature over the
-raw UTF-8 challenge bytes above.
+32-byte SHA-256 digest of the UTF-8 challenge bytes above (the digest bytes,
+not their hex encoding).
 
 ## 3. Artifact Payloads
 
@@ -220,8 +228,11 @@ and optional publication-key linkage.
 Settlement method rules for offers:
 
 - An Offer for a free service (where `price_schedule.base_fee_msat == 0` AND `price_schedule.success_fee_msat == 0`) MUST use `settlement_method: "none"`.
-- An Offer for a paid service MUST use a recognized paid settlement method: `"lightning.base_fee_plus_success_fee.v1"`, `"stripe_mpp.v1"`, or `"lightning.prepaid.v1"`.
+- An Offer for a paid service MUST use a recognized paid settlement method: `"lightning.base_fee_plus_success_fee.v1"`, `"stripe_mpp.v1"`, `"lightning.prepaid.v1"`, or `"x402.eip3009.v1"`.
 - An Offer MUST NOT use a paid settlement method string when fees are zero, and MUST NOT use `"none"` when fees are non-zero.
+- Only `"lightning.base_fee_plus_success_fee.v1"` supports a non-zero
+  `price_schedule.success_fee_msat`; Stripe MPP, prepaid Lightning, and x402
+  Offers MUST set it to `0`.
 
 ### 3.3 Quote Payload
 
@@ -258,6 +269,12 @@ For `settlement_method: "none"`, `settlement_terms` MUST contain:
 - `destination_identity`: `""` (empty string)
 - `base_fee_msat`: `0`
 - `success_fee_msat`: `0`
+
+For `settlement_method: "lightning.prepaid.v1"`,
+`settlement_terms.destination_identity` MUST be the provider invoice payee's
+33-byte compressed secp256k1 public key encoded as lowercase hex, and
+`success_fee_msat` MUST be `0`. This signed destination is the requester-side
+binding used when validating the BOLT11 payee before payment.
 
 Quote validation rules:
 
@@ -397,6 +414,7 @@ When an `invoice_bundle` expires (`expires_at` is past), the provider SHALL trea
 - `"lightning.base_fee_plus_success_fee.v1"` — paid escrow-style service via Lightning Network base-fee invoice plus success-fee hold invoice
 - `"stripe_mpp.v1"` — paid service via Stripe Machine Payments Protocol manual-capture PaymentIntent
 - `"lightning.prepaid.v1"` — paid prepaid Lightning service using a standard BOLT11 invoice
+- `"x402.eip3009.v1"` — paid atomic EVM stablecoin transfer authorized by an EIP-3009 `TransferWithAuthorization` (x402)
 
 Future settlement methods (B2B rails, ACH/wire/invoice, custom credit systems) are architecturally expected but MUST NOT be presented as v1 interoperable unless explicitly standardized in a future version.
 
@@ -488,7 +506,7 @@ For `lightning.base_fee_plus_success_fee.v1`:
 - The base-fee leg state is recorded in `Receipt.payload.settlement_refs.base_fee.state`
 - The success-fee leg state is recorded in `Receipt.payload.settlement_refs.success_fee.state`
 
-Terminal receipt `settlement_state` values for Lightning deals:
+Terminal receipt `settlement_state` values for Lightning escrow deals:
 
 | `settlement_state` | Meaning |
 |---|---|
@@ -523,17 +541,64 @@ Receipt rules for `stripe_mpp.v1`:
 
 The prepaid Lightning method uses a standard BOLT11 invoice paid before execution. It does not use an `invoice_bundle` or requester-controlled success-fee hold.
 
+Quote rules for `lightning.prepaid.v1`:
+
+- `settlement_terms.destination_identity` MUST be the provider invoice payee's
+  33-byte compressed secp256k1 public key encoded as lowercase hex.
+- `settlement_terms.success_fee_msat` MUST be `0`.
+
 Receipt rules for `lightning.prepaid.v1`:
 
 - `Receipt.payload.settlement_refs.method` MUST be `"lightning.prepaid.v1"`.
 - `settlement_refs.bundle_hash` MUST be `null`.
-- `settlement_refs.destination_identity` MUST be empty.
+- `settlement_refs.destination_identity` MUST equal the signed Quote
+  `settlement_terms.destination_identity` (the provider invoice payee's 33-byte
+  compressed secp256k1 public key encoded as lowercase hex).
 - `settlement_refs.base_fee.payment_hash` carries the BOLT11 payment hash.
 - For settled receipts, `settlement_refs.base_fee.invoice_hash` carries the 32-byte payment preimage, and `SHA256(preimage) == payment_hash`.
 - For canceled receipts, `settlement_refs.base_fee.invoice_hash` MUST be empty.
 - `settlement_refs.success_fee` MUST be a zero-valued canceled placeholder.
 - A successful deal receipt MUST have `settlement_state == "settled"`.
 - A failed deal receipt MUST have `settlement_state` in `{settled, canceled}` depending on whether the prepaid invoice was paid.
+
+### 5.6 Settlement Method: `"x402.eip3009.v1"` (Paid Service)
+
+The x402 method settles an EVM stablecoin transfer authorized by an EIP-3009
+`TransferWithAuthorization` signed by the payer and broadcast by a facilitator.
+It is atomic and single-leg: there is no `invoice_bundle` and no requester-held
+success fee.
+
+Quote rules for `x402.eip3009.v1`:
+
+- `settlement_terms.destination_identity` MUST be the payee EVM address as 20-byte lowercase hex **without** a `0x` prefix. Unlike the other non-escrow methods, this field is non-empty: signing the payee into the quote is what lets a verifier check the authorization's `to` field offline.
+- `settlement_terms.success_fee_msat` MUST be `0`.
+
+Receipt rules for `x402.eip3009.v1`:
+
+- `Receipt.payload.settlement_refs.method` MUST be `"x402.eip3009.v1"`.
+- `settlement_refs.destination_identity` MUST equal the quote's payee address (20-byte lowercase hex, no prefix).
+- `settlement_refs.base_fee.payment_hash` carries the EIP-3009 authorization nonce as 32-byte lowercase hex.
+- For settled receipts: `settlement_refs.bundle_hash` MUST be present and be 32-byte lowercase hex; `settlement_refs.base_fee.invoice_hash` carries the on-chain settle transaction hash as 32-byte lowercase hex; `base_fee.state` MUST be `"settled"`.
+- For canceled receipts: `settlement_refs.bundle_hash` MUST be absent, `base_fee.invoice_hash` MUST be empty, and `base_fee.state` MUST be `"canceled"`.
+- `settlement_refs.success_fee` MUST be a zero-valued canceled placeholder.
+- A successful deal receipt MUST have `settlement_state == "settled"`.
+
+`bundle_hash` is `SHA256(JCS(evidence bundle))` — a content-addressed commitment
+to the payer-signed authorization and the settlement reference. The bundle
+itself is carried out of band; the commitment is what makes it tamper-evident.
+
+**What this method proves, and what it does not.** The payer's EIP-712 signature
+over the authorization is offline-verifiable against the `from` address, so a
+verifier holding the evidence bundle can establish cryptographically that the
+payer authorized paying exactly `value` to exactly `to`. Transaction inclusion is
+**attested, not proven**: the receipt asserts a transaction hash that any chain
+view can check, but the artifact alone does not prove the transfer confirmed.
+Value equivalence between the quoted msat amount and the transferred stablecoin
+units is a provider attestation, never a cryptographic fact. x402 therefore sits
+between `lightning.prepaid.v1` (cryptographic proof of payment) and
+`stripe_mpp.v1` (fully attested).
+
+Conformance vectors: `conformance/x402_v1.json`.
 
 ## 6. Lightning Settlement Binding
 
@@ -634,9 +699,11 @@ Semantics:
 - `failed`: execution failed after admission
 - `canceled`: the interaction ended non-successfully for a non-execution reason, including requester/provider aborts and requester refusal or failure to release the success fee after result staging
 
-For Lightning-settled deals: if the deal has not been admitted by `admission_deadline` (invoices expire or are canceled before funding), the deal transitions to `deal_state: "canceled"` (NOT `"failed"`, which is reserved for post-admission execution failures).
+For Lightning escrow deals: if the deal has not been admitted by `admission_deadline` (invoices expire or are canceled before funding), the deal transitions to `deal_state: "canceled"` (NOT `"failed"`, which is reserved for post-admission execution failures).
 
-For free deals (`settlement_method: "none"`): admission is immediate — the deal starts in `accepted` status, skipping `payment_pending`. The `admission_deadline` question is only relevant for Lightning deals.
+For free deals (`settlement_method: "none"`): admission does not wait on a
+settlement precondition. The provider must still admit or reject the deal by
+`admission_deadline`.
 
 ### 8.2 Execution State
 
@@ -694,7 +761,7 @@ The core commitment chain is:
 - `InvoiceBundle` commits to `quote_hash`, `deal_hash`, and `success_fee.payment_hash`
 - `Receipt` commits to `deal_hash`, `quote_hash`, `result_hash`, and settlement references
 
-A verifier checking a full paid interaction MUST validate, in order:
+A verifier checking a full Lightning escrow interaction MUST validate, in order:
 
 1. `Descriptor`
 2. `Offer`
@@ -703,7 +770,7 @@ A verifier checking a full paid interaction MUST validate, in order:
 5. `InvoiceBundle`
 6. `Receipt`
 
-The full chain is valid only if:
+The full Lightning escrow chain is valid only if:
 
 - Every envelope verifies independently (§2.2)
 - Every hash reference resolves to the expected prior artifact
@@ -712,7 +779,8 @@ The full chain is valid only if:
 - The success payment hash is unchanged from deal to `invoice_bundle` and receipt
 - The settlement destination and fee amounts are unchanged from quote to `invoice_bundle` and receipt
 
-For free deals (`settlement_method: "none"`), the chain is:
+For all methods that do not use an `InvoiceBundle` (`none`, `stripe_mpp.v1`,
+`lightning.prepaid.v1`, and `x402.eip3009.v1`), the chain is:
 
 1. `Descriptor`
 2. `Offer`
@@ -720,7 +788,9 @@ For free deals (`settlement_method: "none"`), the chain is:
 4. `Deal`
 5. `Receipt`
 
-No `InvoiceBundle` exists in the free-deal chain.
+No `InvoiceBundle` exists in these chains. Their method-specific Quote and
+Receipt settlement references MUST still agree, including destination identity
+and fee amounts.
 
 ## 10. Expiry Ordering Constraints
 
@@ -730,13 +800,13 @@ Each expiry field constrains a specific phase of the deal lifecycle. These MUST 
 
 **`quote.expires_at`** — Quote validity window. After this time, the quote MUST NOT be used to create new deals. This is the outermost deadline for deal creation.
 
-**`deal.admission_deadline`** — The deadline by which the provider must admit the deal. For Lightning deals, this means the provider must issue the `invoice_bundle` and the requester must fund it (reach Funds_Locked) before this time. For free deals, admission is immediate. If a Lightning deal is not admitted by this deadline (invoices expire or are canceled), the deal transitions to `deal_state: "canceled"` with failure code `payment_expired` or `payment_canceled`.
+**`deal.admission_deadline`** — The deadline by which the provider must admit the deal. For Lightning escrow deals, this means the provider must issue the `invoice_bundle` and the requester must fund it (reach Funds_Locked) before this time. For free deals, admission does not wait on settlement. If a Lightning escrow deal is not admitted by this deadline (invoices expire or are canceled), the deal transitions to `deal_state: "canceled"` with failure code `payment_expired` or `payment_canceled`.
 
 **`invoice_bundle.expires_at`** — The payment window for the base-fee invoice and the success-fee hold acceptance. This constrains only the initial funding phase: the requester must pay the base_fee and the success_fee hold must be accepted within this window. This MUST be `<= deal.admission_deadline` and `<= quote.expires_at`. Critically, the success-fee hold invoice itself must survive beyond `invoice_bundle.expires_at` — it must remain valid through execution AND requester acceptance (up to `deal.acceptance_deadline`). The `invoice_bundle.expires_at` constrains when the hold must be *accepted*, not when it must be *settled*.
 
 **`deal.completion_deadline`** — The deadline by which execution MUST complete. MUST be `> deal.admission_deadline`.
 
-**`deal.acceptance_deadline`** — The deadline by which the requester MUST accept or reject the result (release or withhold the success-fee preimage). For Lightning deals, the success-fee hold invoice must remain valid until at least this deadline. MUST be `> deal.completion_deadline`.
+**`deal.acceptance_deadline`** — The deadline by which the requester MUST accept or reject the result (release or withhold the success-fee preimage). For Lightning escrow deals, the success-fee hold invoice must remain valid until at least this deadline. MUST be `> deal.completion_deadline`.
 
 ### 10.2 Cross-Artifact Ordering
 
@@ -745,7 +815,7 @@ offer.expires_at (if present)  >= quote.expires_at
 
 quote.expires_at               >= deal.admission_deadline
 
-deal.admission_deadline        >= invoice_bundle.expires_at  (Lightning deals)
+deal.admission_deadline        >= invoice_bundle.expires_at  (Lightning escrow deals)
 
 deal.admission_deadline        <  deal.completion_deadline
                                <  deal.acceptance_deadline

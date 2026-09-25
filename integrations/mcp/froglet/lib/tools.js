@@ -1,4 +1,10 @@
 import { dispatchFrogletAction } from "../../../shared/froglet-lib/tool-dispatch.js"
+import {
+  FROGLET_ACTIONS,
+  FROGLET_LIGHTNING_MODES,
+  FROGLET_PAYMENT_RAILS,
+  MARKETPLACE_ATTESTATION_PROPERTIES
+} from "../../../shared/froglet-lib/tool-contract.js"
 
 function errorResult(error) {
   return {
@@ -8,9 +14,9 @@ function errorResult(error) {
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool for a local or self-hosted Froglet node. Use exact Froglet actions instead of guessing. Start with status to verify provider/runtime reachability. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. For ONE-CALL agent-grade publishing (user says \"publish a Froglet service that does X\") use marketplace_publish — it shells out to `froglet-node publish` which builds, signs, registers, and verifies in one call; pass {name, source_inline, hosting:{kind:'tor'|'local'|'self'}}. publish_artifact still exists for the lower-level path of publishing a pre-built artifact to a local provider only. For settlement visibility use get_wallet_balance (current funds snapshot), get_spend_status (requester spend budget + headroom; paid deals are refused fail-closed until a budget is configured), reset_spend (archive committed spend to restore budget headroom), list_settlement_activity (recent deals), get_payment_intent (per-deal intent), or get_invoice_bundle (per-deal bundle). For the marketplace: marketplace_register (self-register a public provider), marketplace_search (find providers + offers), marketplace_provider (one provider's details), marketplace_receipts (one provider's receipts), marketplace_file_complaint (file an arbiter complaint), marketplace_get_complaint (read complaint status). When the user asks whether or how to install Froglet locally, call plan_install first to collect choices; once the profile is confirmed, call get_install_guide to retrieve the canonical shell commands and run them through your host agent's shell — do NOT route install commands through the Froglet runtime. After install, call plan_use_case before implementing consumer, provider, evidence, payments, batch, or GPU workflows so unsupported boundaries are named before execution. The no-install public demo lives at https://froglet.dev/llms.txt and is intentionally not exposed as an MCP action."
+  "Authoritative Froglet MCP tool for a local or self-hosted Froglet node. Use exact Froglet actions instead of guessing. Start with status to verify provider/runtime reachability. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. For agent-grade public publishing use marketplace_publish twice: the first call is non-mutating and returns the exact relay/plaintext, quota, backup, limits, and price consent; present it to the user, then repeat with its consent_hash to publish and verify. publish_artifact remains the lower-level local-only path. For settlement visibility use get_wallet_balance, get_spend_status, reset_spend, list_settlement_activity, get_payment_intent, or get_invoice_bundle. For marketplace operations use the named marketplace actions. When asked to install, call plan_install, present its immutable release and exact impact, then pass the returned release_tag and install_approval_hash unchanged to get_install_guide only after user approval. Run approved commands through the host shell. The no-install public demo lives at https://froglet.dev/llms.txt."
 
-function frogletToolInputSchema(config) {
+export function frogletToolInputSchema(config) {
   return {
     type: "object",
     required: ["action"],
@@ -18,37 +24,8 @@ function frogletToolInputSchema(config) {
       action: {
         type: "string",
         description:
-          "Exact Froglet action name. Do not invent actions. Use status first to verify local provider/runtime reachability. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact to a local provider, run_compute for open-ended compute. For one-call agent-grade publishing (HEADLINE action) use marketplace_publish — it scaffolds manifests, builds the artifact, signs, registers, and verifies in one MCP call. Settlement visibility: get_wallet_balance, get_spend_status, reset_spend, list_settlement_activity, get_payment_intent, get_invoice_bundle. Marketplace wrappers: marketplace_register, marketplace_search, marketplace_provider, marketplace_receipts, marketplace_file_complaint, marketplace_get_complaint — prefer these over invoke_service when targeting the marketplace. plan_install returns the decision tree, prerequisites, required secrets, validation checks, and post-install playbooks. get_install_guide returns canonical shell commands for a confirmed profile — execute those through your own shell, not the Froglet runtime. plan_use_case returns the post-install implementation plan for consumer/provider/evidence/payments/batch/GPU workflows.",
-        enum: [
-          "discover_services",
-          "get_service",
-          "invoke_service",
-          "list_local_services",
-          "get_local_service",
-          "publish_artifact",
-          "status",
-          "get_task",
-          "wait_task",
-          "run_compute",
-          "get_wallet_balance",
-          "get_spend_status",
-          "reset_spend",
-          "list_settlement_activity",
-          "get_payment_intent",
-          "get_invoice_bundle",
-          "plan_install",
-          "get_install_guide",
-          "plan_use_case",
-          "marketplace_register",
-          "marketplace_domain_claim",
-          "marketplace_domain_complete",
-          "marketplace_search",
-          "marketplace_provider",
-          "marketplace_receipts",
-          "marketplace_file_complaint",
-          "marketplace_get_complaint",
-          "marketplace_publish"
-        ]
+          "Exact Froglet action name. Do not invent actions. Use status first to verify local provider/runtime reachability. Use list_local_services for local listings, discover_services for remote marketplace listings, get_local_service/get_service for authoritative details, invoke_service for named execution, publish_artifact to publish a built artifact to a local provider, and run_compute for open-ended compute. Public marketplace_publish is a two-call flow: omit consent_hash to get the exact non-mutating disclosure, present it to the user, then repeat with the returned consent_hash to publish and verify. Use the named settlement, marketplace, install, and use-case planning actions for those workflows.",
+        enum: [...FROGLET_ACTIONS]
       },
       service_id: {
         type: "string",
@@ -56,6 +33,10 @@ function frogletToolInputSchema(config) {
           "Service identifier. Required for publish_artifact, get_local_service, get_service, and invoke_service."
       },
       offer_id: { type: "string" },
+      project_id: {
+        type: "string",
+        description: "Optional project identity preserved by publish_artifact."
+      },
       summary: {
         type: "string",
         description: "Descriptive metadata for publish_artifact."
@@ -91,14 +72,49 @@ function frogletToolInputSchema(config) {
         description: "Contract version for the execution payload."
       },
       mounts: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["handle", "kind"],
+          additionalProperties: false,
+          properties: {
+            handle: { type: "string", pattern: "^[a-z0-9_]{1,64}$" },
+            kind: {
+              type: "string",
+              enum: ["postgres", "sqlite", "object_store", "s3", "redis"],
+              description: "Use object_store for new authoring; s3 is a compatibility alias normalized before publication."
+            },
+            read_only: { type: "boolean", default: true }
+          }
+        },
         description:
-          "Optional mount handles or bindings required by the workload. Keep this as the provider-defined mount payload."
+          "Optional workload mounts. For publication, provide only handle, kind, and read_only (default true); provider-owned binding values are rejected. New object-store authoring uses kind=object_store."
       },
       capabilities: {
         type: "array",
         items: { type: "string" },
         description:
-          "Optional provider-required capability strings for publish_artifact, for example compute.gpu. GPU capabilities require a GPU-enabled provider."
+          "Optional provider-required capability strings for publish_artifact or marketplace_publish, for example compute.gpu. GPU capabilities require a GPU-enabled provider."
+      },
+      limits: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          max_input_bytes: { type: "integer", minimum: 1 },
+          max_runtime_ms: { type: "integer", minimum: 1 },
+          max_memory_bytes: { type: "integer", minimum: 1 },
+          max_output_bytes: { type: "integer", minimum: 1 },
+          fuel_limit: { type: "integer", minimum: 0 }
+        },
+        description: "Optional exact execution limits for marketplace_publish."
+      },
+      verification: {
+        type: "object",
+        required: ["input"],
+        additionalProperties: false,
+        properties: { input: {}, expected_output: {} },
+        description:
+          "Provider-private local-canary fixture for marketplace_publish; required for relay, Tor, and self-hosted publication, optional for local-only publication, and never signed or listed publicly."
       },
       wasm_module_hex: {
         type: "string",
@@ -110,6 +126,10 @@ function frogletToolInputSchema(config) {
         description:
           "Optional inline source for a compute request. Use this when you want to run explicit source text, typically for runtime=python package_kind=inline_source."
       },
+      source_kind: {
+        type: "string",
+        description: "Optional authoring source classification preserved by publish_artifact."
+      },
       input: {},
       result_json: {
         description:
@@ -118,6 +138,18 @@ function frogletToolInputSchema(config) {
       output_schema: {},
       input_schema: {},
       price_sats: { type: "integer", minimum: 0 },
+      base_fee_msat: { type: "integer", minimum: 0 },
+      success_fee_msat: { type: "integer", minimum: 0 },
+      settlement_method: {
+        type: "string",
+        enum: ["none", "lightning", "stripe"],
+        description: "Explicit settlement rail for publish_artifact. Paid publications must set this."
+      },
+      price_currency: {
+        type: "string",
+        enum: ["sat", "usd"],
+        description: "Explicit price currency for publish_artifact."
+      },
       publication_state: {
         type: "string",
         enum: ["active", "hidden"]
@@ -161,27 +193,27 @@ function frogletToolInputSchema(config) {
       },
       payment_rail: {
         type: "string",
-        enum: ["none", "lightning-mock", "lightning-lnd-rest", "lightning-phoenixd", "stripe-test", "stripe-live", "x402"],
+        enum: [...FROGLET_PAYMENT_RAILS],
         description:
           "Explicit payment rail for plan_install/get_install_guide. Required before commands are generated; use none for the first free demo service."
       },
       lightning_mode: {
         type: "string",
-        enum: ["mock", "lnd_rest", "phoenixd"],
+        enum: [...FROGLET_LIGHTNING_MODES],
         description:
           "Lightning mode for plan_install/get_install_guide. mock requires no wallet; lnd_rest requires an LND REST URL and macaroon path; phoenixd requires a running phoenixd daemon URL and its http-password (prepaid rail, no channel management)."
       },
       footprint: {
         type: "string",
-        enum: ["docker", "binary", "source"],
+        enum: ["auto", "native", "docker", "binary", "source"],
         description:
-          "Install footprint for plan_install/get_install_guide. docker is the full local provider+runtime stack; binary installs only froglet-node; source builds from the cloned repo."
+          "Install footprint for plan_install/get_install_guide. auto is the native-first no-clone default with a digest-pinned Docker fallback; native requires launchd/user-systemd; docker explicitly selects the immutable-image fallback; binary installs only froglet-node; source builds from the cloned repo."
       },
       role: {
         type: "string",
         enum: ["consumer", "provider", "both"],
         description:
-          "User intent for plan_install/get_install_guide. Docker defaults to both provider and runtime; split roles are a direct froglet-node concern."
+          "User intent for plan_install/get_install_guide. No-clone bootstrap footprints start the dual-role node; split roles are a direct froglet-node concern."
       },
       network_mode: {
         type: "string",
@@ -198,6 +230,18 @@ function frogletToolInputSchema(config) {
         type: "string",
         description:
           "The user's first intended Froglet use case after install, used by plan_install to choose a post-install playbook."
+      },
+      release_tag: {
+        type: "string",
+        pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$",
+        description:
+          "Immutable GitHub release tag returned by plan_install. Omit on the first plan to resolve the latest immutable release; pass the exact returned tag to get_install_guide."
+      },
+      install_approval_hash: {
+        type: "string",
+        pattern: "^[0-9a-f]{64}$",
+        description:
+          "Exact approval hash returned by plan_install after it binds the immutable release/manifest/bootstrap, profile, persistent paths, process-manager impact, and command preview. Pass unchanged to get_install_guide only after user approval."
       },
       workload_profile: {
         type: "string",
@@ -254,21 +298,7 @@ function frogletToolInputSchema(config) {
         minimum: 0,
         description: "Upper price bound in sats for marketplace_search results."
       },
-      attested: {
-        type: "boolean",
-        description:
-          "marketplace_search filter: only providers holding at least one valid identity attestation (docs/IDENTITY_ATTESTATION.md). Attestations are optional; unattested providers are still first-class."
-      },
-      attestation_kind: {
-        type: "string",
-        enum: ["dns", "oauth"],
-        description: "marketplace_search filter: require an attestation of this kind."
-      },
-      attestation_dns_zone: {
-        type: "string",
-        description:
-          "marketplace_search filter: require a DNS attestation for this zone (e.g. example.com)."
-      },
+      ...MARKETPLACE_ATTESTATION_PROPERTIES,
       status: {
         type: "string",
         description: "Status filter for marketplace_receipts (e.g. \"succeeded\")."
@@ -303,9 +333,9 @@ function frogletToolInputSchema(config) {
       hosting: {
         type: "object",
         description:
-          "Hosting backend for marketplace_publish. kind ∈ {local|tor|self}. local = private dev, tor = auto hidden service (requires daemon FROGLET_NETWORK_MODE=tor), self = user-supplied URL.",
+          "Hosting backend for marketplace_publish. kind ∈ {local|relay|tor|self}. relay = default outbound WSS reachability with relay TLS/plaintext disclosure; local = private dev; tor = hidden service; self = user-supplied URL.",
         properties: {
-          kind: { type: "string", enum: ["local", "tor", "self"] },
+          kind: { type: "string", enum: ["local", "relay", "tor", "self"] },
           url: { type: "string", description: "Required when kind = 'self'." }
         }
       },
@@ -321,6 +351,12 @@ function frogletToolInputSchema(config) {
         type: "string",
         description:
           "Marketplace URL for marketplace_publish, marketplace_register, and domain_claim (defaults to https://marketplace.froglet.dev), and the URL plan_install/get_install_guide export before starting the local stack."
+      },
+      consent_hash: {
+        type: "string",
+        pattern: "^[0-9a-f]{64}$",
+        description:
+          "Approval token returned by the prior marketplace_publish plan. Omit on the first call; Froglet returns the exact relay/plaintext, quota, identity-backup, limits, and price disclosure without opening a tunnel. After the user approves it, repeat with this hash."
       }
     }
   }

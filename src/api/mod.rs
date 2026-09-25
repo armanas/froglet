@@ -1,13 +1,41 @@
+mod offer_terms;
+use offer_terms::*;
+
 use axum::{
     Json, Router,
     body::Bytes,
     error_handling::HandleErrorLayer,
-    extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use froglet_protocol::managed_deployment::{
+    DestroyConfirmationV1, ManagedDeploymentApprovalScopeV1,
+};
+use froglet_protocol::managed_publication::{
+    MANAGED_PUBLICATION_CAPSULE_SCHEMA_V1, MANAGED_PUBLICATION_PACKAGE_REQUEST_SCHEMA_V1,
+    MANAGED_PUBLICATION_PLAN_SCHEMA_V1, ManagedPublicationBundleManifestV1,
+    ManagedPublicationCapsuleV1, ManagedPublicationOperationIdentityV1,
+    ManagedPublicationPackageRequestV1, ManagedPublicationPackageV1, ManagedPublicationPhaseV1,
+    ManagedPublicationPlanPayloadV1, ManagedPublicationPlanV1, ManagedPublicationRegistrationV1,
+    ManagedPublicationRemoteCanaryV1, managed_publication_operation_id, validate_deploy_result,
+    validate_result_for_scope,
+};
+use froglet_protocol::publication::{
+    LocalVerificationEvidence, PUBLICATION_BUILD_EVIDENCE_SCHEMA_V1,
+    PUBLICATION_CANARY_RESULT_SCHEMA_V1, PUBLICATION_PRECONDITION_HEADER,
+    PUBLICATION_REVISION_SCHEMA_V1, PublicationBuildEvidence, PublicationCanaryRequest,
+    PublicationCanaryResultPayload, PublicationCsvSchema, PublicationCurrency,
+    PublicationDataFormat, PublicationDataSource, PublicationIdentityBackup,
+    PublicationIdentityBackupState, PublicationMount, PublicationPrecondition,
+    PublicationRevisionPayload, PublicationRevisionPrice, PublicationRevisionService,
+    PublicationSettlement, ResolvedPublicationLimits, SignedPublicationCanaryResult,
+    SignedPublicationRevision, sign_publication_canary_result, sign_publication_revision,
+};
+use froglet_publish_engine::managed_oci::PlannedManagedOciLayoutV1;
 use futures::{StreamExt, stream};
 use rand::RngCore;
 use serde::de::DeserializeOwned;
@@ -17,17 +45,22 @@ use std::{
     collections::{BTreeMap, HashSet},
     error::Error as StdError,
     fs,
-    io::Write,
+    io::{Read, Write},
     net::{IpAddr, SocketAddr},
     path::{Path as FsPath, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
 use tower::{BoxError, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
 use crate::{
+    builtins::{
+        DATA_QUERY_CSV_CONTRACT_V1, DATA_QUERY_JSON_CONTRACT_V1, DATA_QUERY_SQLITE_CONTRACT_V1,
+        DATA_QUERY_STARTER_V1, DataQueryHandler, DataQuerySourceKind, data_query_csv_output_schema,
+        data_query_input_schema, data_query_output_schema,
+    },
     canonical_json,
     confidential::{
         self, AttestationBundle, AttestationProvider, ConfidentialExecutionContext,
@@ -42,11 +75,11 @@ use crate::{
     db,
     deals::{self, NewDeal},
     execution::{
-        CONTRACT_BUILTIN_EVENTS_QUERY_V1, CONTRACT_CONTAINER_JSON_V1,
+        BuiltinServiceHandler, CONTRACT_BUILTIN_EVENTS_QUERY_V1, CONTRACT_CONTAINER_JSON_V1,
         CONTRACT_PYTHON_HANDLER_JSON_V1, CONTRACT_PYTHON_SCRIPT_JSON_V1, ExecutionEntrypointKind,
         ExecutionMount, ExecutionPackageKind, ExecutionRuntime, ExecutionSecurityMode,
         ExecutionWorkload, default_contract_version_for, default_entrypoint_for,
-        default_entrypoint_kind_for, validate_execution_mount_descriptor,
+        default_entrypoint_kind_for,
     },
     jobs::{self, JobSpec, NewJob},
     nostr,
@@ -92,6 +125,10 @@ pub struct FeedQuery {
 #[derive(Debug, Serialize)]
 pub struct FeedResponse {
     pub artifacts: Vec<db::LedgerArtifact>,
+    /// Complete deterministic snapshot of exact Offer hashes that are active
+    /// at response time. This higher-layer projection lets marketplace health
+    /// leases follow pause/unpublish without inventing Kernel tombstones.
+    pub active_offer_hashes: Vec<String>,
     pub cursor_type: String,
     pub cursor_semantics: String,
     pub applied_cursor: i64,
@@ -102,6 +139,8 @@ pub struct FeedResponse {
 }
 
 const MAX_BODY_BYTES: usize = 1_048_576;
+const MAX_PROVIDER_PUBLISH_BODY_BYTES: usize = 24 * 1024 * 1024;
+const MAX_MANAGED_CAPSULE_BYTES: usize = 96 * 1024;
 const MAX_UPSTREAM_JSON_BYTES: usize = 1_048_576;
 const MAX_EVENT_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_WASM_HEX_BYTES: usize = 512 * 1024;
@@ -110,6 +149,11 @@ const MAX_OCI_WASM_MODULE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 const BLOCKING_EXECUTION_TIMEOUT_GRACE_SECS: u64 = 1;
 const DEFAULT_ROUTE_TIMEOUT_SECS: u64 = 10;
+const DEAL_MATERIALIZATION_ROUTE_TIMEOUT_SECS: u64 = 90;
+const MAX_PUBLICATION_VERIFICATION_RUNTIME_MS: u64 = 300_000;
+const MAX_NATIVE_DATA_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+const PROVIDER_CONTROL_ROUTE_TIMEOUT_SECS: u64 = 315;
+const RELAY_ACTIVATION_TIMEOUT_SECS: u64 = 60;
 const RUNTIME_WAIT_ROUTE_TIMEOUT_SECS: u64 = 65;
 const DEFAULT_EVENTS_QUERY_ROUTE_CONCURRENCY_LIMIT: usize = 16;
 const HOSTED_TRIAL_ORIGIN_SECRET_HEADER: &str = "x-froglet-hosted-trial-secret";
@@ -121,11 +165,31 @@ const STRIPE_WEBHOOK_TOLERANCE_SECS: i64 = 300;
 pub(crate) const EXECUTE_COMPUTE_GENERIC_OFFER_ID: &str = "execute.compute.generic";
 pub(crate) type ApiFailure = (StatusCode, serde_json::Value);
 
-fn private_runtime_tempdir(prefix: &str) -> Result<std::path::PathBuf, String> {
+struct PrivateRuntimeTempdir {
+    path: std::path::PathBuf,
+}
+
+impl PrivateRuntimeTempdir {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateRuntimeTempdir {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %self.path.display(), %error, "failed to remove private runtime directory");
+        }
+    }
+}
+
+fn private_runtime_tempdir(prefix: &str) -> Result<PrivateRuntimeTempdir, String> {
     let mut rng_bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut rng_bytes);
     let tempdir = std::env::temp_dir().join(format!("{prefix}-{}", hex::encode(rng_bytes)));
-    fs::create_dir_all(&tempdir)
+    fs::create_dir(&tempdir)
         .map_err(|error| format!("failed to create tempdir {}: {error}", tempdir.display()))?;
     #[cfg(unix)]
     {
@@ -138,7 +202,7 @@ fn private_runtime_tempdir(prefix: &str) -> Result<std::path::PathBuf, String> {
             )
         })?;
     }
-    Ok(tempdir)
+    Ok(PrivateRuntimeTempdir { path: tempdir })
 }
 
 #[cfg(test)]
@@ -211,30 +275,341 @@ fn events_query_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     http_events::query_routes(state)
 }
 
+/// Exact durable publication scope attached only to requests that arrived
+/// through the relay loopback path. The relay overwrites the marker header;
+/// direct local and Tor requests do not carry this scope.
+#[derive(Clone)]
+pub struct RelayGrantScope {
+    grants: Arc<Vec<db::PublicationTransportGrantRecord>>,
+    _linearization_guard: Arc<tokio::sync::OwnedRwLockReadGuard<()>>,
+}
+
+impl RelayGrantScope {
+    fn permits_service(&self, service_id: &str) -> bool {
+        self.grants
+            .iter()
+            .any(|grant| grant.service_id == service_id)
+    }
+
+    fn permits_offer_id(&self, offer_id: &str) -> bool {
+        self.grants.iter().any(|grant| grant.offer_id == offer_id)
+    }
+
+    fn permits_offer_hash(&self, offer_hash: &str) -> bool {
+        self.grants
+            .iter()
+            .any(|grant| grant.offer_hash == offer_hash)
+    }
+
+    fn permits_revision(&self, revision_hash: &str) -> bool {
+        self.grants
+            .iter()
+            .any(|grant| grant.revision_hash == revision_hash)
+    }
+}
+
+async fn current_relay_grant_scope(
+    state: &AppState,
+    linearization_guard: Arc<tokio::sync::OwnedRwLockReadGuard<()>>,
+) -> Result<RelayGrantScope, String> {
+    let expected_public_url = state
+        .transport_status
+        .lock()
+        .await
+        .relay_url
+        .clone()
+        .ok_or("relay request arrived without a planned public URL")?;
+    let expected_control_url = state
+        .config
+        .relay
+        .url
+        .as_deref()
+        .ok_or("relay request arrived without a configured control URL")?;
+    let grants = state
+        .db
+        .with_read_conn(|conn| db::list_publication_transport_grants(conn, "relay"))
+        .await?
+        .into_iter()
+        .filter(|grant| {
+            grant.public_url == expected_public_url
+                && grant.relay_control_url == expected_control_url
+        })
+        .collect::<Vec<_>>();
+    Ok(RelayGrantScope {
+        grants: Arc::new(grants),
+        _linearization_guard: linearization_guard,
+    })
+}
+
+fn relay_marker(headers: &HeaderMap) -> Result<bool, ()> {
+    match headers.get("x-froglet-relay") {
+        None => Ok(false),
+        Some(value) if value.as_bytes() == b"v1" => Ok(true),
+        Some(_) => Err(()),
+    }
+}
+
+fn relay_path_is_common(path: &str) -> bool {
+    matches!(
+        path,
+        "/health"
+            | "/v1/node/capabilities"
+            | "/v1/node/identity"
+            | "/v1/openapi.yaml"
+            | "/v1/receipts/verify"
+            | "/v1/invoice-bundles/verify"
+    )
+}
+
+fn relay_path_is_catalog(path: &str) -> bool {
+    path == "/v1/provider/descriptor"
+        || path == "/v1/provider/offers"
+        || path == "/v1/provider/services"
+        || path.starts_with("/v1/provider/services/")
+        || path == "/v1/feed"
+        || path.starts_with("/v1/artifacts/")
+}
+
+async fn relay_scope_permits_deal(
+    state: &AppState,
+    scope: &RelayGrantScope,
+    deal_id: &str,
+) -> Result<bool, String> {
+    let deal_id = deal_id.to_string();
+    Ok(state
+        .db
+        .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
+        .await?
+        .is_some_and(|deal| scope.permits_offer_hash(&deal.quote.payload.offer_hash)))
+}
+
+/// Default-deny relay-origin middleware. A connection-level grant is not
+/// enough: every request is additionally constrained to the exact services,
+/// revisions, offers, and resulting deals in the durable grant set.
+async fn relay_ingress_guard(
+    State(state): State<Arc<AppState>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    match relay_marker(request.headers()) {
+        Ok(false) => return next.run(request).await,
+        Err(()) => {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "invalid relay ingress marker" }),
+            )
+            .into_response();
+        }
+        Ok(true) => {}
+    }
+
+    let relay_publication_gate = { state.transport_status.lock().await.relay_publication_gate() };
+    let linearization_guard = Arc::new(relay_publication_gate.read_owned().await);
+    let scope = match current_relay_grant_scope(state.as_ref(), linearization_guard).await {
+        Ok(scope) => scope,
+        Err(error) => {
+            tracing::error!(details = %error, "relay ingress grant resolution failed closed");
+            return error_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({ "error": "relay publication scope is unavailable" }),
+            )
+            .into_response();
+        }
+    };
+    if scope.grants.is_empty() {
+        return error_json(StatusCode::NOT_FOUND, json!({ "error": "not found" })).into_response();
+    }
+    let path = request.uri().path();
+    let permitted = if relay_path_is_common(path)
+        || relay_path_is_catalog(path)
+        || matches!(path, "/v1/provider/quotes" | "/v1/provider/deals")
+    {
+        true
+    } else if let Some(revision_hash) = path
+        .strip_prefix("/v1/publications/")
+        .and_then(|tail| tail.strip_suffix("/canary"))
+    {
+        scope.permits_revision(revision_hash)
+    } else if let Some(tail) = path.strip_prefix("/v1/provider/deals/") {
+        let deal_id = tail.split('/').next().unwrap_or_default();
+        !deal_id.is_empty()
+            && relay_scope_permits_deal(state.as_ref(), &scope, deal_id)
+                .await
+                .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if !permitted {
+        return error_json(StatusCode::NOT_FOUND, json!({ "error": "not found" })).into_response();
+    }
+    request.extensions_mut().insert(scope);
+    next.run(request).await
+}
+
 fn provider_control_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/provider/artifacts/publish", post(publish_artifact))
+        .route(
+            "/v1/provider/artifacts/publish",
+            post(publish_artifact).layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/artifacts/preflight",
+            post(preflight_publication)
+                .layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/transports/relay/activate",
+            post(activate_relay_transport),
+        )
+        .route(
+            "/v1/provider/transports/relay/deactivate",
+            post(deactivate_relay_transport),
+        )
+        .route(
+            "/v1/provider/managed-publications/capsule",
+            post(build_managed_publication_capsule),
+        )
+        .route(
+            "/v1/provider/managed-publications/package-request",
+            post(managed_publication_package_request)
+                .layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/managed-publications/plan",
+            post(plan_managed_publication)
+                .layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/managed-publications/prepare",
+            post(prepare_managed_publication),
+        )
+        .route(
+            "/v1/provider/managed-publications/upload",
+            post(upload_managed_publication_image)
+                .layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/managed-publications/import",
+            post(import_managed_publication)
+                .layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/managed-publications/activate",
+            post(activate_managed_publication)
+                .layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
+        )
+        .route(
+            "/v1/provider/managed-publications/operations/:operation_id",
+            get(get_managed_publication_operation),
+        )
+        .route(
+            "/v1/provider/managed-publications/operations/:operation_id/reconcile",
+            post(reconcile_managed_publication),
+        )
+        .route(
+            "/v1/provider/managed-publications/operations/:operation_id/compensate",
+            post(compensate_managed_publication_operation),
+        )
+        .route(
+            "/v1/provider/managed-publications/operations/:operation_id/complete",
+            post(complete_managed_publication),
+        )
+        .route(
+            "/v1/provider/managed-publications/operations/:operation_id/registering",
+            post(begin_managed_publication_registration),
+        )
+        .route("/v1/provider/publications", get(list_provider_publications))
+        .route(
+            "/v1/provider/publications/:service_id",
+            get(get_provider_publication),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/revisions",
+            get(list_provider_publication_revisions),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/revisions/:revision_hash",
+            get(get_provider_publication_revision),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/logs",
+            get(list_provider_publication_operations),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/pause",
+            post(pause_provider_publication),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/revisions/:revision_hash/pause",
+            post(pause_exact_provider_publication),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/resume",
+            post(resume_provider_publication),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/unpublish",
+            post(unpublish_provider_publication),
+        )
+        .route(
+            "/v1/provider/publications/:service_id/rollback/:revision_hash",
+            post(rollback_provider_publication),
+        )
         .route("/v1/provider/domain-claims/sign", post(sign_domain_claim))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_provider_control_auth_middleware,
         ))
+        .route_layer(ConcurrencyLimitLayer::new(4))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_timeout_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(
+                    PROVIDER_CONTROL_ROUTE_TIMEOUT_SECS,
+                ))),
+        )
 }
 
-fn provider_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
-    Router::new()
+fn provider_routes() -> Router<Arc<AppState>> {
+    let default_routes = Router::new()
         .merge(http_catalog::routes())
         .merge(http_confidential::routes())
         .merge(http_deals::provider_routes())
         .merge(http_events::provider_routes())
         .merge(http_settlement::provider_routes())
-        .merge(provider_control_routes(state))
         .route_layer(ConcurrencyLimitLayer::new(16))
         .layer(
             ServiceBuilder::new()
                 .layer(HandleErrorLayer::new(handle_timeout_error))
                 .layer(TimeoutLayer::new(Duration::from_secs(
                     DEFAULT_ROUTE_TIMEOUT_SECS,
+                ))),
+        );
+    let deal_materialization_routes = http_deals::provider_materialization_routes()
+        .route_layer(ConcurrencyLimitLayer::new(16))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_timeout_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(
+                    DEAL_MATERIALIZATION_ROUTE_TIMEOUT_SECS,
+                ))),
+        );
+    default_routes.merge(deal_materialization_routes)
+}
+
+fn publication_canary_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/v1/publications/:revision_hash/canary",
+            post(publication_canary),
+        )
+        .route_layer(ConcurrencyLimitLayer::new(2))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_timeout_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(
+                    PROVIDER_CONTROL_ROUTE_TIMEOUT_SECS,
                 ))),
         )
 }
@@ -301,7 +676,9 @@ pub fn public_router(state: Arc<AppState>) -> Router {
     // tower_governor::GovernorLayer for per-caller throttling.
     let base = common_routes()
         .merge(events_query_routes(&state))
-        .merge(provider_routes(&state))
+        .merge(provider_routes())
+        .merge(publication_canary_routes())
+        .merge(provider_control_routes(&state))
         .merge(publish_routes());
 
     // Hosted-trial routes are present on the public listener only when the
@@ -314,6 +691,10 @@ pub fn public_router(state: Arc<AppState>) -> Router {
         base
     };
     router
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            relay_ingress_guard,
+        ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -338,7 +719,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     common_routes()
         .merge(events_query_routes(&state))
         .merge(runtime_routes(&state))
-        .merge(provider_routes(&state))
+        .merge(provider_routes())
+        .merge(publication_canary_routes())
+        .merge(provider_control_routes(&state))
         .merge(publish_routes())
         .merge(execute_wasm_routes(&state))
         .merge(jobs_routes(&state))
@@ -365,7 +748,13 @@ pub async fn openapi_spec() -> impl IntoResponse {
 pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let transport_status = state.transport_status.lock().await.clone();
     let settlement_descriptor = settlement::driver_descriptor(state.as_ref());
-    let faas_descriptor = jobs::FaaSDescriptor::standard();
+    let container_runtime_available = crate::oci_worker::ConfiguredOciWorker::from_env()
+        .map(|worker| worker.is_enabled())
+        .unwrap_or(false);
+    let faas_descriptor = jobs::FaaSDescriptor::available(
+        crate::python_sandbox::runtime_available(),
+        container_runtime_available,
+    );
 
     let capabilities = NodeCapabilities {
         api_version: "v1".to_string(),
@@ -389,6 +778,7 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
             },
             relay: RelayInfo {
                 enabled: transport_status.relay_enabled,
+                control_url: state.config.relay.url.clone(),
                 url: transport_status.relay_url,
                 status: transport_status.relay_status,
             },
@@ -628,19 +1018,6 @@ fn format_reqwest_error(error: &reqwest::Error) -> String {
     parts.join(": ")
 }
 
-async fn remote_json_request<T, B>(
-    state: &AppState,
-    method: reqwest::Method,
-    url: String,
-    body: Option<&B>,
-) -> Result<T, ApiFailure>
-where
-    T: DeserializeOwned,
-    B: Serialize + ?Sized,
-{
-    remote_json_request_with_client_error_passthrough(state, method, url, body, false).await
-}
-
 async fn remote_json_request_with_pinned_addresses<T, B>(
     state: &AppState,
     method: reqwest::Method,
@@ -653,20 +1030,6 @@ where
     B: Serialize + ?Sized,
 {
     remote_json_request_inner(state, method, url, body, false, pinned_addresses).await
-}
-
-async fn remote_json_request_with_client_error_passthrough<T, B>(
-    state: &AppState,
-    method: reqwest::Method,
-    url: String,
-    body: Option<&B>,
-    preserve_client_errors: bool,
-) -> Result<T, ApiFailure>
-where
-    T: DeserializeOwned,
-    B: Serialize + ?Sized,
-{
-    remote_json_request_inner(state, method, url, body, preserve_client_errors, &[]).await
 }
 
 async fn remote_json_request_with_client_error_passthrough_and_pinned_addresses<T, B>(
@@ -707,7 +1070,7 @@ where
     let client = if pinned_addresses.is_empty() {
         state.http_client.clone()
     } else {
-        pinned_json_client(&url, pinned_addresses).map_err(|error| {
+        pinned_json_client(state, &url, pinned_addresses).map_err(|error| {
             (
                 StatusCode::BAD_GATEWAY,
                 json!({ "error": "failed to pin upstream provider address", "details": error, "url": url }),
@@ -790,7 +1153,11 @@ async fn configured_marketplace_endpoint_for_egress(
     .map(Some)
 }
 
-fn pinned_json_client(url: &str, pinned_addresses: &[IpAddr]) -> Result<reqwest::Client, String> {
+fn pinned_json_client(
+    state: &AppState,
+    url: &str,
+    pinned_addresses: &[IpAddr],
+) -> Result<reqwest::Client, String> {
     let parsed = reqwest::Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
     let host = parsed
         .host_str()
@@ -803,8 +1170,7 @@ fn pinned_json_client(url: &str, pinned_addresses: &[IpAddr]) -> Result<reqwest:
         .copied()
         .map(|address| SocketAddr::new(address, port))
         .collect();
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    crate::tls::configured_reqwest_client_builder(state.config.http_ca_cert_path.as_deref())?
         .resolve_to_addrs(host, &socket_addresses)
         .build()
         .map_err(|error| format!("failed to build pinned client: {error}"))
@@ -828,17 +1194,23 @@ fn provider_bad_gateway(message: &str) -> ApiFailure {
     (StatusCode::BAD_GATEWAY, json!({ "error": message }))
 }
 
+fn verify_remote_typed_artifact<T: Serialize>(
+    artifact: &SignedArtifact<T>,
+    expected_kind: &str,
+) -> Result<(), String> {
+    let document = serde_json::to_value(artifact)
+        .map_err(|error| format!("failed to encode remote artifact: {error}"))?;
+    protocol::verify_typed_document(&document, expected_kind)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn verify_provider_descriptor_artifact(
     descriptor: &SignedArtifact<DescriptorPayload>,
 ) -> Result<(), ApiFailure> {
-    if !protocol::verify_artifact(descriptor) {
-        return Err(provider_bad_gateway(
-            "provider descriptor signature verification failed",
-        ));
-    }
-    if let Err(error) = protocol::validate_descriptor_artifact(descriptor) {
+    if let Err(error) = verify_remote_typed_artifact(descriptor, ARTIFACT_KIND_DESCRIPTOR) {
         return Err(provider_bad_gateway(&format!(
-            "provider descriptor semantic validation failed: {error}"
+            "provider descriptor validation failed: {error}"
         )));
     }
     Ok(())
@@ -847,27 +1219,12 @@ fn verify_provider_descriptor_artifact(
 fn verify_marketplace_quote_artifact(
     quote: SignedArtifact<QuotePayload>,
 ) -> Result<SignedArtifact<QuotePayload>, String> {
-    if quote.artifact_type != ARTIFACT_KIND_QUOTE {
-        return Err(format!(
-            "marketplace quote artifact_type must be {ARTIFACT_KIND_QUOTE}"
-        ));
-    }
-    if !protocol::verify_artifact(&quote) {
-        return Err("marketplace quote signature verification failed".to_string());
-    }
-    if quote.signer != quote.payload.provider_id {
-        return Err("marketplace quote signer does not match provider_id".to_string());
-    }
-    if quote.payload.provider_id.trim().is_empty() {
-        return Err("marketplace quote provider_id must be non-empty".to_string());
-    }
-    if quote.payload.workload_hash.trim().is_empty() {
-        return Err("marketplace quote workload_hash must be non-empty".to_string());
-    }
+    verify_remote_typed_artifact(&quote, ARTIFACT_KIND_QUOTE)
+        .map_err(|error| format!("marketplace quote validation failed: {error}"))?;
     Ok(quote)
 }
 
-fn verify_provider_receipt_artifact(
+pub(crate) fn verify_provider_receipt_artifact(
     receipt: &SignedArtifact<ReceiptPayload>,
     quote: &SignedArtifact<QuotePayload>,
     deal: &SignedArtifact<DealPayload>,
@@ -876,14 +1233,16 @@ fn verify_provider_receipt_artifact(
     result: Option<&Value>,
     result_hash: Option<&str>,
 ) -> Result<(), ApiFailure> {
-    if !protocol::verify_artifact(receipt) {
-        return Err(provider_bad_gateway(
-            "provider receipt signature verification failed",
-        ));
-    }
-    if let Err(error) = protocol::validate_receipt_artifact(receipt) {
+    let report = protocol::validate_quote_deal_receipt(quote, deal, receipt, None);
+    if !report.valid {
+        let details = report
+            .issues
+            .iter()
+            .map(|issue| format!("{}: {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(provider_bad_gateway(&format!(
-            "provider receipt semantic validation failed: {error}"
+            "provider Artifact Chain validation failed: {details}"
         )));
     }
     if receipt.payload.provider_id != expected_provider_id {
@@ -896,37 +1255,157 @@ fn verify_provider_receipt_artifact(
             "provider receipt requester_id does not match local runtime identity",
         ));
     }
-    if receipt.payload.quote_hash != quote.hash {
-        return Err(provider_bad_gateway(
-            "provider receipt quote_hash does not match local requester quote",
-        ));
-    }
-    if receipt.payload.deal_hash != deal.hash {
-        return Err(provider_bad_gateway(
-            "provider receipt deal_hash does not match local requester deal",
-        ));
-    }
-    if receipt.payload.settlement_refs.method != quote.payload.settlement_terms.method {
-        return Err(provider_bad_gateway(
-            "provider receipt settlement method does not match local requester quote",
-        ));
-    }
-    if let Some(result_hash) = result_hash
-        && receipt.payload.result_hash.as_deref() != Some(result_hash)
-    {
-        return Err(provider_bad_gateway(
-            "provider receipt result_hash does not match provider result_hash",
-        ));
-    }
-    if let Some(result) = result {
-        let canonical_hash = canonical_result_hash(result);
-        if receipt.payload.result_hash.as_deref() != Some(canonical_hash.as_str()) {
+    match (receipt.payload.result_hash.as_deref(), result, result_hash) {
+        (None, None, None) => {}
+        (Some(receipt_hash), Some(result), Some(response_hash)) => {
+            let canonical_hash = canonical_result_hash(result);
+            if receipt_hash != response_hash || receipt_hash != canonical_hash {
+                return Err(provider_bad_gateway(
+                    "provider receipt, result_hash, and result payload do not match",
+                ));
+            }
+        }
+        _ => {
             return Err(provider_bad_gateway(
-                "provider receipt result_hash does not match provider result",
+                "provider receipt result fields do not match the provider response",
             ));
         }
     }
     Ok(())
+}
+
+fn verify_provider_deal_artifact_chain(
+    remote: &deals::DealRecord,
+    expected_quote: &SignedArtifact<QuotePayload>,
+    expected_deal: &SignedArtifact<DealPayload>,
+) -> Result<(), ApiFailure> {
+    if remote.quote.hash != expected_quote.hash || remote.deal.hash != expected_deal.hash {
+        return Err(provider_bad_gateway(
+            "provider deal does not match local requester artifacts",
+        ));
+    }
+    let report = protocol::validate_quote_deal(&remote.quote, &remote.deal, None);
+    if !report.valid {
+        let details = report
+            .issues
+            .iter()
+            .map(|issue| format!("{}: {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(provider_bad_gateway(&format!(
+            "provider Quote-to-Deal chain validation failed: {details}"
+        )));
+    }
+    Ok(())
+}
+
+fn status_bound_to_receipt(receipt: &SignedArtifact<ReceiptPayload>) -> &'static str {
+    match receipt.payload.deal_state.as_str() {
+        "succeeded" => deals::DEAL_STATUS_SUCCEEDED,
+        "rejected" => deals::DEAL_STATUS_REJECTED,
+        "failed" | "canceled" => deals::DEAL_STATUS_FAILED,
+        _ => unreachable!("canonical Receipt validation rejects unknown deal_state"),
+    }
+}
+
+enum ProviderDealProjection {
+    Unchanged,
+    Provisional,
+    SignedTerminal,
+}
+
+fn unsigned_provider_transition_is_forward(from: &str, to: &str) -> bool {
+    match from {
+        deals::DEAL_STATUS_PAYMENT_PENDING => matches!(
+            to,
+            deals::DEAL_STATUS_PAYMENT_PENDING
+                | deals::DEAL_STATUS_ACCEPTED
+                | deals::DEAL_STATUS_RUNNING
+                | deals::DEAL_STATUS_RESULT_READY
+        ),
+        deals::DEAL_STATUS_ACCEPTED => matches!(
+            to,
+            deals::DEAL_STATUS_ACCEPTED
+                | deals::DEAL_STATUS_RUNNING
+                | deals::DEAL_STATUS_RESULT_READY
+        ),
+        deals::DEAL_STATUS_RUNNING => matches!(
+            to,
+            deals::DEAL_STATUS_RUNNING | deals::DEAL_STATUS_RESULT_READY
+        ),
+        deals::DEAL_STATUS_RESULT_READY => to == deals::DEAL_STATUS_RESULT_READY,
+        _ => false,
+    }
+}
+
+fn verify_provider_deal_projection(
+    stored: &requester_deals::StoredRequesterDeal,
+    remote: &deals::DealRecord,
+) -> Result<ProviderDealProjection, ApiFailure> {
+    verify_provider_deal_artifact_chain(remote, &stored.quote, &stored.deal)?;
+    match remote.receipt.as_ref() {
+        Some(receipt) => {
+            verify_provider_receipt_artifact(
+                receipt,
+                &stored.quote,
+                &stored.deal,
+                &stored.provider_id,
+                &stored.deal.payload.requester_id,
+                remote.result.as_ref(),
+                remote.result_hash.as_deref(),
+            )?;
+            if remote.status != status_bound_to_receipt(receipt) {
+                return Err(provider_bad_gateway(
+                    "provider status does not match its signed Receipt",
+                ));
+            }
+            Ok(ProviderDealProjection::SignedTerminal)
+        }
+        None => {
+            if !unsigned_provider_transition_is_forward(&stored.status, &remote.status) {
+                return Err(provider_bad_gateway(
+                    "provider attempted to change requester state without a signed Receipt",
+                ));
+            }
+            match remote.status.as_str() {
+                deals::DEAL_STATUS_RESULT_READY => {
+                    let Some(result) = remote.result.as_ref() else {
+                        return Err(provider_bad_gateway(
+                            "provider result_ready projection is missing its result",
+                        ));
+                    };
+                    let Some(result_hash) = remote.result_hash.as_deref() else {
+                        return Err(provider_bad_gateway(
+                            "provider result_ready projection is missing its result_hash",
+                        ));
+                    };
+                    if canonical_result_hash(result) != result_hash || remote.error.is_some() {
+                        return Err(provider_bad_gateway(
+                            "provider result_ready projection has inconsistent result fields",
+                        ));
+                    }
+                }
+                _ if remote.result.is_some()
+                    || remote.result_hash.is_some()
+                    || remote.error.is_some() =>
+                {
+                    return Err(provider_bad_gateway(
+                        "provider non-terminal projection has unexpected result or error fields",
+                    ));
+                }
+                _ => {}
+            }
+            if remote.status == stored.status
+                && remote.result == stored.result
+                && remote.result_hash == stored.result_hash
+                && remote.error == stored.error
+            {
+                Ok(ProviderDealProjection::Unchanged)
+            } else {
+                Ok(ProviderDealProjection::Provisional)
+            }
+        }
+    }
 }
 
 struct ResolvedProvider {
@@ -937,6 +1416,9 @@ struct ResolvedProvider {
 }
 
 struct SyncedRequesterDeal {
+    // A provisional remote result is for display only; CAS must compare the
+    // durable state observed before the network request, never that projection.
+    persisted: requester_deals::StoredRequesterDeal,
     deal: requester_deals::StoredRequesterDeal,
     provider_sync_url: String,
     pinned_public_addresses: Vec<IpAddr>,
@@ -1205,6 +1687,9 @@ fn validate_hosted_trial_workload_matches_service(
     let (runtime, package_kind, entrypoint_kind, entrypoint, contract_version) =
         normalized_service_execution_profile(service)?;
     if runtime == ExecutionRuntime::Builtin && package_kind == ExecutionPackageKind::Builtin {
+        if service_binding_hash(service).is_some() {
+            return validate_service_addressed_execution_against_service(execution, service);
+        }
         if execution.runtime != runtime {
             return Err("hosted trial builtin runtime does not match local service".to_string());
         }
@@ -1358,10 +1843,18 @@ fn validate_hosted_trial_quote_terms(
     ))
 }
 
-fn generate_success_preimage_hex() -> String {
+struct GeneratedSuccessPreimage {
+    bytes: [u8; 32],
+    encoded: String,
+}
+
+fn generate_success_preimage() -> GeneratedSuccessPreimage {
     let mut bytes = [0_u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
+    GeneratedSuccessPreimage {
+        encoded: hex::encode(bytes),
+        bytes,
+    }
 }
 
 fn lightning_quote_max_admission_deadline(quote: &SignedArtifact<QuotePayload>) -> i64 {
@@ -1469,9 +1962,7 @@ async fn persist_requester_artifacts(
     state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation = (|| -> Result<(), String> {
+            db::with_immediate_transaction(conn, |conn| {
                 persist_runtime_artifact(
                     conn,
                     &quote.hash,
@@ -1504,13 +1995,7 @@ async fn persist_requester_artifacts(
                     )?;
                 }
                 Ok(())
-            })();
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-            conn.execute_batch("COMMIT")
-                .map_err(|error| error.to_string())
+            })
         })
         .await
 }
@@ -1558,22 +2043,30 @@ async fn sync_requester_deal_from_provider(
     )
     .await?;
 
-    if remote.quote.hash != stored.quote.hash || remote.deal.hash != stored.deal.hash {
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "provider deal does not match local requester deal" }),
-        ));
-    }
-    if let Some(receipt) = remote.receipt.as_ref() {
-        verify_provider_receipt_artifact(
-            receipt,
-            &stored.quote,
-            &stored.deal,
-            &stored.provider_id,
-            &stored.deal.payload.requester_id,
-            remote.result.as_ref(),
-            remote.result_hash.as_deref(),
-        )?;
+    let projection = verify_provider_deal_projection(&stored, &remote)?;
+    match projection {
+        ProviderDealProjection::Unchanged => {
+            return Ok(SyncedRequesterDeal {
+                persisted: stored.clone(),
+                deal: stored,
+                provider_sync_url: provider_endpoint.url,
+                pinned_public_addresses: provider_endpoint.pinned_public_addresses,
+            });
+        }
+        ProviderDealProjection::Provisional => {
+            let mut projected = stored.clone();
+            projected.status = remote.status;
+            projected.result = remote.result;
+            projected.result_hash = remote.result_hash;
+            projected.error = remote.error;
+            return Ok(SyncedRequesterDeal {
+                persisted: stored,
+                deal: projected,
+                provider_sync_url: provider_endpoint.url,
+                pinned_public_addresses: provider_endpoint.pinned_public_addresses,
+            });
+        }
+        ProviderDealProjection::SignedTerminal => {}
     }
 
     persist_requester_artifacts(
@@ -1596,20 +2089,44 @@ async fn sync_requester_deal_from_provider(
     let result_hash = remote.result_hash.clone();
     let error = remote.error.clone();
     let receipt = remote.receipt.clone();
+    let expected_status = stored.status.clone();
+    let expected_result = stored.result.clone();
+    let expected_result_hash = stored.result_hash.clone();
+    let expected_error = stored.error.clone();
+    let expected_receipt_hash = stored.receipt.as_ref().map(|receipt| receipt.hash.clone());
+    let expected_updated_at = stored.updated_at;
     let updated_at = settlement::current_unix_timestamp();
     let deal = state
         .db
         .with_write_conn(move |conn| {
-            requester_deals::update_requester_deal_state(
-                conn,
-                &update_id,
-                &status,
-                result.as_ref(),
-                result_hash.as_deref(),
-                error.as_deref(),
-                receipt.as_ref(),
-                updated_at,
-            )
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = requester_deals::get_requester_deal(conn, &update_id)? else {
+                    return Ok(None);
+                };
+                let current_receipt_hash = current
+                    .receipt
+                    .as_ref()
+                    .map(|receipt| receipt.hash.as_str());
+                if current.status != expected_status
+                    || current.result != expected_result
+                    || current.result_hash != expected_result_hash
+                    || current.error != expected_error
+                    || current_receipt_hash != expected_receipt_hash.as_deref()
+                    || current.updated_at != expected_updated_at
+                {
+                    return Ok(Some(current));
+                }
+                requester_deals::update_requester_deal_state(
+                    conn,
+                    &update_id,
+                    &status,
+                    result.as_ref(),
+                    result_hash.as_deref(),
+                    error.as_deref(),
+                    receipt.as_ref(),
+                    updated_at,
+                )
+            })
         })
         .await
         .map_err(|error| {
@@ -1627,6 +2144,7 @@ async fn sync_requester_deal_from_provider(
         })?;
 
     Ok(SyncedRequesterDeal {
+        persisted: deal.clone(),
         deal,
         provider_sync_url: provider_endpoint.url,
         pinned_public_addresses: provider_endpoint.pinned_public_addresses,
@@ -1666,12 +2184,10 @@ pub async fn runtime_create_deal(
     runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::Full).await
 }
 
-/// Holds a `reserved` row in the requester spend ledger for the lifetime of
-/// one deal-creation attempt. Any early error return drops the guard, which
-/// releases the reservation in the background (the startup stale-reservation
-/// sweep is the backstop if that best-effort release is lost to a crash).
-/// The success path calls [`SpendReservationGuard::commit`], which flips the
-/// row to `committed` and disarms the drop hook.
+/// Holds a `reserved` row in the requester spend ledger until either the
+/// attempt fails without an external side effect or it durably crosses that
+/// boundary. Once marked `external_pending`, dropping this guard must never
+/// release real or potentially-real spend.
 struct SpendReservationGuard {
     state: Arc<AppState>,
     deal_hash: String,
@@ -1687,11 +2203,29 @@ impl SpendReservationGuard {
         }
     }
 
-    async fn commit(mut self, deal_id: &str) {
+    async fn mark_external_pending(&mut self) -> Result<(), String> {
+        if !self.armed {
+            return Ok(());
+        }
+        let deal_hash = self.deal_hash.clone();
+        self.state
+            .db
+            .with_write_conn(move |conn| {
+                crate::requester_budget::mark_spend_external_pending(
+                    conn,
+                    &deal_hash,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await?;
         self.armed = false;
+        Ok(())
+    }
+
+    async fn commit(mut self, deal_id: &str) {
         let deal_hash = self.deal_hash.clone();
         let deal_id = deal_id.to_string();
-        if let Err(error) = self
+        match self
             .state
             .db
             .with_write_conn(move |conn| {
@@ -1704,9 +2238,13 @@ impl SpendReservationGuard {
             })
             .await
         {
-            // The reservation stays in place (still counted against the
-            // budget), so failing to mark it committed is never fail-open.
-            tracing::error!("failed to commit spend ledger reservation: {error}");
+            Ok(()) => self.armed = false,
+            Err(error) => {
+                // An external-pending row stays counted. If this was somehow
+                // still only reserved, Drop may release it because no caller
+                // should commit before crossing the external boundary.
+                tracing::error!("failed to commit spend ledger reservation: {error}");
+            }
         }
     }
 }
@@ -1748,6 +2286,115 @@ async fn runtime_create_deal_inner(
     }
     if let Err(error) = enforce_hosted_trial_create_deal_quota(state.as_ref(), &scope) {
         return error_json(error.0, error.1).into_response();
+    }
+
+    let idempotency_key = match normalize_idempotency_key(payload.idempotency_key.clone()) {
+        Ok(key) => key,
+        Err(response) => return response.into_response(),
+    };
+
+    // A completed or in-flight requester intent wins before fetching a new
+    // Quote or contacting the provider Deal endpoint. This makes retries
+    // return the durable operation instead of generating a new signed Deal,
+    // spend reservation, or payment attempt.
+    if let Some(key) = idempotency_key.as_deref() {
+        let lookup_key = key.to_string();
+        let existing = match state
+            .db
+            .with_read_conn(move |conn| {
+                requester_deals::find_requester_deal_by_idempotency_key(conn, &lookup_key)
+            })
+            .await
+        {
+            Ok(existing) => existing,
+            Err(error) => {
+                tracing::error!("failed to look up requester idempotency key: {error}");
+                return error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "internal error" }),
+                )
+                .into_response();
+            }
+        };
+        if let Some(existing) = existing {
+            let provider_id_conflicts = payload
+                .provider
+                .provider_id
+                .as_deref()
+                .is_some_and(|provider_id| provider_id != existing.provider_id);
+            let provider_url_conflicts =
+                payload
+                    .provider
+                    .provider_url
+                    .as_deref()
+                    .is_some_and(|provider_url| {
+                        let provider_url = provider_url.trim_end_matches('/');
+                        provider_url != existing.provider_url.trim_end_matches('/')
+                            && existing
+                                .provider_sync_url
+                                .as_deref()
+                                .is_none_or(|sync_url| {
+                                    provider_url != sync_url.trim_end_matches('/')
+                                })
+                    });
+            if provider_id_conflicts || provider_url_conflicts || existing.spec != payload.spec {
+                return error_json(
+                    StatusCode::CONFLICT,
+                    json!({ "error": "idempotency key reused with a different requester deal" }),
+                )
+                .into_response();
+            }
+            let stored_price = existing
+                .quote
+                .payload
+                .settlement_terms
+                .base_fee_msat
+                .checked_add(existing.quote.payload.settlement_terms.success_fee_msat);
+            if payload.max_price_sats.is_some_and(|maximum| {
+                stored_price.is_none_or(|price| price > maximum.saturating_mul(1000))
+            }) {
+                return error_json(StatusCode::CONFLICT, json!({"error":"existing idempotent invocation exceeds the requested max_price_sats"})).into_response();
+            }
+            if scope.is_hosted_trial()
+                && (existing.provider_id != state.identity.node_id()
+                    || validate_hosted_trial_quote_terms(&existing.quote).is_err())
+            {
+                return error_json(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "hosted trial idempotency key does not identify a free local deal" }),
+                )
+                .into_response();
+            }
+
+            let stored =
+                match sync_requester_deal_from_provider(state.clone(), &existing.deal_id).await {
+                    Ok(synced) => synced.deal,
+                    Err(_) => existing,
+                };
+            let mut payment_intent = None;
+            if quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
+                match load_runtime_requester_deal_and_payment_intent(state.clone(), &stored.deal_id)
+                    .await
+                {
+                    Ok((_deal, intent)) => payment_intent = intent,
+                    Err(error) => return error_json(error.0, error.1).into_response(),
+                }
+            }
+            return (
+                StatusCode::OK,
+                Json(json!(RuntimeCreateDealResponse {
+                    provider_id: stored.provider_id.clone(),
+                    provider_url: stored.provider_url.clone(),
+                    quote: stored.quote.clone(),
+                    deal: stored.public_record(),
+                    payment_intent_path: payment_intent
+                        .as_ref()
+                        .map(|intent| runtime_payment_intent_path(&intent.deal_id)),
+                    payment_intent,
+                })),
+            )
+                .into_response();
+        }
     }
 
     let provider = match resolve_runtime_provider(state.as_ref(), &payload.provider).await {
@@ -1800,6 +2447,16 @@ async fn runtime_create_deal_inner(
         return error_json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "provider quote signature verification failed" }),
+        )
+        .into_response();
+    }
+    if let Err(error) = verify_remote_typed_artifact(&quote, ARTIFACT_KIND_QUOTE) {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": "provider quote validation failed",
+                "details": error,
+            }),
         )
         .into_response();
     }
@@ -1856,11 +2513,9 @@ async fn runtime_create_deal_inner(
         return error_json(error.0, error.1).into_response();
     }
 
-    let success_preimage = generate_success_preimage_hex();
-    let success_payment_hash = crypto::sha256_hex(
-        hex::decode(&success_preimage)
-            .expect("generated success preimage should always be valid hex"),
-    );
+    let generated_preimage = generate_success_preimage();
+    let success_payment_hash = crypto::sha256_hex(generated_preimage.bytes);
+    let success_preimage = generated_preimage.encoded;
     let deal_artifact = match build_runtime_requester_deal_artifact(
         state.as_ref(),
         &quote,
@@ -1882,8 +2537,30 @@ async fn runtime_create_deal_inner(
     // total is reserved atomically against the cumulative budget; free deals
     // (total 0) skip the policy entirely. Fail-closed: paid deals are refused
     // when no budget is configured.
-    let quoted_total_msat = quote.payload.settlement_terms.base_fee_msat
-        + quote.payload.settlement_terms.success_fee_msat;
+    let quoted_total_msat = match quote
+        .payload
+        .settlement_terms
+        .base_fee_msat
+        .checked_add(quote.payload.settlement_terms.success_fee_msat)
+    {
+        Some(total) if i64::try_from(total).is_ok() => total,
+        _ => {
+            return error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": "provider quote total exceeds the supported signed range" }),
+            )
+            .into_response();
+        }
+    };
+    if quote.payload.settlement_terms.method == "lightning.prepaid.v1"
+        && quote.payload.settlement_terms.base_fee_msat % 1_000 != 0
+    {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "prepaid Lightning quote amount must be a whole number of satoshis" }),
+        )
+        .into_response();
+    }
     let mut spend_guard: Option<SpendReservationGuard> = None;
     if quoted_total_msat > 0 {
         // The provider also enforces the caller's max_price_sats, but a
@@ -1999,72 +2676,131 @@ async fn runtime_create_deal_inner(
 
     // ── Buyer-side Stripe SPT minting ──────────────────────────────────────
     //
-    // When the quote requires stripe_mpp.v1 payment and the caller has not
-    // already supplied a payment token (e.g. the runtime is acting as the
-    // buyer), mint a Shared Payment Token from the buyer's Stripe account and
-    // attach it to the outgoing CreateDealRequest.
+    // When the quote requires stripe_mpp.v1 payment, production callers must
+    // supply an SPT issued by their authorized agentic-commerce platform. The
+    // only automatic path is Stripe's seller-side test helper, guarded by an
+    // explicit sandbox opt-in and an sk_test_ key in BuyerStripeConfig.
     //
     // If the caller explicitly supplied `payload.payment`, we honour it as-is
     // (allows advanced callers to pre-mint tokens externally).
-    let payment_for_deal: Option<settlement::ProvidedPayment> =
-        if payload.payment.is_none() && quote.payload.settlement_terms.method == "stripe_mpp.v1" {
-            match &state.config.buyer_stripe {
-                None => {
+    let payment_for_deal: Option<settlement::ProvidedPayment> = if quote
+        .payload
+        .settlement_terms
+        .method
+        == "stripe_mpp.v1"
+    {
+        match (&payload.payment, &state.config.buyer_stripe) {
+            (Some(payment), _) => {
+                if payment.kind != "stripe_mpp"
+                    || !settlement::stripe::is_valid_spt_id(&payment.token)
+                {
                     return error_json(
-                        StatusCode::PAYMENT_REQUIRED,
-                        json!({
-                            "error": "the provider requires Stripe payment (stripe_mpp.v1) but \
-                                      FROGLET_BUYER_STRIPE_SECRET_KEY is not configured on this \
-                                      buyer node; set FROGLET_BUYER_STRIPE_SECRET_KEY and \
-                                      FROGLET_BUYER_STRIPE_PAYMENT_METHOD (or \
-                                      FROGLET_BUYER_STRIPE_CUSTOMER) to enable buyer-side payments"
-                        }),
+                            StatusCode::BAD_REQUEST,
+                            json!({
+                                "error": "stripe_mpp.v1 requires a caller-supplied Stripe Shared Payment Token",
+                                "code": "invalid_stripe_spt",
+                            }),
+                        )
+                        .into_response();
+                }
+                Some(payment.clone())
+            }
+            (None, None)
+            | (
+                None,
+                Some(crate::config::BuyerStripeConfig {
+                    test_helper_enabled: false,
+                    ..
+                }),
+            ) => {
+                return error_json(
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({
+                        "error": "the provider requires Stripe payment (stripe_mpp.v1); \
+                                  supply a Shared Payment Token issued by an authorized \
+                                  agentic-commerce platform in payment.kind='stripe_mpp' and \
+                                  payment.token",
+                        "code": "stripe_spt_required",
+                    }),
+                )
+                .into_response();
+            }
+            (None, Some(buyer_config)) => {
+                // The quoted price is expressed in msat; convert to cents
+                // (1 sat = 1 cent in this protocol — the unit is shared).
+                // The SPT ceiling is padded by 1 cent to satisfy any
+                // strict > check on the Stripe side.
+                let price_cents = (quoted_total_msat / 1_000).max(1);
+                // Give the token a 10-minute validity window — enough for
+                // the provider to validate and create the PaymentIntent.
+                let expires_at = match settlement::current_unix_timestamp().checked_add(600) {
+                    Some(expires_at) => expires_at,
+                    None => {
+                        return error_json(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({ "error": "internal error" }),
+                        )
+                        .into_response();
+                    }
+                };
+
+                if let Some(guard) = spend_guard.as_mut()
+                    && let Err(error) = guard.mark_external_pending().await
+                {
+                    tracing::error!("failed to persist spend before SPT mint: {error}");
+                    return error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": "internal error" }),
                     )
                     .into_response();
                 }
-                Some(buyer_config) => {
-                    // The quoted price is expressed in msat; convert to cents
-                    // (1 sat = 1 cent in this protocol — the unit is shared).
-                    // The SPT ceiling is padded by 1 cent to satisfy any
-                    // strict > check on the Stripe side.
-                    let total_msat = quote.payload.settlement_terms.base_fee_msat
-                        + quote.payload.settlement_terms.success_fee_msat;
-                    let price_cents = (total_msat / 1_000).max(1);
-                    // Give the token a 10-minute validity window — enough for
-                    // the provider to validate and create the PaymentIntent.
-                    let expires_at = settlement::current_unix_timestamp() + 600;
 
-                    match settlement::mint_buyer_spt(
-                        buyer_config,
-                        price_cents,
-                        expires_at,
-                        buyer_config.api_base_url.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(spt_id) => Some(settlement::ProvidedPayment {
-                            kind: "stripe_mpp".to_string(),
-                            token: spt_id,
-                        }),
-                        Err(err) => {
-                            tracing::error!("Buyer SPT mint failed: {err}");
-                            return error_json(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                json!({
-                                    "error": format!(
-                                        "failed to mint Stripe payment token for this deal: {err}"
-                                    )
-                                }),
-                            )
-                            .into_response();
-                        }
+                match settlement::mint_buyer_spt(
+                    buyer_config,
+                    price_cents,
+                    expires_at,
+                    buyer_config.api_base_url.as_deref(),
+                )
+                .await
+                {
+                    Ok(spt_id) => Some(settlement::ProvidedPayment {
+                        kind: "stripe_mpp".to_string(),
+                        token: spt_id,
+                    }),
+                    Err(err) => {
+                        tracing::error!("Buyer SPT mint failed: {err}");
+                        return error_json(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({
+                                "error": format!(
+                                    "Stripe sandbox SPT test helper failed: {err}"
+                                ),
+                                "code": "stripe_spt_test_helper_failed",
+                            }),
+                        )
+                        .into_response();
                     }
                 }
             }
-        } else {
-            payload.payment.clone()
-        };
+        }
+    } else {
+        payload.payment.clone()
+    };
     // ── end buyer-side SPT minting ─────────────────────────────────────────
+
+    // The provider Deal request is the first contractual external effect for
+    // caller-supplied payments and all non-Stripe rails. Persist that boundary
+    // before sending it so an error or crash cannot release actual spend.
+    if let Some(guard) = spend_guard.as_mut()
+        && let Err(error) = guard.mark_external_pending().await
+    {
+        tracing::error!("failed to persist spend before provider Deal request: {error}");
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "internal error" }),
+        )
+        .into_response();
+    }
 
     let remote_deal = match remote_json_request_with_pinned_addresses::<deals::DealRecord, _>(
         state.as_ref(),
@@ -2074,7 +2810,7 @@ async fn runtime_create_deal_inner(
             quote: quote.clone(),
             deal: deal_artifact.clone(),
             spec: payload.spec.clone(),
-            idempotency_key: payload.idempotency_key.clone(),
+            idempotency_key: idempotency_key.clone(),
             payment: payment_for_deal,
         }),
         &provider.pinned_public_addresses,
@@ -2085,12 +2821,8 @@ async fn runtime_create_deal_inner(
         Err(error) => return error_json(error.0, error.1).into_response(),
     };
 
-    if remote_deal.quote.hash != quote.hash || remote_deal.deal.hash != deal_artifact.hash {
-        return error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "provider deal response does not match submitted artifacts" }),
-        )
-        .into_response();
+    if let Err(error) = verify_provider_deal_artifact_chain(&remote_deal, &quote, &deal_artifact) {
+        return error_json(error.0, error.1).into_response();
     }
     if let Some(receipt) = remote_deal.receipt.as_ref()
         && let Err(error) = verify_provider_receipt_artifact(
@@ -2106,15 +2838,10 @@ async fn runtime_create_deal_inner(
         return error_json(error.0, error.1).into_response();
     }
 
-    // ── Buyer-side prepaid Lightning payment ───────────────────────────────
-    //
-    // For a prepaid (`lightning.prepaid.v1`) quote, the provider mints a BOLT11
-    // invoice and returns it on the deal-create response.  Pay it now from the
-    // buyer's own phoenixd so the provider can confirm payment and execute.
-    // The provider reads the preimage from its OWN phoenixd at receipt time, so
-    // we never transmit the preimage; we only verify it locally as a sanity
-    // check that the payment landed.
-    if quote.payload.settlement_terms.method == "lightning.prepaid.v1" {
+    // Validate every provider-controlled BOLT11 field against the signed Quote
+    // before either persisting a payment intent or handing the invoice to the
+    // buyer's wallet.
+    let prepaid_invoice = if quote.payload.settlement_terms.method == "lightning.prepaid.v1" {
         let Some(invoice) = remote_deal.prepaid_invoice.as_ref() else {
             return error_json(
                 StatusCode::BAD_GATEWAY,
@@ -2124,55 +2851,46 @@ async fn runtime_create_deal_inner(
             )
             .into_response();
         };
-        match &state.config.buyer_phoenixd {
-            None => {
-                return error_json(
-                    StatusCode::PAYMENT_REQUIRED,
-                    json!({
-                        "error": "the provider requires prepaid Lightning (lightning.prepaid.v1) but \
-                                  this buyer node has no phoenixd configured; set \
-                                  FROGLET_LIGHTNING_BUYER_PHOENIXD_URL and \
-                                  FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD to enable \
-                                  buyer-side payments"
-                    }),
-                )
-                .into_response();
-            }
-            Some(buyer_phoenixd) => {
-                match settlement::pay_buyer_prepaid_invoice(buyer_phoenixd, &invoice.bolt11).await {
-                    Ok(sent) => {
-                        let computed =
-                            crypto::sha256_hex(hex::decode(&sent.preimage_hex).unwrap_or_default());
-                        if computed != invoice.payment_hash.to_lowercase() {
-                            tracing::error!(
-                                deal_id = %remote_deal.deal_id,
-                                "prepaid payment preimage does not match the invoice payment hash"
-                            );
-                            return error_json(
-                                StatusCode::BAD_GATEWAY,
-                                json!({
-                                    "error": "prepaid payment preimage did not match the invoice payment hash"
-                                }),
-                            )
-                            .into_response();
-                        }
-                    }
-                    Err(error) => {
-                        tracing::error!("Buyer prepaid Lightning payment failed: {error}");
-                        return error_json(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            json!({
-                                "error": format!(
-                                    "failed to pay the prepaid Lightning invoice for this deal: {error}"
-                                )
-                            }),
-                        )
-                        .into_response();
-                    }
-                }
-            }
+        if state.config.buyer_phoenixd.is_none() {
+            return error_json(
+                StatusCode::PAYMENT_REQUIRED,
+                json!({
+                    "error": "the provider requires prepaid Lightning (lightning.prepaid.v1) but \
+                              this buyer node has no phoenixd configured; set \
+                              FROGLET_LIGHTNING_BUYER_PHOENIXD_URL and \
+                              FROGLET_LIGHTNING_BUYER_PHOENIXD_HTTP_PASSWORD to enable \
+                              buyer-side payments"
+                }),
+            )
+            .into_response();
         }
-    }
+        if let Err(error) = settlement::lightning::validate_prepaid_lightning_invoice(
+            settlement::lightning::PrepaidLightningInvoiceValidation {
+                invoice_bolt11: &invoice.bolt11,
+                expected_payment_hash: &invoice.payment_hash,
+                expected_amount_sat: invoice.amount_sat,
+                expected_destination_identity: Some(
+                    quote.payload.settlement_terms.destination_identity.as_str(),
+                ),
+                expected_network: Some(lightning_invoice::Currency::Bitcoin),
+                now: settlement::current_unix_timestamp(),
+                deal_admission_deadline: deal_artifact.payload.admission_deadline,
+                quote: &quote,
+            },
+        ) {
+            return error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({
+                    "error": "provider returned an invalid prepaid Lightning invoice",
+                    "details": error,
+                }),
+            )
+            .into_response();
+        }
+        Some(invoice.clone())
+    } else {
+        None
+    };
 
     if let Err(error) = persist_requester_artifacts(
         state.clone(),
@@ -2194,14 +2912,14 @@ async fn runtime_create_deal_inner(
     let provider_id = provider.provider_id.clone();
     let provider_public_url = provider.provider_public_url.clone();
     let provider_sync_url = provider.provider_sync_url.clone();
-    let stored = match state
+    let insert_outcome = match state
         .db
         .with_write_conn(move |conn| {
             requester_deals::insert_or_get_requester_deal(
                 conn,
                 NewRequesterDeal {
                     deal_id: insert_deal_id,
-                    idempotency_key: payload.idempotency_key.clone(),
+                    idempotency_key: idempotency_key.clone(),
                     provider_id,
                     provider_url: provider_public_url,
                     provider_sync_url: Some(provider_sync_url),
@@ -2216,7 +2934,7 @@ async fn runtime_create_deal_inner(
         })
         .await
     {
-        Ok(stored) => stored,
+        Ok(outcome) => outcome,
         Err(error) => {
             tracing::error!("database error persisting deal: {error}");
             return error_json(
@@ -2227,11 +2945,68 @@ async fn runtime_create_deal_inner(
         }
     };
 
-    // The deal is contractually committed and persisted — convert the spend
-    // reservation into committed budget. (Money may already have moved on the
-    // SPT/prepaid rails above; everything from the reservation onward counts.)
+    let stored = insert_outcome.deal;
+
+    // The remote contract and local payment intent are durable. Convert the
+    // spend hold to committed before moving money; a failure here remains
+    // counted as external-pending.
     if let Some(guard) = spend_guard.take() {
         guard.commit(&stored.deal_id).await;
+    }
+
+    // ── Buyer-side prepaid Lightning payment ───────────────────────────────
+    // Only the transaction that created the durable requester record may pay.
+    // An identical provider retry reuses the record and never pays twice.
+    if insert_outcome.created
+        && let Some(invoice) = prepaid_invoice.as_ref()
+    {
+        let buyer_phoenixd = state
+            .config
+            .buyer_phoenixd
+            .as_ref()
+            .expect("prepaid config checked before persistence");
+        match settlement::pay_buyer_prepaid_invoice(buyer_phoenixd, &invoice.bolt11).await {
+            Ok(sent) => {
+                if let Err(error) = settlement::phoenixd::validate_prepaid_payment_proof(
+                    &invoice.payment_hash,
+                    invoice.amount_sat,
+                    &settlement::phoenixd::IncomingPayment {
+                        is_paid: true,
+                        preimage_hex: sent.preimage_hex,
+                        received_sat: invoice.amount_sat,
+                    },
+                ) {
+                    tracing::error!(
+                        deal_id = %stored.deal_id,
+                        "prepaid payment proof did not match the invoice: {error}"
+                    );
+                    return error_json(
+                        StatusCode::BAD_GATEWAY,
+                        json!({ "error": "prepaid payment proof did not match the invoice" }),
+                    )
+                    .into_response();
+                }
+                if sent.payment_hash_hex.to_lowercase() != invoice.payment_hash.to_lowercase() {
+                    return error_json(
+                        StatusCode::BAD_GATEWAY,
+                        json!({ "error": "prepaid wallet returned a different payment hash" }),
+                    )
+                    .into_response();
+                }
+            }
+            Err(error) => {
+                tracing::error!("Buyer prepaid Lightning payment failed: {error}");
+                return error_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({
+                        "error": format!(
+                            "failed to pay the prepaid Lightning invoice for this deal: {error}"
+                        )
+                    }),
+                )
+                .into_response();
+            }
+        }
     }
 
     let stored = match sync_requester_deal_from_provider(state.clone(), &stored.deal_id).await {
@@ -2329,6 +3104,7 @@ pub async fn runtime_mock_pay_deal(
         deal: stored,
         provider_sync_url,
         pinned_public_addresses,
+        ..
     } = synced;
 
     if !quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
@@ -2360,14 +3136,21 @@ pub async fn runtime_mock_pay_deal(
         Err(error) => return error_json(error.0, error.1),
     };
 
-    if remote.quote.hash != stored.quote.hash || remote.deal.hash != stored.deal.hash {
+    if let Err(error) = verify_provider_deal_artifact_chain(&remote, &stored.quote, &stored.deal) {
+        return error_json(error.0, error.1);
+    }
+    if matches!(
+        remote.status.as_str(),
+        deals::DEAL_STATUS_SUCCEEDED | deals::DEAL_STATUS_FAILED | deals::DEAL_STATUS_REJECTED
+    ) && remote.receipt.is_none()
+    {
         return error_json(
             StatusCode::BAD_GATEWAY,
-            json!({ "error": "provider mock-pay response does not match local requester deal" }),
+            json!({ "error": "provider mock-pay terminal response omitted its signed Receipt" }),
         );
     }
-    if let Some(receipt) = remote.receipt.as_ref()
-        && let Err(error) = verify_provider_receipt_artifact(
+    if let Some(receipt) = remote.receipt.as_ref() {
+        if let Err(error) = verify_provider_receipt_artifact(
             receipt,
             &stored.quote,
             &stored.deal,
@@ -2375,9 +3158,15 @@ pub async fn runtime_mock_pay_deal(
             &stored.deal.payload.requester_id,
             remote.result.as_ref(),
             remote.result_hash.as_deref(),
-        )
-    {
-        return error_json(error.0, error.1);
+        ) {
+            return error_json(error.0, error.1);
+        }
+        if remote.status != status_bound_to_receipt(receipt) {
+            return error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": "provider mock-pay status does not match its signed Receipt" }),
+            );
+        }
     }
 
     match load_runtime_requester_deal_and_payment_intent(state, &deal_id).await {
@@ -2411,8 +3200,10 @@ pub async fn runtime_accept_deal(
     };
     let SyncedRequesterDeal {
         deal: stored,
+        persisted,
         provider_sync_url,
         pinned_public_addresses,
+        ..
     } = synced;
     let expected_result_hash = payload
         .expected_result_hash
@@ -2441,24 +3232,32 @@ pub async fn runtime_accept_deal(
         Ok(terminal) => terminal,
         Err(error) => return error_json(error.0, error.1),
     };
-    if terminal.quote.hash != stored.quote.hash || terminal.deal.hash != stored.deal.hash {
-        return error_json(
-            StatusCode::BAD_GATEWAY,
-            json!({ "error": "provider accept response does not match local requester deal" }),
-        );
-    }
-    if let Some(receipt) = terminal.receipt.as_ref()
-        && let Err(error) = verify_provider_receipt_artifact(
-            receipt,
-            &stored.quote,
-            &stored.deal,
-            &stored.provider_id,
-            &stored.deal.payload.requester_id,
-            terminal.result.as_ref(),
-            terminal.result_hash.as_deref(),
-        )
+    if let Err(error) = verify_provider_deal_artifact_chain(&terminal, &stored.quote, &stored.deal)
     {
         return error_json(error.0, error.1);
+    }
+    let Some(receipt) = terminal.receipt.as_ref() else {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider accept response omitted its terminal signed Receipt" }),
+        );
+    };
+    if let Err(error) = verify_provider_receipt_artifact(
+        receipt,
+        &stored.quote,
+        &stored.deal,
+        &stored.provider_id,
+        &stored.deal.payload.requester_id,
+        terminal.result.as_ref(),
+        terminal.result_hash.as_deref(),
+    ) {
+        return error_json(error.0, error.1);
+    }
+    if terminal.status != status_bound_to_receipt(receipt) {
+        return error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "provider accept status does not match its signed Receipt" }),
+        );
     }
 
     if let Err(error) = persist_requester_artifacts(
@@ -2482,19 +3281,47 @@ pub async fn runtime_accept_deal(
     let terminal_result_hash = terminal.result_hash.clone();
     let terminal_error = terminal.error.clone();
     let terminal_receipt = terminal.receipt.clone();
+    let expected_status = persisted.status.clone();
+    let expected_result = persisted.result.clone();
+    let expected_result_hash = persisted.result_hash.clone();
+    let expected_error = persisted.error.clone();
+    let expected_receipt_hash = persisted
+        .receipt
+        .as_ref()
+        .map(|receipt| receipt.hash.clone());
+    let expected_updated_at = persisted.updated_at;
     let updated = match state
         .db
         .with_write_conn(move |conn| {
-            requester_deals::update_requester_deal_state(
-                conn,
-                &update_deal_id,
-                &terminal_status,
-                terminal_result.as_ref(),
-                terminal_result_hash.as_deref(),
-                terminal_error.as_deref(),
-                terminal_receipt.as_ref(),
-                updated_at,
-            )
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = requester_deals::get_requester_deal(conn, &update_deal_id)?
+                else {
+                    return Ok(None);
+                };
+                if current.status != expected_status
+                    || current.result != expected_result
+                    || current.result_hash != expected_result_hash
+                    || current.error != expected_error
+                    || current
+                        .receipt
+                        .as_ref()
+                        .map(|receipt| receipt.hash.as_str())
+                        != expected_receipt_hash.as_deref()
+                    || current.updated_at != expected_updated_at
+                {
+                    return Ok(Some(current));
+                }
+                requester_deals::update_requester_deal_state(
+                    conn,
+                    &update_deal_id,
+                    &terminal_status,
+                    terminal_result.as_ref(),
+                    terminal_result_hash.as_deref(),
+                    terminal_error.as_deref(),
+                    terminal_receipt.as_ref(),
+                    updated_at,
+                )
+            })
         })
         .await
     {
@@ -2838,8 +3665,78 @@ pub async fn runtime_archive_subject(
     }
 }
 
-pub async fn protocol_descriptor(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match current_descriptor_artifact(state.as_ref()).await {
+async fn relay_scope_offer_artifacts(
+    state: &AppState,
+    scope: &RelayGrantScope,
+) -> Result<Vec<SignedArtifact<OfferPayload>>, String> {
+    let offer_hashes = scope
+        .grants
+        .iter()
+        .map(|grant| grant.offer_hash.clone())
+        .collect::<Vec<_>>();
+    let documents = state
+        .db
+        .with_read_conn(move |conn| {
+            offer_hashes
+                .iter()
+                .map(|offer_hash| {
+                    db::get_artifact_by_hash(conn, offer_hash)?
+                        .ok_or_else(|| format!("granted Offer artifact {offer_hash} is missing"))
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .await?;
+    let mut offers = Vec::with_capacity(documents.len());
+    for document in documents {
+        if document.kind != ARTIFACT_KIND_OFFER || !scope.permits_offer_hash(&document.hash) {
+            return Err(format!(
+                "granted artifact {} is not an exact Offer",
+                document.hash
+            ));
+        }
+        let offer: SignedArtifact<OfferPayload> =
+            serde_json::from_value(document.document).map_err(|error| error.to_string())?;
+        protocol::validate_offer_artifact(&offer).map_err(|error| error.to_string())?;
+        offers.push(offer);
+    }
+    offers.sort_by(|left, right| left.hash.cmp(&right.hash));
+    offers.dedup_by(|left, right| left.hash == right.hash);
+    Ok(offers)
+}
+
+async fn relay_scope_descriptor_artifact(
+    state: &AppState,
+    scope: &RelayGrantScope,
+) -> Result<SignedArtifact<DescriptorPayload>, String> {
+    let offer = relay_scope_offer_artifacts(state, scope)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("relay grant scope contains no Offer")?;
+    let descriptor_hash = offer.payload.descriptor_hash;
+    let artifact = state
+        .db
+        .with_read_conn(move |conn| db::get_artifact_by_hash(conn, &descriptor_hash))
+        .await?
+        .ok_or("granted Offer Descriptor is missing")?;
+    if artifact.kind != ARTIFACT_KIND_DESCRIPTOR {
+        return Err("granted Offer descriptor_hash is not a Descriptor artifact".to_string());
+    }
+    let descriptor: SignedArtifact<DescriptorPayload> =
+        serde_json::from_value(artifact.document).map_err(|error| error.to_string())?;
+    protocol::validate_descriptor_artifact(&descriptor).map_err(|error| error.to_string())?;
+    Ok(descriptor)
+}
+
+pub async fn protocol_descriptor(
+    State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
+) -> impl IntoResponse {
+    let descriptor = match relay_scope.as_ref() {
+        Some(Extension(scope)) => relay_scope_descriptor_artifact(state.as_ref(), scope).await,
+        None => current_descriptor_artifact(state.as_ref()).await,
+    };
+    match descriptor {
         Ok(descriptor) => (StatusCode::OK, Json(json!(descriptor))),
         Err(error) => {
             tracing::error!("Failed to build protocol descriptor: {error}");
@@ -2851,8 +3748,15 @@ pub async fn protocol_descriptor(State(state): State<Arc<AppState>>) -> impl Int
     }
 }
 
-pub async fn list_offers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match current_offer_artifacts(state.as_ref()).await {
+pub async fn list_offers(
+    State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
+) -> impl IntoResponse {
+    let offers = match relay_scope.as_ref() {
+        Some(Extension(scope)) => relay_scope_offer_artifacts(state.as_ref(), scope).await,
+        None => current_offer_artifacts(state.as_ref()).await,
+    };
+    match offers {
         Ok(offers) => (StatusCode::OK, Json(json!({ "offers": offers }))),
         Err(error) => {
             tracing::error!("Failed to build offers: {error}");
@@ -2864,9 +3768,15 @@ pub async fn list_offers(State(state): State<Arc<AppState>>) -> impl IntoRespons
     }
 }
 
-pub async fn list_provider_services(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn list_provider_services(
+    State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
+) -> impl IntoResponse {
     match current_service_records(state.as_ref(), false, false).await {
-        Ok(services) => {
+        Ok(mut services) => {
+            if let Some(Extension(scope)) = relay_scope.as_ref() {
+                services.retain(|service| scope.permits_service(&service.service_id));
+            }
             (StatusCode::OK, Json(ProviderServicesResponse { services })).into_response()
         }
         Err(error) => {
@@ -2882,11 +3792,72 @@ pub async fn list_provider_services(State(state): State<Arc<AppState>>) -> impl 
 
 pub async fn get_provider_service(
     State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
     Path(service_id): Path<String>,
 ) -> impl IntoResponse {
+    if relay_scope
+        .as_ref()
+        .is_some_and(|Extension(scope)| !scope.permits_service(&service_id))
+    {
+        return error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "service not found", "service_id": service_id }),
+        )
+        .into_response();
+    }
     match provider_service_record(state.as_ref(), &service_id, false, false).await {
         Ok(Some(service)) => {
-            (StatusCode::OK, Json(ProviderServiceResponse { service })).into_response()
+            let selected_service_id = service_id.clone();
+            let revision = state
+                .db
+                .with_read_conn(move |conn| {
+                    let Some(lifecycle) =
+                        db::get_publication_lifecycle(conn, &selected_service_id)?
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(hash) = lifecycle.active_revision_hash else {
+                        return Ok(None);
+                    };
+                    db::get_publication_revision(conn, &selected_service_id, &hash)
+                })
+                .await;
+            let publication_revision = match revision {
+                Ok(Some(record))
+                    if record.offer_id == service.offer_id
+                        && service.binding_hash.as_deref()
+                            == Some(record.binding_hash.as_str()) =>
+                {
+                    match provider_publication_revision_detail(record) {
+                        Ok(detail) => Some(detail.signed_revision),
+                        Err(error) => {
+                            tracing::error!("invalid public revision: {error}");
+                            return error_json(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                json!({"error":"publication revision unavailable"}),
+                            )
+                            .into_response();
+                        }
+                    }
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::error!("public revision lookup failed: {error}");
+                    return error_json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error":"publication revision unavailable"}),
+                    )
+                    .into_response();
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(ProviderServiceResponse {
+                    service,
+                    publication_revision,
+                }),
+            )
+                .into_response()
         }
         Ok(None) => error_json(
             StatusCode::NOT_FOUND,
@@ -2906,6 +3877,7 @@ pub async fn get_provider_service(
 
 pub async fn get_feed(
     State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
     Query(query): Query<FeedQuery>,
 ) -> impl IntoResponse {
     if let Err(error) = ensure_protocol_root_artifacts(state.as_ref()).await {
@@ -2938,7 +3910,12 @@ pub async fn get_feed(
         None => 50,
     };
 
-    let current_public_feed = match current_public_feed_artifacts(state.as_ref()).await {
+    let current_public_feed = match current_public_feed_artifacts(
+        state.as_ref(),
+        relay_scope.as_ref().map(|Extension(scope)| scope),
+    )
+    .await
+    {
         Ok(current_public_feed) => current_public_feed,
         Err(error) => {
             tracing::error!("Failed to build public feed snapshot: {error}");
@@ -2949,6 +3926,7 @@ pub async fn get_feed(
         }
     };
 
+    let active_offer_hashes = current_public_feed.sorted_offer_hashes();
     match state
         .db
         .with_read_conn(move |conn| {
@@ -2960,6 +3938,7 @@ pub async fn get_feed(
             StatusCode::OK,
             Json(json!(FeedResponse {
                 artifacts,
+                active_offer_hashes,
                 cursor_type: "artifact_sequence".to_string(),
                 cursor_semantics: "exclusive_after".to_string(),
                 applied_cursor,
@@ -2980,33 +3959,91 @@ pub async fn get_feed(
 
 #[derive(Clone)]
 struct CurrentPublicFeedArtifacts {
-    descriptor_hash: String,
+    descriptor_hashes: HashSet<String>,
     offer_hashes: HashSet<String>,
+    /// `None` means the normal local/Tor feed may expose every receipt.
+    /// Relay scopes carry an exact set tied to granted Offer hashes.
+    receipt_hashes: Option<HashSet<String>>,
 }
 
 impl CurrentPublicFeedArtifacts {
     fn contains(&self, artifact: &db::LedgerArtifact) -> bool {
         match artifact.kind.as_str() {
-            ARTIFACT_KIND_DESCRIPTOR => artifact.hash == self.descriptor_hash,
+            ARTIFACT_KIND_DESCRIPTOR => self.descriptor_hashes.contains(artifact.hash.as_str()),
             ARTIFACT_KIND_OFFER => self.offer_hashes.contains(artifact.hash.as_str()),
-            ARTIFACT_KIND_RECEIPT => true,
+            ARTIFACT_KIND_RECEIPT => self
+                .receipt_hashes
+                .as_ref()
+                .is_none_or(|hashes| hashes.contains(artifact.hash.as_str())),
             _ => false,
         }
+    }
+
+    fn sorted_offer_hashes(&self) -> Vec<String> {
+        let mut hashes = self.offer_hashes.iter().cloned().collect::<Vec<_>>();
+        hashes.sort_unstable();
+        hashes
     }
 }
 
 async fn current_public_feed_artifacts(
     state: &AppState,
+    relay_scope: Option<&RelayGrantScope>,
 ) -> Result<CurrentPublicFeedArtifacts, String> {
-    let descriptor_hash = current_descriptor_artifact(state).await?.hash;
-    let offer_hashes = current_offer_artifacts(state)
-        .await?
+    let offers = match relay_scope {
+        Some(scope) => relay_scope_offer_artifacts(state, scope).await?,
+        None => current_offer_artifacts(state).await?,
+    };
+    let mut descriptor_hashes = offers
+        .iter()
+        .map(|offer| offer.payload.descriptor_hash.clone())
+        .collect::<HashSet<_>>();
+    // Direct discovery must expose the current transport/capability descriptor
+    // even when immutable active offers still reference historical descriptors.
+    // Relay feeds remain restricted to descriptors covered by exact grants.
+    if relay_scope.is_none() {
+        descriptor_hashes.insert(current_descriptor_artifact(state).await?.hash);
+    }
+    let offer_hashes = offers
         .into_iter()
         .map(|offer| offer.hash)
         .collect::<HashSet<_>>();
+    let receipt_hashes = if relay_scope.is_some() {
+        let allowed_offer_hashes = offer_hashes.clone();
+        Some(
+            state
+                .db
+                .with_read_conn(move |conn| {
+                    let mut statement = conn
+                        .prepare(
+                            "SELECT offer_id, receipt_artifact_hash
+                             FROM deals
+                             WHERE receipt_artifact_hash IS NOT NULL",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let rows = statement
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .map_err(|error| error.to_string())?;
+                    let mut hashes = HashSet::new();
+                    for row in rows {
+                        let (offer_hash, receipt_hash) = row.map_err(|error| error.to_string())?;
+                        if allowed_offer_hashes.contains(&offer_hash) {
+                            hashes.insert(receipt_hash);
+                        }
+                    }
+                    Ok::<_, String>(hashes)
+                })
+                .await?,
+        )
+    } else {
+        None
+    };
     Ok(CurrentPublicFeedArtifacts {
-        descriptor_hash,
+        descriptor_hashes,
         offer_hashes,
+        receipt_hashes,
     })
 }
 
@@ -3063,6 +4100,7 @@ fn list_public_feed_artifacts(
 
 pub async fn get_artifact(
     State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
     Path(artifact_hash): Path<String>,
 ) -> impl IntoResponse {
     if let Err(error) = ensure_protocol_root_artifacts(state.as_ref()).await {
@@ -3073,7 +4111,12 @@ pub async fn get_artifact(
         );
     }
 
-    let current_public_feed = match current_public_feed_artifacts(state.as_ref()).await {
+    let current_public_feed = match current_public_feed_artifacts(
+        state.as_ref(),
+        relay_scope.as_ref().map(|Extension(scope)| scope),
+    )
+    .await
+    {
         Ok(current_public_feed) => current_public_feed,
         Err(error) => {
             tracing::error!("Failed to build public feed snapshot: {error}");
@@ -3115,8 +4158,18 @@ pub async fn create_quote(
     State(state): State<Arc<AppState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
+    relay_scope: Option<Extension<RelayGrantScope>>,
     Json(payload): Json<CreateQuoteRequest>,
 ) -> impl IntoResponse {
+    if relay_scope
+        .as_ref()
+        .is_some_and(|Extension(scope)| !scope.permits_offer_id(&payload.offer_id))
+    {
+        return error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "offer not found", "offer_id": payload.offer_id }),
+        );
+    }
     let quota_identity = public_quota_identity_from_request(
         &headers,
         connect_info.map(|ConnectInfo(peer_addr)| peer_addr),
@@ -3136,8 +4189,14 @@ pub async fn create_quote(
 
 pub async fn create_deal(
     State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
     Json(payload): Json<CreateDealRequest>,
 ) -> impl IntoResponse {
+    if relay_scope.as_ref().is_some_and(|Extension(scope)| {
+        !scope.permits_offer_hash(&payload.quote.payload.offer_hash)
+    }) {
+        return error_json(StatusCode::NOT_FOUND, json!({ "error": "offer not found" }));
+    }
     match create_deal_record(state.clone(), payload).await {
         Ok((deal, status)) => (status, Json(json!(deal))),
         Err(error) => error_json(error.0, error.1),
@@ -3146,6 +4205,7 @@ pub async fn create_deal(
 
 pub async fn get_deal_status(
     State(state): State<Arc<AppState>>,
+    relay_scope: Option<Extension<RelayGrantScope>>,
     Path(deal_id): Path<String>,
 ) -> impl IntoResponse {
     let lookup_deal_id = deal_id.clone();
@@ -3166,6 +4226,13 @@ pub async fn get_deal_status(
             );
         }
     };
+
+    if relay_scope
+        .as_ref()
+        .is_some_and(|Extension(scope)| !scope.permits_offer_hash(&deal.quote.payload.offer_hash))
+    {
+        return error_json(StatusCode::NOT_FOUND, json!({ "error": "deal not found" }));
+    }
 
     if deal.payment_method.as_deref() == Some("lightning") {
         if let Err(error) = sync_and_maybe_promote_lightning_deal(state.clone(), &deal).await {
@@ -3802,14 +4869,34 @@ pub async fn publish_event(
         return response;
     }
 
-    if event.id != expected_node_event_id(&event) {
+    let expected_event_id = match expected_node_event_id(&event) {
+        Ok(expected_event_id) => expected_event_id,
+        Err(error) => {
+            tracing::error!(details = %error, "failed to canonicalize node event id preimage");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to canonicalize node event" }),
+            );
+        }
+    };
+    if event.id != expected_event_id {
         return error_json(
             StatusCode::BAD_REQUEST,
             json!({ "error": "invalid event id" }),
         );
     }
 
-    if !crypto::verify_message(&event.pubkey, &event.sig, &event.canonical_signing_bytes()) {
+    let signing_bytes = match event.canonical_signing_bytes() {
+        Ok(signing_bytes) => signing_bytes,
+        Err(error) => {
+            tracing::error!(details = %error, "failed to canonicalize node event signing bytes");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to canonicalize node event" }),
+            );
+        }
+    };
+    if !crypto::verify_message(&event.pubkey, &event.sig, &signing_bytes) {
         tracing::warn!("Invalid signature for event: {}", event.id);
         return error_json(
             StatusCode::BAD_REQUEST,
@@ -4095,9 +5182,7 @@ pub async fn create_job(
     let insert_outcome = match state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<jobs::InsertJobOutcome, String> {
+            db::with_immediate_transaction(conn, |conn| {
                 let insert_outcome = jobs::insert_or_get_job(conn, new_job)?;
                 if insert_outcome.created {
                     let evidence_hash = db::insert_execution_evidence(
@@ -4115,18 +5200,7 @@ pub async fn create_job(
                     )?;
                 }
                 Ok(insert_outcome)
-            })();
-
-            let result = match operation {
-                Ok(result) => result,
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
-                }
-            };
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(result)
+            })
         })
         .await
     {
@@ -4374,6 +5448,11 @@ fn try_acquire_events_query_permit(
         .map_err(|_| EVENTS_QUERY_CAPACITY_EXHAUSTED.to_string())
 }
 
+enum BuiltinRuntimePermit {
+    Process(Arc<tokio::sync::OwnedSemaphorePermit>),
+    Events(tokio::sync::OwnedSemaphorePermit),
+}
+
 async fn query_events_db(
     state: &AppState,
     kinds: Vec<String>,
@@ -4397,7 +5476,19 @@ async fn query_events_with_capacity(
     kinds: Vec<String>,
     limit: Option<usize>,
 ) -> Result<Vec<NodeEventEnvelope>, String> {
-    let _permit = try_acquire_events_query_permit(state)?;
+    query_events_with_permit(state, kinds, limit, None).await
+}
+
+async fn query_events_with_permit(
+    state: &AppState,
+    kinds: Vec<String>,
+    limit: Option<usize>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<Vec<NodeEventEnvelope>, String> {
+    let _permit = match permit {
+        Some(permit) => permit,
+        None => try_acquire_events_query_permit(state)?,
+    };
     query_events_db(state, kinds, limit).await
 }
 
@@ -4405,6 +5496,28 @@ async fn dispatch_builtin_workload(
     state: &AppState,
     execution: &ExecutionWorkload,
     caller_id: Option<&str>,
+    timeout: Duration,
+    permit: Option<BuiltinRuntimePermit>,
+) -> Result<Value, String> {
+    match tokio::time::timeout(
+        timeout,
+        dispatch_builtin_workload_inner(state, execution, caller_id, permit),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "builtin execution exceeded runtime deadline after {}ms",
+            timeout.as_millis()
+        )),
+    }
+}
+
+async fn dispatch_builtin_workload_inner(
+    state: &AppState,
+    execution: &ExecutionWorkload,
+    caller_id: Option<&str>,
+    permit: Option<BuiltinRuntimePermit>,
 ) -> Result<Value, String> {
     let builtin_name = execution
         .builtin_name
@@ -4417,15 +5530,149 @@ async fn dispatch_builtin_workload(
         if let (Some(obj), Some(cid)) = (input.as_object_mut(), caller_id) {
             obj.insert("_caller_id".to_string(), Value::String(cid.to_string()));
         }
-        handler.execute(input).await
+        let process_permit = match permit {
+            Some(BuiltinRuntimePermit::Process(permit)) => Some(permit),
+            Some(BuiltinRuntimePermit::Events(_)) => {
+                return Err("job reserved event capacity for a process builtin".to_string());
+            }
+            None => None,
+        };
+        execute_builtin_handler_off_thread(state, Arc::clone(handler), input, process_permit).await
     } else if let Some((kinds, limit)) = execution.events_query_params() {
+        let events_permit = match permit {
+            Some(BuiltinRuntimePermit::Events(permit)) => Some(permit),
+            Some(BuiltinRuntimePermit::Process(_)) => {
+                return Err("job reserved process capacity for an events builtin".to_string());
+            }
+            None => None,
+        };
         Ok(json!({
-            "events": query_events_with_capacity(state, kinds, limit).await?,
+            "events": query_events_with_permit(state, kinds, limit, events_permit).await?,
             "cursor": null
         }))
+    } else if matches!(
+        execution.contract_version.as_str(),
+        DATA_QUERY_JSON_CONTRACT_V1 | DATA_QUERY_CSV_CONTRACT_V1 | DATA_QUERY_SQLITE_CONTRACT_V1
+    ) {
+        let process_permit = match permit {
+            Some(BuiltinRuntimePermit::Process(permit)) => Some(permit),
+            Some(BuiltinRuntimePermit::Events(_)) => {
+                return Err("job reserved event capacity for a data-query builtin".to_string());
+            }
+            None => None,
+        };
+        dispatch_native_data_query(state, execution, process_permit).await
     } else {
         Err(format!("unsupported builtin service: {builtin_name}"))
     }
+}
+
+/// Isolate third-party builtin futures from Tokio worker threads. A handler
+/// that performs synchronous work before yielding cannot stall the runtime,
+/// and its owned permit remains held if a caller deadline expires while the
+/// non-cooperative worker is still unwinding.
+async fn execute_builtin_handler_off_thread(
+    state: &AppState,
+    handler: Arc<dyn BuiltinServiceHandler>,
+    input: Value,
+    permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
+) -> Result<Value, String> {
+    let permit = match permit {
+        Some(permit) => permit,
+        None => Arc::new(try_acquire_process_execution_permit(state)?),
+    };
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.block_on(handler.execute(input))
+    })
+    .await
+    .map_err(|error| format!("builtin execution worker failed: {error}"))?
+}
+
+async fn dispatch_native_data_query(
+    state: &AppState,
+    execution: &ExecutionWorkload,
+    permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
+) -> Result<Value, String> {
+    let content_hash = execution
+        .module_hash
+        .as_deref()
+        .ok_or_else(|| "native data query is missing its immutable binding hash".to_string())?;
+    if content_hash.len() != 64
+        || !content_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("native data query has an invalid binding hash".to_string());
+    }
+    let (extension, source_kind) = match execution.contract_version.as_str() {
+        DATA_QUERY_JSON_CONTRACT_V1 => ("json", DataQuerySourceKind::Json),
+        DATA_QUERY_CSV_CONTRACT_V1 => ("csv", DataQuerySourceKind::Csv),
+        DATA_QUERY_SQLITE_CONTRACT_V1 => ("sqlite", DataQuerySourceKind::Sqlite),
+        _ => return Err("unsupported native data query contract".to_string()),
+    };
+    let root = state.config.storage.data_dir.join("publication-data");
+    let file_name = format!("{content_hash}.{extension}");
+    let contract_version = execution.contract_version.clone();
+    let package_digest = content_hash.to_string();
+    let package_digest_for_open = package_digest.clone();
+    let blocking_capacity = Arc::clone(&state.process_execution_semaphore);
+    let initialization_permit = permit.clone();
+    let handler = state
+        .native_data_query_handlers
+        .get_or_try_init(&contract_version, &package_digest, move || async move {
+            let permit =
+                match initialization_permit {
+                    Some(permit) => permit,
+                    None => Arc::new(blocking_capacity.try_acquire_owned().map_err(|_| {
+                        "process execution concurrency limit exhausted".to_string()
+                    })?),
+                };
+            let handler = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let path = root.join(&file_name);
+                let bytes = fs::read(&path).map_err(|error| {
+                    format!("failed to read immutable data query snapshot: {error}")
+                })?;
+                if source_kind != DataQuerySourceKind::Csv
+                    && crypto::sha256_hex(&bytes) != package_digest_for_open
+                {
+                    return Err(
+                        "native data query snapshot no longer matches its revision binding"
+                            .to_string(),
+                    );
+                }
+                let handler = if source_kind == DataQuerySourceKind::Csv {
+                    let schema_path =
+                        root.join(format!("{package_digest_for_open}.csv.schema.json"));
+                    let schema_bytes = fs::read(&schema_path)
+                        .map_err(|error| format!("failed to read immutable CSV schema: {error}"))?;
+                    let schema: PublicationCsvSchema = serde_json::from_slice(&schema_bytes)
+                        .map_err(|error| format!("invalid immutable CSV schema: {error}"))?;
+                    if canonical_json::to_vec(&schema).map_err(|error| error.to_string())?
+                        != schema_bytes
+                    {
+                        return Err("immutable CSV schema is not canonical JSON".to_string());
+                    }
+                    DataQueryHandler::open_csv_indexed(
+                        &root,
+                        &file_name,
+                        schema,
+                        &package_digest_for_open,
+                    )?
+                } else {
+                    DataQueryHandler::open(&root, &file_name, source_kind)?
+                };
+                Ok(Arc::new(handler))
+            })
+            .await
+            .map_err(|error| format!("native data query initialization failed: {error}"))??;
+            Ok(handler)
+        })
+        .await?;
+    let handler: Arc<dyn BuiltinServiceHandler> = handler;
+    execute_builtin_handler_off_thread(state, handler, execution.input.clone(), permit).await
 }
 
 async fn ensure_protocol_root_artifacts(state: &AppState) -> Result<(), String> {
@@ -4797,9 +6044,7 @@ pub async fn open_confidential_session(
     let persisted = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation = (|| -> Result<(), String> {
+            db::with_immediate_transaction(conn, |conn| {
                 db::insert_artifact_document(
                     conn,
                     &session_hash,
@@ -4834,16 +6079,7 @@ pub async fn open_confidential_session(
                     now,
                 )?;
                 Ok(())
-            })();
-
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-
-            conn.execute_batch("COMMIT")
-                .map_err(|error| error.to_string())?;
-            Ok(())
+            })
         })
         .await;
 
@@ -4901,67 +6137,25 @@ pub async fn get_confidential_session(
 async fn current_descriptor_artifact(
     state: &AppState,
 ) -> Result<SignedArtifact<DescriptorPayload>, String> {
-    let transport_status = state.transport_status.lock().await.clone();
-    let mut transport_endpoints = Vec::new();
-    if let Some(uri) = transport_status.clearnet_url {
-        transport_endpoints.push(protocol::TransportEndpoint {
-            transport: transport_name_for_clearnet_uri(&uri).to_string(),
-            uri,
-            created_at: None,
-            expires_at: None,
-            priority: 10,
-            features: vec![
-                "quote_http".to_string(),
-                "artifact_fetch".to_string(),
-                "receipt_poll".to_string(),
-            ],
-        });
-    }
-    if let Some(uri) = transport_status.tor_onion_url {
-        transport_endpoints.push(protocol::TransportEndpoint {
-            transport: "tor".to_string(),
-            uri,
-            created_at: None,
-            expires_at: None,
-            priority: 20,
-            features: vec![
-                "quote_http".to_string(),
-                "artifact_fetch".to_string(),
-                "receipt_poll".to_string(),
-            ],
-        });
-    }
     let active_offer_definitions = current_offer_definitions(state)
         .await?
         .into_iter()
         .filter(|definition| definition.publication_state == "active")
         .collect::<Vec<_>>();
-    let mut service_kinds = active_offer_definitions
-        .iter()
-        .map(|definition| definition.offer_kind.clone())
-        .collect::<Vec<_>>();
-    let mut execution_runtimes = active_offer_definitions
-        .iter()
-        .map(|definition| definition.runtime.clone())
-        .collect::<Vec<_>>();
-    service_kinds.sort();
-    service_kinds.dedup();
-    execution_runtimes.sort();
-    execution_runtimes.dedup();
-    let mut payload = DescriptorPayload {
-        provider_id: state.identity.node_id().to_string(),
-        descriptor_seq: 0,
-        protocol_version: protocol::FROGLET_SCHEMA_V1.to_string(),
-        expires_at: None,
-        linked_identities: vec![nostr_publication_linked_identity(state)?],
+    descriptor_artifact_for_active_definitions(state, active_offer_definitions).await
+}
+
+async fn descriptor_artifact_for_active_definitions(
+    state: &AppState,
+    active_offer_definitions: Vec<ProviderManagedOfferDefinition>,
+) -> Result<SignedArtifact<DescriptorPayload>, String> {
+    let transport_status = state.transport_status.lock().await.clone();
+    let transport_endpoints = descriptor_transport_endpoints(&transport_status);
+    let mut payload = descriptor_payload_for_active_definitions(
+        state,
+        &active_offer_definitions,
         transport_endpoints,
-        capabilities: protocol::DescriptorCapabilities {
-            service_kinds,
-            execution_runtimes,
-            max_concurrent_deals: Some(sandbox::wasm_concurrency_limit() as u32),
-        },
-        accepted_payment_methods: settlement::accepted_payment_methods(state),
-    };
+    )?;
 
     let actor_id = state.identity.node_id().to_string();
     let latest_descriptor = state
@@ -4985,6 +6179,100 @@ async fn current_descriptor_artifact(
     persist_signed_artifact(state, ARTIFACT_KIND_DESCRIPTOR, payload).await
 }
 
+fn descriptor_payload_for_active_definitions(
+    state: &AppState,
+    active_offer_definitions: &[ProviderManagedOfferDefinition],
+    transport_endpoints: Vec<protocol::TransportEndpoint>,
+) -> Result<DescriptorPayload, String> {
+    let mut service_kinds = active_offer_definitions
+        .iter()
+        .map(|definition| definition.offer_kind.clone())
+        .collect::<Vec<_>>();
+    let mut execution_runtimes = active_offer_definitions
+        .iter()
+        .map(|definition| definition.runtime.clone())
+        .collect::<Vec<_>>();
+    service_kinds.sort();
+    service_kinds.dedup();
+    execution_runtimes.sort();
+    execution_runtimes.dedup();
+    Ok(DescriptorPayload {
+        provider_id: state.identity.node_id().to_string(),
+        descriptor_seq: 0,
+        protocol_version: protocol::FROGLET_SCHEMA_V1.to_string(),
+        expires_at: None,
+        linked_identities: vec![nostr_publication_linked_identity(state)?],
+        transport_endpoints,
+        capabilities: protocol::DescriptorCapabilities {
+            service_kinds,
+            execution_runtimes,
+            max_concurrent_deals: Some(sandbox::wasm_concurrency_limit() as u32),
+        },
+        // x402 is exposed by its direct HTTP endpoint, not by the Kernel
+        // Offer→Quote→Deal protocol, so the Kernel Descriptor must not claim
+        // it as an admitted Deal settlement method.
+        accepted_payment_methods: accepted_payment_methods(state),
+    })
+}
+
+fn public_transport_features() -> Vec<String> {
+    vec![
+        "quote_http".to_string(),
+        "artifact_fetch".to_string(),
+        "receipt_poll".to_string(),
+    ]
+}
+
+fn descriptor_transport_endpoints(
+    transport_status: &crate::state::TransportStatus,
+) -> Vec<protocol::TransportEndpoint> {
+    let mut transport_endpoints = Vec::new();
+    if let Some(uri) = transport_status.clearnet_url.clone() {
+        transport_endpoints.push(protocol::TransportEndpoint {
+            transport: transport_name_for_clearnet_uri(&uri).to_string(),
+            uri,
+            created_at: None,
+            expires_at: None,
+            priority: 10,
+            features: public_transport_features(),
+        });
+    }
+
+    if transport_status.relay_enabled
+        && let Some(advertised) = transport_status.relay_url.as_deref()
+        && let Ok(uri) = crate::relay_tunnel::validate_public_url(advertised)
+        && !transport_endpoints
+            .iter()
+            .any(|endpoint| endpoint.uri.trim_end_matches('/') == uri.trim_end_matches('/'))
+    {
+        // The deterministic identity-bound endpoint is safe to bind before
+        // forwarding activation. Relay ingress remains closed and its router
+        // scope empty until a durable exact publication grant exists.
+        // Keep deterministic preference/order: explicit clearnet first,
+        // relay second, Tor third.
+        transport_endpoints.push(protocol::TransportEndpoint {
+            transport: "https".to_string(),
+            uri,
+            created_at: None,
+            expires_at: None,
+            priority: 15,
+            features: public_transport_features(),
+        });
+    }
+
+    if let Some(uri) = transport_status.tor_onion_url.clone() {
+        transport_endpoints.push(protocol::TransportEndpoint {
+            transport: "tor".to_string(),
+            uri,
+            created_at: None,
+            expires_at: None,
+            priority: 20,
+            features: public_transport_features(),
+        });
+    }
+    transport_endpoints
+}
+
 async fn current_offer_artifacts(
     state: &AppState,
 ) -> Result<Vec<SignedArtifact<OfferPayload>>, String> {
@@ -5006,6 +6294,9 @@ async fn lookup_offer(
 
 fn accepted_payment_methods(state: &AppState) -> Vec<String> {
     settlement::accepted_payment_methods(state)
+        .into_iter()
+        .filter(|method| method != "x402_usdc")
+        .collect()
 }
 
 fn grant_requested_capabilities_from_offer(
@@ -5053,22 +6344,6 @@ fn mount_access_capabilities(mounts: &[ExecutionMount]) -> Vec<String> {
         .collect()
 }
 
-fn validate_provider_control_publish_mounts(
-    mounts: Vec<ExecutionMount>,
-) -> Result<Vec<ExecutionMount>, String> {
-    for mount in &mounts {
-        validate_provider_control_publish_mount(mount)?;
-    }
-    Ok(mounts)
-}
-
-fn validate_provider_control_publish_mount(mount: &ExecutionMount) -> Result<(), String> {
-    if mount.binding.is_some() {
-        return Err("provider-control publish mounts must not include binding".to_string());
-    }
-    validate_execution_mount_descriptor(mount)
-}
-
 fn merged_access_capabilities(definition: &ProviderManagedOfferDefinition) -> Vec<String> {
     let mut capabilities = definition.capabilities.clone();
     capabilities.extend(mount_access_capabilities(&definition.mounts));
@@ -5083,33 +6358,6 @@ fn service_access_capabilities(service: &ProviderServiceRecord) -> Vec<String> {
     capabilities.sort();
     capabilities.dedup();
     capabilities
-}
-
-fn normalize_declared_capabilities(capabilities: Vec<String>) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    for capability in capabilities {
-        let trimmed = capability.trim().to_ascii_lowercase();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.len() > 128 {
-            return Err(format!("capability is too long: {trimmed}"));
-        }
-        if !trimmed
-            .split('.')
-            .all(|segment| !segment.is_empty() && segment.chars().all(valid_capability_char))
-        {
-            return Err(format!("invalid capability: {trimmed}"));
-        }
-        out.push(trimmed);
-    }
-    out.sort();
-    out.dedup();
-    Ok(out)
-}
-
-fn valid_capability_char(character: char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
 }
 
 fn capability_requires_gpu(capability: &str) -> bool {
@@ -5241,15 +6489,26 @@ async fn quoted_settlement_terms(
             .payment_backends
             .contains(&PaymentBackend::Stripe)
     {
+        let base_fee_msat = price_sats
+            .checked_mul(1_000)
+            .ok_or_else(|| "quote price exceeds the millishatoshi range".to_string())?;
         return Ok(QuoteSettlementTerms {
             method: "stripe_mpp.v1".to_string(),
             destination_identity: String::new(),
-            base_fee_msat: price_sats.saturating_mul(1_000),
+            base_fee_msat,
             success_fee_msat: 0,
             max_base_invoice_expiry_secs: 0,
             max_success_hold_expiry_secs: 0,
             min_final_cltv_expiry: 0,
         });
+    }
+
+    if price_sats > 0 {
+        return Err(
+            "priced Kernel deals require a configured Lightning or Stripe settlement backend; \
+             x402 is available only through the direct HTTP payment endpoint"
+                .to_string(),
+        );
     }
 
     // Canonical free-service settlement terms: method "none" with empty
@@ -5481,6 +6740,376 @@ async fn require_provider_control_auth_middleware(
     next.run(request).await
 }
 
+#[derive(Serialize)]
+struct ProviderPublicationConfigurationToken<'a> {
+    schema_version: &'static str,
+    provider_id: &'a str,
+    runtime: &'a str,
+    resolved_definition_digest: &'a str,
+    available_limits: ResolvedPublicationLimits,
+    payment_backends: Vec<String>,
+    offer_settlement_method: String,
+    gpu_enabled: bool,
+    gpu_capabilities: Vec<String>,
+    wasm_host_capabilities: Vec<String>,
+}
+
+struct ResolvedPublicationApproval {
+    precondition: PublicationPrecondition,
+    candidate: ResolvedProviderOfferDefinition,
+}
+
+fn resolve_publication_identity_backup(
+    state: &AppState,
+) -> Result<PublicationIdentityBackup, ApiFailure> {
+    use crate::identity_custody::BackupStatusState;
+
+    let status = crate::identity_custody::backup_status(
+        &crate::identity_custody::IdentityPaths::from(&state.config),
+    );
+    let publication_state = match status.state {
+        BackupStatusState::Current => PublicationIdentityBackupState::Current,
+        BackupStatusState::Missing => PublicationIdentityBackupState::Missing,
+        BackupStatusState::StaleIdentity => PublicationIdentityBackupState::StaleIdentity,
+        BackupStatusState::BackupMissing => PublicationIdentityBackupState::BackupMissing,
+        BackupStatusState::BackupDigestMismatch => {
+            PublicationIdentityBackupState::BackupDigestMismatch
+        }
+        BackupStatusState::InvalidRecord => PublicationIdentityBackupState::InvalidRecord,
+    };
+    let backup_sha256 = status.backup_sha256.filter(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    PublicationIdentityBackup::new(publication_state, backup_sha256).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to resolve identity backup state: {error}") }),
+        )
+    })
+}
+
+/// Resolve the complete publication candidate and every provider-owned value
+/// that can be known before approval. This performs no persistent or
+/// operator-visible mutation: it may read an approved artifact path and uses
+/// an auto-cleaned private tempdir for native data inspection, but never
+/// stages publication bytes, executes a fixture, or touches the database.
+fn resolve_publication_approval(
+    state: &AppState,
+    payload: &ProviderControlPublishArtifactRequest,
+) -> Result<ResolvedPublicationApproval, ApiFailure> {
+    let intent_digest = crypto::sha256_hex(canonical_json::to_vec(payload).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("failed to canonicalize publication intent: {error}") }),
+        )
+    })?);
+    let candidate = resolve_artifact_provider_offer_definition(state, payload)?;
+    let definition = &candidate.definition;
+    // Build the exact verification workload now so malformed fixtures,
+    // package bindings, entrypoints, and unavailable deterministic sandbox
+    // requirements fail before approval. The workload is not admitted or run.
+    let _ = prepare_local_verification(state, definition)?;
+    let runtime = definition.runtime.as_str();
+
+    let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
+        provider_offer_limits(state, runtime);
+    let available_limits = ResolvedPublicationLimits {
+        max_input_bytes,
+        max_runtime_ms,
+        max_memory_bytes,
+        max_output_bytes,
+        fuel_limit,
+    };
+    let resolved_limits = ResolvedPublicationLimits {
+        max_input_bytes: definition.max_input_bytes,
+        max_runtime_ms: definition.max_runtime_ms,
+        max_memory_bytes: definition.max_memory_bytes,
+        max_output_bytes: definition.max_output_bytes,
+        fuel_limit: definition.fuel_limit,
+    };
+
+    let mut payment_backends = state
+        .config
+        .payment_backends
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    payment_backends.sort();
+    payment_backends.dedup();
+    let (base_fee_msat, success_fee_msat) = provider_offer_price_schedule(definition);
+    let offer_settlement_method = resolved_offer_settlement_method(
+        state,
+        definition.settlement_method,
+        base_fee_msat,
+        success_fee_msat,
+    );
+    let mut gpu_capabilities = state.config.gpu.advertised_capabilities();
+    gpu_capabilities.sort();
+    gpu_capabilities.dedup();
+    let mut wasm_host_capabilities = state
+        .wasm_host
+        .as_ref()
+        .map_or_else(Vec::new, |host| host.advertised_capabilities());
+    wasm_host_capabilities.sort();
+    wasm_host_capabilities.dedup();
+    let provider_id = state.identity.node_id();
+    let resolved_definition_digest = crypto::sha256_hex(
+        canonical_json::to_vec(definition).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to bind resolved publication definition: {error}") }),
+            )
+        })?,
+    );
+    let configuration = ProviderPublicationConfigurationToken {
+        schema_version: "froglet.provider-publication-configuration.v2",
+        provider_id,
+        runtime,
+        resolved_definition_digest: &resolved_definition_digest,
+        available_limits,
+        payment_backends,
+        offer_settlement_method,
+        gpu_enabled: state.config.gpu.enabled,
+        gpu_capabilities,
+        wasm_host_capabilities,
+    };
+    let configuration_token = crypto::sha256_hex(
+        canonical_json::to_vec(&configuration).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to resolve provider publication configuration: {error}") }),
+            )
+        })?,
+    );
+    let identity_backup = resolve_publication_identity_backup(state)?;
+    let precondition = PublicationPrecondition::new(
+        provider_id.to_string(),
+        intent_digest,
+        resolved_limits,
+        configuration_token,
+        identity_backup,
+    )
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to build publication precondition: {error}") }),
+        )
+    })?;
+    Ok(ResolvedPublicationApproval {
+        precondition,
+        candidate,
+    })
+}
+
+fn resolve_publication_precondition(
+    state: &AppState,
+    payload: &ProviderControlPublishArtifactRequest,
+) -> Result<PublicationPrecondition, ApiFailure> {
+    resolve_publication_approval(state, payload).map(|resolved| resolved.precondition)
+}
+
+async fn preflight_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ProviderControlPublishArtifactRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let resolution_state = Arc::clone(&state);
+    let resolved = tokio::task::spawn_blocking(move || {
+        resolve_publication_precondition(resolution_state.as_ref(), &payload)
+    })
+    .await;
+    match resolved {
+        Err(error) => {
+            tracing::error!(details = %error, "publication preflight worker failed");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "publication preflight worker failed" }),
+            )
+            .into_response()
+        }
+        Ok(Ok(precondition)) => (StatusCode::OK, Json(precondition)).into_response(),
+        Ok(Err((status, body))) => (status, Json(body)).into_response(),
+    }
+}
+
+fn validate_approved_publication_precondition(
+    state: &AppState,
+    headers: &HeaderMap,
+    payload: &ProviderControlPublishArtifactRequest,
+) -> Result<ResolvedProviderOfferDefinition, ApiFailure> {
+    let Some(approved) = headers.get(PUBLICATION_PRECONDITION_HEADER) else {
+        // Legacy direct provider-control publication remains available. The
+        // canonical public publish engine always supplies this header.
+        return resolve_publication_approval(state, payload).map(|resolved| resolved.candidate);
+    };
+    let approved = approved.to_str().map_err(|_| {
+        (
+            StatusCode::PRECONDITION_FAILED,
+            json!({
+                "error": "publication precondition header is not valid ASCII",
+                "remediation": "re-plan the publication and approve the new consent hash",
+            }),
+        )
+    })?;
+    let current = resolve_publication_approval(state, payload).map_err(|(_, details)| {
+        (
+            StatusCode::PRECONDITION_FAILED,
+            json!({
+                "error": "approved publication precondition cannot be satisfied by the current provider configuration",
+                "details": details,
+                "remediation": "re-plan the publication and approve the new consent hash",
+            }),
+        )
+    })?;
+    if approved.len() != 64
+        || !approved.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !bool::from(
+            approved
+                .as_bytes()
+                .ct_eq(current.precondition.precondition_token.as_bytes()),
+        )
+    {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            json!({
+                "error": "approved publication precondition no longer matches the provider identity, intent, or effective configuration",
+                "provider_id": current.precondition.provider_id,
+                "resolved_limits": current.precondition.resolved_limits,
+                "identity_backup": current.precondition.identity_backup,
+                "remediation": "re-plan the publication and approve the new consent hash",
+            }),
+        ));
+    }
+    Ok(current.candidate)
+}
+
+#[derive(Debug)]
+struct CommittedPublicationCandidate {
+    previous_lifecycle: Option<db::PublicationLifecycleRecord>,
+    previous_transport_grants: Vec<db::PublicationTransportGrantRecord>,
+    lifecycle: db::PublicationLifecycleRecord,
+    revision: SignedPublicationRevision,
+    offer: SignedArtifact<OfferPayload>,
+}
+
+type PublicationCommitHook = fn() -> Result<(), String>;
+
+fn publication_commit_noop() -> Result<(), String> {
+    Ok(())
+}
+
+fn insert_publication_artifact<T: Serialize>(
+    conn: &rusqlite::Connection,
+    artifact: &SignedArtifact<T>,
+) -> Result<(), String> {
+    let document_json = serde_json::to_string(artifact).map_err(|error| error.to_string())?;
+    db::insert_artifact_document(
+        conn,
+        &artifact.hash,
+        &artifact.payload_hash,
+        &artifact.artifact_type,
+        &artifact.signer,
+        artifact.created_at,
+        &document_json,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_publication_candidate_atomically(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    definition: &ProviderManagedOfferDefinition,
+    verification: &LocalVerificationEvidence,
+    lifecycle_status: &str,
+    builtin_definitions: Vec<ProviderManagedOfferDefinition>,
+    transport_endpoints: Vec<protocol::TransportEndpoint>,
+    now: i64,
+    data_staging: &mut PublicationDataStaging,
+    after_artifact_insert: PublicationCommitHook,
+) -> Result<CommittedPublicationCandidate, String> {
+    // Native data becomes durable before SQLite exposes any lifecycle pointer.
+    // If syncing fails, the armed staging guard removes its unreachable files.
+    data_staging.prepare_for_commit()?;
+
+    let committed = db::with_immediate_transaction(conn, |conn| {
+        let service_id = definition
+            .service_id
+            .as_deref()
+            .ok_or_else(|| "publication definition is missing service_id".to_string())?;
+        let previous_lifecycle = db::get_publication_lifecycle(conn, service_id)?;
+        let previous_transport_grants = db::list_publication_transport_grants(conn, "relay")?
+            .into_iter()
+            .filter(|grant| grant.service_id == service_id)
+            .collect();
+        let bindings = current_offer_bindings_in_connection(
+            conn,
+            builtin_definitions,
+            kernel_paid_settlement_available(state),
+        )?;
+        let descriptor = publication_descriptor_in_connection(
+            state,
+            conn,
+            &bindings,
+            definition,
+            transport_endpoints,
+            now,
+        )?;
+        let offer =
+            publication_offer_in_connection(state, conn, &bindings, definition, &descriptor, now)?;
+        let offer_record = provider_offer_record_from_parts(definition, offer.clone());
+        let revision =
+            build_signed_publication_revision(state, definition, &offer_record, verification)?;
+        let signed_revision_json =
+            serde_json::to_string(&revision).map_err(|error| error.to_string())?;
+        let definition_json =
+            serde_json::to_string(definition).map_err(|error| error.to_string())?;
+        let lifecycle_evidence_json = serde_json::to_string(&json!({
+            "revision_hash": revision.revision_hash,
+            "offer_hash": revision.payload.offer_hash,
+            "binding_hash": revision.payload.binding_hash,
+            "local_verification": verification,
+        }))
+        .map_err(|error| error.to_string())?;
+        let db_revision = db::NewPublicationRevision {
+            revision_hash: revision.revision_hash.clone(),
+            service_id: revision.payload.service_id.clone(),
+            offer_id: revision.payload.offer_id.clone(),
+            offer_hash: revision.payload.offer_hash.clone(),
+            binding_hash: revision.payload.binding_hash.clone(),
+            signed_revision_json,
+            definition_json,
+        };
+
+        // These feed writes are deliberately inside the same rollback domain
+        // as the immutable revision and lifecycle activation pointer.
+        insert_publication_artifact(conn, &descriptor)?;
+        insert_publication_artifact(conn, &offer)?;
+        after_artifact_insert()?;
+        let lifecycle = db::persist_and_activate_publication_revision_in_transaction(
+            conn,
+            &db_revision,
+            lifecycle_status,
+            &lifecycle_evidence_json,
+            now,
+        )?;
+        Ok(CommittedPublicationCandidate {
+            previous_lifecycle,
+            previous_transport_grants,
+            lifecycle,
+            revision,
+            offer,
+        })
+    })?;
+    data_staging.mark_committed();
+    Ok(committed)
+}
+
 pub(crate) async fn publish_artifact(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5489,22 +7118,1775 @@ pub(crate) async fn publish_artifact(
     if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
         return (status, Json(json!(body))).into_response();
     }
-    let service_id = payload.service_id.clone();
-    let definition = match artifact_provider_offer_definition(state.as_ref(), payload) {
-        Ok(d) => d,
+    let resolution_state = Arc::clone(&state);
+    let resolved = match tokio::task::spawn_blocking(move || {
+        validate_approved_publication_precondition(resolution_state.as_ref(), &headers, &payload)
+    })
+    .await
+    {
+        Ok(Ok(resolved)) => resolved,
+        Ok(Err((status, body))) => return (status, Json(json!(body))).into_response(),
+        Err(error) => {
+            tracing::error!(details = %error, "publication approval worker failed");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "publication approval worker failed" }),
+            )
+            .into_response();
+        }
+    };
+    let Some(service_id) = resolved.definition.service_id.clone() else {
+        tracing::error!(
+            offer_id = %resolved.definition.offer_id,
+            "resolved publication definition is missing its service identity"
+        );
+        return error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "resolved publication definition is missing its service identity" }),
+        )
+        .into_response();
+    };
+    let has_native_data = resolved.validated_data_source.is_some();
+    // Keep the same-node owner through staging, fixture execution, and the
+    // lifecycle commit. The blocking worker does not need the guard itself;
+    // this async frame retains it while awaiting the worker.
+    let _native_data_publication_guard = if has_native_data {
+        Some(state.native_data_publication_lock.lock().await)
+    } else {
+        None
+    };
+    let prepared = if has_native_data {
+        let preparation_state = Arc::clone(&state);
+        match tokio::task::spawn_blocking(move || {
+            prepare_resolved_artifact_provider_offer_definition(
+                preparation_state.as_ref(),
+                resolved,
+            )
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(details = %error, "publication data staging worker failed");
+                return error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "publication data staging worker failed" }),
+                )
+                .into_response();
+            }
+        }
+    } else {
+        prepare_resolved_artifact_provider_offer_definition(state.as_ref(), resolved)
+    };
+    let PreparedProviderOfferDefinition {
+        definition,
+        mut data_staging,
+    } = match prepared {
+        Ok(prepared) => prepared,
         Err((status, body)) => return (status, Json(json!(body))).into_response(),
     };
-    match persist_provider_offer_mutation(
+    if let Err(error) = validate_shared_offer_compatibility(state.as_ref(), &definition).await {
+        return (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response();
+    }
+    let local_verification = match verify_provider_offer_locally(state.as_ref(), &definition).await
+    {
+        Ok(evidence) => evidence,
+        Err((status, body)) => return (status, Json(json!(body))).into_response(),
+    };
+    if let Some(verification) = local_verification.as_ref()
+        && let Err(error) =
+            preflight_publication_revision(state.as_ref(), &definition, verification)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "publication revision preflight failed",
+                "details": error,
+            })),
+        )
+            .into_response();
+    }
+    let Some(verification) = local_verification.as_ref() else {
+        if data_staging.owns_publication_lock() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "native data publication requires a local verification fixture before persistence"
+                })),
+            )
+                .into_response();
+        }
+        return match persist_provider_offer_mutation(
+            state.as_ref(),
+            definition,
+            StatusCode::CREATED,
+            format!("published legacy unverified local artifact {service_id}"),
+        )
+        .await
+        {
+            Ok((status, Json(mut response))) => {
+                data_staging.mark_committed();
+                response.evidence.lifecycle_status = "legacy_unverified".to_string();
+                (status, Json(response)).into_response()
+            }
+            Err((status, body)) => (status, Json(json!(body))).into_response(),
+        };
+    };
+    let lifecycle_status = if definition.publication_state == "active" {
+        "active"
+    } else {
+        "paused"
+    };
+    let confidential_profiles = match current_confidential_profile_artifacts(state.as_ref()).await {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            tracing::error!(offer_id = %definition.offer_id, details = %error, "failed to prepare publication offer context");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to prepare publication offer context" })),
+            )
+                .into_response();
+        }
+    };
+    let builtin_definitions =
+        builtin_provider_offer_definitions(state.as_ref(), &confidential_profiles);
+    let transport_endpoints = {
+        let transport_status = state.transport_status.lock().await.clone();
+        descriptor_transport_endpoints(&transport_status)
+    };
+    let now = settlement::current_unix_timestamp();
+    let _relay_publication_write = acquire_relay_publication_write(state.as_ref()).await;
+    let state_for_commit = Arc::clone(&state);
+    let definition_for_commit = definition.clone();
+    let verification_for_commit = verification.clone();
+    let persisted_lifecycle = state
+        .db
+        .with_write_conn(move |conn| {
+            persist_publication_candidate_atomically(
+                state_for_commit.as_ref(),
+                conn,
+                &definition_for_commit,
+                &verification_for_commit,
+                lifecycle_status,
+                builtin_definitions,
+                transport_endpoints,
+                now,
+                &mut data_staging,
+                publication_commit_noop,
+            )
+        })
+        .await;
+    let committed = match persisted_lifecycle {
+        Ok(committed) => committed,
+        Err(error) => {
+            tracing::error!(offer_id = %definition.offer_id, details = %error, "failed to persist publication revision lifecycle");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "failed to persist immutable publication revision",
+                    "details": error,
+                })),
+            )
+                .into_response();
+        }
+    };
+    let remaining_relay_grants = match sync_relay_activation_gate(state.as_ref()).await {
+        Ok(count) => count,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": "publication revision persisted but relay activation gate could not be synchronized",
+                    "partial_state": true,
+                    "service_id": service_id,
+                    "revision_hash": committed.revision.revision_hash,
+                    "relay_gate_sync_error": error,
+                }),
+            )
+            .into_response();
+        }
+    };
+    let lifecycle = committed.lifecycle;
+    let previous_publication = committed
+        .previous_lifecycle
+        .map(provider_publication_status);
+    let previous_transport_grants = committed.previous_transport_grants;
+    let revision = committed.revision;
+    let offer_record = provider_offer_record_from_parts(&definition, committed.offer);
+    let response = ProviderControlMutationResponse {
+        request_id: protocol::new_artifact_id(),
+        status: "passed".to_string(),
+        failure_kind: None,
+        summary: format!(
+            "published artifact {service_id}; {remaining_relay_grants} exact relay grant(s) remain"
+        ),
+        artifacts: vec![
+            ProviderControlArtifactRef {
+                kind: ARTIFACT_KIND_DESCRIPTOR.to_string(),
+                hash: offer_record.offer.payload.descriptor_hash.clone(),
+            },
+            ProviderControlArtifactRef {
+                kind: ARTIFACT_KIND_OFFER.to_string(),
+                hash: offer_record.offer.hash.clone(),
+            },
+        ],
+        evidence: ProviderControlEvidence {
+            provider_id: offer_record.offer.payload.provider_id.clone(),
+            descriptor_hash: offer_record.offer.payload.descriptor_hash.clone(),
+            offer_hash: offer_record.offer.hash.clone(),
+            offer_id: offer_record.offer.payload.offer_id.clone(),
+            lifecycle_status: lifecycle.status,
+            service_id: offer_record.service_id.clone(),
+            local_verification,
+            publication_revision: Some(revision),
+            activation_token: Some(lifecycle.activation_token),
+            previous_publication,
+            previous_transport_grants,
+        },
+        offer: offer_record,
+    };
+    (StatusCode::CREATED, Json(response)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderPublicationListQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+fn provider_publication_status(
+    record: db::PublicationLifecycleRecord,
+) -> ProviderPublicationStatus {
+    ProviderPublicationStatus {
+        service_id: record.service_id,
+        status: record.status,
+        active_revision_hash: record.active_revision_hash,
+        selected_revision_hash: record.selected_revision_hash,
+        activation_token: record.activation_token,
+        revision_count: record.revision_count,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+fn provider_publication_revision_summary(
+    record: &db::PublicationRevisionRecord,
+) -> ProviderPublicationRevisionSummary {
+    ProviderPublicationRevisionSummary {
+        revision_hash: record.revision_hash.clone(),
+        service_id: record.service_id.clone(),
+        offer_id: record.offer_id.clone(),
+        offer_hash: record.offer_hash.clone(),
+        binding_hash: record.binding_hash.clone(),
+        validation_status: record.validation_status.clone(),
+        created_at: record.created_at,
+    }
+}
+
+fn provider_publication_revision_detail(
+    record: db::PublicationRevisionRecord,
+) -> Result<ProviderPublicationRevisionDetail, String> {
+    let signed_revision: SignedPublicationRevision =
+        serde_json::from_value(record.signed_revision.clone())
+            .map_err(|error| format!("stored publication revision is invalid JSON: {error}"))?;
+    signed_revision
+        .verify()
+        .map_err(|error| format!("stored publication revision failed verification: {error}"))?;
+    if signed_revision.revision_hash != record.revision_hash
+        || signed_revision.payload.service_id != record.service_id
+        || signed_revision.payload.offer_id != record.offer_id
+        || signed_revision.payload.offer_hash != record.offer_hash
+        || signed_revision.payload.binding_hash != record.binding_hash
+    {
+        return Err(
+            "stored publication revision metadata does not match its signed payload".to_string(),
+        );
+    }
+    Ok(ProviderPublicationRevisionDetail {
+        summary: provider_publication_revision_summary(&record),
+        signed_revision,
+    })
+}
+
+async fn list_provider_publications(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProviderPublicationListQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(100).clamp(1, 100);
+    match state
+        .db
+        .with_read_conn(db::list_publication_lifecycles)
+        .await
+    {
+        Ok(mut records) => {
+            records.truncate(limit);
+            let service_ids = records
+                .iter()
+                .map(|record| record.service_id.clone())
+                .collect::<Vec<_>>();
+            let last_successful_calls = match state.db.with_read_conn(move |conn| {
+                let mut result = std::collections::BTreeMap::new();
+                // deals.offer_id contains the selected offer artifact hash,
+                // while its service_id may be the generic Wasm execution type.
+                let mut query = conn.prepare("SELECT MAX(updated_at) FROM deals WHERE offer_id IN (SELECT offer_hash FROM publication_revisions WHERE service_id = ?1) AND status = 'succeeded' AND receipt_artifact_json IS NOT NULL").map_err(|e| e.to_string())?;
+                for id in service_ids {
+                    let timestamp: Option<i64> = query.query_row([&id], |row| row.get(0)).map_err(|e| e.to_string())?;
+                    if let Some(timestamp) = timestamp { result.insert(id, timestamp); }
+                }
+                Ok::<_, String>(result)
+            }).await {
+                Ok(calls) => calls,
+                Err(error) => {
+                    tracing::error!("could not read service call status: {error}");
+                    return error_json(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"service call status unavailable"})).into_response();
+                }
+            };
+            let publications = records
+                .into_iter()
+                .map(provider_publication_status)
+                .collect();
+            (
+                StatusCode::OK,
+                Json(ProviderPublicationsResponse {
+                    publications,
+                    last_successful_calls,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::error!(details = %error, "failed to list publication lifecycles");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to list publication lifecycles" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn get_provider_publication(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+) -> impl IntoResponse {
+    let service_id = match normalize_short_id(&service_id) {
+        Ok(service_id) => service_id,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+        }
+    };
+    let lookup_service_id = service_id.clone();
+    match state
+        .db
+        .with_read_conn(move |conn| db::get_publication_lifecycle(conn, &lookup_service_id))
+        .await
+    {
+        Ok(Some(record)) => (
+            StatusCode::OK,
+            Json(ProviderPublicationResponse {
+                publication: provider_publication_status(record),
+            }),
+        )
+            .into_response(),
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "publication lifecycle not found", "service_id": service_id }),
+        )
+        .into_response(),
+        Err(error) => {
+            tracing::error!(service_id = %service_id, details = %error, "failed to load publication lifecycle");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load publication lifecycle" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn list_provider_publication_revisions(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+    Query(query): Query<ProviderPublicationListQuery>,
+) -> impl IntoResponse {
+    let service_id = match normalize_short_id(&service_id) {
+        Ok(service_id) => service_id,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+        }
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let lookup_service_id = service_id.clone();
+    match state
+        .db
+        .with_read_conn(move |conn| db::list_publication_revisions(conn, &lookup_service_id, limit))
+        .await
+    {
+        Ok(records) if records.is_empty() => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "publication lifecycle not found", "service_id": service_id }),
+        )
+        .into_response(),
+        Ok(records) => {
+            let revisions = records
+                .iter()
+                .map(provider_publication_revision_summary)
+                .collect();
+            (
+                StatusCode::OK,
+                Json(ProviderPublicationRevisionsResponse { revisions }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::error!(service_id = %service_id, details = %error, "failed to list publication revisions");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to list publication revisions" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn get_provider_publication_revision(
+    State(state): State<Arc<AppState>>,
+    Path((service_id, revision_hash)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let service_id = match normalize_short_id(&service_id) {
+        Ok(service_id) => service_id,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+        }
+    };
+    if revision_hash.len() != 64 || !revision_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "revision_hash must be 64 hexadecimal characters" }),
+        )
+        .into_response();
+    }
+    let lookup_service_id = service_id.clone();
+    let lookup_revision_hash = revision_hash.clone();
+    match state
+        .db
+        .with_read_conn(move |conn| {
+            db::get_publication_revision(conn, &lookup_service_id, &lookup_revision_hash)
+        })
+        .await
+    {
+        Ok(Some(record)) => match provider_publication_revision_detail(record) {
+            Ok(revision) => (
+                StatusCode::OK,
+                Json(ProviderPublicationRevisionResponse { revision }),
+            )
+                .into_response(),
+            Err(error) => {
+                tracing::error!(service_id = %service_id, revision_hash = %revision_hash, details = %error, "stored publication revision failed validation");
+                error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "stored publication revision failed validation" }),
+                )
+                .into_response()
+            }
+        },
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({
+                "error": "publication revision not found",
+                "service_id": service_id,
+                "revision_hash": revision_hash,
+            }),
+        )
+        .into_response(),
+        Err(error) => {
+            tracing::error!(service_id = %service_id, revision_hash = %revision_hash, details = %error, "failed to load publication revision");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load publication revision" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn list_provider_publication_operations(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+    Query(query): Query<ProviderPublicationListQuery>,
+) -> impl IntoResponse {
+    let service_id = match normalize_short_id(&service_id) {
+        Ok(service_id) => service_id,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+        }
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let lookup_service_id = service_id.clone();
+    match state
+        .db
+        .with_read_conn(move |conn| {
+            db::list_publication_operations(conn, &lookup_service_id, limit)
+        })
+        .await
+    {
+        Ok(operations) if operations.is_empty() => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "publication lifecycle not found", "service_id": service_id }),
+        )
+        .into_response(),
+        Ok(operations) => (
+            StatusCode::OK,
+            Json(ProviderPublicationOperationsResponse { operations }),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(service_id = %service_id, details = %error, "failed to list publication operations");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to list publication operations" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn legacy_unverified_publication_exists(state: &AppState, service_id: &str) -> bool {
+    let service_id = service_id.to_string();
+    state
+        .db
+        .with_read_conn(move |conn| {
+            let records = db::list_provider_managed_offers(conn)?;
+            Ok::<_, String>(records.into_iter().any(|record| {
+                record.definition.get("service_id").and_then(Value::as_str)
+                    == Some(service_id.as_str())
+            }))
+        })
+        .await
+        .unwrap_or(false)
+}
+
+fn validate_relay_activation_request(
+    request: &RelayTransportActivationRequest,
+) -> Result<(), String> {
+    normalize_short_id(&request.service_id)?;
+    if request.revision_hash.len() != 64
+        || !request
+            .revision_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("revision_hash must be 64 lowercase hexadecimal characters".to_string());
+    }
+    if !db::is_publication_activation_token(&request.activation_token) {
+        return Err("activation_token must be 64 lowercase hexadecimal characters".to_string());
+    }
+    crate::relay_tunnel::validate_public_url(&request.public_url)?;
+    crate::config::validate_relay_control_url(&request.relay_control_url)?;
+    Ok(())
+}
+
+/// Recompute desired relay connection state from durable exact grants. Grants
+/// for an older configured public URL remain dormant and cannot authorize the
+/// current tunnel.
+async fn sync_relay_activation_gate(state: &AppState) -> Result<usize, String> {
+    let grants = state
+        .db
+        .with_read_conn(|conn| db::list_publication_transport_grants(conn, "relay"))
+        .await?;
+    let status = state.transport_status.lock().await;
+    let matching_grants = status
+        .relay_url
+        .as_deref()
+        .zip(state.config.relay.url.as_deref())
+        .map_or(0, |(expected_public_url, expected_control_url)| {
+            grants
+                .iter()
+                .filter(|grant| {
+                    grant.public_url == expected_public_url
+                        && grant.relay_control_url == expected_control_url
+                })
+                .count()
+        });
+    status.set_relay_activation_desired(status.relay_enabled && matching_grants > 0);
+    Ok(matching_grants)
+}
+
+async fn acquire_relay_publication_write(
+    state: &AppState,
+) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+    let gate = { state.transport_status.lock().await.relay_publication_gate() };
+    gate.write_owned().await
+}
+
+async fn wait_for_relay_activation_state(
+    state: &AppState,
+    expected_public_url: &str,
+    desired_active: bool,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let status = state.transport_status.lock().await.clone();
+        let reached = if desired_active {
+            status.relay_status == "up" && status.relay_url.as_deref() == Some(expected_public_url)
+        } else {
+            status.relay_status != "up" && status.relay_status != "starting"
+        };
+        if reached {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "relay did not reach {} within {:?}; last status was {:?}",
+                if desired_active { "up" } else { "reserved" },
+                timeout,
+                status.relay_status,
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn activate_relay_transport(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<RelayTransportActivationRequest>,
+) -> Response {
+    if let Err(error) = validate_relay_activation_request(&request) {
+        return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+    }
+    let planned_public_url = {
+        let status = state.transport_status.lock().await;
+        if !status.relay_enabled {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "relay endpoint planning is disabled" }),
+            )
+            .into_response();
+        }
+        status.relay_url.clone()
+    };
+    let Some(planned_public_url) = planned_public_url else {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "relay has no identity-bound planned public URL" }),
+        )
+        .into_response();
+    };
+    if request.public_url != planned_public_url {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "relay activation endpoint differs from the planned endpoint",
+                "planned_public_url": planned_public_url,
+            }),
+        )
+        .into_response();
+    }
+    let Some(planned_control_url) = state.config.relay.url.as_deref() else {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "relay has no configured control endpoint" }),
+        )
+        .into_response();
+    };
+    if request.relay_control_url != planned_control_url {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "relay activation control endpoint differs from the planned endpoint",
+                "planned_relay_control_url": planned_control_url,
+            }),
+        )
+        .into_response();
+    }
+    let _relay_publication_write = acquire_relay_publication_write(state.as_ref()).await;
+
+    let service_id = request.service_id.clone();
+    let revision_hash = request.revision_hash.clone();
+    let activation_token = request.activation_token.clone();
+    let grant_public_url = request.public_url.clone();
+    let grant_control_url = request.relay_control_url.clone();
+    let now = settlement::current_unix_timestamp();
+    let grant = match state
+        .db
+        .with_write_conn(move |conn| {
+            db::persist_publication_transport_grant(
+                conn,
+                &db::NewPublicationTransportGrant {
+                    transport: "relay",
+                    service_id: &service_id,
+                    revision_hash: &revision_hash,
+                    activation_token: &activation_token,
+                    public_url: &grant_public_url,
+                    relay_control_url: &grant_control_url,
+                    now,
+                },
+            )
+        })
+        .await
+    {
+        Ok(grant) => grant,
+        Err(error) if error.contains("precondition mismatch") => {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+        }
+        Err(error) => {
+            tracing::error!(details = %error, "failed to persist relay transport grant");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to persist relay transport grant" }),
+            )
+            .into_response();
+        }
+    };
+    let remaining_grants = match sync_relay_activation_gate(state.as_ref()).await {
+        Ok(count) => count,
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": "relay grant persisted but activation gate could not be synchronized",
+                    "partial_state": true,
+                    "details": error,
+                    "grant": grant,
+                }),
+            )
+            .into_response();
+        }
+    };
+    if let Err(activation_error) = wait_for_relay_activation_state(
         state.as_ref(),
-        definition,
-        StatusCode::CREATED,
-        format!("published artifact {service_id}"),
+        &planned_public_url,
+        true,
+        Duration::from_secs(RELAY_ACTIVATION_TIMEOUT_SECS),
     )
     .await
     {
-        Ok((status, json)) => (status, json).into_response(),
-        Err((status, body)) => (status, Json(json!(body))).into_response(),
+        let remove_service_id = grant.service_id.clone();
+        let remove_revision_hash = grant.revision_hash.clone();
+        let remove_activation_token = grant.activation_token.clone();
+        let remove_public_url = grant.public_url.clone();
+        let remove_control_url = grant.relay_control_url.clone();
+        let withdrawal = state
+            .db
+            .with_write_conn(move |conn| {
+                db::remove_publication_transport_grant_exact(
+                    conn,
+                    "relay",
+                    &remove_service_id,
+                    &remove_revision_hash,
+                    &remove_activation_token,
+                    &remove_public_url,
+                    &remove_control_url,
+                )
+            })
+            .await;
+        let gate_sync = sync_relay_activation_gate(state.as_ref()).await;
+        return match (withdrawal, gate_sync) {
+            (Ok(_), Ok(_)) => error_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "error": activation_error,
+                    "relay_grant_withdrawn": true,
+                    "grant": grant,
+                }),
+            )
+            .into_response(),
+            (withdrawal, gate_sync) => error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": activation_error,
+                    "partial_state": true,
+                    "relay_grant_withdrawal": withdrawal.map_err(|error| error.to_string()),
+                    "relay_gate_sync": gate_sync.map_err(|error| error.to_string()),
+                    "grant": grant,
+                }),
+            )
+            .into_response(),
+        };
     }
+
+    (
+        StatusCode::OK,
+        Json(RelayTransportActivationResponse {
+            status: "up".to_string(),
+            public_url: planned_public_url,
+            grant,
+            remaining_grants,
+        }),
+    )
+        .into_response()
+}
+
+async fn deactivate_relay_transport(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<RelayTransportActivationRequest>,
+) -> Response {
+    if let Err(error) = validate_relay_activation_request(&request) {
+        return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+    }
+    let expected_public_url = state.transport_status.lock().await.relay_url.clone();
+    if expected_public_url.as_deref() != Some(request.public_url.as_str())
+        || state.config.relay.url.as_deref() != Some(request.relay_control_url.as_str())
+    {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "relay deactivation endpoints differ from the configured grant scope" }),
+        )
+        .into_response();
+    }
+    let _relay_publication_write = acquire_relay_publication_write(state.as_ref()).await;
+    let service_id = request.service_id.clone();
+    let revision_hash = request.revision_hash.clone();
+    let activation_token = request.activation_token.clone();
+    let public_url = request.public_url.clone();
+    let relay_control_url = request.relay_control_url.clone();
+    let removed = match state
+        .db
+        .with_write_conn(move |conn| {
+            db::remove_publication_transport_grant_exact(
+                conn,
+                "relay",
+                &service_id,
+                &revision_hash,
+                &activation_token,
+                &public_url,
+                &relay_control_url,
+            )
+        })
+        .await
+    {
+        Ok(removed) => removed,
+        Err(error) => {
+            tracing::error!(details = %error, "failed to withdraw relay transport grant");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to withdraw relay transport grant" }),
+            )
+            .into_response();
+        }
+    };
+    match sync_relay_activation_gate(state.as_ref()).await {
+        Ok(remaining_grants) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": if remaining_grants == 0 { "reserved" } else { "up" },
+                "public_url": request.public_url,
+                "grant_removed": removed,
+                "remaining_grants": remaining_grants,
+            })),
+        )
+            .into_response(),
+        Err(error) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": "relay grant withdrawal persisted but activation gate could not be synchronized",
+                "partial_state": true,
+                "details": error,
+                "grant_removed": removed,
+            }),
+        )
+        .into_response(),
+    }
+}
+
+struct PublicationActivationCandidate {
+    definition: ProviderManagedOfferDefinition,
+    revision: db::PublicationRevisionRecord,
+    revision_provider_id: String,
+}
+
+// Private lifecycle evidence, never part of a signed publication artifact.
+// A pause withdraws its exact grant; retaining the previously approved scope
+// lets an explicit resume create a new grant for its rotated activation token.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PausedRelayScope {
+    revision_hash: String,
+    public_url: String,
+    relay_control_url: String,
+}
+
+async fn relay_scope_for_lifecycle_mutation(
+    state: &AppState,
+    service_id: &str,
+    mutation: &db::PublicationLifecycleMutation,
+) -> Result<Option<PausedRelayScope>, String> {
+    let service_id = service_id.to_string();
+    let mutation = mutation.clone();
+    state
+        .db
+        .with_read_conn(move |conn| match mutation {
+            db::PublicationLifecycleMutation::Pause
+            | db::PublicationLifecycleMutation::PauseExact { .. } => {
+                Ok(db::list_publication_transport_grants(conn, "relay")?
+                    .into_iter()
+                    .find(|grant| grant.service_id == service_id)
+                    .map(|grant| PausedRelayScope {
+                        revision_hash: grant.revision_hash,
+                        public_url: grant.public_url,
+                        relay_control_url: grant.relay_control_url,
+                    }))
+            }
+            db::PublicationLifecycleMutation::Resume => {
+                let Some(lifecycle) = db::get_publication_lifecycle(conn, &service_id)? else {
+                    return Ok(None);
+                };
+                let Some(last) = db::list_publication_operations(conn, &service_id, 1)?
+                    .into_iter()
+                    .next()
+                else {
+                    return Ok(None);
+                };
+                let expected_status = match last.operation.as_str() {
+                    "pause" => "paused",
+                    "resume" => "active",
+                    _ => return Ok(None),
+                };
+                if lifecycle.status != expected_status
+                    || last.revision_hash.as_deref()
+                        != Some(lifecycle.selected_revision_hash.as_str())
+                {
+                    return Ok(None);
+                }
+                last.evidence
+                    .get("relay_scope")
+                    .filter(|value| !value.is_null())
+                    .cloned()
+                    .map(serde_json::from_value::<PausedRelayScope>)
+                    .transpose()
+                    .map_err(|error| format!("stored relay recovery scope is invalid: {error}"))
+                    .map(|scope| {
+                        scope
+                            .filter(|scope| scope.revision_hash == lifecycle.selected_revision_hash)
+                    })
+            }
+            _ => Ok(None),
+        })
+        .await
+}
+
+enum PublicationActivationTarget {
+    SelectedRevision,
+    ExactRevision(String),
+}
+
+async fn publication_candidate_for_activation(
+    state: &AppState,
+    service_id: &str,
+    mutation: &db::PublicationLifecycleMutation,
+) -> Result<Option<PublicationActivationCandidate>, String> {
+    let target = match mutation {
+        db::PublicationLifecycleMutation::Resume => PublicationActivationTarget::SelectedRevision,
+        db::PublicationLifecycleMutation::Rollback { revision_hash } => {
+            PublicationActivationTarget::ExactRevision(revision_hash.clone())
+        }
+        db::PublicationLifecycleMutation::Pause
+        | db::PublicationLifecycleMutation::PauseExact { .. }
+        | db::PublicationLifecycleMutation::Unpublish => return Ok(None),
+    };
+    let service_id = service_id.to_string();
+    let revision = state
+        .db
+        .with_write_conn(move |conn| {
+            let revision_hash = match target {
+                PublicationActivationTarget::SelectedRevision => {
+                    let Some(lifecycle) = db::get_publication_lifecycle(conn, &service_id)? else {
+                        return Ok(None);
+                    };
+                    if !matches!(lifecycle.status.as_str(), "active" | "paused") {
+                        return Ok(None);
+                    }
+                    lifecycle.selected_revision_hash
+                }
+                PublicationActivationTarget::ExactRevision(revision_hash) => revision_hash,
+            };
+            db::get_publication_revision(conn, &service_id, &revision_hash)
+        })
+        .await?;
+    let Some(revision) = revision else {
+        return Ok(None);
+    };
+    let signed_revision: SignedPublicationRevision =
+        serde_json::from_value(revision.signed_revision.clone()).map_err(|error| {
+            format!(
+                "publication revision {} contains invalid signed revision JSON: {error}",
+                revision.revision_hash
+            )
+        })?;
+    signed_revision.verify().map_err(|error| {
+        format!(
+            "publication revision {} failed signature verification: {error}",
+            revision.revision_hash
+        )
+    })?;
+    if signed_revision.revision_hash != revision.revision_hash {
+        return Err(format!(
+            "publication revision key {} does not match its signed revision hash {}",
+            revision.revision_hash, signed_revision.revision_hash
+        ));
+    }
+    let mut definition: ProviderManagedOfferDefinition =
+        serde_json::from_value(revision.definition.clone()).map_err(|error| {
+            format!(
+                "publication revision {} contains invalid provider definition JSON: {error}",
+                revision.revision_hash
+            )
+        })?;
+    definition.publication_state = "active".to_string();
+    validate_provider_offer_definition(&definition)?;
+    Ok(Some(PublicationActivationCandidate {
+        definition,
+        revision,
+        revision_provider_id: signed_revision.payload.provider_id,
+    }))
+}
+
+async fn validate_shared_offer_activation_artifact(
+    state: &AppState,
+    candidate: &PublicationActivationCandidate,
+) -> Result<(), String> {
+    let target_offer = load_stored_publication_offer(state, &candidate.revision).await?;
+    let candidate_service_id = offer_service_id(&candidate.definition);
+    for binding in current_offer_bindings(state).await? {
+        if binding.definition.publication_state != "active"
+            || binding.definition.offer_id != candidate.definition.offer_id
+            || offer_service_id(&binding.definition) == candidate_service_id
+        {
+            continue;
+        }
+        let active_offer = offer_artifact_for_binding(state, &binding).await?;
+        if active_offer.hash != target_offer.hash {
+            return Err(format!(
+                "offer_id {} is active for service {} through exact Kernel Offer {}; revision {} uses {}; republish {} against the active shared offer before activation",
+                candidate.definition.offer_id,
+                offer_service_id(&binding.definition),
+                active_offer.hash,
+                candidate.revision.revision_hash,
+                target_offer.hash,
+                candidate_service_id,
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn mutate_provider_publication(
+    state: Arc<AppState>,
+    service_id: String,
+    mutation: db::PublicationLifecycleMutation,
+    operation: &'static str,
+) -> Response {
+    let service_id = match normalize_short_id(&service_id) {
+        Ok(service_id) => service_id,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+        }
+    };
+    let _relay_publication_write = acquire_relay_publication_write(state.as_ref()).await;
+    let relay_scope = match relay_scope_for_lifecycle_mutation(
+        state.as_ref(),
+        &service_id,
+        &mutation,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(error) => {
+            tracing::error!(service_id = %service_id, operation, details = %error, "failed to read publication relay recovery scope");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to read publication relay recovery scope" }),
+            )
+            .into_response();
+        }
+    };
+    if operation == "resume"
+        && let Some(scope) = relay_scope.as_ref()
+    {
+        let transport = state.transport_status.lock().await;
+        if !transport.relay_enabled
+            || transport.relay_url.as_deref() != Some(scope.public_url.as_str())
+            || state.config.relay.url.as_deref() != Some(scope.relay_control_url.as_str())
+        {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "approved relay endpoint changed; prepare a new exact publication before resuming",
+                    "service_id": service_id,
+                }),
+            )
+            .into_response();
+        }
+    }
+    let activation_candidate = match publication_candidate_for_activation(
+        state.as_ref(),
+        &service_id,
+        &mutation,
+    )
+    .await
+    {
+        Ok(definition) => definition,
+        Err(error) => {
+            tracing::error!(service_id = %service_id, operation, details = %error, "failed to resolve publication activation revision");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to resolve publication activation revision" }),
+            )
+            .into_response();
+        }
+    };
+    if let Some(candidate) = activation_candidate {
+        if candidate.revision_provider_id != state.identity.node_id() {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "publication revision belongs to a different provider identity; republish under the current identity before activation",
+                    "revision_provider_id": candidate.revision_provider_id,
+                    "current_provider_id": state.identity.node_id(),
+                    "revision_hash": candidate.revision.revision_hash,
+                }),
+            )
+            .into_response();
+        }
+        if let Err(error) =
+            validate_shared_offer_compatibility(state.as_ref(), &candidate.definition).await
+        {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+        }
+        if let Err(error) =
+            validate_shared_offer_activation_artifact(state.as_ref(), &candidate).await
+        {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+        }
+    }
+    let evidence_json = json!({ "operation": operation, "relay_scope": relay_scope }).to_string();
+    let mutation_service_id = service_id.clone();
+    let now = settlement::current_unix_timestamp();
+    match state
+        .db
+        .with_write_conn(move |conn| {
+            db::mutate_publication_lifecycle(
+                conn,
+                &mutation_service_id,
+                mutation,
+                &evidence_json,
+                now,
+            )
+        })
+        .await
+    {
+        Ok(record) => {
+            let publication = provider_publication_status(record);
+            match sync_relay_activation_gate(state.as_ref()).await {
+                Ok(mut remaining_grants) => {
+                    if operation == "resume"
+                        && let Some(scope) = relay_scope
+                    {
+                        let request = RelayTransportActivationRequest {
+                            service_id: service_id.clone(),
+                            revision_hash: publication.selected_revision_hash.clone(),
+                            activation_token: publication.activation_token.clone(),
+                            public_url: scope.public_url,
+                            relay_control_url: scope.relay_control_url,
+                        };
+                        // The transport activation handler acquires this gate itself
+                        // and verifies the fresh lifecycle token before granting.
+                        drop(_relay_publication_write);
+                        let response = activate_relay_transport(State(state.clone()), Json(request)).await;
+                        if !response.status().is_success() {
+                            return error_json(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                json!({
+                                    "error": "publication resumed but its approved relay transport did not reconnect",
+                                    "partial_state": true,
+                                    "operation": operation,
+                                    "publication": publication,
+                                    "relay_activation_http_status": response.status().as_u16(),
+                                    "next_action": "Retry publication_resume after checking relay status",
+                                }),
+                            )
+                            .into_response();
+                        }
+                        remaining_grants = match sync_relay_activation_gate(state.as_ref()).await {
+                            Ok(count) => count,
+                            Err(error) => {
+                                return error_json(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    json!({
+                                        "error": "relay reconnected but its activation gate could not be checked",
+                                        "partial_state": true,
+                                        "publication": publication,
+                                        "details": error,
+                                    }),
+                                )
+                                .into_response();
+                            }
+                        };
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "operation": operation,
+                            "publication": publication,
+                            "relay_withdrawal": {
+                                "status": if remaining_grants == 0 { "reserved" } else { "shared_active" },
+                                "remaining_grants": remaining_grants,
+                            },
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(error) => error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({
+                        "error": "publication lifecycle changed but relay activation gate could not be synchronized",
+                        "partial_state": true,
+                        "operation": operation,
+                        "publication": publication,
+                        "relay_withdrawal_error": error,
+                    }),
+                )
+                .into_response(),
+            }
+        }
+        Err(error) if error.contains("publication service") && error.contains("was not found") => {
+            if legacy_unverified_publication_exists(state.as_ref(), &service_id).await {
+                error_json(
+                    StatusCode::CONFLICT,
+                    json!({
+                        "error": "legacy unverified publication is not lifecycle-eligible",
+                        "service_id": service_id,
+                        "lifecycle_status": "legacy_unverified",
+                        "remediation": "republish the service with a verification fixture",
+                    }),
+                )
+                .into_response()
+            } else {
+                error_json(
+                    StatusCode::NOT_FOUND,
+                    json!({ "error": "publication lifecycle not found", "service_id": service_id }),
+                )
+                .into_response()
+            }
+        }
+        Err(error)
+            if error.contains("cannot be resumed")
+                || error.contains("cannot be resumed or paused") =>
+        {
+            error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response()
+        }
+        Err(error)
+            if error.contains("publication revision precondition mismatch")
+                || error.contains("publication activation token precondition mismatch") =>
+        {
+            error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response()
+        }
+        Err(error) if error.contains("validated local publication revision") => {
+            error_json(StatusCode::NOT_FOUND, json!({ "error": error })).into_response()
+        }
+        Err(error) => {
+            tracing::error!(service_id = %service_id, operation, details = %error, "failed to mutate publication lifecycle");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to mutate publication lifecycle" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn pause_provider_publication(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+) -> Response {
+    mutate_provider_publication(
+        state,
+        service_id,
+        db::PublicationLifecycleMutation::Pause,
+        "pause",
+    )
+    .await
+}
+
+async fn restore_previous_publication_exact(
+    state: Arc<AppState>,
+    service_id: String,
+    failed_revision_hash: String,
+    failed_activation_token: String,
+    previous: ProviderPublicationStatus,
+    previous_transport_grants: Vec<db::PublicationTransportGrantRecord>,
+) -> Response {
+    let service_id = match normalize_short_id(&service_id) {
+        Ok(service_id) => service_id,
+        Err(error) => {
+            return error_json(StatusCode::BAD_REQUEST, json!({ "error": error })).into_response();
+        }
+    };
+    if previous.service_id != service_id
+        || !matches!(
+            previous.status.as_str(),
+            "active" | "paused" | "unpublished"
+        )
+        || previous.selected_revision_hash.len() != 64
+        || !previous
+            .selected_revision_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || (previous.status == "active"
+            && previous.active_revision_hash.as_deref()
+                != Some(previous.selected_revision_hash.as_str()))
+        || (previous.status != "active" && previous.active_revision_hash.is_some())
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "previous publication snapshot is inconsistent" }),
+        )
+        .into_response();
+    }
+    if previous_transport_grants.iter().any(|grant| {
+        previous.status != "active"
+            || grant.transport != "relay"
+            || grant.service_id != service_id
+            || grant.revision_hash != previous.selected_revision_hash
+            || grant.activation_token != previous.activation_token
+    }) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "previous transport grants do not match the previous publication snapshot" }),
+        )
+        .into_response();
+    }
+
+    let _relay_publication_write = acquire_relay_publication_write(state.as_ref()).await;
+    let rollback_mutation = db::PublicationLifecycleMutation::Rollback {
+        revision_hash: previous.selected_revision_hash.clone(),
+    };
+    let activation_candidate = match publication_candidate_for_activation(
+        state.as_ref(),
+        &service_id,
+        &rollback_mutation,
+    )
+    .await
+    {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "previous validated publication revision was not found" }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to resolve previous publication revision", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if activation_candidate.revision_provider_id != state.identity.node_id() {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "previous publication revision belongs to a different provider identity" }),
+        )
+        .into_response();
+    }
+    if let Err(error) =
+        validate_shared_offer_compatibility(state.as_ref(), &activation_candidate.definition).await
+    {
+        return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+    }
+    if let Err(error) =
+        validate_shared_offer_activation_artifact(state.as_ref(), &activation_candidate).await
+    {
+        return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+    }
+
+    let mutation_service_id = service_id.clone();
+    let previous_status = previous.status.clone();
+    let previous_revision_hash = previous.selected_revision_hash.clone();
+    let now = settlement::current_unix_timestamp();
+    let lifecycle = match state
+        .db
+        .with_write_conn(move |conn| {
+            let current = db::get_publication_lifecycle(conn, &mutation_service_id)?
+                .ok_or_else(|| format!("publication service {mutation_service_id} was not found"))?;
+            let already_restored = current.status == previous_status
+                && current.selected_revision_hash == previous_revision_hash;
+            let restored = if already_restored {
+                current
+            } else {
+                if current.selected_revision_hash != failed_revision_hash {
+                    return Err(format!(
+                        "publication revision precondition mismatch: service {mutation_service_id} currently selects {}, not {failed_revision_hash}",
+                        current.selected_revision_hash
+                    ));
+                }
+                if current.activation_token != failed_activation_token {
+                    return Err(format!(
+                        "publication activation token precondition mismatch: service {mutation_service_id} no longer identifies the failed activation"
+                    ));
+                }
+                let evidence = json!({
+                    "operation": "restore_previous_after_failed_publication",
+                    "failed_revision_hash": failed_revision_hash,
+                })
+                .to_string();
+                let active = db::mutate_publication_lifecycle(
+                    conn,
+                    &mutation_service_id,
+                    db::PublicationLifecycleMutation::Rollback {
+                        revision_hash: previous_revision_hash.clone(),
+                    },
+                    &evidence,
+                    now,
+                )?;
+                match previous_status.as_str() {
+                    "active" => active,
+                    "paused" => db::mutate_publication_lifecycle(
+                        conn,
+                        &mutation_service_id,
+                        db::PublicationLifecycleMutation::PauseExact {
+                            revision_hash: previous_revision_hash.clone(),
+                            activation_token: active.activation_token,
+                        },
+                        &evidence,
+                        now,
+                    )?,
+                    "unpublished" => db::mutate_publication_lifecycle(
+                        conn,
+                        &mutation_service_id,
+                        db::PublicationLifecycleMutation::Unpublish,
+                        &evidence,
+                        now,
+                    )?,
+                    _ => unreachable!("previous status was validated"),
+                }
+            };
+            if restored.status == "active" {
+                for grant in &previous_transport_grants {
+                    db::persist_publication_transport_grant(
+                        conn,
+                        &db::NewPublicationTransportGrant {
+                            transport: &grant.transport,
+                            service_id: &mutation_service_id,
+                            revision_hash: &restored.selected_revision_hash,
+                            activation_token: &restored.activation_token,
+                            public_url: &grant.public_url,
+                            relay_control_url: &grant.relay_control_url,
+                            now,
+                        },
+                    )?;
+                }
+            }
+            Ok(restored)
+        })
+        .await
+    {
+        Ok(lifecycle) => lifecycle,
+        Err(error)
+            if error.contains("precondition mismatch")
+                || error.contains("activation token precondition mismatch") =>
+        {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to restore previous publication", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    match sync_relay_activation_gate(state.as_ref()).await {
+        Ok(remaining_grants) => (
+            StatusCode::OK,
+            Json(json!({
+                "operation": "restore_previous",
+                "publication": provider_publication_status(lifecycle),
+                "relay_withdrawal": {
+                    "status": if remaining_grants == 0 { "reserved" } else { "shared_active" },
+                    "remaining_grants": remaining_grants,
+                },
+            })),
+        )
+            .into_response(),
+        Err(error) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": "previous publication restored but relay activation gate could not be synchronized",
+                "partial_state": true,
+                "publication": provider_publication_status(lifecycle),
+                "relay_gate_sync_error": error,
+            }),
+        )
+        .into_response(),
+    }
+}
+
+async fn pause_exact_provider_publication(
+    State(state): State<Arc<AppState>>,
+    Path((service_id, revision_hash)): Path<(String, String)>,
+    Json(request): Json<ExactPublicationPauseRequest>,
+) -> Response {
+    if revision_hash.len() != 64 || !revision_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "revision_hash must be 64 hexadecimal characters" }),
+        )
+        .into_response();
+    }
+    if !db::is_publication_activation_token(&request.activation_token) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "activation_token must be 64 lowercase hexadecimal characters" }),
+        )
+        .into_response();
+    }
+    if let Some(previous) = request.previous_publication {
+        restore_previous_publication_exact(
+            state,
+            service_id,
+            revision_hash,
+            request.activation_token,
+            previous,
+            request.previous_transport_grants,
+        )
+        .await
+    } else {
+        if !request.previous_transport_grants.is_empty() {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "previous transport grants require a previous publication snapshot" }),
+            )
+            .into_response();
+        }
+        mutate_provider_publication(
+            state,
+            service_id,
+            db::PublicationLifecycleMutation::PauseExact {
+                revision_hash,
+                activation_token: request.activation_token,
+            },
+            "pause",
+        )
+        .await
+    }
+}
+
+async fn resume_provider_publication(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+) -> Response {
+    mutate_provider_publication(
+        state,
+        service_id,
+        db::PublicationLifecycleMutation::Resume,
+        "resume",
+    )
+    .await
+}
+
+async fn unpublish_provider_publication(
+    State(state): State<Arc<AppState>>,
+    Path(service_id): Path<String>,
+) -> Response {
+    mutate_provider_publication(
+        state,
+        service_id,
+        db::PublicationLifecycleMutation::Unpublish,
+        "unpublish",
+    )
+    .await
+}
+
+async fn rollback_provider_publication(
+    State(state): State<Arc<AppState>>,
+    Path((service_id, revision_hash)): Path<(String, String)>,
+) -> Response {
+    if revision_hash.len() != 64 || !revision_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "revision_hash must be 64 hexadecimal characters" }),
+        )
+        .into_response();
+    }
+    mutate_provider_publication(
+        state,
+        service_id,
+        db::PublicationLifecycleMutation::Rollback { revision_hash },
+        "rollback",
+    )
+    .await
+}
+
+async fn publication_canary(
+    State(state): State<Arc<AppState>>,
+    Path(path_revision_hash): Path<String>,
+    Json(request): Json<PublicationCanaryRequest>,
+) -> impl IntoResponse {
+    if let Err(error) = request.validate() {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        )
+        .into_response();
+    }
+    if path_revision_hash != request.revision_hash {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "path revision_hash does not match request revision_hash" }),
+        )
+        .into_response();
+    }
+    let canary_input = match canonical_json::to_vec(&request.input) {
+        Ok(input) if input.len() <= MAX_BODY_BYTES => input,
+        Ok(input) => {
+            return error_json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({
+                    "error": "publication canary input exceeds the node body limit",
+                    "actual_bytes": input.len(),
+                    "max_bytes": MAX_BODY_BYTES,
+                }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("publication canary input is not canonical JSON: {error}") }),
+            )
+            .into_response();
+        }
+    };
+
+    let binding = match current_offer_bindings(state.as_ref()).await {
+        Ok(bindings) => bindings.into_iter().find_map(|binding| {
+            let CurrentOfferBinding {
+                definition,
+                revision,
+            } = binding;
+            let revision = revision?;
+            (revision.revision_hash == request.revision_hash
+                && revision.offer_hash == request.offer_hash)
+                .then_some((definition, revision))
+        }),
+        Err(error) => {
+            tracing::error!(details = %error, "failed to resolve publication canary binding");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to resolve publication canary binding" }),
+            )
+            .into_response();
+        }
+    };
+    let Some((definition, revision_record)) = binding else {
+        return error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "exact active publication revision not found" }),
+        )
+        .into_response();
+    };
+    let offer = match load_stored_publication_offer(state.as_ref(), &revision_record).await {
+        Ok(offer) => provider_offer_record_from_parts(&definition, offer),
+        Err(error) => {
+            tracing::error!(details = %error, "failed to load exact publication canary offer");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load exact publication canary offer" }),
+            )
+            .into_response();
+        }
+    };
+    let Some(fixture) = definition.verification.as_ref() else {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "publication has no immutable canary fixture" }),
+        )
+        .into_response();
+    };
+    let fixture_input = match canonical_json::to_vec(&fixture.input) {
+        Ok(input) => input,
+        Err(error) => {
+            tracing::error!(offer_id = %definition.offer_id, details = %error, "stored publication fixture is invalid");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "stored publication fixture is invalid" }),
+            )
+            .into_response();
+        }
+    };
+    if fixture_input != canary_input {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "canary input does not match the immutable local verification fixture" }),
+        )
+        .into_response();
+    }
+    let local_verification = match verify_provider_offer_locally(state.as_ref(), &definition).await
+    {
+        Ok(Some(evidence)) => evidence,
+        Ok(None) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "publication has no local verification evidence" }),
+            )
+            .into_response();
+        }
+        Err((status, body)) => return error_json(status, body).into_response(),
+    };
+    let revision = match build_signed_publication_revision(
+        state.as_ref(),
+        &definition,
+        &offer,
+        &local_verification,
+    ) {
+        Ok(revision) => revision,
+        Err(error) => {
+            tracing::error!(offer_id = %definition.offer_id, details = %error, "failed to rebuild publication revision for canary");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to rebuild publication revision for canary" }),
+            )
+            .into_response();
+        }
+    };
+    if revision.revision_hash != request.revision_hash
+        || revision.payload.offer_hash != request.offer_hash
+        || revision.payload.local_verification != local_verification
+    {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "requested publication revision is not the exact active revision" }),
+        )
+        .into_response();
+    }
+    let result = match sign_publication_canary_result(
+        PublicationCanaryResultPayload {
+            schema_version: PUBLICATION_CANARY_RESULT_SCHEMA_V1.to_string(),
+            provider_id: state.identity.node_id().to_string(),
+            revision_hash: request.revision_hash,
+            offer_hash: request.offer_hash,
+            challenge: request.challenge,
+            input_hash: local_verification.input_hash,
+            result_hash: local_verification.result_hash,
+            status: "succeeded".to_string(),
+        },
+        |message| state.identity.sign_message_hex(message),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(details = %error, "failed to sign publication canary result");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to sign publication canary result" }),
+            )
+            .into_response();
+        }
+    };
+    (StatusCode::OK, Json(result)).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -5562,17 +8944,16 @@ pub(crate) fn provider_offer_limits(
     state: &AppState,
     runtime: &str,
 ) -> (usize, u64, usize, usize, u64) {
+    let max_runtime_ms = state
+        .config
+        .execution_timeout_secs
+        .saturating_mul(1_000)
+        .min(MAX_PUBLICATION_VERIFICATION_RUNTIME_MS);
     match runtime {
-        "builtin" => (
-            MAX_BODY_BYTES,
-            state.config.execution_timeout_secs.saturating_mul(1_000),
-            0,
-            MAX_BODY_BYTES,
-            0,
-        ),
+        "builtin" => (MAX_BODY_BYTES, max_runtime_ms, 0, MAX_BODY_BYTES, 0),
         _ => (
             MAX_WASM_INPUT_BYTES,
-            state.config.execution_timeout_secs.saturating_mul(1_000),
+            max_runtime_ms,
             sandbox::WASM_MAX_MEMORY_BYTES,
             sandbox::WASM_MAX_OUTPUT_BYTES,
             sandbox::WASM_FUEL_LIMIT,
@@ -5593,6 +8974,26 @@ pub(crate) fn validate_provider_offer_definition(
     }
     if definition.offer_kind.trim().is_empty() {
         return Err("offer_kind must be a non-empty string".to_string());
+    }
+    let expected_success_fee_msat = definition
+        .price_sats
+        .checked_mul(1_000)
+        .ok_or_else(|| "price_sats overflows the millishatoshi schedule".to_string())?;
+    if definition
+        .success_fee_msat
+        .is_some_and(|value| value != expected_success_fee_msat)
+    {
+        return Err("price_sats conflicts with success_fee_msat".to_string());
+    }
+    let (base_fee_msat, success_fee_msat) = provider_offer_price_schedule(definition);
+    base_fee_msat
+        .checked_add(success_fee_msat)
+        .ok_or_else(|| "provider offer price schedule overflows u64".to_string())?;
+    if !base_fee_msat.is_multiple_of(1_000) || !success_fee_msat.is_multiple_of(1_000) {
+        return Err(
+            "provider offer price legs must each be representable as whole currency minor units"
+                .to_string(),
+        );
     }
     let runtime = ExecutionRuntime::parse(&definition.runtime)?;
     if runtime == ExecutionRuntime::Any {
@@ -5630,6 +9031,40 @@ pub(crate) fn validate_provider_offer_definition(
     if definition.source_kind.trim().is_empty() {
         return Err("source_kind must be a non-empty string".to_string());
     }
+    if let Some(evidence) = &definition.build_evidence {
+        evidence.validate()?;
+        if definition.module_hash.as_deref() != Some(evidence.artifact_digest.as_str()) {
+            return Err(
+                "build evidence artifact_digest must match the provider package binding"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(bundle) = &definition.python_bundle {
+        if runtime != ExecutionRuntime::Python || package_kind != ExecutionPackageKind::InlineSource
+        {
+            return Err(
+                "python_bundle requires runtime=python and package_kind=inline_source".to_string(),
+            );
+        }
+        let evidence = definition
+            .build_evidence
+            .as_ref()
+            .ok_or_else(|| "locked Python definition requires exact build evidence".to_string())?;
+        froglet_publish_engine::python_bundle::validate_build_evidence(bundle, evidence)?;
+        let verified = froglet_publish_engine::python_bundle::verify_bundle(bundle)?;
+        if definition.module_hash.as_deref() != Some(verified.package_digest.as_str()) {
+            return Err(
+                "locked Python bundle digest must match the provider package binding".to_string(),
+            );
+        }
+        if definition.inline_source.as_deref() != std::str::from_utf8(&verified.source).ok() {
+            return Err(
+                "locked Python private execution source does not match the canonical bundle"
+                    .to_string(),
+            );
+        }
+    }
     if runtime == ExecutionRuntime::Builtin && package_kind != ExecutionPackageKind::Builtin {
         return Err("builtin runtime requires package_kind=builtin".to_string());
     }
@@ -5658,12 +9093,12 @@ pub(crate) fn validate_provider_offer_definition(
 /// - Any other value is rejected.
 fn validate_price_currency_for_backends(
     state: &AppState,
-    price_currency: Option<&str>,
+    price_currency: Option<PublicationCurrency>,
 ) -> Result<Option<String>, ApiFailure> {
-    let currency = price_currency.unwrap_or("sat");
+    let currency = price_currency.unwrap_or(PublicationCurrency::Sat);
     match currency {
-        "sat" => Ok(price_currency.map(str::to_string)),
-        "usd" => {
+        PublicationCurrency::Sat => Ok(price_currency.map(|value| value.to_string())),
+        PublicationCurrency::Usd => {
             if state
                 .config
                 .payment_backends
@@ -5690,15 +9125,31 @@ fn validate_price_currency_for_backends(
                 ))
             }
         }
-        other => Err((
+    }
+}
+
+fn validate_settlement_for_backends(
+    state: &AppState,
+    settlement: Option<PublicationSettlement>,
+) -> Result<Option<PublicationSettlement>, ApiFailure> {
+    let required_backend = match settlement {
+        Some(PublicationSettlement::Lightning) => Some(PaymentBackend::Lightning),
+        Some(PublicationSettlement::Stripe) => Some(PaymentBackend::Stripe),
+        Some(PublicationSettlement::None) | None => None,
+    };
+    if let Some(required_backend) = required_backend
+        && !state.config.payment_backends.contains(&required_backend)
+    {
+        return Err((
             StatusCode::BAD_REQUEST,
             json!({
                 "error": format!(
-                    "price.currency={other:?} is not supported; allowed: \"sat\", \"usd\""
+                    "settlement method {settlement:?} requires the {required_backend} payment backend"
                 )
             }),
-        )),
+        ));
     }
+    Ok(settlement)
 }
 
 fn offer_service_id(definition: &ProviderManagedOfferDefinition) -> String {
@@ -5737,31 +9188,8 @@ fn payload_from_provider_offer_definition(
     let service_id = service_id_for_offer_definition(definition);
     let offer_kind = effective_provider_offer_kind(definition);
     let runtime = ExecutionRuntime::parse(&definition.runtime).unwrap_or(ExecutionRuntime::Wasm);
-    let base_fee_msat: u64 = 0;
-    let success_fee_msat: u64 = definition.price_sats.saturating_mul(1_000);
-    let settlement_method = if base_fee_msat == 0 && success_fee_msat == 0 {
-        "none".to_string()
-    } else if state
-        .config
-        .payment_backends
-        .contains(&PaymentBackend::Stripe)
-        && !state
-            .config
-            .payment_backends
-            .contains(&PaymentBackend::Lightning)
-    {
-        "stripe_mpp.v1".to_string()
-    } else if state
-        .config
-        .payment_backends
-        .contains(&PaymentBackend::Lightning)
-        && state.config.lightning.mode == LightningMode::Phoenixd
-    {
-        // phoenixd has no hold invoices → prepaid, non-escrow method.
-        "lightning.prepaid.v1".to_string()
-    } else {
-        "lightning.base_fee_plus_success_fee.v1".to_string()
-    };
+    let (settlement_method, base_fee_msat, success_fee_msat) =
+        resolved_provider_offer_terms(state, definition);
     OfferPayload {
         provider_id: state.identity.node_id().to_string(),
         offer_id: definition.offer_id.clone(),
@@ -5772,7 +9200,7 @@ fn payload_from_provider_offer_definition(
         quote_ttl_secs: advertised_offer_timeout_secs(
             state,
             service_id,
-            definition.price_sats,
+            provider_offer_total_minor_units(definition),
             &accepted_payment_methods(state),
         ),
         execution_profile: protocol::OfferExecutionProfile {
@@ -5885,12 +9313,17 @@ fn builtin_provider_offer_definitions(
             max_output_bytes,
             fuel_limit,
             price_sats,
+            base_fee_msat: None,
+            success_fee_msat: None,
+            settlement_method: None,
             price_currency: None, // builtins are always priced in sat
             publication_state: default_offer_publication_state(),
             starter: None,
             module_hash: None,
+            build_evidence: None,
             module_bytes_hex: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             source_path: None,
@@ -5898,6 +9331,7 @@ fn builtin_provider_offer_definitions(
             summary: Some(summary.to_string()),
             input_schema: None,
             output_schema: None,
+            verification: None,
             terms_hash: None,
             confidential_profile_hash: None,
         }
@@ -5985,12 +9419,17 @@ fn builtin_provider_offer_definitions(
             max_output_bytes: profile.config.max_output_bytes,
             fuel_limit: sandbox::WASM_FUEL_LIMIT,
             price_sats: profile.config.price_sats,
+            base_fee_msat: None,
+            success_fee_msat: None,
+            settlement_method: None,
             price_currency: None, // confidential profiles are always priced in sat
             publication_state: default_offer_publication_state(),
             starter: None,
             module_hash: None,
+            build_evidence: None,
             module_bytes_hex: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             source_path: None,
@@ -5998,6 +9437,7 @@ fn builtin_provider_offer_definitions(
             summary: Some(summary.to_string()),
             input_schema: None,
             output_schema: None,
+            verification: None,
             terms_hash: profile.config.terms_hash.clone(),
             confidential_profile_hash: Some(profile.artifact.hash.clone()),
         });
@@ -6005,21 +9445,73 @@ fn builtin_provider_offer_definitions(
     definitions
 }
 
-pub(crate) async fn current_offer_definitions(
-    state: &AppState,
-) -> Result<Vec<ProviderManagedOfferDefinition>, String> {
+#[derive(Debug, Clone)]
+struct CurrentOfferBinding {
+    definition: ProviderManagedOfferDefinition,
+    /// Present only for lifecycle-managed publications. The stored exact
+    /// Offer/Descriptor tuple is authoritative for these bindings.
+    revision: Option<db::PublicationRevisionRecord>,
+}
+
+async fn current_offer_bindings(state: &AppState) -> Result<Vec<CurrentOfferBinding>, String> {
     let confidential_profiles = current_confidential_profile_artifacts(state).await?;
-    let mut definitions = BTreeMap::new();
-    for definition in builtin_provider_offer_definitions(state, &confidential_profiles) {
-        definitions.insert(definition.offer_id.clone(), definition);
-    }
-    let managed = state
+    let builtin_definitions = builtin_provider_offer_definitions(state, &confidential_profiles);
+    let paid_settlement_available = kernel_paid_settlement_available(state);
+    let bindings = state
         .db
         // Operator publications can arrive from a separate long-lived process.
         // Use the writer connection here so provider-facing snapshots reflect
-        // the latest committed offer definitions immediately.
-        .with_write_conn(db::list_provider_managed_offers)
+        // the latest committed activation pointer immediately.
+        .with_write_conn(move |conn| {
+            current_offer_bindings_in_connection(
+                conn,
+                builtin_definitions,
+                paid_settlement_available,
+            )
+        })
         .await?;
+    Ok(bindings)
+}
+
+fn current_offer_bindings_in_connection(
+    conn: &rusqlite::Connection,
+    builtin_definitions: Vec<ProviderManagedOfferDefinition>,
+    paid_settlement_available: bool,
+) -> Result<Vec<CurrentOfferBinding>, String> {
+    let mut bindings = BTreeMap::new();
+    for definition in builtin_definitions {
+        bindings.insert(
+            current_offer_binding_key(&definition),
+            CurrentOfferBinding {
+                definition,
+                revision: None,
+            },
+        );
+    }
+    let managed = db::list_provider_managed_offers(conn)?;
+    let lifecycles = db::list_publication_lifecycles(conn)?;
+    let mut active_revisions = Vec::new();
+    for lifecycle in &lifecycles {
+        let Some(active_revision_hash) = lifecycle.active_revision_hash.as_deref() else {
+            continue;
+        };
+        let revision = db::get_publication_revision(
+            conn,
+            &lifecycle.service_id,
+            active_revision_hash,
+        )?
+        .ok_or_else(|| {
+            format!(
+                "active publication revision {active_revision_hash} is missing for service {}",
+                lifecycle.service_id
+            )
+        })?;
+        active_revisions.push(revision);
+    }
+    let lifecycle_service_ids = lifecycles
+        .iter()
+        .map(|lifecycle| lifecycle.service_id.clone())
+        .collect::<HashSet<_>>();
     for record in managed {
         let definition: ProviderManagedOfferDefinition = serde_json::from_value(record.definition)
             .map_err(|error| {
@@ -6028,10 +9520,2248 @@ pub(crate) async fn current_offer_definitions(
                     record.offer_id
                 )
             })?;
+        if definition
+            .service_id
+            .as_deref()
+            .is_some_and(|service_id| lifecycle_service_ids.contains(service_id))
+        {
+            continue;
+        }
         validate_provider_offer_definition(&definition)?;
-        definitions.insert(definition.offer_id.clone(), definition);
+        bindings.insert(
+            current_offer_binding_key(&definition),
+            CurrentOfferBinding {
+                definition,
+                revision: None,
+            },
+        );
     }
-    Ok(definitions.into_values().collect())
+    for revision in active_revisions {
+        let mut definition: ProviderManagedOfferDefinition =
+            serde_json::from_value(revision.definition.clone()).map_err(|error| {
+                format!(
+                    "publication revision {} contains invalid provider definition JSON: {error}",
+                    revision.revision_hash
+                )
+            })?;
+        definition.publication_state = "active".to_string();
+        validate_provider_offer_definition(&definition)?;
+        bindings.insert(
+            current_offer_binding_key(&definition),
+            CurrentOfferBinding {
+                definition,
+                revision: Some(revision),
+            },
+        );
+    }
+    Ok(bindings
+        .into_values()
+        .filter(|binding| {
+            paid_settlement_available || !provider_offer_definition_is_paid(&binding.definition)
+        })
+        .collect())
+}
+
+fn current_offer_binding_key(definition: &ProviderManagedOfferDefinition) -> (String, String) {
+    (definition.offer_id.clone(), offer_service_id(definition))
+}
+
+fn shared_offer_incompatibility(
+    candidate: &ProviderManagedOfferDefinition,
+    existing: &ProviderManagedOfferDefinition,
+) -> String {
+    format!(
+        "offer_id {} is already bound to service {} with different Kernel Offer terms/profile; use a distinct offer_id or publish identical runtime, settlement, limits, price, capabilities, and terms",
+        candidate.offer_id,
+        offer_service_id(existing),
+    )
+}
+
+/// Enforce the service-binding contract for a shared `offer_id` without
+/// coupling the Kernel Offer to its provider-private executable binding.
+pub(crate) async fn validate_shared_offer_compatibility(
+    state: &AppState,
+    candidate: &ProviderManagedOfferDefinition,
+) -> Result<(), String> {
+    if provider_offer_definition_is_paid(candidate) && !kernel_paid_settlement_available(state) {
+        return Err(
+            "priced Kernel offers require a configured Lightning or Stripe settlement backend; \
+             x402 is direct-endpoint only"
+                .to_string(),
+        );
+    }
+    if candidate.publication_state != "active" {
+        return Ok(());
+    }
+    let descriptor_hash = "00".repeat(32);
+    let candidate_payload =
+        payload_from_provider_offer_definition(state, &descriptor_hash, candidate);
+    let candidate_service_id = offer_service_id(candidate);
+
+    for existing in current_offer_bindings(state).await? {
+        if existing.definition.publication_state != "active"
+            || existing.definition.offer_id != candidate.offer_id
+            || offer_service_id(&existing.definition) == candidate_service_id
+        {
+            continue;
+        }
+        let existing_payload =
+            payload_from_provider_offer_definition(state, &descriptor_hash, &existing.definition);
+        if existing_payload != candidate_payload {
+            return Err(shared_offer_incompatibility(
+                candidate,
+                &existing.definition,
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn offer_artifact_for_binding(
+    state: &AppState,
+    binding: &CurrentOfferBinding,
+) -> Result<SignedArtifact<OfferPayload>, String> {
+    if let Some(revision) = binding.revision.as_ref() {
+        return load_stored_publication_offer(state, revision).await;
+    }
+    let descriptor = current_descriptor_artifact(state).await?;
+    let payload =
+        payload_from_provider_offer_definition(state, &descriptor.hash, &binding.definition);
+    persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await
+}
+
+fn load_publication_offer_in_connection(
+    conn: &rusqlite::Connection,
+    revision: &db::PublicationRevisionRecord,
+) -> Result<SignedArtifact<OfferPayload>, String> {
+    let signed_revision: SignedPublicationRevision =
+        serde_json::from_value(revision.signed_revision.clone()).map_err(|error| {
+            format!(
+                "publication revision {} contains invalid signed JSON: {error}",
+                revision.revision_hash
+            )
+        })?;
+    signed_revision.verify().map_err(|error| {
+        format!(
+            "publication revision {} failed signature verification: {error}",
+            revision.revision_hash
+        )
+    })?;
+    if signed_revision.revision_hash != revision.revision_hash
+        || signed_revision.payload.service_id != revision.service_id
+        || signed_revision.payload.offer_id != revision.offer_id
+        || signed_revision.payload.offer_hash != revision.offer_hash
+        || signed_revision.payload.binding_hash != revision.binding_hash
+    {
+        return Err(format!(
+            "publication revision {} metadata does not match its signed payload",
+            revision.revision_hash
+        ));
+    }
+    let stored = db::get_artifact_by_hash(conn, &revision.offer_hash)?.ok_or_else(|| {
+        format!(
+            "exact Offer {} for active publication revision {} is missing",
+            revision.offer_hash, revision.revision_hash
+        )
+    })?;
+    if stored.kind != ARTIFACT_KIND_OFFER || stored.hash != revision.offer_hash {
+        return Err(format!(
+            "active publication revision {} does not resolve to its exact Offer",
+            revision.revision_hash
+        ));
+    }
+    let offer: SignedArtifact<OfferPayload> = serde_json::from_value(stored.document)
+        .map_err(|error| format!("stored exact publication Offer is invalid JSON: {error}"))?;
+    protocol::validate_offer_artifact(&offer).map_err(|error| {
+        format!(
+            "exact Offer for active publication revision {} failed validation: {error}",
+            revision.revision_hash
+        )
+    })?;
+    if offer.hash != revision.offer_hash
+        || offer.payload.offer_id != revision.offer_id
+        || offer.payload.provider_id != signed_revision.payload.provider_id
+    {
+        return Err(format!(
+            "exact Offer does not match active publication revision {}",
+            revision.revision_hash
+        ));
+    }
+    Ok(offer)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationPackageProfileRequest {
+    bundle: ManagedPublicationBundleManifestV1,
+    target: String,
+    profile: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationPackageProfileResponse {
+    request: ManagedPublicationPackageRequestV1,
+    base_manifest_base64: String,
+    base_config_base64: String,
+}
+
+async fn managed_publication_package_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationPackageProfileRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    if let Err(error) = request.bundle.validate() {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed publication bundle is invalid", "details": error.to_string() }),
+        )
+        .into_response();
+    }
+    let expected_provider_id = state.identity.node_id().to_string();
+    let target = request.target;
+    let profile_name = request.profile;
+    let bundle = request.bundle;
+    let result = tokio::task::spawn_blocking(move || {
+        let profile = crate::managed_publication::load_target_profile(&target, &profile_name)?;
+        let operation_id =
+            managed_publication_operation_id(&ManagedPublicationOperationIdentityV1 {
+                service_id: &bundle.service_id,
+                provider_id: &expected_provider_id,
+                publish_request_digest: &bundle.publish_request_digest,
+                source_package_digest: &bundle.source_package_digest,
+                base_runner_image: &profile.base_runner_image,
+                release_bundle_digest: &profile.release_bundle_digest,
+                output_repository: &profile.output_repository,
+                target: &target,
+                profile: &profile_name,
+            })
+            .map_err(|error| error.to_string())?;
+        let package_request = ManagedPublicationPackageRequestV1 {
+            schema_version: MANAGED_PUBLICATION_PACKAGE_REQUEST_SCHEMA_V1.to_string(),
+            operation_id,
+            bundle,
+            output_repository: profile.output_repository.clone(),
+            base_runner_image: profile.base_runner_image.clone(),
+            release_bundle_digest: profile.release_bundle_digest.clone(),
+        };
+        package_request
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let (base_manifest, base_config) = profile.read_base_oci_metadata()?;
+        Ok::<_, String>(ManagedPublicationPackageProfileResponse {
+            request: package_request,
+            base_manifest_base64: STANDARD.encode(base_manifest),
+            base_config_base64: STANDARD.encode(base_config),
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) => (StatusCode::OK, Json(response)).into_response(),
+        Ok(Err(error)) => error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed publication package profile is unavailable", "details": error }),
+        )
+        .into_response(),
+        Err(error) => {
+            tracing::error!(details = %error, "managed publication package profile worker failed");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication package profile worker failed" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationPlanRequest {
+    bundle: ManagedPublicationBundleManifestV1,
+    package: ManagedPublicationPackageV1,
+    target: String,
+    profile: String,
+}
+
+fn plan_managed_publication_blocking(
+    expected_provider_id: String,
+    nostr_publication_created_at: i64,
+    request: ManagedPublicationPlanRequest,
+) -> Result<ManagedPublicationPlanV1, String> {
+    request
+        .bundle
+        .validate()
+        .map_err(|error| error.to_string())?;
+    let profile =
+        crate::managed_publication::load_target_profile(&request.target, &request.profile)?;
+    profile.validate_package(&request.package)?;
+    let operation_id = managed_publication_operation_id(&ManagedPublicationOperationIdentityV1 {
+        service_id: &request.bundle.service_id,
+        provider_id: &expected_provider_id,
+        publish_request_digest: &request.bundle.publish_request_digest,
+        source_package_digest: &request.bundle.source_package_digest,
+        base_runner_image: &request.package.base_runner_image,
+        release_bundle_digest: &request.package.release_bundle_digest,
+        output_repository: &request.package.image.repository,
+        target: &request.target,
+        profile: &request.profile,
+    })
+    .map_err(|error| error.to_string())?;
+    let package_request = ManagedPublicationPackageRequestV1 {
+        schema_version: MANAGED_PUBLICATION_PACKAGE_REQUEST_SCHEMA_V1.to_string(),
+        operation_id: operation_id.clone(),
+        bundle: request.bundle.clone(),
+        output_repository: profile.output_repository.clone(),
+        base_runner_image: profile.base_runner_image.clone(),
+        release_bundle_digest: profile.release_bundle_digest.clone(),
+    };
+    package_request
+        .validate_output(&request.package)
+        .map_err(|error| error.to_string())?;
+    let mut desired_state = profile.deployment.desired_state(&request.package);
+    desired_state.environment.insert(
+        crate::identity::NOSTR_PUBLICATION_CREATED_AT_ENV.to_string(),
+        nostr_publication_created_at.to_string(),
+    );
+    let provision_plan = profile
+        .provision
+        .then(|| {
+            crate::managed_publication::plan_operator_operation(
+                &profile,
+                &desired_state,
+                &ManagedDeploymentApprovalScopeV1::Provision,
+            )
+        })
+        .transpose()?;
+    let deploy_plan = crate::managed_publication::plan_operator_operation(
+        &profile,
+        &desired_state,
+        &ManagedDeploymentApprovalScopeV1::Deploy,
+    )?;
+    let compensation_scope = ManagedDeploymentApprovalScopeV1::Destroy {
+        confirmation: DestroyConfirmationV1 {
+            deployment_id: desired_state.deployment_id.clone(),
+            adapter_id: deploy_plan.adapter.adapter_id.clone(),
+        },
+    };
+    let compensation_plan = crate::managed_publication::plan_operator_operation(
+        &profile,
+        &desired_state,
+        &compensation_scope,
+    )?;
+    ManagedPublicationPlanV1::new(ManagedPublicationPlanPayloadV1 {
+        schema_version: MANAGED_PUBLICATION_PLAN_SCHEMA_V1.to_string(),
+        operation_id,
+        service_id: request.bundle.service_id,
+        target: request.target,
+        profile: request.profile,
+        expected_provider_id,
+        publish_request_digest: request.bundle.publish_request_digest,
+        package: request.package,
+        desired_state,
+        provision_plan,
+        deploy_plan,
+        compensation_plan,
+        public_url: profile.public_url,
+    })
+    .map_err(|error| error.to_string())
+}
+
+async fn plan_managed_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationPlanRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let provider_id = state.identity.node_id().to_string();
+    let nostr_publication_created_at = state.identity.nostr_publication_created_at();
+    match tokio::task::spawn_blocking(move || {
+        plan_managed_publication_blocking(provider_id, nostr_publication_created_at, request)
+    })
+    .await
+    {
+        Ok(Ok(plan)) => (StatusCode::OK, Json(plan)).into_response(),
+        Ok(Err(error)) => error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed publication plan could not be produced", "details": error }),
+        )
+        .into_response(),
+        Err(error) => {
+            tracing::error!(details = %error, "managed publication planning worker failed");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication planning worker failed" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationPrepareRequest {
+    plan: ManagedPublicationPlanV1,
+    consent_hash: String,
+}
+
+async fn prepare_managed_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationPrepareRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let plan = request.plan;
+    let consent_hash = request.consent_hash;
+    match state
+        .db
+        .with_write_conn(move |conn| {
+            crate::managed_publication::create_planned(
+                conn,
+                &plan,
+                &consent_hash,
+                settlement::current_unix_timestamp(),
+            )
+        })
+        .await
+    {
+        Ok(record) => (StatusCode::OK, Json(json!(record))).into_response(),
+        Err(error) => error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed publication could not be prepared durably", "details": error }),
+        )
+        .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationUploadRequest {
+    plan: ManagedPublicationPlanV1,
+    layout: PlannedManagedOciLayoutV1,
+}
+
+async fn upload_managed_publication_image(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationUploadRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    if let Err(error) = request.plan.validate() {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed publication plan is invalid", "details": error.to_string() }),
+        )
+        .into_response();
+    }
+    if request.layout.package != request.plan.payload.package
+        || request.layout.manifest_descriptor.digest != request.plan.payload.package.image.digest
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed OCI layout does not match the approved package" }),
+        )
+        .into_response();
+    }
+    let operation_id = request.plan.payload.operation_id.clone();
+    let durable = match state
+        .db
+        .with_read_conn(move |conn| crate::managed_publication::get(conn, &operation_id))
+        .await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return error_json(
+                StatusCode::PRECONDITION_REQUIRED,
+                json!({ "error": "managed publication must be durably prepared before registry mutation" }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication durable-state lookup failed", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if durable.plan != request.plan || durable.operation.phase != ManagedPublicationPhaseV1::Planned
+    {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed image upload requires the exact durably prepared plan", "operation": durable }),
+        )
+        .into_response();
+    }
+    let profile = match crate::managed_publication::load_target_profile(
+        &request.plan.payload.target,
+        &request.plan.payload.profile,
+    ) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed target profile is unavailable", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    let digest = request.layout.manifest_descriptor.digest.clone();
+    match crate::managed_registry::push_managed_layout(&profile, &request.layout).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({
+                "operation_id": request.plan.payload.operation_id,
+                "image": request.plan.payload.package.image,
+                "verified_manifest_digest": digest,
+            })),
+        )
+            .into_response(),
+        Err(error) => error_json(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": "managed OCI image upload failed", "details": error }),
+        )
+        .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationActivationRequest {
+    bundle: ManagedPublicationBundleManifestV1,
+    capsule: ManagedPublicationCapsuleV1,
+}
+
+async fn persist_managed_operation_update(
+    state: &Arc<AppState>,
+    current: &crate::managed_publication::ManagedPublicationRecord,
+    next: froglet_protocol::managed_publication::ManagedPublicationOperationV1,
+) -> Result<crate::managed_publication::ManagedPublicationRecord, String> {
+    let operation_id = current.operation.operation_id.clone();
+    let expected_state_version = current.state_version;
+    state
+        .db
+        .with_write_conn(move |conn| {
+            crate::managed_publication::update_operation(
+                conn,
+                &operation_id,
+                expected_state_version,
+                &next,
+            )
+        })
+        .await
+}
+
+fn transitioned_managed_operation(
+    current: &crate::managed_publication::ManagedPublicationRecord,
+    phase: ManagedPublicationPhaseV1,
+    now: i64,
+) -> Result<froglet_protocol::managed_publication::ManagedPublicationOperationV1, String> {
+    let mut next = current.operation.clone();
+    next.transition(phase, now)
+        .map_err(|error| error.to_string())?;
+    Ok(next)
+}
+
+async fn compensate_managed_publication(
+    state: &Arc<AppState>,
+    current: crate::managed_publication::ManagedPublicationRecord,
+    profile: crate::managed_publication::ManagedTargetProfileV1,
+    reason: String,
+) -> Result<crate::managed_publication::ManagedPublicationRecord, String> {
+    let now = settlement::current_unix_timestamp();
+    let mut compensating =
+        transitioned_managed_operation(&current, ManagedPublicationPhaseV1::Compensating, now)?;
+    compensating.last_error = Some(reason);
+    compensating.attempt_count = compensating.attempt_count.saturating_add(1);
+    let compensating = persist_managed_operation_update(state, &current, compensating).await?;
+    let scope = match &compensating.plan.payload.compensation_plan.outcome {
+        froglet_protocol::managed_deployment::ManagedDeploymentPlanOutcomeV1::Applicable {
+            approval_scope: Some(scope),
+            approval_hash: Some(approval_hash),
+            ..
+        } => (scope.clone(), *approval_hash),
+        _ => return Err("approved compensation plan lost its exact approval binding".to_string()),
+    };
+    let desired = compensating.plan.payload.desired_state.clone();
+    let execution_profile = profile.clone();
+    let execution_scope = scope.0.clone();
+    let approval_hash = scope.1;
+    let result = tokio::task::spawn_blocking(move || {
+        crate::managed_publication::execute_operator_operation(
+            &execution_profile,
+            &desired,
+            &execution_scope,
+            &approval_hash,
+            None,
+        )
+    })
+    .await
+    .map_err(|error| format!("managed compensation worker failed: {error}"))?;
+    match result {
+        Ok(result) => {
+            validate_result_for_scope(&result, &compensating.plan, &scope.0)
+                .map_err(|error| error.to_string())?;
+            let mut compensated = transitioned_managed_operation(
+                &compensating,
+                ManagedPublicationPhaseV1::Compensated,
+                settlement::current_unix_timestamp(),
+            )?;
+            compensated.compensation_result = Some(result);
+            persist_managed_operation_update(state, &compensating, compensated).await
+        }
+        Err(error) => {
+            let mut unresolved = transitioned_managed_operation(
+                &compensating,
+                ManagedPublicationPhaseV1::ReconciliationRequired,
+                settlement::current_unix_timestamp(),
+            )?;
+            unresolved.last_error = Some(error.clone());
+            let stored = persist_managed_operation_update(state, &compensating, unresolved).await?;
+            Err(format!(
+                "managed compensation could not be proven; operation {} requires reconciliation: {error}",
+                stored.operation.operation_id
+            ))
+        }
+    }
+}
+
+async fn verify_managed_remote_canary(
+    record: &crate::managed_publication::ManagedPublicationRecord,
+) -> Result<ManagedPublicationRemoteCanaryV1, String> {
+    let capsule = record
+        .capsule
+        .as_ref()
+        .ok_or_else(|| "managed operation has no capsule".to_string())?;
+    let revision = &capsule.revision;
+    let request = PublicationCanaryRequest {
+        schema_version: froglet_protocol::publication::PUBLICATION_CANARY_REQUEST_SCHEMA_V1
+            .to_string(),
+        revision_hash: revision.revision_hash.clone(),
+        offer_hash: revision.payload.offer_hash.clone(),
+        challenge: crypto::sha256_hex(rand::random::<[u8; 32]>()),
+        input: capsule.verification_fixture.input.clone(),
+    };
+    let base = url::Url::parse(&record.plan.payload.public_url)
+        .map_err(|error| format!("approved public URL is invalid: {error}"))?;
+    let endpoint = base
+        .join(&format!(
+            "/v1/publications/{}/canary",
+            revision.revision_hash
+        ))
+        .map_err(|error| format!("managed canary URL could not be built: {error}"))?;
+    let result: SignedPublicationCanaryResult = crate::safe_fetch::safe_post_json(
+        endpoint.as_str(),
+        &request,
+        crate::safe_fetch::FetchPolicy {
+            max_bytes: MAX_BODY_BYTES as u64,
+            timeout_ms: 30_000,
+            tor_socks_proxy: None,
+            allow_private_networks: false,
+        },
+    )
+    .await?;
+    result
+        .verify()
+        .map_err(|error| format!("managed remote canary signature is invalid: {error}"))?;
+    if result.payload.provider_id != record.plan.payload.expected_provider_id
+        || result.payload.revision_hash != revision.revision_hash
+        || result.payload.offer_hash != revision.payload.offer_hash
+        || result.payload.challenge != request.challenge
+        || result.payload.input_hash != revision.payload.local_verification.input_hash
+        || result.payload.result_hash != revision.payload.local_verification.result_hash
+        || result.payload.status != "succeeded"
+    {
+        return Err("managed remote canary did not prove the exact approved Revision".to_string());
+    }
+    let canary = ManagedPublicationRemoteCanaryV1 {
+        provider_id: result.payload.provider_id,
+        revision_hash: result.payload.revision_hash,
+        public_url: record.plan.payload.public_url.clone(),
+        observed_at_epoch_seconds: settlement::current_unix_timestamp(),
+    };
+    canary
+        .validate_against(&record.plan, &revision.revision_hash)
+        .map_err(|error| error.to_string())?;
+    Ok(canary)
+}
+
+async fn get_managed_publication_operation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    match state
+        .db
+        .with_read_conn(move |conn| crate::managed_publication::get(conn, &operation_id))
+        .await
+    {
+        Ok(Some(record)) => (StatusCode::OK, Json(json!(record))).into_response(),
+        Ok(None) => error_json(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "managed publication operation not found" }),
+        )
+        .into_response(),
+        Err(error) => {
+            tracing::error!(details = %error, "managed publication operation lookup failed");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication operation lookup failed" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+async fn reconcile_managed_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let mut record = match state
+        .db
+        .with_read_conn(move |conn| crate::managed_publication::get(conn, &operation_id))
+        .await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "managed publication operation not found" }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication operation lookup failed", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    let interrupted_pre_deploy_or_compensation = matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Provisioning | ManagedPublicationPhaseV1::Compensating
+    );
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::CanaryVerified
+            | ManagedPublicationPhaseV1::Active
+            | ManagedPublicationPhaseV1::Compensated
+            | ManagedPublicationPhaseV1::Failed
+    ) {
+        return (StatusCode::OK, Json(json!(record))).into_response();
+    }
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Planned | ManagedPublicationPhaseV1::LocalRevisionReady
+    ) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed operation has not crossed an external boundary; use activate", "operation": record }),
+        )
+        .into_response();
+    }
+    let profile = match crate::managed_publication::load_target_profile(
+        &record.plan.payload.target,
+        &record.plan.payload.profile,
+    ) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed target profile is unavailable", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if let Err(error) = profile.validate_package(&record.plan.payload.package) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed target profile drifted after approval", "details": error }),
+        )
+        .into_response();
+    }
+
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Provisioning
+            | ManagedPublicationPhaseV1::Registering
+            | ManagedPublicationPhaseV1::Compensating
+    ) {
+        let mut required = match transitioned_managed_operation(
+            &record,
+            ManagedPublicationPhaseV1::ReconciliationRequired,
+            settlement::current_unix_timestamp(),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+        required.last_error =
+            Some("reconciliation explicitly resumed an ambiguous external phase".to_string());
+        record = match persist_managed_operation_update(&state, &record, required).await {
+            Ok(record) => record,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+    }
+    if interrupted_pre_deploy_or_compensation {
+        return match compensate_managed_publication(
+            &state,
+            record,
+            profile,
+            "interrupted provision or compensation could not be proven read-only".to_string(),
+        )
+        .await
+        {
+            Ok(compensated) => (StatusCode::OK, Json(json!(compensated))).into_response(),
+            Err(error) => {
+                error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response()
+            }
+        };
+    }
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Deploying | ManagedPublicationPhaseV1::ReconciliationRequired
+    ) {
+        let mut reconciling = match transitioned_managed_operation(
+            &record,
+            ManagedPublicationPhaseV1::Reconciling,
+            settlement::current_unix_timestamp(),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+        reconciling.attempt_count = reconciling.attempt_count.saturating_add(1);
+        record = match persist_managed_operation_update(&state, &record, reconciling).await {
+            Ok(record) => record,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+    }
+
+    if record.operation.phase == ManagedPublicationPhaseV1::Reconciling {
+        let inspection_profile = profile.clone();
+        let desired = record.plan.payload.desired_state.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            crate::managed_publication::inspect_operator_status(&inspection_profile, &desired)
+        })
+        .await;
+        match status {
+            Ok(Ok(status)) if validate_deploy_result(&status, &record.plan).is_ok() => {
+                let mut deployed = match transitioned_managed_operation(
+                    &record,
+                    ManagedPublicationPhaseV1::Deployed,
+                    settlement::current_unix_timestamp(),
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+                deployed.deploy_result = Some(status);
+                record = match persist_managed_operation_update(&state, &record, deployed).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+            }
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                return match compensate_managed_publication(
+                    &state,
+                    record,
+                    profile,
+                    "reconciliation could not prove the exact healthy deployment".to_string(),
+                )
+                .await
+                {
+                    Ok(compensated) => error_json(
+                        StatusCode::BAD_GATEWAY,
+                        json!({ "error": "managed reconciliation compensated an unproven deployment", "operation": compensated }),
+                    )
+                    .into_response(),
+                    Err(error) => {
+                        error_json(StatusCode::BAD_GATEWAY, json!({ "error": error }))
+                            .into_response()
+                    }
+                };
+            }
+        }
+    }
+    if record.operation.phase == ManagedPublicationPhaseV1::Deployed {
+        match verify_managed_remote_canary(&record).await {
+            Ok(canary) => {
+                let mut verified = match transitioned_managed_operation(
+                    &record,
+                    ManagedPublicationPhaseV1::CanaryVerified,
+                    settlement::current_unix_timestamp(),
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+                verified.remote_canary = Some(canary);
+                record = match persist_managed_operation_update(&state, &record, verified).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+            }
+            Err(error) => {
+                return match compensate_managed_publication(&state, record, profile, error).await {
+                    Ok(compensated) => error_json(
+                        StatusCode::BAD_GATEWAY,
+                        json!({ "error": "managed canary failed during reconciliation and deployment was compensated", "operation": compensated }),
+                    )
+                    .into_response(),
+                    Err(error) => {
+                        error_json(StatusCode::BAD_GATEWAY, json!({ "error": error }))
+                            .into_response()
+                    }
+                };
+            }
+        }
+    }
+    (StatusCode::OK, Json(json!(record))).into_response()
+}
+
+async fn compensate_managed_publication_operation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let record = match state
+        .db
+        .with_read_conn(move |conn| crate::managed_publication::get(conn, &operation_id))
+        .await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "managed publication operation not found" }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication operation lookup failed", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if record.operation.phase == ManagedPublicationPhaseV1::Compensated {
+        return (StatusCode::OK, Json(json!(record))).into_response();
+    }
+    if record.operation.phase == ManagedPublicationPhaseV1::Planned {
+        // The only allowed external effect before a capsule is attached is an
+        // idempotent content-addressed registry upload. No compute, ingress,
+        // DNS, or adapter resource exists to destroy in this phase.
+        return (StatusCode::OK, Json(json!(record))).into_response();
+    }
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Active
+            | ManagedPublicationPhaseV1::Failed
+            | ManagedPublicationPhaseV1::Compensating
+    ) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed operation cannot begin exact compensation in its current phase", "operation": record }),
+        )
+        .into_response();
+    }
+    let profile = match crate::managed_publication::load_target_profile(
+        &record.plan.payload.target,
+        &record.plan.payload.profile,
+    ) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed target profile is unavailable", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    match compensate_managed_publication(
+        &state,
+        record,
+        profile,
+        "explicit downstream compensation request".to_string(),
+    )
+    .await
+    {
+        Ok(record) => (StatusCode::OK, Json(json!(record))).into_response(),
+        Err(error) => {
+            error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response()
+        }
+    }
+}
+
+async fn begin_managed_publication_registration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let record = match state
+        .db
+        .with_read_conn(move |conn| crate::managed_publication::get(conn, &operation_id))
+        .await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "managed publication operation not found" }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication operation lookup failed", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Registering | ManagedPublicationPhaseV1::Active
+    ) {
+        return (StatusCode::OK, Json(json!(record))).into_response();
+    }
+    if record.operation.phase != ManagedPublicationPhaseV1::CanaryVerified {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed publication is not ready to register", "operation": record }),
+        )
+        .into_response();
+    }
+    let registering = match transitioned_managed_operation(
+        &record,
+        ManagedPublicationPhaseV1::Registering,
+        settlement::current_unix_timestamp(),
+    ) {
+        Ok(operation) => operation,
+        Err(error) => {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+        }
+    };
+    match persist_managed_operation_update(&state, &record, registering).await {
+        Ok(record) => (StatusCode::OK, Json(json!(record))).into_response(),
+        Err(error) => error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedRegistrationResume {
+    Idempotent,
+    PendingToActive,
+}
+
+fn managed_registration_resume(
+    existing: &ManagedPublicationRegistrationV1,
+    incoming: &ManagedPublicationRegistrationV1,
+) -> Option<ManagedRegistrationResume> {
+    let same_exact_registration = existing.marketplace_url == incoming.marketplace_url
+        && existing.provider_id == incoming.provider_id
+        && existing.validated_offer_hash == incoming.validated_offer_hash
+        && existing.validated_revision_hash == incoming.validated_revision_hash;
+    if !same_exact_registration {
+        return None;
+    }
+    if existing.status == incoming.status {
+        Some(ManagedRegistrationResume::Idempotent)
+    } else if existing.status == "pending_review" && incoming.status == "active" {
+        Some(ManagedRegistrationResume::PendingToActive)
+    } else {
+        None
+    }
+}
+
+async fn complete_managed_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+    Json(registration): Json<ManagedPublicationRegistrationV1>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let record = match state
+        .db
+        .with_read_conn(move |conn| crate::managed_publication::get(conn, &operation_id))
+        .await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return error_json(
+                StatusCode::NOT_FOUND,
+                json!({ "error": "managed publication operation not found" }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication operation lookup failed", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if !matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Registering | ManagedPublicationPhaseV1::Active
+    ) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed publication is not awaiting registration completion", "operation": record }),
+        )
+        .into_response();
+    }
+    let revision_hash = record
+        .operation
+        .revision_hash
+        .as_deref()
+        .unwrap_or_default();
+    if let Err(error) = registration.validate_against(&record.plan, revision_hash) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed registration evidence is invalid", "details": error.to_string() }),
+        )
+        .into_response();
+    }
+    if record.capsule.as_ref().is_none_or(|capsule| {
+        registration.validated_offer_hash != capsule.revision.payload.offer_hash
+    }) {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed registration did not validate the capsule's exact Offer" }),
+        )
+        .into_response();
+    }
+    if record.operation.phase == ManagedPublicationPhaseV1::Active {
+        let Some(existing) = record.operation.registration.as_ref() else {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "active managed operation omitted registration evidence" }),
+            )
+            .into_response();
+        };
+        let Some(resume) = managed_registration_resume(existing, &registration) else {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed publication is already active with different registration evidence" }),
+            )
+            .into_response();
+        };
+        if resume == ManagedRegistrationResume::Idempotent {
+            return (StatusCode::OK, Json(json!(record))).into_response();
+        }
+        let mut progressed = record.operation.clone();
+        if let Err(error) = progressed.transition(
+            ManagedPublicationPhaseV1::Active,
+            settlement::current_unix_timestamp(),
+        ) {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error.to_string() }))
+                .into_response();
+        }
+        progressed.registration = Some(registration);
+        return match persist_managed_operation_update(&state, &record, progressed).await {
+            Ok(record) => (StatusCode::OK, Json(json!(record))).into_response(),
+            Err(error) => {
+                error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response()
+            }
+        };
+    }
+    let mut active = match transitioned_managed_operation(
+        &record,
+        ManagedPublicationPhaseV1::Active,
+        settlement::current_unix_timestamp(),
+    ) {
+        Ok(operation) => operation,
+        Err(error) => {
+            return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+        }
+    };
+    active.registration = Some(registration);
+    match persist_managed_operation_update(&state, &record, active).await {
+        Ok(record) => (StatusCode::OK, Json(json!(record))).into_response(),
+        Err(error) => error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response(),
+    }
+}
+
+async fn activate_managed_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationActivationRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    if let Err((status, body)) = validate_managed_publication_import_contract(
+        state.as_ref(),
+        &ManagedPublicationImportRequest {
+            bundle: request.bundle.clone(),
+            capsule: request.capsule.clone(),
+        },
+    ) {
+        return (status, Json(body)).into_response();
+    }
+    let plan = request.capsule.plan.clone();
+    let profile = match crate::managed_publication::load_target_profile(
+        &plan.payload.target,
+        &plan.payload.profile,
+    ) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed target profile is unavailable", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if let Err(error) = profile.validate_package(&plan.payload.package) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed target profile drifted after approval", "details": error }),
+        )
+        .into_response();
+    }
+    let package_request = ManagedPublicationPackageRequestV1 {
+        schema_version: MANAGED_PUBLICATION_PACKAGE_REQUEST_SCHEMA_V1.to_string(),
+        operation_id: plan.payload.operation_id.clone(),
+        bundle: request.bundle,
+        output_repository: profile.output_repository.clone(),
+        base_runner_image: profile.base_runner_image.clone(),
+        release_bundle_digest: profile.release_bundle_digest.clone(),
+    };
+    if let Err(error) = package_request.validate_output(&plan.payload.package) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed bundle/package no longer matches approval", "details": error.to_string() }),
+        )
+        .into_response();
+    }
+    let plan_for_store = plan.clone();
+    let consent_hash = request.capsule.consent_hash.clone();
+    let mut record = match state
+        .db
+        .with_write_conn(move |conn| {
+            crate::managed_publication::create_planned(
+                conn,
+                &plan_for_store,
+                &consent_hash,
+                settlement::current_unix_timestamp(),
+            )
+        })
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed operation conflicts with durable state", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if record.operation.phase == ManagedPublicationPhaseV1::Planned {
+        let operation_id = record.operation.operation_id.clone();
+        let state_version = record.state_version;
+        let capsule = request.capsule.clone();
+        record = match state
+            .db
+            .with_write_conn(move |conn| {
+                crate::managed_publication::attach_capsule(
+                    conn,
+                    &operation_id,
+                    state_version,
+                    &capsule,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await
+        {
+            Ok(record) => record,
+            Err(error) => {
+                return error_json(
+                    StatusCode::CONFLICT,
+                    json!({ "error": "managed capsule conflicts with durable state", "details": error }),
+                )
+                .into_response();
+            }
+        };
+    }
+    if record.capsule.as_ref() != Some(&request.capsule) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "durable managed operation contains a different capsule" }),
+        )
+        .into_response();
+    }
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::CanaryVerified
+            | ManagedPublicationPhaseV1::Registering
+            | ManagedPublicationPhaseV1::Active
+    ) {
+        return (StatusCode::OK, Json(json!(record))).into_response();
+    }
+    if matches!(
+        record.operation.phase,
+        ManagedPublicationPhaseV1::Compensated
+            | ManagedPublicationPhaseV1::Compensating
+            | ManagedPublicationPhaseV1::ReconciliationRequired
+            | ManagedPublicationPhaseV1::Failed
+    ) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed operation is not directly activatable", "operation": record }),
+        )
+        .into_response();
+    }
+
+    let capsule_json = match canonical_json::to_vec(&request.capsule) {
+        Ok(bytes) if bytes.len() <= MAX_MANAGED_CAPSULE_BYTES => bytes,
+        Ok(bytes) => {
+            return error_json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({ "error": "managed capsule exceeds the bounded runner secret transport", "actual_bytes": bytes.len(), "max_bytes": MAX_MANAGED_CAPSULE_BYTES }),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "managed capsule is not canonical", "details": error.to_string() }),
+            )
+            .into_response();
+        }
+    };
+    let capsule_base64 = STANDARD.encode(capsule_json);
+
+    if record.operation.phase == ManagedPublicationPhaseV1::Provisioning {
+        let mut unresolved = match transitioned_managed_operation(
+            &record,
+            ManagedPublicationPhaseV1::ReconciliationRequired,
+            settlement::current_unix_timestamp(),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+        unresolved.last_error =
+            Some("activation resumed after an interrupted provision operation".to_string());
+        record = match persist_managed_operation_update(&state, &record, unresolved).await {
+            Ok(record) => record,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+        return error_json(StatusCode::CONFLICT, json!({ "error": "managed provision outcome requires reconciliation", "operation": record })).into_response();
+    }
+
+    if record.operation.phase == ManagedPublicationPhaseV1::LocalRevisionReady {
+        if let Some(provision_plan) = record.plan.payload.provision_plan.clone() {
+            let mut provisioning = match transitioned_managed_operation(
+                &record,
+                ManagedPublicationPhaseV1::Provisioning,
+                settlement::current_unix_timestamp(),
+            ) {
+                Ok(operation) => operation,
+                Err(error) => {
+                    return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                        .into_response();
+                }
+            };
+            provisioning.attempt_count = provisioning.attempt_count.saturating_add(1);
+            record = match persist_managed_operation_update(&state, &record, provisioning).await {
+                Ok(record) => record,
+                Err(error) => {
+                    return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                        .into_response();
+                }
+            };
+            let approval_hash =
+                match provision_plan
+                    .approval_hash_for_scope(&ManagedDeploymentApprovalScopeV1::Provision)
+                {
+                    Some(hash) => *hash,
+                    None => return error_json(
+                        StatusCode::CONFLICT,
+                        json!({ "error": "approved provision plan has no exact approval hash" }),
+                    )
+                    .into_response(),
+                };
+            let execution_profile = profile.clone();
+            let desired = record.plan.payload.desired_state.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::managed_publication::execute_operator_operation(
+                    &execution_profile,
+                    &desired,
+                    &ManagedDeploymentApprovalScopeV1::Provision,
+                    &approval_hash,
+                    None,
+                )
+            })
+            .await;
+            let result = match result {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => {
+                    return match compensate_managed_publication(&state, record, profile, error).await {
+                        Ok(compensated) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": "managed provision failed and was compensated", "operation": compensated })).into_response(),
+                        Err(error) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response(),
+                    };
+                }
+                Err(error) => {
+                    return error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": format!("managed provision worker failed: {error}") }),
+                    )
+                    .into_response();
+                }
+            };
+            if let Err(error) = validate_result_for_scope(
+                &result,
+                &record.plan,
+                &ManagedDeploymentApprovalScopeV1::Provision,
+            ) {
+                return match compensate_managed_publication(&state, record, profile, error.to_string()).await {
+                    Ok(compensated) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": "managed provision evidence was invalid and was compensated", "operation": compensated })).into_response(),
+                    Err(error) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response(),
+                };
+            }
+            let mut deploying = match transitioned_managed_operation(
+                &record,
+                ManagedPublicationPhaseV1::Deploying,
+                settlement::current_unix_timestamp(),
+            ) {
+                Ok(operation) => operation,
+                Err(error) => {
+                    return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                        .into_response();
+                }
+            };
+            deploying.provision_result = Some(result);
+            record = match persist_managed_operation_update(&state, &record, deploying).await {
+                Ok(record) => record,
+                Err(error) => {
+                    return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                        .into_response();
+                }
+            };
+        } else {
+            let mut deploying = match transitioned_managed_operation(
+                &record,
+                ManagedPublicationPhaseV1::Deploying,
+                settlement::current_unix_timestamp(),
+            ) {
+                Ok(operation) => operation,
+                Err(error) => {
+                    return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                        .into_response();
+                }
+            };
+            deploying.attempt_count = deploying.attempt_count.saturating_add(1);
+            record = match persist_managed_operation_update(&state, &record, deploying).await {
+                Ok(record) => record,
+                Err(error) => {
+                    return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                        .into_response();
+                }
+            };
+        }
+
+        let approval_hash = match record.plan.deploy_approval_hash() {
+            Ok(hash) => *hash,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error.to_string() }))
+                    .into_response();
+            }
+        };
+        let execution_profile = profile.clone();
+        let desired = record.plan.payload.desired_state.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::managed_publication::execute_operator_operation(
+                &execution_profile,
+                &desired,
+                &ManagedDeploymentApprovalScopeV1::Deploy,
+                &approval_hash,
+                Some(&capsule_base64),
+            )
+        })
+        .await;
+        let result = match result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                return match compensate_managed_publication(&state, record, profile, error).await {
+                    Ok(compensated) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": "managed deploy failed and was compensated", "operation": compensated })).into_response(),
+                    Err(error) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response(),
+                };
+            }
+            Err(error) => {
+                return error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("managed deploy worker failed: {error}") }),
+                )
+                .into_response();
+            }
+        };
+        if let Err(error) = validate_deploy_result(&result, &record.plan) {
+            return match compensate_managed_publication(&state, record, profile, error.to_string()).await {
+                Ok(compensated) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": "managed deploy evidence was invalid and was compensated", "operation": compensated })).into_response(),
+                Err(error) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response(),
+            };
+        }
+        let mut deployed = match transitioned_managed_operation(
+            &record,
+            ManagedPublicationPhaseV1::Deployed,
+            settlement::current_unix_timestamp(),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+        deployed.deploy_result = Some(result);
+        record = match persist_managed_operation_update(&state, &record, deployed).await {
+            Ok(record) => record,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+    } else if record.operation.phase == ManagedPublicationPhaseV1::Deploying {
+        let inspection_profile = profile.clone();
+        let desired = record.plan.payload.desired_state.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            crate::managed_publication::inspect_operator_status(&inspection_profile, &desired)
+        })
+        .await;
+        let status = match status {
+            Ok(Ok(status)) if validate_deploy_result(&status, &record.plan).is_ok() => status,
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                let mut unresolved = match transitioned_managed_operation(
+                    &record,
+                    ManagedPublicationPhaseV1::ReconciliationRequired,
+                    settlement::current_unix_timestamp(),
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+                unresolved.last_error =
+                    Some("interrupted deploy could not be proven healthy by status".to_string());
+                record = match persist_managed_operation_update(&state, &record, unresolved).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+                return error_json(StatusCode::CONFLICT, json!({ "error": "managed deploy requires reconciliation", "operation": record })).into_response();
+            }
+        };
+        let mut deployed = match transitioned_managed_operation(
+            &record,
+            ManagedPublicationPhaseV1::Deployed,
+            settlement::current_unix_timestamp(),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+        deployed.deploy_result = Some(status);
+        record = match persist_managed_operation_update(&state, &record, deployed).await {
+            Ok(record) => record,
+            Err(error) => {
+                return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+            }
+        };
+    }
+
+    if record.operation.phase == ManagedPublicationPhaseV1::Deployed {
+        match verify_managed_remote_canary(&record).await {
+            Ok(canary) => {
+                let mut verified = match transitioned_managed_operation(
+                    &record,
+                    ManagedPublicationPhaseV1::CanaryVerified,
+                    settlement::current_unix_timestamp(),
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+                verified.remote_canary = Some(canary);
+                record = match persist_managed_operation_update(&state, &record, verified).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return error_json(StatusCode::CONFLICT, json!({ "error": error }))
+                            .into_response();
+                    }
+                };
+            }
+            Err(error) => {
+                return match compensate_managed_publication(&state, record, profile, error).await {
+                    Ok(compensated) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": "managed remote canary failed and deployment was compensated", "operation": compensated })).into_response(),
+                    Err(error) => error_json(StatusCode::BAD_GATEWAY, json!({ "error": error })).into_response(),
+                };
+            }
+        }
+    }
+    (StatusCode::OK, Json(json!(record))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationCapsuleRequest {
+    plan: ManagedPublicationPlanV1,
+    consent_hash: String,
+    revision_hash: String,
+}
+
+fn managed_publication_capsule_in_connection(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    plan: ManagedPublicationPlanV1,
+    consent_hash: String,
+    revision_hash: String,
+) -> Result<ManagedPublicationCapsuleV1, String> {
+    plan.validate().map_err(|error| error.to_string())?;
+    let service_id = plan.payload.service_id.clone();
+    let lifecycle = db::get_publication_lifecycle(conn, &service_id)?
+        .ok_or_else(|| format!("managed publication service {service_id:?} is missing"))?;
+    if lifecycle.selected_revision_hash != revision_hash {
+        return Err(format!(
+            "managed publication selected revision {:?} does not match requested revision {:?}",
+            lifecycle.selected_revision_hash, revision_hash
+        ));
+    }
+    let revision_record = db::get_publication_revision(conn, &service_id, &revision_hash)?
+        .ok_or_else(|| format!("managed publication revision {revision_hash:?} is missing"))?;
+    let source_revision: SignedPublicationRevision =
+        serde_json::from_value(revision_record.signed_revision.clone())
+            .map_err(|error| format!("managed publication revision JSON is invalid: {error}"))?;
+    source_revision
+        .verify()
+        .map_err(|error| format!("managed publication revision is invalid: {error}"))?;
+    let definition: ProviderManagedOfferDefinition =
+        serde_json::from_value(revision_record.definition).map_err(|error| {
+            format!("managed publication provider definition JSON is invalid: {error}")
+        })?;
+    let verification_fixture = definition.verification.clone().ok_or_else(|| {
+        "managed publication provider definition has no verification fixture".to_string()
+    })?;
+
+    let offer_record = db::get_artifact_by_hash(conn, &source_revision.payload.offer_hash)?
+        .ok_or_else(|| "managed publication exact Offer is missing".to_string())?;
+    if offer_record.kind != ARTIFACT_KIND_OFFER {
+        return Err("managed publication offer_hash did not resolve to an Offer".to_string());
+    }
+    let source_offer: SignedArtifact<OfferPayload> =
+        serde_json::from_value(offer_record.document.clone())
+            .map_err(|error| format!("managed publication Offer JSON is invalid: {error}"))?;
+    let descriptor_record = db::get_artifact_by_hash(conn, &source_offer.payload.descriptor_hash)?
+        .ok_or_else(|| "managed publication exact Descriptor is missing".to_string())?;
+    if descriptor_record.kind != ARTIFACT_KIND_DESCRIPTOR {
+        return Err(
+            "managed publication descriptor_hash did not resolve to a Descriptor".to_string(),
+        );
+    }
+
+    let source_descriptor: SignedArtifact<DescriptorPayload> =
+        serde_json::from_value(descriptor_record.document)
+            .map_err(|error| format!("managed publication Descriptor JSON is invalid: {error}"))?;
+    let mut managed_definitions = builtin_provider_offer_definitions(state, &[]);
+    managed_definitions.push(definition.clone());
+    let mut descriptor_payload = descriptor_payload_for_active_definitions(
+        state,
+        &managed_definitions,
+        vec![protocol::TransportEndpoint {
+            transport: "https".to_string(),
+            uri: plan.payload.public_url.clone(),
+            created_at: None,
+            expires_at: None,
+            priority: 10,
+            features: public_transport_features(),
+        }],
+    )?;
+    descriptor_payload.descriptor_seq = source_descriptor
+        .payload
+        .descriptor_seq
+        .checked_add(1)
+        .ok_or_else(|| "managed Descriptor sequence is exhausted".to_string())?;
+    let descriptor = sign_node_artifact(
+        state,
+        ARTIFACT_KIND_DESCRIPTOR,
+        source_descriptor.created_at,
+        descriptor_payload,
+    )?;
+    let offer = sign_node_artifact(
+        state,
+        ARTIFACT_KIND_OFFER,
+        source_offer.created_at,
+        payload_from_provider_offer_definition(state, &descriptor.hash, &definition),
+    )?;
+    let revision = build_signed_publication_revision(
+        state,
+        &definition,
+        &provider_offer_record_from_parts(&definition, offer.clone()),
+        &source_revision.payload.local_verification,
+    )?;
+
+    let capsule = ManagedPublicationCapsuleV1 {
+        schema_version: MANAGED_PUBLICATION_CAPSULE_SCHEMA_V1.to_string(),
+        operation_id: plan.payload.operation_id.clone(),
+        plan_hash: plan.plan_hash.clone(),
+        consent_hash,
+        plan,
+        source_revision_hash: source_revision.revision_hash,
+        revision,
+        verification_fixture,
+        descriptor: serde_json::to_value(descriptor).map_err(|error| error.to_string())?,
+        offer: serde_json::to_value(offer).map_err(|error| error.to_string())?,
+    };
+    capsule.validate().map_err(|error| error.to_string())?;
+    Ok(capsule)
+}
+
+async fn build_managed_publication_capsule(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationCapsuleRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let capsule_state = Arc::clone(&state);
+    let result = state
+        .db
+        .with_read_conn(move |conn| {
+            managed_publication_capsule_in_connection(
+                capsule_state.as_ref(),
+                conn,
+                request.plan,
+                request.consent_hash,
+                request.revision_hash,
+            )
+        })
+        .await;
+    match result {
+        Ok(capsule) => match canonical_json::to_vec(&capsule) {
+            Ok(bytes) if bytes.len() <= MAX_MANAGED_CAPSULE_BYTES => {
+                (StatusCode::OK, Json(capsule)).into_response()
+            }
+            Ok(bytes) => error_json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({
+                    "error": "managed capsule exceeds the bounded runner secret transport",
+                    "actual_bytes": bytes.len(),
+                    "max_bytes": MAX_MANAGED_CAPSULE_BYTES,
+                }),
+            )
+            .into_response(),
+            Err(error) => error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed publication capsule is not canonical", "details": error.to_string() }),
+            )
+            .into_response(),
+        },
+        Err(error) => error_json(
+            StatusCode::CONFLICT,
+            json!({ "error": "managed publication capsule could not be built", "details": error }),
+        )
+        .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPublicationImportRequest {
+    bundle: ManagedPublicationBundleManifestV1,
+    capsule: ManagedPublicationCapsuleV1,
+}
+
+fn validate_managed_publication_import_contract(
+    state: &AppState,
+    request: &ManagedPublicationImportRequest,
+) -> Result<
+    (
+        SignedArtifact<DescriptorPayload>,
+        SignedArtifact<OfferPayload>,
+    ),
+    ApiFailure,
+> {
+    request.bundle.validate().map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed publication bundle is invalid", "details": error.to_string() }),
+        )
+    })?;
+    request.capsule.validate().map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed publication capsule is invalid", "details": error.to_string() }),
+        )
+    })?;
+    let plan = &request.capsule.plan;
+    let bundle_digest = request.bundle.bundle_manifest_digest().map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "managed publication bundle digest failed", "details": error.to_string() }),
+        )
+    })?;
+    if request.bundle.service_id != plan.payload.service_id
+        || request.bundle.publish_request_digest != plan.payload.publish_request_digest
+        || request.bundle.source_package_digest != plan.payload.package.source_package_digest
+        || bundle_digest != plan.payload.package.bundle_manifest_digest
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "managed publication bundle does not match the approved plan",
+                "operation_id": plan.payload.operation_id,
+            }),
+        ));
+    }
+    if state.identity.node_id() != plan.payload.expected_provider_id {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            json!({
+                "error": "managed publication target does not hold the approved Provider identity",
+                "expected_provider_id": plan.payload.expected_provider_id,
+                "actual_provider_id": state.identity.node_id(),
+            }),
+        ));
+    }
+
+    let descriptor: SignedArtifact<DescriptorPayload> =
+        serde_json::from_value(request.capsule.descriptor.clone()).map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "managed publication Descriptor is invalid", "details": error.to_string() }),
+            )
+        })?;
+    let offer: SignedArtifact<OfferPayload> =
+        serde_json::from_value(request.capsule.offer.clone()).map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "managed publication Offer is invalid", "details": error.to_string() }),
+            )
+        })?;
+    Ok((descriptor, offer))
+}
+
+fn prepare_managed_publication_import(
+    state: &AppState,
+    bundle: &ManagedPublicationBundleManifestV1,
+    capsule: &ManagedPublicationCapsuleV1,
+) -> Result<PreparedProviderOfferDefinition, ApiFailure> {
+    let mut intent = bundle.intent.clone();
+    intent.verification = Some(capsule.verification_fixture.clone());
+    intent.publication_state = Some("active".to_string());
+    let resolved = resolve_artifact_provider_offer_definition(state, &intent)?;
+    prepare_resolved_artifact_provider_offer_definition(state, resolved)
+}
+
+fn persist_managed_publication_import(
+    conn: &rusqlite::Connection,
+    definition: &ProviderManagedOfferDefinition,
+    descriptor: &SignedArtifact<DescriptorPayload>,
+    offer: &SignedArtifact<OfferPayload>,
+    capsule: &ManagedPublicationCapsuleV1,
+    data_staging: &mut PublicationDataStaging,
+    now: i64,
+) -> Result<db::PublicationLifecycleRecord, String> {
+    data_staging.prepare_for_commit()?;
+    let result = db::with_immediate_transaction(conn, |conn| {
+        let definition_json =
+            serde_json::to_string(definition).map_err(|error| error.to_string())?;
+        let signed_revision_json =
+            serde_json::to_string(&capsule.revision).map_err(|error| error.to_string())?;
+        let revision = db::NewPublicationRevision {
+            revision_hash: capsule.revision.revision_hash.clone(),
+            service_id: capsule.revision.payload.service_id.clone(),
+            offer_id: capsule.revision.payload.offer_id.clone(),
+            offer_hash: capsule.revision.payload.offer_hash.clone(),
+            binding_hash: capsule.revision.payload.binding_hash.clone(),
+            signed_revision_json,
+            definition_json,
+        };
+        let evidence_json = serde_json::to_string(&json!({
+            "operation": "managed_import",
+            "operation_id": capsule.operation_id,
+            "plan_hash": capsule.plan_hash,
+            "consent_hash": capsule.consent_hash,
+            "capsule_hash": capsule.capsule_hash().map_err(|error| error.to_string())?,
+            "revision_hash": capsule.revision.revision_hash,
+        }))
+        .map_err(|error| error.to_string())?;
+        insert_publication_artifact(conn, descriptor)?;
+        insert_publication_artifact(conn, offer)?;
+        db::persist_and_activate_publication_revision_in_transaction(
+            conn,
+            &revision,
+            "active",
+            &evidence_json,
+            now,
+        )
+    })?;
+    data_staging.mark_committed();
+    Ok(result)
+}
+
+async fn import_managed_publication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ManagedPublicationImportRequest>,
+) -> Response {
+    if let Err((status, body)) = require_provider_control_auth(&headers, &state) {
+        return (status, Json(json!(body))).into_response();
+    }
+    let (descriptor, offer) =
+        match validate_managed_publication_import_contract(state.as_ref(), &request) {
+            Ok(artifacts) => artifacts,
+            Err((status, body)) => return (status, Json(body)).into_response(),
+        };
+    let prepare_state = Arc::clone(&state);
+    let bundle = request.bundle.clone();
+    let capsule = request.capsule.clone();
+    let prepared = match tokio::task::spawn_blocking(move || {
+        prepare_managed_publication_import(prepare_state.as_ref(), &bundle, &capsule)
+    })
+    .await
+    {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err((status, body))) => return (status, Json(body)).into_response(),
+        Err(error) => {
+            tracing::error!(details = %error, "managed publication import preparation worker failed");
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication import preparation failed" }),
+            )
+            .into_response();
+        }
+    };
+    let PreparedProviderOfferDefinition {
+        definition,
+        mut data_staging,
+    } = prepared;
+    if let Err(error) = validate_shared_offer_compatibility(state.as_ref(), &definition).await {
+        return error_json(StatusCode::CONFLICT, json!({ "error": error })).into_response();
+    }
+    let expected_offer_payload =
+        payload_from_provider_offer_definition(state.as_ref(), &descriptor.hash, &definition);
+    if expected_offer_payload != offer.payload {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "managed publication target configuration would materialize a different Offer",
+                "remediation": "reconcile the target profile and re-plan before activation",
+            }),
+        )
+        .into_response();
+    }
+    let mut expected_descriptor_definitions =
+        builtin_provider_offer_definitions(state.as_ref(), &[]);
+    expected_descriptor_definitions.push(definition.clone());
+    let expected_descriptor_payload = match descriptor_payload_for_active_definitions(
+        state.as_ref(),
+        &expected_descriptor_definitions,
+        vec![protocol::TransportEndpoint {
+            transport: "https".to_string(),
+            uri: request.capsule.plan.payload.public_url.clone(),
+            created_at: None,
+            expires_at: None,
+            priority: 10,
+            features: public_transport_features(),
+        }],
+    ) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed target Descriptor configuration is invalid", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if !descriptor_payload_equivalent(&expected_descriptor_payload, &descriptor.payload) {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "managed publication target configuration would materialize a different Descriptor",
+                "remediation": "reconcile target transport, payment, and capability configuration and re-plan",
+            }),
+        )
+        .into_response();
+    }
+    let verification = match verify_provider_offer_locally(state.as_ref(), &definition).await {
+        Ok(Some(verification)) => verification,
+        Ok(None) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed publication import has no verification fixture" }),
+            )
+            .into_response();
+        }
+        Err((status, body)) => return error_json(status, body).into_response(),
+    };
+    if verification != request.capsule.revision.payload.local_verification {
+        return error_json(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "error": "managed publication target did not reproduce the signed local verification evidence",
+                "expected": request.capsule.revision.payload.local_verification,
+                "actual": verification,
+            }),
+        )
+        .into_response();
+    }
+    let rebuilt_revision = match build_signed_publication_revision(
+        state.as_ref(),
+        &definition,
+        &provider_offer_record_from_parts(&definition, offer.clone()),
+        &verification,
+    ) {
+        Ok(revision) => revision,
+        Err(error) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                json!({ "error": "managed publication Revision could not be reproduced", "details": error }),
+            )
+            .into_response();
+        }
+    };
+    if rebuilt_revision != request.capsule.revision {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "managed publication target would sign a different Revision",
+                "remediation": "reconcile Provider identity and target runtime configuration",
+            }),
+        )
+        .into_response();
+    }
+
+    let capsule = request.capsule;
+    let response_revision = capsule.revision.clone();
+    let persisted_definition = definition.clone();
+    let result = state
+        .db
+        .with_write_conn(move |conn| {
+            persist_managed_publication_import(
+                conn,
+                &persisted_definition,
+                &descriptor,
+                &offer,
+                &capsule,
+                &mut data_staging,
+                settlement::current_unix_timestamp(),
+            )
+        })
+        .await;
+    match result {
+        Ok(lifecycle) => (
+            StatusCode::OK,
+            Json(json!({
+                "operation": "managed_import",
+                "publication": provider_publication_status(lifecycle),
+                "revision": response_revision,
+            })),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(details = %error, "managed publication import persistence failed");
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "managed publication import persistence failed" }),
+            )
+            .into_response()
+        }
+    }
+}
+
+fn publication_descriptor_in_connection(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    bindings: &[CurrentOfferBinding],
+    candidate: &ProviderManagedOfferDefinition,
+    transport_endpoints: Vec<protocol::TransportEndpoint>,
+    now: i64,
+) -> Result<SignedArtifact<DescriptorPayload>, String> {
+    let mut active_offer_definitions = bindings
+        .iter()
+        .map(|binding| &binding.definition)
+        .filter(|definition| {
+            definition.publication_state == "active"
+                && definition.service_id != candidate.service_id
+                && definition.offer_id != candidate.offer_id
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    // A paused first publication still needs an exact Offer that can be
+    // resumed without pointing at a Descriptor which never described its
+    // capabilities. Descriptor payloads contain capability classes rather
+    // than lifecycle visibility, so materialize the prospective active
+    // snapshot for both initial states.
+    active_offer_definitions.push(candidate.clone());
+    let mut payload = descriptor_payload_for_active_definitions(
+        state,
+        &active_offer_definitions,
+        transport_endpoints,
+    )?;
+    let actor_id = state.identity.node_id();
+    if let Some(latest) =
+        db::get_latest_artifact_by_actor_kind(conn, actor_id, ARTIFACT_KIND_DESCRIPTOR)?
+    {
+        let existing: SignedArtifact<DescriptorPayload> =
+            serde_json::from_value(latest.document).map_err(|error| error.to_string())?;
+        if !protocol::verify_artifact(&existing) {
+            return Err("latest provider Descriptor failed signature verification".to_string());
+        }
+        protocol::validate_descriptor_artifact(&existing).map_err(|error| error.to_string())?;
+        if descriptor_payload_equivalent(&payload, &existing.payload) {
+            return Ok(existing);
+        }
+        payload.descriptor_seq = existing
+            .payload
+            .descriptor_seq
+            .checked_add(1)
+            .ok_or_else(|| "provider Descriptor sequence is exhausted".to_string())?;
+    } else {
+        payload.descriptor_seq = 1;
+    }
+    sign_node_artifact(state, ARTIFACT_KIND_DESCRIPTOR, now, payload)
+}
+
+fn publication_offer_in_connection(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    bindings: &[CurrentOfferBinding],
+    candidate: &ProviderManagedOfferDefinition,
+    descriptor: &SignedArtifact<DescriptorPayload>,
+    now: i64,
+) -> Result<SignedArtifact<OfferPayload>, String> {
+    let descriptor_hash = "00".repeat(32);
+    let candidate_payload =
+        payload_from_provider_offer_definition(state, &descriptor_hash, candidate);
+    let candidate_service_id = offer_service_id(candidate);
+    let mut shared_offer: Option<SignedArtifact<OfferPayload>> = None;
+    for binding in bindings {
+        if candidate.publication_state != "active"
+            || binding.definition.publication_state != "active"
+            || binding.definition.offer_id != candidate.offer_id
+            || offer_service_id(&binding.definition) == candidate_service_id
+        {
+            continue;
+        }
+        let offer = if let Some(revision) = binding.revision.as_ref() {
+            load_publication_offer_in_connection(conn, revision)?
+        } else {
+            let payload = payload_from_provider_offer_definition(
+                state,
+                &descriptor.hash,
+                &binding.definition,
+            );
+            let materialized = sign_node_artifact(state, ARTIFACT_KIND_OFFER, now, payload)?;
+            db::get_artifact_by_actor_kind_payload(
+                conn,
+                &materialized.signer,
+                ARTIFACT_KIND_OFFER,
+                &materialized.payload_hash,
+            )?
+            .map(|stored| {
+                serde_json::from_value(stored.document).map_err(|error| error.to_string())
+            })
+            .transpose()?
+            .unwrap_or(materialized)
+        };
+        let mut existing_payload = offer.payload.clone();
+        existing_payload.descriptor_hash = descriptor_hash.clone();
+        if existing_payload != candidate_payload {
+            return Err(shared_offer_incompatibility(candidate, &binding.definition));
+        }
+        if let Some(canonical) = shared_offer.as_ref()
+            && canonical.hash != offer.hash
+        {
+            return Err(format!(
+                "shared offer_id {} resolves to multiple exact Kernel Offer artifacts; republish the service against one active shared offer",
+                candidate.offer_id,
+            ));
+        }
+        shared_offer = Some(offer);
+    }
+    if let Some(offer) = shared_offer {
+        return Ok(offer);
+    }
+    let payload = payload_from_provider_offer_definition(state, &descriptor.hash, candidate);
+    let materialized = sign_node_artifact(state, ARTIFACT_KIND_OFFER, now, payload)?;
+    if let Some(stored) = db::get_artifact_by_actor_kind_payload(
+        conn,
+        &materialized.signer,
+        ARTIFACT_KIND_OFFER,
+        &materialized.payload_hash,
+    )? {
+        let existing: SignedArtifact<OfferPayload> = serde_json::from_value(stored.document)
+            .map_err(|error| format!("stored publication Offer is invalid JSON: {error}"))?;
+        protocol::validate_offer_artifact(&existing)
+            .map_err(|error| format!("stored publication Offer failed validation: {error}"))?;
+        return Ok(existing);
+    }
+    Ok(materialized)
+}
+
+pub(crate) async fn current_offer_definitions(
+    state: &AppState,
+) -> Result<Vec<ProviderManagedOfferDefinition>, String> {
+    Ok(current_offer_bindings(state)
+        .await?
+        .into_iter()
+        .map(|binding| binding.definition)
+        .collect())
 }
 
 pub async fn current_advertised_services(
@@ -6041,10 +11771,24 @@ pub async fn current_advertised_services(
         .await?
         .into_iter()
         .filter(|definition| definition.publication_state == "active")
-        .map(|definition| crate::pricing::ServicePriceInfo {
-            service_id: offer_service_id(&definition),
-            price_sats: definition.price_sats,
-            payment_required: definition.price_sats > 0,
+        .map(|definition| {
+            let (_, base_fee_msat, success_fee_msat) =
+                resolved_provider_offer_terms(state, &definition);
+            let price_sats = provider_offer_total_minor_units(&definition);
+            crate::pricing::ServicePriceInfo {
+                service_id: offer_service_id(&definition),
+                price_sats,
+                payment_required: price_sats > 0,
+                price_currency: Some(
+                    definition
+                        .price_currency
+                        .clone()
+                        .unwrap_or_else(|| "sat".to_string()),
+                ),
+                base_fee_msat: Some(base_fee_msat),
+                success_fee_msat: Some(success_fee_msat),
+                settlement_method: definition.settlement_method.map(|value| value.to_string()),
+            }
         })
         .collect::<Vec<_>>();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
@@ -6057,16 +11801,103 @@ pub(crate) async fn current_offer_records(
 ) -> Result<Vec<ProviderControlOfferRecord>, String> {
     let descriptor = current_descriptor_artifact(state).await?;
     let descriptor_hash = descriptor.hash;
-    let mut records = Vec::new();
-    for definition in current_offer_definitions(state).await? {
+    let mut records = BTreeMap::new();
+    for binding in current_offer_bindings(state).await? {
+        let definition = binding.definition;
         if !include_hidden && definition.publication_state == "hidden" {
             continue;
         }
-        let payload = payload_from_provider_offer_definition(state, &descriptor_hash, &definition);
-        let offer = persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await?;
-        records.push(provider_offer_record_from_parts(&definition, offer));
+        let offer = if let Some(revision) = binding.revision {
+            load_stored_publication_offer(state, &revision).await?
+        } else {
+            let payload =
+                payload_from_provider_offer_definition(state, &descriptor_hash, &definition);
+            persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await?
+        };
+        let offer_id = definition.offer_id.clone();
+        let record = provider_offer_record_from_parts(&definition, offer);
+        match records.entry(offer_id.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(record);
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if entry.get().offer.hash == record.offer.hash => {}
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                return Err(format!(
+                    "shared offer_id {offer_id} resolves to conflicting Kernel Offer artifacts {} and {}",
+                    entry.get().offer.hash,
+                    record.offer.hash,
+                ));
+            }
+        }
     }
-    Ok(records)
+    Ok(records.into_values().collect())
+}
+
+async fn load_stored_publication_offer(
+    state: &AppState,
+    revision: &db::PublicationRevisionRecord,
+) -> Result<SignedArtifact<OfferPayload>, String> {
+    let signed_revision: SignedPublicationRevision =
+        serde_json::from_value(revision.signed_revision.clone()).map_err(|error| {
+            format!(
+                "publication revision {} contains invalid signed JSON: {error}",
+                revision.revision_hash
+            )
+        })?;
+    signed_revision.verify().map_err(|error| {
+        format!(
+            "publication revision {} failed signature verification: {error}",
+            revision.revision_hash
+        )
+    })?;
+    if signed_revision.revision_hash != revision.revision_hash
+        || signed_revision.payload.service_id != revision.service_id
+        || signed_revision.payload.offer_id != revision.offer_id
+        || signed_revision.payload.offer_hash != revision.offer_hash
+        || signed_revision.payload.binding_hash != revision.binding_hash
+    {
+        return Err(format!(
+            "publication revision {} metadata does not match its signed payload",
+            revision.revision_hash
+        ));
+    }
+
+    let offer_hash = revision.offer_hash.clone();
+    let stored = state
+        .db
+        .with_read_conn(move |conn| db::get_artifact_by_hash(conn, &offer_hash))
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "exact Offer {} for active publication revision {} is missing",
+                revision.offer_hash, revision.revision_hash
+            )
+        })?;
+    if stored.kind != ARTIFACT_KIND_OFFER || stored.hash != revision.offer_hash {
+        return Err(format!(
+            "active publication revision {} does not resolve to its exact Offer",
+            revision.revision_hash
+        ));
+    }
+    let offer: SignedArtifact<OfferPayload> = serde_json::from_value(stored.document)
+        .map_err(|error| format!("stored exact publication Offer is invalid JSON: {error}"))?;
+    protocol::validate_offer_artifact(&offer).map_err(|error| {
+        format!(
+            "exact Offer for active publication revision {} failed validation: {error}",
+            revision.revision_hash
+        )
+    })?;
+    if offer.hash != revision.offer_hash
+        || offer.payload.offer_id != revision.offer_id
+        || offer.payload.provider_id != signed_revision.payload.provider_id
+    {
+        return Err(format!(
+            "exact Offer does not match active publication revision {}",
+            revision.revision_hash
+        ));
+    }
+    Ok(offer)
 }
 
 fn inline_module_bytes_hex(
@@ -6094,6 +11925,10 @@ fn provider_service_from_definition(
     let Some(service_id) = definition.service_id.clone() else {
         return Ok(None);
     };
+    let (base_fee_msat, success_fee_msat) = provider_offer_price_schedule(definition);
+    let price_sats = base_fee_msat.saturating_add(success_fee_msat) / 1_000;
+    let settlement_method =
+        provider_offer_settlement_method(state, definition, base_fee_msat, success_fee_msat);
     Ok(Some(ProviderServiceRecord {
         service_id,
         offer_id: definition.offer_id.clone(),
@@ -6112,7 +11947,11 @@ fn provider_service_from_definition(
         mounts: service_record_mounts(state, definition, include_binding),
         capabilities: definition.capabilities.clone(),
         mode: definition.mode.clone(),
-        price_sats: definition.price_sats,
+        price_sats,
+        base_fee_msat,
+        success_fee_msat,
+        settlement_method,
+        price_currency: definition.price_currency.clone(),
         publication_state: definition.publication_state.clone(),
         provider_id: state.identity.node_id().to_string(),
         module_hash: definition.module_hash.clone(),
@@ -6127,6 +11966,11 @@ fn provider_service_from_definition(
         },
         inline_source: if include_binding {
             definition.inline_source.clone()
+        } else {
+            None
+        },
+        python_bundle: if include_binding {
+            definition.python_bundle.clone()
         } else {
             None
         },
@@ -6309,6 +12153,594 @@ fn display_path(path: &FsPath) -> String {
     path.display().to_string()
 }
 
+#[derive(Debug)]
+struct ValidatedPublicationData {
+    bytes: Vec<u8>,
+    content_hash: String,
+    file_name: String,
+    source_kind: String,
+    kind: ValidatedPublicationDataKind,
+    input_schema: Value,
+    output_schema: Value,
+}
+
+#[derive(Debug)]
+enum ValidatedPublicationDataKind {
+    Json,
+    Csv {
+        schema: PublicationCsvSchema,
+        canonical_schema_bytes: Vec<u8>,
+    },
+    Sqlite,
+}
+
+#[derive(Debug)]
+struct StagedPublicationData {
+    source_path: String,
+    staging: PublicationDataStaging,
+}
+
+/// Owns files created while a native-data publication is still provisional.
+///
+/// Provider-control publication has several fallible gates after the data
+/// bytes have been parsed: request normalization, fixture execution, signed
+/// revision construction, and lifecycle persistence. Keeping ownership in a
+/// drop guard prevents an authenticated stream of deliberately failing
+/// publications from filling the private data directory with unreachable
+/// snapshots. Existing content-addressed files are never owned or removed by
+/// a later request.
+type PublicationDirectorySync = fn(&FsPath) -> std::io::Result<()>;
+
+fn sync_publication_directory(path: &FsPath) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[derive(Debug)]
+struct PublicationDataStaging {
+    created_paths: Vec<PathBuf>,
+    temporary_paths: Vec<PathBuf>,
+    /// Cross-process ownership for the publication-data directory. The file
+    /// descriptor moves into the blocking database commit so request
+    /// cancellation cannot release ownership or run cleanup ahead of a
+    /// detached SQLite transaction.
+    publication_lock: Option<fs::File>,
+    parent_dir: Option<PathBuf>,
+    directory_sync: PublicationDirectorySync,
+    committed: bool,
+}
+
+impl Default for PublicationDataStaging {
+    fn default() -> Self {
+        Self {
+            created_paths: Vec::new(),
+            temporary_paths: Vec::new(),
+            publication_lock: None,
+            parent_dir: None,
+            directory_sync: sync_publication_directory,
+            committed: false,
+        }
+    }
+}
+
+impl PublicationDataStaging {
+    fn acquire_publication_lock(&mut self, root: &FsPath) -> Result<(), ApiFailure> {
+        let lock_path = root.join(".publication.lock");
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let lock = options.open(&lock_path).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to open publication data lock: {error}") }),
+            )
+        })?;
+        if !lock
+            .metadata()
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to inspect publication data lock: {error}") }),
+                )
+            })?
+            .is_file()
+        {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "publication data lock is not a regular file" }),
+            ));
+        }
+        match lock.try_lock() {
+            Ok(()) => {
+                self.publication_lock = Some(lock);
+                self.parent_dir = Some(root.to_path_buf());
+                Ok(())
+            }
+            Err(fs::TryLockError::WouldBlock) => Err((
+                StatusCode::CONFLICT,
+                json!({ "error": "another publication data transaction is in progress; retry this exact request" }),
+            )),
+            Err(fs::TryLockError::Error(error)) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to lock publication data directory: {error}") }),
+            )),
+        }
+    }
+
+    fn owns_publication_lock(&self) -> bool {
+        self.publication_lock.is_some()
+    }
+
+    fn track_created(&mut self, path: PathBuf) {
+        self.created_paths.push(path);
+    }
+
+    fn track_temporary(&mut self, path: PathBuf) {
+        self.temporary_paths.push(path);
+    }
+
+    /// Remove transient names and durably publish every final hard link before
+    /// SQLite is allowed to make the lifecycle reachable.
+    fn prepare_for_commit(&mut self) -> Result<(), String> {
+        for path in self.temporary_paths.iter().rev() {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to remove publication data temporary file: {error}"
+                    ));
+                }
+            }
+        }
+        if let Some(parent_dir) = self.parent_dir.as_deref() {
+            (self.directory_sync)(parent_dir)
+                .map_err(|error| format!("failed to sync publication data directory: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn mark_committed(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PublicationDataStaging {
+    fn drop(&mut self) {
+        for path in self.temporary_paths.iter().rev() {
+            let _ = fs::remove_file(path);
+        }
+        if !self.committed {
+            for path in self.created_paths.iter().rev() {
+                let _ = fs::remove_file(path);
+            }
+            if let Some(parent_dir) = self.parent_dir.as_deref() {
+                let _ = (self.directory_sync)(parent_dir);
+            }
+        }
+    }
+}
+
+fn verify_existing_content_addressed_file(
+    path: &FsPath,
+    expected: &[u8],
+    mismatch_error: &'static str,
+) -> Result<(), ApiFailure> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to inspect existing publication data file: {error}") }),
+        )
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "content-addressed publication path is not a regular file" }),
+        ));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to open existing publication data file: {error}") }),
+        )
+    })?;
+    if !file
+        .metadata()
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to inspect opened publication data file: {error}") }),
+            )
+        })?
+        .is_file()
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "content-addressed publication path is not a regular file" }),
+        ));
+    }
+    let mut existing = Vec::with_capacity(expected.len().saturating_add(1));
+    file.take(expected.len().saturating_add(1) as u64)
+        .read_to_end(&mut existing)
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to read existing publication data file: {error}") }),
+            )
+        })?;
+    if existing != expected {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": mismatch_error }),
+        ));
+    }
+    Ok(())
+}
+
+/// Publish an immutable private data file without replacing an existing path.
+///
+/// A hard link from a fully synced sibling temporary file gives us portable
+/// no-clobber semantics on the local filesystems supported by Froglet. Only
+/// the request that creates the final link records ownership in `staging`.
+fn stage_content_addressed_file(
+    final_path: &FsPath,
+    bytes: &[u8],
+    mismatch_error: &'static str,
+    write_context: &'static str,
+    staging: &mut PublicationDataStaging,
+) -> Result<bool, ApiFailure> {
+    if final_path.exists() {
+        verify_existing_content_addressed_file(final_path, bytes, mismatch_error)?;
+        return Ok(false);
+    }
+
+    let file_name = final_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "publication data path has no valid file name" }),
+            )
+        })?;
+    let mut nonce = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let temp_path = final_path.with_file_name(format!(".{file_name}.{}.tmp", hex::encode(nonce)));
+    staging.track_temporary(temp_path.clone());
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("{write_context}: {error}") }),
+        ));
+    }
+
+    match fs::hard_link(&temp_path, final_path) {
+        Ok(()) => {
+            staging.track_created(final_path.to_path_buf());
+            let _ = fs::remove_file(&temp_path);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            verify_existing_content_addressed_file(final_path, bytes, mismatch_error)?;
+            let _ = fs::remove_file(&temp_path);
+            Ok(false)
+        }
+        Err(error) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("{write_context}: {error}") }),
+        )),
+    }
+}
+
+fn open_private_runtime_file(path: &FsPath) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Decode and inspect a native publication snapshot without touching the
+/// operator-visible publication directory. JSON and CSV can be parsed in
+/// memory, but SQLite's safety checks deliberately use rusqlite's real
+/// read-only file path. One std-only RAII tempdir keeps all three formats on a
+/// single validation path and removes both the snapshot and any derived CSV
+/// cache on success or error.
+fn validate_publication_data_source_with_tempdir(
+    source: &PublicationDataSource,
+    tempdir: PrivateRuntimeTempdir,
+) -> Result<ValidatedPublicationData, ApiFailure> {
+    let bytes = STANDARD.decode(&source.content_base64).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("data_source.content_base64 is invalid: {error}") }),
+        )
+    })?;
+    if bytes.is_empty() || bytes.len() > MAX_NATIVE_DATA_SOURCE_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            json!({
+                "error": "native data source size is outside the supported range",
+                "actual_bytes": bytes.len(),
+                "max_bytes": MAX_NATIVE_DATA_SOURCE_BYTES,
+            }),
+        ));
+    }
+    if STANDARD.encode(&bytes) != source.content_base64 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "data_source.content_base64 must use canonical padded base64" }),
+        ));
+    }
+
+    let content_hash = if source.format == PublicationDataFormat::Csv {
+        source.csv_package_digest().map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("CSV package is not canonical JSON: {error}") }),
+            )
+        })?
+    } else {
+        crypto::sha256_hex(&bytes)
+    };
+    let (extension, source_kind, query_kind) = match source.format {
+        PublicationDataFormat::Json => ("json", "data_query.json", DataQuerySourceKind::Json),
+        PublicationDataFormat::Csv => ("csv", "data_query.csv", DataQuerySourceKind::Csv),
+        PublicationDataFormat::Sqlite => {
+            ("sqlite", "data_query.sqlite", DataQuerySourceKind::Sqlite)
+        }
+    };
+    let file_name = format!("{content_hash}.{extension}");
+    let source_path = tempdir.path().join(&file_name);
+    let mut file = open_private_runtime_file(&source_path).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to create native data validation snapshot: {error}") }),
+        )
+    })?;
+    file.write_all(&bytes).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to write native data validation snapshot: {error}") }),
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to sync native data validation snapshot: {error}") }),
+        )
+    })?;
+    drop(file);
+
+    let (opened_handler, kind) = match query_kind {
+        DataQuerySourceKind::Csv => {
+            let schema = source.csv_schema.clone().ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "CSV data_source requires csv_schema" }),
+                )
+            })?;
+            let canonical_schema_bytes = canonical_json::to_vec(&schema).map_err(|error| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": format!("CSV schema is not canonical JSON: {error}") }),
+                )
+            })?;
+            (
+                DataQueryHandler::open_csv_indexed(
+                    tempdir.path(),
+                    &file_name,
+                    schema.clone(),
+                    &content_hash,
+                ),
+                ValidatedPublicationDataKind::Csv {
+                    schema,
+                    canonical_schema_bytes,
+                },
+            )
+        }
+        DataQuerySourceKind::Json => (
+            DataQueryHandler::open(tempdir.path(), &file_name, query_kind),
+            ValidatedPublicationDataKind::Json,
+        ),
+        DataQuerySourceKind::Sqlite => (
+            DataQueryHandler::open(tempdir.path(), &file_name, query_kind),
+            ValidatedPublicationDataKind::Sqlite,
+        ),
+    };
+    let handler = opened_handler.map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "data source failed native read-only validation",
+                "details": error,
+            }),
+        )
+    })?;
+    let collections = handler.collection_schema();
+    let output_schema = match handler.csv_summary() {
+        Some((schema, row_count)) => {
+            data_query_csv_output_schema(&collections, &schema, row_count).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to serialize validated CSV schema: {error}") }),
+                )
+            })?
+        }
+        None => data_query_output_schema(&collections),
+    };
+    drop(handler);
+
+    Ok(ValidatedPublicationData {
+        bytes,
+        content_hash,
+        file_name,
+        source_kind: source_kind.to_string(),
+        kind,
+        input_schema: data_query_input_schema(),
+        output_schema,
+    })
+}
+
+fn validate_publication_data_source(
+    source: &PublicationDataSource,
+) -> Result<ValidatedPublicationData, ApiFailure> {
+    let tempdir = private_runtime_tempdir("froglet-publication-preflight").map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to create private publication validation directory: {error}") }),
+        )
+    })?;
+    validate_publication_data_source_with_tempdir(source, tempdir)
+}
+
+fn stage_publication_data_source(
+    state: &AppState,
+    validated: ValidatedPublicationData,
+) -> Result<StagedPublicationData, ApiFailure> {
+    let ValidatedPublicationData {
+        bytes,
+        content_hash,
+        file_name,
+        source_kind: _,
+        kind,
+        input_schema: _,
+        output_schema: expected_output_schema,
+    } = validated;
+    let mut staging = PublicationDataStaging::default();
+    let root = state.config.storage.data_dir.join("publication-data");
+    fs::create_dir_all(&root).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("failed to create private publication data directory: {error}") }),
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("failed to secure private publication data directory: {error}") }),
+            )
+        })?;
+    }
+    staging.acquire_publication_lock(&root)?;
+    let final_path = root.join(&file_name);
+    stage_content_addressed_file(
+        &final_path,
+        &bytes,
+        "content-addressed publication snapshot does not match its hash",
+        "failed to stage publication data snapshot",
+        &mut staging,
+    )?;
+
+    let csv = match kind {
+        ValidatedPublicationDataKind::Csv {
+            schema,
+            canonical_schema_bytes,
+        } => Some((schema, canonical_schema_bytes)),
+        ValidatedPublicationDataKind::Json | ValidatedPublicationDataKind::Sqlite => None,
+    };
+    if let Some((_, schema_bytes)) = csv.as_ref() {
+        let schema_name = format!("{content_hash}.csv.schema.json");
+        let schema_path = root.join(&schema_name);
+        stage_content_addressed_file(
+            &schema_path,
+            schema_bytes,
+            "content-addressed CSV schema does not match its package hash",
+            "failed to stage CSV schema",
+            &mut staging,
+        )?;
+    }
+
+    let csv_cache_path = csv
+        .as_ref()
+        .map(|_| root.join(format!("{content_hash}.csv.sqlite")));
+    let csv_cache_existed = csv_cache_path.as_ref().is_some_and(|path| path.exists());
+    let opened_handler = csv.map(|(schema, _)| {
+        DataQueryHandler::open_csv_indexed(&root, &file_name, schema, &content_hash)
+    });
+    if !csv_cache_existed
+        && let Some(cache_path) = csv_cache_path
+        && cache_path.exists()
+    {
+        staging.track_created(cache_path);
+    }
+    if let Some(opened_handler) = opened_handler {
+        let handler = match opened_handler {
+            Ok(handler) => handler,
+            Err(error) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({
+                        "error": "validated CSV source could not be installed",
+                        "details": error,
+                    }),
+                ));
+            }
+        };
+        let collections = handler.collection_schema();
+        let installed_output_schema = match handler.csv_summary() {
+            Some((schema, row_count)) => data_query_csv_output_schema(
+                &collections,
+                &schema,
+                row_count,
+            )
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("failed to serialize installed CSV schema: {error}") }),
+                )
+            })?,
+            None => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": "validated CSV source lost its schema during installation" }),
+                ));
+            }
+        };
+        if installed_output_schema != expected_output_schema {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": "installed CSV schema differs from the preflighted publication",
+                }),
+            ));
+        }
+    }
+    Ok(StagedPublicationData {
+        source_path: display_path(&final_path),
+        staging,
+    })
+}
+
 fn reject_unused_publish_artifact_fields(
     payload: &ProviderControlPublishArtifactRequest,
     unused: &[(&str, bool)],
@@ -6348,28 +12780,127 @@ fn validated_publish_oci_binding(
     Ok((reference, digest))
 }
 
-pub fn artifact_provider_offer_definition(
+struct PreparedProviderOfferDefinition {
+    definition: ProviderManagedOfferDefinition,
+    data_staging: PublicationDataStaging,
+}
+
+#[derive(Debug)]
+struct ResolvedProviderOfferDefinition {
+    definition: ProviderManagedOfferDefinition,
+    validated_data_source: Option<ValidatedPublicationData>,
+}
+
+/// Test-only definition builder for validation cases that do not persist a
+/// lifecycle. Production publication must keep the staging owner armed until
+/// its database commit is durable.
+#[cfg(test)]
+fn artifact_provider_offer_definition(
     state: &AppState,
     payload: ProviderControlPublishArtifactRequest,
 ) -> Result<ProviderManagedOfferDefinition, ApiFailure> {
+    let PreparedProviderOfferDefinition {
+        definition,
+        mut data_staging,
+    } = prepare_artifact_provider_offer_definition(state, payload)?;
+    data_staging.mark_committed();
+    Ok(definition)
+}
+
+#[cfg(test)]
+fn prepare_artifact_provider_offer_definition(
+    state: &AppState,
+    payload: ProviderControlPublishArtifactRequest,
+) -> Result<PreparedProviderOfferDefinition, ApiFailure> {
+    let resolved = resolve_artifact_provider_offer_definition(state, &payload)?;
+    prepare_resolved_artifact_provider_offer_definition(state, resolved)
+}
+
+fn prepare_resolved_artifact_provider_offer_definition(
+    state: &AppState,
+    resolved: ResolvedProviderOfferDefinition,
+) -> Result<PreparedProviderOfferDefinition, ApiFailure> {
+    let ResolvedProviderOfferDefinition {
+        definition,
+        validated_data_source,
+    } = resolved;
+    let data_staging = if let Some(validated_data_source) = validated_data_source {
+        let expected_source_path = definition.source_path.as_deref().ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "preflighted native data publication has no source path" }),
+            )
+        })?;
+        let staged = stage_publication_data_source(state, validated_data_source)?;
+        if staged.source_path != expected_source_path {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": "staged native data path differs from the preflighted publication",
+                    "expected": expected_source_path,
+                    "actual": staged.source_path,
+                }),
+            ));
+        }
+        staged.staging
+    } else {
+        PublicationDataStaging::default()
+    };
+    Ok(PreparedProviderOfferDefinition {
+        definition,
+        data_staging,
+    })
+}
+
+/// Resolve the complete provider definition without persistent or
+/// operator-visible mutation. Artifact paths may be read, and native data is
+/// inspected through an auto-cleaned private tempdir, but this function never
+/// stages publication bytes, executes a fixture, or touches SQLite state.
+fn resolve_artifact_provider_offer_definition(
+    state: &AppState,
+    payload: &ProviderControlPublishArtifactRequest,
+) -> Result<ResolvedProviderOfferDefinition, ApiFailure> {
+    let mut validated_data_source = None;
+    let payload = payload.clone().normalized().map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        )
+    })?;
+    let requested_build_evidence = payload.build_evidence.clone();
     let service_id = normalize_short_id(&payload.service_id)
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     let offer_id = normalize_short_id(payload.offer_id.as_deref().unwrap_or(&service_id))
+        .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    let project_id = payload
+        .project_id
+        .as_deref()
+        .map(normalize_short_id)
+        .transpose()
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     let publication_state = normalize_offer_publication_state(payload.publication_state.as_deref())
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
     // Validate price.currency against the node's active payment backends before
     // payload fields are partially moved. "sat" (or absent) → Lightning or free;
     // "usd" → Stripe backend required.
-    let price_currency =
-        validate_price_currency_for_backends(state, payload.price_currency.as_deref())?;
-    let mounts =
-        validate_provider_control_publish_mounts(payload.mounts.clone().unwrap_or_default())
-            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
+    let price_currency = validate_price_currency_for_backends(state, payload.price_currency)?;
+    let settlement_method = validate_settlement_for_backends(state, payload.settlement_method)?;
+    let mounts = payload
+        .mounts
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mount| ExecutionMount {
+            handle: mount.handle,
+            kind: mount.kind,
+            read_only: mount.read_only,
+            binding: mount.binding,
+        })
+        .collect();
     let runtime = if let Some(runtime) = payload.runtime.as_deref() {
         ExecutionRuntime::parse(runtime)
             .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
-    } else if payload.inline_source.is_some() {
+    } else if payload.inline_source.is_some() || payload.python_bundle.is_some() {
         ExecutionRuntime::Python
     } else if payload.wasm_module_hex.is_some() {
         ExecutionRuntime::Wasm
@@ -6393,7 +12924,7 @@ pub fn artifact_provider_offer_definition(
     let package_kind = if let Some(package_kind) = payload.package_kind.as_deref() {
         ExecutionPackageKind::parse(package_kind)
             .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?
-    } else if payload.inline_source.is_some() {
+    } else if payload.inline_source.is_some() || payload.python_bundle.is_some() {
         ExecutionPackageKind::InlineSource
     } else if payload.wasm_module_hex.is_some() {
         ExecutionPackageKind::InlineModule
@@ -6412,22 +12943,38 @@ pub fn artifact_provider_offer_definition(
     } else {
         default_entrypoint_kind_for(&runtime)
     };
-    let entrypoint = payload
-        .entrypoint
-        .clone()
-        .unwrap_or_else(|| default_entrypoint_for(&runtime, &entrypoint_kind).to_string());
+    let entrypoint = payload.entrypoint.clone().unwrap_or_else(|| {
+        if payload.data_source.is_some() {
+            service_id.clone()
+        } else {
+            default_entrypoint_for(&runtime, &entrypoint_kind).to_string()
+        }
+    });
     let contract_version = payload.contract_version.clone().unwrap_or_else(|| {
-        default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string()
+        payload.data_source.as_ref().map_or_else(
+            || default_contract_version_for(&runtime, &package_kind, &entrypoint_kind).to_string(),
+            |source| {
+                match source.format {
+                    PublicationDataFormat::Json => DATA_QUERY_JSON_CONTRACT_V1,
+                    PublicationDataFormat::Csv => DATA_QUERY_CSV_CONTRACT_V1,
+                    PublicationDataFormat::Sqlite => DATA_QUERY_SQLITE_CONTRACT_V1,
+                }
+                .to_string()
+            },
+        )
     });
     let (
         offer_kind,
         module_hash,
         module_bytes_hex,
         inline_source,
+        python_bundle,
         source_path,
         source_kind,
         oci_reference,
         oci_digest,
+        default_input_schema,
+        default_output_schema,
     ) = match (&runtime, &package_kind) {
         (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
             reject_unused_publish_artifact_fields(
@@ -6507,8 +13054,11 @@ pub fn artifact_provider_offer_definition(
                         .unwrap_or_else(|| hex::encode(&module_bytes)),
                 ),
                 None,
+                None,
                 source_path,
                 "artifact".to_string(),
+                None,
+                None,
                 None,
                 None,
             )
@@ -6542,9 +13092,12 @@ pub fn artifact_provider_offer_definition(
                 None,
                 None,
                 None,
+                None,
                 "oci".to_string(),
                 Some(oci_reference),
                 Some(oci_digest),
+                None,
+                None,
             )
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
@@ -6556,45 +13109,96 @@ pub fn artifact_provider_offer_definition(
                     ("oci_digest", payload.oci_digest.is_some()),
                 ],
             )?;
-            let (source_text, source_path) = match (
-                payload.inline_source.as_ref(),
-                payload.artifact_path.as_ref(),
-            ) {
-                (Some(source), None) => (source.clone(), None),
-                (None, Some(path)) => {
-                    let artifact_path = canonical_provider_artifact_path(state, path)?;
-                    let source_text = fs::read_to_string(&artifact_path).map_err(|error| {
+            let (package_digest, source_text, python_bundle, source_path) = if let Some(bundle) =
+                payload.python_bundle.as_ref()
+            {
+                if payload.inline_source.is_some() || payload.artifact_path.is_some() {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "python_bundle cannot be combined with artifact_path or inline_source" }),
+                    ));
+                }
+                let verified = froglet_publish_engine::python_bundle::verify_bundle(bundle)
+                    .map_err(|error| {
                         (
                             StatusCode::BAD_REQUEST,
                             json!({
-                                "error": "failed to read artifact_path",
-                                "artifact_path": display_path(&artifact_path),
-                                "details": error.to_string(),
+                                "error": "locked Python bundle validation failed",
+                                "details": error,
                             }),
                         )
                     })?;
-                    (source_text, Some(display_path(&artifact_path)))
-                }
-                (Some(_), Some(_)) => {
+                let source_text = String::from_utf8(verified.source).map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "locked Python source is not valid UTF-8" }),
+                    )
+                })?;
+                (
+                    verified.package_digest,
+                    source_text,
+                    Some(bundle.clone()),
+                    None,
+                )
+            } else {
+                if payload.schema_version.is_some() {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        json!({ "error": "provide either artifact_path or inline_source, not both" }),
+                        json!({
+                            "error": "current Python publication requires python_bundle",
+                            "details": "use the locked Froglet builder; raw host Python publication is legacy-only",
+                        }),
                     ));
                 }
-                _ => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": "artifact_path or inline_source is required for runtime=python package_kind=inline_source" }),
-                    ));
-                }
+                let (source_text, source_path) = match (
+                    payload.inline_source.as_ref(),
+                    payload.artifact_path.as_ref(),
+                ) {
+                    (Some(source), None) => (source.clone(), None),
+                    (None, Some(path)) => {
+                        let artifact_path = canonical_provider_artifact_path(state, path)?;
+                        let source_text = fs::read_to_string(&artifact_path).map_err(|error| {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                json!({
+                                    "error": "failed to read artifact_path",
+                                    "artifact_path": display_path(&artifact_path),
+                                    "details": error.to_string(),
+                                }),
+                            )
+                        })?;
+                        (source_text, Some(display_path(&artifact_path)))
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "provide either artifact_path or inline_source, not both" }),
+                        ));
+                    }
+                    _ => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "artifact_path or inline_source is required for legacy Python publication" }),
+                        ));
+                    }
+                };
+                (
+                    crypto::sha256_hex(source_text.as_bytes()),
+                    source_text,
+                    None,
+                    source_path,
+                )
             };
             (
                 crate::execution::WORKLOAD_KIND_EXECUTION_V1.to_string(),
-                Some(crypto::sha256_hex(source_text.as_bytes())),
+                Some(package_digest),
                 None,
                 Some(source_text),
+                python_bundle,
                 source_path,
                 runtime.as_str().to_string(),
+                None,
+                None,
                 None,
                 None,
             )
@@ -6629,16 +13233,80 @@ pub fn artifact_provider_offer_definition(
                 None,
                 None,
                 None,
+                None,
                 "oci".to_string(),
                 Some(oci_reference),
                 Some(oci_digest),
+                None,
+                None,
             )
         }
         (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "builtin services are managed by Froglet and cannot be published via publish_artifact" }),
-            ));
+            let Some(data_source) = payload.data_source.as_ref() else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "builtin services are managed by Froglet; only a typed native data_source can be published" }),
+                ));
+            };
+            let expected_contract = match data_source.format {
+                PublicationDataFormat::Json => DATA_QUERY_JSON_CONTRACT_V1,
+                PublicationDataFormat::Csv => DATA_QUERY_CSV_CONTRACT_V1,
+                PublicationDataFormat::Sqlite => DATA_QUERY_SQLITE_CONTRACT_V1,
+            };
+            if entrypoint_kind != ExecutionEntrypointKind::Builtin
+                || entrypoint != service_id
+                || contract_version != expected_contract
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "native data publication execution profile is fixed",
+                        "entrypoint_kind": "builtin",
+                        "entrypoint": service_id,
+                        "contract_version": expected_contract,
+                    }),
+                ));
+            }
+            let validated = validate_publication_data_source(data_source)?;
+            if payload
+                .source_kind
+                .as_deref()
+                .is_some_and(|value| value != validated.source_kind)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "source_kind does not match data_source.format",
+                        "expected": validated.source_kind,
+                    }),
+                ));
+            }
+            let content_hash = validated.content_hash.clone();
+            let source_path = display_path(
+                &state
+                    .config
+                    .storage
+                    .data_dir
+                    .join("publication-data")
+                    .join(&validated.file_name),
+            );
+            let source_kind = validated.source_kind.clone();
+            let input_schema = validated.input_schema.clone();
+            let output_schema = validated.output_schema.clone();
+            validated_data_source = Some(validated);
+            (
+                service_id.clone(),
+                Some(content_hash),
+                None,
+                None,
+                None,
+                Some(source_path),
+                source_kind,
+                None,
+                None,
+                Some(input_schema),
+                Some(output_schema),
+            )
         }
         _ => {
             return Err((
@@ -6652,14 +13320,88 @@ pub fn artifact_provider_offer_definition(
         }
     };
 
+    let artifact_digest = module_hash.as_deref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "publication has no immutable package digest" }),
+        )
+    })?;
+    if let Some(bundle) = python_bundle.as_ref() {
+        let evidence = requested_build_evidence.as_ref().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "locked Python publication requires exact build_evidence" }),
+            )
+        })?;
+        froglet_publish_engine::python_bundle::validate_build_evidence(bundle, evidence).map_err(
+            |error| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "locked Python build evidence validation failed",
+                        "details": error,
+                    }),
+                )
+            },
+        )?;
+    }
+    let build_evidence = if let Some(evidence) = requested_build_evidence {
+        if evidence.artifact_digest != artifact_digest {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "build evidence artifact_digest does not match the validated package",
+                    "expected": artifact_digest,
+                    "actual": evidence.artifact_digest,
+                }),
+            ));
+        }
+        evidence
+    } else {
+        let unresolved = matches!(
+            (&runtime, &package_kind),
+            (ExecutionRuntime::Python, _)
+                | (ExecutionRuntime::Container, _)
+                | (_, ExecutionPackageKind::OciImage)
+        );
+        PublicationBuildEvidence {
+            schema_version: PUBLICATION_BUILD_EVIDENCE_SCHEMA_V1.to_string(),
+            builder: "froglet.provider-import".to_string(),
+            builder_version: "1".to_string(),
+            source_digest: artifact_digest.to_string(),
+            artifact_digest: artifact_digest.to_string(),
+            dependency_mode: if unresolved { "unresolved" } else { "none" }.to_string(),
+            components: Vec::new(),
+            hermetic: false,
+        }
+    };
+
     let runtime_str = runtime.as_str().to_string();
     let (max_input_bytes, max_runtime_ms, max_memory_bytes, max_output_bytes, fuel_limit) =
         provider_offer_limits(state, &runtime_str);
+    let available_limits = ResolvedPublicationLimits {
+        max_input_bytes,
+        max_runtime_ms,
+        max_memory_bytes,
+        max_output_bytes,
+        fuel_limit,
+    };
+    let resolved_limits = payload
+        .limits
+        .clone()
+        .unwrap_or_default()
+        .resolve_within(available_limits)
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string() }),
+            )
+        })?;
 
     let definition = ProviderManagedOfferDefinition {
         offer_id: offer_id.clone(),
         service_id: Some(service_id),
-        project_id: None,
+        project_id,
         offer_kind,
         runtime: runtime_str,
         package_kind: package_kind.as_str().to_string(),
@@ -6668,31 +13410,41 @@ pub fn artifact_provider_offer_definition(
         contract_version: contract_version.clone(),
         mounts,
         mode: payload.mode.unwrap_or_else(default_service_mode),
-        capabilities: normalize_declared_capabilities(payload.capabilities.unwrap_or_default())
-            .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?,
-        max_input_bytes,
-        max_runtime_ms,
-        max_memory_bytes,
-        max_output_bytes,
-        fuel_limit,
+        capabilities: payload.capabilities.unwrap_or_default(),
+        max_input_bytes: resolved_limits.max_input_bytes,
+        max_runtime_ms: resolved_limits.max_runtime_ms,
+        max_memory_bytes: resolved_limits.max_memory_bytes,
+        max_output_bytes: resolved_limits.max_output_bytes,
+        fuel_limit: resolved_limits.fuel_limit,
         price_sats: payload.price_sats,
+        base_fee_msat: payload.base_fee_msat,
+        success_fee_msat: payload.success_fee_msat,
+        settlement_method,
         price_currency,
         publication_state,
-        starter: payload.starter,
+        starter: payload.starter.or_else(|| {
+            payload
+                .data_source
+                .as_ref()
+                .map(|_| DATA_QUERY_STARTER_V1.to_string())
+        }),
         module_hash,
+        build_evidence: Some(build_evidence),
         module_bytes_hex,
         inline_source,
+        python_bundle,
         oci_reference,
         oci_digest,
         source_path,
-        source_kind,
+        source_kind: payload.source_kind.unwrap_or(source_kind),
         summary: Some(
             payload
                 .summary
                 .unwrap_or_else(|| format!("Froglet service {}", offer_id)),
         ),
-        input_schema: payload.input_schema,
-        output_schema: payload.output_schema,
+        input_schema: payload.input_schema.or(default_input_schema),
+        output_schema: payload.output_schema.or(default_output_schema),
+        verification: payload.verification,
         terms_hash: None,
         confidential_profile_hash: None,
     };
@@ -6701,7 +13453,470 @@ pub fn artifact_provider_offer_definition(
             validate_provider_offer_capabilities_for_node(state, &definition.capabilities)
         })
         .map_err(|error| (StatusCode::BAD_REQUEST, json!({ "error": error })))?;
-    Ok(definition)
+    if validated_data_source.is_some() && definition.verification.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "native data publication requires a local verification fixture before persistence"
+            }),
+        ));
+    }
+    let placeholder_verification = LocalVerificationEvidence {
+        input_hash: "00".repeat(32),
+        result_hash: "00".repeat(32),
+        expected_output_matched: None,
+    };
+    preflight_publication_revision(state, &definition, &placeholder_verification).map_err(
+        |error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "publication revision preflight failed",
+                    "details": error,
+                }),
+            )
+        },
+    )?;
+    Ok(ResolvedProviderOfferDefinition {
+        definition,
+        validated_data_source,
+    })
+}
+
+fn verification_execution_permit(
+    state: &AppState,
+    spec: &WorkloadSpec,
+) -> Result<Option<sandbox::ExecutionPermit>, String> {
+    let requires_wasm_permit = match spec {
+        WorkloadSpec::Execution { execution } => execution.requires_wasm_permit(),
+        WorkloadSpec::Wasm { .. }
+        | WorkloadSpec::OciWasm { .. }
+        | WorkloadSpec::AttestedWasm { .. } => true,
+        WorkloadSpec::ConfidentialService { .. } | WorkloadSpec::EventsQuery { .. } => false,
+    };
+    requires_wasm_permit
+        .then(|| state.wasm_sandbox.try_acquire_execution_permit())
+        .transpose()
+}
+
+struct PreparedLocalVerification {
+    fixture_input: Vec<u8>,
+    expected_output: Option<Vec<u8>>,
+    service: ProviderServiceRecord,
+    spec: WorkloadSpec,
+}
+
+fn local_verification_binding_failure(error: String) -> ApiFailure {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({
+            "error": "failed to prepare local publication verification",
+            "failure_kind": "binding_invalid",
+            "details": error,
+        }),
+    )
+}
+
+fn validate_prepared_local_verification_environment(
+    state: &AppState,
+    service: &ProviderServiceRecord,
+    spec: &WorkloadSpec,
+) -> Result<(), ApiFailure> {
+    match spec {
+        WorkloadSpec::Wasm { submission } => {
+            let verified = submission
+                .verify()
+                .map_err(local_verification_binding_failure)?;
+            local_wasm_capabilities_for_submission(state, &verified)
+                .map(|_| ())
+                .map_err(local_verification_binding_failure)
+        }
+        WorkloadSpec::OciWasm { submission } => {
+            submission
+                .verify()
+                .map_err(local_verification_binding_failure)?;
+            let requested_capabilities = crate::wasm::normalize_requested_capabilities(
+                &submission.workload.requested_capabilities,
+            )
+            .map_err(local_verification_binding_failure)?;
+            local_wasm_capabilities_for_submission(
+                state,
+                &crate::wasm::VerifiedWasmSubmission {
+                    module_bytes: Vec::new(),
+                    input: submission.input.clone(),
+                    abi_version: submission.workload.abi_version.clone(),
+                    requested_capabilities,
+                },
+            )
+            .map(|_| ())
+            .map_err(local_verification_binding_failure)
+        }
+        WorkloadSpec::Execution { execution } => {
+            let capabilities = service_access_capabilities(service);
+            validate_gpu_capabilities_supported_by_execution(execution, &capabilities)
+                .map_err(local_verification_binding_failure)?;
+            if execution.runtime == ExecutionRuntime::Python
+                && execution.package_kind == ExecutionPackageKind::InlineSource
+            {
+                crate::data_mounts::collect_data_mount_plan(execution, &capabilities)
+                    .map_err(local_verification_binding_failure)?;
+            }
+            if matches!(
+                (&execution.runtime, &execution.package_kind),
+                (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
+                    | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage)
+            ) {
+                match crate::oci_worker::ConfiguredOciWorker::from_env()
+                    .map_err(local_verification_binding_failure)?
+                {
+                    crate::oci_worker::ConfiguredOciWorker::Disabled(_) => {
+                        return Err(local_verification_binding_failure(
+                            "OCI execution is disabled: configure an authenticated isolated worker"
+                                .to_string(),
+                        ));
+                    }
+                    crate::oci_worker::ConfiguredOciWorker::Http(_) => {}
+                }
+            }
+            Ok(())
+        }
+        WorkloadSpec::ConfidentialService { .. }
+        | WorkloadSpec::AttestedWasm { .. }
+        | WorkloadSpec::EventsQuery { .. } => Ok(()),
+    }
+}
+
+/// Resolve every deterministic local-verification condition without running
+/// author code or consuming execution capacity. The returned workload is the
+/// exact one later admitted by `verify_provider_offer_locally`.
+fn prepare_local_verification(
+    state: &AppState,
+    definition: &ProviderManagedOfferDefinition,
+) -> Result<Option<PreparedLocalVerification>, ApiFailure> {
+    let Some(fixture) = definition.verification.as_ref() else {
+        return Ok(None);
+    };
+    if definition.runtime == "python"
+        && crate::python_sandbox::detect_tier() != crate::python_sandbox::SandboxTier::Full
+    {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "error": "local publication verification requires the full Python sandbox",
+                "failure_kind": "sandbox_unavailable",
+            }),
+        ));
+    }
+    if definition.mounts.iter().any(|mount| !mount.read_only) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "error": "local publication verification does not execute with writable mounts",
+                "failure_kind": "unsafe_verification_capability",
+            }),
+        ));
+    }
+    let fixture_input = canonical_json::to_vec(&fixture.input).map_err(|error| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "error": "verification input is not canonical JSON", "details": error.to_string() }),
+        )
+    })?;
+    if fixture_input.len() > definition.max_input_bytes {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            json!({
+                "error": "verification input exceeds the publication input limit",
+                "actual_bytes": fixture_input.len(),
+                "max_input_bytes": definition.max_input_bytes,
+            }),
+        ));
+    }
+    let expected_output = fixture
+        .expected_output
+        .as_ref()
+        .map(canonical_json::to_vec)
+        .transpose()
+        .map_err(|error| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": "verification expected output is not canonical JSON", "details": error.to_string() }),
+            )
+        })?;
+    if let Some(expected_output) = expected_output.as_ref()
+        && expected_output.len() > definition.max_output_bytes
+    {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            json!({
+                "error": "verification expected output exceeds the publication output limit",
+                "actual_bytes": expected_output.len(),
+                "max_output_bytes": definition.max_output_bytes,
+            }),
+        ));
+    }
+    let service = provider_service_from_definition(state, definition, true)
+        .map_err(|error| {
+            tracing::warn!(offer_id = %definition.offer_id, details = %error, "failed to prepare local publication verification");
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": "failed to prepare local publication verification", "failure_kind": "binding_invalid" }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": "publication does not define an executable service" }),
+            )
+        })?;
+    let spec = build_bound_workload_spec_from_service(&service, fixture.input.clone()).map_err(
+        |error| {
+            tracing::warn!(offer_id = %definition.offer_id, details = %error, "failed to build local publication verification");
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": "failed to build local publication verification", "failure_kind": "binding_invalid" }),
+            )
+        },
+    )?;
+    validate_prepared_local_verification_environment(state, &service, &spec)?;
+    Ok(Some(PreparedLocalVerification {
+        fixture_input,
+        expected_output,
+        service,
+        spec,
+    }))
+}
+
+/// Execute author-supplied verification before an offer is persisted or made
+/// visible. The fixture remains inside the provider-managed definition and is
+/// never copied into a public service record or signed Kernel payload.
+async fn verify_provider_offer_locally(
+    state: &AppState,
+    definition: &ProviderManagedOfferDefinition,
+) -> Result<Option<LocalVerificationEvidence>, ApiFailure> {
+    let Some(prepared) = prepare_local_verification(state, definition)? else {
+        return Ok(None);
+    };
+    let PreparedLocalVerification {
+        fixture_input,
+        expected_output,
+        service,
+        spec,
+    } = prepared;
+    let permit = verification_execution_permit(state, &spec).map_err(|error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "error": "local publication verification capacity unavailable", "details": error }),
+        )
+    })?;
+    let capabilities_granted = service_access_capabilities(&service);
+    let output = run_workload_spec_with_admission_limits(
+        state,
+        spec,
+        capabilities_granted,
+        None,
+        permit,
+        None,
+        None,
+        Some(ExecutionLimits {
+            max_input_bytes: definition.max_input_bytes,
+            max_runtime_ms: definition.max_runtime_ms,
+            max_memory_bytes: definition.max_memory_bytes,
+            max_output_bytes: definition.max_output_bytes,
+            fuel_limit: definition.fuel_limit,
+        }),
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(offer_id = %definition.offer_id, details = %error, "local publication verification failed");
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "error": "local publication verification failed", "failure_kind": "execution_failed" }),
+        )
+    })?;
+
+    let actual_output = canonical_json::to_vec(&output.persisted_result).map_err(|error| {
+        tracing::warn!(offer_id = %definition.offer_id, details = %error, "local publication result was not canonical JSON");
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "error": "local publication verification returned invalid JSON", "failure_kind": "invalid_output" }),
+        )
+    })?;
+    if actual_output.len() > definition.max_output_bytes {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "error": "local publication verification output exceeds the publication limit",
+                "failure_kind": "output_limit_exceeded",
+                "actual_bytes": actual_output.len(),
+                "max_output_bytes": definition.max_output_bytes,
+            }),
+        ));
+    }
+    let expected_output_matched = expected_output
+        .as_ref()
+        .map(|expected| actual_output == *expected);
+    if expected_output_matched == Some(false) {
+        let expected_hash = expected_output.as_ref().map(crypto::sha256_hex);
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "error": "local publication verification output mismatch",
+                "expected_output_hash": expected_hash,
+                "actual_output_hash": output.result_hash,
+            }),
+        ));
+    }
+
+    Ok(Some(LocalVerificationEvidence {
+        input_hash: crypto::sha256_hex(&fixture_input),
+        result_hash: output.result_hash,
+        expected_output_matched,
+    }))
+}
+
+fn publication_revision_service(
+    definition: &ProviderManagedOfferDefinition,
+) -> PublicationRevisionService {
+    PublicationRevisionService {
+        project_id: definition.project_id.clone(),
+        summary: definition.summary.clone(),
+        starter: definition.starter.clone(),
+        source_kind: definition.source_kind.clone(),
+        entrypoint_kind: definition.entrypoint_kind.clone(),
+        entrypoint: definition.entrypoint.clone(),
+        contract_version: definition.contract_version.clone(),
+        mode: definition.mode.clone(),
+        mounts: definition
+            .mounts
+            .iter()
+            .map(|mount| PublicationMount {
+                handle: mount.handle.clone(),
+                kind: mount.kind.clone(),
+                read_only: mount.read_only,
+                // Provider-owned bindings are operational state and must
+                // never enter an immutable public revision.
+                binding: None,
+            })
+            .collect(),
+        capabilities: merged_access_capabilities(definition),
+        input_schema: definition.input_schema.clone(),
+        output_schema: definition.output_schema.clone(),
+    }
+}
+
+fn publication_revision_payload(
+    state: &AppState,
+    definition: &ProviderManagedOfferDefinition,
+    offer_hash: String,
+    offer_settlement_method: String,
+    base_fee_msat: u64,
+    success_fee_msat: u64,
+    local_verification: &LocalVerificationEvidence,
+) -> Result<PublicationRevisionPayload, String> {
+    let binding_hash = definition
+        .module_hash
+        .clone()
+        .ok_or_else(|| "publication has no immutable package binding".to_string())?;
+    if !base_fee_msat.is_multiple_of(1_000) || !success_fee_msat.is_multiple_of(1_000) {
+        return Err("offer price schedule is not representable in whole minor units".to_string());
+    }
+    let has_price = base_fee_msat != 0 || success_fee_msat != 0;
+    let settlement_method = if has_price {
+        definition
+            .settlement_method
+            .ok_or_else(|| "paid publication has no explicit settlement method".to_string())?
+    } else {
+        PublicationSettlement::None
+    };
+    let currency = match definition.price_currency.as_deref() {
+        Some("usd") => PublicationCurrency::Usd,
+        Some("sat") | None => PublicationCurrency::Sat,
+        Some(other) => return Err(format!("unsupported publication currency {other:?}")),
+    };
+    let service_id = definition
+        .service_id
+        .clone()
+        .ok_or_else(|| "publication has no service_id".to_string())?;
+    Ok(PublicationRevisionPayload {
+        schema_version: PUBLICATION_REVISION_SCHEMA_V1.to_string(),
+        provider_id: state.identity.node_id().to_string(),
+        service_id,
+        offer_id: definition.offer_id.clone(),
+        offer_hash,
+        binding_hash: binding_hash.clone(),
+        package_digest: binding_hash,
+        runtime: definition.runtime.clone(),
+        package_kind: definition.package_kind.clone(),
+        build_evidence: definition.build_evidence.clone(),
+        service: publication_revision_service(definition),
+        limits: ResolvedPublicationLimits {
+            max_input_bytes: definition.max_input_bytes,
+            max_runtime_ms: definition.max_runtime_ms,
+            max_memory_bytes: definition.max_memory_bytes,
+            max_output_bytes: definition.max_output_bytes,
+            fuel_limit: definition.fuel_limit,
+        },
+        price: PublicationRevisionPrice {
+            settlement_method,
+            currency,
+            base_amount_minor: base_fee_msat / 1_000,
+            success_amount_minor: success_fee_msat / 1_000,
+            offer_settlement_method,
+        },
+        local_verification: local_verification.clone(),
+    })
+}
+
+fn preflight_publication_revision(
+    state: &AppState,
+    definition: &ProviderManagedOfferDefinition,
+    local_verification: &LocalVerificationEvidence,
+) -> Result<(), String> {
+    let (offer_settlement_method, base_fee_msat, success_fee_msat) =
+        resolved_provider_offer_terms(state, definition);
+    let payload = publication_revision_payload(
+        state,
+        definition,
+        "00".repeat(32),
+        offer_settlement_method,
+        base_fee_msat,
+        success_fee_msat,
+        local_verification,
+    )?;
+    sign_publication_revision(payload, |message| state.identity.sign_message_hex(message))
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn build_signed_publication_revision(
+    state: &AppState,
+    definition: &ProviderManagedOfferDefinition,
+    offer: &ProviderControlOfferRecord,
+    local_verification: &LocalVerificationEvidence,
+) -> Result<SignedPublicationRevision, String> {
+    let (expected_settlement_method, expected_base_fee_msat, expected_success_fee_msat) =
+        resolved_provider_offer_terms(state, definition);
+    if offer.offer.payload.offer_id != definition.offer_id
+        || offer.offer.payload.price_schedule.base_fee_msat != expected_base_fee_msat
+        || offer.offer.payload.price_schedule.success_fee_msat != expected_success_fee_msat
+        || offer.offer.payload.settlement_method != expected_settlement_method
+    {
+        return Err(
+            "materialized offer differs from the preflighted publication terms".to_string(),
+        );
+    }
+    let payload = publication_revision_payload(
+        state,
+        definition,
+        offer.offer.hash.clone(),
+        offer.offer.payload.settlement_method.clone(),
+        offer.offer.payload.price_schedule.base_fee_msat,
+        offer.offer.payload.price_schedule.success_fee_msat,
+        local_verification,
+    )?;
+    sign_publication_revision(payload, |message| state.identity.sign_message_hex(message))
+        .map_err(|error| error.to_string())
 }
 
 pub async fn persist_provider_offer_mutation(
@@ -6758,7 +13973,13 @@ pub async fn persist_provider_offer_mutation(
             descriptor_hash: offer_record.offer.payload.descriptor_hash.clone(),
             offer_hash: offer_record.offer.hash.clone(),
             offer_id: offer_record.offer.payload.offer_id.clone(),
+            lifecycle_status: "legacy_unverified".to_string(),
             service_id: offer_record.service_id.clone(),
+            local_verification: None,
+            publication_revision: None,
+            activation_token: None,
+            previous_publication: None,
+            previous_transport_grants: Vec::new(),
         },
         offer: offer_record,
     };
@@ -6859,6 +14080,13 @@ async fn create_quote_record(
             }),
         ));
     }
+    validate_service_bound_spec_for_offer(
+        state.as_ref(),
+        &payload.spec,
+        &offer.hash,
+        Some(&offer.payload.offer_id),
+    )
+    .await?;
     if let Some(confidential_profile_hash) = offer.payload.confidential_profile_hash.as_deref() {
         let Some(confidential_session_hash) = payload.spec.confidential_session_hash() else {
             return Err((
@@ -6927,9 +14155,24 @@ async fn create_quote_record(
     let capabilities_granted = grant_requested_capabilities_from_offer(&payload.spec, &offer)
         .map_err(|response| (response.0, response.1.0))?;
 
-    let quoted_total_sats = (offer.payload.price_schedule.base_fee_msat
-        + offer.payload.price_schedule.success_fee_msat)
-        / 1_000;
+    let quoted_total_msat = offer
+        .payload
+        .price_schedule
+        .base_fee_msat
+        .checked_add(offer.payload.price_schedule.success_fee_msat)
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "offer price schedule overflows the supported range" }),
+            )
+        })?;
+    if i64::try_from(quoted_total_msat).is_err() || quoted_total_msat % 1_000 != 0 {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "offer price is not representable as signed whole-satoshi settlement" }),
+        ));
+    }
+    let quoted_total_sats = quoted_total_msat / 1_000;
     if let Some(max_price_sats) = payload.max_price_sats
         && quoted_total_sats > max_price_sats
     {
@@ -6959,8 +14202,15 @@ async fn create_quote_record(
                 json!({ "error": "failed to resolve lightning settlement destination" }),
             )
         })?;
-    settlement_terms.base_fee_msat = offer.payload.price_schedule.base_fee_msat;
-    settlement_terms.success_fee_msat = offer.payload.price_schedule.success_fee_msat;
+    if settlement_terms.method == "lightning.base_fee_plus_success_fee.v1" {
+        settlement_terms.base_fee_msat = offer.payload.price_schedule.base_fee_msat;
+        settlement_terms.success_fee_msat = offer.payload.price_schedule.success_fee_msat;
+    } else if quoted_total_msat > 0 {
+        // Prepaid Lightning and Stripe are single-leg methods. Preserve the
+        // Offer's total while canonicalizing it into the upfront base leg.
+        settlement_terms.base_fee_msat = quoted_total_msat;
+        settlement_terms.success_fee_msat = 0;
+    }
     let quote_expires_at = settlement_quote_expires_at(
         state.as_ref(),
         created_at,
@@ -7005,6 +14255,12 @@ async fn create_quote_record(
             json!({ "error": format!("failed to sign quote: {error}") }),
         )
     })?;
+    protocol::validate_quote_artifact(&quote).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "provider generated invalid Quote terms", "details": error }),
+        )
+    })?;
 
     let artifact_json = serde_json::to_string(&quote).map_err(|error| {
         (
@@ -7020,9 +14276,7 @@ async fn create_quote_record(
     let persisted = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<(), String> {
+            db::with_immediate_transaction(conn, |conn| {
                 db::insert_artifact_document(
                     conn,
                     &quote_hash,
@@ -7036,15 +14290,7 @@ async fn create_quote_record(
                     deals::insert_quote(conn, &quote_for_db)?;
                 }
                 Ok(())
-            })();
-
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(())
+            })
         })
         .await;
 
@@ -7055,13 +14301,18 @@ async fn create_quote_record(
             json!({ "error": "failed to persist quote" }),
         )
     })?;
-
     Ok(quote)
 }
 
 const STRIPE_PAYMENT_MATERIALIZATION_KIND: &str = "stripe_payment_reservation";
 const PREPAID_INVOICE_MATERIALIZATION_KIND: &str = "lightning_prepaid_invoice";
 const SETTLEMENT_MATERIALIZATION_CLAIM_TTL_SECS: i64 = 300;
+const SETTLEMENT_MATERIALIZATION_BATCH_SIZE: usize = 32;
+const SETTLEMENT_MATERIALIZATION_CONCURRENCY: usize = 4;
+const SETTLEMENT_MATERIALIZATION_SCAN_INTERVAL_SECS: u64 = 2;
+const SETTLEMENT_MATERIALIZATION_PHASE_PENDING: &str = "pending";
+const SETTLEMENT_MATERIALIZATION_PHASE_RESOURCE_READY: &str = "resource_ready";
+const SETTLEMENT_MATERIALIZATION_PHASE_CLEANUP_PENDING: &str = "cleanup_pending";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StripePaymentMaterializationRequest {
@@ -7076,6 +14327,141 @@ struct PrepaidInvoiceMaterializationRequest {
     amount_sats: u64,
     expiry_secs: u64,
     external_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StripePaymentMaterializationResource {
+    schema_version: String,
+    request_id: String,
+    method: String,
+    amount_sats: u64,
+    payment_intent_id: String,
+}
+
+impl StripePaymentMaterializationResource {
+    const SCHEMA_VERSION: &'static str = "froglet.stripe-materialization-resource.v1";
+
+    fn from_reservation(reservation: &settlement::PaymentReservation) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION.to_string(),
+            request_id: reservation.request_id.clone(),
+            method: reservation.method.clone(),
+            amount_sats: reservation.amount_sats,
+            payment_intent_id: reservation.token_hash.clone(),
+        }
+    }
+
+    fn into_reservation(self) -> Result<settlement::PaymentReservation, String> {
+        if self.schema_version != Self::SCHEMA_VERSION
+            || self.request_id.trim().is_empty()
+            || self.method != "stripe_mpp"
+            || self.amount_sats == 0
+            || self.payment_intent_id.trim().is_empty()
+        {
+            return Err("stored Stripe materialization resource is invalid".to_string());
+        }
+        Ok(settlement::PaymentReservation {
+            request_id: self.request_id,
+            method: self.method,
+            service_id: ServiceId::ExecuteWasm,
+            amount_sats: self.amount_sats,
+            token_hash: self.payment_intent_id,
+        })
+    }
+}
+
+#[derive(Debug)]
+enum MaterializationDisposition<T> {
+    Persisted(T),
+    AlreadyBound(T),
+    CleanupOwned(T),
+    LostOwnership(T),
+    AuthoritativeConflict(T, String),
+}
+
+fn settlement_materialization_retry_delay_secs(deal_id: &str, attempt_count: i64) -> i64 {
+    let exponent = attempt_count.saturating_sub(1).clamp(0, 5) as u32;
+    let base = (1_i64 << exponent).min(30);
+    let digest = crypto::sha256_hex(format!("{deal_id}:{attempt_count}").as_bytes());
+    let jitter = digest
+        .get(..2)
+        .and_then(|prefix| u8::from_str_radix(prefix, 16).ok())
+        .map(i64::from)
+        .unwrap_or(0)
+        % (base / 4 + 1);
+    base + jitter
+}
+
+async fn renew_owned_materialization_claim(
+    state: &AppState,
+    record: &db::DealSettlementMaterializationRecord,
+) -> Result<bool, String> {
+    let claim_token = record
+        .claim_token
+        .clone()
+        .ok_or_else(|| "claimed materialization omitted its claim token".to_string())?;
+    let deal_id = record.deal_id.clone();
+    let now = settlement::current_unix_timestamp();
+    let expires_at = now.saturating_add(SETTLEMENT_MATERIALIZATION_CLAIM_TTL_SECS);
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::renew_deal_settlement_materialization_claim(
+                conn,
+                &deal_id,
+                &claim_token,
+                expires_at,
+                now,
+            )
+        })
+        .await
+}
+
+async fn reschedule_owned_materialization(
+    state: &AppState,
+    record: &db::DealSettlementMaterializationRecord,
+    error_code: &'static str,
+) -> Result<bool, String> {
+    let claim_token = record
+        .claim_token
+        .clone()
+        .ok_or_else(|| "claimed materialization omitted its claim token".to_string())?;
+    let deal_id = record.deal_id.clone();
+    let now = settlement::current_unix_timestamp();
+    let next_attempt_at = now.saturating_add(settlement_materialization_retry_delay_secs(
+        &deal_id,
+        record.attempt_count,
+    ));
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::reschedule_deal_settlement_materialization_if_claim_token(
+                conn,
+                &deal_id,
+                &claim_token,
+                next_attempt_at,
+                error_code,
+                now,
+            )
+        })
+        .await
+}
+
+async fn delete_owned_materialization(
+    state: &AppState,
+    record: &db::DealSettlementMaterializationRecord,
+) -> Result<bool, String> {
+    let claim_token = record
+        .claim_token
+        .clone()
+        .ok_or_else(|| "claimed materialization omitted its claim token".to_string())?;
+    let deal_id = record.deal_id.clone();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::delete_deal_settlement_materialization_if_claim_token(conn, &deal_id, &claim_token)
+        })
+        .await
 }
 
 async fn create_deal_record(
@@ -7118,6 +14504,33 @@ async fn create_deal_record(
         return Err((
             StatusCode::BAD_REQUEST,
             json!({ "error": "invalid deal signature" }),
+        ));
+    }
+    verify_remote_typed_artifact(&payload.quote, ARTIFACT_KIND_QUOTE).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid Quote artifact", "details": error }),
+        )
+    })?;
+    verify_remote_typed_artifact(&payload.deal, ARTIFACT_KIND_DEAL).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid Deal artifact", "details": error }),
+        )
+    })?;
+    let chain_report = protocol::validate_quote_deal(&payload.quote, &payload.deal, None);
+    if !chain_report.valid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "invalid Quote-to-Deal artifact chain",
+                "details": chain_report
+                    .issues
+                    .iter()
+                    .map(|issue| format!("{}: {}", issue.code, issue.message))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            }),
         ));
     }
 
@@ -7166,6 +14579,13 @@ async fn create_deal_record(
             json!({ "error": "quote does not match workload payload" }),
         ));
     }
+    validate_service_bound_spec_for_offer(
+        state.as_ref(),
+        &payload.spec,
+        &payload.quote.payload.offer_hash,
+        None,
+    )
+    .await?;
 
     if payload.deal.signer != payload.deal.payload.requester_id {
         return Err((
@@ -7274,8 +14694,24 @@ async fn create_deal_record(
         })?;
     }
 
-    let quoted_total_msat = payload.quote.payload.settlement_terms.base_fee_msat
-        + payload.quote.payload.settlement_terms.success_fee_msat;
+    let quoted_total_msat = payload
+        .quote
+        .payload
+        .settlement_terms
+        .base_fee_msat
+        .checked_add(payload.quote.payload.settlement_terms.success_fee_msat)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "quote total overflows the supported range" }),
+            )
+        })?;
+    if i64::try_from(quoted_total_msat).is_err() || quoted_total_msat % 1_000 != 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "quote total is not representable as signed whole-satoshi settlement" }),
+        ));
+    }
     let quoted_total_sats = quoted_total_msat / 1_000;
     let uses_lightning_bundle = quoted_total_sats > 0
         && payload.quote.payload.settlement_terms.method.as_str()
@@ -7297,6 +14733,15 @@ async fn create_deal_record(
             .config
             .payment_backends
             .contains(&PaymentBackend::Stripe);
+    if quoted_total_sats > 0 && !uses_lightning_bundle && !uses_prepaid && !uses_stripe {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "quote settlement method is not admitted by the provider Deal runtime",
+                "method": payload.quote.payload.settlement_terms.method,
+            }),
+        ));
+    }
     if let Err((status, message)) =
         validate_deal_deadlines(&payload.quote, &payload.deal, now, uses_lightning_bundle)
     {
@@ -7326,16 +14771,9 @@ async fn create_deal_record(
             ));
         }
         if uses_stripe && existing.status == deals::DEAL_STATUS_PAYMENT_PENDING {
-            let persisted = materialize_pending_stripe_payment(state.clone(), &existing)
+            let persisted = run_stripe_materialization_detached(state.clone(), existing)
                 .await
                 .map_err(|response| (response.0, response.1.0))?;
-            if persisted.status == deals::DEAL_STATUS_ACCEPTED {
-                tokio::spawn(process_deal_with_reserved_permit(
-                    state,
-                    persisted.deal_id.clone(),
-                    None,
-                ));
-            }
             return Ok((persisted.public_record(), StatusCode::OK));
         }
         if uses_prepaid
@@ -7343,7 +14781,7 @@ async fn create_deal_record(
             && existing.payment_token_hash.is_none()
         {
             let (persisted, invoice) =
-                materialize_pending_prepaid_invoice(state.clone(), &existing)
+                run_prepaid_materialization_detached(state.clone(), existing)
                     .await
                     .map_err(|response| (response.0, response.1.0))?;
             let mut record = persisted.public_record();
@@ -7379,16 +14817,9 @@ async fn create_deal_record(
         }
 
         if uses_stripe && existing.status == deals::DEAL_STATUS_PAYMENT_PENDING {
-            let persisted = materialize_pending_stripe_payment(state.clone(), &existing)
+            let persisted = run_stripe_materialization_detached(state.clone(), existing)
                 .await
                 .map_err(|response| (response.0, response.1.0))?;
-            if persisted.status == deals::DEAL_STATUS_ACCEPTED {
-                tokio::spawn(process_deal_with_reserved_permit(
-                    state,
-                    persisted.deal_id.clone(),
-                    None,
-                ));
-            }
             return Ok((persisted.public_record(), StatusCode::OK));
         }
         if uses_prepaid
@@ -7396,7 +14827,7 @@ async fn create_deal_record(
             && existing.payment_token_hash.is_none()
         {
             let (persisted, invoice) =
-                materialize_pending_prepaid_invoice(state.clone(), &existing)
+                run_prepaid_materialization_detached(state.clone(), existing)
                     .await
                     .map_err(|response| (response.0, response.1.0))?;
             let mut record = persisted.public_record();
@@ -7519,9 +14950,26 @@ async fn create_deal_record(
             })?,
         ))
     } else if uses_prepaid {
+        let remaining_admission_secs = payload
+            .deal
+            .payload
+            .admission_deadline
+            .checked_sub(now)
+            .and_then(|remaining| u64::try_from(remaining).ok())
+            .filter(|remaining| *remaining > 0)
+            .ok_or_else(|| {
+                (
+                    StatusCode::GONE,
+                    json!({ "error": "prepaid Deal admission deadline has elapsed" }),
+                )
+            })?;
         let request = PrepaidInvoiceMaterializationRequest {
             amount_sats: quoted_total_sats,
-            expiry_secs: state.config.lightning.base_invoice_expiry_secs,
+            expiry_secs: state
+                .config
+                .lightning
+                .base_invoice_expiry_secs
+                .min(remaining_admission_secs),
             external_id: deal_id.clone(),
         };
         Some((
@@ -7616,9 +15064,7 @@ async fn create_deal_record(
     let insert_result = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<deals::InsertDealOutcome, String> {
+            db::with_immediate_transaction(conn, |conn| {
                 db::insert_artifact_document(
                     conn,
                     &quote_hash,
@@ -7775,18 +15221,7 @@ async fn create_deal_record(
                 }
 
                 Ok(insert_outcome)
-            })();
-
-            let result = match operation {
-                Ok(result) => result,
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
-                }
-            };
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(result)
+            })
         })
         .await;
 
@@ -7807,21 +15242,15 @@ async fn create_deal_record(
 
     if !insert_result.created {
         if uses_stripe {
-            let persisted = materialize_pending_stripe_payment(state.clone(), &insert_result.deal)
-                .await
-                .map_err(|response| (response.0, response.1.0))?;
-            if persisted.status == deals::DEAL_STATUS_ACCEPTED {
-                tokio::spawn(process_deal_with_reserved_permit(
-                    state,
-                    persisted.deal_id.clone(),
-                    None,
-                ));
-            }
+            let persisted =
+                run_stripe_materialization_detached(state.clone(), insert_result.deal.clone())
+                    .await
+                    .map_err(|response| (response.0, response.1.0))?;
             return Ok((persisted.public_record(), StatusCode::OK));
         }
         if uses_prepaid {
             let (persisted, invoice) =
-                materialize_pending_prepaid_invoice(state.clone(), &insert_result.deal)
+                run_prepaid_materialization_detached(state.clone(), insert_result.deal.clone())
                     .await
                     .map_err(|response| (response.0, response.1.0))?;
             let mut record = persisted.public_record();
@@ -7864,7 +15293,9 @@ async fn create_deal_record(
     }
 
     if uses_lightning_bundle {
-        if let Err(error) = materialize_pending_lightning_bundle(state.clone(), &deal_id).await {
+        if let Err(error) =
+            run_lightning_materialization_detached(state.clone(), deal_id.clone()).await
+        {
             tracing::error!("Failed to materialize paid deal settlement for {deal_id}: {error}");
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -7894,22 +15325,16 @@ async fn create_deal_record(
     }
 
     if uses_stripe {
-        let persisted = materialize_pending_stripe_payment(state.clone(), &insert_result.deal)
-            .await
-            .map_err(|response| (response.0, response.1.0))?;
-        if persisted.status == deals::DEAL_STATUS_ACCEPTED {
-            tokio::spawn(process_deal_with_reserved_permit(
-                state,
-                persisted.deal_id.clone(),
-                None,
-            ));
-        }
+        let persisted =
+            run_stripe_materialization_detached(state.clone(), insert_result.deal.clone())
+                .await
+                .map_err(|response| (response.0, response.1.0))?;
         return Ok((persisted.public_record(), StatusCode::ACCEPTED));
     }
 
     if uses_prepaid {
         let (persisted, invoice) =
-            materialize_pending_prepaid_invoice(state.clone(), &insert_result.deal)
+            run_prepaid_materialization_detached(state.clone(), insert_result.deal.clone())
                 .await
                 .map_err(|response| (response.0, response.1.0))?;
         let mut record = persisted.public_record();
@@ -7937,42 +15362,85 @@ async fn create_deal_record(
     Ok((insert_result.deal.public_record(), StatusCode::ACCEPTED))
 }
 
+async fn run_lightning_materialization_detached(
+    state: Arc<AppState>,
+    deal_id: String,
+) -> Result<(), String> {
+    tokio::spawn(async move { materialize_pending_lightning_bundle(state, &deal_id).await })
+        .await
+        .map_err(|error| format!("lightning materialization task failed: {error}"))?
+}
+
+async fn run_stripe_materialization_detached(
+    state: Arc<AppState>,
+    deal: deals::StoredDeal,
+) -> Result<deals::StoredDeal, (StatusCode, Json<serde_json::Value>)> {
+    tokio::spawn(async move {
+        let persisted = materialize_pending_stripe_payment(state.clone(), &deal).await?;
+        if persisted.status == deals::DEAL_STATUS_ACCEPTED {
+            tokio::spawn(process_deal_with_reserved_permit(
+                state,
+                persisted.deal_id.clone(),
+                None,
+            ));
+        }
+        Ok(persisted)
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Stripe materialization task failed: {error}") })),
+        )
+    })?
+}
+
+async fn run_prepaid_materialization_detached(
+    state: Arc<AppState>,
+    deal: deals::StoredDeal,
+) -> Result<(deals::StoredDeal, Option<deals::PrepaidInvoice>), (StatusCode, Json<Value>)> {
+    tokio::spawn(async move { materialize_pending_prepaid_invoice(state, &deal).await })
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("prepaid materialization task failed: {error}") })),
+            )
+        })?
+}
+
 async fn fail_pending_deal_materialization(
     state: Arc<AppState>,
     deal: &deals::StoredDeal,
+    expected_claim_token: Option<String>,
     failure_code: &str,
     error_message: String,
 ) -> Result<(), String> {
     let failure = receipt_failure(failure_code, error_message.clone());
     let completed_at = settlement::current_unix_timestamp();
-    let receipt = sign_deal_receipt(
-        state.as_ref(),
-        deal,
-        completed_at,
-        ReceiptSignSpec {
-            deal_state: "failed",
-            execution_state: "not_started",
-            bundle: None,
-            stripe_settlement: None,
-            prepaid_settlement: None,
-            result_hash: None,
-            result_format: None,
-            result_envelope_hash: None,
-            failure: Some(failure.clone()),
-        },
-    )
-    .map_err(|error| error.to_string())?;
-    let receipt_json = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
+    // No complete payment evidence was committed, so this attempt never
+    // reached admission. Keep runtime cancellation evidence, but do not sign
+    // a free Receipt for a paid Quote or invent an invoice_bundle reference.
     let deal_id = deal.deal_id.clone();
     let expected_status = deal.status.clone();
-    let receipt_for_db = receipt.clone();
     let updated = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation = (|| -> Result<bool, String> {
-                let _ = db::delete_deal_settlement_materialization(conn, &deal_id)?;
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = deals::get_deal(conn, &deal_id)? else {
+                    return Ok(false);
+                };
+                if current.status != expected_status {
+                    return Ok(false);
+                }
+                let Some(materialization) =
+                    db::get_deal_settlement_materialization(conn, &deal_id)?
+                else {
+                    return Ok(false);
+                };
+                if materialization.claim_token != expected_claim_token {
+                    return Ok(false);
+                }
                 let failure_evidence_hash = db::insert_execution_evidence(
                     conn,
                     "deal",
@@ -7981,53 +15449,35 @@ async fn fail_pending_deal_materialization(
                     &failure,
                     completed_at,
                 )?;
-                let updated = deals::complete_deal_failure_if_status(
+                let updated = deals::cancel_unadmitted_deal(
                     conn,
-                    deals::DealTerminalTransition {
-                        deal_id: &deal_id,
-                        expected_status: &expected_status,
-                        error: &error_message,
-                        receipt: &receipt_for_db,
-                        failure_evidence_hash: Some(&failure_evidence_hash),
-                        receipt_artifact_hash: Some(&receipt_for_db.hash),
-                        now: completed_at,
-                    },
+                    &deal_id,
+                    &error_message,
+                    &failure_evidence_hash,
+                    completed_at,
                 )?;
-
-                if updated {
-                    db::insert_artifact_document(
+                if !updated {
+                    return Err(
+                        "deal state changed despite the immediate materialization transaction"
+                            .to_string(),
+                    );
+                }
+                let deleted = match expected_claim_token.as_deref() {
+                    Some(claim_token) => db::delete_deal_settlement_materialization_if_claim_token(
                         conn,
-                        &receipt_for_db.hash,
-                        &receipt_for_db.payload_hash,
-                        ARTIFACT_KIND_RECEIPT,
-                        &receipt_for_db.signer,
-                        receipt_for_db.created_at,
-                        &receipt_json,
-                    )?;
-                    let _ = db::insert_execution_evidence(
-                        conn,
-                        "deal",
                         &deal_id,
-                        "receipt_artifact_ref",
-                        &json!({ "artifact_hash": receipt_for_db.hash }),
-                        completed_at,
-                    )?;
+                        claim_token,
+                    )?,
+                    None => db::delete_deal_settlement_materialization(conn, &deal_id)?,
+                };
+                if !deleted {
+                    return Err(
+                        "owned settlement materialization disappeared during failure commit"
+                            .to_string(),
+                    );
                 }
-
-                Ok(updated)
-            })();
-
-            let result = match operation {
-                Ok(result) => result,
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
-                }
-            };
-
-            conn.execute_batch("COMMIT")
-                .map_err(|error| error.to_string())?;
-            Ok(result)
+                Ok(true)
+            })
         })
         .await?;
 
@@ -8060,6 +15510,13 @@ async fn materialize_pending_lightning_bundle(
             materialization.materialization_kind
         ));
     }
+    let claim_token = materialization
+        .claim_token
+        .clone()
+        .ok_or_else(|| "claimed lightning materialization omitted its claim token".to_string())?;
+    if !renew_owned_materialization_claim(state.as_ref(), &materialization).await? {
+        return Ok(());
+    }
 
     let request: settlement::BuildLightningInvoiceBundleRequest =
         serde_json::from_str(&materialization.request_json).map_err(|error| {
@@ -8075,6 +15532,7 @@ async fn materialize_pending_lightning_bundle(
             fail_pending_deal_materialization(
                 state,
                 &deal,
+                materialization.claim_token.clone(),
                 "lightning_invoice_bundle_materialization_failed",
                 error.clone(),
             )
@@ -8085,22 +15543,55 @@ async fn materialize_pending_lightning_bundle(
 
     let bundle_for_db = bundle.clone();
     let bundle_session_id = bundle.session_id.clone();
+    let bundle_hash = bundle.bundle.hash.clone();
     let deal_id_for_db = deal.deal_id.clone();
     let deal_hash_for_db = deal.artifact.hash.clone();
     let persisted = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation = (|| -> Result<(), String> {
-                if db::get_deal_settlement_materialization(conn, &deal_id_for_db)?.is_none() {
-                    return Ok(());
+            db::with_immediate_transaction(conn, |conn| {
+                let materialization =
+                    db::get_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                if let Some(existing) =
+                    db::get_lightning_invoice_bundle_by_deal_hash(conn, &deal_hash_for_db)?
+                {
+                    let owns_materialization = materialization
+                        .as_ref()
+                        .and_then(|record| record.claim_token.as_deref())
+                        == Some(claim_token.as_str());
+                    if owns_materialization
+                        && !db::delete_deal_settlement_materialization_if_claim_token(
+                            conn,
+                            &deal_id_for_db,
+                            &claim_token,
+                        )?
+                    {
+                        return Err("owned lightning materialization disappeared during cleanup"
+                            .to_string());
+                    }
+                    if existing.session_id != bundle_session_id
+                        || existing.bundle.hash != bundle_hash
+                    {
+                        return Ok(MaterializationDisposition::AuthoritativeConflict(
+                            (),
+                            "a different signed lightning bundle is already authoritative for this deal"
+                                .to_string(),
+                        ));
+                    }
+                    return Ok(MaterializationDisposition::AlreadyBound(()));
                 }
 
-                if db::get_lightning_invoice_bundle_by_deal_hash(conn, &deal_hash_for_db)?.is_some()
-                {
-                    let _ = db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
-                    return Ok(());
+                let Some(materialization) = materialization else {
+                    return Ok(MaterializationDisposition::LostOwnership(()));
+                };
+                if materialization.claim_token.as_deref() != Some(claim_token.as_str()) {
+                    return Ok(MaterializationDisposition::LostOwnership(()));
+                }
+                let Some(current) = deals::get_deal(conn, &deal_id_for_db)? else {
+                    return Ok(MaterializationDisposition::CleanupOwned(()));
+                };
+                if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+                    return Ok(MaterializationDisposition::CleanupOwned(()));
                 }
 
                 db::insert_lightning_invoice_bundle(
@@ -8122,41 +15613,82 @@ async fn materialize_pending_lightning_bundle(
                     }),
                     settlement::current_unix_timestamp(),
                 )?;
-                let _ = db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
-                Ok(())
-            })();
-
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-
-            conn.execute_batch("COMMIT")
-                .map_err(|error| error.to_string())?;
-            Ok(())
+                if !db::delete_deal_settlement_materialization_if_claim_token(
+                    conn,
+                    &deal_id_for_db,
+                    &claim_token,
+                )? {
+                    return Err(
+                        "owned lightning materialization disappeared during persistence"
+                            .to_string(),
+                    );
+                }
+                Ok(MaterializationDisposition::Persisted(()))
+            })
         })
         .await;
 
-    if let Err(error) = persisted {
-        let cancel_error =
-            settlement::cancel_lightning_invoice_bundle(state.as_ref(), &bundle).await;
-        let failure_message = match cancel_error {
-            Ok(()) => error.clone(),
-            Err(cancel_error) => format!(
-                "{error}; additionally failed to cancel materialized lightning invoices: {cancel_error}"
-            ),
-        };
-        fail_pending_deal_materialization(
-            state,
-            &deal,
-            "lightning_invoice_bundle_persist_failed",
-            failure_message.clone(),
-        )
-        .await?;
-        return Err(failure_message);
+    match persisted {
+        Ok(MaterializationDisposition::Persisted(()))
+        | Ok(MaterializationDisposition::AlreadyBound(())) => Ok(()),
+        Ok(MaterializationDisposition::LostOwnership(())) => {
+            tracing::warn!(
+                deal_id = %deal.deal_id,
+                "lightning materialization ownership changed; leaving shared invoices to the current owner"
+            );
+            Ok(())
+        }
+        Ok(MaterializationDisposition::AuthoritativeConflict((), error)) => Err(error),
+        Ok(MaterializationDisposition::CleanupOwned(())) => {
+            if let Err(error) =
+                settlement::cancel_lightning_invoice_bundle(state.as_ref(), &bundle).await
+            {
+                let _ = reschedule_owned_materialization(
+                    state.as_ref(),
+                    &materialization,
+                    "lightning_cleanup_retry",
+                )
+                .await?;
+                return Err(error);
+            }
+            if !delete_owned_materialization(state.as_ref(), &materialization).await? {
+                return Err(
+                    "lightning cleanup completed after materialization ownership changed"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if !renew_owned_materialization_claim(state.as_ref(), &materialization).await? {
+                return Err(format!(
+                    "{error}; lightning materialization ownership changed before cleanup"
+                ));
+            }
+            if let Err(cancel_error) =
+                settlement::cancel_lightning_invoice_bundle(state.as_ref(), &bundle).await
+            {
+                let _ = reschedule_owned_materialization(
+                    state.as_ref(),
+                    &materialization,
+                    "lightning_cleanup_retry",
+                )
+                .await?;
+                return Err(format!(
+                    "{error}; additionally failed to cancel materialized lightning invoices: {cancel_error}"
+                ));
+            }
+            fail_pending_deal_materialization(
+                state,
+                &deal,
+                materialization.claim_token.clone(),
+                "lightning_invoice_bundle_persist_failed",
+                error.clone(),
+            )
+            .await?;
+            Err(error)
+        }
     }
-
-    Ok(())
 }
 
 async fn claim_deal_materialization(
@@ -8178,37 +15710,26 @@ async fn claim_deal_materialization(
     state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation = (|| -> Result<
-                (
-                    Option<deals::StoredDeal>,
-                    Option<db::DealSettlementMaterializationRecord>,
-                ),
-                String,
-            > {
-                let deal = deals::get_deal(conn, &claim_deal_id)?;
-                let materialization = db::claim_deal_settlement_materialization(
-                    conn,
-                    &claim_deal_id,
-                    &claim_token,
-                    claim_expires_at,
-                    now,
-                )?;
-                Ok((deal, materialization))
-            })();
-
-            match operation {
-                Ok(result) => {
-                    conn.execute_batch("COMMIT")
-                        .map_err(|error| error.to_string())?;
-                    Ok(result)
-                }
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    Err(error)
-                }
-            }
+            db::with_immediate_transaction(
+                conn,
+                |conn| -> Result<
+                    (
+                        Option<deals::StoredDeal>,
+                        Option<db::DealSettlementMaterializationRecord>,
+                    ),
+                    String,
+                > {
+                    let deal = deals::get_deal(conn, &claim_deal_id)?;
+                    let materialization = db::claim_deal_settlement_materialization(
+                        conn,
+                        &claim_deal_id,
+                        &claim_token,
+                        claim_expires_at,
+                        now,
+                    )?;
+                    Ok((deal, materialization))
+                },
+            )
         })
         .await
 }
@@ -8262,76 +15783,305 @@ async fn materialize_pending_stripe_payment(
         return Ok(deal);
     };
     if materialization.materialization_kind != STRIPE_PAYMENT_MATERIALIZATION_KIND {
-        return Ok(deal);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "claimed materialization is not a Stripe reservation" })),
+        ));
     }
-
-    let request: StripePaymentMaterializationRequest =
-        serde_json::from_str(&materialization.request_json).map_err(|error| {
+    let claim_token = materialization.claim_token.clone().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "claimed Stripe materialization omitted its claim token" })),
+        )
+    })?;
+    let reservation = if matches!(
+        materialization.phase.as_str(),
+        SETTLEMENT_MATERIALIZATION_PHASE_RESOURCE_READY
+            | SETTLEMENT_MATERIALIZATION_PHASE_CLEANUP_PENDING
+    ) {
+        let resource_json = materialization.resource_json.as_deref().ok_or_else(|| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    json!({ "error": format!("invalid stripe materialization payload: {error}") }),
-                ),
+                Json(json!({ "error": "Stripe materialization resource is missing" })),
             )
         })?;
-    let reservation = match settlement::prepare_payment_for_amount(
-        state.as_ref(),
-        ServiceId::ExecuteWasm,
-        request.price_sats,
-        Some(request.payment),
-        Some(request.request_id),
-    )
-    .await
-    {
-        Ok(Some(reservation)) => reservation,
-        Ok(None) => {
-            let message = "stripe materialization returned no payment reservation".to_string();
+        serde_json::from_str::<StripePaymentMaterializationResource>(resource_json)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("invalid Stripe materialization resource: {error}") })),
+                )
+            })?
+            .into_reservation()
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": error })),
+                )
+            })?
+    } else {
+        if materialization.phase != SETTLEMENT_MATERIALIZATION_PHASE_PENDING {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "unsupported Stripe materialization phase" })),
+            ));
+        }
+        if settlement::current_unix_timestamp() >= deal.artifact.payload.admission_deadline {
+            let message = "deal admission deadline elapsed before Stripe authorization".to_string();
             fail_pending_deal_materialization(
                 state,
                 &deal,
-                "stripe_payment_materialization_failed",
+                materialization.claim_token.clone(),
+                "stripe_materialization_deadline_elapsed",
                 message.clone(),
             )
             .await
             .map_err(|error| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "failed to persist stripe materialization failure", "details": error })),
+                    Json(json!({ "error": "failed to persist Stripe deadline failure", "details": error })),
                 )
             })?;
-            return Err((StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))));
+            return Err((StatusCode::CONFLICT, Json(json!({ "error": message }))));
         }
-        Err(error) => {
-            let message = error.details()["error"]
-                .as_str()
-                .unwrap_or("stripe payment materialization failed")
-                .to_string();
-            return Err((error.status_code(), Json(json!({ "error": message }))));
+        if !renew_owned_materialization_claim(state.as_ref(), &materialization)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to renew Stripe materialization claim", "details": error })),
+                )
+            })?
+        {
+            return Ok(deal);
         }
+        let request: StripePaymentMaterializationRequest = serde_json::from_str(
+            &materialization.request_json,
+        )
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({ "error": format!("invalid Stripe materialization payload: {error}") }),
+                ),
+            )
+        })?;
+        let reservation = match settlement::prepare_payment_for_amount(
+            state.as_ref(),
+            ServiceId::ExecuteWasm,
+            request.price_sats,
+            Some(request.payment),
+            Some(request.request_id),
+        )
+        .await
+        {
+            Ok(Some(reservation)) => reservation,
+            Ok(None) => {
+                let message = "Stripe materialization returned no payment reservation".to_string();
+                fail_pending_deal_materialization(
+                    state,
+                    &deal,
+                    materialization.claim_token.clone(),
+                    "stripe_payment_materialization_failed",
+                    message.clone(),
+                )
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "failed to persist Stripe materialization failure", "details": error })),
+                    )
+                })?;
+                return Err((StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))));
+            }
+            Err(error) => {
+                let status = error.status_code();
+                let message = error.details()["error"]
+                    .as_str()
+                    .unwrap_or("Stripe payment materialization failed")
+                    .to_string();
+                if matches!(
+                    error,
+                    settlement::PaymentError::PaymentRequired { .. }
+                        | settlement::PaymentError::UnsupportedKind { .. }
+                        | settlement::PaymentError::InvalidPayment { .. }
+                ) {
+                    fail_pending_deal_materialization(
+                        state,
+                        &deal,
+                        materialization.claim_token.clone(),
+                        "stripe_payment_invalid",
+                        message.clone(),
+                    )
+                    .await
+                    .map_err(|persist_error| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": "failed to persist invalid Stripe payment", "details": persist_error })),
+                        )
+                    })?;
+                } else {
+                    let _ = reschedule_owned_materialization(
+                        state.as_ref(),
+                        &materialization,
+                        "stripe_prepare_retry",
+                    )
+                    .await
+                    .map_err(|persist_error| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": "failed to schedule Stripe retry", "details": persist_error })),
+                        )
+                    })?;
+                }
+                return Err((status, Json(json!({ "error": message }))));
+            }
+        };
+        let resource = StripePaymentMaterializationResource::from_reservation(&reservation);
+        let resource_json = serde_json::to_string(&resource).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("failed to encode Stripe resource: {error}") })),
+            )
+        })?;
+        let resource_deal_id = deal.deal_id.clone();
+        let resource_claim_token = claim_token.clone();
+        let resource_persisted = state
+            .db
+            .with_write_conn(move |conn| {
+                db::set_deal_settlement_materialization_resource_if_claim_token(
+                    conn,
+                    &resource_deal_id,
+                    &resource_claim_token,
+                    SETTLEMENT_MATERIALIZATION_PHASE_RESOURCE_READY,
+                    &resource_json,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to persist Stripe resource", "details": error })),
+                )
+            })?;
+        if !resource_persisted {
+            tracing::warn!(
+                deal_id = %deal.deal_id,
+                "Stripe resource was created after materialization ownership changed; current owner will reconcile the shared idempotency key"
+            );
+            return Ok(deal);
+        }
+        reservation
     };
 
+    if materialization.phase == SETTLEMENT_MATERIALIZATION_PHASE_CLEANUP_PENDING {
+        if !renew_owned_materialization_claim(state.as_ref(), &materialization)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to renew Stripe cleanup claim", "details": error })),
+                )
+            })?
+        {
+            return Ok(deal);
+        }
+        if let Err(error) = settlement::release_payment(state.as_ref(), &reservation).await {
+            let _ = reschedule_owned_materialization(
+                state.as_ref(),
+                &materialization,
+                "stripe_cleanup_retry",
+            )
+            .await
+            .map_err(|persist_error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to schedule Stripe cleanup retry", "details": persist_error })),
+                )
+            })?;
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": format!("Stripe cleanup remains pending: {error}") })),
+            ));
+        }
+        if !delete_owned_materialization(state.as_ref(), &materialization)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to finalize Stripe cleanup", "details": error })),
+                )
+            })?
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "Stripe cleanup completed after ownership changed" })),
+            ));
+        }
+        return Ok(deal);
+    }
+
     let reservation_for_db = reservation.clone();
+    let expected_resource_json = serde_json::to_string(
+        &StripePaymentMaterializationResource::from_reservation(&reservation),
+    )
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("failed to encode Stripe resource: {error}") })),
+        )
+    })?;
     let deal_id_for_db = deal.deal_id.clone();
     let persisted = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation = (|| -> Result<deals::StoredDeal, String> {
+            db::with_immediate_transaction(conn, |conn| {
                 let Some(current) = deals::get_deal(conn, &deal_id_for_db)? else {
                     return Err("deal disappeared during stripe materialization".to_string());
                 };
-                if db::get_deal_settlement_materialization(conn, &deal_id_for_db)?.is_none() {
-                    return Ok(current);
+                let Some(materialization) =
+                    db::get_deal_settlement_materialization(conn, &deal_id_for_db)?
+                else {
+                    return Ok(MaterializationDisposition::LostOwnership(current));
+                };
+                if materialization.claim_token.as_deref() != Some(claim_token.as_str()) {
+                    return Ok(MaterializationDisposition::LostOwnership(current));
+                }
+                if materialization.resource_json.as_deref()
+                    != Some(expected_resource_json.as_str())
+                {
+                    return Ok(MaterializationDisposition::AuthoritativeConflict(
+                        current,
+                        "stored Stripe resource changed during finalization".to_string(),
+                    ));
                 }
                 if current.payment_token_hash.as_deref()
                     == Some(reservation_for_db.token_hash.as_str())
                 {
-                    db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
-                    return Ok(current);
+                    if !db::delete_deal_settlement_materialization_if_claim_token(
+                        conn,
+                        &deal_id_for_db,
+                        &claim_token,
+                    )? {
+                        return Err(
+                            "owned Stripe materialization disappeared during cleanup".to_string()
+                        );
+                    }
+                    return Ok(MaterializationDisposition::AlreadyBound(current));
                 }
                 if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
-                    return Ok(current);
+                    if !db::set_deal_settlement_materialization_resource_if_claim_token(
+                        conn,
+                        &deal_id_for_db,
+                        &claim_token,
+                        SETTLEMENT_MATERIALIZATION_PHASE_CLEANUP_PENDING,
+                        &expected_resource_json,
+                        settlement::current_unix_timestamp(),
+                    )? {
+                        return Err("owned obsolete Stripe materialization disappeared".to_string());
+                    }
+                    return Ok(MaterializationDisposition::CleanupOwned(current));
                 }
                 let updated = deals::materialize_payment_for_pending_deal(
                     conn,
@@ -8342,44 +16092,91 @@ async fn materialize_pending_stripe_payment(
                     settlement::current_unix_timestamp(),
                 )?;
                 if !updated {
-                    return deals::get_deal(conn, &deal_id_for_db)?.ok_or_else(|| {
-                        "deal disappeared during stripe materialization".to_string()
-                    });
+                    return Err(
+                        "payment-pending deal changed despite the immediate Stripe materialization transaction"
+                            .to_string(),
+                    );
                 }
-                db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                if !db::delete_deal_settlement_materialization_if_claim_token(
+                    conn,
+                    &deal_id_for_db,
+                    &claim_token,
+                )? {
+                    return Err(
+                        "owned Stripe materialization disappeared during persistence".to_string(),
+                    );
+                }
                 deals::get_deal(conn, &deal_id_for_db)?
+                    .map(MaterializationDisposition::Persisted)
                     .ok_or_else(|| "materialized stripe deal not readable".to_string())
-            })();
-
-            match operation {
-                Ok(result) => {
-                    conn.execute_batch("COMMIT")
-                        .map_err(|error| error.to_string())?;
-                    Ok(result)
-                }
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    Err(error)
-                }
-            }
+            })
         })
         .await;
 
     match persisted {
-        Ok(deal) => Ok(deal),
-        Err(error) => {
-            let release_error = settlement::release_payment(state.as_ref(), &reservation).await;
-            let message = match release_error {
-                Ok(()) => error,
-                Err(release_error) => {
-                    format!(
-                        "{error}; additionally failed to release stripe reservation: {release_error}"
+        Ok(MaterializationDisposition::Persisted(deal))
+        | Ok(MaterializationDisposition::AlreadyBound(deal)) => Ok(deal),
+        Ok(MaterializationDisposition::LostOwnership(deal)) => {
+            tracing::warn!(
+                deal_id = %deal.deal_id,
+                "Stripe materialization ownership changed; leaving the idempotent PaymentIntent to the current owner"
+            );
+            Ok(deal)
+        }
+        Ok(MaterializationDisposition::AuthoritativeConflict(_, error)) => {
+            Err((StatusCode::CONFLICT, Json(json!({ "error": error }))))
+        }
+        Ok(MaterializationDisposition::CleanupOwned(deal)) => {
+            if let Err(error) = settlement::release_payment(state.as_ref(), &reservation).await {
+                let _ = reschedule_owned_materialization(
+                    state.as_ref(),
+                    &materialization,
+                    "stripe_cleanup_retry",
+                )
+                .await
+                .map_err(|persist_error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "failed to schedule Stripe cleanup retry", "details": persist_error })),
                     )
-                }
-            };
+                })?;
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({ "error": format!("Stripe cleanup remains pending: {error}") })),
+                ));
+            }
+            if !delete_owned_materialization(state.as_ref(), &materialization)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "failed to finalize Stripe cleanup", "details": error })),
+                    )
+                })?
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": "Stripe cleanup completed after ownership changed" })),
+                ));
+            }
+            Ok(deal)
+        }
+        Err(error) => {
+            let _ = reschedule_owned_materialization(
+                state.as_ref(),
+                &materialization,
+                "stripe_persist_retry",
+            )
+            .await
+            .map_err(|persist_error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to schedule Stripe persistence retry", "details": persist_error })),
+                )
+            })?;
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": message })),
+                Json(json!({ "error": error })),
             ))
         }
     }
@@ -8412,15 +16209,22 @@ async fn materialize_pending_prepaid_invoice(
         return Ok((deal, invoice));
     };
     if materialization.materialization_kind != PREPAID_INVOICE_MATERIALIZATION_KIND {
-        let invoice = load_deal_prepaid_invoice(state.as_ref(), &deal.deal_id)
-            .await
-            .map_err(|error| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "failed to load persisted prepaid invoice", "details": error })),
-                )
-            })?;
-        return Ok((deal, invoice));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "claimed materialization is not a prepaid invoice" })),
+        ));
+    }
+    let claim_token = materialization.claim_token.clone().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "claimed prepaid materialization omitted its claim token" })),
+        )
+    })?;
+    if materialization.phase != SETTLEMENT_MATERIALIZATION_PHASE_PENDING {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "unsupported prepaid materialization phase" })),
+        ));
     }
 
     if let Some(invoice) = load_deal_prepaid_invoice(state.as_ref(), &deal.deal_id)
@@ -8432,6 +16236,38 @@ async fn materialize_pending_prepaid_invoice(
             )
         })?
     {
+        let cleanup_deal_id = deal.deal_id.clone();
+        let cleanup_claim_token = claim_token.clone();
+        state
+            .db
+            .with_write_conn(move |conn| {
+                db::with_immediate_transaction(conn, |conn| {
+                    let materialization =
+                        db::get_deal_settlement_materialization(conn, &cleanup_deal_id)?;
+                    if materialization
+                        .as_ref()
+                        .and_then(|record| record.claim_token.as_deref())
+                        == Some(cleanup_claim_token.as_str())
+                        && !db::delete_deal_settlement_materialization_if_claim_token(
+                            conn,
+                            &cleanup_deal_id,
+                            &cleanup_claim_token,
+                        )?
+                    {
+                        return Err(
+                            "owned prepaid materialization disappeared during cleanup".to_string(),
+                        );
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to clean completed prepaid materialization", "details": error })),
+                )
+            })?;
         return Ok((deal, Some(invoice)));
     }
 
@@ -8444,27 +16280,126 @@ async fn materialize_pending_prepaid_invoice(
                 ),
             )
         })?;
-    let client = state.phoenixd_client.as_ref().ok_or_else(|| {
-        (
+    let materialization_now = settlement::current_unix_timestamp();
+    if materialization_now >= deal.artifact.payload.admission_deadline {
+        let message =
+            "deal admission deadline elapsed before prepaid invoice materialization".to_string();
+        fail_pending_deal_materialization(
+            state,
+            &deal,
+            materialization.claim_token.clone(),
+            "prepaid_materialization_deadline_elapsed",
+            message.clone(),
+        )
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to persist prepaid deadline failure", "details": error })),
+            )
+        })?;
+        return Err((StatusCode::CONFLICT, Json(json!({ "error": message }))));
+    }
+    let remaining_admission_secs = deal
+        .artifact
+        .payload
+        .admission_deadline
+        .checked_sub(materialization_now)
+        .and_then(|remaining| u64::try_from(remaining).ok())
+        .filter(|remaining| *remaining > 0)
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "prepaid Deal admission deadline has elapsed" })),
+            )
+        })?;
+    let invoice_expiry_secs = request.expiry_secs.min(remaining_admission_secs);
+    if !renew_owned_materialization_claim(state.as_ref(), &materialization)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to renew prepaid materialization claim", "details": error })),
+            )
+        })?
+    {
+        return Ok((deal, None));
+    }
+    let Some(client) = state.phoenixd_client.as_ref() else {
+        let _ = reschedule_owned_materialization(
+            state.as_ref(),
+            &materialization,
+            "prepaid_backend_unavailable",
+        )
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to schedule prepaid retry", "details": error })),
+            )
+        })?;
+        return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "phoenixd backend is not configured for prepaid Lightning" })),
-        )
-    })?;
+        ));
+    };
     let created = match client
-        .create_invoice_with_external_id(
+        .create_or_recover_invoice_with_external_id(
             request.amount_sats,
             &deal.deal_id,
-            request.expiry_secs,
-            Some(&request.external_id),
+            invoice_expiry_secs,
+            &request.external_id,
         )
         .await
     {
         Ok(created) => created,
         Err(error) => {
-            let message = format!("failed to mint prepaid invoice: {error}");
-            return Err((StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))));
+            let _ = reschedule_owned_materialization(
+                state.as_ref(),
+                &materialization,
+                "prepaid_create_retry",
+            )
+            .await
+            .map_err(|persist_error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to schedule prepaid create retry", "details": persist_error })),
+                )
+            })?;
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    json!({ "error": format!("failed to create or reconcile prepaid invoice: {error}") }),
+                ),
+            ));
         }
     };
+    if let Err(error) = settlement::lightning::validate_prepaid_lightning_invoice(
+        settlement::lightning::PrepaidLightningInvoiceValidation {
+            invoice_bolt11: &created.payment_request,
+            expected_payment_hash: &created.payment_hash_hex,
+            expected_amount_sat: request.amount_sats,
+            expected_destination_identity: Some(
+                deal.quote
+                    .payload
+                    .settlement_terms
+                    .destination_identity
+                    .as_str(),
+            ),
+            expected_network: Some(lightning_invoice::Currency::Bitcoin),
+            now: settlement::current_unix_timestamp(),
+            deal_admission_deadline: deal.artifact.payload.admission_deadline,
+            quote: &deal.quote,
+        },
+    ) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "phoenixd created an invoice that violates the signed Quote",
+                "details": error,
+            })),
+        ));
+    }
     let prepaid_invoice = deals::PrepaidInvoice {
         bolt11: created.payment_request,
         payment_hash: created.payment_hash_hex,
@@ -8476,56 +16411,54 @@ async fn materialize_pending_prepaid_invoice(
     let persisted = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|error| error.to_string())?;
-            let operation =
-                (|| -> Result<(deals::StoredDeal, Option<deals::PrepaidInvoice>), String> {
-                    let Some(current) = deals::get_deal(conn, &deal_id_for_db)? else {
-                        return Err("deal disappeared during prepaid materialization".to_string());
-                    };
-                    if let Some(existing_invoice) =
-                        db::get_deal_prepaid_invoice(conn, &deal_id_for_db)?
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = deals::get_deal(conn, &deal_id_for_db)? else {
+                    return Err("deal disappeared during prepaid materialization".to_string());
+                };
+                if let Some(existing_invoice) = db::get_deal_prepaid_invoice(conn, &deal_id_for_db)?
+                {
+                    let existing_invoice = prepaid_invoice_from_record(existing_invoice);
+                    if existing_invoice.bolt11 != invoice_for_db.bolt11
+                        || existing_invoice.payment_hash != invoice_for_db.payment_hash
+                        || existing_invoice.amount_sat != invoice_for_db.amount_sat
                     {
-                        let _ = db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
-                        return Ok((current, Some(prepaid_invoice_from_record(existing_invoice))));
+                        return Ok(MaterializationDisposition::AuthoritativeConflict(
+                            (current, Some(existing_invoice)),
+                            "a different prepaid invoice is already bound to this deal".to_string(),
+                        ));
                     }
-                    if db::get_deal_settlement_materialization(conn, &deal_id_for_db)?.is_none() {
-                        return Err(
-                        "prepaid materialization was already completed without a persisted invoice"
-                            .to_string(),
-                    );
-                    }
-                    if current.payment_token_hash.as_deref()
-                        == Some(invoice_for_db.payment_hash.as_str())
-                    {
-                        db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
-                        db::insert_deal_prepaid_invoice(
+                    let materialization =
+                        db::get_deal_settlement_materialization(conn, &deal_id_for_db)?;
+                    if materialization
+                        .as_ref()
+                        .and_then(|record| record.claim_token.as_deref())
+                        == Some(claim_token.as_str())
+                        && !db::delete_deal_settlement_materialization_if_claim_token(
                             conn,
                             &deal_id_for_db,
-                            &invoice_for_db.bolt11,
-                            &invoice_for_db.payment_hash,
-                            invoice_for_db.amount_sat,
-                            settlement::current_unix_timestamp(),
-                        )?;
-                        return Ok((current, Some(invoice_for_db)));
-                    }
-                    if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+                            &claim_token,
+                        )?
+                    {
                         return Err(
-                            "prepaid materialization target deal is no longer payment_pending"
-                                .to_string(),
+                            "owned prepaid materialization disappeared during cleanup".to_string()
                         );
                     }
-                    let updated = deals::materialize_payment_for_pending_deal(
-                        conn,
-                        &deal_id_for_db,
-                        &invoice_for_db.payment_hash,
-                        invoice_for_db.amount_sat,
-                        deals::DEAL_STATUS_PAYMENT_PENDING,
-                        settlement::current_unix_timestamp(),
-                    )?;
-                    if !updated {
-                        return Err("prepaid deal could not be materialized".to_string());
-                    }
+                    return Ok(MaterializationDisposition::AlreadyBound((
+                        current,
+                        Some(existing_invoice),
+                    )));
+                }
+                let Some(materialization) =
+                    db::get_deal_settlement_materialization(conn, &deal_id_for_db)?
+                else {
+                    return Ok(MaterializationDisposition::LostOwnership((current, None)));
+                };
+                if materialization.claim_token.as_deref() != Some(claim_token.as_str()) {
+                    return Ok(MaterializationDisposition::LostOwnership((current, None)));
+                }
+                if current.payment_token_hash.as_deref()
+                    == Some(invoice_for_db.payment_hash.as_str())
+                {
                     db::insert_deal_prepaid_invoice(
                         conn,
                         &deal_id_for_db,
@@ -8534,32 +16467,115 @@ async fn materialize_pending_prepaid_invoice(
                         invoice_for_db.amount_sat,
                         settlement::current_unix_timestamp(),
                     )?;
-                    db::delete_deal_settlement_materialization(conn, &deal_id_for_db)?;
-                    let deal = deals::get_deal(conn, &deal_id_for_db)?
-                        .ok_or_else(|| "materialized prepaid deal not readable".to_string())?;
-                    Ok((deal, Some(invoice_for_db)))
-                })();
-
-            match operation {
-                Ok(result) => {
-                    conn.execute_batch("COMMIT")
-                        .map_err(|error| error.to_string())?;
-                    Ok(result)
+                    if !db::delete_deal_settlement_materialization_if_claim_token(
+                        conn,
+                        &deal_id_for_db,
+                        &claim_token,
+                    )? {
+                        return Err(
+                            "owned prepaid materialization disappeared during persistence"
+                                .to_string(),
+                        );
+                    }
+                    return Ok(MaterializationDisposition::AlreadyBound((
+                        current,
+                        Some(invoice_for_db),
+                    )));
                 }
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    Err(error)
+                if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+                    db::insert_deal_prepaid_invoice(
+                        conn,
+                        &deal_id_for_db,
+                        &invoice_for_db.bolt11,
+                        &invoice_for_db.payment_hash,
+                        invoice_for_db.amount_sat,
+                        settlement::current_unix_timestamp(),
+                    )?;
+                    if !db::delete_deal_settlement_materialization_if_claim_token(
+                        conn,
+                        &deal_id_for_db,
+                        &claim_token,
+                    )? {
+                        return Err(
+                            "owned obsolete prepaid materialization disappeared".to_string()
+                        );
+                    }
+                    return Ok(MaterializationDisposition::CleanupOwned((
+                        current,
+                        Some(invoice_for_db),
+                    )));
                 }
-            }
+                let updated = deals::materialize_payment_for_pending_deal(
+                    conn,
+                    &deal_id_for_db,
+                    &invoice_for_db.payment_hash,
+                    invoice_for_db.amount_sat,
+                    deals::DEAL_STATUS_PAYMENT_PENDING,
+                    settlement::current_unix_timestamp(),
+                )?;
+                if !updated {
+                    return Err("prepaid deal could not be materialized".to_string());
+                }
+                db::insert_deal_prepaid_invoice(
+                    conn,
+                    &deal_id_for_db,
+                    &invoice_for_db.bolt11,
+                    &invoice_for_db.payment_hash,
+                    invoice_for_db.amount_sat,
+                    settlement::current_unix_timestamp(),
+                )?;
+                if !db::delete_deal_settlement_materialization_if_claim_token(
+                    conn,
+                    &deal_id_for_db,
+                    &claim_token,
+                )? {
+                    return Err(
+                        "owned prepaid materialization disappeared during persistence".to_string(),
+                    );
+                }
+                let deal = deals::get_deal(conn, &deal_id_for_db)?
+                    .ok_or_else(|| "materialized prepaid deal not readable".to_string())?;
+                Ok(MaterializationDisposition::Persisted((
+                    deal,
+                    Some(invoice_for_db),
+                )))
+            })
         })
         .await;
 
-    persisted.map_err(|error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": error })),
-        )
-    })
+    match persisted {
+        Ok(MaterializationDisposition::Persisted(result))
+        | Ok(MaterializationDisposition::AlreadyBound(result))
+        | Ok(MaterializationDisposition::CleanupOwned(result)) => Ok(result),
+        Ok(MaterializationDisposition::LostOwnership(result)) => {
+            tracing::warn!(
+                deal_id = %deal.deal_id,
+                "prepaid materialization ownership changed; the current owner will reconcile by external ID"
+            );
+            Ok(result)
+        }
+        Ok(MaterializationDisposition::AuthoritativeConflict(_, error)) => {
+            Err((StatusCode::CONFLICT, Json(json!({ "error": error }))))
+        }
+        Err(error) => {
+            let _ = reschedule_owned_materialization(
+                state.as_ref(),
+                &materialization,
+                "prepaid_persist_retry",
+            )
+            .await
+            .map_err(|persist_error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "failed to schedule prepaid persistence retry", "details": persist_error })),
+                )
+            })?;
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error })),
+            ))
+        }
+    }
 }
 
 fn validate_job_spec(spec: &JobSpec) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
@@ -8824,11 +16840,40 @@ async fn run_python_execution(
         .inline_source
         .as_ref()
         .ok_or_else(|| "python execution requires inline_source".to_string())?;
+    let (python3, locked_wheels) = if let Some(bundle) = execution.python_bundle.as_ref() {
+        let verified = froglet_publish_engine::python_bundle::verify_bundle(bundle)?;
+        if execution.source_hash.as_deref() != Some(verified.package_digest.as_str()) {
+            return Err(
+                "locked Python execution source_hash does not bind the canonical bundle"
+                    .to_string(),
+            );
+        }
+        if verified.source != source.as_bytes() {
+            return Err("locked Python execution source does not match bundle".to_string());
+        }
+        let executable = froglet_publish_engine::python_bundle::resolve_python_executable()?;
+        let attestation =
+            froglet_publish_engine::python_bundle::attest_runtime(&verified.runtime, &executable)?;
+        if !attestation.compatible {
+            return Err(format!(
+                "locked Python runtime compatibility mismatch: expected={:?} observed={:?}",
+                verified.runtime, attestation.runtime
+            ));
+        }
+        (executable, verified.wheels)
+    } else {
+        (
+            crate::python_sandbox::resolve_python3_executable(),
+            Vec::new(),
+        )
+    };
     let input_json = canonical_json::to_vec(&execution.input).map_err(|error| error.to_string())?;
     let mount_context = execution_mount_context(execution, granted_access);
     let runner = r#"
 import json, os, sys, traceback
 source_path = sys.argv[1]
+for wheel_path in reversed(json.loads(os.environ.get("FROGLET_PYTHON_WHEELS", "[]"))):
+    sys.path.insert(0, wheel_path)
 entrypoint_kind = os.environ.get("FROGLET_ENTRYPOINT_KIND", "handler")
 entrypoint = os.environ.get("FROGLET_ENTRYPOINT", "handler")
 context = json.loads(os.environ.get("FROGLET_CONTEXT", "{}"))
@@ -8854,9 +16899,33 @@ else:
 json.dump(result, sys.stdout, separators=(",", ":"))
 "#;
     let tempdir = private_runtime_tempdir("froglet-python")?;
-    let source_path = tempdir.join("main.py");
+    let source_path = tempdir.path().join("main.py");
     fs::write(&source_path, source)
         .map_err(|error| format!("failed to write python source: {error}"))?;
+    let wheels_dir = tempdir.path().join("wheels");
+    let mut wheel_paths = Vec::with_capacity(locked_wheels.len());
+    if !locked_wheels.is_empty() {
+        fs::create_dir(&wheels_dir)
+            .map_err(|error| format!("failed to create private Python wheel directory: {error}"))?;
+    }
+    for wheel in locked_wheels {
+        let path = wheels_dir.join(&wheel.filename);
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        let mut file = options
+            .open(&path)
+            .map_err(|error| format!("failed to create locked Python wheel: {error}"))?;
+        file.write_all(&wheel.bytes)
+            .map_err(|error| format!("failed to write locked Python wheel: {error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).map_err(|error| {
+                format!("failed to make locked Python wheel read-only: {error}")
+            })?;
+        }
+        wheel_paths.push(path.display().to_string());
+    }
     let context = json!({
         "mounts": mount_context,
     });
@@ -8864,6 +16933,8 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     let entrypoint_kind = execution.entrypoint.kind.as_str().to_string();
     let entrypoint = execution.entrypoint.value.clone();
     let context_json = context.to_string();
+    let wheel_paths_json = serde_json::to_string(&wheel_paths)
+        .map_err(|error| format!("failed to encode locked Python wheel paths: {error}"))?;
     let timeout_secs = timeout;
     let input_json_clone = input_json.clone();
     let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
@@ -8874,14 +16945,19 @@ json.dump(result, sys.stdout, separators=(",", ":"))
     // granted access to it, and (c) the operator configured a binding for
     // the handle via FROGLET_MOUNT_<kind>_<handle>. See docs/MOUNTS.md.
     let mount_plan = collect_data_mount_plan(execution, granted_access)?;
-    if mount_plan.needs_network {
-        return Err("network-backed data mounts require endpoint-scoped proxying".to_string());
-    }
     // Per-invocation sandbox policy: read Python stdlib + CA certs, write
     // only to the invocation tempdir, no outbound network by default. Data
     // mounts can add exact SQLite database files as read-only or writable
     // paths; network-backed mounts fail closed above.
-    let mut sandbox_config = crate::python_sandbox::SandboxConfig::for_python(&tempdir);
+    let mut sandbox_config = crate::python_sandbox::SandboxConfig::for_python(tempdir.path());
+    sandbox_config.memory_limit_bytes =
+        (process_limits.memory_max_bytes != 0).then_some(process_limits.memory_max_bytes);
+    sandbox_config.cpu_time_limit_secs = Some(
+        timeout
+            .as_secs()
+            .saturating_add(u64::from(timeout.subsec_nanos() != 0))
+            .max(1),
+    );
     sandbox_config
         .readonly_paths
         .extend(mount_plan.readonly_paths.clone());
@@ -8890,20 +16966,31 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         .extend(mount_plan.writable_paths.clone());
     let mount_env = mount_plan.env.clone();
     let process_runtime_config = ProcessRuntimeConfig::from_process_limits(process_limits);
-    let result = run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
-        let python3 = crate::python_sandbox::resolve_python3_executable();
+    run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
         let mut command = std::process::Command::new(&python3);
         command
+            .env_clear()
             .arg("-I")
+            .arg("-S")
             .arg("-c")
             .arg(runner)
             .arg(&source_path_string)
             .env("FROGLET_ENTRYPOINT_KIND", entrypoint_kind)
             .env("FROGLET_ENTRYPOINT", entrypoint)
             .env("FROGLET_CONTEXT", context_json)
+            .env("FROGLET_PYTHON_WHEELS", wheel_paths_json)
+            .env("LANG", "C.UTF-8")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            // Put every invocation in its own process group so cancellation
+            // and output-limit enforcement cannot leave descendants behind.
+            command.process_group(0);
+        }
         for (name, value) in &mount_env {
             command.env(name, value);
         }
@@ -8912,6 +16999,9 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         let mut child = command
             .spawn()
             .map_err(|error| format!("failed to spawn {}: {error}", python3.display()))?;
+        #[cfg(unix)]
+        let process_group_id = i32::try_from(child.id())
+            .map_err(|_| "python child pid does not fit process-group id".to_string())?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(&input_json_clone)
@@ -8922,7 +17012,11 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         let stderr_pipe = child.stderr.take();
         *kill_handle_clone
             .lock()
-            .map_err(|_| "python kill handle lock poisoned".to_string())? = Some(child);
+            .map_err(|_| "python kill handle lock poisoned".to_string())? = Some(ManagedChild {
+            child,
+            #[cfg(unix)]
+            process_group_id,
+        });
         let output = read_child_output_bounded(stdout_pipe, stderr_pipe, &process_runtime_config)?;
         if output.stdout.truncated {
             kill_child_process(&kill_handle_clone);
@@ -8933,13 +17027,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
             return Err(stream_limit_error("python stderr", &output.stderr).into());
         }
         // Wait for child to exit; kill handle can kill it on timeout.
-        let status = kill_handle_clone
-            .lock()
-            .map_err(|_| "python kill handle lock poisoned".to_string())?
-            .as_mut()
-            .map(|c| c.wait())
-            .transpose()
-            .map_err(|error| format!("failed waiting for python execution: {error}"))?;
+        let status = wait_child_process(&kill_handle_clone)?;
         if let Some(status) = status
             && !status.success()
         {
@@ -8951,25 +17039,7 @@ json.dump(result, sys.stdout, separators=(",", ":"))
         serde_json::from_slice::<Value>(&output.stdout.bytes)
             .map_err(|error| format!("python execution returned invalid JSON: {error}").into())
     })
-    .await;
-    let _ = fs::remove_dir_all(&tempdir);
-    result
-}
-
-fn detect_container_runner() -> Option<String> {
-    for candidate in ["docker", "podman"] {
-        if std::process::Command::new(candidate)
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
-            return Some(candidate.to_string());
-        }
-    }
-    None
+    .await
 }
 
 async fn run_container_execution(
@@ -8978,146 +17048,35 @@ async fn run_container_execution(
     gpu_config: &crate::config::GpuConfig,
     timeout: Duration,
     process_limits: &crate::config::ProcessLimitsConfig,
-) -> Result<Value, String> {
-    let runner = detect_container_runner().ok_or_else(|| {
-        "no supported OCI/container runtime found (expected docker or podman)".to_string()
-    })?;
-    let image = execution
-        .oci_reference
-        .as_ref()
-        .ok_or_else(|| "container execution requires oci_reference".to_string())?;
-    let oci_digest = execution
-        .oci_digest
-        .as_ref()
-        .ok_or_else(|| "container execution requires oci_digest".to_string())?;
-    let image_ref = crate::execution::digest_pinned_oci_image_reference(image, oci_digest)?;
-    let input_json = canonical_json::to_vec(&execution.input).map_err(|error| error.to_string())?;
-    let mount_context = execution_mount_context(execution, granted_access);
-    let mounts = execution.mounts.clone();
-    let oci_digest = Some(oci_digest.to_string());
-    let timeout_secs = timeout;
-    let context_json = json!({ "mounts": mount_context }).to_string();
-    let granted_access_clone = granted_access.to_vec();
+) -> Result<crate::oci_worker::OciWorkerResult, String> {
     let gpu_requested = granted_access
         .iter()
         .any(|capability| capability_requires_gpu(capability));
-    let gpu_config = gpu_config.clone();
-    let process_runtime_config = ProcessRuntimeConfig::from_process_limits(process_limits);
-    let kill_handle: ChildKillHandle = Arc::new(std::sync::Mutex::new(None));
-    let kill_handle_clone = Arc::clone(&kill_handle);
-    run_wasm_with_timeout_and_kill(timeout_secs, Some(kill_handle), move || {
-        if gpu_requested && !gpu_config.enabled {
-            return Err(
-                "GPU capability requested but FROGLET_GPU_ENABLED is not enabled on this provider"
-                    .to_string()
-                    .into(),
-            );
-        }
-        if gpu_requested && runner != "docker" {
-            return Err(
-                "GPU container execution currently requires Docker with GPU support"
-                    .to_string()
-                    .into(),
-            );
-        }
-        let mut command = std::process::Command::new(&runner);
-        command
-            .arg("run")
-            .arg("--rm")
-            .arg("-i")
-            .arg("--network")
-            .arg("none")
-            .arg("-e")
-            .arg("FROGLET_CONTEXT")
-            .env("FROGLET_CONTEXT", &context_json);
-        process_runtime_config.apply_container_limits(&mut command);
-        if gpu_requested {
-            let gpu_capabilities = serde_json::to_string(
-                &granted_access_clone
-                    .iter()
-                    .filter(|capability| capability_requires_gpu(capability))
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(|error| error.to_string())?;
-            command
-                .arg("--gpus")
-                .arg("all")
-                .arg("-e")
-                .arg("FROGLET_GPU_CAPABILITIES")
-                .env("FROGLET_GPU_CAPABILITIES", gpu_capabilities);
-        }
-        if let Some(oci_digest) = oci_digest.as_ref() {
-            command
-                .arg("-e")
-                .arg("FROGLET_OCI_DIGEST")
-                .env("FROGLET_OCI_DIGEST", oci_digest);
-        }
-        for mount in mounts.iter() {
-            let Some(binding) = mount.binding.as_ref() else {
-                continue;
-            };
-            let capability = format!(
-                "mount.{}.{}.{}",
-                mount.kind,
-                if mount.read_only { "read" } else { "write" },
-                mount.handle
-            );
-            if !granted_access_clone.iter().any(|v| v == &capability) {
-                continue;
-            }
-            let target = format!("/froglet-mounts/{}", mount.handle);
-            let mut volume = format!("{binding}:{target}");
-            if mount.read_only {
-                volume.push_str(":ro");
-            }
-            command.arg("-v").arg(volume);
-        }
-        command
-            .arg(&image_ref)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("failed to spawn container runtime: {error}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&input_json)
-                .map_err(|error| format!("failed to write container input: {error}"))?;
-        }
-        let stdout_pipe = child.stdout.take();
-        let stderr_pipe = child.stderr.take();
-        *kill_handle_clone
-            .lock()
-            .map_err(|_| "container kill handle lock poisoned".to_string())? = Some(child);
-        let output = read_child_output_bounded(stdout_pipe, stderr_pipe, &process_runtime_config)?;
-        if output.stdout.truncated {
-            kill_child_process(&kill_handle_clone);
-            return Err(stream_limit_error("container stdout", &output.stdout).into());
-        }
-        if output.stderr.truncated {
-            kill_child_process(&kill_handle_clone);
-            return Err(stream_limit_error("container stderr", &output.stderr).into());
-        }
-        let status = kill_handle_clone
-            .lock()
-            .map_err(|_| "container kill handle lock poisoned".to_string())?
-            .as_mut()
-            .map(|c| c.wait())
-            .transpose()
-            .map_err(|error| format!("failed waiting for container execution: {error}"))?;
-        if let Some(status) = status
-            && !status.success()
-        {
-            let stderr = String::from_utf8_lossy(&output.stderr.bytes)
-                .trim()
-                .to_string();
-            return Err(format!("container execution failed: {stderr}").into());
-        }
-        serde_json::from_slice::<Value>(&output.stdout.bytes)
-            .map_err(|error| format!("container execution returned invalid JSON: {error}").into())
-    })
-    .await
+    if gpu_requested && !gpu_config.enabled {
+        return Err(
+            "GPU capability requested but FROGLET_GPU_ENABLED is not enabled on this provider"
+                .to_string(),
+        );
+    }
+    let input_bytes =
+        canonical_json::to_vec(&execution.input).map_err(|error| error.to_string())?;
+    let cpu_millis = (process_limits.cpu_limit * 1_000.0)
+        .round()
+        .clamp(1.0, u32::MAX as f64) as u32;
+    let request = crate::oci_worker::request_from_execution(
+        execution,
+        granted_access,
+        crate::oci_worker::OciWorkerLimits {
+            max_input_bytes: input_bytes.len().clamp(1, MAX_WASM_INPUT_BYTES),
+            max_runtime_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
+            max_memory_bytes: process_limits.memory_max_bytes,
+            max_output_bytes: process_limits.output_max_bytes,
+            pids_limit: process_limits.pids_limit,
+            cpu_millis,
+        },
+    )?;
+    let worker = crate::oci_worker::ConfiguredOciWorker::from_env()?;
+    crate::oci_worker::OciWorker::execute(&worker, request).await
 }
 
 fn normalized_service_execution_profile(
@@ -9208,6 +17167,16 @@ fn validate_service_addressed_execution_against_service(
             "service-addressed execution contract_version does not match local service".to_string(),
         );
     }
+    if package_kind == ExecutionPackageKind::Builtin {
+        if execution.builtin_name.as_deref() != Some(entrypoint.as_str()) {
+            return Err("service-addressed builtin name does not match local service".to_string());
+        }
+        if execution.workload_kind != service.offer_kind {
+            return Err(
+                "service-addressed builtin workload_kind does not match local service".to_string(),
+            );
+        }
+    }
     if mounts_without_bindings(&execution.mounts) != mounts_without_bindings(&service.mounts) {
         return Err("service-addressed execution mounts do not match local service".to_string());
     }
@@ -9232,6 +17201,94 @@ fn validate_service_addressed_execution_against_service(
         return Err(
             "service-addressed execution binding hash does not match local service".to_string(),
         );
+    }
+    Ok(())
+}
+
+async fn validate_service_bound_spec_for_offer(
+    state: &AppState,
+    spec: &WorkloadSpec,
+    expected_offer_hash: &str,
+    expected_offer_id: Option<&str>,
+) -> Result<(), ApiFailure> {
+    let WorkloadSpec::Execution { execution } = spec else {
+        return Ok(());
+    };
+    if execution.runtime == ExecutionRuntime::Builtin
+        && execution.package_kind == ExecutionPackageKind::Builtin
+        && execution.binding_hash().is_some()
+        && !execution.is_service_addressed()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "provider-bound builtin execution requires security.service_id",
+            }),
+        ));
+    }
+    if !execution.is_service_addressed() {
+        return Ok(());
+    }
+
+    let service_id = execution.service_id().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "service-addressed execution requires security.service_id" }),
+        )
+    })?;
+    let service = provider_service_record(state, service_id, false, true)
+        .await
+        .map_err(|error| {
+            tracing::error!(service_id, details = %error, "failed to load quote service binding");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load service binding" }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                json!({
+                    "error": "service-addressed execution targets an inactive or unknown service",
+                    "service_id": service_id,
+                }),
+            )
+        })?;
+    validate_service_addressed_execution_against_service(execution, &service).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "service-addressed execution does not match the active service binding",
+                "details": error,
+            }),
+        )
+    })?;
+    if expected_offer_id.is_some_and(|offer_id| offer_id != service.offer_id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "selected offer does not belong to the addressed service" }),
+        ));
+    }
+    let active_offer = provider_control_offer_record(state, &service.offer_id, false)
+        .await
+        .map_err(|error| {
+            tracing::error!(service_id, details = %error, "failed to load active service offer");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "failed to load active service offer" }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                json!({ "error": "addressed service offer is no longer active" }),
+            )
+        })?;
+    if active_offer.offer.hash != expected_offer_hash {
+        return Err((
+            StatusCode::CONFLICT,
+            json!({ "error": "addressed service offer changed after quote selection" }),
+        ));
     }
     Ok(())
 }
@@ -9298,10 +17355,37 @@ fn build_bound_workload_spec_from_service(
             })
         }
         (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
-            let source = service
-                .inline_source
-                .clone()
-                .ok_or_else(|| "service is missing inline_source binding".to_string())?;
+            let (source, bundle, package_binding) =
+                if let Some(bundle) = service.python_bundle.clone() {
+                    let verified = froglet_publish_engine::python_bundle::verify_bundle(&bundle)?;
+                    let binding_hash = service_binding_hash(service)
+                        .ok_or_else(|| "service is missing Python package binding".to_string())?;
+                    if verified.package_digest != binding_hash {
+                        return Err(
+                            "locked Python package digest does not match local service binding"
+                                .to_string(),
+                        );
+                    }
+                    let source = String::from_utf8(verified.source)
+                        .map_err(|_| "locked Python source is not valid UTF-8".to_string())?;
+                    if service.inline_source.as_deref() != Some(source.as_str()) {
+                        return Err(
+                        "locked Python source does not match private service execution material"
+                            .to_string(),
+                    );
+                    }
+                    (source, Some(bundle), Some(binding_hash.to_string()))
+                } else {
+                    // Compatibility for definitions created before locked bundles.
+                    // Current publication requests cannot create this shape.
+                    (
+                        service.inline_source.clone().ok_or_else(|| {
+                            "legacy service is missing inline_source binding".to_string()
+                        })?,
+                        None,
+                        None,
+                    )
+                };
             let execution = match entrypoint_kind {
                 ExecutionEntrypointKind::Script => {
                     ExecutionWorkload::python_inline_script(source, input)?
@@ -9311,6 +17395,11 @@ fn build_bound_workload_spec_from_service(
             let execution = ExecutionWorkload {
                 requested_access,
                 mounts: service.mounts.clone(),
+                // The request hash serializes `source_hash` but skips the
+                // private bundle bytes. Keep it bound to the full canonical
+                // envelope, never to source-only bytes.
+                source_hash: package_binding.or(execution.source_hash),
+                python_bundle: bundle,
                 ..execution
             };
             Ok(WorkloadSpec::Execution {
@@ -9384,8 +17473,12 @@ fn build_bound_workload_spec_from_service(
                     execution: Box::new(execution),
                 })
             } else {
-                let execution =
-                    ExecutionWorkload::builtin_service(builtin_name.to_string(), input)?;
+                let execution = ExecutionWorkload::bound_builtin_service(
+                    builtin_name.to_string(),
+                    contract_version,
+                    service_binding_hash(service).map(str::to_string),
+                    input,
+                )?;
                 Ok(WorkloadSpec::Execution {
                     execution: Box::new(execution),
                 })
@@ -9532,7 +17625,7 @@ fn transport_name_for_clearnet_uri(uri: &str) -> &'static str {
     }
 }
 
-fn node_event_id_preimage(event: &NodeEventEnvelope) -> Vec<u8> {
+fn node_event_id_preimage(event: &NodeEventEnvelope) -> serde_json::Result<Vec<u8>> {
     canonical_json::to_vec(&json!([
         event.pubkey,
         event.created_at,
@@ -9540,11 +17633,10 @@ fn node_event_id_preimage(event: &NodeEventEnvelope) -> Vec<u8> {
         event.tags,
         event.content
     ]))
-    .expect("node event id preimage should serialize canonically")
 }
 
-fn expected_node_event_id(event: &NodeEventEnvelope) -> String {
-    crypto::sha256_hex(node_event_id_preimage(event))
+fn expected_node_event_id(event: &NodeEventEnvelope) -> serde_json::Result<String> {
+    node_event_id_preimage(event).map(crypto::sha256_hex)
 }
 
 fn normalize_idempotency_key(
@@ -9698,6 +17790,7 @@ async fn load_runtime_requester_deal_and_payment_intent(
         deal: stored,
         provider_sync_url,
         pinned_public_addresses,
+        ..
     } = sync_requester_deal_from_provider(state.clone(), deal_id).await?;
 
     if !quote_uses_lightning_bundle(state.as_ref(), &stored.quote) {
@@ -9808,8 +17901,13 @@ async fn sync_and_maybe_promote_lightning_deal(
     deal: &deals::StoredDeal,
 ) -> Result<Option<settlement::LightningInvoiceBundleSession>, String> {
     let Some(bundle) = deal_lightning_invoice_bundle(state.as_ref(), deal).await? else {
+        tracing::debug!(deal_id = %deal.deal_id, "Lightning deal has no materialized invoice bundle");
         return Ok(None);
     };
+
+    tracing::debug!(deal_id = %deal.deal_id, status = %deal.status,
+        base_state = ?bundle.base_state, success_state = ?bundle.success_state,
+        "Reconciling Lightning funding state");
 
     let _ = promote_lightning_deal_if_funded(state, deal, &bundle).await?;
     Ok(Some(bundle))
@@ -9930,9 +18028,13 @@ async fn persist_lightning_success_receipt(
     state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<bool, String> {
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = deals::get_deal(conn, &deal_id)? else {
+                    return Ok(false);
+                };
+                if current.status != deals::DEAL_STATUS_RESULT_READY {
+                    return Ok(false);
+                }
                 if let Some(release_evidence) = release_evidence.as_ref() {
                     let _ = db::insert_execution_evidence(
                         conn,
@@ -9960,7 +18062,7 @@ async fn persist_lightning_success_receipt(
                     &json!({ "artifact_hash": receipt_for_db.hash }),
                     completed_at,
                 )?;
-                deals::complete_deal_success_if_status(
+                let updated = deals::complete_deal_success_if_status(
                     conn,
                     deals::DealSuccessCompletion {
                         deal_id: &deal_id,
@@ -9972,19 +18074,14 @@ async fn persist_lightning_success_receipt(
                         receipt_artifact_hash: Some(&receipt_for_db.hash),
                         now: completed_at,
                     },
-                )
-            })();
-
-            let result = match operation {
-                Ok(result) => result,
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
+                )?;
+                if !updated {
+                    return Err(
+                        "deal state changed despite the immediate success transaction".to_string(),
+                    );
                 }
-            };
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(result)
+                Ok(true)
+            })
         })
         .await
 }
@@ -10023,9 +18120,13 @@ async fn persist_deal_terminal_failure_receipt(
     state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<bool, String> {
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = deals::get_deal(conn, &deal_id)? else {
+                    return Ok(false);
+                };
+                if current.status != expected_status {
+                    return Ok(false);
+                }
                 let failure_evidence_hash = db::insert_execution_evidence(
                     conn,
                     "deal",
@@ -10051,7 +18152,7 @@ async fn persist_deal_terminal_failure_receipt(
                     receipt_for_db.created_at,
                     &receipt_json,
                 )?;
-                deals::complete_deal_failure_if_status(
+                let updated = deals::complete_deal_failure_if_status(
                     conn,
                     deals::DealTerminalTransition {
                         deal_id: &deal_id,
@@ -10062,19 +18163,14 @@ async fn persist_deal_terminal_failure_receipt(
                         receipt_artifact_hash: Some(&receipt_for_db.hash),
                         now: completed_at,
                     },
-                )
-            })();
-
-            let result = match operation {
-                Ok(result) => result,
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
+                )?;
+                if !updated {
+                    return Err(
+                        "deal state changed despite the immediate failure transaction".to_string(),
+                    );
                 }
-            };
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(result)
+                Ok(true)
+            })
         })
         .await
 }
@@ -10154,9 +18250,18 @@ async fn reconcile_prepaid_deal(
     let Some(payment_hash) = deal.payment_token_hash.as_deref() else {
         return Ok(());
     };
+    let expected_amount_sat = deal
+        .payment_amount_sats
+        .ok_or_else(|| "prepaid deal is missing its expected payment amount".to_string())?;
 
     match client.get_incoming_payment(payment_hash).await {
         Ok(payment) if payment.is_paid => {
+            crate::settlement::phoenixd::validate_prepaid_payment_proof(
+                payment_hash,
+                expected_amount_sat,
+                &payment,
+            )
+            .map_err(|error| format!("prepaid payment proof validation failed: {error}"))?;
             promote_prepaid_deal_if_paid(state.clone(), &deal).await?;
         }
         Ok(_) => {
@@ -10264,9 +18369,13 @@ async fn fail_unpaid_prepaid_deal(
     state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<(), String> {
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = deals::get_deal(conn, &deal_id)? else {
+                    return Ok(());
+                };
+                if current.status != deals::DEAL_STATUS_PAYMENT_PENDING {
+                    return Ok(());
+                }
                 let failure_evidence_hash = db::insert_execution_evidence(
                     conn,
                     "deal",
@@ -10284,7 +18393,7 @@ async fn fail_unpaid_prepaid_deal(
                     receipt.created_at,
                     &receipt_json,
                 )?;
-                let _ = deals::complete_deal_failure_if_status(
+                let updated = deals::complete_deal_failure_if_status(
                     conn,
                     deals::DealTerminalTransition {
                         deal_id: &deal_id,
@@ -10296,14 +18405,14 @@ async fn fail_unpaid_prepaid_deal(
                         now: completed_at,
                     },
                 )?;
+                if !updated {
+                    return Err(
+                        "prepaid deal state changed despite the immediate failure transaction"
+                            .to_string(),
+                    );
+                }
                 Ok(())
-            })();
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(())
+            })
         })
         .await?;
     Ok(())
@@ -10723,81 +18832,13 @@ fn receipt_executor_for_deal(deal: &deals::StoredDeal) -> ReceiptExecutor {
     }
 }
 
-fn receipt_limits_for_spec(
-    state: &AppState,
-    spec: &WorkloadSpec,
-    payment_method: Option<&str>,
-) -> ReceiptLimitsApplied {
-    let max_runtime_ms =
-        duration_millis_u64(workload_execution_timeout(state, spec, payment_method));
-    match spec {
-        WorkloadSpec::Execution { execution } => match execution.runtime {
-            ExecutionRuntime::Wasm | ExecutionRuntime::TeeWasm => ReceiptLimitsApplied {
-                max_input_bytes: MAX_WASM_INPUT_BYTES,
-                max_runtime_ms,
-                max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
-                max_output_bytes: sandbox::WASM_MAX_OUTPUT_BYTES,
-                fuel_limit: sandbox::WASM_FUEL_LIMIT,
-            },
-            ExecutionRuntime::Builtin | ExecutionRuntime::TeeService => ReceiptLimitsApplied {
-                max_input_bytes: MAX_BODY_BYTES,
-                max_runtime_ms,
-                max_memory_bytes: 0,
-                max_output_bytes: MAX_BODY_BYTES,
-                fuel_limit: 0,
-            },
-            ExecutionRuntime::Any => ReceiptLimitsApplied {
-                max_input_bytes: MAX_BODY_BYTES,
-                max_runtime_ms,
-                max_memory_bytes: 128 * 1024 * 1024,
-                max_output_bytes: MAX_BODY_BYTES,
-                fuel_limit: 0,
-            },
-            ExecutionRuntime::Python
-            | ExecutionRuntime::Container
-            | ExecutionRuntime::TeePython => ReceiptLimitsApplied {
-                max_input_bytes: MAX_BODY_BYTES,
-                max_runtime_ms,
-                max_memory_bytes: 128 * 1024 * 1024,
-                max_output_bytes: MAX_BODY_BYTES,
-                fuel_limit: 0,
-            },
-        },
-        WorkloadSpec::Wasm { .. } => ReceiptLimitsApplied {
-            max_input_bytes: MAX_WASM_INPUT_BYTES,
-            max_runtime_ms,
-            max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
-            max_output_bytes: sandbox::WASM_MAX_OUTPUT_BYTES,
-            fuel_limit: sandbox::WASM_FUEL_LIMIT,
-        },
-        WorkloadSpec::OciWasm { .. } => ReceiptLimitsApplied {
-            max_input_bytes: MAX_WASM_INPUT_BYTES,
-            max_runtime_ms,
-            max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
-            max_output_bytes: sandbox::WASM_MAX_OUTPUT_BYTES,
-            fuel_limit: sandbox::WASM_FUEL_LIMIT,
-        },
-        WorkloadSpec::ConfidentialService { .. } => ReceiptLimitsApplied {
-            max_input_bytes: MAX_BODY_BYTES,
-            max_runtime_ms,
-            max_memory_bytes: 0,
-            max_output_bytes: MAX_BODY_BYTES,
-            fuel_limit: 0,
-        },
-        WorkloadSpec::AttestedWasm { .. } => ReceiptLimitsApplied {
-            max_input_bytes: MAX_WASM_INPUT_BYTES,
-            max_runtime_ms,
-            max_memory_bytes: sandbox::WASM_MAX_MEMORY_BYTES,
-            max_output_bytes: sandbox::WASM_MAX_OUTPUT_BYTES,
-            fuel_limit: sandbox::WASM_FUEL_LIMIT,
-        },
-        WorkloadSpec::EventsQuery { .. } => ReceiptLimitsApplied {
-            max_input_bytes: MAX_BODY_BYTES,
-            max_runtime_ms,
-            max_memory_bytes: 0,
-            max_output_bytes: MAX_BODY_BYTES,
-            fuel_limit: 0,
-        },
+fn receipt_limits_applied(execution_limits: &ExecutionLimits) -> ReceiptLimitsApplied {
+    ReceiptLimitsApplied {
+        max_input_bytes: execution_limits.max_input_bytes,
+        max_runtime_ms: execution_limits.max_runtime_ms,
+        max_memory_bytes: execution_limits.max_memory_bytes,
+        max_output_bytes: execution_limits.max_output_bytes,
+        fuel_limit: execution_limits.fuel_limit,
     }
 }
 
@@ -10880,12 +18921,15 @@ fn settlement_refs_from_stripe(stripe: &StripeSettlementInfo) -> ReceiptSettleme
 /// Build ReceiptSettlement for a prepaid (`lightning.prepaid.v1`) deal.
 ///
 /// phoenixd has no hold invoices, so there is no bundle: `bundle_hash` is None
-/// and `destination_identity` is empty.  The base_fee leg carries the payment
+/// and `destination_identity` remains bound to the signed Quote.  The base_fee leg carries the payment
 /// hash and — when paid — the **preimage** in `invoice_hash`, which is the
 /// cryptographic proof of payment the kernel verifies
 /// (`sha256(preimage) == payment_hash`).  The success_fee leg is an
 /// empty-canceled placeholder.
-fn settlement_refs_from_prepaid(prepaid: &PrepaidSettlementInfo) -> ReceiptSettlement {
+fn settlement_refs_from_prepaid(
+    prepaid: &PrepaidSettlementInfo,
+    destination_identity: &str,
+) -> ReceiptSettlement {
     let (base_state, invoice_hash) = if prepaid.paid {
         (ReceiptLegState::Settled, prepaid.preimage_hex.clone())
     } else {
@@ -10894,7 +18938,7 @@ fn settlement_refs_from_prepaid(prepaid: &PrepaidSettlementInfo) -> ReceiptSettl
     ReceiptSettlement {
         method: "lightning.prepaid.v1".to_string(),
         bundle_hash: None,
-        destination_identity: String::new(),
+        destination_identity: destination_identity.to_string(),
         base_fee: ReceiptSettlementLeg {
             amount_msat: prepaid.charged_msat,
             invoice_hash,
@@ -10938,6 +18982,15 @@ fn receipt_failure(code: &str, message: impl Into<String>) -> ReceiptFailure {
     }
 }
 
+fn invoice_bundle_leg_is_terminal(state: &InvoiceBundleLegState) -> bool {
+    matches!(
+        state,
+        InvoiceBundleLegState::Settled
+            | InvoiceBundleLegState::Canceled
+            | InvoiceBundleLegState::Expired
+    )
+}
+
 #[derive(Debug, Clone)]
 struct RecoveredDealResume {
     deal_id: String,
@@ -10956,6 +19009,8 @@ struct RecoveredJobResume {
 #[derive(Debug, Clone)]
 struct RecoveredDealFailure {
     deal: deals::StoredDeal,
+    expected_status: String,
+    preserve_result: bool,
     bundle: Option<settlement::LightningInvoiceBundleSession>,
     error_message: String,
     failure: ReceiptFailure,
@@ -10968,11 +19023,48 @@ enum DealRecoveryDecision {
     Fail(Box<RecoveredDealFailure>),
 }
 
-fn recovery_execution_state(deal: &deals::StoredDeal) -> &'static str {
-    if deal.status == deals::DEAL_STATUS_RUNNING {
-        "failed"
-    } else {
-        "not_started"
+struct RecoveryReceiptState {
+    deal_state: &'static str,
+    execution_state: &'static str,
+    result_hash: Option<String>,
+    preserve_result: bool,
+}
+
+fn recovery_receipt_state(deal: &deals::StoredDeal) -> Result<RecoveryReceiptState, String> {
+    match deal.status.as_str() {
+        deals::DEAL_STATUS_RESULT_READY => {
+            if deal.result.is_none() {
+                return Err("result_ready deal is missing its result during recovery".to_string());
+            }
+            let result_hash = deal.result_hash.clone().ok_or_else(|| {
+                "result_ready deal is missing its result_hash during recovery".to_string()
+            })?;
+            Ok(RecoveryReceiptState {
+                deal_state: "canceled",
+                execution_state: "succeeded",
+                result_hash: Some(result_hash),
+                preserve_result: true,
+            })
+        }
+        deals::DEAL_STATUS_RUNNING | deals::DEAL_STATUS_SETTLEMENT_PENDING => {
+            Ok(RecoveryReceiptState {
+                deal_state: "failed",
+                execution_state: "failed",
+                result_hash: None,
+                preserve_result: false,
+            })
+        }
+        deals::DEAL_STATUS_ACCEPTED | deals::DEAL_STATUS_PAYMENT_PENDING => {
+            Ok(RecoveryReceiptState {
+                deal_state: "canceled",
+                execution_state: "not_started",
+                result_hash: None,
+                preserve_result: false,
+            })
+        }
+        status => Err(format!(
+            "unsupported deal status during recovery receipt construction: {status}"
+        )),
     }
 }
 
@@ -11013,25 +19105,40 @@ fn build_recovered_deal_failure_with_settlement(
     failure: ReceiptFailure,
 ) -> Result<RecoveredDealFailure, String> {
     let error_message = error_message.into();
+    let receipt_state = recovery_receipt_state(&deal)?;
     let receipt = sign_deal_receipt(
         state,
         &deal,
         recovered_at,
         ReceiptSignSpec {
-            deal_state: "failed",
-            execution_state: recovery_execution_state(&deal),
+            deal_state: receipt_state.deal_state,
+            execution_state: receipt_state.execution_state,
             bundle: settlement_refs.bundle.as_ref(),
             stripe_settlement: settlement_refs.stripe_settlement,
             prepaid_settlement: settlement_refs.prepaid_settlement,
-            result_hash: None,
+            result_hash: receipt_state.result_hash,
             result_format: None,
             result_envelope_hash: None,
             failure: Some(failure.clone()),
         },
     )?;
+    let report = protocol::validate_quote_deal_receipt(&deal.quote, &deal.artifact, &receipt, None);
+    if !report.valid {
+        let details = report
+            .issues
+            .iter()
+            .map(|issue| format!("{}: {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "recovered deal Receipt failed Kernel validation: {details}"
+        ));
+    }
     let receipt_json = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
 
     Ok(RecoveredDealFailure {
+        expected_status: deal.status.clone(),
+        preserve_result: receipt_state.preserve_result,
         deal,
         bundle: settlement_refs.bundle,
         error_message,
@@ -11044,8 +19151,10 @@ fn build_recovered_deal_failure_with_settlement(
 async fn recovered_stripe_release_settlement(
     state: &AppState,
     deal: &deals::StoredDeal,
-) -> Option<StripeSettlementInfo> {
-    let payment_intent_id = deal.payment_token_hash.clone()?;
+) -> Result<Option<StripeSettlementInfo>, String> {
+    let Some(payment_intent_id) = deal.payment_token_hash.clone() else {
+        return Ok(None);
+    };
     let charged_msat = deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000);
     let reservation = PaymentReservation {
         request_id: deal.deal_id.clone(),
@@ -11055,17 +19164,21 @@ async fn recovered_stripe_release_settlement(
         token_hash: payment_intent_id.clone(),
     };
     if let Err(error) = settlement::release_payment(state, &reservation).await {
+        let payment_intent_fingerprint = payment_resource_fingerprint(&payment_intent_id);
         tracing::error!(
             deal_id = %deal.deal_id,
-            payment_intent_id = %payment_intent_id,
+            payment_intent_fingerprint = %payment_intent_fingerprint,
             "Stripe release failed while recovering expired deal: {error}"
         );
+        return Err(
+            "Stripe cancellation could not be confirmed while recovering the deal".to_string(),
+        );
     }
-    Some(StripeSettlementInfo {
+    Ok(Some(StripeSettlementInfo {
         payment_intent_id,
         charged_msat,
         captured: false,
-    })
+    }))
 }
 
 async fn recovered_prepaid_settlement(
@@ -11213,7 +19326,22 @@ async fn classify_deal_recovery(
             "deal completion_deadline elapsed while recovering from node restart",
         );
         let stripe_settlement = if deal.payment_method.as_deref() == Some("stripe") {
-            recovered_stripe_release_settlement(state.as_ref(), &deal).await
+            match recovered_stripe_release_settlement(state.as_ref(), &deal).await {
+                Ok(settlement) => settlement,
+                Err(error) => {
+                    tracing::warn!(
+                        deal_id = %deal.deal_id,
+                        "Stripe settlement could not be made terminal during recovery; \
+                         leaving deal non-terminal for reconciliation: {error}"
+                    );
+                    return Ok(DealRecoveryDecision::Requeue(RecoveredDealResume {
+                        deal_id: deal.deal_id,
+                        previous_status: deal.status.clone(),
+                        reset_running_status: false,
+                        spawn_after_recovery: false,
+                    }));
+                }
+            }
         } else {
             None
         };
@@ -11273,9 +19401,7 @@ async fn apply_recovery_plan(
     state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<(), String> {
+            db::with_immediate_transaction(conn, |conn| {
                 for job in &recovered_jobs_for_db {
                     if job.reset_running_status
                         && !jobs::reset_running_job_to_queued(conn, &job.job_id, recovered_at)?
@@ -11299,6 +19425,12 @@ async fn apply_recovery_plan(
                 }
 
                 for deal in &recovered_deals_for_db {
+                    let Some(current) = deals::get_deal(conn, &deal.deal_id)? else {
+                        continue;
+                    };
+                    if current.status != deal.previous_status {
+                        continue;
+                    }
                     if deal.reset_running_status
                         && !deals::reset_running_deal_to_accepted(
                             conn,
@@ -11325,19 +19457,41 @@ async fn apply_recovery_plan(
                 }
 
                 for deal in &failed_deals {
-                    if let Some(bundle) = deal.bundle.as_ref()
-                        && !db::update_lightning_invoice_bundle_states(
+                    let Some(current) = deals::get_deal(conn, &deal.deal.deal_id)? else {
+                        continue;
+                    };
+                    if current.status != deal.expected_status {
+                        continue;
+                    }
+                    if let Some(bundle) = deal.bundle.as_ref() {
+                        let Some(current_bundle) =
+                            db::get_lightning_invoice_bundle(conn, &bundle.session_id)?
+                        else {
+                            return Err(format!(
+                                "lightning invoice bundle {} disappeared during recovery",
+                                bundle.session_id
+                            ));
+                        };
+                        let conflicts_with_terminal =
+                            (invoice_bundle_leg_is_terminal(&current_bundle.base_state)
+                                && current_bundle.base_state != bundle.base_state)
+                                || (invoice_bundle_leg_is_terminal(&current_bundle.success_state)
+                                    && current_bundle.success_state != bundle.success_state);
+                        if conflicts_with_terminal {
+                            continue;
+                        }
+                        if !db::update_lightning_invoice_bundle_states(
                             conn,
                             &bundle.session_id,
                             bundle.base_state.clone(),
                             bundle.success_state.clone(),
                             recovered_at,
-                        )?
-                    {
-                        return Err(format!(
-                            "lightning invoice bundle {} disappeared during recovery",
-                            bundle.session_id
-                        ));
+                        )? {
+                            return Err(format!(
+                                "lightning invoice bundle {} disappeared during recovery",
+                                bundle.session_id
+                            ));
+                        }
                     }
 
                     let failure_evidence_hash = db::insert_execution_evidence(
@@ -11348,15 +19502,25 @@ async fn apply_recovery_plan(
                         &deal.failure,
                         recovered_at,
                     )?;
-                    deals::complete_deal_failure(
+                    let updated = deals::complete_recovery_failure_if_status(
                         conn,
-                        &deal.deal.deal_id,
-                        &deal.error_message,
-                        &deal.receipt,
-                        Some(&failure_evidence_hash),
-                        Some(&deal.receipt.hash),
-                        recovered_at,
+                        deals::DealRecoveryFailureTransition {
+                            deal_id: &deal.deal.deal_id,
+                            expected_status: &deal.expected_status,
+                            error: &deal.error_message,
+                            receipt: &deal.receipt,
+                            failure_evidence_hash: Some(&failure_evidence_hash),
+                            receipt_artifact_hash: Some(&deal.receipt.hash),
+                            preserve_result: deal.preserve_result,
+                            now: recovered_at,
+                        },
                     )?;
+                    if !updated {
+                        return Err(format!(
+                            "deal {} changed state during recovery finalization",
+                            deal.deal.deal_id
+                        ));
+                    }
                     db::insert_artifact_document(
                         conn,
                         &deal.receipt.hash,
@@ -11376,15 +19540,7 @@ async fn apply_recovery_plan(
                     )?;
                 }
                 Ok(())
-            })();
-
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(())
+            })
         })
         .await?;
 
@@ -11415,6 +19571,16 @@ async fn delete_orphaned_deal_materialization_record(
 }
 
 async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> Result<(), String> {
+    let recovered_at = settlement::current_unix_timestamp();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                db::reset_deal_settlement_materialization_claims(conn, recovered_at)?;
+                Ok(())
+            })
+        })
+        .await?;
     let records = state
         .db
         .with_read_conn(db::list_deal_settlement_materializations)
@@ -11429,17 +19595,11 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
 
         match deal {
             Some(deal) => {
-                if record.materialization_kind == STRIPE_PAYMENT_MATERIALIZATION_KIND {
-                    let _ = materialize_pending_stripe_payment(state.clone(), &deal)
-                        .await
-                        .map_err(|response| response.1.0.to_string())?;
-                    continue;
-                }
-
-                if record.materialization_kind == PREPAID_INVOICE_MATERIALIZATION_KIND {
-                    let _ = materialize_pending_prepaid_invoice(state.clone(), &deal)
-                        .await
-                        .map_err(|response| response.1.0.to_string())?;
+                if matches!(
+                    record.materialization_kind.as_str(),
+                    STRIPE_PAYMENT_MATERIALIZATION_KIND | PREPAID_INVOICE_MATERIALIZATION_KIND
+                ) {
+                    // Rail I/O belongs to the supervised post-listener queue.
                     continue;
                 }
 
@@ -11456,6 +19616,7 @@ async fn recover_orphaned_deal_materializations_local(state: Arc<AppState>) -> R
                 fail_pending_deal_materialization(
                     state.clone(),
                     &deal,
+                    record.claim_token.clone(),
                     "settlement_materialization_interrupted_during_recovery",
                     "settlement materialization did not complete before node restart".to_string(),
                 )
@@ -11484,48 +19645,183 @@ async fn recover_orphaned_deal_materializations_remote(state: Arc<AppState>) -> 
         .with_read_conn(db::list_deal_settlement_materializations)
         .await?;
 
-    for record in records {
-        let deal_id = record.deal_id.clone();
-        let deal = state
-            .db
-            .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
-            .await?;
-
-        match deal {
-            Some(deal) => {
-                if record.materialization_kind != "lightning_invoice_bundle"
-                    || deal.payment_method.as_deref() != Some("lightning")
-                {
-                    continue;
-                }
-
-                let request: settlement::BuildLightningInvoiceBundleRequest =
-                    serde_json::from_str(&record.request_json).map_err(|error| {
-                        format!(
-                            "invalid settlement materialization payload for deal {} during recovery: {error}",
-                            deal.deal_id
-                        )
-                    })?;
-                settlement::cancel_pending_lightning_materialization_request(
-                    state.as_ref(),
-                    &request,
-                )
-                .await?;
-                fail_pending_deal_materialization(
-                    state.clone(),
-                    &deal,
-                    "settlement_materialization_interrupted_during_recovery",
-                    "settlement materialization did not complete before node restart".to_string(),
-                )
-                .await?;
+    for record in records
+        .into_iter()
+        .filter(|record| record.materialization_kind == "lightning_invoice_bundle")
+    {
+        let (deal, claimed) = claim_deal_materialization(state.as_ref(), &record.deal_id).await?;
+        let Some(claimed) = claimed else {
+            continue;
+        };
+        let Some(deal) = deal else {
+            if !delete_owned_materialization(state.as_ref(), &claimed).await? {
+                tracing::warn!(
+                    deal_id = %claimed.deal_id,
+                    "orphaned lightning materialization ownership changed during deletion"
+                );
             }
-            None => {
-                delete_orphaned_deal_materialization_record(state.clone(), record.deal_id).await?;
+            continue;
+        };
+        if deal.payment_method.as_deref() != Some("lightning") {
+            if !delete_owned_materialization(state.as_ref(), &claimed).await? {
+                tracing::warn!(
+                    deal_id = %deal.deal_id,
+                    "non-lightning materialization ownership changed during cleanup"
+                );
             }
+            continue;
         }
+
+        let request: settlement::BuildLightningInvoiceBundleRequest = serde_json::from_str(
+            &claimed.request_json,
+        )
+        .map_err(|error| {
+            format!(
+                "invalid settlement materialization payload for deal {} during recovery: {error}",
+                deal.deal_id
+            )
+        })?;
+        if let Err(error) =
+            settlement::cancel_pending_lightning_materialization_request(state.as_ref(), &request)
+                .await
+        {
+            let _ = reschedule_owned_materialization(
+                state.as_ref(),
+                &claimed,
+                "lightning_recovery_cleanup_retry",
+            )
+            .await?;
+            return Err(error);
+        }
+        fail_pending_deal_materialization(
+            state.clone(),
+            &deal,
+            claimed.claim_token.clone(),
+            "settlement_materialization_interrupted_during_recovery",
+            "settlement materialization did not complete before node restart".to_string(),
+        )
+        .await?;
     }
 
     Ok(())
+}
+
+async fn reconcile_due_settlement_materialization(
+    state: Arc<AppState>,
+    record: db::DealSettlementMaterializationRecord,
+) {
+    let deal_id = record.deal_id.clone();
+    let deal = match state
+        .db
+        .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
+        .await
+    {
+        Ok(Some(deal)) => deal,
+        Ok(None) => {
+            let claim = claim_deal_materialization(state.as_ref(), &record.deal_id).await;
+            match claim {
+                Ok((None, Some(claimed))) => {
+                    if let Err(error) = delete_owned_materialization(state.as_ref(), &claimed).await
+                    {
+                        tracing::warn!(
+                            deal_id = %record.deal_id,
+                            %error,
+                            "failed to remove orphaned settlement materialization"
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    deal_id = %record.deal_id,
+                    %error,
+                    "failed to claim orphaned settlement materialization"
+                ),
+            }
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                deal_id = %record.deal_id,
+                %error,
+                "failed to load due settlement materialization deal"
+            );
+            return;
+        }
+    };
+
+    match record.materialization_kind.as_str() {
+        STRIPE_PAYMENT_MATERIALIZATION_KIND => {
+            match materialize_pending_stripe_payment(state.clone(), &deal).await {
+                Ok(persisted) if persisted.status == deals::DEAL_STATUS_ACCEPTED => {
+                    tokio::spawn(process_deal_with_reserved_permit(
+                        state,
+                        persisted.deal_id,
+                        None,
+                    ));
+                }
+                Ok(_) => {}
+                Err((status, _)) => tracing::warn!(
+                    deal_id = %deal.deal_id,
+                    http_status = status.as_u16(),
+                    "Stripe materialization remains queued"
+                ),
+            }
+        }
+        PREPAID_INVOICE_MATERIALIZATION_KIND => {
+            if let Err((status, _)) = materialize_pending_prepaid_invoice(state, &deal).await {
+                tracing::warn!(
+                    deal_id = %deal.deal_id,
+                    http_status = status.as_u16(),
+                    "prepaid invoice materialization remains queued"
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Supervised durable worker for settlement resources whose creation outlives
+/// an HTTP request. Exact claim tokens serialize competing workers; a bounded
+/// scan interval makes wakeups durable without relying on in-memory signals.
+pub async fn run_settlement_materialization_loop(state: Arc<AppState>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(
+        SETTLEMENT_MATERIALIZATION_SCAN_INTERVAL_SECS,
+    ));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        if state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Lightning)
+            && let Err(error) = recover_orphaned_deal_materializations_remote(state.clone()).await
+        {
+            tracing::warn!(%error, "lightning materialization cleanup remains queued");
+        }
+        let now = settlement::current_unix_timestamp();
+        let due = match state
+            .db
+            .with_read_conn(move |conn| {
+                db::list_due_deal_settlement_materializations(
+                    conn,
+                    now,
+                    SETTLEMENT_MATERIALIZATION_BATCH_SIZE,
+                )
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::warn!(%error, "failed to scan settlement materialization queue");
+                continue;
+            }
+        };
+        stream::iter(due)
+            .for_each_concurrent(SETTLEMENT_MATERIALIZATION_CONCURRENCY, |record| {
+                reconcile_due_settlement_materialization(state.clone(), record)
+            })
+            .await;
+    }
 }
 
 /// Register this provider's descriptor and offers with a marketplace.
@@ -11547,10 +19843,13 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
     // (which is typically a loopback/docker-internal address the marketplace
     // rejects); Tor last.
     let explicit_clearnet = state.config.public_base_url.is_some();
-    let (provider_url, transport) = if explicit_clearnet && transport_status.clearnet_url.is_some()
+    let (provider_url, transport) = if let (true, Some(url)) =
+        (explicit_clearnet, transport_status.clearnet_url.as_ref())
     {
-        (transport_status.clearnet_url.unwrap(), "clearnet")
-    } else if let Some(url) = transport_status.relay_url {
+        (url.clone(), "clearnet")
+    } else if transport_status.relay_status == "up"
+        && let Some(url) = transport_status.relay_url
+    {
         // Relay hostnames are public HTTPS; the marketplace treats them as
         // clearnet endpoints.
         (url, "clearnet")
@@ -11598,6 +19897,15 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
 
 pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), String> {
     recover_orphaned_deal_materializations_local(state.clone()).await?;
+    stage_interrupted_stripe_deals_for_recovery(state.as_ref()).await?;
+
+    let stripe_settlement_pending: HashSet<String> = state
+        .db
+        .with_read_conn(db::list_stripe_settlement_outbox)
+        .await?
+        .into_iter()
+        .map(|record| record.deal_id)
+        .collect();
 
     let incomplete_deals = state
         .db
@@ -11611,6 +19919,7 @@ pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), Str
     for deal in incomplete_deals
         .into_iter()
         .filter(|deal| deal.payment_method.as_deref() != Some("lightning"))
+        .filter(|deal| !stripe_settlement_pending.contains(&deal.deal_id))
     {
         match classify_deal_recovery(&state, deal, recovered_at).await? {
             DealRecoveryDecision::Requeue(resume) => recovered_deals.push(resume),
@@ -11660,6 +19969,15 @@ pub async fn recover_runtime_state_remote(state: Arc<AppState>) -> Result<(), St
         .into_iter()
         .filter(|deal| deal.payment_method.as_deref() == Some("lightning"))
     {
+        let lookup_id = deal.deal_id.clone();
+        if state
+            .db
+            .with_read_conn(move |conn| db::get_deal_settlement_materialization(conn, &lookup_id))
+            .await?
+            .is_some()
+        {
+            continue;
+        }
         match classify_deal_recovery(&state, deal, recovered_at).await? {
             DealRecoveryDecision::Requeue(resume) => recovered_deals.push(resume),
             DealRecoveryDecision::Fail(failure) => failed_deals.push(*failure),
@@ -11686,8 +20004,14 @@ pub async fn recover_runtime_state(state: Arc<AppState>) -> Result<(), String> {
     recover_runtime_state_remote(state).await
 }
 
-/// Shared slot for a child process, allowing timeout-based kill.
-type ChildKillHandle = Arc<std::sync::Mutex<Option<std::process::Child>>>;
+/// Shared slot for a child process, allowing timeout-based process-tree kill.
+struct ManagedChild {
+    child: std::process::Child,
+    #[cfg(unix)]
+    process_group_id: i32,
+}
+
+type ChildKillHandle = Arc<std::sync::Mutex<Option<ManagedChild>>>;
 
 fn try_acquire_process_execution_permit(
     state: &AppState,
@@ -11699,12 +20023,42 @@ fn try_acquire_process_execution_permit(
         .map_err(|_| "process execution concurrency limit exhausted".to_string())
 }
 
+async fn acquire_process_execution_permit(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    state
+        .process_execution_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "process execution runtime is shutting down".to_string())
+}
+
 fn kill_child_process(kill_handle: &ChildKillHandle) {
-    if let Ok(mut guard) = kill_handle.lock()
-        && let Some(child) = guard.as_mut()
-    {
-        let _ = child.kill();
+    let managed = kill_handle.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(mut managed) = managed {
+        #[cfg(unix)]
+        unsafe {
+            // Negative PID targets the complete process group. Ignore ESRCH:
+            // the child may have exited between timeout detection and kill.
+            libc::kill(-managed.process_group_id, libc::SIGKILL);
+        }
+        let _ = managed.child.kill();
+        let _ = managed.child.wait();
     }
+}
+
+fn wait_child_process(
+    kill_handle: &ChildKillHandle,
+) -> Result<Option<std::process::ExitStatus>, String> {
+    let managed = kill_handle
+        .lock()
+        .map_err(|_| "python kill handle lock poisoned".to_string())?
+        .take();
+    managed
+        .map(|mut managed| managed.child.wait())
+        .transpose()
+        .map_err(|error| format!("failed waiting for python execution: {error}"))
 }
 
 async fn run_wasm_with_timeout<F>(timeout: Duration, operation: F) -> Result<Value, String>
@@ -11735,12 +20089,8 @@ where
             result.map_err(|error| error.to_string())
         }
         Err(_) => {
-            if let Some(ref handle) = kill_handle
-                && let Ok(mut guard) = handle.lock()
-                && let Some(ref mut child) = *guard
-            {
-                let _ = child.kill();
-                let _ = child.wait();
+            if let Some(ref handle) = kill_handle {
+                kill_child_process(handle);
             }
             Err(format!(
                 "execution exceeded runtime deadline after {}s",
@@ -11946,31 +20296,146 @@ async fn fetch_oci_wasm_module(
     Ok(module_bytes)
 }
 
+enum JobRuntimePermit {
+    Wasm(sandbox::ExecutionPermit),
+    Process(Arc<tokio::sync::OwnedSemaphorePermit>),
+    Events(tokio::sync::OwnedSemaphorePermit),
+    None,
+}
+
+async fn acquire_job_runtime_permit(
+    state: &AppState,
+    spec: &JobSpec,
+) -> Result<JobRuntimePermit, String> {
+    match spec {
+        JobSpec::Execution { execution }
+            if matches!(
+                (&execution.runtime, &execution.package_kind),
+                (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule)
+                    | (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage)
+            ) =>
+        {
+            state
+                .wasm_sandbox
+                .acquire_execution_permit()
+                .await
+                .map(JobRuntimePermit::Wasm)
+        }
+        JobSpec::Wasm { .. } | JobSpec::OciWasm { .. } => state
+            .wasm_sandbox
+            .acquire_execution_permit()
+            .await
+            .map(JobRuntimePermit::Wasm),
+        JobSpec::Execution { execution }
+            if matches!(
+                (&execution.runtime, &execution.package_kind),
+                (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource)
+                    | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
+                    | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage)
+            ) =>
+        {
+            acquire_process_execution_permit(state)
+                .await
+                .map(Arc::new)
+                .map(JobRuntimePermit::Process)
+        }
+        JobSpec::Execution { execution }
+            if matches!(
+                (&execution.runtime, &execution.package_kind),
+                (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin)
+            ) =>
+        {
+            if execution.events_query_params().is_some() {
+                state
+                    .events_query_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map(JobRuntimePermit::Events)
+                    .map_err(|_| "events query runtime is shutting down".to_string())
+            } else {
+                acquire_process_execution_permit(state)
+                    .await
+                    .map(Arc::new)
+                    .map(JobRuntimePermit::Process)
+            }
+        }
+        _ => Ok(JobRuntimePermit::None),
+    }
+}
+
+fn take_wasm_job_permit(permit: &mut JobRuntimePermit) -> Result<sandbox::ExecutionPermit, String> {
+    match std::mem::replace(permit, JobRuntimePermit::None) {
+        JobRuntimePermit::Wasm(permit) => Ok(permit),
+        other => {
+            *permit = other;
+            Err("job did not reserve Wasm execution capacity".to_string())
+        }
+    }
+}
+
+fn take_process_job_permit(
+    permit: &mut JobRuntimePermit,
+) -> Result<Arc<tokio::sync::OwnedSemaphorePermit>, String> {
+    match std::mem::replace(permit, JobRuntimePermit::None) {
+        JobRuntimePermit::Process(permit) => Ok(permit),
+        other => {
+            *permit = other;
+            Err("job did not reserve process execution capacity".to_string())
+        }
+    }
+}
+
+fn take_builtin_job_permit(permit: &mut JobRuntimePermit) -> Result<BuiltinRuntimePermit, String> {
+    match std::mem::replace(permit, JobRuntimePermit::None) {
+        JobRuntimePermit::Process(permit) => Ok(BuiltinRuntimePermit::Process(permit)),
+        JobRuntimePermit::Events(permit) => Ok(BuiltinRuntimePermit::Events(permit)),
+        other => {
+            *permit = other;
+            Err("job did not reserve builtin execution capacity".to_string())
+        }
+    }
+}
+
 async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, String> {
+    let permit = acquire_job_runtime_permit(state, &spec).await?;
+    run_job_spec_now_with_permit(state, spec, permit).await
+}
+
+async fn run_job_spec_now_with_permit(
+    state: &AppState,
+    spec: JobSpec,
+    mut job_permit: JobRuntimePermit,
+) -> Result<Value, String> {
     let timeout = execution_timeout(state);
     match spec {
         JobSpec::Execution { execution } => match (&execution.runtime, &execution.package_kind) {
             (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule) => {
+                let permit = take_wasm_job_permit(&mut job_permit)?;
                 let submission = execution.to_wasm_submission()?;
                 let verified = submission.verify()?;
                 let (capabilities_granted, host_environment) =
                     local_wasm_capabilities_for_submission(state, &verified)?;
                 let wasm_sandbox = state.wasm_sandbox.clone();
                 run_wasm_with_timeout(timeout, move || {
-                    wasm_sandbox.execute_module_with_options(
+                    wasm_sandbox.execute_module_with_options_and_permit(
                         &verified.module_bytes,
                         &verified.input,
                         sandbox::WasmExecutionOptions {
                             abi_version: verified.abi_version.clone(),
                             capabilities_granted,
                             host_environment,
+                            max_memory_bytes: None,
+                            fuel_limit: None,
                         },
+                        permit,
                         timeout,
                     )
                 })
                 .await
             }
             (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage) => {
+                let permit = take_wasm_job_permit(&mut job_permit)?;
                 let submission = execution.to_oci_wasm_submission()?;
                 submission.verify()?;
                 let module_bytes = fetch_oci_wasm_module(&submission).await?;
@@ -11991,21 +20456,24 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                 let abi_version = submission.workload.abi_version.clone();
                 let input = submission.input.clone();
                 run_wasm_with_timeout(timeout, move || {
-                    wasm_sandbox.execute_module_with_options(
+                    wasm_sandbox.execute_module_with_options_and_permit(
                         &module_bytes,
                         &input,
                         sandbox::WasmExecutionOptions {
                             abi_version,
                             capabilities_granted,
                             host_environment,
+                            max_memory_bytes: None,
+                            fuel_limit: None,
                         },
+                        permit,
                         timeout,
                     )
                 })
                 .await
             }
             (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource) => {
-                let _permit = try_acquire_process_execution_permit(state)?;
+                let _permit = take_process_job_permit(&mut job_permit)?;
                 run_python_execution(
                     &execution,
                     &execution.requested_access,
@@ -12016,7 +20484,7 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
             }
             (ExecutionRuntime::Python, ExecutionPackageKind::OciImage)
             | (ExecutionRuntime::Container, ExecutionPackageKind::OciImage) => {
-                let _permit = try_acquire_process_execution_permit(state)?;
+                let _permit = take_process_job_permit(&mut job_permit)?;
                 run_container_execution(
                     &execution,
                     &execution.requested_access,
@@ -12025,32 +20493,39 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
                     &state.config.process_limits,
                 )
                 .await
+                .map(|result| result.output)
             }
             (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
-                dispatch_builtin_workload(state, &execution, None).await
+                let permit = take_builtin_job_permit(&mut job_permit)?;
+                dispatch_builtin_workload(state, &execution, None, timeout, Some(permit)).await
             }
             _ => Err("unsupported execution runtime/package for job".to_string()),
         },
         JobSpec::Wasm { submission } => {
+            let permit = take_wasm_job_permit(&mut job_permit)?;
             let verified = submission.verify()?;
             let (capabilities_granted, host_environment) =
                 local_wasm_capabilities_for_submission(state, &verified)?;
             let wasm_sandbox = state.wasm_sandbox.clone();
             run_wasm_with_timeout(timeout, move || {
-                wasm_sandbox.execute_module_with_options(
+                wasm_sandbox.execute_module_with_options_and_permit(
                     &verified.module_bytes,
                     &verified.input,
                     sandbox::WasmExecutionOptions {
                         abi_version: verified.abi_version.clone(),
                         capabilities_granted,
                         host_environment,
+                        max_memory_bytes: None,
+                        fuel_limit: None,
                     },
+                    permit,
                     timeout,
                 )
             })
             .await
         }
         JobSpec::OciWasm { submission } => {
+            let permit = take_wasm_job_permit(&mut job_permit)?;
             submission.verify()?;
             let module_bytes = fetch_oci_wasm_module(&submission).await?;
 
@@ -12072,14 +20547,17 @@ async fn run_job_spec_now(state: &AppState, spec: JobSpec) -> Result<Value, Stri
             let input = submission.input.clone();
 
             run_wasm_with_timeout(timeout, move || {
-                wasm_sandbox.execute_module_with_options(
+                wasm_sandbox.execute_module_with_options_and_permit(
                     &module_bytes,
                     &input,
                     sandbox::WasmExecutionOptions {
                         abi_version,
                         capabilities_granted,
                         host_environment,
+                        max_memory_bytes: None,
+                        fuel_limit: None,
                     },
+                    permit,
                     timeout,
                 )
             })
@@ -12180,15 +20658,32 @@ async fn run_confidential_service_workload(
     };
     let timeout = confidential_execution_timeout(state, &loaded.profile.payload);
     let service_id = service_id.to_string();
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "confidential service deadline overflow".to_string())?;
+    let process_permit = tokio::time::timeout(timeout, acquire_process_execution_permit(state))
+        .await
+        .map_err(|_| {
+            "confidential service timed out waiting for execution capacity".to_string()
+        })??;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or_else(|| "confidential service execution timed out".to_string())?;
     let context = ConfidentialExecutionContext {
-        confidential_session_hash,
+        confidential_session_hash: confidential_session_hash.to_string(),
         now: settlement::current_unix_timestamp(),
+        deadline,
+        max_output_bytes: loaded.profile.payload.max_output_bytes,
     };
-    let result = tokio::time::timeout(timeout, async move {
-        executor.execute_service(&service_id, input, &context)
+    let result = run_wasm_with_timeout(remaining, move || {
+        let _process_permit = process_permit;
+        executor
+            .execute_service(&service_id, input, &context)
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(std::io::Error::other(error))
+            })
     })
-    .await
-    .map_err(|_| "confidential service execution timed out".to_string())??;
+    .await?;
     let result_size = canonical_json::to_vec(&result)
         .map_err(|error| error.to_string())?
         .len();
@@ -12258,6 +20753,8 @@ async fn run_attested_wasm_workload(
                 abi_version: verified.abi_version.clone(),
                 capabilities_granted: Vec::new(),
                 host_environment: None,
+                max_memory_bytes: None,
+                fuel_limit: None,
             },
             permit,
             timeout,
@@ -12286,6 +20783,77 @@ async fn run_attested_wasm_workload(
     })
 }
 
+fn workload_input_size(spec: &WorkloadSpec) -> Result<usize, String> {
+    let value = match spec {
+        WorkloadSpec::Execution { execution } => &execution.input,
+        WorkloadSpec::Wasm { submission } => &submission.input,
+        WorkloadSpec::OciWasm { submission } => &submission.input,
+        WorkloadSpec::ConfidentialService {
+            request_envelope, ..
+        }
+        | WorkloadSpec::AttestedWasm {
+            request_envelope, ..
+        } => {
+            return canonical_json::to_vec(request_envelope.as_ref())
+                .map(|bytes| bytes.len())
+                .map_err(|error| error.to_string());
+        }
+        WorkloadSpec::EventsQuery { .. } => {
+            return canonical_json::to_vec(spec)
+                .map(|bytes| bytes.len())
+                .map_err(|error| error.to_string());
+        }
+    };
+    canonical_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|error| error.to_string())
+}
+
+async fn run_oci_wasm_with_admission(
+    state: &AppState,
+    submission: crate::wasm::OciWasmSubmission,
+    capabilities_granted: Vec<String>,
+    permit: sandbox::ExecutionPermit,
+    timeout: Duration,
+    max_memory_bytes: Option<usize>,
+    fuel_limit: Option<u64>,
+) -> Result<Value, String> {
+    submission.verify()?;
+    let module_bytes = fetch_oci_wasm_module(&submission).await?;
+    let declared_capabilities =
+        crate::wasm::normalize_requested_capabilities(&submission.workload.requested_capabilities)?;
+    let (_, host_environment) = local_wasm_capabilities_for_submission(
+        state,
+        &crate::wasm::VerifiedWasmSubmission {
+            module_bytes: module_bytes.clone(),
+            input: submission.input.clone(),
+            abi_version: submission.workload.abi_version.clone(),
+            requested_capabilities: declared_capabilities,
+        },
+    )?;
+    let wasm_sandbox = state.wasm_sandbox.clone();
+    let abi_version = submission.workload.abi_version.clone();
+    let input = submission.input.clone();
+
+    run_wasm_with_timeout(timeout, move || {
+        wasm_sandbox.execute_module_with_options_and_permit(
+            &module_bytes,
+            &input,
+            sandbox::WasmExecutionOptions {
+                abi_version,
+                capabilities_granted,
+                host_environment,
+                max_memory_bytes,
+                fuel_limit,
+            },
+            permit,
+            timeout,
+        )
+    })
+    .await
+}
+
+#[cfg(test)]
 async fn run_workload_spec_with_admission(
     state: &AppState,
     spec: WorkloadSpec,
@@ -12295,13 +20863,68 @@ async fn run_workload_spec_with_admission(
     expected_offer_hash: Option<&str>,
     caller_id: Option<&str>,
 ) -> Result<WorkloadRunOutput, String> {
-    let timeout = workload_execution_timeout(state, &spec, payment_method);
+    run_workload_spec_with_admission_limits(
+        state,
+        spec,
+        capabilities_granted,
+        payment_method,
+        permit,
+        expected_offer_hash,
+        caller_id,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_workload_spec_with_admission_limits(
+    state: &AppState,
+    spec: WorkloadSpec,
+    capabilities_granted: Vec<String>,
+    payment_method: Option<&str>,
+    permit: Option<sandbox::ExecutionPermit>,
+    expected_offer_hash: Option<&str>,
+    caller_id: Option<&str>,
+    execution_limits: Option<ExecutionLimits>,
+) -> Result<WorkloadRunOutput, String> {
+    if let Some(limits) = execution_limits.as_ref() {
+        let input_size = workload_input_size(&spec)?;
+        if input_size > limits.max_input_bytes {
+            return Err(format!(
+                "workload input is {input_size} bytes and exceeds quoted max_input_bytes {}",
+                limits.max_input_bytes
+            ));
+        }
+    }
+    let global_timeout = workload_execution_timeout(state, &spec, payment_method);
+    let timeout = execution_limits
+        .as_ref()
+        .map(|limits| global_timeout.min(Duration::from_millis(limits.max_runtime_ms)))
+        .unwrap_or(global_timeout);
+    let wasm_max_memory_bytes = execution_limits
+        .as_ref()
+        .map(|limits| limits.max_memory_bytes)
+        .filter(|value| *value != 0);
+    let wasm_fuel_limit = execution_limits
+        .as_ref()
+        .map(|limits| limits.fuel_limit)
+        .filter(|value| *value != 0);
+    let mut process_limits = state.config.process_limits.clone();
+    if let Some(limits) = execution_limits.as_ref() {
+        process_limits.output_max_bytes =
+            process_limits.output_max_bytes.min(limits.max_output_bytes);
+        if limits.max_memory_bytes != 0 {
+            process_limits.memory_max_bytes = process_limits
+                .memory_max_bytes
+                .min(limits.max_memory_bytes as u64);
+        }
+    }
     if let WorkloadSpec::Execution { execution } = &spec
         && execution.is_service_addressed()
     {
         let bound_spec =
             resolve_service_addressed_workload_spec(state, execution, expected_offer_hash).await?;
-        return Box::pin(run_workload_spec_with_admission(
+        return Box::pin(run_workload_spec_with_admission_limits(
             state,
             bound_spec,
             capabilities_granted,
@@ -12309,13 +20932,14 @@ async fn run_workload_spec_with_admission(
             permit,
             expected_offer_hash,
             caller_id,
+            execution_limits,
         ))
         .await;
     }
     if let WorkloadSpec::Execution { execution } = &spec {
         validate_gpu_capabilities_supported_by_execution(execution, &capabilities_granted)?;
     }
-    match (spec, permit) {
+    let output = match (spec, permit) {
         (WorkloadSpec::Execution { execution }, permit) => {
             match (&execution.runtime, &execution.package_kind, permit) {
                 (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule, Some(permit)) => {
@@ -12332,6 +20956,8 @@ async fn run_workload_spec_with_admission(
                                 abi_version: verified.abi_version.clone(),
                                 capabilities_granted,
                                 host_environment,
+                                max_memory_bytes: wasm_max_memory_bytes,
+                                fuel_limit: wasm_fuel_limit,
                             },
                             permit,
                             timeout,
@@ -12343,17 +20969,22 @@ async fn run_workload_spec_with_admission(
                 (ExecutionRuntime::Wasm, ExecutionPackageKind::InlineModule, None) => {
                     Err("Wasm workloads require an execution permit".to_string())
                 }
-                (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage, permit) => {
-                    let execution_clone = execution.as_ref().clone();
-                    let result = run_job_spec_now(
+                (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage, Some(permit)) => {
+                    let submission = execution.to_oci_wasm_submission()?;
+                    let result = run_oci_wasm_with_admission(
                         state,
-                        JobSpec::Execution {
-                            execution: Box::new(execution_clone),
-                        },
+                        submission,
+                        capabilities_granted,
+                        permit,
+                        timeout,
+                        wasm_max_memory_bytes,
+                        wasm_fuel_limit,
                     )
                     .await?;
-                    drop(permit);
                     Ok(run_output_for_plain_result(result))
+                }
+                (ExecutionRuntime::Wasm, ExecutionPackageKind::OciImage, None) => {
+                    Err("OCI Wasm workloads require an execution permit".to_string())
                 }
                 (ExecutionRuntime::Python, ExecutionPackageKind::InlineSource, _) => {
                     let _process_permit = try_acquire_process_execution_permit(state)?;
@@ -12361,7 +20992,7 @@ async fn run_workload_spec_with_admission(
                         execution.as_ref(),
                         &capabilities_granted,
                         timeout,
-                        &state.config.process_limits,
+                        &process_limits,
                     )
                     .await?;
                     Ok(run_output_for_plain_result(result))
@@ -12374,13 +21005,20 @@ async fn run_workload_spec_with_admission(
                         &capabilities_granted,
                         &state.config.gpu,
                         timeout,
-                        &state.config.process_limits,
+                        &process_limits,
                     )
                     .await?;
-                    Ok(run_output_for_plain_result(result))
+                    let mut output = run_output_for_plain_result(result.output);
+                    output.extra_evidence.push((
+                        "oci_worker_execution".to_string(),
+                        serde_json::to_value(result.evidence).map_err(|error| error.to_string())?,
+                    ));
+                    Ok(output)
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
-                    let result = dispatch_builtin_workload(state, &execution, caller_id).await?;
+                    let result =
+                        dispatch_builtin_workload(state, &execution, caller_id, timeout, None)
+                            .await?;
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, Some(_)) => {
@@ -12439,6 +21077,8 @@ async fn run_workload_spec_with_admission(
                         abi_version: verified.abi_version.clone(),
                         capabilities_granted,
                         host_environment,
+                        max_memory_bytes: wasm_max_memory_bytes,
+                        fuel_limit: wasm_fuel_limit,
                     },
                     permit,
                     timeout,
@@ -12450,50 +21090,19 @@ async fn run_workload_spec_with_admission(
         (WorkloadSpec::Wasm { .. }, None) => {
             Err("Wasm workloads require an execution permit".to_string())
         }
-        (WorkloadSpec::OciWasm { submission }, None) => {
-            let result = run_job_spec_now(
-                state,
-                JobSpec::OciWasm {
-                    submission: *submission,
-                },
-            )
-            .await?;
-            Ok(run_output_for_plain_result(result))
+        (WorkloadSpec::OciWasm { .. }, None) => {
+            Err("OCI Wasm workloads require an execution permit".to_string())
         }
         (WorkloadSpec::OciWasm { submission }, Some(permit)) => {
-            submission.verify()?;
-            let module_bytes = fetch_oci_wasm_module(&submission).await?;
-
-            let declared_capabilities = crate::wasm::normalize_requested_capabilities(
-                &submission.workload.requested_capabilities,
-            )?;
-            let (_, host_environment) = local_wasm_capabilities_for_submission(
+            let result = run_oci_wasm_with_admission(
                 state,
-                &crate::wasm::VerifiedWasmSubmission {
-                    module_bytes: module_bytes.clone(),
-                    input: submission.input.clone(),
-                    abi_version: submission.workload.abi_version.clone(),
-                    requested_capabilities: declared_capabilities,
-                },
-            )?;
-
-            let wasm_sandbox = state.wasm_sandbox.clone();
-            let abi_version = submission.workload.abi_version.clone();
-            let input = submission.input.clone();
-
-            let result = run_wasm_with_timeout(timeout, move || {
-                wasm_sandbox.execute_module_with_options_and_permit(
-                    &module_bytes,
-                    &input,
-                    sandbox::WasmExecutionOptions {
-                        abi_version,
-                        capabilities_granted,
-                        host_environment,
-                    },
-                    permit,
-                    timeout,
-                )
-            })
+                *submission,
+                capabilities_granted,
+                permit,
+                timeout,
+                wasm_max_memory_bytes,
+                wasm_fuel_limit,
+            )
             .await?;
             Ok(run_output_for_plain_result(result))
         }
@@ -12544,10 +21153,45 @@ async fn run_workload_spec_with_admission(
         (WorkloadSpec::EventsQuery { .. }, Some(_)) => {
             Err("events workloads do not use execution permits".to_string())
         }
+    }?;
+    if let Some(limits) = execution_limits.as_ref() {
+        let output_size = canonical_json::to_vec(&output.persisted_result)
+            .map_err(|error| error.to_string())?
+            .len();
+        if output_size > limits.max_output_bytes {
+            return Err(format!(
+                "workload output is {output_size} bytes and exceeds quoted max_output_bytes {}",
+                limits.max_output_bytes
+            ));
+        }
     }
+    Ok(output)
 }
 
 async fn process_job(state: Arc<AppState>, job_id: String) {
+    // Inspect the queued spec and reserve runtime capacity before changing the
+    // persisted state to `running`. Multiple workers may race here; only the
+    // one that wins try_start_job keeps its reservation.
+    let lookup_job_id = job_id.clone();
+    let queued_job = match state
+        .db
+        .with_read_conn(move |conn| jobs::get_job(conn, &lookup_job_id))
+        .await
+    {
+        Ok(Some(job)) if job.status == jobs::JOB_STATUS_QUEUED => job,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::error!("Failed to inspect queued job before admission: {error}");
+            return;
+        }
+    };
+    let job_permit = match acquire_job_runtime_permit(state.as_ref(), &queued_job.spec).await {
+        Ok(permit) => permit,
+        Err(error) => {
+            tracing::error!("Failed while waiting for queued job capacity: {error}");
+            return;
+        }
+    };
     let started_job = state
         .db
         .with_write_conn(move |conn| {
@@ -12575,9 +21219,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
         let persisted = state
             .db
             .with_write_conn(move |conn| {
-                conn.execute_batch("BEGIN IMMEDIATE")
-                    .map_err(|e| e.to_string())?;
-                let operation = (|| -> Result<(), String> {
+                db::with_immediate_transaction(conn, |conn| {
                     let failed_at = settlement::current_unix_timestamp();
                     let failure_evidence_hash = db::insert_execution_evidence(
                         conn,
@@ -12595,13 +21237,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
                         failed_at,
                     )?;
                     Ok(())
-                })();
-                if let Err(error) = operation {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
-                }
-                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                Ok(())
+                })
             })
             .await;
         if let Err(error) = persisted {
@@ -12610,15 +21246,13 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
         return;
     }
 
-    match run_job_spec_now(state.as_ref(), job.spec.clone()).await {
+    match run_job_spec_now_with_permit(state.as_ref(), job.spec.clone(), job_permit).await {
         Ok(result) => {
             let job_for_commit = job.clone();
             let persisted = state
                 .db
                 .with_write_conn(move |conn| {
-                    conn.execute_batch("BEGIN IMMEDIATE")
-                        .map_err(|e| e.to_string())?;
-                    let operation = (|| -> Result<(), String> {
+                    db::with_immediate_transaction(conn, |conn| {
                         let committed_at = settlement::current_unix_timestamp();
                         let result_evidence_hash = db::insert_execution_evidence(
                             conn,
@@ -12637,15 +21271,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
                             committed_at,
                         )?;
                         Ok(())
-                    })();
-
-                    if let Err(error) = operation {
-                        let _ = conn.execute_batch("ROLLBACK");
-                        return Err(error);
-                    }
-
-                    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                    Ok(())
+                    })
                 })
                 .await;
 
@@ -12671,9 +21297,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
             let persisted = state
                 .db
                 .with_write_conn(move |conn| {
-                    conn.execute_batch("BEGIN IMMEDIATE")
-                        .map_err(|e| e.to_string())?;
-                    let operation = (|| -> Result<(), String> {
+                    db::with_immediate_transaction(conn, |conn| {
                         let failed_at = settlement::current_unix_timestamp();
                         let failure_evidence_hash = db::insert_execution_evidence(
                             conn,
@@ -12691,15 +21315,7 @@ async fn process_job(state: Arc<AppState>, job_id: String) {
                             failed_at,
                         )?;
                         Ok(())
-                    })();
-
-                    if let Err(error) = operation {
-                        let _ = conn.execute_batch("ROLLBACK");
-                        return Err(error);
-                    }
-
-                    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                    Ok(())
+                    })
                 })
                 .await;
 
@@ -12757,6 +21373,556 @@ struct StripeSettlementInfo {
     captured: bool,
 }
 
+const STRIPE_SETTLEMENT_CAPTURE_ACTION: &str = "capture";
+const STRIPE_SETTLEMENT_CANCEL_ACTION: &str = "cancel";
+const STRIPE_SETTLEMENT_RECONCILE_BATCH_SIZE: usize = 128;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "execution_outcome", rename_all = "snake_case")]
+enum StripeSettlementOutboxDetails {
+    Succeeded {
+        result_format: String,
+        #[serde(default)]
+        result_envelope_hash: Option<String>,
+    },
+    Failed {
+        failure: ReceiptFailure,
+    },
+}
+
+fn stripe_reservation_for_deal(deal: &deals::StoredDeal) -> Result<PaymentReservation, String> {
+    if deal.payment_method.as_deref() != Some("stripe") {
+        return Err("Stripe settlement outbox references a non-Stripe deal".to_string());
+    }
+    let payment_intent_id = deal
+        .payment_token_hash
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Stripe deal is missing its PaymentIntent id".to_string())?;
+    Ok(PaymentReservation {
+        request_id: deal.deal_id.clone(),
+        method: "stripe_mpp".to_string(),
+        service_id: ServiceId::ExecuteWasm,
+        amount_sats: deal.payment_amount_sats.unwrap_or(0),
+        token_hash: payment_intent_id.to_string(),
+    })
+}
+
+async fn stage_stripe_capture(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+    output: &WorkloadRunOutput,
+    completed_at: i64,
+) -> Result<(), String> {
+    let details = StripeSettlementOutboxDetails::Succeeded {
+        result_format: output.result_format.clone(),
+        result_envelope_hash: output.result_envelope_hash.clone(),
+    };
+    let details_json = serde_json::to_string(&details).map_err(|error| error.to_string())?;
+    let deal = deal.clone();
+    let output = output.clone();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                let result_evidence_hash = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal.deal_id,
+                    &output.result_evidence_kind,
+                    &output.persisted_result,
+                    completed_at,
+                )?;
+                for (evidence_kind, evidence_value) in &output.extra_evidence {
+                    let _ = db::insert_execution_evidence(
+                        conn,
+                        "deal",
+                        &deal.deal_id,
+                        evidence_kind,
+                        evidence_value,
+                        completed_at,
+                    )?;
+                }
+                if !deals::stage_deal_result_ready(
+                    conn,
+                    &deal.deal_id,
+                    &output.persisted_result,
+                    Some(&output.result_hash),
+                    Some(&result_evidence_hash),
+                    completed_at,
+                )? {
+                    return Err("Stripe deal could not be staged as result_ready".to_string());
+                }
+                db::insert_stripe_settlement_outbox(
+                    conn,
+                    &deal.deal_id,
+                    STRIPE_SETTLEMENT_CAPTURE_ACTION,
+                    &details_json,
+                    completed_at,
+                )
+            })
+        })
+        .await
+}
+
+async fn stage_stripe_cancel(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+    failure: &ReceiptFailure,
+    completed_at: i64,
+) -> Result<(), String> {
+    let details = StripeSettlementOutboxDetails::Failed {
+        failure: failure.clone(),
+    };
+    let details_json = serde_json::to_string(&details).map_err(|error| error.to_string())?;
+    let deal = deal.clone();
+    let failure = failure.clone();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                let failure_evidence_hash = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal.deal_id,
+                    "execution_failure",
+                    &failure,
+                    completed_at,
+                )?;
+                if !deals::stage_deal_settlement_pending_failure(
+                    conn,
+                    &deal.deal_id,
+                    &failure.message,
+                    &failure_evidence_hash,
+                    completed_at,
+                )? {
+                    return Err("Stripe deal could not be staged as settlement_pending".to_string());
+                }
+                db::insert_stripe_settlement_outbox(
+                    conn,
+                    &deal.deal_id,
+                    STRIPE_SETTLEMENT_CANCEL_ACTION,
+                    &details_json,
+                    completed_at,
+                )
+            })
+        })
+        .await
+}
+
+fn ensure_valid_local_receipt(receipt: &SignedArtifact<ReceiptPayload>) -> Result<(), String> {
+    if !protocol::verify_artifact(receipt) {
+        return Err("locally signed Stripe receipt failed signature verification".to_string());
+    }
+    protocol::validate_receipt_artifact(receipt)
+        .map_err(|error| format!("locally signed Stripe receipt is invalid: {error}"))
+}
+
+async fn persist_stripe_success_receipt(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+    result_format: String,
+    result_envelope_hash: Option<String>,
+    finished_at: i64,
+) -> Result<(), String> {
+    let result = deal
+        .result
+        .clone()
+        .ok_or_else(|| "result-ready Stripe deal is missing its result".to_string())?;
+    let result_hash = deal
+        .result_hash
+        .clone()
+        .ok_or_else(|| "result-ready Stripe deal is missing its result hash".to_string())?;
+    let reservation = stripe_reservation_for_deal(deal)?;
+    let receipt = sign_deal_receipt(
+        state,
+        deal,
+        finished_at,
+        ReceiptSignSpec {
+            deal_state: "succeeded",
+            execution_state: "succeeded",
+            bundle: None,
+            stripe_settlement: Some(StripeSettlementInfo {
+                payment_intent_id: reservation.token_hash,
+                charged_msat: reservation.amount_sats.saturating_mul(1_000),
+                captured: true,
+            }),
+            prepaid_settlement: None,
+            result_hash: Some(result_hash.clone()),
+            result_format: Some(result_format),
+            result_envelope_hash,
+            failure: None,
+        },
+    )?;
+    ensure_valid_local_receipt(&receipt)?;
+    let receipt_json = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
+    let deal_id = deal.deal_id.clone();
+    let receipt_for_db = receipt.clone();
+    let now = settlement::current_unix_timestamp();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                db::insert_artifact_document(
+                    conn,
+                    &receipt_for_db.hash,
+                    &receipt_for_db.payload_hash,
+                    ARTIFACT_KIND_RECEIPT,
+                    &receipt_for_db.signer,
+                    receipt_for_db.created_at,
+                    &receipt_json,
+                )?;
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "receipt_artifact_ref",
+                    &json!({ "artifact_hash": receipt_for_db.hash }),
+                    now,
+                )?;
+                if !deals::complete_deal_success_if_status(
+                    conn,
+                    deals::DealSuccessCompletion {
+                        deal_id: &deal_id,
+                        expected_status: deals::DEAL_STATUS_RESULT_READY,
+                        result: &result,
+                        explicit_result_hash: Some(&result_hash),
+                        receipt: &receipt_for_db,
+                        result_evidence_hash: None,
+                        receipt_artifact_hash: Some(&receipt_for_db.hash),
+                        now,
+                    },
+                )? {
+                    return Err("Stripe success deal changed state before finalization".to_string());
+                }
+                if !db::delete_stripe_settlement_outbox(conn, &deal_id)? {
+                    return Err("Stripe success outbox record disappeared".to_string());
+                }
+                Ok(())
+            })
+        })
+        .await
+}
+
+async fn persist_stripe_canceled_after_execution_receipt(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+    result_format: String,
+    result_envelope_hash: Option<String>,
+    finished_at: i64,
+) -> Result<(), String> {
+    let result_hash = deal
+        .result_hash
+        .clone()
+        .ok_or_else(|| "result-ready Stripe deal is missing its result hash".to_string())?;
+    let reservation = stripe_reservation_for_deal(deal)?;
+    let failure = receipt_failure(
+        "stripe_capture_canceled",
+        "Stripe authorization reached canceled state after execution completed",
+    );
+    let receipt = sign_deal_receipt(
+        state,
+        deal,
+        finished_at,
+        ReceiptSignSpec {
+            deal_state: "canceled",
+            execution_state: "succeeded",
+            bundle: None,
+            stripe_settlement: Some(StripeSettlementInfo {
+                payment_intent_id: reservation.token_hash,
+                charged_msat: reservation.amount_sats.saturating_mul(1_000),
+                captured: false,
+            }),
+            prepaid_settlement: None,
+            result_hash: Some(result_hash),
+            result_format: Some(result_format),
+            result_envelope_hash,
+            failure: Some(failure.clone()),
+        },
+    )?;
+    ensure_valid_local_receipt(&receipt)?;
+    let receipt_json = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
+    let deal_id = deal.deal_id.clone();
+    let receipt_for_db = receipt.clone();
+    let now = settlement::current_unix_timestamp();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                let failure_evidence_hash = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "settlement_failure",
+                    &failure,
+                    now,
+                )?;
+                db::insert_artifact_document(
+                    conn,
+                    &receipt_for_db.hash,
+                    &receipt_for_db.payload_hash,
+                    ARTIFACT_KIND_RECEIPT,
+                    &receipt_for_db.signer,
+                    receipt_for_db.created_at,
+                    &receipt_json,
+                )?;
+                if !deals::complete_deal_failure_if_status(
+                    conn,
+                    deals::DealTerminalTransition {
+                        deal_id: &deal_id,
+                        expected_status: deals::DEAL_STATUS_RESULT_READY,
+                        error: "Stripe authorization was canceled after execution",
+                        receipt: &receipt_for_db,
+                        failure_evidence_hash: Some(&failure_evidence_hash),
+                        receipt_artifact_hash: Some(&receipt_for_db.hash),
+                        now,
+                    },
+                )? {
+                    return Err(
+                        "Stripe canceled deal changed state before finalization".to_string()
+                    );
+                }
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "receipt_artifact_ref",
+                    &json!({ "artifact_hash": receipt_for_db.hash }),
+                    now,
+                )?;
+                if !db::delete_stripe_settlement_outbox(conn, &deal_id)? {
+                    return Err("Stripe canceled outbox record disappeared".to_string());
+                }
+                Ok(())
+            })
+        })
+        .await
+}
+
+async fn persist_stripe_failure_receipt(
+    state: &AppState,
+    deal: &deals::StoredDeal,
+    failure: ReceiptFailure,
+    captured: bool,
+    finished_at: i64,
+) -> Result<(), String> {
+    let reservation = stripe_reservation_for_deal(deal)?;
+    let receipt = sign_deal_receipt(
+        state,
+        deal,
+        finished_at,
+        ReceiptSignSpec {
+            deal_state: "failed",
+            execution_state: "failed",
+            bundle: None,
+            stripe_settlement: Some(StripeSettlementInfo {
+                payment_intent_id: reservation.token_hash,
+                charged_msat: reservation.amount_sats.saturating_mul(1_000),
+                captured,
+            }),
+            prepaid_settlement: None,
+            result_hash: None,
+            result_format: None,
+            result_envelope_hash: None,
+            failure: Some(failure.clone()),
+        },
+    )?;
+    ensure_valid_local_receipt(&receipt)?;
+    let receipt_json = serde_json::to_string(&receipt).map_err(|error| error.to_string())?;
+    let deal_id = deal.deal_id.clone();
+    let receipt_for_db = receipt.clone();
+    let now = settlement::current_unix_timestamp();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                db::insert_artifact_document(
+                    conn,
+                    &receipt_for_db.hash,
+                    &receipt_for_db.payload_hash,
+                    ARTIFACT_KIND_RECEIPT,
+                    &receipt_for_db.signer,
+                    receipt_for_db.created_at,
+                    &receipt_json,
+                )?;
+                if !deals::complete_deal_failure_if_status(
+                    conn,
+                    deals::DealTerminalTransition {
+                        deal_id: &deal_id,
+                        expected_status: deals::DEAL_STATUS_SETTLEMENT_PENDING,
+                        error: &failure.message,
+                        receipt: &receipt_for_db,
+                        failure_evidence_hash: None,
+                        receipt_artifact_hash: Some(&receipt_for_db.hash),
+                        now,
+                    },
+                )? {
+                    return Err("Stripe failed deal changed state before finalization".to_string());
+                }
+                let _ = db::insert_execution_evidence(
+                    conn,
+                    "deal",
+                    &deal_id,
+                    "receipt_artifact_ref",
+                    &json!({ "artifact_hash": receipt_for_db.hash }),
+                    now,
+                )?;
+                if !db::delete_stripe_settlement_outbox(conn, &deal_id)? {
+                    return Err("Stripe failure outbox record disappeared".to_string());
+                }
+                Ok(())
+            })
+        })
+        .await
+}
+
+async fn reconcile_stripe_settlement_record(
+    state: &AppState,
+    record: db::StripeSettlementOutboxRecord,
+) -> Result<(), String> {
+    let deal_id = record.deal_id.clone();
+    let deal = state
+        .db
+        .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
+        .await?
+        .ok_or_else(|| "Stripe settlement outbox references a missing deal".to_string())?;
+    let details: StripeSettlementOutboxDetails = serde_json::from_str(&record.details_json)
+        .map_err(|error| format!("Stripe settlement outbox contains invalid details: {error}"))?;
+    let reservation = stripe_reservation_for_deal(&deal)?;
+
+    match (record.action.as_str(), details) {
+        (
+            STRIPE_SETTLEMENT_CAPTURE_ACTION,
+            StripeSettlementOutboxDetails::Succeeded {
+                result_format,
+                result_envelope_hash,
+            },
+        ) => {
+            let state_after_capture =
+                match settlement::commit_payment(state, reservation.clone()).await {
+                    Ok(_) => settlement::PaymentReservationState::Committed,
+                    Err(_) => settlement::payment_reservation_state(state, &reservation).await?,
+                };
+            match state_after_capture {
+                settlement::PaymentReservationState::Committed => {
+                    persist_stripe_success_receipt(
+                        state,
+                        &deal,
+                        result_format,
+                        result_envelope_hash,
+                        record.created_at,
+                    )
+                    .await
+                }
+                settlement::PaymentReservationState::Released => {
+                    persist_stripe_canceled_after_execution_receipt(
+                        state,
+                        &deal,
+                        result_format,
+                        result_envelope_hash,
+                        record.created_at,
+                    )
+                    .await
+                }
+                settlement::PaymentReservationState::Pending(status) => Err(format!(
+                    "Stripe capture remains non-terminal ({status}); reconciliation will retry"
+                )),
+            }
+        }
+        (STRIPE_SETTLEMENT_CANCEL_ACTION, StripeSettlementOutboxDetails::Failed { failure }) => {
+            let state_after_cancel = match settlement::release_payment(state, &reservation).await {
+                Ok(()) => settlement::PaymentReservationState::Released,
+                Err(_) => settlement::payment_reservation_state(state, &reservation).await?,
+            };
+            match state_after_cancel {
+                settlement::PaymentReservationState::Committed => {
+                    persist_stripe_failure_receipt(state, &deal, failure, true, record.created_at)
+                        .await
+                }
+                settlement::PaymentReservationState::Released => {
+                    persist_stripe_failure_receipt(state, &deal, failure, false, record.created_at)
+                        .await
+                }
+                settlement::PaymentReservationState::Pending(status) => Err(format!(
+                    "Stripe cancellation remains non-terminal ({status}); reconciliation will retry"
+                )),
+            }
+        }
+        _ => {
+            Err("Stripe settlement outbox action does not match its execution outcome".to_string())
+        }
+    }
+}
+
+pub async fn reconcile_stripe_settlement_once(state: Arc<AppState>) -> Result<(), String> {
+    let records = state
+        .db
+        .with_read_conn(|conn| {
+            db::list_stripe_settlement_outbox_batch(conn, STRIPE_SETTLEMENT_RECONCILE_BATCH_SIZE)
+        })
+        .await?;
+    stream::iter(records)
+        .for_each_concurrent(4, |record| {
+            let state = state.clone();
+            async move {
+                let deal_id = record.deal_id.clone();
+                if let Err(error) = reconcile_stripe_settlement_record(state.as_ref(), record).await
+                {
+                    tracing::warn!(
+                        deal_id = %deal_id,
+                        "Stripe settlement remains pending: {error}"
+                    );
+                }
+            }
+        })
+        .await;
+    Ok(())
+}
+
+pub async fn run_stripe_settlement_loop(state: Arc<AppState>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        if let Err(error) = reconcile_stripe_settlement_once(state.clone()).await {
+            tracing::error!("Stripe settlement reconciliation failed: {error}");
+        }
+    }
+}
+
+async fn stage_interrupted_stripe_deals_for_recovery(state: &AppState) -> Result<(), String> {
+    let existing_outbox_ids: HashSet<String> = state
+        .db
+        .with_read_conn(db::list_stripe_settlement_outbox)
+        .await?
+        .into_iter()
+        .map(|record| record.deal_id)
+        .collect();
+    let interrupted_deals = state
+        .db
+        .with_read_conn(deals::list_incomplete_deals)
+        .await?
+        .into_iter()
+        .filter(|deal| deal.payment_method.as_deref() == Some("stripe"))
+        .filter(|deal| deal.status == deals::DEAL_STATUS_RUNNING)
+        .filter(|deal| !existing_outbox_ids.contains(&deal.deal_id))
+        .collect::<Vec<_>>();
+
+    for deal in interrupted_deals {
+        let failure = receipt_failure(
+            "execution_interrupted",
+            "node restarted before the Stripe execution outcome was durably staged",
+        );
+        stage_stripe_cancel(state, &deal, &failure, settlement::current_unix_timestamp()).await?;
+    }
+    Ok(())
+}
+
+fn payment_resource_fingerprint(resource_id: &str) -> String {
+    let digest = crypto::sha256_hex(resource_id.as_bytes());
+    format!("sha256:{}", &digest[..16])
+}
+
 /// Carries the prepaid (phoenixd) data needed to build ReceiptSettlementRefs.
 #[derive(Clone)]
 struct PrepaidSettlementInfo {
@@ -12788,19 +21954,25 @@ async fn prepaid_settlement_for_deal(
         .payment_token_hash
         .as_deref()
         .ok_or_else(|| "prepaid deal is missing its payment hash".to_string())?;
+    let expected_amount_sat = deal
+        .payment_amount_sats
+        .ok_or_else(|| "prepaid deal is missing its payment amount".to_string())?;
     let payment = client
         .get_incoming_payment(payment_hash)
         .await
         .map_err(|error| error.to_string())?;
-    if !payment.is_paid {
-        return Err(format!(
-            "prepaid invoice {payment_hash} is not yet paid at receipt time"
-        ));
-    }
+    settlement::phoenixd::validate_prepaid_payment_proof(
+        payment_hash,
+        expected_amount_sat,
+        &payment,
+    )?;
+    let charged_msat = expected_amount_sat
+        .checked_mul(1_000)
+        .ok_or_else(|| "prepaid receipt amount overflowed millisatoshis".to_string())?;
     Ok(PrepaidSettlementInfo {
         payment_hash: payment_hash.to_string(),
         preimage_hex: payment.preimage_hex,
-        charged_msat: deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000),
+        charged_msat,
         paid: true,
     })
 }
@@ -12818,7 +21990,10 @@ fn sign_deal_receipt(
     });
     let (settlement_refs, settlement_state) = if let Some(prepaid) = &spec.prepaid_settlement {
         (
-            settlement_refs_from_prepaid(prepaid),
+            settlement_refs_from_prepaid(
+                prepaid,
+                &deal.quote.payload.settlement_terms.destination_identity,
+            ),
             if prepaid.paid {
                 "settled".to_string()
             } else {
@@ -12864,11 +22039,7 @@ fn sign_deal_receipt(
             result_envelope_hash: spec.result_envelope_hash,
             result_format,
             executor: receipt_executor_for_deal(deal),
-            limits_applied: receipt_limits_for_spec(
-                state,
-                &deal.spec,
-                deal.payment_method.as_deref(),
-            ),
+            limits_applied: receipt_limits_applied(&deal.quote.payload.execution_limits),
             settlement_refs,
             failure_code,
             failure_message,
@@ -12934,9 +22105,13 @@ async fn reject_deal_before_execution(
     let persisted = state
         .db
         .with_write_conn(move |conn| {
-            conn.execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| e.to_string())?;
-            let operation = (|| -> Result<(), String> {
+            db::with_immediate_transaction(conn, |conn| {
+                let Some(current) = deals::get_deal(conn, &deal_id)? else {
+                    return Ok(());
+                };
+                if current.status != expected_status {
+                    return Ok(());
+                }
                 let failure_evidence_hash = db::insert_execution_evidence(
                     conn,
                     "deal",
@@ -12960,7 +22135,10 @@ async fn reject_deal_before_execution(
                 )?;
 
                 if !rejected {
-                    return Ok(());
+                    return Err(
+                        "deal state changed despite the immediate rejection transaction"
+                            .to_string(),
+                    );
                 }
 
                 db::insert_artifact_document(
@@ -12981,15 +22159,7 @@ async fn reject_deal_before_execution(
                     completed_at,
                 )?;
                 Ok(())
-            })();
-
-            if let Err(error) = operation {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-
-            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-            Ok(())
+            })
         })
         .await;
 
@@ -13177,7 +22347,7 @@ async fn process_deal_with_reserved_permit(
         .collect();
 
     let deal_requester_id = deal.artifact.payload.requester_id.clone();
-    match run_workload_spec_with_admission(
+    match run_workload_spec_with_admission_limits(
         state.as_ref(),
         deal.spec.clone(),
         effective_capabilities,
@@ -13185,21 +22355,38 @@ async fn process_deal_with_reserved_permit(
         execution_permit,
         Some(deal.quote.payload.offer_hash.as_str()),
         Some(&deal_requester_id),
+        Some(deal.quote.payload.execution_limits.clone()),
     )
     .await
     {
         Ok(output) => {
             let completed_at = settlement::current_unix_timestamp();
             let result_for_db = output.persisted_result.clone();
+            if deal.payment_method.as_deref() == Some("stripe") {
+                if let Err(error) =
+                    stage_stripe_capture(state.as_ref(), &deal, &output, completed_at).await
+                {
+                    tracing::error!(
+                        deal_id = %deal.deal_id,
+                        "Failed to durably stage Stripe capture: {error}"
+                    );
+                    return;
+                }
+                if let Err(error) = reconcile_stripe_settlement_once(state.clone()).await {
+                    tracing::error!(
+                        deal_id = %deal.deal_id,
+                        "Failed to start Stripe capture reconciliation: {error}"
+                    );
+                }
+                return;
+            }
             if deal.payment_method.as_deref() == Some("lightning") {
                 let deal_for_stage = deal.clone();
                 let output_for_stage = output.clone();
                 let persisted = state
                     .db
                     .with_write_conn(move |conn| {
-                        conn.execute_batch("BEGIN IMMEDIATE")
-                            .map_err(|e| e.to_string())?;
-                        let operation = (|| -> Result<(), String> {
+                        db::with_immediate_transaction(conn, |conn| {
                             let result_evidence_hash = db::insert_execution_evidence(
                                 conn,
                                 "deal",
@@ -13231,15 +22418,7 @@ async fn process_deal_with_reserved_permit(
                                 return Err("deal could not be staged as result_ready".to_string());
                             }
                             Ok(())
-                        })();
-
-                        if let Err(error) = operation {
-                            let _ = conn.execute_batch("ROLLBACK");
-                            return Err(error);
-                        }
-
-                        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                        Ok(())
+                        })
                     })
                     .await;
 
@@ -13250,60 +22429,9 @@ async fn process_deal_with_reserved_permit(
                     );
                 }
             } else {
-                // For Stripe deals, capture the PaymentIntent synchronously before
-                // signing the receipt.
-                //
-                // FAIL-CLOSED: Within the kernel receipt model, settlement_state is
-                // coupled to deal_state (succeeded ⇒ settled). There is no
-                // "succeeded-but-unpaid" representation, so an uncollectable-after-
-                // execution deal is recorded as failed (the buyer's PaymentIntent
-                // auth is canceled/voided, so they are not charged). This is a
-                // deliberate fail-closed default the product owner can refine later
-                // (e.g. a reconciliation/retry queue).
-                let capture_outcome = if deal.payment_method.as_deref() == Some("stripe") {
-                    let pi_id = deal.payment_token_hash.clone().unwrap_or_default();
-                    let charged_msat = deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000);
-                    let stripe_reservation = PaymentReservation {
-                        request_id: deal.deal_id.clone(),
-                        method: "stripe_mpp".to_string(),
-                        service_id: ServiceId::ExecuteWasm,
-                        amount_sats: deal.payment_amount_sats.unwrap_or(0),
-                        token_hash: pi_id.clone(),
-                    };
-                    // Attempt capture with up to 3 tries; authorized manual-capture
-                    // PaymentIntents almost always capture on the first attempt.
-                    const MAX_CAPTURE_ATTEMPTS: u32 = 3;
-                    let mut last_capture_err: Option<String> = None;
-                    let mut captured = false;
-                    for attempt in 1..=MAX_CAPTURE_ATTEMPTS {
-                        match settlement::commit_payment(state.as_ref(), stripe_reservation.clone())
-                            .await
-                        {
-                            Ok(_) => {
-                                captured = true;
-                                break;
-                            }
-                            Err(err) => {
-                                last_capture_err = Some(err.to_string());
-                                if attempt < MAX_CAPTURE_ATTEMPTS {
-                                    tokio::time::sleep(Duration::from_millis(200)).await;
-                                }
-                            }
-                        }
-                    }
-                    if captured {
-                        Ok(Some(StripeSettlementInfo {
-                            payment_intent_id: pi_id,
-                            charged_msat,
-                            captured: true,
-                        }))
-                    } else {
-                        Err((pi_id, charged_msat, last_capture_err.unwrap_or_default()))
-                    }
-                } else {
-                    // Non-Stripe path (prepaid / free): no capture needed.
-                    Ok(None)
-                };
+                // Stripe returned above after durably staging its settlement
+                // outbox. This branch handles only free and prepaid deals.
+                let stripe_settlement = None;
 
                 // For prepaid (phoenixd) deals, read the payment preimage from
                 // our own phoenixd so the receipt carries the cryptographic
@@ -13328,287 +22456,119 @@ async fn process_deal_with_reserved_permit(
                         None
                     };
 
-                match capture_outcome {
-                    Ok(stripe_settlement) => {
-                        // Happy path: execution succeeded and (for Stripe) capture succeeded.
-                        let receipt = match sign_deal_receipt(
-                            state.as_ref(),
-                            &deal,
-                            completed_at,
-                            ReceiptSignSpec {
-                                deal_state: "succeeded",
-                                execution_state: "succeeded",
-                                bundle: None,
-                                stripe_settlement,
-                                prepaid_settlement: prepaid_settlement.clone(),
-                                result_hash: Some(output.result_hash.clone()),
-                                result_format: Some(output.result_format.clone()),
-                                result_envelope_hash: output.result_envelope_hash.clone(),
-                                failure: None,
-                            },
-                        ) {
-                            Ok(receipt) => receipt,
-                            Err(error) => {
-                                tracing::error!("Failed to sign successful deal receipt: {error}");
-                                return;
-                            }
-                        };
-
-                        let receipt_json = match serde_json::to_string(&receipt) {
-                            Ok(json) => json,
-                            Err(error) => {
-                                tracing::error!(
-                                    "Failed to encode successful deal receipt: {error}"
-                                );
-                                return;
-                            }
-                        };
-
-                        let deal_for_commit = deal.clone();
-                        let receipt_for_db = receipt.clone();
-                        let output_for_commit = output.clone();
-                        let persisted = state
-                            .db
-                            .with_write_conn(move |conn| {
-                                conn.execute_batch("BEGIN IMMEDIATE")
-                                    .map_err(|e| e.to_string())?;
-                                let operation = (|| -> Result<(), String> {
-                                    let result_evidence_hash = db::insert_execution_evidence(
-                                        conn,
-                                        "deal",
-                                        &deal_for_commit.deal_id,
-                                        &output_for_commit.result_evidence_kind,
-                                        &result_for_db,
-                                        completed_at,
-                                    )?;
-                                    for (evidence_kind, evidence_value) in
-                                        &output_for_commit.extra_evidence
-                                    {
-                                        let _ = db::insert_execution_evidence(
-                                            conn,
-                                            "deal",
-                                            &deal_for_commit.deal_id,
-                                            evidence_kind,
-                                            evidence_value,
-                                            completed_at,
-                                        )?;
-                                    }
-                                    db::insert_artifact_document(
-                                        conn,
-                                        &receipt_for_db.hash,
-                                        &receipt_for_db.payload_hash,
-                                        ARTIFACT_KIND_RECEIPT,
-                                        &receipt_for_db.signer,
-                                        receipt_for_db.created_at,
-                                        &receipt_json,
-                                    )?;
-                                    let _ = db::insert_execution_evidence(
-                                        conn,
-                                        "deal",
-                                        &deal_for_commit.deal_id,
-                                        "receipt_artifact_ref",
-                                        &json!({ "artifact_hash": receipt_for_db.hash }),
-                                        completed_at,
-                                    )?;
-
-                                    let updated = deals::complete_deal_success_if_status(
-                                        conn,
-                                        deals::DealSuccessCompletion {
-                                            deal_id: &deal_for_commit.deal_id,
-                                            expected_status: deals::DEAL_STATUS_RUNNING,
-                                            result: &result_for_db,
-                                            explicit_result_hash: Some(
-                                                &output_for_commit.result_hash,
-                                            ),
-                                            receipt: &receipt_for_db,
-                                            result_evidence_hash: Some(&result_evidence_hash),
-                                            receipt_artifact_hash: Some(&receipt_for_db.hash),
-                                            now: completed_at,
-                                        },
-                                    )?;
-                                    if !updated {
-                                        return Ok(());
-                                    }
-                                    Ok(())
-                                })();
-
-                                if let Err(error) = operation {
-                                    let _ = conn.execute_batch("ROLLBACK");
-                                    return Err(error);
-                                }
-
-                                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                                Ok(())
-                            })
-                            .await;
-
-                        if let Err(error) = persisted {
-                            // CRITICAL: Stripe capture succeeded but the
-                            // subsequent DB persist failed. The buyer HAS been
-                            // charged (capture is irreversible). The deal is
-                            // left in DEAL_STATUS_RUNNING; on node restart the
-                            // recovery path resets running deals to accepted and
-                            // re-executes them, which would attempt a second
-                            // capture against an already-captured PaymentIntent
-                            // (Stripe will reject it, so no double charge, but
-                            // the deal may loop). Manual intervention required:
-                            // mark the deal as succeeded in the DB or otherwise
-                            // prevent re-execution (e.g., cancel the
-                            // PaymentIntent reservation or mark the deal
-                            // terminal via a direct SQL update).
-                            //
-                            // RESIDUAL GAP: full atomicity requires a
-                            // two-phase-commit or an idempotency key on the
-                            // capture request. That is larger surgery deferred
-                            // to a future change.
-                            let pi_id_for_log =
-                                deal.payment_token_hash.as_deref().unwrap_or("<unknown>");
-                            let amount_for_log = deal.payment_amount_sats.unwrap_or(0);
-                            tracing::error!(
-                                deal_id = %deal.deal_id,
-                                payment_intent_id = %pi_id_for_log,
-                                amount_sats = %amount_for_log,
-                                persist_error = %error,
-                                "CRITICAL: Stripe capture succeeded but deal persist failed; \
-                                 buyer has been charged and deal is stuck in running state; \
-                                 manual reconciliation required"
-                            );
-                        }
+                // Happy path for free and prepaid execution.
+                let receipt = match sign_deal_receipt(
+                    state.as_ref(),
+                    &deal,
+                    completed_at,
+                    ReceiptSignSpec {
+                        deal_state: "succeeded",
+                        execution_state: "succeeded",
+                        bundle: None,
+                        stripe_settlement,
+                        prepaid_settlement: prepaid_settlement.clone(),
+                        result_hash: Some(output.result_hash.clone()),
+                        result_format: Some(output.result_format.clone()),
+                        result_envelope_hash: output.result_envelope_hash.clone(),
+                        failure: None,
+                    },
+                ) {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
+                        tracing::error!("Failed to sign successful deal receipt: {error}");
+                        return;
                     }
-                    Err((pi_id, charged_msat, capture_err)) => {
-                        // Stripe capture failed after all retry attempts. Treat as
-                        // deal failure: cancel the PaymentIntent so the buyer is not
-                        // charged, then record a kernel-valid failed receipt.
-                        tracing::error!(
-                            deal_id = %deal.deal_id,
-                            "CRITICAL: Stripe capture failed after successful execution; \
-                             deal {} marked failed, buyer not charged, \
-                             manual reconciliation may be needed. Error: {capture_err}",
-                            deal.deal_id,
-                        );
-                        let failure = receipt_failure(
-                            "stripe_capture_failed",
-                            format!(
-                                "Stripe capture failed for deal {}: {capture_err}",
-                                deal.deal_id
-                            ),
-                        );
-                        // Release the PaymentIntent so the buyer is not charged.
-                        let cancel_reservation = PaymentReservation {
-                            request_id: deal.deal_id.clone(),
-                            method: "stripe_mpp".to_string(),
-                            service_id: ServiceId::ExecuteWasm,
-                            amount_sats: deal.payment_amount_sats.unwrap_or(0),
-                            token_hash: pi_id.clone(),
-                        };
-                        if let Err(err) =
-                            settlement::release_payment(state.as_ref(), &cancel_reservation).await
-                        {
-                            tracing::error!(
-                                deal_id = %deal.deal_id,
-                                "Stripe cancel after capture failure also failed: {err}"
-                            );
-                        }
-                        let stripe_settlement = Some(StripeSettlementInfo {
-                            payment_intent_id: pi_id,
-                            charged_msat,
-                            captured: false,
-                        });
-                        let receipt = match sign_deal_receipt(
-                            state.as_ref(),
-                            &deal,
-                            completed_at,
-                            ReceiptSignSpec {
-                                deal_state: "failed",
-                                execution_state: "failed",
-                                bundle: None,
-                                stripe_settlement,
-                                prepaid_settlement: None,
-                                result_hash: None,
-                                result_format: None,
-                                result_envelope_hash: None,
-                                failure: Some(failure.clone()),
-                            },
-                        ) {
-                            Ok(receipt) => receipt,
-                            Err(error) => {
-                                tracing::error!(
-                                    "Failed to sign capture-failed deal receipt: {error}"
-                                );
-                                return;
-                            }
-                        };
-                        let receipt_json = match serde_json::to_string(&receipt) {
-                            Ok(json) => json,
-                            Err(error) => {
-                                tracing::error!(
-                                    "Failed to encode capture-failed deal receipt: {error}"
-                                );
-                                return;
-                            }
-                        };
-                        // Persist using the same pattern as the execution-failure branch.
-                        let deal_id = deal.deal_id.clone();
-                        let receipt_for_db = receipt.clone();
-                        let persisted = state
-                            .db
-                            .with_write_conn(move |conn| {
-                                conn.execute_batch("BEGIN IMMEDIATE")
-                                    .map_err(|e| e.to_string())?;
-                                let operation = (|| -> Result<(), String> {
-                                    let failure_evidence_hash = db::insert_execution_evidence(
-                                        conn,
-                                        "deal",
-                                        &deal_id,
-                                        "execution_failure",
-                                        &failure,
-                                        completed_at,
-                                    )?;
-                                    db::insert_artifact_document(
-                                        conn,
-                                        &receipt_for_db.hash,
-                                        &receipt_for_db.payload_hash,
-                                        ARTIFACT_KIND_RECEIPT,
-                                        &receipt_for_db.signer,
-                                        receipt_for_db.created_at,
-                                        &receipt_json,
-                                    )?;
-                                    let _ = db::insert_execution_evidence(
-                                        conn,
-                                        "deal",
-                                        &deal_id,
-                                        "receipt_artifact_ref",
-                                        &json!({ "artifact_hash": receipt_for_db.hash }),
-                                        completed_at,
-                                    )?;
-                                    let _ = deals::complete_deal_failure_if_status(
-                                        conn,
-                                        deals::DealTerminalTransition {
-                                            deal_id: &deal_id,
-                                            expected_status: deals::DEAL_STATUS_RUNNING,
-                                            error: "stripe_capture_failed",
-                                            receipt: &receipt_for_db,
-                                            failure_evidence_hash: Some(&failure_evidence_hash),
-                                            receipt_artifact_hash: Some(&receipt_for_db.hash),
-                                            now: completed_at,
-                                        },
-                                    )?;
-                                    Ok(())
-                                })();
-                                if let Err(error) = operation {
-                                    let _ = conn.execute_batch("ROLLBACK");
-                                    return Err(error);
-                                }
-                                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                                Ok(())
-                            })
-                            .await;
-                        if let Err(error) = persisted {
-                            tracing::error!(
-                                "Failed to persist capture-failed deal result: {error}"
-                            );
-                        }
+                };
+
+                let receipt_json = match serde_json::to_string(&receipt) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        tracing::error!("Failed to encode successful deal receipt: {error}");
+                        return;
                     }
+                };
+
+                let deal_for_commit = deal.clone();
+                let receipt_for_db = receipt.clone();
+                let output_for_commit = output.clone();
+                let persisted = state
+                    .db
+                    .with_write_conn(move |conn| {
+                        db::with_immediate_transaction(conn, |conn| {
+                            let Some(current) = deals::get_deal(conn, &deal_for_commit.deal_id)?
+                            else {
+                                return Ok(());
+                            };
+                            if current.status != deals::DEAL_STATUS_RUNNING {
+                                return Ok(());
+                            }
+                            let result_evidence_hash = db::insert_execution_evidence(
+                                conn,
+                                "deal",
+                                &deal_for_commit.deal_id,
+                                &output_for_commit.result_evidence_kind,
+                                &result_for_db,
+                                completed_at,
+                            )?;
+                            for (evidence_kind, evidence_value) in &output_for_commit.extra_evidence
+                            {
+                                let _ = db::insert_execution_evidence(
+                                    conn,
+                                    "deal",
+                                    &deal_for_commit.deal_id,
+                                    evidence_kind,
+                                    evidence_value,
+                                    completed_at,
+                                )?;
+                            }
+                            db::insert_artifact_document(
+                                conn,
+                                &receipt_for_db.hash,
+                                &receipt_for_db.payload_hash,
+                                ARTIFACT_KIND_RECEIPT,
+                                &receipt_for_db.signer,
+                                receipt_for_db.created_at,
+                                &receipt_json,
+                            )?;
+                            let _ = db::insert_execution_evidence(
+                                conn,
+                                "deal",
+                                &deal_for_commit.deal_id,
+                                "receipt_artifact_ref",
+                                &json!({ "artifact_hash": receipt_for_db.hash }),
+                                completed_at,
+                            )?;
+
+                            let updated = deals::complete_deal_success_if_status(
+                                conn,
+                                deals::DealSuccessCompletion {
+                                    deal_id: &deal_for_commit.deal_id,
+                                    expected_status: deals::DEAL_STATUS_RUNNING,
+                                    result: &result_for_db,
+                                    explicit_result_hash: Some(&output_for_commit.result_hash),
+                                    receipt: &receipt_for_db,
+                                    result_evidence_hash: Some(&result_evidence_hash),
+                                    receipt_artifact_hash: Some(&receipt_for_db.hash),
+                                    now: completed_at,
+                                },
+                            )?;
+                            if !updated {
+                                return Err(
+                                    "deal state changed despite the immediate success transaction"
+                                        .to_string(),
+                                );
+                            }
+                            Ok(())
+                        })
+                    })
+                    .await;
+
+                if let Err(error) = persisted {
+                    tracing::error!(
+                        deal_id = %deal.deal_id,
+                        persist_error = %error,
+                        "Failed to persist successful free or prepaid deal"
+                    );
                 }
             }
         }
@@ -13618,6 +22578,24 @@ async fn process_deal_with_reserved_permit(
                 classify_execution_failure(&error_message),
                 error_message.clone(),
             );
+            if deal.payment_method.as_deref() == Some("stripe") {
+                if let Err(error) =
+                    stage_stripe_cancel(state.as_ref(), &deal, &failure, completed_at).await
+                {
+                    tracing::error!(
+                        deal_id = %deal.deal_id,
+                        "Failed to durably stage Stripe cancellation: {error}"
+                    );
+                    return;
+                }
+                if let Err(error) = reconcile_stripe_settlement_once(state.clone()).await {
+                    tracing::error!(
+                        deal_id = %deal.deal_id,
+                        "Failed to start Stripe cancellation reconciliation: {error}"
+                    );
+                }
+                return;
+            }
             let bundle = match update_deal_lightning_bundle_state(
                 state.as_ref(),
                 &deal,
@@ -13634,42 +22612,8 @@ async fn process_deal_with_reserved_permit(
                     None
                 }
             };
-            // For Stripe deals, release (cancel) the PaymentIntent on failure.
-            let stripe_settlement = if deal.payment_method.as_deref() == Some("stripe") {
-                let pi_id = deal.payment_token_hash.clone().unwrap_or_default();
-                let charged_msat = deal.payment_amount_sats.unwrap_or(0).saturating_mul(1_000);
-                let stripe_reservation = PaymentReservation {
-                    request_id: deal.deal_id.clone(),
-                    method: "stripe_mpp".to_string(),
-                    service_id: ServiceId::ExecuteWasm,
-                    amount_sats: deal.payment_amount_sats.unwrap_or(0),
-                    token_hash: pi_id.clone(),
-                };
-                if let Err(err) =
-                    settlement::release_payment(state.as_ref(), &stripe_reservation).await
-                {
-                    // CRITICAL: execution failed and the PaymentIntent cancel
-                    // (release) also failed. The buyer's funds may remain held.
-                    // Manual intervention required: cancel/expire the
-                    // PaymentIntent via the Stripe dashboard or API before the
-                    // hold expires naturally (typically 7 days).
-                    tracing::error!(
-                        deal_id = %deal.deal_id,
-                        payment_intent_id = %pi_id,
-                        amount_sats = %deal.payment_amount_sats.unwrap_or(0),
-                        release_error = %err,
-                        "CRITICAL: Stripe release (cancel) failed for failed deal; \
-                         buyer funds may remain held; manual release required"
-                    );
-                }
-                Some(StripeSettlementInfo {
-                    payment_intent_id: pi_id,
-                    charged_msat,
-                    captured: false,
-                })
-            } else {
-                None
-            };
+            // Stripe failures returned above after durable outbox staging.
+            let stripe_settlement = None;
 
             // For prepaid (phoenixd) deals, the buyer already paid upfront, so
             // execution failure does NOT refund (MVP): the receipt is still
@@ -13730,9 +22674,13 @@ async fn process_deal_with_reserved_permit(
             let persisted = state
                 .db
                 .with_write_conn(move |conn| {
-                    conn.execute_batch("BEGIN IMMEDIATE")
-                        .map_err(|e| e.to_string())?;
-                    let operation = (|| -> Result<(), String> {
+                    db::with_immediate_transaction(conn, |conn| {
+                        let Some(current) = deals::get_deal(conn, &deal_id)? else {
+                            return Ok(());
+                        };
+                        if current.status != deals::DEAL_STATUS_RUNNING {
+                            return Ok(());
+                        }
                         let failure_evidence_hash = db::insert_execution_evidence(
                             conn,
                             "deal",
@@ -13759,7 +22707,7 @@ async fn process_deal_with_reserved_permit(
                             completed_at,
                         )?;
 
-                        let _ = deals::complete_deal_failure_if_status(
+                        let updated = deals::complete_deal_failure_if_status(
                             conn,
                             deals::DealTerminalTransition {
                                 deal_id: &deal_id,
@@ -13771,16 +22719,14 @@ async fn process_deal_with_reserved_permit(
                                 now: completed_at,
                             },
                         )?;
+                        if !updated {
+                            return Err(
+                                "deal state changed despite the immediate failure transaction"
+                                    .to_string(),
+                            );
+                        }
                         Ok(())
-                    })();
-
-                    if let Err(error) = operation {
-                        let _ = conn.execute_batch("ROLLBACK");
-                        return Err(error);
-                    }
-
-                    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                    Ok(())
+                    })
                 })
                 .await;
 
@@ -13815,7 +22761,7 @@ mod tests {
     };
     use axum::{
         body::{Body, to_bytes},
-        http::{HeaderMap, Method, Request, StatusCode, header},
+        http::{HeaderMap, HeaderName, Method, Request, StatusCode, header},
     };
     use std::sync::{
         Arc,
@@ -13829,6 +22775,21 @@ mod tests {
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
     const TEST_CONFIDENTIAL_POLICY_TOML: &str =
         include_str!("../../examples/confidential_policy.example.toml");
+
+    struct BlockingBuiltinHandler;
+
+    impl BuiltinServiceHandler for BlockingBuiltinHandler {
+        fn execute<'a>(
+            &'a self,
+            _input: Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send + 'a>>
+        {
+            Box::pin(async {
+                std::thread::sleep(Duration::from_millis(250));
+                Ok(json!({"unexpected": "completed"}))
+            })
+        }
+    }
 
     fn unique_temp_dir(label: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
@@ -13963,8 +22924,13 @@ mod tests {
 
         let db = DbPool::open(&db_path).expect("db pool");
         let events_query_capacity = db.read_connection_count().max(1);
+        let _identity_env_guard = crate::identity::IDENTITY_ENV_LOCK
+            .lock()
+            .expect("identity env lock");
+        let _identity_seed_env = ScopedEnvVar::unset(crate::identity::NODE_IDENTITY_SEED_ENV);
         let identity = NodeIdentity::load_or_create(&node_config).expect("identity");
-        let settlement_registry = SettlementRegistry::new(&node_config);
+        let settlement_registry =
+            SettlementRegistry::new(&node_config).expect("settlement registry");
 
         Arc::new(AppState {
             db,
@@ -13992,6 +22958,8 @@ mod tests {
                 .clone(),
             events_query_semaphore: Arc::new(tokio::sync::Semaphore::new(events_query_capacity)),
             process_execution_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            native_data_query_handlers: crate::builtins::DataQueryHandlerCache::default(),
+            native_data_publication_lock: tokio::sync::Mutex::const_new(()),
             hosted_trial_deal_quota: None,
             hosted_trial_session_quota: Arc::new(crate::public_quota::IdentityQuota::new(
                 1000,
@@ -14081,6 +23049,92 @@ mod tests {
         state
     }
 
+    #[tokio::test]
+    async fn live_relay_capability_is_advertised_by_exact_descriptor() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let relay_url = "https://identity.relay.example";
+        let relay_control_url = "wss://control.relay.example/v1/tunnel";
+        Arc::get_mut(&mut state)
+            .expect("unique test state")
+            .config
+            .relay = crate::config::RelayConfig {
+            url: Some(relay_control_url.to_string()),
+            public_suffix: Some("relay.example".to_string()),
+            enabled: true,
+        };
+        {
+            let mut transport = state.transport_status.lock().await;
+            transport.relay_enabled = true;
+            transport.relay_status = "up".to_string();
+            transport.relay_url = Some(relay_url.to_string());
+        }
+
+        let descriptor = current_descriptor_artifact(state.as_ref())
+            .await
+            .expect("descriptor for live relay");
+        let relay_endpoint = descriptor
+            .payload
+            .transport_endpoints
+            .iter()
+            .find(|endpoint| endpoint.uri == relay_url)
+            .expect("descriptor advertises the capability/preflight relay URL");
+        assert_eq!(relay_endpoint.transport, "https");
+        assert_eq!(relay_endpoint.priority, 15);
+
+        // The publication preflight reads this same capabilities payload.
+        // Its approved URL must therefore be present verbatim in the signed
+        // descriptor that strict marketplace registration validates.
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/node/capabilities",
+                None,
+                None,
+            ))
+            .await
+            .expect("node capabilities response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["transports"]["relay"]["status"], "up");
+        assert_eq!(payload["transports"]["relay"]["url"], relay_url);
+        assert_eq!(
+            payload["transports"]["relay"]["control_url"],
+            relay_control_url
+        );
+        let capability_relay_url = payload["transports"]["relay"]["url"]
+            .as_str()
+            .expect("relay capability URL string");
+        assert!(
+            descriptor
+                .payload
+                .transport_endpoints
+                .iter()
+                .any(|endpoint| endpoint.uri == capability_relay_url)
+        );
+    }
+
+    #[test]
+    fn descriptor_relay_endpoint_can_bind_reserved_valid_unique_transport() {
+        let state = test_app_state_with_lightning_mode_and_public_base_url(
+            PaymentBackend::None,
+            LightningMode::Mock,
+            Some("https://clearnet.example"),
+        );
+        let mut transport = TransportStatus::from_config(&state.config);
+        transport.relay_enabled = true;
+        transport.relay_url = Some("https://identity.relay.example".to_string());
+        transport.relay_status = "reserved".to_string();
+        assert_eq!(descriptor_transport_endpoints(&transport).len(), 2);
+
+        transport.relay_url = Some("https://user@identity.relay.example".to_string());
+        assert_eq!(descriptor_transport_endpoints(&transport).len(), 1);
+
+        transport.relay_url = transport.clearnet_url.clone();
+        let endpoints = descriptor_transport_endpoints(&transport);
+        assert_eq!(endpoints.len(), 1, "duplicate public URLs are collapsed");
+        assert_eq!(endpoints[0].priority, 10, "clearnet ordering wins");
+    }
+
     fn issue_test_session_token(state: &Arc<AppState>) -> String {
         state
             .session_pool
@@ -14092,7 +23146,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_capabilities_reports_all_job_runtimes() {
+    async fn node_capabilities_reports_only_runnable_job_runtimes() {
         let state = test_app_state(PaymentBackend::None);
         let response = public_router(state)
             .oneshot(runtime_request(
@@ -14109,10 +23163,22 @@ mod tests {
         assert_eq!(payload["faas"]["jobs_api"], Value::Bool(true));
         assert_eq!(payload["faas"]["async_jobs"], Value::Bool(true));
         assert_eq!(payload["faas"]["idempotency_keys"], Value::Bool(true));
-        assert_eq!(
-            payload["faas"]["runtimes"],
-            json!(crate::jobs::FaaSDescriptor::standard().runtimes)
-        );
+        let runtimes = payload["faas"]["runtimes"]
+            .as_array()
+            .expect("runtime capability array");
+        assert!(runtimes.iter().any(|runtime| runtime == "wasm"));
+        assert!(runtimes.iter().any(|runtime| runtime == "builtin"));
+        assert!(runtimes.iter().all(|runtime| {
+            matches!(
+                runtime.as_str(),
+                Some("wasm" | "builtin" | "python" | "container")
+            )
+        }));
+        assert!(runtimes.iter().all(|runtime| {
+            !runtime
+                .as_str()
+                .is_some_and(|name| name.starts_with("tee."))
+        }));
         assert_eq!(payload["execution"]["gpu"]["enabled"], Value::Bool(false));
         assert_eq!(
             payload["execution"]["gpu"]["count"],
@@ -14166,7 +23232,7 @@ mod tests {
 
     #[tokio::test]
     async fn generic_compute_offer_advertises_gpu_when_configured() {
-        let mut state = test_app_state(PaymentBackend::None);
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
         let state_mut = Arc::get_mut(&mut state).expect("unique app state");
         state_mut.config.gpu = GpuConfig {
             enabled: true,
@@ -14268,10 +23334,12 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats,
+                settlement_method: (price_sats > 0).then_some(PublicationSettlement::Lightning),
                 price_currency: None,
                 publication_state: Some(publication_state.to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -14301,7 +23369,49 @@ mod tests {
             publication_state: Some("active".to_string()),
             input_schema: None,
             output_schema: None,
+            ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn locked_python_runtime_mismatch_fails_before_source_side_effects() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let marker = directory.path().join("source-ran");
+        let marker_literal = serde_json::to_string(&marker.to_string_lossy()).unwrap();
+        let source = format!(
+            "from pathlib import Path\nPath({marker_literal}).write_text('ran')\ndef handler(event, context): return event\n"
+        );
+        let built = froglet_publish_engine::builder::build_python_inline(
+            &froglet_publish_engine::SourceLocator::Inline(source.clone()),
+            Some("handler.py"),
+        )
+        .await
+        .expect("locked Python bundle");
+        let mut bundle = built.python_bundle.expect("bundle");
+        bundle.lock.runtime.version = "0.0.0".to_string();
+        bundle.lock_sha256 = bundle.lock.lock_sha256().expect("updated lock digest");
+        let package_digest = froglet_publish_engine::python_bundle::package_digest(&bundle)
+            .expect("updated package digest");
+        let mut execution =
+            ExecutionWorkload::python_inline_handler(source, "handler".to_string(), json!({}))
+                .expect("execution");
+        execution.source_hash = Some(package_digest);
+        execution.python_bundle = Some(bundle);
+
+        let error = run_python_execution(
+            &execution,
+            &[],
+            Duration::from_secs(1),
+            &crate::config::ProcessLimitsConfig::default(),
+        )
+        .await
+        .expect_err("incompatible runtime must fail closed");
+
+        assert!(error.contains("runtime compatibility mismatch"));
+        assert!(
+            !marker.exists(),
+            "locked source executed before runtime compatibility was attested"
+        );
     }
 
     fn set_provider_artifact_root(state: &mut Arc<AppState>, root: std::path::PathBuf) {
@@ -14339,7 +23449,7 @@ mod tests {
         let state = test_app_state(PaymentBackend::None);
 
         let mut binding_payload = base_python_publish_request("bad-mount-binding");
-        binding_payload.mounts = Some(vec![crate::execution::ExecutionMount {
+        binding_payload.mounts = Some(vec![froglet_protocol::publication::PublicationMount {
             kind: "postgres".to_string(),
             handle: "analytics".to_string(),
             binding: Some("postgres://example".to_string()),
@@ -14351,13 +23461,13 @@ mod tests {
         assert!(
             binding_error.1["error"]
                 .as_str()
-                .is_some_and(|message| message.contains("must not include binding")),
+                .is_some_and(|message| message.contains("provider-owned binding material")),
             "unexpected error payload: {}",
             binding_error.1
         );
 
         let mut kind_payload = base_python_publish_request("bad-mount-kind");
-        kind_payload.mounts = Some(vec![crate::execution::ExecutionMount {
+        kind_payload.mounts = Some(vec![froglet_protocol::publication::PublicationMount {
             kind: "filesystem".to_string(),
             handle: "workspace".to_string(),
             binding: None,
@@ -14375,7 +23485,7 @@ mod tests {
         );
 
         let mut handle_payload = base_python_publish_request("bad-mount-handle");
-        handle_payload.mounts = Some(vec![crate::execution::ExecutionMount {
+        handle_payload.mounts = Some(vec![froglet_protocol::publication::PublicationMount {
             kind: "sqlite".to_string(),
             handle: "Workspace".to_string(),
             binding: None,
@@ -14549,6 +23659,4275 @@ mod tests {
         assert_eq!(payload["error"], "missing provider-control authorization");
     }
 
+    fn verified_wasm_publication_request(
+        service_id: &str,
+        expected_output: Option<Value>,
+    ) -> Value {
+        json!({
+            "service_id": service_id,
+            "runtime": "wasm",
+            "package_kind": "inline_module",
+            "contract_version": WASM_RUN_JSON_ABI_V1,
+            "wasm_module_hex": VALID_WASM_HEX,
+            "price_sats": 0,
+            "settlement_method": "none",
+            "price_currency": "sat",
+            "publication_state": "active",
+            "verification": {
+                "input": null,
+                "expected_output": expected_output,
+            },
+        })
+    }
+
+    fn managed_operator_plan_for_test(
+        desired: &froglet_protocol::managed_deployment::ManagedDeploymentDesiredStateV1,
+        scope: froglet_protocol::managed_deployment::ManagedDeploymentApprovalScopeV1,
+        approval_byte: u8,
+    ) -> froglet_protocol::managed_deployment::ManagedDeploymentPlanV1 {
+        use froglet_protocol::managed_deployment::{
+            AdapterCapabilitiesV1, AdapterCapabilityV1, ApplicableDeploymentPlanV1,
+            ManagedDeploymentPlanV1, PlanActionV1, PlanApprovalHashV1, PlanStepV1,
+            RecurringCostDisclosureV1,
+        };
+        let action = match &scope {
+            froglet_protocol::managed_deployment::ManagedDeploymentApprovalScopeV1::Deploy => {
+                PlanActionV1::DeployRevision
+            }
+            froglet_protocol::managed_deployment::ManagedDeploymentApprovalScopeV1::Destroy {
+                ..
+            } => PlanActionV1::DestroyDeployment,
+            froglet_protocol::managed_deployment::ManagedDeploymentApprovalScopeV1::Provision => {
+                PlanActionV1::AcquireCompute
+            }
+            froglet_protocol::managed_deployment::ManagedDeploymentApprovalScopeV1::Rollback {
+                ..
+            } => PlanActionV1::DeployRevision,
+        };
+        ManagedDeploymentPlanV1::applicable(
+            desired,
+            AdapterCapabilitiesV1::new(
+                "ssh-oci",
+                [
+                    AdapterCapabilityV1::ImmutableOciImage,
+                    AdapterCapabilityV1::ResourceIntent,
+                    AdapterCapabilityV1::ContainerPorts,
+                    AdapterCapabilityV1::HttpHealthCheck,
+                    AdapterCapabilityV1::LogicalSecretReferences,
+                    AdapterCapabilityV1::PublicHttpsIngress,
+                    AdapterCapabilityV1::StructuredLogs,
+                    AdapterCapabilityV1::RevisionRollback,
+                    AdapterCapabilityV1::DeploymentDestroy,
+                ],
+            ),
+            ApplicableDeploymentPlanV1 {
+                steps: vec![PlanStepV1 {
+                    sequence: 1,
+                    action,
+                    summary: "test exact managed operation".to_string(),
+                }],
+                warnings: Vec::new(),
+                recurring_cost: RecurringCostDisclosureV1::default(),
+            },
+            Some((scope, PlanApprovalHashV1::from_bytes([approval_byte; 32]))),
+        )
+    }
+
+    fn managed_publication_plan_for_test(
+        provider_id: &str,
+        bundle: &ManagedPublicationBundleManifestV1,
+        revision: &SignedPublicationRevision,
+    ) -> ManagedPublicationPlanV1 {
+        use froglet_protocol::managed_deployment::{
+            DESIRED_STATE_SCHEMA_V1, DeploymentRevisionV1, DestroyConfirmationV1,
+            HttpHealthCheckV1, IngressIntentV1, IngressTransportV1, LifecycleIntentV1,
+            ManagedDeploymentApprovalScopeV1, ManagedDeploymentDesiredStateV1,
+            ObservabilityIntentV1, OciImageV1, PortIntentV1, PortProtocolV1, ResourceIntentV1,
+            WorkloadArchitectureV1,
+        };
+        use froglet_protocol::managed_publication::{
+            MANAGED_PUBLICATION_PACKAGE_SCHEMA_V1, MANAGED_PUBLICATION_PLAN_SCHEMA_V1,
+            MANAGED_PUBLICATION_RUNNER_CONTRACT_V1, ManagedPublicationContentVisibilityV1,
+            ManagedPublicationPackageV1, ManagedPublicationPlanPayloadV1,
+            managed_publication_operation_id,
+        };
+
+        let build_evidence = revision
+            .payload
+            .build_evidence
+            .as_ref()
+            .expect("managed revision build evidence");
+        let bundle_digest = bundle.bundle_manifest_digest().expect("bundle digest");
+        let release_bundle_digest = format!("sha256:{}", "a".repeat(64));
+        let image = OciImageV1 {
+            repository: "registry.example.test/private/froglet-managed-test".to_string(),
+            digest: format!("sha256:{}", "b".repeat(64)),
+        };
+        let desired = ManagedDeploymentDesiredStateV1 {
+            schema_version: DESIRED_STATE_SCHEMA_V1.to_string(),
+            deployment_id: format!("{}-managed", revision.payload.service_id),
+            revision: DeploymentRevisionV1 {
+                revision_id: bundle_digest.clone(),
+                release_bundle_digest: release_bundle_digest.clone(),
+                image: image.clone(),
+            },
+            environment: Default::default(),
+            secrets: Vec::new(),
+            resources: ResourceIntentV1 {
+                cpu_millis: 500,
+                memory_bytes: 512 * 1024 * 1024,
+                architecture: WorkloadArchitectureV1::Amd64,
+            },
+            ports: vec![PortIntentV1 {
+                name: "froglet".to_string(),
+                container_port: 8080,
+                protocol: PortProtocolV1::Tcp,
+            }],
+            persistent_volumes: Vec::new(),
+            health_check: HttpHealthCheckV1 {
+                port_name: "froglet".to_string(),
+                path: "/healthz".to_string(),
+                interval_seconds: 30,
+                timeout_seconds: 5,
+            },
+            ingress: Some(IngressIntentV1 {
+                port_name: "froglet".to_string(),
+                transport: IngressTransportV1::Https,
+                requested_hostname: Some("managed-import.example.test".to_string()),
+            }),
+            observability: ObservabilityIntentV1 {
+                structured_logs: true,
+            },
+            lifecycle: LifecycleIntentV1 {
+                rollback_required: true,
+            },
+        };
+        let package = ManagedPublicationPackageV1 {
+            schema_version: MANAGED_PUBLICATION_PACKAGE_SCHEMA_V1.to_string(),
+            source_package_digest: revision.payload.package_digest.clone(),
+            build_evidence_digest: crypto::sha256_hex(
+                canonical_json::to_vec(build_evidence).expect("canonical build evidence"),
+            ),
+            bundle_manifest_digest: bundle_digest,
+            release_bundle_digest,
+            base_runner_image: OciImageV1 {
+                repository: "registry.example.test/froglet-runner".to_string(),
+                digest: format!("sha256:{}", "c".repeat(64)),
+            },
+            image,
+            content_visibility: ManagedPublicationContentVisibilityV1::PrivateRegistryRequired,
+            runtime: revision.payload.runtime.clone(),
+            package_kind: revision.payload.package_kind.clone(),
+            builder_id: "froglet-managed-oci".to_string(),
+            builder_fingerprint: "d".repeat(64),
+            runner_contract: MANAGED_PUBLICATION_RUNNER_CONTRACT_V1.to_string(),
+        };
+        let operation_id =
+            managed_publication_operation_id(&ManagedPublicationOperationIdentityV1 {
+                service_id: &revision.payload.service_id,
+                provider_id,
+                publish_request_digest: &bundle.publish_request_digest,
+                source_package_digest: &revision.payload.package_digest,
+                base_runner_image: &package.base_runner_image,
+                release_bundle_digest: &package.release_bundle_digest,
+                output_repository: &package.image.repository,
+                target: "test-target",
+                profile: "test-profile",
+            })
+            .expect("operation id");
+        ManagedPublicationPlanV1::new(ManagedPublicationPlanPayloadV1 {
+            schema_version: MANAGED_PUBLICATION_PLAN_SCHEMA_V1.to_string(),
+            operation_id,
+            service_id: revision.payload.service_id.clone(),
+            target: "test-target".to_string(),
+            profile: "test-profile".to_string(),
+            expected_provider_id: provider_id.to_string(),
+            publish_request_digest: bundle.publish_request_digest.clone(),
+            package,
+            desired_state: desired.clone(),
+            provision_plan: None,
+            deploy_plan: managed_operator_plan_for_test(
+                &desired,
+                ManagedDeploymentApprovalScopeV1::Deploy,
+                3,
+            ),
+            compensation_plan: managed_operator_plan_for_test(
+                &desired,
+                ManagedDeploymentApprovalScopeV1::Destroy {
+                    confirmation: DestroyConfirmationV1 {
+                        deployment_id: desired.deployment_id.clone(),
+                        adapter_id: "ssh-oci".to_string(),
+                    },
+                },
+                4,
+            ),
+            public_url: "https://managed-import.example.test".to_string(),
+        })
+        .expect("managed publication plan")
+    }
+
+    fn native_data_publication_request(service_id: &str, source: &[u8]) -> Value {
+        json!({
+            "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+            "service_id": service_id,
+            "runtime": "builtin",
+            "package_kind": "builtin",
+            "data_source": {
+                "format": "json",
+                "content_base64": STANDARD.encode(source),
+            },
+            "price_sats": 0,
+            "settlement_method": "none",
+            "price_currency": "sat",
+            "publication_state": "active",
+            "verification": {
+                "input": {"op": "describe"},
+            },
+        })
+    }
+
+    async fn publication_precondition_through_api(
+        state: Arc<AppState>,
+        payload: Value,
+    ) -> PublicationPrecondition {
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/preflight",
+                Some("test-provider-control-token"),
+                Some(payload),
+            ))
+            .await
+            .expect("publication preflight response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        serde_json::from_value(payload).expect("typed publication precondition")
+    }
+
+    fn publication_request_with_precondition(
+        payload: Value,
+        precondition_token: &str,
+    ) -> Request<Body> {
+        let mut request = runtime_request(
+            Method::POST,
+            "/v1/provider/artifacts/publish",
+            Some("test-provider-control-token"),
+            Some(payload),
+        );
+        request.headers_mut().insert(
+            header::HeaderName::from_static(PUBLICATION_PRECONDITION_HEADER),
+            HeaderValue::from_str(precondition_token).expect("precondition header"),
+        );
+        request
+    }
+
+    fn private_validation_test_dir(prefix: &str) -> (PrivateRuntimeTempdir, PathBuf) {
+        let path = unique_temp_dir(prefix);
+        fs::create_dir(&path).expect("create private validation test directory");
+        let guard = PrivateRuntimeTempdir { path: path.clone() };
+        (guard, path)
+    }
+
+    #[test]
+    fn publication_preflight_native_tempdir_is_removed_on_success_and_error() {
+        let valid = PublicationDataSource {
+            format: PublicationDataFormat::Json,
+            content_base64: STANDARD.encode(br#"[{"id":1}]"#),
+            csv_schema: None,
+        };
+        let (success_guard, success_path) = private_validation_test_dir("preflight-temp-success");
+        let validated = validate_publication_data_source_with_tempdir(&valid, success_guard)
+            .expect("valid native source");
+        assert_eq!(validated.source_kind, "data_query.json");
+        assert!(
+            !success_path.exists(),
+            "successful validation must remove its private tempdir"
+        );
+
+        let invalid = PublicationDataSource {
+            format: PublicationDataFormat::Json,
+            content_base64: STANDARD.encode(b"not-json"),
+            csv_schema: None,
+        };
+        let (error_guard, error_path) = private_validation_test_dir("preflight-temp-error");
+        let error = validate_publication_data_source_with_tempdir(&invalid, error_guard)
+            .expect_err("invalid native source");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            !error_path.exists(),
+            "failed validation must remove its private tempdir"
+        );
+
+        let csv_without_schema = PublicationDataSource {
+            format: PublicationDataFormat::Csv,
+            content_base64: STANDARD.encode(b"id\n1\n"),
+            csv_schema: None,
+        };
+        let (csv_guard, csv_path) = private_validation_test_dir("preflight-temp-csv-schema");
+        let error = validate_publication_data_source_with_tempdir(&csv_without_schema, csv_guard)
+            .expect_err("CSV without a schema must fail without panicking");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1["error"], "CSV data_source requires csv_schema");
+        assert!(
+            !csv_path.exists(),
+            "failed CSV validation must remove its private tempdir"
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_preflight_rejects_invalid_packages_before_any_persistent_mutation() {
+        let state = test_app_state(PaymentBackend::None);
+        let invalid_wasm = json!({
+            "service_id": "preflight-invalid-wasm",
+            "runtime": "wasm",
+            "package_kind": "inline_module",
+            "contract_version": WASM_RUN_JSON_ABI_V1,
+            "wasm_module_hex": "00",
+            "price_sats": 0,
+            "settlement_method": "none",
+            "price_currency": "sat",
+            "publication_state": "active",
+            "verification": { "input": null },
+        });
+        let invalid_native = native_data_publication_request(
+            "preflight-invalid-native",
+            b"not a valid JSON snapshot",
+        );
+        let invalid_oci = json!({
+            "service_id": "preflight-invalid-oci",
+            "runtime": "container",
+            "package_kind": "oci_image",
+            "contract_version": CONTRACT_CONTAINER_JSON_V1,
+            "oci_reference": "registry.example/froglet/example:mutable",
+            "oci_digest": "not-a-digest",
+            "price_sats": 0,
+            "settlement_method": "none",
+            "price_currency": "sat",
+            "publication_state": "active",
+            "verification": { "input": {} },
+        });
+        let built_python = froglet_publish_engine::builder::build_python_inline(
+            &froglet_publish_engine::SourceLocator::Inline(
+                "def handler(event, context):\n    return event\n".to_string(),
+            ),
+            Some("handler"),
+        )
+        .await
+        .expect("locked Python fixture");
+        let mut mismatched_evidence = built_python.build_evidence;
+        mismatched_evidence.artifact_digest = "00".repeat(32);
+        let invalid_python = json!({
+            "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+            "service_id": "preflight-invalid-python",
+            "runtime": "python",
+            "package_kind": "inline_source",
+            "entrypoint_kind": "handler",
+            "entrypoint": "handler",
+            "contract_version": CONTRACT_PYTHON_HANDLER_JSON_V1,
+            "python_bundle": built_python.python_bundle.expect("locked Python bundle"),
+            "build_evidence": mismatched_evidence,
+            "price_sats": 0,
+            "settlement_method": "none",
+            "price_currency": "sat",
+            "publication_state": "active",
+            "verification": { "input": {} },
+        });
+
+        for (service_id, payload) in [
+            ("preflight-invalid-wasm", invalid_wasm),
+            ("preflight-invalid-native", invalid_native),
+            ("preflight-invalid-oci", invalid_oci),
+            ("preflight-invalid-python", invalid_python),
+        ] {
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/artifacts/preflight",
+                    Some("test-provider-control-token"),
+                    Some(payload),
+                ))
+                .await
+                .expect("invalid publication preflight response");
+            let (status, body): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{service_id}: {body}");
+            assert!(
+                state
+                    .db
+                    .with_read_conn({
+                        let service_id = service_id.to_string();
+                        move |conn| db::get_publication_lifecycle(conn, &service_id)
+                    })
+                    .await
+                    .expect("lifecycle lookup")
+                    .is_none(),
+                "invalid preflight persisted lifecycle state for {service_id}"
+            );
+        }
+        assert!(
+            !state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .exists(),
+            "invalid preflight must not create the publication data directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_preflight_and_publish_persist_the_same_definition() {
+        let state = test_app_state(PaymentBackend::None);
+        let service_id = "preflight-definition-parity";
+        let payload = verified_wasm_publication_request(service_id, Some(json!(42)));
+        let typed: ProviderControlPublishArtifactRequest =
+            serde_json::from_value(payload.clone()).expect("typed publication request");
+        let resolved = resolve_publication_approval(state.as_ref(), &typed)
+            .expect("resolved publication approval");
+        let expected_definition =
+            serde_json::to_value(&resolved.candidate.definition).expect("definition JSON");
+        assert_eq!(
+            resolved.precondition.resolved_limits,
+            ResolvedPublicationLimits {
+                max_input_bytes: resolved.candidate.definition.max_input_bytes,
+                max_runtime_ms: resolved.candidate.definition.max_runtime_ms,
+                max_memory_bytes: resolved.candidate.definition.max_memory_bytes,
+                max_output_bytes: resolved.candidate.definition.max_output_bytes,
+                fuel_limit: resolved.candidate.definition.fuel_limit,
+            }
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(publication_request_with_precondition(
+                payload,
+                &resolved.precondition.precondition_token,
+            ))
+            .await
+            .expect("approved publication response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+
+        let stored_definition = state
+            .db
+            .with_read_conn(move |conn| {
+                let lifecycle = db::get_publication_lifecycle(conn, service_id)?
+                    .ok_or_else(|| "publication lifecycle missing".to_string())?;
+                db::get_publication_revision(conn, service_id, &lifecycle.selected_revision_hash)?
+                    .map(|revision| revision.definition)
+                    .ok_or_else(|| "publication revision missing".to_string())
+            })
+            .await
+            .expect("stored publication definition");
+        assert_eq!(stored_definition, expected_definition);
+    }
+
+    #[test]
+    fn publication_preflight_artifact_path_byte_drift_changes_the_opaque_token() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let root = unique_temp_dir("preflight-artifact-drift");
+        fs::create_dir(&root).expect("artifact root");
+        let artifact = root.join("service.wasm");
+        let first_bytes = hex::decode(VALID_WASM_HEX).expect("valid Wasm fixture");
+        fs::write(&artifact, &first_bytes).expect("first Wasm artifact");
+        set_provider_artifact_root(&mut state, root.clone());
+        let mut payload: ProviderControlPublishArtifactRequest = serde_json::from_value(
+            verified_wasm_publication_request("preflight-artifact-drift", Some(json!(42))),
+        )
+        .expect("typed publication request");
+        payload.wasm_module_hex = None;
+        payload.artifact_path = Some(artifact.display().to_string());
+
+        let first = resolve_publication_approval(state.as_ref(), &payload)
+            .expect("first publication approval");
+        let mut second_bytes = first_bytes;
+        *second_bytes.last_mut().expect("Wasm data byte") = b'3';
+        fs::write(&artifact, second_bytes).expect("changed valid Wasm artifact");
+        let second = resolve_publication_approval(state.as_ref(), &payload)
+            .expect("second publication approval");
+
+        assert_eq!(
+            first.precondition.intent_digest,
+            second.precondition.intent_digest
+        );
+        assert_ne!(
+            first.precondition.configuration_token,
+            second.precondition.configuration_token
+        );
+        assert_ne!(
+            first.precondition.precondition_token,
+            second.precondition.precondition_token
+        );
+        assert_ne!(
+            first.candidate.definition.module_hash,
+            second.candidate.definition.module_hash
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HeaderName::from_static(PUBLICATION_PRECONDITION_HEADER),
+            HeaderValue::from_str(&first.precondition.precondition_token)
+                .expect("precondition header"),
+        );
+        let error = validate_approved_publication_precondition(state.as_ref(), &headers, &payload)
+            .expect_err("stale artifact approval");
+        assert_eq!(error.0, StatusCode::PRECONDITION_FAILED);
+
+        fs::remove_dir_all(root).expect("remove artifact root");
+    }
+
+    #[tokio::test]
+    async fn publication_preflight_is_read_only_and_resolves_omitted_limits() {
+        let state = test_app_state(PaymentBackend::None);
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let payload = native_data_publication_request("preflight-data", source);
+        let precondition = publication_precondition_through_api(state.clone(), payload).await;
+
+        precondition.validate().expect("valid precondition token");
+        assert_eq!(precondition.provider_id, state.identity.node_id());
+        assert_eq!(precondition.resolved_limits.max_input_bytes, MAX_BODY_BYTES);
+        assert_eq!(precondition.resolved_limits.max_runtime_ms, 5_000);
+        assert_eq!(precondition.resolved_limits.max_memory_bytes, 0);
+        assert_eq!(
+            precondition.resolved_limits.max_output_bytes,
+            MAX_BODY_BYTES
+        );
+        assert_eq!(precondition.resolved_limits.fuel_limit, 0);
+        assert_eq!(
+            precondition.identity_backup.state,
+            PublicationIdentityBackupState::Missing
+        );
+        assert!(precondition.identity_backup.backup_sha256.is_none());
+        assert!(
+            !state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .exists(),
+            "read-only preflight must not create the publication data directory"
+        );
+        assert!(
+            state
+                .db
+                .with_read_conn(|conn| db::get_publication_lifecycle(conn, "preflight-data"))
+                .await
+                .expect("lifecycle lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_backup_digest_drift_invalidates_approval_before_publication_mutation() {
+        let state = test_app_state(PaymentBackend::None);
+        let identity_paths = crate::identity_custody::IdentityPaths::from(&state.config);
+        let backup_path = state
+            .config
+            .storage
+            .data_dir
+            .join("identities.froglet-backup");
+        let recovery_key_path = state.config.storage.data_dir.join("identity.recovery-key");
+        let adapter = crate::identity_custody::RecoveryKeyFileAdapter::create(&recovery_key_path)
+            .expect("recovery key");
+        let report = crate::identity_custody::create_backup(
+            &identity_paths,
+            &backup_path,
+            &adapter,
+            Some(recovery_key_path),
+        )
+        .expect("identity backup");
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let content_hash = crypto::sha256_hex(source);
+        let payload = native_data_publication_request("backup-drift-data", source);
+        let precondition =
+            publication_precondition_through_api(state.clone(), payload.clone()).await;
+        assert_eq!(
+            precondition.identity_backup.state,
+            PublicationIdentityBackupState::Current
+        );
+        assert_eq!(
+            precondition.identity_backup.backup_sha256.as_deref(),
+            Some(report.backup_sha256.as_str())
+        );
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&backup_path)
+            .and_then(|mut file| file.write_all(b"\n"))
+            .expect("tamper backup bytes");
+        let response = public_router(state.clone())
+            .oneshot(publication_request_with_precondition(
+                payload,
+                &precondition.precondition_token,
+            ))
+            .await
+            .expect("backup-drift publication response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert_eq!(body["identity_backup"]["state"], "backup_digest_mismatch");
+        assert!(
+            !state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .join(format!("{content_hash}.json"))
+                .exists(),
+            "backup drift must fail before snapshot staging"
+        );
+        assert!(
+            state
+                .db
+                .with_read_conn(|conn| { db::get_publication_lifecycle(conn, "backup-drift-data") })
+                .await
+                .expect("lifecycle lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_drift_fails_before_native_data_staging_or_revision_persistence() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let content_hash = crypto::sha256_hex(source);
+        let payload = native_data_publication_request("config-drift-data", source);
+        let precondition =
+            publication_precondition_through_api(state.clone(), payload.clone()).await;
+
+        Arc::get_mut(&mut state)
+            .expect("preflight router released its state")
+            .config
+            .execution_timeout_secs = 4;
+        let response = public_router(state.clone())
+            .oneshot(publication_request_with_precondition(
+                payload,
+                &precondition.precondition_token,
+            ))
+            .await
+            .expect("drifted publication response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert_eq!(body["resolved_limits"]["max_runtime_ms"], 4_000);
+        assert!(
+            !state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .join(format!("{content_hash}.json"))
+                .exists(),
+            "configuration drift must fail before snapshot staging"
+        );
+        assert!(
+            state
+                .db
+                .with_read_conn(|conn| { db::get_publication_lifecycle(conn, "config-drift-data") })
+                .await
+                .expect("lifecycle lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn lightning_mode_drift_fails_before_staging_or_artifact_insertion() {
+        let mut state =
+            test_app_state_with_lightning_mode(PaymentBackend::Lightning, LightningMode::LndRest);
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let content_hash = crypto::sha256_hex(source);
+        let mut payload = native_data_publication_request("settlement-drift-data", source);
+        payload["price_sats"] = json!(3);
+        payload["settlement_method"] = json!("lightning");
+        let precondition =
+            publication_precondition_through_api(state.clone(), payload.clone()).await;
+
+        Arc::get_mut(&mut state)
+            .expect("preflight router released its state")
+            .config
+            .lightning
+            .mode = LightningMode::Phoenixd;
+        let response = public_router(state.clone())
+            .oneshot(publication_request_with_precondition(
+                payload,
+                &precondition.precondition_token,
+            ))
+            .await
+            .expect("settlement-drift publication response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert!(
+            !state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .join(format!("{content_hash}.json"))
+                .exists(),
+            "settlement drift must fail before snapshot staging"
+        );
+        state
+            .db
+            .with_read_conn(|conn| {
+                let candidate_artifacts: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM artifact_documents
+                         WHERE artifact_kind IN (?1, ?2)",
+                        rusqlite::params![ARTIFACT_KIND_DESCRIPTOR, ARTIFACT_KIND_OFFER],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if candidate_artifacts != 0 {
+                    return Err(format!(
+                        "settlement drift inserted {candidate_artifacts} candidate artifacts"
+                    ));
+                }
+                if db::get_publication_lifecycle(conn, "settlement-drift-data")?.is_some() {
+                    return Err("settlement drift inserted a lifecycle".to_string());
+                }
+                Ok(())
+            })
+            .await
+            .expect("no settlement-drift persistence");
+    }
+
+    #[tokio::test]
+    async fn provider_identity_drift_fails_before_native_data_staging_or_revision_persistence() {
+        let planning_state = test_app_state(PaymentBackend::None);
+        let publishing_state = test_app_state(PaymentBackend::None);
+        assert_ne!(
+            planning_state.identity.node_id(),
+            publishing_state.identity.node_id(),
+            "test states require distinct provider identities"
+        );
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let content_hash = crypto::sha256_hex(source);
+        let payload = native_data_publication_request("identity-drift-data", source);
+        let precondition =
+            publication_precondition_through_api(planning_state, payload.clone()).await;
+
+        let response = public_router(publishing_state.clone())
+            .oneshot(publication_request_with_precondition(
+                payload,
+                &precondition.precondition_token,
+            ))
+            .await
+            .expect("identity-drift publication response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert!(
+            !publishing_state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .join(format!("{content_hash}.json"))
+                .exists(),
+            "identity drift must fail before snapshot staging"
+        );
+        assert!(
+            publishing_state
+                .db
+                .with_read_conn(|conn| {
+                    db::get_publication_lifecycle(conn, "identity-drift-data")
+                })
+                .await
+                .expect("lifecycle lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publish_executes_private_fixture_before_persisting() {
+        let state = test_app_state(PaymentBackend::None);
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(verified_wasm_publication_request(
+                    "verified-wasm",
+                    Some(json!(42)),
+                )),
+            ))
+            .await
+            .expect("provider-control publish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        assert_eq!(
+            payload["evidence"]["local_verification"]["result_hash"],
+            canonical_result_hash(&json!(42))
+        );
+        assert_eq!(
+            payload["evidence"]["local_verification"]["expected_output_matched"],
+            true
+        );
+        assert!(payload["evidence"]["offer_hash"].is_string());
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(payload["evidence"]["publication_revision"].clone())
+                .expect("typed publication revision");
+        revision.verify().expect("signed publication revision");
+        assert_eq!(
+            revision.payload.offer_hash,
+            payload["evidence"]["offer_hash"]
+        );
+        assert_eq!(payload["evidence"]["lifecycle_status"], "active");
+        assert_eq!(revision.payload.service_id, "verified-wasm");
+        assert_eq!(
+            revision.payload.binding_hash,
+            revision.payload.package_digest
+        );
+        assert_eq!(revision.payload.price.currency, PublicationCurrency::Sat);
+        let build_evidence = revision
+            .payload
+            .build_evidence
+            .as_ref()
+            .expect("every new revision carries build evidence");
+        assert_eq!(build_evidence.builder, "froglet.provider-import");
+        assert_eq!(
+            build_evidence.artifact_digest,
+            revision.payload.package_digest
+        );
+        assert!(
+            provider_control_offer_record(state.as_ref(), "verified-wasm", true)
+                .await
+                .expect("offer lookup")
+                .is_some()
+        );
+        let revision_hash = revision.revision_hash.clone();
+        let lifecycle = state
+            .db
+            .with_read_conn(move |conn| db::get_publication_lifecycle(conn, "verified-wasm"))
+            .await
+            .expect("lifecycle lookup")
+            .expect("persisted lifecycle");
+        assert_eq!(lifecycle.status, "active");
+        assert_eq!(
+            lifecycle.active_revision_hash.as_deref(),
+            Some(revision_hash.as_str())
+        );
+        assert_eq!(lifecycle.revision_count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_registration_resume_is_exact_and_timestamp_idempotent() {
+        let existing = ManagedPublicationRegistrationV1 {
+            marketplace_url: "https://marketplace.example.test".to_string(),
+            status: "pending_review".to_string(),
+            provider_id: "1".repeat(64),
+            validated_offer_hash: "2".repeat(64),
+            validated_revision_hash: "3".repeat(64),
+            registered_at_epoch_seconds: 10,
+        };
+        let mut same = existing.clone();
+        same.registered_at_epoch_seconds = 20;
+        assert_eq!(
+            managed_registration_resume(&existing, &same),
+            Some(ManagedRegistrationResume::Idempotent)
+        );
+        let mut active = same;
+        active.status = "active".to_string();
+        assert_eq!(
+            managed_registration_resume(&existing, &active),
+            Some(ManagedRegistrationResume::PendingToActive)
+        );
+        active.validated_offer_hash = "4".repeat(64);
+        assert_eq!(managed_registration_resume(&existing, &active), None);
+    }
+
+    #[tokio::test]
+    async fn managed_planner_uses_private_target_registry_and_shared_operator_contract() {
+        use froglet_protocol::managed_deployment::{
+            DeploymentEndpointV1, DeploymentHealthStatusV1, DeploymentHealthV1,
+            EndpointTransportV1, HttpHealthCheckV1, IngressIntentV1, IngressTransportV1,
+            LifecycleIntentV1, LogicalSecretReferenceV1, ManagedDeploymentOperationStatusV1,
+            ManagedDeploymentOperationV1, ManagedDeploymentResultV1, ObservabilityIntentV1,
+            OciImageV1, PortIntentV1, PortProtocolV1, ResourceIntentV1, WorkloadArchitectureV1,
+        };
+        use froglet_protocol::managed_publication::{
+            MANAGED_PUBLICATION_PACKAGE_SCHEMA_V1, MANAGED_PUBLICATION_RUNNER_CONTRACT_V1,
+            ManagedPublicationContentVisibilityV1, ManagedPublicationPackageV1,
+        };
+        use froglet_protocol::publication::{
+            PUBLICATION_BUILD_EVIDENCE_SCHEMA_V1, PUBLICATION_INTENT_SCHEMA_V1,
+            PublicationBuildEvidence, PublicationIntent,
+        };
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::PermissionsExt;
+
+        let state = test_app_state(PaymentBackend::None);
+        let module_digest = crypto::sha256_hex(hex::decode(VALID_WASM_HEX).unwrap());
+        let build_evidence = PublicationBuildEvidence {
+            schema_version: PUBLICATION_BUILD_EVIDENCE_SCHEMA_V1.to_string(),
+            builder: "froglet-test-wat".to_string(),
+            builder_version: "1".to_string(),
+            source_digest: module_digest.clone(),
+            artifact_digest: module_digest.clone(),
+            dependency_mode: "none".to_string(),
+            components: Vec::new(),
+            hermetic: true,
+        };
+        let mut intent: PublicationIntent = serde_json::from_value(
+            verified_wasm_publication_request("managed-plan-wasm", Some(json!(42))),
+        )
+        .unwrap();
+        intent.schema_version = Some(PUBLICATION_INTENT_SCHEMA_V1.to_string());
+        intent.build_evidence = Some(build_evidence.clone());
+        let bundle = ManagedPublicationBundleManifestV1::from_intent(&intent).unwrap();
+        let base_runner_image = OciImageV1 {
+            repository: "registry.example.test/froglet-runner".to_string(),
+            digest: format!("sha256:{}", "1".repeat(64)),
+        };
+        let release_bundle_digest = format!("sha256:{}", "2".repeat(64));
+        let package = ManagedPublicationPackageV1 {
+            schema_version: MANAGED_PUBLICATION_PACKAGE_SCHEMA_V1.to_string(),
+            source_package_digest: module_digest,
+            build_evidence_digest: crypto::sha256_hex(
+                canonical_json::to_vec(&build_evidence).unwrap(),
+            ),
+            bundle_manifest_digest: bundle.bundle_manifest_digest().unwrap(),
+            release_bundle_digest: release_bundle_digest.clone(),
+            base_runner_image: base_runner_image.clone(),
+            image: OciImageV1 {
+                repository: "registry.example.test/private/managed-plan-wasm".to_string(),
+                digest: format!("sha256:{}", "3".repeat(64)),
+            },
+            content_visibility: ManagedPublicationContentVisibilityV1::PrivateRegistryRequired,
+            runtime: "wasm".to_string(),
+            package_kind: "inline_module".to_string(),
+            builder_id: "froglet-managed-oci".to_string(),
+            builder_fingerprint: "4".repeat(64),
+            runner_contract: MANAGED_PUBLICATION_RUNNER_CONTRACT_V1.to_string(),
+        };
+        let template = crate::managed_publication::ManagedDeploymentTemplateV1 {
+            deployment_id: "managed-plan-wasm".to_string(),
+            environment: BTreeMap::from([
+                (
+                    crate::managed_publication::MANAGED_BUNDLE_PATH_ENV.to_string(),
+                    crate::managed_publication::MANAGED_BUNDLE_CONTAINER_PATH.to_string(),
+                ),
+                (
+                    crate::managed_publication::MANAGED_PUBLIC_BASE_URL_ENV.to_string(),
+                    "https://managed-plan.invalid".to_string(),
+                ),
+            ]),
+            secrets: vec![
+                LogicalSecretReferenceV1 {
+                    environment_name: crate::managed_publication::MANAGED_IDENTITY_SEED_ENV
+                        .to_string(),
+                    reference: "secret://froglet/provider/identity".to_string(),
+                },
+                LogicalSecretReferenceV1 {
+                    environment_name: crate::managed_publication::MANAGED_CAPSULE_ENV.to_string(),
+                    reference: "secret://froglet/managed/capsule".to_string(),
+                },
+                LogicalSecretReferenceV1 {
+                    environment_name: crate::identity::NOSTR_PUBLICATION_IDENTITY_SEED_ENV
+                        .to_string(),
+                    reference: "secret://froglet/provider/nostr-publication-identity".to_string(),
+                },
+            ],
+            resources: ResourceIntentV1 {
+                cpu_millis: 500,
+                memory_bytes: 512 * 1024 * 1024,
+                architecture: WorkloadArchitectureV1::Amd64,
+            },
+            ports: vec![PortIntentV1 {
+                name: "froglet".to_string(),
+                container_port: 8080,
+                protocol: PortProtocolV1::Tcp,
+            }],
+            persistent_volumes: Vec::new(),
+            health_check: HttpHealthCheckV1 {
+                port_name: "froglet".to_string(),
+                path: "/healthz".to_string(),
+                interval_seconds: 30,
+                timeout_seconds: 5,
+            },
+            ingress: Some(IngressIntentV1 {
+                port_name: "froglet".to_string(),
+                transport: IngressTransportV1::Https,
+                requested_hostname: Some("managed-plan.example.test".to_string()),
+            }),
+            observability: ObservabilityIntentV1 {
+                structured_logs: true,
+            },
+            lifecycle: LifecycleIntentV1 {
+                rollback_required: true,
+            },
+        };
+        let desired = template.desired_state(&package);
+        let deploy_plan =
+            managed_operator_plan_for_test(&desired, ManagedDeploymentApprovalScopeV1::Deploy, 9);
+        let destroy_plan = managed_operator_plan_for_test(
+            &desired,
+            ManagedDeploymentApprovalScopeV1::Destroy {
+                confirmation: DestroyConfirmationV1 {
+                    deployment_id: desired.deployment_id.clone(),
+                    adapter_id: deploy_plan.adapter.adapter_id.clone(),
+                },
+            },
+            10,
+        );
+        let mut deploy_result = ManagedDeploymentResultV1::new(
+            ManagedDeploymentOperationV1::Deploy,
+            desired.deployment_id.clone(),
+            desired.revision.revision_id.clone(),
+            deploy_plan.adapter.adapter_id.clone(),
+            ManagedDeploymentOperationStatusV1::Succeeded,
+            vec![desired.revision.image.clone()],
+            DeploymentHealthV1 {
+                status: DeploymentHealthStatusV1::Healthy,
+                checked_url: Some("https://managed-plan.invalid/healthz".to_string()),
+                detail: None,
+            },
+            1_720_000_000,
+        );
+        deploy_result.endpoints.push(DeploymentEndpointV1 {
+            name: "public".to_string(),
+            url: "https://managed-plan.invalid".to_string(),
+            transport: EndpointTransportV1::Https,
+        });
+        let destroy_result = ManagedDeploymentResultV1::new(
+            ManagedDeploymentOperationV1::Destroy,
+            desired.deployment_id.clone(),
+            desired.revision.revision_id.clone(),
+            deploy_plan.adapter.adapter_id.clone(),
+            ManagedDeploymentOperationStatusV1::Succeeded,
+            Vec::new(),
+            DeploymentHealthV1 {
+                status: DeploymentHealthStatusV1::Unknown,
+                checked_url: None,
+                detail: None,
+            },
+            1_720_000_001,
+        );
+
+        let directory = unique_temp_dir("managed-target-registry");
+        std::fs::create_dir_all(&directory).unwrap();
+        let deploy_plan_path = directory.join("deploy-plan.json");
+        let destroy_plan_path = directory.join("destroy-plan.json");
+        let deploy_result_path = directory.join("deploy-result.json");
+        let destroy_result_path = directory.join("destroy-result.json");
+        std::fs::write(&deploy_plan_path, serde_json::to_vec(&deploy_plan).unwrap()).unwrap();
+        std::fs::write(
+            &destroy_plan_path,
+            serde_json::to_vec(&destroy_plan).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &deploy_result_path,
+            serde_json::to_vec(&deploy_result).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &destroy_result_path,
+            serde_json::to_vec(&destroy_result).unwrap(),
+        )
+        .unwrap();
+        let operator_path = directory.join("fake-operator.sh");
+        std::fs::write(
+            &operator_path,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncase \"$1\" in\n  plan) case \"$3\" in deploy) cat '{}' ;; destroy) cat '{}' ;; *) exit 2 ;; esac ;;\n  deploy) [ -n \"$FROGLET_TEST_CAPSULE_SOURCE\" ] || exit 3; cat '{}' ;;\n  destroy) cat '{}' ;;\n  *) exit 2 ;;\nesac\n",
+                deploy_plan_path.display(),
+                destroy_plan_path.display(),
+                deploy_result_path.display(),
+                destroy_result_path.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&operator_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter_config_path = directory.join("adapter.json");
+        let base_manifest_path = directory.join("base-manifest.json");
+        let base_config_path = directory.join("base-config.json");
+        for path in [&adapter_config_path, &base_manifest_path, &base_config_path] {
+            std::fs::write(path, b"{}").unwrap();
+        }
+        let registry_path = directory.join("targets.json");
+        let registry = crate::managed_publication::ManagedTargetRegistryV1 {
+            schema_version: crate::managed_publication::MANAGED_TARGET_REGISTRY_SCHEMA_V1
+                .to_string(),
+            targets: BTreeMap::from([(
+                "portable-host".to_string(),
+                BTreeMap::from([(
+                    "small".to_string(),
+                    crate::managed_publication::ManagedTargetProfileV1 {
+                        operator_binary: operator_path,
+                        adapter: "ssh-oci".to_string(),
+                        adapter_config_path,
+                        output_repository: package.image.repository.clone(),
+                        base_runner_image,
+                        release_bundle_digest,
+                        base_manifest_path,
+                        base_config_path,
+                        public_url: "https://managed-plan.invalid".to_string(),
+                        provision: false,
+                        deployment: template,
+                        capsule_source_environment: "FROGLET_TEST_CAPSULE_SOURCE".to_string(),
+                        registry_auth: crate::managed_publication::ManagedRegistryAuthV1::Anonymous,
+                        registry_insecure_http: false,
+                    },
+                )]),
+            )]),
+        };
+        std::fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+
+        let _environment_guard = TEST_ENV_LOCK.lock().await;
+        let _registry_env = ScopedEnvVar::set(
+            crate::managed_publication::MANAGED_TARGET_REGISTRY_ENV,
+            registry_path.to_str().unwrap(),
+        );
+        let plan = plan_managed_publication_blocking(
+            state.identity.node_id().to_string(),
+            state.identity.nostr_publication_created_at(),
+            ManagedPublicationPlanRequest {
+                bundle: bundle.clone(),
+                package: package.clone(),
+                target: "portable-host".to_string(),
+                profile: "small".to_string(),
+            },
+        )
+        .expect("provider-neutral managed plan through external operator");
+        plan.validate().expect("exact Managed Publication plan");
+        assert_eq!(plan.payload.deploy_plan, deploy_plan);
+        assert_eq!(plan.payload.compensation_plan, destroy_plan);
+        assert_eq!(
+            plan.payload.deploy_plan.adapter.adapter_id, "ssh-oci",
+            "provider-native details stay behind the selected adapter"
+        );
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/managed-publications/prepare",
+                Some("test-provider-control-token"),
+                Some(json!({ "plan": plan, "consent_hash": "5".repeat(64) })),
+            ))
+            .await
+            .unwrap();
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["operation"]["phase"], "planned");
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(serde_json::to_value(&intent).unwrap()),
+            ))
+            .await
+            .unwrap();
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(body["evidence"]["publication_revision"].clone()).unwrap();
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/managed-publications/capsule",
+                Some("test-provider-control-token"),
+                Some(json!({
+                    "plan": plan,
+                    "consent_hash": "5".repeat(64),
+                    "revision_hash": revision.revision_hash,
+                })),
+            ))
+            .await
+            .unwrap();
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let capsule: ManagedPublicationCapsuleV1 = serde_json::from_value(body).unwrap();
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/managed-publications/activate",
+                Some("test-provider-control-token"),
+                Some(json!({ "bundle": bundle, "capsule": capsule })),
+            ))
+            .await
+            .unwrap();
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert_eq!(body["operation"]["operation"]["phase"], "compensated");
+        assert_eq!(
+            body["operation"]["operation"]["deploy_result"]["operation"],
+            "deploy"
+        );
+        assert_eq!(
+            body["operation"]["operation"]["compensation_result"]["operation"],
+            "destroy"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_publication_import_reproduces_exact_revision_on_same_identity_node() {
+        use froglet_protocol::managed_publication::ManagedPublicationBundleManifestV1;
+        use froglet_protocol::publication::{
+            PUBLICATION_BUILD_EVIDENCE_SCHEMA_V1, PUBLICATION_CANARY_REQUEST_SCHEMA_V1,
+            PUBLICATION_INTENT_SCHEMA_V1, PublicationBuildEvidence, PublicationIntent,
+        };
+
+        let source_state = test_app_state(PaymentBackend::None);
+        let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm hex");
+        let package_digest = crypto::sha256_hex(&module_bytes);
+        let mut intent: PublicationIntent = serde_json::from_value(
+            verified_wasm_publication_request("managed-import-wasm", Some(json!(42))),
+        )
+        .expect("typed managed intent");
+        intent.schema_version = Some(PUBLICATION_INTENT_SCHEMA_V1.to_string());
+        intent.build_evidence = Some(PublicationBuildEvidence {
+            schema_version: PUBLICATION_BUILD_EVIDENCE_SCHEMA_V1.to_string(),
+            builder: "froglet-test-wat".to_string(),
+            builder_version: "1".to_string(),
+            source_digest: package_digest.clone(),
+            artifact_digest: package_digest,
+            dependency_mode: "none".to_string(),
+            components: Vec::new(),
+            hermetic: true,
+        });
+        let bundle = ManagedPublicationBundleManifestV1::from_intent(&intent)
+            .expect("managed runtime bundle");
+
+        let response = public_router(source_state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(serde_json::to_value(&intent).expect("publish intent JSON")),
+            ))
+            .await
+            .expect("authoring publication response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {body}");
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(body["evidence"]["publication_revision"].clone())
+                .expect("authoring signed revision");
+        let plan =
+            managed_publication_plan_for_test(source_state.identity.node_id(), &bundle, &revision);
+        let consent_hash = "e".repeat(64);
+        let response = public_router(source_state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/managed-publications/capsule",
+                Some("test-provider-control-token"),
+                Some(json!({
+                    "plan": plan,
+                    "consent_hash": consent_hash,
+                    "revision_hash": revision.revision_hash,
+                })),
+            ))
+            .await
+            .expect("managed capsule response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected capsule response: {body}"
+        );
+        let capsule: ManagedPublicationCapsuleV1 =
+            serde_json::from_value(body).expect("typed managed capsule");
+        capsule.validate().expect("valid managed capsule");
+        assert_eq!(capsule.source_revision_hash, revision.revision_hash);
+        assert_ne!(
+            capsule.revision.revision_hash, revision.revision_hash,
+            "managed endpoint binding must derive a distinct signed Revision"
+        );
+        let managed_revision = capsule.revision.clone();
+
+        let durable_plan = plan.clone();
+        let durable_consent = consent_hash.clone();
+        let planned = source_state
+            .db
+            .with_write_conn(move |conn| {
+                crate::managed_publication::create_planned(
+                    conn,
+                    &durable_plan,
+                    &durable_consent,
+                    100,
+                )
+            })
+            .await
+            .expect("durably create managed operation");
+        assert_eq!(planned.state_version, 1);
+        assert_eq!(
+            planned.operation.phase,
+            froglet_protocol::managed_publication::ManagedPublicationPhaseV1::Planned
+        );
+        let operation_id = planned.operation.operation_id.clone();
+        let durable_capsule = capsule.clone();
+        let local_revision_ready = source_state
+            .db
+            .with_write_conn(move |conn| {
+                crate::managed_publication::attach_capsule(
+                    conn,
+                    &operation_id,
+                    1,
+                    &durable_capsule,
+                    101,
+                )
+            })
+            .await
+            .expect("durably attach managed capsule");
+        assert_eq!(local_revision_ready.state_version, 2);
+        assert_eq!(
+            local_revision_ready.operation.phase,
+            froglet_protocol::managed_publication::ManagedPublicationPhaseV1::LocalRevisionReady
+        );
+        let mut deploying = local_revision_ready.operation.clone();
+        deploying.attempt_count = 1;
+        deploying
+            .transition(
+                froglet_protocol::managed_publication::ManagedPublicationPhaseV1::Deploying,
+                102,
+            )
+            .expect("valid durable deploying transition");
+        let operation_id = deploying.operation_id.clone();
+        let deploying_for_store = deploying.clone();
+        let deploying_record = source_state
+            .db
+            .with_write_conn(move |conn| {
+                crate::managed_publication::update_operation(
+                    conn,
+                    &operation_id,
+                    2,
+                    &deploying_for_store,
+                )
+            })
+            .await
+            .expect("durably record deploying phase");
+        assert_eq!(deploying_record.state_version, 3);
+        let stale_operation_id = deploying.operation_id.clone();
+        let stale = source_state
+            .db
+            .with_write_conn(move |conn| {
+                crate::managed_publication::update_operation(
+                    conn,
+                    &stale_operation_id,
+                    2,
+                    &deploying,
+                )
+            })
+            .await
+            .expect_err("stale durable transition must fail");
+        assert!(stale.contains("state version mismatch"), "{stale}");
+        let recoverable = source_state
+            .db
+            .with_read_conn(crate::managed_publication::list_recoverable)
+            .await
+            .expect("recoverable managed operations");
+        assert!(recoverable.iter().any(|record| {
+            record.operation.operation_id == deploying_record.operation.operation_id
+                && record.operation.phase
+                    == froglet_protocol::managed_publication::ManagedPublicationPhaseV1::Deploying
+        }));
+        let recovered = source_state
+            .db
+            .with_write_conn(|conn| crate::managed_publication::recover_interrupted(conn, 103))
+            .await
+            .expect("crash-interrupted managed operation recovery");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(
+            recovered[0].operation.phase,
+            froglet_protocol::managed_publication::ManagedPublicationPhaseV1::ReconciliationRequired
+        );
+        assert_eq!(recovered[0].state_version, 4);
+
+        let wrong_identity_state = test_app_state(PaymentBackend::None);
+        let response = public_router(wrong_identity_state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/managed-publications/import",
+                Some("test-provider-control-token"),
+                Some(json!({ "bundle": bundle, "capsule": capsule })),
+            ))
+            .await
+            .expect("wrong-identity import response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert!(
+            wrong_identity_state
+                .db
+                .with_read_conn(|conn| {
+                    db::get_publication_lifecycle(conn, "managed-import-wasm")
+                })
+                .await
+                .expect("wrong identity lifecycle lookup")
+                .is_none(),
+            "identity mismatch must fail before persistence"
+        );
+
+        let mut target_state = test_app_state(PaymentBackend::None);
+        let managed_public_url = capsule.plan.payload.public_url.clone();
+        std::fs::copy(
+            &source_state.config.storage.identity_seed_path,
+            &target_state.config.storage.identity_seed_path,
+        )
+        .expect("copy exact Provider identity seed into managed target");
+        std::fs::remove_file(&target_state.config.storage.nostr_publication_seed_path)
+            .expect("remove generated target Nostr publication identity");
+        let nostr_seed =
+            std::fs::read_to_string(&source_state.config.storage.nostr_publication_seed_path)
+                .expect("read source Nostr publication seed");
+        let nostr_created_at = source_state
+            .identity
+            .nostr_publication_created_at()
+            .to_string();
+        let target_identity = {
+            let _identity_env_guard = crate::identity::IDENTITY_ENV_LOCK
+                .lock()
+                .expect("identity env lock");
+            let _identity_seed_env = ScopedEnvVar::unset(crate::identity::NODE_IDENTITY_SEED_ENV);
+            let _nostr_seed_env = ScopedEnvVar::set(
+                crate::identity::NOSTR_PUBLICATION_IDENTITY_SEED_ENV,
+                nostr_seed.trim(),
+            );
+            let _nostr_created_at_env = ScopedEnvVar::set(
+                crate::identity::NOSTR_PUBLICATION_CREATED_AT_ENV,
+                &nostr_created_at,
+            );
+            NodeIdentity::load_or_create(&target_state.config).expect("reload target identity")
+        };
+        let target_state_mut =
+            Arc::get_mut(&mut target_state).expect("unique managed target state");
+        target_state_mut.identity = Arc::new(target_identity);
+        target_state_mut.config.public_base_url = Some(managed_public_url.clone());
+        target_state.transport_status.lock().await.clearnet_url = Some(managed_public_url.clone());
+        assert_eq!(
+            target_state.identity.node_id(),
+            source_state.identity.node_id(),
+            "managed target must hold the exact Provider identity"
+        );
+        assert_eq!(
+            target_state.identity.nostr_publication_key_hex(),
+            source_state.identity.nostr_publication_key_hex(),
+            "managed target must hold the exact Nostr publication identity"
+        );
+        assert_eq!(
+            target_state.identity.nostr_publication_created_at(),
+            source_state.identity.nostr_publication_created_at(),
+            "managed target must preserve the linked-identity creation time"
+        );
+
+        let bundle_path = target_state
+            .config
+            .storage
+            .data_dir
+            .join("managed-bundle.json");
+        std::fs::write(
+            &bundle_path,
+            canonical_json::to_vec(&bundle).expect("canonical startup bundle"),
+        )
+        .expect("write startup bundle");
+        let capsule_base64 =
+            STANDARD.encode(canonical_json::to_vec(&capsule).expect("canonical startup capsule"));
+        {
+            let _environment_guard = TEST_ENV_LOCK.lock().await;
+            let _bundle_env = ScopedEnvVar::set(
+                "FROGLET_MANAGED_BUNDLE_PATH",
+                bundle_path.to_str().expect("UTF-8 bundle path"),
+            );
+            let _capsule_env = ScopedEnvVar::set(
+                crate::managed_publication::MANAGED_CAPSULE_ENV,
+                &capsule_base64,
+            );
+            crate::server::import_managed_startup_publication(target_state.clone())
+                .await
+                .expect("managed runner startup import");
+        }
+
+        let response = public_router(target_state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/managed-publications/import",
+                Some("test-provider-control-token"),
+                Some(json!({ "bundle": bundle, "capsule": capsule })),
+            ))
+            .await
+            .expect("managed import response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected import response: {body}");
+        assert_eq!(
+            body["revision"]["revision_hash"], managed_revision.revision_hash,
+            "target must persist the exact managed-endpoint Revision"
+        );
+        let target_revision_hash = managed_revision.revision_hash.clone();
+        let target_revision = target_state
+            .db
+            .with_read_conn(move |conn| {
+                db::get_publication_revision(conn, "managed-import-wasm", &target_revision_hash)
+            })
+            .await
+            .expect("target revision lookup")
+            .expect("target exact revision");
+        assert_eq!(
+            target_revision.signed_revision,
+            serde_json::to_value(&managed_revision).expect("revision JSON")
+        );
+
+        let feed = public_router(target_state.clone())
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
+            .await
+            .expect("managed target feed response");
+        let (status, feed): (StatusCode, Value) = response_json(feed).await;
+        assert_eq!(status, StatusCode::OK, "unexpected managed feed: {feed}");
+        assert!(
+            feed["active_offer_hashes"]
+                .as_array()
+                .expect("managed active offer hashes")
+                .iter()
+                .any(|hash| hash == managed_revision.payload.offer_hash.as_str()),
+            "managed feed must retain the capsule's exact Offer"
+        );
+        let managed_descriptor = feed["artifacts"]
+            .as_array()
+            .expect("managed feed artifacts")
+            .iter()
+            .find(|artifact| artifact["document"]["hash"] == capsule.descriptor["hash"])
+            .expect("managed feed exact Descriptor");
+        assert_eq!(
+            managed_descriptor["document"]["payload"]["transport_endpoints"][0]["uri"],
+            managed_public_url
+        );
+
+        let canary_request = PublicationCanaryRequest {
+            schema_version: PUBLICATION_CANARY_REQUEST_SCHEMA_V1.to_string(),
+            revision_hash: managed_revision.revision_hash.clone(),
+            offer_hash: managed_revision.payload.offer_hash.clone(),
+            challenge: "f".repeat(64),
+            input: capsule.verification_fixture.input.clone(),
+        };
+        let response = public_router(target_state)
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/publications/{}/canary", managed_revision.revision_hash),
+                None,
+                Some(serde_json::to_value(canary_request).expect("canary request JSON")),
+            ))
+            .await
+            .expect("managed target canary response");
+        let (status, body): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected canary response: {body}");
+        assert_eq!(
+            body["payload"]["provider_id"],
+            source_state.identity.node_id()
+        );
+        assert_eq!(
+            body["payload"]["revision_hash"],
+            managed_revision.revision_hash
+        );
+        assert_eq!(
+            body["payload"]["result_hash"],
+            managed_revision.payload.local_verification.result_hash
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_wat_publication_locally_invokes_and_signs_locked_provenance() {
+        let state = test_app_state(PaymentBackend::None);
+        let artifact = froglet_publish_engine::builder::build_wasm_inline(
+            &froglet_publish_engine::SourceLocator::Inline(
+                r#"(module
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "42")
+                    (func (export "alloc") (param i32) (result i32) i32.const 16)
+                    (func (export "run") (param i32 i32) (result i64) i64.const 2)
+                )"#
+                .to_string(),
+            ),
+        )
+        .await
+        .expect("embedded WAT build");
+        let module_hash = artifact.source_hash.clone();
+        let expected_evidence = artifact.build_evidence.clone();
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(json!({
+                    "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+                    "service_id": "wat-json",
+                    "runtime": "wasm",
+                    "package_kind": "inline_module",
+                    "entrypoint_kind": "module",
+                    "entrypoint": "run",
+                    "contract_version": WASM_RUN_JSON_ABI_V1,
+                    "wasm_module_hex": hex::encode(artifact.source_bytes),
+                    "build_evidence": expected_evidence,
+                    "price_sats": 0,
+                    "settlement_method": "none",
+                    "price_currency": "sat",
+                    "publication_state": "active",
+                    "verification": {"input": null, "expected_output": 42},
+                })),
+            ))
+            .await
+            .expect("WAT publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        assert_eq!(
+            payload["evidence"]["local_verification"]["expected_output_matched"],
+            true
+        );
+
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(payload["evidence"]["publication_revision"].clone())
+                .expect("WAT publication revision");
+        revision.verify().expect("valid WAT publication revision");
+        assert_eq!(revision.payload.package_digest, module_hash);
+        assert_eq!(revision.payload.service.entrypoint_kind, "module");
+        let evidence = revision.payload.build_evidence.unwrap();
+        assert_eq!(evidence.builder, "froglet.embedded-wat");
+        assert_eq!(evidence.dependency_mode, "locked");
+        assert!(evidence.hermetic);
+        assert_eq!(evidence.components.len(), 1);
+        assert_eq!(
+            evidence.components[0].version,
+            froglet_publish_engine::builder::EMBEDDED_WAT_BUILDER_VERSION
+        );
+    }
+
+    #[tokio::test]
+    async fn native_data_publication_stages_invokes_and_signs_exact_canary() {
+        use froglet_protocol::publication::{
+            PUBLICATION_CANARY_REQUEST_SCHEMA_V1, PublicationCanaryRequest,
+            SignedPublicationCanaryResult,
+        };
+
+        let state = test_app_state(PaymentBackend::None);
+        let source = br#"[{"id":1,"name":"Ada"},{"id":2,"name":"Grace"}]"#;
+        let describe = json!({"op": "describe"});
+        let expected = json!({
+            "contract_version": crate::builtins::DATA_QUERY_CONTRACT_V1,
+            "source_kind": "json",
+            "collections": {"rows": ["id", "name"]},
+        });
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(json!({
+                    "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+                    "service_id": "people-data",
+                    "runtime": "builtin",
+                    "package_kind": "builtin",
+                    "data_source": {
+                        "format": "json",
+                        "content_base64": STANDARD.encode(source),
+                    },
+                    "price_sats": 0,
+                    "settlement_method": "none",
+                    "price_currency": "sat",
+                    "publication_state": "active",
+                    "verification": {
+                        "input": describe,
+                        "expected_output": expected,
+                    },
+                })),
+            ))
+            .await
+            .expect("native data publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(payload["evidence"]["publication_revision"].clone())
+                .expect("data publication revision");
+        revision.verify().expect("valid data publication revision");
+        assert_eq!(revision.payload.runtime, "builtin");
+        assert_eq!(revision.payload.package_kind, "builtin");
+        assert_eq!(
+            revision.payload.service.contract_version,
+            DATA_QUERY_JSON_CONTRACT_V1
+        );
+        assert_eq!(revision.payload.binding_hash, crypto::sha256_hex(source));
+        assert_eq!(
+            revision.payload.local_verification.input_hash,
+            crypto::sha256_hex(canonical_json::to_vec(&describe).unwrap())
+        );
+
+        let challenge = "ab".repeat(32);
+        let canary_request = PublicationCanaryRequest {
+            schema_version: PUBLICATION_CANARY_REQUEST_SCHEMA_V1.to_string(),
+            revision_hash: revision.revision_hash.clone(),
+            offer_hash: revision.payload.offer_hash.clone(),
+            challenge: challenge.clone(),
+            input: describe.clone(),
+        };
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/publications/{}/canary", revision.revision_hash),
+                None,
+                Some(serde_json::to_value(canary_request).unwrap()),
+            ))
+            .await
+            .expect("publication canary response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        let result: SignedPublicationCanaryResult =
+            serde_json::from_value(payload).expect("signed canary result");
+        result.verify().expect("valid canary signature");
+        assert_eq!(result.payload.revision_hash, revision.revision_hash);
+        assert_eq!(result.payload.offer_hash, revision.payload.offer_hash);
+        assert_eq!(result.payload.challenge, challenge);
+        assert_eq!(
+            result.payload.input_hash,
+            revision.payload.local_verification.input_hash
+        );
+        assert_eq!(
+            result.payload.result_hash,
+            revision.payload.local_verification.result_hash
+        );
+
+        let service = provider_service_record(state.as_ref(), "people-data", false, true)
+            .await
+            .expect("service lookup")
+            .expect("active data service");
+        let invocation_input = json!({
+            "op": "select",
+            "collection": "rows",
+            "columns": ["name"],
+            "equals": {"id": 2},
+            "limit": 10,
+        });
+        let execution = service_addressed_execution_from_record(&service, invocation_input.clone());
+        create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: service.offer_id.clone(),
+                requester_id: "11".repeat(32),
+                spec: WorkloadSpec::Execution {
+                    execution: Box::new(execution.clone()),
+                },
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .expect("bound native data quote");
+
+        let mut unaddressed = execution.clone();
+        unaddressed.security.service_id = None;
+        let (status, payload) = create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: service.offer_id.clone(),
+                requester_id: "12".repeat(32),
+                spec: WorkloadSpec::Execution {
+                    execution: Box::new(unaddressed),
+                },
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .expect_err("bound builtin must not be downgraded to an unaddressed request");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            payload["error"],
+            "provider-bound builtin execution requires security.service_id"
+        );
+
+        let mut tampered = execution;
+        tampered.module_hash = Some("ff".repeat(32));
+        let (status, payload) = create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: service.offer_id.clone(),
+                requester_id: "13".repeat(32),
+                spec: WorkloadSpec::Execution {
+                    execution: Box::new(tampered),
+                },
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .expect_err("quote must reject a tampered native data binding");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            payload["error"],
+            "service-addressed execution does not match the active service binding"
+        );
+        assert_eq!(
+            payload["details"],
+            "service-addressed execution binding hash does not match local service"
+        );
+
+        let spec = build_bound_workload_spec_from_service(&service, invocation_input)
+            .expect("bound native data workload");
+        let output = run_workload_spec_with_admission_limits(
+            state.as_ref(),
+            spec,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            Some(ExecutionLimits {
+                max_input_bytes: 4096,
+                max_runtime_ms: 2_500,
+                max_memory_bytes: 1,
+                max_output_bytes: 4096,
+                fuel_limit: 0,
+            }),
+        )
+        .await
+        .expect("native data selection");
+        assert_eq!(output.persisted_result["rows"], json!([{"name": "Grace"}]));
+    }
+
+    #[tokio::test]
+    async fn csv_publication_above_default_body_limit_builds_index_and_invokes() {
+        use froglet_protocol::publication::{
+            PublicationCsvColumn, PublicationCsvColumnType, PublicationCsvSchema,
+        };
+
+        let state = test_app_state(PaymentBackend::None);
+        let schema = PublicationCsvSchema {
+            collection: "people".to_string(),
+            columns: vec![
+                PublicationCsvColumn {
+                    name: "id".to_string(),
+                    column_type: PublicationCsvColumnType::Integer,
+                    nullable: false,
+                    indexed: true,
+                },
+                PublicationCsvColumn {
+                    name: "name".to_string(),
+                    column_type: PublicationCsvColumnType::String,
+                    nullable: false,
+                    indexed: false,
+                },
+            ],
+        };
+        let mut source = b"id,name\n".to_vec();
+        let mut row_count = 0usize;
+        while source.len() <= MAX_BODY_BYTES + 32 * 1024 {
+            row_count += 1;
+            source.extend_from_slice(format!("{row_count},person-{row_count}\n").as_bytes());
+        }
+        let data_source = PublicationDataSource {
+            format: PublicationDataFormat::Csv,
+            content_base64: STANDARD.encode(&source),
+            csv_schema: Some(schema.clone()),
+        };
+        let package_digest = data_source
+            .csv_package_digest()
+            .expect("canonical CSV package");
+        let describe = json!({"op": "describe"});
+        let expected = json!({
+            "contract_version": crate::builtins::DATA_QUERY_CONTRACT_V1,
+            "source_kind": "csv",
+            "collections": {"people": ["id", "name"]},
+            "csv_schema": schema,
+            "row_counts": {"people": row_count},
+        });
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(json!({
+                    "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+                    "service_id": "people-csv",
+                    "runtime": "builtin",
+                    "package_kind": "builtin",
+                    "data_source": data_source,
+                    "price_sats": 0,
+                    "settlement_method": "none",
+                    "price_currency": "sat",
+                    "publication_state": "active",
+                    "verification": {
+                        "input": describe,
+                        "expected_output": expected,
+                    },
+                })),
+            ))
+            .await
+            .expect("CSV publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(payload["evidence"]["publication_revision"].clone())
+                .expect("CSV publication revision");
+        revision.verify().expect("valid CSV revision");
+        assert_eq!(revision.payload.package_digest, package_digest);
+        assert_eq!(
+            revision.payload.service.contract_version,
+            DATA_QUERY_CSV_CONTRACT_V1
+        );
+        assert_eq!(
+            revision.payload.service.output_schema.as_ref().unwrap()["x-froglet-row-count"],
+            json!(row_count)
+        );
+        assert!(
+            state
+                .config
+                .storage
+                .data_dir
+                .join("publication-data")
+                .join(format!("{package_digest}.csv.sqlite"))
+                .is_file()
+        );
+
+        let service = provider_service_record(state.as_ref(), "people-csv", false, true)
+            .await
+            .expect("service lookup")
+            .expect("active CSV service");
+        let spec = build_bound_workload_spec_from_service(
+            &service,
+            json!({
+                "op": "select",
+                "collection": "people",
+                "columns": ["name"],
+                "equals": {"id": row_count},
+                "limit": 1,
+            }),
+        )
+        .expect("bound CSV workload");
+        let output = run_workload_spec_with_admission_limits(
+            state.as_ref(),
+            spec,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            Some(ExecutionLimits {
+                max_input_bytes: 4_096,
+                max_runtime_ms: 2_500,
+                max_memory_bytes: 1,
+                max_output_bytes: 4_096,
+                fuel_limit: 0,
+            }),
+        )
+        .await
+        .expect("indexed CSV selection");
+        assert_eq!(
+            output.persisted_result["rows"],
+            json!([{"name": format!("person-{row_count}")}])
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_native_data_verification_removes_provisional_snapshot() {
+        let state = test_app_state(PaymentBackend::None);
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let content_hash = crypto::sha256_hex(source);
+        let snapshot = state
+            .config
+            .storage
+            .data_dir
+            .join("publication-data")
+            .join(format!("{content_hash}.json"));
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(json!({
+                    "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+                    "service_id": "rejected-people-data",
+                    "runtime": "builtin",
+                    "package_kind": "builtin",
+                    "data_source": {
+                        "format": "json",
+                        "content_base64": STANDARD.encode(source),
+                    },
+                    "price_sats": 0,
+                    "settlement_method": "none",
+                    "price_currency": "sat",
+                    "publication_state": "active",
+                    "verification": {
+                        "input": {"op": "describe"},
+                        "expected_output": {"must": "not match"},
+                    },
+                })),
+            ))
+            .await
+            .expect("native data rejection response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{payload}");
+        assert_eq!(
+            payload["error"],
+            "local publication verification output mismatch"
+        );
+        assert!(
+            !snapshot.exists(),
+            "a failed publication must not retain its provisional data snapshot"
+        );
+        assert!(
+            provider_control_offer_record(state.as_ref(), "rejected-people-data", true)
+                .await
+                .expect("offer lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_native_data_failure_cannot_remove_successful_publication_snapshot() {
+        let state = test_app_state(PaymentBackend::None);
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let content_hash = crypto::sha256_hex(source);
+        let snapshot = state
+            .config
+            .storage
+            .data_dir
+            .join("publication-data")
+            .join(format!("{content_hash}.json"));
+        let describe = json!({"op": "describe"});
+        let expected = json!({
+            "contract_version": crate::builtins::DATA_QUERY_CONTRACT_V1,
+            "source_kind": "json",
+            "collections": {"rows": ["id", "name"]},
+        });
+        let publication = |service_id: &str, expected_output: Value| {
+            json!({
+                "schema_version": froglet_protocol::publication::PUBLICATION_INTENT_SCHEMA_V1,
+                "service_id": service_id,
+                "runtime": "builtin",
+                "package_kind": "builtin",
+                "data_source": {
+                    "format": "json",
+                    "content_base64": STANDARD.encode(source),
+                },
+                "price_sats": 0,
+                "settlement_method": "none",
+                "price_currency": "sat",
+                "publication_state": "active",
+                "verification": {
+                    "input": describe,
+                    "expected_output": expected_output,
+                },
+            })
+        };
+
+        // Hold the per-node lock while both handlers queue. Tokio's FIFO mutex
+        // makes the successful request publish first; the later failed request
+        // must treat its exact snapshot as pre-existing and non-owned.
+        let queue_guard = state.native_data_publication_lock.lock().await;
+        let successful_state = state.clone();
+        let successful_payload = publication("concurrent-data-ok", expected);
+        let successful = tokio::spawn(async move {
+            public_router(successful_state)
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/artifacts/publish",
+                    Some("test-provider-control-token"),
+                    Some(successful_payload),
+                ))
+                .await
+                .expect("successful concurrent publication response")
+        });
+        tokio::task::yield_now().await;
+
+        let failing_state = state.clone();
+        let failing_payload = publication("concurrent-data-rejected", json!({"wrong": true}));
+        let failing = tokio::spawn(async move {
+            public_router(failing_state)
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/artifacts/publish",
+                    Some("test-provider-control-token"),
+                    Some(failing_payload),
+                ))
+                .await
+                .expect("failed concurrent publication response")
+        });
+        tokio::task::yield_now().await;
+        drop(queue_guard);
+
+        let (success_status, success_payload): (StatusCode, Value) =
+            response_json(successful.await.expect("successful publication task")).await;
+        let (failure_status, failure_payload): (StatusCode, Value) =
+            response_json(failing.await.expect("failed publication task")).await;
+        assert_eq!(success_status, StatusCode::CREATED, "{success_payload}");
+        assert_eq!(
+            failure_status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{failure_payload}"
+        );
+        assert!(
+            snapshot.is_file(),
+            "a failed concurrent request must not remove the committed snapshot"
+        );
+        assert!(
+            provider_control_offer_record(state.as_ref(), "concurrent-data-ok", true)
+                .await
+                .expect("successful offer lookup")
+                .is_some()
+        );
+        assert!(
+            provider_control_offer_record(state.as_ref(), "concurrent-data-rejected", true)
+                .await
+                .expect("rejected offer lookup")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn content_addressed_staging_only_removes_files_created_by_its_request() {
+        let root = unique_temp_dir("publication-staging-ownership");
+        fs::create_dir_all(&root).expect("create staging test directory");
+        let existing_path = root.join("existing.json");
+        let provisional_path = root.join("provisional.json");
+        let bytes = br#"[{"id":1}]"#;
+        fs::write(&existing_path, bytes).expect("seed existing content-addressed file");
+
+        {
+            let mut staging = PublicationDataStaging::default();
+            let created = stage_content_addressed_file(
+                &existing_path,
+                bytes,
+                "existing mismatch",
+                "existing stage failed",
+                &mut staging,
+            )
+            .expect("reuse exact existing file");
+            assert!(!created, "an exact pre-existing file is not request-owned");
+        }
+        assert!(
+            existing_path.is_file(),
+            "dropping an uncommitted guard must preserve pre-existing content"
+        );
+
+        {
+            let mut staging = PublicationDataStaging::default();
+            let created = stage_content_addressed_file(
+                &provisional_path,
+                bytes,
+                "provisional mismatch",
+                "provisional stage failed",
+                &mut staging,
+            )
+            .expect("stage new provisional file");
+            assert!(created);
+            assert!(provisional_path.is_file());
+        }
+        assert!(
+            !provisional_path.exists(),
+            "dropping an uncommitted guard must remove its provisional file"
+        );
+        let temporary_files = fs::read_dir(&root)
+            .expect("read staging test directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(
+            temporary_files, 0,
+            "temporary hard-link sources are cleaned"
+        );
+
+        fs::remove_dir_all(root).expect("remove staging test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_addressed_staging_rejects_existing_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_temp_dir("publication-staging-symlink");
+        fs::create_dir_all(&root).expect("create staging test directory");
+        let target = root.join("target.json");
+        let content_path = root.join("content.json");
+        let bytes = br#"[{"id":1}]"#;
+        fs::write(&target, bytes).expect("seed symlink target");
+        symlink(&target, &content_path).expect("create publication-path symlink");
+
+        let mut staging = PublicationDataStaging::default();
+        let error = stage_content_addressed_file(
+            &content_path,
+            bytes,
+            "existing mismatch",
+            "existing stage failed",
+            &mut staging,
+        )
+        .expect_err("a content-addressed path must never follow a symlink");
+        assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            error.1["error"],
+            "content-addressed publication path is not a regular file"
+        );
+        assert!(
+            fs::symlink_metadata(&content_path)
+                .expect("inspect publication path")
+                .file_type()
+                .is_symlink()
+        );
+
+        fs::remove_dir_all(root).expect("remove staging test directory");
+    }
+
+    #[test]
+    fn publication_data_lock_serializes_independent_staging_owners() {
+        let root = unique_temp_dir("publication-staging-lock");
+        fs::create_dir_all(&root).expect("create staging test directory");
+
+        let mut first = PublicationDataStaging::default();
+        first
+            .acquire_publication_lock(&root)
+            .expect("first staging owner acquires lock");
+        let mut competing = PublicationDataStaging::default();
+        let conflict = competing
+            .acquire_publication_lock(&root)
+            .expect_err("independent staging owner must not overlap");
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+
+        drop(first);
+        competing
+            .acquire_publication_lock(&root)
+            .expect("lock is reusable after the prior owner completes");
+        drop(competing);
+
+        fs::remove_dir_all(root).expect("remove staging test directory");
+    }
+
+    fn injected_publication_commit_failure() -> Result<(), String> {
+        Err("injected failure after candidate artifact insertion".to_string())
+    }
+
+    fn injected_publication_directory_sync_failure(_: &FsPath) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "injected publication directory sync failure",
+        ))
+    }
+
+    fn test_local_verification() -> LocalVerificationEvidence {
+        LocalVerificationEvidence {
+            input_hash: "11".repeat(32),
+            result_hash: "22".repeat(32),
+            expected_output_matched: Some(true),
+        }
+    }
+
+    async fn assert_no_candidate_publication_rows(state: &AppState, service_id: &str) {
+        let service_id = service_id.to_string();
+        state
+            .db
+            .with_read_conn(move |conn| {
+                let artifact_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM artifact_documents
+                         WHERE artifact_kind IN (?1, ?2)",
+                        rusqlite::params![ARTIFACT_KIND_DESCRIPTOR, ARTIFACT_KIND_OFFER],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let feed_count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM artifact_feed", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                let revision_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM publication_revisions WHERE service_id = ?1",
+                        rusqlite::params![service_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let operation_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM publication_operation_log WHERE service_id = ?1",
+                        rusqlite::params![service_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if artifact_count != 0
+                    || feed_count != 0
+                    || revision_count != 0
+                    || operation_count != 0
+                    || db::get_publication_lifecycle(conn, &service_id)?.is_some()
+                {
+                    return Err(format!(
+                        "partial publication state remained: artifacts={artifact_count}, feed={feed_count}, revisions={revision_count}, operations={operation_count}"
+                    ));
+                }
+                Ok(())
+            })
+            .await
+            .expect("publication transaction left no candidate state");
+    }
+
+    #[tokio::test]
+    async fn publication_failpoint_rolls_back_artifacts_revision_lifecycle_and_log() {
+        let state = test_app_state(PaymentBackend::None);
+        let request: ProviderControlPublishArtifactRequest = serde_json::from_value(
+            verified_wasm_publication_request("atomic-failpoint", Some(json!(42))),
+        )
+        .expect("typed publication request");
+        let PreparedProviderOfferDefinition {
+            definition,
+            mut data_staging,
+        } = prepare_artifact_provider_offer_definition(state.as_ref(), request)
+            .expect("prepared publication");
+        let builtin_definitions = builtin_provider_offer_definitions(state.as_ref(), &[]);
+        let transport_endpoints =
+            descriptor_transport_endpoints(&state.transport_status.lock().await.clone());
+        let commit_state = state.clone();
+        let result = state
+            .db
+            .with_write_conn(move |conn| {
+                persist_publication_candidate_atomically(
+                    commit_state.as_ref(),
+                    conn,
+                    &definition,
+                    &test_local_verification(),
+                    "active",
+                    builtin_definitions,
+                    transport_endpoints,
+                    settlement::current_unix_timestamp(),
+                    &mut data_staging,
+                    injected_publication_commit_failure,
+                )
+            })
+            .await;
+        assert!(
+            result
+                .expect_err("injected publication failure")
+                .contains("injected failure")
+        );
+        assert_no_candidate_publication_rows(state.as_ref(), "atomic-failpoint").await;
+    }
+
+    #[tokio::test]
+    async fn relay_activation_rejects_changed_control_endpoint_before_granting() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let public_url = "https://identity.relay.example".to_string();
+        let approved_control_url = "wss://control-a.relay.example/v1/tunnel".to_string();
+        Arc::get_mut(&mut state)
+            .expect("unique test state")
+            .config
+            .relay = crate::config::RelayConfig {
+            url: Some(approved_control_url),
+            public_suffix: Some("relay.example".to_string()),
+            enabled: true,
+        };
+        {
+            let mut transport = state.transport_status.lock().await;
+            transport.relay_enabled = true;
+            transport.relay_url = Some(public_url.clone());
+            transport.relay_status = "reserved".to_string();
+        }
+
+        let response = activate_relay_transport(
+            State(state.clone()),
+            Json(RelayTransportActivationRequest {
+                service_id: "control-drift".to_string(),
+                revision_hash: "11".repeat(32),
+                activation_token: "22".repeat(32),
+                public_url,
+                relay_control_url: "wss://control-b.relay.example/v1/tunnel".to_string(),
+            }),
+        )
+        .await;
+        let (status_code, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status_code, StatusCode::CONFLICT, "{payload}");
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("control endpoint"))
+        );
+        let grants = state
+            .db
+            .with_read_conn(|conn| db::list_publication_transport_grants(conn, "relay"))
+            .await
+            .expect("relay grants");
+        assert!(grants.is_empty());
+        let transport = state.transport_status.lock().await;
+        assert_eq!(transport.relay_status, "reserved");
+        let desired = transport.relay_activation_receiver();
+        assert!(!*desired.borrow());
+    }
+
+    #[tokio::test]
+    async fn relay_scope_hides_and_rejects_ungranted_local_offer() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let relay_url = "https://identity.relay.example".to_string();
+        let relay_control_url = "wss://control.relay.example/v1/tunnel".to_string();
+        Arc::get_mut(&mut state)
+            .expect("unique test state")
+            .config
+            .relay = crate::config::RelayConfig {
+            url: Some(relay_control_url.clone()),
+            public_suffix: Some("relay.example".to_string()),
+            enabled: true,
+        };
+        {
+            let mut transport = state.transport_status.lock().await;
+            transport.relay_enabled = true;
+            transport.relay_url = Some(relay_url.clone());
+            transport.relay_status = "up".to_string();
+        }
+
+        let request: ProviderControlPublishArtifactRequest = serde_json::from_value(
+            verified_wasm_publication_request("relay-granted", Some(json!(42))),
+        )
+        .expect("typed publication request");
+        let PreparedProviderOfferDefinition {
+            definition,
+            mut data_staging,
+        } = prepare_artifact_provider_offer_definition(state.as_ref(), request)
+            .expect("prepared publication");
+        let builtin_definitions = builtin_provider_offer_definitions(state.as_ref(), &[]);
+        let transport_endpoints =
+            descriptor_transport_endpoints(&state.transport_status.lock().await.clone());
+        let commit_state = state.clone();
+        let committed = state
+            .db
+            .with_write_conn(move |conn| {
+                persist_publication_candidate_atomically(
+                    commit_state.as_ref(),
+                    conn,
+                    &definition,
+                    &test_local_verification(),
+                    "active",
+                    builtin_definitions,
+                    transport_endpoints,
+                    settlement::current_unix_timestamp(),
+                    &mut data_staging,
+                    publication_commit_noop,
+                )
+            })
+            .await
+            .expect("committed exact publication");
+        let pause_service_id = committed.lifecycle.service_id.clone();
+        let pause_revision_hash = committed.revision.revision_hash.clone();
+        let pause_activation_token = committed.lifecycle.activation_token.clone();
+        let grant_service_id = pause_service_id.clone();
+        let grant_revision_hash = pause_revision_hash.clone();
+        let grant_activation_token = pause_activation_token.clone();
+        let grant_offer_hash = committed.offer.hash.clone();
+        let grant_url = relay_url.clone();
+        let grant_control_url = relay_control_url.clone();
+        state
+            .db
+            .with_write_conn(move |conn| {
+                db::persist_publication_transport_grant(
+                    conn,
+                    &db::NewPublicationTransportGrant {
+                        transport: "relay",
+                        service_id: &grant_service_id,
+                        revision_hash: &grant_revision_hash,
+                        activation_token: &grant_activation_token,
+                        public_url: &grant_url,
+                        relay_control_url: &grant_control_url,
+                        now: settlement::current_unix_timestamp(),
+                    },
+                )
+            })
+            .await
+            .expect("relay grant");
+
+        publish_test_python_service(&state, "local-only", 0, "active").await;
+        let local_service = provider_service_record(state.as_ref(), "local-only", false, true)
+            .await
+            .expect("local service lookup")
+            .expect("local service");
+        let local_offer = provider_control_offer_record(state.as_ref(), "local-only", false)
+            .await
+            .expect("local offer lookup")
+            .expect("local offer");
+        let local_offer_hash = local_offer.offer.hash.clone();
+
+        let public = public_router(state.clone());
+        let mut relay_services_request =
+            runtime_request(Method::GET, "/v1/provider/services", None, None);
+        relay_services_request.headers_mut().insert(
+            HeaderName::from_static("x-froglet-relay"),
+            HeaderValue::from_static("v1"),
+        );
+        let relay_services = public
+            .clone()
+            .oneshot(relay_services_request)
+            .await
+            .expect("relay services");
+        let (status, payload): (StatusCode, Value) = response_json(relay_services).await;
+        assert_eq!(status, StatusCode::OK);
+        let service_ids = payload["services"]
+            .as_array()
+            .expect("services")
+            .iter()
+            .filter_map(|service| service["service_id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(service_ids, vec!["relay-granted"]);
+
+        let mut relay_feed_request = runtime_request(Method::GET, "/v1/feed?limit=100", None, None);
+        relay_feed_request.headers_mut().insert(
+            HeaderName::from_static("x-froglet-relay"),
+            HeaderValue::from_static("v1"),
+        );
+        let relay_feed = public
+            .clone()
+            .oneshot(relay_feed_request)
+            .await
+            .expect("relay feed");
+        let (status, payload): (StatusCode, Value) = response_json(relay_feed).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["active_offer_hashes"], json!([grant_offer_hash]));
+        assert!(
+            !payload["artifacts"]
+                .as_array()
+                .expect("artifacts")
+                .iter()
+                .any(|artifact| artifact["hash"] == local_offer_hash),
+            "relay feed exposed an ungranted local Offer"
+        );
+
+        let execution = service_addressed_execution_from_record(&local_service, json!({}));
+        let quote_body = serde_json::to_value(CreateQuoteRequest {
+            offer_id: local_service.offer_id.clone(),
+            requester_id: "11".repeat(32),
+            spec: WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            max_price_sats: Some(0),
+        })
+        .expect("quote body");
+        let mut relay_quote_request = runtime_request(
+            Method::POST,
+            "/v1/provider/quotes",
+            None,
+            Some(quote_body.clone()),
+        );
+        relay_quote_request.headers_mut().insert(
+            HeaderName::from_static("x-froglet-relay"),
+            HeaderValue::from_static("v1"),
+        );
+        let relay_quote = public
+            .clone()
+            .oneshot(relay_quote_request)
+            .await
+            .expect("relay quote");
+        assert_eq!(relay_quote.status(), StatusCode::NOT_FOUND);
+
+        let local_quote = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/quotes",
+                None,
+                Some(quote_body),
+            ))
+            .await
+            .expect("local quote");
+        assert_eq!(local_quote.status(), StatusCode::CREATED);
+
+        // Deterministically pause a relay request after its exact scope was
+        // loaded but before quote persistence. Revocation must wait for that
+        // full response, then make every later request observe no grant.
+        let granted_service = provider_service_record(state.as_ref(), "relay-granted", false, true)
+            .await
+            .expect("granted service lookup")
+            .expect("granted service");
+        let granted_execution =
+            service_addressed_execution_from_record(&granted_service, json!({}));
+        let granted_quote_body = serde_json::to_value(CreateQuoteRequest {
+            offer_id: granted_service.offer_id.clone(),
+            requester_id: "22".repeat(32),
+            spec: WorkloadSpec::Execution {
+                execution: Box::new(granted_execution),
+            },
+            max_price_sats: Some(0),
+        })
+        .expect("granted quote body");
+
+        let (writer_held_tx, writer_held_rx) = tokio::sync::oneshot::channel();
+        let (release_writer_tx, release_writer_rx) = std::sync::mpsc::channel();
+        let held_db = state.db.clone();
+        let writer_task = tokio::spawn(async move {
+            held_db
+                .with_write_conn(move |_conn| -> Result<(), String> {
+                    writer_held_tx.send(()).expect("writer held signal");
+                    release_writer_rx.recv().expect("release writer signal");
+                    Ok(())
+                })
+                .await
+        });
+        writer_held_rx.await.expect("writer lock held");
+
+        let mut admitted_quote_request = runtime_request(
+            Method::POST,
+            "/v1/provider/quotes",
+            None,
+            Some(granted_quote_body.clone()),
+        );
+        admitted_quote_request.headers_mut().insert(
+            HeaderName::from_static("x-froglet-relay"),
+            HeaderValue::from_static("v1"),
+        );
+        let admitted_public = public.clone();
+        let admitted_quote =
+            tokio::spawn(async move { admitted_public.oneshot(admitted_quote_request).await });
+        let relay_gate = { state.transport_status.lock().await.relay_publication_gate() };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if relay_gate.clone().try_write_owned().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("relay request acquired its read gate");
+
+        let pause_body = json!({ "activation_token": pause_activation_token });
+        let pause_request = runtime_request(
+            Method::POST,
+            &format!(
+                "/v1/provider/publications/{pause_service_id}/revisions/{pause_revision_hash}/pause"
+            ),
+            Some("test-provider-control-token"),
+            Some(pause_body),
+        );
+        let pause_public = public.clone();
+        let pause = tokio::spawn(async move { pause_public.oneshot(pause_request).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !pause.is_finished(),
+            "revocation returned while an admitted relay request was in flight"
+        );
+
+        release_writer_tx.send(()).expect("release DB writer");
+        writer_task
+            .await
+            .expect("writer task")
+            .expect("writer operation");
+        let admitted_response = admitted_quote
+            .await
+            .expect("admitted quote task")
+            .expect("admitted quote response");
+        assert_eq!(admitted_response.status(), StatusCode::CREATED);
+        let pause_response = pause.await.expect("pause task").expect("pause response");
+        assert_eq!(pause_response.status(), StatusCode::OK);
+
+        let quote_count_after_revoke = state
+            .db
+            .with_read_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM quotes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())
+            })
+            .await
+            .expect("quote count");
+        let mut post_revoke_request = runtime_request(
+            Method::POST,
+            "/v1/provider/quotes",
+            None,
+            Some(granted_quote_body),
+        );
+        post_revoke_request.headers_mut().insert(
+            HeaderName::from_static("x-froglet-relay"),
+            HeaderValue::from_static("v1"),
+        );
+        let post_revoke = public
+            .oneshot(post_revoke_request)
+            .await
+            .expect("post-revoke quote");
+        assert_eq!(post_revoke.status(), StatusCode::NOT_FOUND);
+        let final_quote_count = state
+            .db
+            .with_read_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM quotes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())
+            })
+            .await
+            .expect("final quote count");
+        assert_eq!(final_quote_count, quote_count_after_revoke);
+
+        // The exact relay scope approved before pause must survive as private
+        // recovery evidence, while the old grant stays withdrawn. Resuming
+        // creates a fresh token and must restore a fresh exact grant.
+        {
+            let mut transport = state.transport_status.lock().await;
+            transport.relay_status = "reserved".to_string();
+        }
+        let resumed_state = state.clone();
+        let relay_reconnected = tokio::spawn(async move {
+            let mut desired = resumed_state
+                .transport_status
+                .lock()
+                .await
+                .relay_activation_receiver();
+            while !*desired.borrow_and_update() {
+                desired.changed().await.expect("relay activation sender");
+            }
+            resumed_state.transport_status.lock().await.relay_status = "up".to_string();
+        });
+        let resume_response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/publications/{pause_service_id}/resume"),
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("resume response");
+        let (status, payload): (StatusCode, Value) = response_json(resume_response).await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        let resumed_token = payload["publication"]["activation_token"]
+            .as_str()
+            .expect("resumed token");
+        assert_ne!(resumed_token, pause_activation_token);
+        let grants = state
+            .db
+            .with_read_conn(|conn| db::list_publication_transport_grants(conn, "relay"))
+            .await
+            .expect("resumed relay grants");
+        assert_eq!(grants.len(), 1, "resume must restore the exact relay grant");
+        assert_eq!(grants[0].service_id, pause_service_id);
+        assert_eq!(grants[0].activation_token, resumed_token);
+        relay_reconnected.await.expect("simulated relay reconnect");
+    }
+
+    #[tokio::test]
+    async fn publication_directory_sync_failure_prevents_lifecycle_commit() {
+        let state = test_app_state(PaymentBackend::None);
+        let source = br#"[{"id":1,"name":"Ada"}]"#;
+        let snapshot = state
+            .config
+            .storage
+            .data_dir
+            .join("publication-data")
+            .join(format!("{}.json", crypto::sha256_hex(source)));
+        let request: ProviderControlPublishArtifactRequest =
+            serde_json::from_value(native_data_publication_request("sync-fail-data", source))
+                .expect("typed native-data request");
+        let PreparedProviderOfferDefinition {
+            definition,
+            mut data_staging,
+        } = prepare_artifact_provider_offer_definition(state.as_ref(), request)
+            .expect("prepared native-data publication");
+        data_staging.directory_sync = injected_publication_directory_sync_failure;
+        let builtin_definitions = builtin_provider_offer_definitions(state.as_ref(), &[]);
+        let transport_endpoints =
+            descriptor_transport_endpoints(&state.transport_status.lock().await.clone());
+        let commit_state = state.clone();
+        let result = state
+            .db
+            .with_write_conn(move |conn| {
+                persist_publication_candidate_atomically(
+                    commit_state.as_ref(),
+                    conn,
+                    &definition,
+                    &test_local_verification(),
+                    "active",
+                    builtin_definitions,
+                    transport_endpoints,
+                    settlement::current_unix_timestamp(),
+                    &mut data_staging,
+                    publication_commit_noop,
+                )
+            })
+            .await;
+        assert!(
+            result
+                .expect_err("injected directory sync failure")
+                .contains("failed to sync publication data directory")
+        );
+        assert!(!snapshot.exists(), "failed sync must clean its snapshot");
+        assert_no_candidate_publication_rows(state.as_ref(), "sync-fail-data").await;
+    }
+
+    #[test]
+    fn concurrent_publications_allocate_strictly_monotonic_descriptor_sequences() {
+        use std::sync::Barrier;
+
+        let state = test_app_state(PaymentBackend::None);
+        let mut first = artifact_provider_offer_definition(
+            state.as_ref(),
+            serde_json::from_value(verified_wasm_publication_request(
+                "descriptor-sequence-a",
+                Some(json!(42)),
+            ))
+            .expect("first typed request"),
+        )
+        .expect("first publication definition");
+        first.offer_kind = "test.descriptor-sequence.a".to_string();
+        let mut second = artifact_provider_offer_definition(
+            state.as_ref(),
+            serde_json::from_value(verified_wasm_publication_request(
+                "descriptor-sequence-b",
+                Some(json!(42)),
+            ))
+            .expect("second typed request"),
+        )
+        .expect("second publication definition");
+        second.offer_kind = "test.descriptor-sequence.b".to_string();
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for definition in [first, second] {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let conn = rusqlite::Connection::open(&state.config.storage.db_path)
+                    .expect("open concurrent publication connection");
+                conn.busy_timeout(Duration::from_secs(5))
+                    .expect("publication busy timeout");
+                conn.execute_batch("PRAGMA foreign_keys = ON")
+                    .expect("publication foreign keys");
+                let builtin_definitions = builtin_provider_offer_definitions(state.as_ref(), &[]);
+                let mut staging = PublicationDataStaging::default();
+                barrier.wait();
+                persist_publication_candidate_atomically(
+                    state.as_ref(),
+                    &conn,
+                    &definition,
+                    &test_local_verification(),
+                    "active",
+                    builtin_definitions,
+                    Vec::new(),
+                    settlement::current_unix_timestamp(),
+                    &mut staging,
+                    publication_commit_noop,
+                )
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker
+                .join()
+                .expect("publication worker")
+                .expect("concurrent publication commit");
+        }
+
+        let conn = rusqlite::Connection::open(&state.config.storage.db_path)
+            .expect("reopen descriptor sequence database");
+        let mut statement = conn
+            .prepare(
+                "SELECT document.document_json
+                 FROM artifact_feed feed
+                 JOIN artifact_documents document
+                   ON document.artifact_hash = feed.artifact_hash
+                 WHERE document.artifact_kind = ?1
+                 ORDER BY feed.sequence ASC",
+            )
+            .expect("descriptor sequence query");
+        let sequences = statement
+            .query_map(rusqlite::params![ARTIFACT_KIND_DESCRIPTOR], |row| {
+                let document: String = row.get(0)?;
+                let descriptor: SignedArtifact<DescriptorPayload> = serde_json::from_str(&document)
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                Ok(descriptor.payload.descriptor_seq)
+            })
+            .expect("map descriptor sequences")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode descriptor sequences");
+        assert_eq!(sequences.len(), 2, "one Descriptor per changed snapshot");
+        assert!(
+            sequences.windows(2).all(|pair| pair[0] < pair[1]),
+            "Descriptor sequences must be unique and strictly monotonic: {sequences:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publish_does_not_persist_a_fixture_mismatch() {
+        let state = test_app_state(PaymentBackend::None);
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(verified_wasm_publication_request(
+                    "mismatched-wasm",
+                    Some(json!(41)),
+                )),
+            ))
+            .await
+            .expect("provider-control publish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            payload["error"],
+            "local publication verification output mismatch"
+        );
+        assert!(payload["expected_output_hash"].is_string());
+        assert!(payload["actual_output_hash"].is_string());
+        assert!(
+            provider_control_offer_record(state.as_ref(), "mismatched-wasm", true)
+                .await
+                .expect("offer lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publish_revision_preflight_failure_does_not_persist() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut request = verified_wasm_publication_request("oversized-revision", Some(json!(42)));
+        request["summary"] = Value::String("x".repeat(20 * 1024));
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(request),
+            ))
+            .await
+            .expect("provider-control publish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["error"], "publication revision preflight failed");
+        assert!(
+            payload["details"]
+                .as_str()
+                .is_some_and(|details| details.contains("service.summary")),
+            "unexpected response: {payload}"
+        );
+        assert!(
+            provider_control_offer_record(state.as_ref(), "oversized-revision", true)
+                .await
+                .expect("offer lookup")
+                .is_none(),
+            "preflight failure must not leave a provider offer"
+        );
+        assert!(
+            state
+                .db
+                .with_read_conn(|conn| {
+                    db::get_publication_lifecycle(conn, "oversized-revision")
+                })
+                .await
+                .expect("lifecycle lookup")
+                .is_none(),
+            "preflight failure must not leave an activation pointer"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publish_accepts_execution_only_fixture() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut request = verified_wasm_publication_request("execution-only-wasm", None);
+        request["verification"]
+            .as_object_mut()
+            .expect("verification object")
+            .remove("expected_output");
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(request),
+            ))
+            .await
+            .expect("provider-control publish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        assert!(
+            payload["evidence"]["local_verification"]
+                .get("expected_output_matched")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publication_retry_is_revision_and_log_idempotent() {
+        let state = test_app_state(PaymentBackend::None);
+        let request = verified_wasm_publication_request("idempotent-wasm", Some(json!(42)));
+        let mut revision_hash = None;
+        for _ in 0..2 {
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/artifacts/publish",
+                    Some("test-provider-control-token"),
+                    Some(request.clone()),
+                ))
+                .await
+                .expect("provider-control publish response");
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(
+                status,
+                StatusCode::CREATED,
+                "unexpected response: {payload}"
+            );
+            let observed = payload["evidence"]["publication_revision"]["revision_hash"]
+                .as_str()
+                .expect("revision hash")
+                .to_string();
+            assert_eq!(revision_hash.get_or_insert(observed.clone()), &observed);
+        }
+
+        let (revisions, operations) = state
+            .db
+            .with_read_conn(|conn| {
+                Ok::<_, String>((
+                    db::list_publication_revisions(conn, "idempotent-wasm", 100)?,
+                    db::list_publication_operations(conn, "idempotent-wasm", 100)?,
+                ))
+            })
+            .await
+            .expect("publication history");
+        assert_eq!(revisions.len(), 1, "retry must not duplicate revisions");
+        assert_eq!(operations.len(), 1, "retry must not duplicate publish logs");
+        assert_eq!(operations[0].operation, "publish");
+    }
+
+    #[tokio::test]
+    async fn unrelated_publication_preserves_each_exact_active_offer() {
+        use froglet_protocol::publication::{
+            PUBLICATION_CANARY_REQUEST_SCHEMA_V1, PublicationCanaryRequest,
+            SignedPublicationCanaryResult,
+        };
+
+        let state = test_app_state(PaymentBackend::None);
+        let mut revisions = Vec::new();
+        for service_id in ["stable-a", "stable-b"] {
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/artifacts/publish",
+                    Some("test-provider-control-token"),
+                    Some(verified_wasm_publication_request(
+                        service_id,
+                        Some(json!(42)),
+                    )),
+                ))
+                .await
+                .expect("publication response");
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(
+                status,
+                StatusCode::CREATED,
+                "unexpected response: {payload}"
+            );
+            let revision: SignedPublicationRevision =
+                serde_json::from_value(payload["evidence"]["publication_revision"].clone())
+                    .expect("signed publication revision");
+            revisions.push(revision);
+        }
+
+        let active = current_offer_records(state.as_ref(), false)
+            .await
+            .expect("active exact offers");
+        for revision in &revisions {
+            assert!(
+                active.iter().any(|record| {
+                    record.offer.hash == revision.payload.offer_hash
+                        && record.offer.payload.offer_id == revision.payload.offer_id
+                }),
+                "publishing another service must not rematerialize {}",
+                revision.payload.offer_id
+            );
+        }
+
+        let feed = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
+            .await
+            .expect("public feed response");
+        let (status, feed): (StatusCode, Value) = response_json(feed).await;
+        assert_eq!(status, StatusCode::OK, "unexpected feed response: {feed}");
+        let active_offer_hashes = feed["active_offer_hashes"]
+            .as_array()
+            .expect("active offer hash snapshot");
+        for revision in &revisions {
+            assert!(
+                active_offer_hashes
+                    .iter()
+                    .any(|hash| hash == revision.payload.offer_hash.as_str()),
+                "feed snapshot must retain {}",
+                revision.payload.offer_id
+            );
+        }
+
+        let first = &revisions[0];
+        let request = PublicationCanaryRequest {
+            schema_version: PUBLICATION_CANARY_REQUEST_SCHEMA_V1.to_string(),
+            revision_hash: first.revision_hash.clone(),
+            offer_hash: first.payload.offer_hash.clone(),
+            challenge: "cd".repeat(32),
+            input: Value::Null,
+        };
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/publications/{}/canary", first.revision_hash),
+                None,
+                Some(serde_json::to_value(request).unwrap()),
+            ))
+            .await
+            .expect("first revision canary after second publication");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected canary response: {payload}"
+        );
+        let result: SignedPublicationCanaryResult =
+            serde_json::from_value(payload).expect("signed canary result");
+        result.verify().expect("valid canary result");
+        assert_eq!(result.payload.revision_hash, first.revision_hash);
+    }
+
+    #[tokio::test]
+    async fn shared_offer_keeps_distinct_service_bindings_and_one_kernel_artifact() {
+        use froglet_protocol::publication::{
+            PUBLICATION_CANARY_REQUEST_SCHEMA_V1, PublicationCanaryRequest,
+            SignedPublicationCanaryResult,
+        };
+
+        let state = test_app_state(PaymentBackend::None);
+        let second_wasm = format!(
+            "{}33",
+            VALID_WASM_HEX
+                .strip_suffix("32")
+                .expect("fixture module ends in the JSON digit 2")
+        );
+        let fixtures = [
+            ("shared-service-a", VALID_WASM_HEX, json!(42)),
+            ("shared-service-b", second_wasm.as_str(), json!(43)),
+        ];
+        let mut revisions = Vec::new();
+        for (service_id, module_hex, expected_output) in fixtures {
+            let mut request =
+                verified_wasm_publication_request(service_id, Some(expected_output.clone()));
+            request["offer_id"] = json!("shared-kernel-offer");
+            request["wasm_module_hex"] = json!(module_hex);
+            request["summary"] = json!(format!("private binding for {service_id}"));
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/artifacts/publish",
+                    Some("test-provider-control-token"),
+                    Some(request),
+                ))
+                .await
+                .expect("shared-offer publication response");
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(
+                status,
+                StatusCode::CREATED,
+                "unexpected response for {service_id}: {payload}"
+            );
+            revisions.push(
+                serde_json::from_value::<SignedPublicationRevision>(
+                    payload["evidence"]["publication_revision"].clone(),
+                )
+                .expect("signed shared-offer revision"),
+            );
+        }
+
+        assert_ne!(
+            revisions[0].payload.binding_hash, revisions[1].payload.binding_hash,
+            "the regression must exercise distinct private bindings"
+        );
+        assert_eq!(
+            revisions[0].payload.offer_hash, revisions[1].payload.offer_hash,
+            "compatible bindings must reuse one exact Kernel Offer"
+        );
+
+        let mut shared_services = current_service_records(state.as_ref(), false, false)
+            .await
+            .expect("current service records")
+            .into_iter()
+            .filter(|service| service.offer_id == "shared-kernel-offer")
+            .map(|service| service.service_id)
+            .collect::<Vec<_>>();
+        shared_services.sort();
+        assert_eq!(
+            shared_services,
+            vec![
+                "shared-service-a".to_string(),
+                "shared-service-b".to_string()
+            ]
+        );
+
+        let shared_offers = current_offer_records(state.as_ref(), false)
+            .await
+            .expect("current offer records")
+            .into_iter()
+            .filter(|record| record.offer.payload.offer_id == "shared-kernel-offer")
+            .collect::<Vec<_>>();
+        assert_eq!(shared_offers.len(), 1);
+        assert_eq!(shared_offers[0].offer.hash, revisions[0].payload.offer_hash);
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
+            .await
+            .expect("shared-offer feed response");
+        let (status, feed): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected feed response: {feed}");
+        let offer_hash = revisions[0].payload.offer_hash.as_str();
+        assert_eq!(
+            feed["active_offer_hashes"]
+                .as_array()
+                .expect("active offer hashes")
+                .iter()
+                .filter(|hash| hash.as_str() == Some(offer_hash))
+                .count(),
+            1
+        );
+        assert_eq!(
+            feed["artifacts"]
+                .as_array()
+                .expect("feed artifacts")
+                .iter()
+                .filter(|artifact| {
+                    artifact["kind"] == ARTIFACT_KIND_OFFER
+                        && artifact["document"]["payload"]["offer_id"] == "shared-kernel-offer"
+                })
+                .count(),
+            1
+        );
+
+        for (index, revision) in revisions.iter().enumerate() {
+            let request = PublicationCanaryRequest {
+                schema_version: PUBLICATION_CANARY_REQUEST_SCHEMA_V1.to_string(),
+                revision_hash: revision.revision_hash.clone(),
+                offer_hash: revision.payload.offer_hash.clone(),
+                challenge: format!("{:02x}", index + 1).repeat(32),
+                input: Value::Null,
+            };
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    &format!("/v1/publications/{}/canary", revision.revision_hash),
+                    None,
+                    Some(serde_json::to_value(request).unwrap()),
+                ))
+                .await
+                .expect("shared-offer canary response");
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "unexpected canary response: {payload}"
+            );
+            let result: SignedPublicationCanaryResult =
+                serde_json::from_value(payload).expect("signed canary result");
+            result.verify().expect("valid canary result");
+            assert_eq!(result.payload.revision_hash, revision.revision_hash);
+            assert_eq!(result.payload.offer_hash, revision.payload.offer_hash);
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_offer_reuses_exact_artifact_across_descriptor_drift() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut first = verified_wasm_publication_request("descriptor-shared-a", Some(json!(42)));
+        first["offer_id"] = json!("descriptor-shared-offer");
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(first),
+            ))
+            .await
+            .expect("first descriptor-shared publication response");
+        let (status, first): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {first}");
+        let original_offer_hash = first["evidence"]["offer_hash"]
+            .as_str()
+            .expect("original offer hash")
+            .to_string();
+        let original_descriptor_hash = first["evidence"]["descriptor_hash"]
+            .as_str()
+            .expect("original descriptor hash")
+            .to_string();
+
+        {
+            let mut transport = state.transport_status.lock().await;
+            transport.relay_enabled = true;
+            transport.relay_status = "up".to_string();
+            transport.relay_url = Some("https://descriptor-drift.relay.example".to_string());
+        }
+        let drifted_descriptor = current_descriptor_artifact(state.as_ref())
+            .await
+            .expect("descriptor after transport drift");
+        assert_ne!(drifted_descriptor.hash, original_descriptor_hash);
+
+        let mut second = verified_wasm_publication_request("descriptor-shared-b", Some(json!(42)));
+        second["offer_id"] = json!("descriptor-shared-offer");
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(second),
+            ))
+            .await
+            .expect("second descriptor-shared publication response");
+        let (status, second): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {second}");
+        assert_eq!(second["evidence"]["offer_hash"], original_offer_hash);
+        assert_eq!(
+            second["evidence"]["descriptor_hash"],
+            original_descriptor_hash
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::GET,
+                &format!("/v1/artifacts/{original_descriptor_hash}"),
+                None,
+                None,
+            ))
+            .await
+            .expect("historical shared descriptor response");
+        let (status, _payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the exact descriptor referenced by the shared offer must stay publicly available"
+        );
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
+            .await
+            .expect("descriptor-shared feed response");
+        let (status, feed): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected feed response: {feed}");
+        let artifacts = feed["artifacts"].as_array().expect("feed artifacts");
+        assert!(artifacts.iter().any(|artifact| {
+            artifact["kind"] == ARTIFACT_KIND_DESCRIPTOR
+                && artifact["hash"] == original_descriptor_hash
+        }));
+        assert!(artifacts.iter().any(|artifact| {
+            artifact["kind"] == ARTIFACT_KIND_DESCRIPTOR
+                && artifact["hash"] == drifted_descriptor.hash
+        }));
+    }
+
+    #[tokio::test]
+    async fn shared_offer_rejects_resume_with_a_different_exact_artifact() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut first = verified_wasm_publication_request("exact-resume-a", Some(json!(42)));
+        first["offer_id"] = json!("exact-resume-offer");
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(first),
+            ))
+            .await
+            .expect("first exact-resume publication response");
+        let (status, first): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {first}");
+        let first_offer_hash = first["evidence"]["offer_hash"]
+            .as_str()
+            .expect("first offer hash")
+            .to_string();
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/exact-resume-a/pause",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("exact-resume pause response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+
+        {
+            let mut transport = state.transport_status.lock().await;
+            transport.relay_enabled = true;
+            transport.relay_status = "up".to_string();
+            transport.relay_url = Some("https://exact-resume.relay.example".to_string());
+        }
+        let drifted_descriptor = current_descriptor_artifact(state.as_ref())
+            .await
+            .expect("drifted exact-resume descriptor");
+
+        let mut second = verified_wasm_publication_request("exact-resume-b", Some(json!(42)));
+        second["offer_id"] = json!("exact-resume-offer");
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(second),
+            ))
+            .await
+            .expect("second exact-resume publication response");
+        let (status, second): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {second}");
+        // The descriptor captured while paused has no active capability. The
+        // replacement restores it and must describe the changed transport.
+        let replacement = current_descriptor_artifact(state.as_ref()).await.unwrap();
+        assert_eq!(second["evidence"]["descriptor_hash"], replacement.hash);
+        assert!(replacement.payload.descriptor_seq > drifted_descriptor.payload.descriptor_seq);
+        assert_eq!(
+            replacement.payload.transport_endpoints,
+            drifted_descriptor.payload.transport_endpoints
+        );
+        assert_ne!(second["evidence"]["offer_hash"], first_offer_hash);
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/exact-resume-a/resume",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("incompatible exact-resume response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("exact Kernel Offer")),
+            "unexpected response: {payload}"
+        );
+        let lifecycle = state
+            .db
+            .with_read_conn(|conn| db::get_publication_lifecycle(conn, "exact-resume-a"))
+            .await
+            .expect("exact-resume lifecycle")
+            .expect("exact-resume lifecycle exists");
+        assert_eq!(lifecycle.status, "paused");
+        assert!(lifecycle.active_revision_hash.is_none());
+    }
+
+    #[tokio::test]
+    async fn shared_offer_rejects_incompatible_kernel_terms() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut first = verified_wasm_publication_request("shared-terms-a", Some(json!(42)));
+        first["offer_id"] = json!("shared-terms-offer");
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(first),
+            ))
+            .await
+            .expect("first shared-terms publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+
+        let mut incompatible = verified_wasm_publication_request("shared-terms-b", Some(json!(42)));
+        incompatible["offer_id"] = json!("shared-terms-offer");
+        incompatible["limits"] = json!({
+            "max_input_bytes": 4096,
+            "max_runtime_ms": 1234,
+            "max_memory_bytes": 8 * 1024 * 1024,
+            "max_output_bytes": 2048,
+            "fuel_limit": 50_000,
+        });
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(incompatible),
+            ))
+            .await
+            .expect("incompatible shared-terms publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("different Kernel Offer terms/profile")),
+            "unexpected response: {payload}"
+        );
+        assert!(
+            state
+                .db
+                .with_read_conn(|conn| db::get_publication_lifecycle(conn, "shared-terms-b"))
+                .await
+                .expect("incompatible lifecycle lookup")
+                .is_none(),
+            "an incompatible shared offer must not create lifecycle state"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_offer_revalidates_terms_before_resume_and_rollback() {
+        let state = test_app_state(PaymentBackend::None);
+        let shared_offer_id = "shared-activation-offer";
+
+        let mut first = verified_wasm_publication_request("shared-activation-a", Some(json!(42)));
+        first["offer_id"] = json!(shared_offer_id);
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(first),
+            ))
+            .await
+            .expect("first shared-activation publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        let first_revision_hash = payload["evidence"]["publication_revision"]["revision_hash"]
+            .as_str()
+            .expect("first revision hash")
+            .to_string();
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/shared-activation-a/pause",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("pause shared-activation response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+
+        let compatible_limits = json!({
+            "max_input_bytes": 4096,
+            "max_runtime_ms": 1234,
+            "max_memory_bytes": 8 * 1024 * 1024,
+            "max_output_bytes": 2048,
+            "fuel_limit": 50_000,
+        });
+        let mut second = verified_wasm_publication_request("shared-activation-b", Some(json!(42)));
+        second["offer_id"] = json!(shared_offer_id);
+        second["limits"] = compatible_limits.clone();
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(second),
+            ))
+            .await
+            .expect("second shared-activation publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/shared-activation-a/resume",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("incompatible resume response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("different Kernel Offer terms/profile"))
+        );
+
+        let mut compatible =
+            verified_wasm_publication_request("shared-activation-a", Some(json!(42)));
+        compatible["offer_id"] = json!(shared_offer_id);
+        compatible["limits"] = compatible_limits;
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(compatible),
+            ))
+            .await
+            .expect("compatible replacement publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        let active_revision_hash = payload["evidence"]["publication_revision"]["revision_hash"]
+            .as_str()
+            .expect("compatible revision hash")
+            .to_string();
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!(
+                    "/v1/provider/publications/shared-activation-a/rollback/{first_revision_hash}"
+                ),
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("incompatible rollback response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+        let lifecycle = state
+            .db
+            .with_read_conn(|conn| db::get_publication_lifecycle(conn, "shared-activation-a"))
+            .await
+            .expect("shared-activation lifecycle")
+            .expect("shared-activation lifecycle exists");
+        assert_eq!(lifecycle.status, "active");
+        assert_eq!(
+            lifecycle.active_revision_hash.as_deref(),
+            Some(active_revision_hash.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publication_lifecycle_controls_public_offer_and_rollback() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut first_request =
+            verified_wasm_publication_request("lifecycle-wasm", Some(json!(42)));
+        first_request["limits"] = json!({
+            "max_input_bytes": 4096,
+            "max_runtime_ms": 2500,
+            "max_memory_bytes": 8 * 1024 * 1024,
+            "max_output_bytes": 2048,
+            "fuel_limit": 50_000,
+        });
+        let first_response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(first_request),
+            ))
+            .await
+            .expect("first publication response");
+        let (status, first_payload): (StatusCode, Value) = response_json(first_response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {first_payload}"
+        );
+        let first_revision_hash =
+            first_payload["evidence"]["publication_revision"]["revision_hash"]
+                .as_str()
+                .expect("first revision hash")
+                .to_string();
+        let first_offer_hash = first_payload["evidence"]["offer_hash"]
+            .as_str()
+            .expect("first offer hash")
+            .to_string();
+        let first_activation_token = first_payload["evidence"]["activation_token"]
+            .as_str()
+            .expect("first activation token")
+            .to_string();
+        assert!(db::is_publication_activation_token(&first_activation_token));
+
+        let mut second_request =
+            verified_wasm_publication_request("lifecycle-wasm", Some(json!(42)));
+        second_request["limits"] = json!({
+            "max_input_bytes": 4096,
+            "max_runtime_ms": 3000,
+            "max_memory_bytes": 8 * 1024 * 1024,
+            "max_output_bytes": 2048,
+            "fuel_limit": 50_000,
+        });
+        let second_response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(second_request),
+            ))
+            .await
+            .expect("second publication response");
+        let (status, second_payload): (StatusCode, Value) = response_json(second_response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {second_payload}"
+        );
+        let second_revision_hash =
+            second_payload["evidence"]["publication_revision"]["revision_hash"]
+                .as_str()
+                .expect("second revision hash")
+                .to_string();
+        let second_offer_hash = second_payload["evidence"]["offer_hash"]
+            .as_str()
+            .expect("second offer hash")
+            .to_string();
+        let second_activation_token = second_payload["evidence"]["activation_token"]
+            .as_str()
+            .expect("second activation token")
+            .to_string();
+        assert!(db::is_publication_activation_token(
+            &second_activation_token
+        ));
+        assert_ne!(first_activation_token, second_activation_token);
+        assert_ne!(first_revision_hash, second_revision_hash);
+        assert_ne!(first_offer_hash, second_offer_hash);
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!(
+                    "/v1/provider/publications/lifecycle-wasm/revisions/{first_revision_hash}/pause"
+                ),
+                Some("test-provider-control-token"),
+                Some(json!({ "activation_token": first_activation_token })),
+            ))
+            .await
+            .expect("stale exact pause response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+        assert_eq!(
+            provider_control_offer_record(state.as_ref(), "lifecycle-wasm", false)
+                .await
+                .expect("active offer lookup")
+                .expect("newer revision remains active")
+                .offer
+                .hash,
+            second_offer_hash
+        );
+
+        for _ in 0..2 {
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    &format!(
+                        "/v1/provider/publications/lifecycle-wasm/revisions/{second_revision_hash}/pause"
+                    ),
+                    Some("test-provider-control-token"),
+                    Some(json!({ "activation_token": second_activation_token })),
+                ))
+                .await
+                .expect("exact pause response");
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+            assert_eq!(payload["publication"]["status"], "paused");
+            assert_eq!(
+                payload["publication"]["activation_token"],
+                second_activation_token
+            );
+        }
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/lifecycle-wasm/pause",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("pause response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        assert_eq!(payload["publication"]["status"], "paused");
+        assert!(payload["publication"].get("active_revision_hash").is_none());
+        assert!(
+            provider_control_offer_record(state.as_ref(), "lifecycle-wasm", false)
+                .await
+                .expect("paused offer lookup")
+                .is_none(),
+            "paused publication must leave the public offer projection"
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/lifecycle-wasm/resume",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("resume response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        assert_eq!(payload["publication"]["status"], "active");
+        let resumed_activation_token = payload["publication"]["activation_token"]
+            .as_str()
+            .expect("resumed activation token")
+            .to_string();
+        assert_ne!(resumed_activation_token, second_activation_token);
+        assert_eq!(
+            provider_control_offer_record(state.as_ref(), "lifecycle-wasm", false)
+                .await
+                .expect("resumed offer lookup")
+                .expect("resumed public offer")
+                .offer
+                .hash,
+            second_offer_hash
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!(
+                    "/v1/provider/publications/lifecycle-wasm/revisions/{second_revision_hash}/pause"
+                ),
+                Some("test-provider-control-token"),
+                Some(json!({ "activation_token": second_activation_token })),
+            ))
+            .await
+            .expect("delayed same-revision compensation response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "delayed compensation must not pause a resumed activation: {payload}"
+        );
+        assert!(
+            payload["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("activation token precondition mismatch")),
+            "unexpected response: {payload}"
+        );
+        let still_active = state
+            .db
+            .with_read_conn(|conn| db::get_publication_lifecycle(conn, "lifecycle-wasm"))
+            .await
+            .expect("same-revision lifecycle lookup")
+            .expect("same-revision lifecycle");
+        assert_eq!(still_active.status, "active");
+        assert_eq!(still_active.activation_token, resumed_activation_token);
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/publications/lifecycle-wasm/rollback/{first_revision_hash}"),
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("rollback response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        assert_eq!(
+            payload["publication"]["active_revision_hash"],
+            first_revision_hash
+        );
+        let first_rollback_activation_token = payload["publication"]["activation_token"]
+            .as_str()
+            .expect("first rollback activation token")
+            .to_string();
+        assert_ne!(first_rollback_activation_token, resumed_activation_token);
+        assert_eq!(
+            provider_control_offer_record(state.as_ref(), "lifecycle-wasm", false)
+                .await
+                .expect("rolled-back offer lookup")
+                .expect("rolled-back public offer")
+                .offer
+                .hash,
+            first_offer_hash
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/lifecycle-wasm/unpublish",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("unpublish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        assert_eq!(payload["publication"]["status"], "unpublished");
+        assert_eq!(
+            payload["publication"]["activation_token"],
+            first_rollback_activation_token
+        );
+        assert!(
+            provider_control_offer_record(state.as_ref(), "lifecycle-wasm", false)
+                .await
+                .expect("unpublished offer lookup")
+                .is_none()
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/lifecycle-wasm/resume",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("invalid resume response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!(
+                    "/v1/provider/publications/lifecycle-wasm/rollback/{second_revision_hash}"
+                ),
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("reactivating rollback response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        assert_eq!(payload["publication"]["status"], "active");
+        assert_eq!(
+            payload["publication"]["active_revision_hash"],
+            second_revision_hash
+        );
+        assert_ne!(
+            payload["publication"]["activation_token"],
+            first_rollback_activation_token
+        );
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/publications/lifecycle-wasm/logs?limit=100",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("operation log response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+        assert_eq!(payload["operations"].as_array().unwrap().len(), 7);
+    }
+
+    #[tokio::test]
+    async fn failed_replacement_compensation_restores_previous_publication() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut first_request =
+            verified_wasm_publication_request("replacement-restore", Some(json!(42)));
+        first_request["limits"]["max_runtime_ms"] = json!(2500);
+        let first_response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(first_request),
+            ))
+            .await
+            .expect("first replacement publication response");
+        let (status, first): (StatusCode, Value) = response_json(first_response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {first}");
+        let first_revision = first["evidence"]["publication_revision"]["revision_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let first_offer = first["evidence"]["offer_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut second_request =
+            verified_wasm_publication_request("replacement-restore", Some(json!(42)));
+        second_request["limits"]["max_runtime_ms"] = json!(3000);
+        let second_response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(second_request),
+            ))
+            .await
+            .expect("replacement publication response");
+        let (status, second): (StatusCode, Value) = response_json(second_response).await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected response: {second}");
+        let second_revision = second["evidence"]["publication_revision"]["revision_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second_token = second["evidence"]["activation_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let previous = second["evidence"]["previous_publication"].clone();
+        assert_eq!(previous["selected_revision_hash"], first_revision);
+        let previous_grants = second["evidence"]["previous_transport_grants"].clone();
+
+        for _ in 0..2 {
+            let response = public_router(state.clone())
+                .oneshot(runtime_request(
+                    Method::POST,
+                    &format!(
+                        "/v1/provider/publications/replacement-restore/revisions/{second_revision}/pause"
+                    ),
+                    Some("test-provider-control-token"),
+                    Some(json!({
+                        "activation_token": second_token,
+                        "previous_publication": previous,
+                        "previous_transport_grants": previous_grants,
+                    })),
+                ))
+                .await
+                .expect("replacement compensation response");
+            let (status, payload): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(status, StatusCode::OK, "unexpected response: {payload}");
+            assert_eq!(payload["publication"]["status"], "active");
+            assert_eq!(
+                payload["publication"]["selected_revision_hash"],
+                first_revision
+            );
+        }
+        let restored = provider_control_offer_record(state.as_ref(), "replacement-restore", false)
+            .await
+            .expect("restored offer lookup")
+            .expect("restored offer");
+        assert_eq!(restored.offer.hash, first_offer);
+    }
+
+    #[tokio::test]
+    async fn legacy_unverified_publication_rejects_lifecycle_mutation() {
+        let state = test_app_state(PaymentBackend::None);
+        let mut request = verified_wasm_publication_request("legacy-wasm", Some(json!(42)));
+        request.as_object_mut().unwrap().remove("verification");
+        let response = public_router(state.clone())
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(request),
+            ))
+            .await
+            .expect("legacy publication response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+        assert_eq!(payload["evidence"]["lifecycle_status"], "legacy_unverified");
+        assert!(payload["evidence"].get("publication_revision").is_none());
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/publications/legacy-wasm/pause",
+                Some("test-provider-control-token"),
+                None,
+            ))
+            .await
+            .expect("legacy pause response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "unexpected response: {payload}"
+        );
+        assert_eq!(payload["lifecycle_status"], "legacy_unverified");
+        assert_eq!(
+            payload["remediation"],
+            "republish the service with a verification fixture"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_publish_paid_revision_preserves_currency_terms_and_limits() {
+        let state = test_app_state(PaymentBackend::Stripe);
+        let mut request = verified_wasm_publication_request("paid-wasm", Some(json!(42)));
+        request["project_id"] = json!("paid-project");
+        request["offer_id"] = json!("paid-wasm-v2");
+        request["starter"] = json!("null");
+        request["price_sats"] = json!(500);
+        request["settlement_method"] = json!("stripe");
+        request["price_currency"] = json!("usd");
+        request["limits"] = json!({
+            "max_input_bytes": 4096,
+            "max_runtime_ms": 2500,
+            "max_memory_bytes": 8 * 1024 * 1024,
+            "max_output_bytes": 2048,
+            "fuel_limit": 50_000,
+        });
+        request["input_schema"] = json!({"type":["null"]});
+        request["output_schema"] = json!({"type":"integer"});
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/artifacts/publish",
+                Some("test-provider-control-token"),
+                Some(request),
+            ))
+            .await
+            .expect("provider-control paid publish response");
+        let (status, payload): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected response: {payload}"
+        );
+
+        let revision: SignedPublicationRevision =
+            serde_json::from_value(payload["evidence"]["publication_revision"].clone())
+                .expect("paid publication revision");
+        revision.verify().expect("valid paid revision signature");
+        assert_eq!(revision.payload.service_id, "paid-wasm");
+        assert_eq!(revision.payload.offer_id, "paid-wasm-v2");
+        assert_eq!(revision.payload.price.currency, PublicationCurrency::Usd);
+        assert_eq!(
+            revision.payload.price.settlement_method,
+            PublicationSettlement::Stripe
+        );
+        assert_eq!(revision.payload.price.base_amount_minor, 500);
+        assert_eq!(revision.payload.price.success_amount_minor, 0);
+        assert_eq!(
+            revision.payload.price.offer_settlement_method,
+            "stripe_mpp.v1"
+        );
+        assert_eq!(revision.payload.limits.max_runtime_ms, 2500);
+        assert_eq!(
+            revision.payload.service.project_id.as_deref(),
+            Some("paid-project")
+        );
+        assert_eq!(revision.payload.service.starter.as_deref(), Some("null"));
+        assert_eq!(revision.payload.service.source_kind, "artifact");
+        assert_eq!(revision.payload.service.entrypoint_kind, "module");
+        assert_eq!(revision.payload.service.entrypoint, "run");
+        assert_eq!(
+            revision.payload.service.contract_version,
+            WASM_RUN_JSON_ABI_V1
+        );
+        assert_eq!(revision.payload.service.mode, "sync");
+        assert!(revision.payload.service.mounts.is_empty());
+        assert!(revision.payload.service.capabilities.is_empty());
+        assert_eq!(
+            revision.payload.service.input_schema.as_ref().unwrap()["type"][0],
+            "null"
+        );
+        assert_eq!(
+            revision.payload.service.output_schema.as_ref().unwrap()["type"],
+            "integer"
+        );
+        assert_eq!(
+            payload["offer"]["offer"]["payload"]["price_schedule"]["base_fee_msat"],
+            500_000
+        );
+        assert_eq!(
+            payload["offer"]["offer"]["payload"]["settlement_method"],
+            "stripe_mpp.v1"
+        );
+        assert_eq!(payload["offer"]["project_id"], "paid-project");
+        assert_eq!(payload["offer"]["starter"], "null");
+        assert_eq!(payload["offer"]["input_schema"]["type"][0], "null");
+        assert_eq!(payload["offer"]["output_schema"]["type"], "integer");
+    }
+
+    #[tokio::test]
+    async fn publication_execution_enforces_quoted_output_limit() {
+        let state = test_app_state(PaymentBackend::None);
+        let definition = artifact_provider_offer_definition(
+            state.as_ref(),
+            ProviderControlPublishArtifactRequest {
+                service_id: "limited-wasm".to_string(),
+                wasm_module_hex: Some(VALID_WASM_HEX.to_string()),
+                runtime: Some("wasm".to_string()),
+                package_kind: Some("inline_module".to_string()),
+                contract_version: Some(WASM_RUN_JSON_ABI_V1.to_string()),
+                price_sats: 0,
+                settlement_method: Some(PublicationSettlement::None),
+                price_currency: Some(PublicationCurrency::Sat),
+                ..Default::default()
+            },
+        )
+        .expect("limited Wasm definition");
+        let service = provider_service_from_definition(state.as_ref(), &definition, true)
+            .expect("service record")
+            .expect("service");
+        let spec =
+            build_bound_workload_spec_from_service(&service, Value::Null).expect("bound workload");
+        let error = run_workload_spec_with_admission_limits(
+            state.as_ref(),
+            spec,
+            Vec::new(),
+            None,
+            Some(
+                state
+                    .wasm_sandbox
+                    .try_acquire_execution_permit()
+                    .expect("Wasm permit"),
+            ),
+            None,
+            None,
+            Some(ExecutionLimits {
+                max_input_bytes: 16,
+                max_runtime_ms: 2_500,
+                max_memory_bytes: 8 * 1024 * 1024,
+                max_output_bytes: 1,
+                fuel_limit: 50_000,
+            }),
+        )
+        .await
+        .expect_err("canonical result 42 is two bytes");
+        assert!(error.contains("exceeds quoted max_output_bytes 1"));
+    }
+
     #[tokio::test]
     async fn provider_domain_claim_sign_accepts_intent_separator() {
         let state = test_app_state(PaymentBackend::None);
@@ -14575,6 +27954,103 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(payload["signature"].as_str().map(str::len), Some(128));
+    }
+
+    #[tokio::test]
+    async fn canonical_publication_intent_reaches_the_persisted_signed_offer() {
+        use froglet_protocol::publication::{
+            PublicationCurrency, PublicationIntent, PublicationLimits, PublicationMount,
+            PublicationSettlement, VerificationFixture,
+        };
+
+        let state = test_app_state(PaymentBackend::Stripe);
+        let intent = PublicationIntent {
+            service_id: "analytics".to_string(),
+            offer_id: Some("analytics-read-v2".to_string()),
+            project_id: Some("analytics-project".to_string()),
+            runtime: Some("python".to_string()),
+            package_kind: Some("inline_source".to_string()),
+            entrypoint_kind: Some("handler".to_string()),
+            entrypoint: Some("handler.py".to_string()),
+            contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
+            mounts: Some(vec![PublicationMount {
+                handle: "warehouse".to_string(),
+                kind: "postgres".to_string(),
+                read_only: true,
+                binding: None,
+            }]),
+            capabilities: Some(vec![
+                "custom.vector-index".to_string(),
+                " custom.vector-index ".to_string(),
+            ]),
+            inline_source: Some(
+                "def handler(event, context):\n    return {\"rows\": []}\n".to_string(),
+            ),
+            source_kind: Some("python".to_string()),
+            summary: Some("Read analytics".to_string()),
+            starter: Some(r#"{"query":"select 1"}"#.to_string()),
+            mode: Some("async".to_string()),
+            price_sats: 5,
+            settlement_method: Some(PublicationSettlement::Stripe),
+            price_currency: Some(PublicationCurrency::Usd),
+            limits: Some(PublicationLimits {
+                max_input_bytes: Some(4096),
+                max_runtime_ms: Some(2500),
+                max_memory_bytes: Some(8 * 1024 * 1024),
+                max_output_bytes: Some(2048),
+                fuel_limit: Some(50_000),
+            }),
+            publication_state: Some("hidden".to_string()),
+            input_schema: Some(json!({"type":"object","required":["query"]})),
+            output_schema: Some(json!({"type":"object","properties":{"rows":{"type":"array"}}})),
+            verification: Some(VerificationFixture {
+                input: json!({"query":"select 1"}),
+                expected_output: Some(json!({"rows":[]})),
+            }),
+            ..PublicationIntent::default()
+        };
+
+        let definition = artifact_provider_offer_definition(state.as_ref(), intent)
+            .expect("canonical publication intent should be accepted");
+        assert_eq!(definition.offer_id, "analytics-read-v2");
+        assert_eq!(definition.project_id.as_deref(), Some("analytics-project"));
+        assert_eq!(definition.capabilities, vec!["custom.vector-index"]);
+        assert_eq!(definition.max_runtime_ms, 2500);
+        assert_eq!(
+            definition.verification.as_ref().unwrap().input["query"],
+            "select 1"
+        );
+
+        let (_status, _response) = persist_provider_offer_mutation(
+            state.as_ref(),
+            definition,
+            StatusCode::CREATED,
+            "published canonical intent".to_string(),
+        )
+        .await
+        .expect("persist offer");
+        let record = provider_control_offer_record(state.as_ref(), "analytics-read-v2", true)
+            .await
+            .expect("read offer")
+            .expect("offer exists");
+
+        assert_eq!(record.offer.payload.offer_id, "analytics-read-v2");
+        assert_eq!(record.offer.payload.settlement_method, "stripe_mpp.v1");
+        assert_eq!(record.offer.payload.price_schedule.base_fee_msat, 5_000);
+        assert_eq!(record.offer.payload.price_schedule.success_fee_msat, 0);
+        assert_eq!(record.offer.payload.execution_profile.max_runtime_ms, 2500);
+        assert_eq!(
+            record.offer.payload.execution_profile.capabilities,
+            vec![
+                "custom.vector-index".to_string(),
+                "mount.postgres.read.warehouse".to_string()
+            ]
+        );
+        assert_eq!(record.input_schema.unwrap()["required"][0], "query");
+        assert_eq!(
+            record.output_schema.unwrap()["properties"]["rows"]["type"],
+            "array"
+        );
     }
 
     #[tokio::test]
@@ -14606,6 +28082,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .expect_err("disabled GPU provider should reject GPU service publication");
@@ -14650,10 +28127,12 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 500,
-                price_currency: Some("usd".to_string()),
+                price_currency: Some(PublicationCurrency::Usd),
+                settlement_method: Some(PublicationSettlement::Stripe),
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .expect_err("usd currency must be rejected when Stripe backend is absent");
@@ -14693,10 +28172,12 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 1000,
-                price_currency: Some("sat".to_string()),
+                settlement_method: Some(PublicationSettlement::Lightning),
+                price_currency: Some(PublicationCurrency::Sat),
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .expect("sat currency must be accepted on Lightning node");
@@ -14732,16 +28213,73 @@ mod tests {
                 starter: None,
                 mode: Some("sync".to_string()),
                 price_sats: 500,
-                price_currency: Some("usd".to_string()),
+                settlement_method: Some(PublicationSettlement::Stripe),
+                price_currency: Some(PublicationCurrency::Usd),
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .expect("usd currency must be accepted on Stripe node");
 
         assert_eq!(definition.price_currency.as_deref(), Some("usd"));
         assert_eq!(definition.price_sats, 500);
+    }
+
+    #[test]
+    fn paid_currency_does_not_select_a_settlement_rail() {
+        let mut state = test_app_state(PaymentBackend::Stripe);
+        Arc::get_mut(&mut state)
+            .expect("unique app state")
+            .config
+            .payment_backends
+            .push(PaymentBackend::Lightning);
+        let mut intent = base_python_publish_request("dual-backend-usd");
+        intent.price_sats = 500;
+        intent.price_currency = Some(PublicationCurrency::Usd);
+
+        let error = artifact_provider_offer_definition(state.as_ref(), intent)
+            .expect_err("paid publication must not infer Stripe from currency");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("explicit settlement method"))
+        );
+    }
+
+    #[test]
+    fn base_fee_only_publication_is_not_reported_as_free() {
+        let state = test_app_state(PaymentBackend::Lightning);
+        let mut intent = base_python_publish_request("base-fee-service");
+        intent.base_fee_msat = Some(1_000);
+        intent.success_fee_msat = Some(0);
+        intent.settlement_method = Some(PublicationSettlement::Lightning);
+        intent.price_currency = Some(PublicationCurrency::Sat);
+
+        let definition = artifact_provider_offer_definition(state.as_ref(), intent)
+            .expect("base-fee publication");
+        let service = provider_service_from_definition(state.as_ref(), &definition, false)
+            .expect("service record")
+            .expect("service");
+        assert_eq!(service.price_sats, 1);
+        assert_eq!(service.base_fee_msat, 1_000);
+        assert_eq!(service.success_fee_msat, 0);
+        assert_eq!(
+            service.settlement_method,
+            "lightning.base_fee_plus_success_fee.v1"
+        );
+        assert_eq!(service.price_currency.as_deref(), Some("sat"));
+
+        let offer =
+            payload_from_provider_offer_definition(state.as_ref(), "descriptor", &definition);
+        assert_eq!(offer.price_schedule.base_fee_msat, 1_000);
+        assert_eq!(offer.price_schedule.success_fee_msat, 0);
+        assert_eq!(
+            offer.settlement_method,
+            "lightning.base_fee_plus_success_fee.v1"
+        );
     }
 
     #[tokio::test]
@@ -14768,7 +28306,7 @@ mod tests {
                 entrypoint_kind: Some("handler".to_string()),
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
-                mounts: Some(vec![crate::execution::ExecutionMount {
+                mounts: Some(vec![froglet_protocol::publication::PublicationMount {
                     handle: "fixtures".to_string(),
                     kind: "postgres".to_string(),
                     read_only: true,
@@ -14784,6 +28322,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -14873,6 +28412,7 @@ mod tests {
             module_bytes_hex: None,
             source_hash: None,
             inline_source: None,
+            python_bundle: None,
             oci_reference: None,
             oci_digest: None,
             builtin_name: None,
@@ -14885,7 +28425,11 @@ mod tests {
             | crate::execution::ExecutionPackageKind::OciImage => {
                 execution.module_hash = Some(binding_hash)
             }
-            crate::execution::ExecutionPackageKind::Builtin => {}
+            crate::execution::ExecutionPackageKind::Builtin => {
+                execution.workload_kind = service.offer_kind.clone();
+                execution.builtin_name = Some(execution.entrypoint.value.clone());
+                execution.module_hash = Some(binding_hash);
+            }
         }
         execution
     }
@@ -14915,6 +28459,102 @@ mod tests {
 
     fn test_wasm_submission() -> crate::wasm::WasmSubmission {
         test_wasm_submission_with_input(Value::Null)
+    }
+
+    #[tokio::test]
+    async fn queued_job_admission_waits_for_runtime_capacity_instead_of_failing() {
+        let mut state = test_app_state(PaymentBackend::None);
+        let state_mut = Arc::get_mut(&mut state).expect("unique state");
+        state_mut.wasm_sandbox =
+            Arc::new(crate::sandbox::WasmSandbox::new(1).expect("single-slot Wasm sandbox"));
+        state_mut.process_execution_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = state
+            .wasm_sandbox
+            .try_acquire_execution_permit()
+            .expect("occupy Wasm slot");
+        let spec = JobSpec::Wasm {
+            submission: test_wasm_submission(),
+        };
+        let mut pending = Box::pin(acquire_job_runtime_permit(state.as_ref(), &spec));
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut pending)
+                .await
+                .is_err(),
+            "admission must remain pending while capacity is occupied"
+        );
+        drop(held);
+
+        let permit = tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("admission should wake after capacity is released")
+            .expect("admission permit");
+        assert!(matches!(permit, JobRuntimePermit::Wasm(_)));
+
+        let held = state
+            .process_execution_semaphore
+            .clone()
+            .try_acquire_owned()
+            .expect("occupy process slot");
+        let spec = JobSpec::Execution {
+            execution: Box::new(
+                ExecutionWorkload::builtin_service("test.handler".to_string(), Value::Null)
+                    .expect("builtin workload"),
+            ),
+        };
+        let mut pending = Box::pin(acquire_job_runtime_permit(state.as_ref(), &spec));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut pending)
+                .await
+                .is_err(),
+            "builtin admission must remain pending while process capacity is occupied"
+        );
+        drop(held);
+        let permit = tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("builtin admission should wake after capacity is released")
+            .expect("builtin admission permit");
+        assert!(matches!(permit, JobRuntimePermit::Process(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_cancellation_kills_and_reaps_the_process_group() {
+        use std::io::BufRead as _;
+        use std::os::unix::process::CommandExt as _;
+
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & echo ready; wait")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn process-group fixture");
+        let process_group_id = i32::try_from(child.id()).expect("process-group id");
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("fixture stdout"))
+            .read_line(&mut ready)
+            .expect("read fixture readiness");
+        assert_eq!(ready.trim(), "ready");
+        let handle = Arc::new(std::sync::Mutex::new(Some(ManagedChild {
+            child,
+            process_group_id,
+        })));
+
+        kill_child_process(&handle);
+
+        assert!(handle.lock().expect("child handle").is_none());
+        let group_gone = (0..100).any(|_| {
+            let result = unsafe { libc::kill(-process_group_id, 0) };
+            if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(group_gone, "cancelled process group still exists");
     }
 
     fn test_runtime_create_deal_request(
@@ -15025,6 +28665,59 @@ mod tests {
         max_base_invoice_expiry_secs: u64,
         max_success_hold_expiry_secs: u64,
     ) -> SignedArtifact<QuotePayload> {
+        signed_quote_with_terms(
+            requester_id,
+            created_at,
+            expires_at,
+            max_runtime_ms,
+            QuoteSettlementTerms {
+                method: "lightning.base_fee_plus_success_fee.v1".to_string(),
+                destination_identity: format!("02{}", "dd".repeat(32)),
+                base_fee_msat: 1_000,
+                success_fee_msat: 9_000,
+                max_base_invoice_expiry_secs,
+                max_success_hold_expiry_secs,
+                min_final_cltv_expiry: 18,
+            },
+        )
+    }
+
+    fn signed_free_quote(
+        state: &AppState,
+        requester_id: String,
+        created_at: i64,
+        expires_at: i64,
+        max_runtime_ms: u64,
+    ) -> SignedArtifact<QuotePayload> {
+        let mut payload = signed_lightning_quote_for_state(
+            state,
+            requester_id,
+            created_at,
+            expires_at,
+            max_runtime_ms,
+            1,
+            1,
+        )
+        .payload;
+        payload.settlement_terms = QuoteSettlementTerms {
+            method: "none".to_string(),
+            destination_identity: String::new(),
+            base_fee_msat: 0,
+            success_fee_msat: 0,
+            max_base_invoice_expiry_secs: 0,
+            max_success_hold_expiry_secs: 0,
+            min_final_cltv_expiry: 0,
+        };
+        sign_node_artifact(state, ARTIFACT_KIND_QUOTE, created_at, payload).expect("free quote")
+    }
+
+    fn signed_quote_with_terms(
+        requester_id: String,
+        created_at: i64,
+        expires_at: i64,
+        max_runtime_ms: u64,
+        settlement_terms: QuoteSettlementTerms,
+    ) -> SignedArtifact<QuotePayload> {
         let provider_key = crypto::generate_signing_key();
         let provider_id = crypto::public_key_hex(&provider_key);
         protocol::sign_artifact(
@@ -15044,19 +28737,13 @@ mod tests {
                 capabilities_granted: Vec::new(),
                 extension_refs: Vec::new(),
                 quote_use: None,
-                settlement_terms: QuoteSettlementTerms {
-                    method: "lightning.base_fee_plus_success_fee.v1".to_string(),
-                    destination_identity: format!("02{}", "dd".repeat(32)),
-                    base_fee_msat: 1_000,
-                    success_fee_msat: 9_000,
-                    max_base_invoice_expiry_secs,
-                    max_success_hold_expiry_secs,
-                    min_final_cltv_expiry: 18,
-                },
+                settlement_terms,
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 1024,
                     max_runtime_ms,
-                    max_memory_bytes: 4096,
+                    // Recovery fixtures execute `test_wasm_submission`, whose
+                    // module declares one 64 KiB WebAssembly memory page.
+                    max_memory_bytes: 64 * 1024,
                     max_output_bytes: 1024,
                     fuel_limit: 10_000,
                 },
@@ -15086,6 +28773,26 @@ mod tests {
             verify_marketplace_quote_artifact(quote.clone()).expect("quote should verify");
 
         assert_eq!(verified.hash, quote.hash);
+    }
+
+    #[test]
+    fn unsigned_provider_projection_only_allows_forward_nonterminal_observations() {
+        assert!(unsigned_provider_transition_is_forward(
+            deals::DEAL_STATUS_PAYMENT_PENDING,
+            deals::DEAL_STATUS_RESULT_READY,
+        ));
+        assert!(unsigned_provider_transition_is_forward(
+            deals::DEAL_STATUS_RUNNING,
+            deals::DEAL_STATUS_RESULT_READY,
+        ));
+        assert!(!unsigned_provider_transition_is_forward(
+            deals::DEAL_STATUS_RESULT_READY,
+            deals::DEAL_STATUS_RUNNING,
+        ));
+        assert!(!unsigned_provider_transition_is_forward(
+            deals::DEAL_STATUS_ACCEPTED,
+            deals::DEAL_STATUS_SUCCEEDED,
+        ));
     }
 
     #[test]
@@ -15176,7 +28883,9 @@ mod tests {
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 1024,
                     max_runtime_ms,
-                    max_memory_bytes: 4096,
+                    // `test_wasm_submission` declares one WebAssembly memory
+                    // page, so the signed limit must admit its 64 KiB minimum.
+                    max_memory_bytes: 64 * 1024,
                     max_output_bytes: 1024,
                     fuel_limit: 10_000,
                 },
@@ -15364,8 +29073,13 @@ mod tests {
             content: content.to_string(),
             sig: String::new(),
         };
-        event.id = expected_node_event_id(&event);
-        event.sig = crypto::sign_message_hex(signing_key, &event.canonical_signing_bytes());
+        event.id = expected_node_event_id(&event).expect("canonical test event id");
+        event.sig = crypto::sign_message_hex(
+            signing_key,
+            &event
+                .canonical_signing_bytes()
+                .expect("canonical test event signing bytes"),
+        );
         event
     }
 
@@ -15829,6 +29543,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -15860,6 +29575,7 @@ mod tests {
                 publication_state: Some("hidden".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -15970,6 +29686,7 @@ mod tests {
                 publication_state: Some("hidden".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -16087,6 +29804,11 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                verification: Some(froglet_protocol::publication::VerificationFixture {
+                    input: json!({"message":"ping"}),
+                    expected_output: Some(json!({"message":"pong"})),
+                }),
+                ..Default::default()
             },
         )
         .await;
@@ -16117,6 +29839,7 @@ mod tests {
                 publication_state: Some("hidden".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -16139,6 +29862,10 @@ mod tests {
         assert_eq!(public_payload["service"]["module_bytes_hex"], Value::Null);
         assert_eq!(public_payload["service"]["oci_reference"], Value::Null);
         assert_eq!(public_payload["service"]["oci_digest"], Value::Null);
+        assert!(
+            public_payload["service"].get("verification").is_none(),
+            "provider-private verification fixture leaked into public service JSON: {public_payload}"
+        );
         assert!(public_payload["service"]["binding_hash"].is_string());
 
         let hidden_response = public_router(state)
@@ -16196,6 +29923,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -16266,6 +29994,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -16334,6 +30063,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -16361,7 +30091,12 @@ mod tests {
             },
             Vec::new(),
             None,
-            None,
+            Some(
+                state
+                    .wasm_sandbox
+                    .try_acquire_execution_permit()
+                    .expect("wasm execution permit"),
+            ),
             Some(offer.offer.hash.as_str()),
             None,
         )
@@ -16369,6 +30104,122 @@ mod tests {
         .expect("service-addressed OCI wasm execution");
 
         assert_eq!(output.persisted_result, json!(42));
+    }
+
+    #[tokio::test]
+    async fn direct_oci_wasm_execution_enforces_signed_fuel_limit() {
+        let state = test_app_state(PaymentBackend::None);
+        let module_bytes = hex::decode(VALID_WASM_HEX).expect("valid wasm bytes");
+        let fixture = spawn_oci_registry_fixture(module_bytes).await;
+        let execution = ExecutionWorkload::from_oci_wasm_submission(test_oci_wasm_submission(
+            &fixture.oci_reference,
+            &fixture.oci_digest,
+        ))
+        .expect("OCI Wasm execution workload");
+
+        let error = run_workload_spec_with_admission_limits(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            Vec::new(),
+            None,
+            Some(
+                state
+                    .wasm_sandbox
+                    .try_acquire_execution_permit()
+                    .expect("wasm execution permit"),
+            ),
+            None,
+            None,
+            Some(ExecutionLimits {
+                max_input_bytes: 16,
+                max_runtime_ms: 2_500,
+                max_memory_bytes: 8 * 1024 * 1024,
+                max_output_bytes: 16,
+                fuel_limit: 1,
+            }),
+        )
+        .await
+        .expect_err("signed fuel limit should stop OCI Wasm execution");
+        assert!(
+            error.to_ascii_lowercase().contains("limit"),
+            "unexpected OCI Wasm fuel-limit error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn signed_runtime_limit_bounds_blocking_builtin_handler() {
+        let mut state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut state)
+            .expect("unique test state")
+            .builtin_services
+            .insert(
+                "test.blocking".to_string(),
+                Arc::new(BlockingBuiltinHandler),
+            );
+        let execution = ExecutionWorkload::builtin_service(
+            "test.blocking".to_string(),
+            json!({"request": "must time out"}),
+        )
+        .expect("blocking builtin workload");
+        let started = std::time::Instant::now();
+
+        let error = run_workload_spec_with_admission_limits(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            Some(ExecutionLimits {
+                max_input_bytes: 4_096,
+                max_runtime_ms: 25,
+                max_memory_bytes: 0,
+                max_output_bytes: 4_096,
+                fuel_limit: 0,
+            }),
+        )
+        .await
+        .expect_err("signed builtin runtime limit must win");
+
+        assert_eq!(
+            error,
+            "builtin execution exceeded runtime deadline after 25ms"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "blocking builtin was not isolated from the Tokio worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_oci_wasm_execution_requires_execution_permit() {
+        let state = test_app_state(PaymentBackend::None);
+        let execution = ExecutionWorkload::from_oci_wasm_submission(test_oci_wasm_submission(
+            "http://127.0.0.1:1/module:latest",
+            &"00".repeat(32),
+        ))
+        .expect("OCI Wasm execution workload");
+
+        let error = run_workload_spec_with_admission(
+            state.as_ref(),
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("direct OCI Wasm execution must require a reserved permit");
+
+        assert_eq!(error, "OCI Wasm workloads require an execution permit");
     }
 
     #[tokio::test]
@@ -16396,7 +30247,7 @@ mod tests {
                 entrypoint_kind: Some("handler".to_string()),
                 entrypoint: Some("handler".to_string()),
                 contract_version: Some(CONTRACT_PYTHON_HANDLER_JSON_V1.to_string()),
-                mounts: Some(vec![crate::execution::ExecutionMount {
+                mounts: Some(vec![froglet_protocol::publication::PublicationMount {
                     handle: "fixtures".to_string(),
                     kind: "postgres".to_string(),
                     read_only: true,
@@ -16412,6 +30263,7 @@ mod tests {
                 publication_state: Some("active".to_string()),
                 input_schema: None,
                 output_schema: None,
+                ..Default::default()
             },
         )
         .await;
@@ -16745,7 +30597,7 @@ mod tests {
             content: "hello".to_string(),
             sig: "22".repeat(64),
         };
-        event.id = expected_node_event_id(&event);
+        event.id = expected_node_event_id(&event).expect("canonical test event id");
         insert_event_db(state.as_ref(), event.clone())
             .await
             .expect("insert event");
@@ -16820,7 +30672,7 @@ mod tests {
             offers: Vec<SignedArtifact<OfferPayload>>,
         }
 
-        let state = test_app_state(PaymentBackend::None);
+        let state = test_app_state_with_free_pricing(PaymentBackend::None);
         let response = public_router(state)
             .oneshot(runtime_request(
                 Method::GET,
@@ -16858,7 +30710,7 @@ mod tests {
 
     #[tokio::test]
     async fn generic_python_compute_is_rejected_by_builtin_execute_compute_offer() {
-        let state = test_app_state(PaymentBackend::None);
+        let state = test_app_state_with_free_pricing(PaymentBackend::None);
         let spec = WorkloadSpec::Execution {
             execution: Box::new(
                 crate::execution::ExecutionWorkload::python_inline_script(
@@ -16941,7 +30793,6 @@ mod tests {
             collect_data_mount_plan(&execution, &["mount.postgres.read.analytics".to_string()])
                 .expect("ungranted mount should be ignored");
         assert!(plan.env.is_empty());
-        assert!(!plan.needs_network);
         unsafe {
             std::env::remove_var("FROGLET_MOUNT_postgres_finance_ungranted");
         }
@@ -16964,7 +30815,6 @@ mod tests {
         };
         let plan = collect_data_mount_plan(&execution, &[]).expect("ungranted mount");
         assert!(plan.env.is_empty());
-        assert!(!plan.needs_network);
         unsafe {
             std::env::remove_var("FROGLET_MOUNT_postgres_finance_none");
         }
@@ -17043,7 +30893,6 @@ mod tests {
             collect_data_mount_plan(&execution, &["mount.sqlite.write.api_cache".to_string()])
                 .expect("sqlite mount plan");
         assert_eq!(plan.env.len(), 2);
-        assert!(!plan.needs_network, "sqlite mount must NOT enable network");
         assert_eq!(plan.writable_paths.len(), 1);
         assert_eq!(plan.writable_paths[0], db_path);
         assert!(plan.readonly_paths.is_empty());
@@ -17158,6 +31007,7 @@ mod tests {
             security: ExecutionSecurity::default(),
             mounts: Vec::new(),
             inline_source: Some("def handler(event, ctx):\n    return event\n".to_string()),
+            python_bundle: None,
             module_hash: None,
             module_bytes_hex: None,
             source_hash: None,
@@ -17921,7 +31771,10 @@ mod tests {
             event.content
         ]))
         .expect("event id preimage");
-        assert_eq!(expected_node_event_id(&event), crypto::sha256_hex(expected));
+        assert_eq!(
+            expected_node_event_id(&event).expect("canonical event id"),
+            crypto::sha256_hex(expected)
+        );
     }
 
     #[tokio::test]
@@ -18278,7 +32131,7 @@ mod tests {
 
     #[tokio::test]
     async fn hosted_trial_create_deal_rejects_paid_hidden_and_payment_requests() {
-        let state = test_app_state_with_session_pool(PaymentBackend::None);
+        let state = test_app_state_with_session_pool(PaymentBackend::Lightning);
         publish_test_python_service(&state, "paid-demo", 1, "active").await;
         publish_test_python_service(&state, "hidden-demo", 0, "hidden").await;
         crate::builtins::register_demo_offers(state.as_ref())
@@ -18468,8 +32321,8 @@ mod tests {
         )
         .await
         .expect("demo quote");
-        let preimage = generate_success_preimage_hex();
-        let payment_hash = crypto::sha256_hex(hex::decode(&preimage).expect("hex preimage"));
+        let preimage = generate_success_preimage();
+        let payment_hash = crypto::sha256_hex(preimage.bytes);
         let deal = build_runtime_requester_deal_artifact(
             state.as_ref(),
             &quote,
@@ -19373,7 +33226,13 @@ mod tests {
         let now = settlement::current_unix_timestamp();
         let requester_key = crypto::generate_signing_key();
         let requester_id = crypto::public_key_hex(&requester_key);
-        let quote = signed_quote(requester_id.clone(), now - 120, now - 90, 1_000, 30, 30);
+        let quote = signed_free_quote(
+            state.as_ref(),
+            requester_id.clone(),
+            now - 120,
+            now - 90,
+            1_000,
+        );
         let expired_deal = build_requester_signed_deal_artifact(
             &quote,
             &requester_key,
@@ -19448,7 +33307,15 @@ mod tests {
         let now = settlement::current_unix_timestamp();
         let requester_key = crypto::generate_signing_key();
         let requester_id = crypto::public_key_hex(&requester_key);
-        let quote = signed_quote(requester_id.clone(), now - 5, now + 180, 30_000, 30, 60);
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            requester_id.clone(),
+            now - 5,
+            now + 180,
+            30_000,
+            30,
+            60,
+        );
         let deal = build_requester_signed_deal_artifact(
             &quote,
             &requester_key,
@@ -19538,7 +33405,15 @@ mod tests {
         let now = settlement::current_unix_timestamp();
         let requester_key = crypto::generate_signing_key();
         let requester_id = crypto::public_key_hex(&requester_key);
-        let quote = signed_quote(requester_id.clone(), now - 5, now + 180, 30_000, 30, 60);
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            requester_id.clone(),
+            now - 5,
+            now + 180,
+            30_000,
+            30,
+            60,
+        );
         let deal = build_requester_signed_deal_artifact(
             &quote,
             &requester_key,
@@ -19643,7 +33518,15 @@ mod tests {
         let now = settlement::current_unix_timestamp();
         let requester_key = crypto::generate_signing_key();
         let requester_id = crypto::public_key_hex(&requester_key);
-        let quote = signed_quote(requester_id.clone(), now - 5, now + 180, 30_000, 30, 60);
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            requester_id.clone(),
+            now - 5,
+            now + 180,
+            30_000,
+            30,
+            60,
+        );
         let deal = build_requester_signed_deal_artifact(
             &quote,
             &requester_key,
@@ -19720,14 +33603,25 @@ mod tests {
             "unexpected recovery error: {:?}",
             failed_deal.error
         );
-        assert!(failed_deal.receipt.is_some(), "expected recovery receipt");
+        let receipt = failed_deal
+            .receipt
+            .as_ref()
+            .expect("expected recovery receipt");
         assert_eq!(
-            failed_deal
-                .receipt
-                .as_ref()
-                .and_then(|receipt| receipt.payload.failure_code.as_deref()),
+            receipt.payload.failure_code.as_deref(),
             Some("success_fee_canceled_during_recovery")
         );
+        assert_eq!(receipt.payload.deal_state, "canceled");
+        assert_eq!(receipt.payload.execution_state, "succeeded");
+        assert_eq!(failed_deal.result, Some(json!({ "ok": true })));
+        assert_eq!(receipt.payload.result_hash, failed_deal.result_hash);
+        let report = protocol::validate_quote_deal_receipt(
+            &failed_deal.quote,
+            &failed_deal.artifact,
+            receipt,
+            None,
+        );
+        assert!(report.valid, "invalid recovered Artifact Chain: {report:?}");
     }
 
     #[tokio::test]
@@ -19736,7 +33630,15 @@ mod tests {
         let now = settlement::current_unix_timestamp();
         let requester_key = crypto::generate_signing_key();
         let requester_id = crypto::public_key_hex(&requester_key);
-        let quote = signed_quote(requester_id.clone(), now - 5, now + 180, 30_000, 30, 60);
+        let quote = signed_lightning_quote_for_state(
+            state.as_ref(),
+            requester_id.clone(),
+            now - 5,
+            now + 180,
+            30_000,
+            30,
+            60,
+        );
         let deal = build_requester_signed_deal_artifact(
             &quote,
             &requester_key,
@@ -19812,15 +33714,781 @@ mod tests {
         assert!(succeeded_deal.receipt.is_some(), "expected success receipt");
     }
 
-    // ─── Stripe capture-fail invariant ────────────────────────────────────────
+    #[derive(Default)]
+    struct ScriptedStripeDriverState {
+        commit_results: std::collections::VecDeque<bool>,
+        release_results: std::collections::VecDeque<bool>,
+        reservation_states: std::collections::VecDeque<settlement::PaymentReservationState>,
+        calls: Vec<(String, String)>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedStripeDriver {
+        state: Arc<std::sync::Mutex<ScriptedStripeDriverState>>,
+    }
+
+    impl ScriptedStripeDriver {
+        fn with_script(
+            commit_results: impl IntoIterator<Item = bool>,
+            release_results: impl IntoIterator<Item = bool>,
+            reservation_states: impl IntoIterator<Item = settlement::PaymentReservationState>,
+        ) -> Self {
+            Self {
+                state: Arc::new(std::sync::Mutex::new(ScriptedStripeDriverState {
+                    commit_results: commit_results.into_iter().collect(),
+                    release_results: release_results.into_iter().collect(),
+                    reservation_states: reservation_states.into_iter().collect(),
+                    calls: Vec::new(),
+                })),
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, String)> {
+            self.state.lock().expect("script lock").calls.clone()
+        }
+    }
+
+    impl settlement::SettlementDriver for ScriptedStripeDriver {
+        fn descriptor(&self, _state: &AppState) -> settlement::SettlementDriverDescriptor {
+            settlement::SettlementDriverDescriptor {
+                backend: "stripe".to_string(),
+                mode: "scripted-test".to_string(),
+                accepted_payment_methods: vec!["stripe_mpp".to_string()],
+                capabilities: Vec::new(),
+                reservations: true,
+                receipts: true,
+            }
+        }
+
+        fn wallet_balance<'a>(
+            &'a self,
+            state: &'a AppState,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<settlement::WalletBalanceSnapshot, settlement::PaymentError>,
+        > {
+            Box::pin(async move {
+                Ok(settlement::WalletBalanceSnapshot::from_descriptor(
+                    self.descriptor(state),
+                ))
+            })
+        }
+
+        fn prepare<'a>(
+            &'a self,
+            _state: &'a AppState,
+            _request: settlement::PreparePaymentRequest,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<Option<PaymentReservation>, settlement::PaymentError>,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn commit<'a>(
+            &'a self,
+            _state: &'a AppState,
+            reservation: PaymentReservation,
+        ) -> futures::future::BoxFuture<'a, Result<PaymentReceipt, settlement::PaymentError>>
+        {
+            Box::pin(async move {
+                let succeeds = {
+                    let mut state = self.state.lock().expect("script lock");
+                    state
+                        .calls
+                        .push(("capture".to_string(), reservation.request_id.clone()));
+                    state.commit_results.pop_front().unwrap_or(false)
+                };
+                if succeeds {
+                    Ok(reservation.receipt(
+                        protocol::SettlementStatus::Committed,
+                        reservation.amount_sats,
+                        Some(reservation.token_hash.clone()),
+                    ))
+                } else {
+                    Err(settlement::PaymentError::BackendUnavailable {
+                        service_id: reservation.service_id.as_str().to_string(),
+                        price_sats: reservation.amount_sats,
+                        backend: "stripe".to_string(),
+                    })
+                }
+            })
+        }
+
+        fn release<'a>(
+            &'a self,
+            _state: &'a AppState,
+            reservation: &'a PaymentReservation,
+        ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                let succeeds = {
+                    let mut state = self.state.lock().expect("script lock");
+                    state
+                        .calls
+                        .push(("cancel".to_string(), reservation.request_id.clone()));
+                    state.release_results.pop_front().unwrap_or(false)
+                };
+                succeeds
+                    .then_some(())
+                    .ok_or_else(|| "injected ambiguous cancellation".to_string())
+            })
+        }
+
+        fn reservation_state<'a>(
+            &'a self,
+            _state: &'a AppState,
+            reservation: &'a PaymentReservation,
+        ) -> futures::future::BoxFuture<'a, Result<settlement::PaymentReservationState, String>>
+        {
+            Box::pin(async move {
+                let mut state = self.state.lock().expect("script lock");
+                state
+                    .calls
+                    .push(("inspect".to_string(), reservation.request_id.clone()));
+                state
+                    .reservation_states
+                    .pop_front()
+                    .ok_or_else(|| "injected status lookup failure".to_string())
+            })
+        }
+    }
+
+    fn scripted_stripe_state(driver: &ScriptedStripeDriver) -> Arc<AppState> {
+        let mut state = test_app_state(PaymentBackend::Stripe);
+        Arc::get_mut(&mut state)
+            .expect("unique state")
+            .settlement_registry = settlement::SettlementRegistry::with_single_driver(
+            "stripe_mpp",
+            Arc::new(driver.clone()),
+        );
+        state
+    }
+
+    async fn seed_running_stripe_deal(state: &Arc<AppState>, label: &str) -> deals::StoredDeal {
+        let now = settlement::current_unix_timestamp();
+        let requester_key = crypto::generate_signing_key();
+        let requester_id = crypto::public_key_hex(&requester_key);
+        let spec = WorkloadSpec::EventsQuery {
+            kinds: vec!["stripe.test".to_string()],
+            limit: Some(1),
+        };
+        let quote = sign_node_artifact(
+            state.as_ref(),
+            ARTIFACT_KIND_QUOTE,
+            now,
+            QuotePayload {
+                provider_id: state.identity.node_id().to_string(),
+                requester_id: requester_id.clone(),
+                descriptor_hash: "aa".repeat(32),
+                offer_hash: "bb".repeat(32),
+                expires_at: now + 600,
+                workload_kind: spec.workload_kind().to_string(),
+                workload_hash: spec.request_hash().expect("workload hash"),
+                confidential_session_hash: None,
+                capabilities_granted: Vec::new(),
+                extension_refs: Vec::new(),
+                quote_use: None,
+                settlement_terms: QuoteSettlementTerms {
+                    method: "stripe_mpp.v1".to_string(),
+                    destination_identity: String::new(),
+                    base_fee_msat: 30_000,
+                    success_fee_msat: 0,
+                    max_base_invoice_expiry_secs: 0,
+                    max_success_hold_expiry_secs: 0,
+                    min_final_cltv_expiry: 0,
+                },
+                execution_limits: ExecutionLimits {
+                    max_input_bytes: 1024,
+                    max_runtime_ms: 1_000,
+                    max_memory_bytes: 64 * 1024,
+                    max_output_bytes: 1024,
+                    fuel_limit: 10_000,
+                },
+            },
+        )
+        .expect("Stripe quote");
+        let deal_artifact = protocol::sign_artifact(
+            &requester_id,
+            |message| crypto::sign_message_hex(&requester_key, message),
+            ARTIFACT_KIND_DEAL,
+            now,
+            DealPayload {
+                requester_id: requester_id.clone(),
+                provider_id: quote.payload.provider_id.clone(),
+                quote_hash: quote.hash.clone(),
+                workload_hash: quote.payload.workload_hash.clone(),
+                confidential_session_hash: None,
+                extension_refs: Vec::new(),
+                authority_ref: None,
+                supersedes_deal_hash: None,
+                client_nonce: Some(label.to_string()),
+                success_payment_hash: "11".repeat(32),
+                admission_deadline: now + 60,
+                completion_deadline: now + 300,
+                acceptance_deadline: now + 600,
+            },
+        )
+        .expect("Stripe deal artifact");
+        let deal_id = format!("stripe-{label}");
+        let idempotency_key = deal_id.clone();
+        let payment_intent_id = format!("pi_{label}");
+        state
+            .db
+            .with_write_conn({
+                let deal_id = deal_id.clone();
+                move |conn| {
+                    deals::insert_or_get_deal(
+                        conn,
+                        NewDeal {
+                            deal_id,
+                            idempotency_key: Some(idempotency_key),
+                            quote,
+                            spec,
+                            artifact: deal_artifact.clone(),
+                            workload_evidence_hash: None,
+                            deal_artifact_hash: deal_artifact.hash.clone(),
+                            payment_method: Some("stripe".to_string()),
+                            payment_token_hash: Some(payment_intent_id),
+                            payment_amount_sats: Some(30),
+                            initial_status: deals::DEAL_STATUS_RUNNING.to_string(),
+                            created_at: now,
+                        },
+                    )
+                    .map(|outcome| outcome.deal)
+                }
+            })
+            .await
+            .expect("seed Stripe deal")
+    }
+
+    async fn load_test_deal(state: &Arc<AppState>, deal_id: &str) -> deals::StoredDeal {
+        let deal_id = deal_id.to_string();
+        state
+            .db
+            .with_read_conn(move |conn| deals::get_deal(conn, &deal_id))
+            .await
+            .expect("load deal")
+            .expect("deal exists")
+    }
+
+    #[tokio::test]
+    async fn stripe_cleanup_failure_keeps_a_durable_exact_retry() {
+        let driver = ScriptedStripeDriver::with_script([], [false, true], []);
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "materialization-cleanup").await;
+        let deal_id = deal.deal_id.clone();
+        let resource = StripePaymentMaterializationResource::from_reservation(
+            &settlement::PaymentReservation {
+                request_id: deal.deal_id.clone(),
+                method: "stripe_mpp".to_string(),
+                service_id: ServiceId::ExecuteWasm,
+                amount_sats: 30,
+                token_hash: "pi_cleanup_retry".to_string(),
+            },
+        );
+        let resource_json = serde_json::to_string(&resource).expect("resource JSON");
+        let now = settlement::current_unix_timestamp();
+        state
+            .db
+            .with_write_conn({
+                let deal_id = deal_id.clone();
+                move |conn| {
+                    db::with_immediate_transaction(conn, |conn| {
+                        conn.execute(
+                            "UPDATE deals
+                             SET status = ?2, payment_token_hash = NULL
+                             WHERE deal_id = ?1",
+                            rusqlite::params![deal_id, deals::DEAL_STATUS_FAILED],
+                        )
+                        .map_err(|error| error.to_string())?;
+                        db::insert_deal_settlement_materialization(
+                            conn,
+                            &deal_id,
+                            STRIPE_PAYMENT_MATERIALIZATION_KIND,
+                            "{}",
+                            now,
+                        )?;
+                        let claimed = db::claim_deal_settlement_materialization(
+                            conn,
+                            &deal_id,
+                            "seed-cleanup-claim",
+                            now + 60,
+                            now,
+                        )?
+                        .ok_or_else(|| "seed cleanup claim missing".to_string())?;
+                        db::set_deal_settlement_materialization_resource_if_claim_token(
+                            conn,
+                            &deal_id,
+                            claimed.claim_token.as_deref().unwrap_or_default(),
+                            SETTLEMENT_MATERIALIZATION_PHASE_CLEANUP_PENDING,
+                            &resource_json,
+                            now,
+                        )?;
+                        Ok(())
+                    })
+                }
+            })
+            .await
+            .expect("seed cleanup materialization");
+        let deal = load_test_deal(&state, &deal_id).await;
+
+        materialize_pending_stripe_payment(state.clone(), &deal)
+            .await
+            .expect("losing claimant exits without cleanup");
+        assert!(
+            driver.calls().is_empty(),
+            "a worker that did not acquire the claim must not cancel the winner's PaymentIntent"
+        );
+        let winning_claim = state
+            .db
+            .with_read_conn({
+                let deal_id = deal_id.clone();
+                move |conn| db::get_deal_settlement_materialization(conn, &deal_id)
+            })
+            .await
+            .expect("read winning claim")
+            .expect("winning cleanup row");
+        assert_eq!(
+            winning_claim.claim_token.as_deref(),
+            Some("seed-cleanup-claim")
+        );
+        recover_orphaned_deal_materializations_local(state.clone())
+            .await
+            .expect("DB-only startup claim reset");
+        assert!(
+            driver.calls().is_empty(),
+            "pre-listener recovery must perform no Stripe rail I/O"
+        );
+
+        let first = materialize_pending_stripe_payment(state.clone(), &deal).await;
+        assert!(first.is_err(), "ambiguous cancellation must remain queued");
+        let pending = state
+            .db
+            .with_read_conn({
+                let deal_id = deal_id.clone();
+                move |conn| db::get_deal_settlement_materialization(conn, &deal_id)
+            })
+            .await
+            .expect("read queued cleanup")
+            .expect("cleanup row remains");
+        assert_eq!(
+            pending.phase,
+            SETTLEMENT_MATERIALIZATION_PHASE_CLEANUP_PENDING
+        );
+        assert!(
+            pending.claim_token.is_none(),
+            "cleanup retry must release its claim: {pending:?}"
+        );
+        assert_eq!(
+            pending.last_error_code.as_deref(),
+            Some("stripe_cleanup_retry")
+        );
+
+        state
+            .db
+            .with_write_conn({
+                let deal_id = deal_id.clone();
+                move |conn| {
+                    conn.execute(
+                        "UPDATE deal_settlement_materializations
+                         SET next_attempt_at = 0
+                         WHERE deal_id = ?1",
+                        rusqlite::params![deal_id],
+                    )
+                    .map(|_| ())
+                }
+            })
+            .await
+            .expect("make cleanup retry due");
+        materialize_pending_stripe_payment(state.clone(), &deal)
+            .await
+            .expect("terminal cleanup retry");
+        assert!(
+            state
+                .db
+                .with_read_conn(move |conn| {
+                    db::get_deal_settlement_materialization(conn, &deal_id)
+                })
+                .await
+                .expect("read final cleanup")
+                .is_none()
+        );
+        assert_eq!(
+            driver.calls(),
+            vec![
+                ("cancel".to_string(), deal.deal_id.clone()),
+                ("cancel".to_string(), deal.deal_id)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_lost_capture_response_reconciles_from_committed_status() {
+        let driver = ScriptedStripeDriver::with_script(
+            [false],
+            [],
+            [settlement::PaymentReservationState::Committed],
+        );
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "lost-capture").await;
+        let output = run_output_for_plain_result(json!({ "ok": true }));
+        stage_stripe_capture(
+            state.as_ref(),
+            &deal,
+            &output,
+            settlement::current_unix_timestamp(),
+        )
+        .await
+        .expect("stage capture");
+
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("reconcile");
+
+        let terminal = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(terminal.status, deals::DEAL_STATUS_SUCCEEDED);
+        assert_eq!(
+            terminal.receipt.unwrap().payload.settlement_state,
+            "settled"
+        );
+        assert_eq!(
+            driver.calls(),
+            vec![
+                ("capture".to_string(), deal.deal_id.clone()),
+                ("inspect".to_string(), deal.deal_id),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_nonterminal_capture_survives_recovery_without_reexecution() {
+        let driver = ScriptedStripeDriver::with_script(
+            [false, true],
+            [],
+            [settlement::PaymentReservationState::Pending(
+                "processing".to_string(),
+            )],
+        );
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "nonterminal").await;
+        let output = run_output_for_plain_result(json!({ "ok": true }));
+        stage_stripe_capture(
+            state.as_ref(),
+            &deal,
+            &output,
+            settlement::current_unix_timestamp(),
+        )
+        .await
+        .expect("stage capture");
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("initial reconcile");
+        assert_eq!(
+            load_test_deal(&state, &deal.deal_id).await.status,
+            deals::DEAL_STATUS_RESULT_READY
+        );
+
+        recover_runtime_state_local(state.clone())
+            .await
+            .expect("startup recovery");
+        assert_eq!(
+            load_test_deal(&state, &deal.deal_id).await.status,
+            deals::DEAL_STATUS_RESULT_READY,
+            "startup recovery must leave Stripe I/O to the supervised loop"
+        );
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("post-startup reconcile");
+        let terminal = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(terminal.status, deals::DEAL_STATUS_SUCCEEDED);
+        let evidence = state
+            .db
+            .with_read_conn({
+                let deal_id = deal.deal_id.clone();
+                move |conn| db::list_execution_evidence_for_subject(conn, "deal", &deal_id)
+            })
+            .await
+            .expect("execution evidence");
+        assert_eq!(
+            evidence
+                .iter()
+                .filter(|record| record.evidence_kind == "execution_result")
+                .count(),
+            1
+        );
+        assert!(
+            evidence
+                .iter()
+                .all(|record| record.evidence_kind != "recovery_action"),
+            "outbox recovery must not requeue workload execution"
+        );
+        let capture_ids: Vec<String> = driver
+            .calls()
+            .into_iter()
+            .filter_map(|(operation, request_id)| (operation == "capture").then_some(request_id))
+            .collect();
+        assert_eq!(capture_ids, vec![deal.deal_id.clone(), deal.deal_id]);
+    }
+
+    #[tokio::test]
+    async fn stripe_cancel_ambiguity_preserves_failure_until_terminal_proof() {
+        let driver = ScriptedStripeDriver::with_script(
+            [],
+            [false, true],
+            [settlement::PaymentReservationState::Pending(
+                "requires_capture".to_string(),
+            )],
+        );
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "cancel-ambiguous").await;
+        let failure = receipt_failure("execution_failed", "injected execution failure");
+        stage_stripe_cancel(
+            state.as_ref(),
+            &deal,
+            &failure,
+            settlement::current_unix_timestamp(),
+        )
+        .await
+        .expect("stage cancellation");
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("initial reconcile");
+        let pending = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(pending.status, deals::DEAL_STATUS_SETTLEMENT_PENDING);
+        assert!(pending.receipt.is_none());
+
+        recover_runtime_state_local(state.clone())
+            .await
+            .expect("startup recovery");
+        assert_eq!(
+            load_test_deal(&state, &deal.deal_id).await.status,
+            deals::DEAL_STATUS_SETTLEMENT_PENDING
+        );
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("post-startup reconcile");
+        let terminal = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(terminal.status, deals::DEAL_STATUS_FAILED);
+        let receipt = terminal.receipt.expect("terminal receipt");
+        assert_eq!(receipt.payload.execution_state, "failed");
+        assert_eq!(receipt.payload.settlement_state, "canceled");
+    }
+
+    #[tokio::test]
+    async fn stripe_recovery_never_reexecutes_a_running_deal_without_an_outbox() {
+        let driver = ScriptedStripeDriver::with_script(
+            [],
+            [false, true],
+            [settlement::PaymentReservationState::Pending(
+                "requires_capture".to_string(),
+            )],
+        );
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "restart-interrupted").await;
+
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            recover_runtime_state_local(state.clone()),
+        )
+        .await
+        .expect("startup recovery must not wait on Stripe")
+        .expect("startup recovery");
+
+        let pending = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(pending.status, deals::DEAL_STATUS_SETTLEMENT_PENDING);
+        assert!(
+            pending.receipt.is_none(),
+            "non-terminal rail has no receipt"
+        );
+        let evidence = state
+            .db
+            .with_read_conn({
+                let deal_id = deal.deal_id.clone();
+                move |conn| db::list_execution_evidence_for_subject(conn, "deal", &deal_id)
+            })
+            .await
+            .expect("recovery evidence");
+        assert!(evidence.iter().any(|record| {
+            record.evidence_kind == "execution_failure"
+                && record.content["code"] == "execution_interrupted"
+        }));
+        assert!(
+            evidence
+                .iter()
+                .all(|record| record.evidence_kind != "recovery_action"),
+            "interrupted Stripe execution must never be requeued"
+        );
+        assert!(
+            driver.calls().is_empty(),
+            "startup recovery must perform no Stripe rail I/O"
+        );
+
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("non-terminal cancellation reconciliation");
+        assert_eq!(
+            load_test_deal(&state, &deal.deal_id).await.status,
+            deals::DEAL_STATUS_SETTLEMENT_PENDING
+        );
+        assert!(
+            load_test_deal(&state, &deal.deal_id)
+                .await
+                .receipt
+                .is_none()
+        );
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("terminal cancellation reconciliation");
+        let terminal = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(terminal.status, deals::DEAL_STATUS_FAILED);
+        let receipt = terminal.receipt.expect("terminal receipt");
+        assert_eq!(
+            receipt.payload.failure_code.as_deref(),
+            Some("execution_interrupted")
+        );
+        assert_eq!(receipt.payload.execution_state, "failed");
+        assert_eq!(receipt.payload.settlement_state, "canceled");
+        let cancel_ids: Vec<String> = driver
+            .calls()
+            .into_iter()
+            .filter_map(|(operation, request_id)| (operation == "cancel").then_some(request_id))
+            .collect();
+        assert_eq!(cancel_ids, vec![deal.deal_id.clone(), deal.deal_id]);
+    }
+
+    #[tokio::test]
+    async fn stripe_recovery_executes_an_accepted_not_started_deal_once() {
+        let driver = ScriptedStripeDriver::with_script([true], [], []);
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "accepted-not-started").await;
+        let deal_id = deal.deal_id.clone();
+        state
+            .db
+            .with_write_conn(move |conn| {
+                conn.execute(
+                    "UPDATE deals SET status = ?2 WHERE deal_id = ?1",
+                    rusqlite::params![deal_id, deals::DEAL_STATUS_ACCEPTED],
+                )
+                .map(|_| ())
+            })
+            .await
+            .expect("mark test deal accepted");
+
+        recover_runtime_state_local(state.clone())
+            .await
+            .expect("startup recovery");
+        let terminal =
+            wait_for_deal_status(&state, &deal.deal_id, deals::DEAL_STATUS_SUCCEEDED).await;
+        assert!(terminal.receipt.is_some());
+        let evidence = state
+            .db
+            .with_read_conn({
+                let deal_id = deal.deal_id.clone();
+                move |conn| db::list_execution_evidence_for_subject(conn, "deal", &deal_id)
+            })
+            .await
+            .expect("deal evidence");
+        assert_eq!(
+            evidence
+                .iter()
+                .filter(|record| record.evidence_kind == "recovery_action")
+                .count(),
+            1
+        );
+        assert_eq!(
+            driver
+                .calls()
+                .iter()
+                .filter(|(operation, _)| operation == "capture")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_capture_persistence_failure_retries_without_losing_result() {
+        let driver = ScriptedStripeDriver::with_script([true, true], [], []);
+        let state = scripted_stripe_state(&driver);
+        let deal = seed_running_stripe_deal(&state, "persist-failure").await;
+        let output = run_output_for_plain_result(json!({ "ok": true }));
+        stage_stripe_capture(
+            state.as_ref(),
+            &deal,
+            &output,
+            settlement::current_unix_timestamp(),
+        )
+        .await
+        .expect("stage capture");
+        state
+            .db
+            .with_write_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER inject_stripe_finalize_failure
+                     BEFORE UPDATE OF status ON deals
+                     WHEN NEW.deal_id = 'stripe-persist-failure'
+                      AND NEW.status = 'succeeded'
+                     BEGIN
+                       SELECT RAISE(ABORT, 'injected Stripe finalize failure');
+                     END;",
+                )
+            })
+            .await
+            .expect("install failure injection");
+
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("first reconcile pass");
+        let pending = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(pending.status, deals::DEAL_STATUS_RESULT_READY);
+        assert_eq!(pending.result, Some(json!({ "ok": true })));
+        let outbox_id = deal.deal_id.clone();
+        assert!(
+            state
+                .db
+                .with_read_conn(move |conn| db::get_stripe_settlement_outbox(conn, &outbox_id))
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        state
+            .db
+            .with_write_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER inject_stripe_finalize_failure")
+            })
+            .await
+            .expect("remove failure injection");
+        recover_runtime_state_local(state.clone())
+            .await
+            .expect("startup recovery");
+        assert_eq!(
+            load_test_deal(&state, &deal.deal_id).await.status,
+            deals::DEAL_STATUS_RESULT_READY
+        );
+        reconcile_stripe_settlement_once(state.clone())
+            .await
+            .expect("post-startup reconcile");
+        let terminal = load_test_deal(&state, &deal.deal_id).await;
+        assert_eq!(terminal.status, deals::DEAL_STATUS_SUCCEEDED);
+        assert_eq!(terminal.result, Some(json!({ "ok": true })));
+        let capture_ids: Vec<String> = driver
+            .calls()
+            .into_iter()
+            .filter_map(|(operation, request_id)| (operation == "capture").then_some(request_id))
+            .collect();
+        assert_eq!(capture_ids, vec![deal.deal_id.clone(), deal.deal_id]);
+    }
+
+    // ─── Stripe terminal receipt invariant ────────────────────────────────────
     //
     // Verify the receipt-construction decision for the Stripe path:
     //   • capture succeeded  ⇒ deal_state="succeeded", settlement_state="settled"
-    //   • capture failed     ⇒ deal_state="failed",    settlement_state="canceled"
+    //   • capture canceled after execution ⇒ deal_state="canceled",
+    //     execution_state="succeeded", settlement_state="canceled"
     // Both must pass validate_receipt_artifact (no succeeded+canceled receipt may
     // ever be produced).
     #[test]
-    fn stripe_capture_outcome_produces_kernel_valid_receipts() {
+    fn stripe_terminal_outcomes_produce_kernel_valid_receipts() {
         use crate::protocol::{validate_receipt_artifact, verify_artifact};
 
         let state = test_app_state(PaymentBackend::Lightning);
@@ -19920,14 +34588,14 @@ mod tests {
         assert_eq!(success_receipt.payload.deal_state, "succeeded");
         assert_eq!(success_receipt.payload.settlement_state, "settled");
 
-        // ── Case 2: capture failed → failed+canceled receipt ───────────────────
-        let fail_receipt = sign_deal_receipt(
+        // ── Case 2: authorization canceled after execution ────────────────────
+        let canceled_receipt = sign_deal_receipt(
             state.as_ref(),
             &stored_deal,
             now + 1,
             ReceiptSignSpec {
-                deal_state: "failed",
-                execution_state: "failed",
+                deal_state: "canceled",
+                execution_state: "succeeded",
                 bundle: None,
                 stripe_settlement: Some(StripeSettlementInfo {
                     payment_intent_id: "pi_test_capture_invariant".to_string(),
@@ -19935,31 +34603,32 @@ mod tests {
                     captured: false,
                 }),
                 prepaid_settlement: None,
-                result_hash: None,
-                result_format: None,
+                result_hash: Some("aa".repeat(32)),
+                result_format: Some("application/json+jcs".to_string()),
                 result_envelope_hash: None,
                 failure: Some(receipt_failure(
-                    "stripe_capture_failed",
-                    "Stripe capture failed for deal test-deal-stripe-capture: mock error",
+                    "stripe_capture_canceled",
+                    "Stripe authorization was canceled after execution",
                 )),
             },
         )
-        .expect("sign capture-failed receipt");
+        .expect("sign canceled receipt");
 
         assert!(
-            verify_artifact(&fail_receipt),
-            "capture-fail receipt must have valid signature"
+            verify_artifact(&canceled_receipt),
+            "canceled receipt must have valid signature"
         );
         assert!(
-            validate_receipt_artifact(&fail_receipt).is_ok(),
-            "capture-fail receipt must pass kernel validation: {:?}",
-            validate_receipt_artifact(&fail_receipt)
+            validate_receipt_artifact(&canceled_receipt).is_ok(),
+            "canceled receipt must pass kernel validation: {:?}",
+            validate_receipt_artifact(&canceled_receipt)
         );
-        assert_eq!(fail_receipt.payload.deal_state, "failed");
-        assert_eq!(fail_receipt.payload.settlement_state, "canceled");
+        assert_eq!(canceled_receipt.payload.deal_state, "canceled");
+        assert_eq!(canceled_receipt.payload.execution_state, "succeeded");
+        assert_eq!(canceled_receipt.payload.settlement_state, "canceled");
         assert_eq!(
-            fail_receipt.payload.failure_code.as_deref(),
-            Some("stripe_capture_failed")
+            canceled_receipt.payload.failure_code.as_deref(),
+            Some("stripe_capture_canceled")
         );
 
         // ── Invariant: no succeeded+canceled receipt can be produced ───────────

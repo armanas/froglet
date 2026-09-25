@@ -38,11 +38,12 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 			<span class="mark" aria-hidden="true">_o..o_</span>
 			froglet
 		</a>
-		<nav aria-label="Primary">
+		<nav class="site-nav-desktop" aria-label="Primary">
 			{
 				navLinks.map((item) => (
 					<a
 						href={item.href}
+						aria-current={isActive(item) ? 'page' : undefined}
 						class:list={[
 							isActive(item) && 'active',
 							'hideOnMobile' in item && item.hideOnMobile && 'mobile-hidden',
@@ -55,6 +56,17 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 				))
 			}
 		</nav>
+		<details class="site-nav-mobile">
+			<summary>Menu</summary>
+			<nav aria-label="Primary">
+				{navLinks.map((item) => (
+					<a href={item.href} aria-current={isActive(item) ? 'page' : undefined}
+						class:list={[isActive(item) && 'active']}
+						target={isExternal(item) ? '_blank' : undefined}
+						rel={isExternal(item) ? 'noreferrer' : undefined}>{item.label}</a>
+				))}
+			</nav>
+		</details>
 		<div class="right">
 			<div class="theme-switch" role="group" aria-label="Theme">
 				<button type="button" class="theme-switch__btn" data-theme-switch="system" title="System preference" aria-label="Use system theme">
@@ -92,7 +104,22 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 	</div>
 </header>
 
+<script>
+	document.querySelectorAll<HTMLDetailsElement>('.site-nav-mobile').forEach((menu) => {
+		menu.addEventListener('keydown', (event) => {
+			if (event.key === 'Escape' && menu.open) {
+				menu.open = false;
+				menu.querySelector('summary')?.focus();
+			}
+		});
+		document.addEventListener('click', (event) => {
+			if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+		});
+	});
+</script>
+
 <style is:global>
+	.site-nav-mobile { display: none; }
 	.site-hdr--embedded {
 		position: static;
 		border-bottom: 0;
@@ -151,6 +178,17 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 	}
 
 	@media (max-width: 760px) {
+		.site-hdr .site-nav-desktop { display: none; }
+		.site-hdr .site-nav-mobile { display: block; margin-left: auto; }
+		.site-nav-mobile > summary { cursor: pointer; min-height: 44px; padding: 12px; color: var(--fg1); }
+		.site-hdr .site-nav-mobile nav {
+			position: absolute; top: 100%; right: var(--shell-gut); z-index: 70;
+			display: flex; flex-direction: column; align-items: stretch; gap: 0;
+			min-width: 200px; padding: 8px; border: 1px solid var(--border);
+			border-radius: var(--r-2); background: var(--bg-elevated);
+		}
+		.site-hdr .site-nav-mobile nav a { min-height: 44px; padding: 12px; }
+		.site-nav-mobile :is(summary, a):focus-visible { outline: 2px solid var(--frog-400); outline-offset: 2px; }
 		.site-hdr nav {
 			flex: 1 1 auto;
 			overflow-x: auto;

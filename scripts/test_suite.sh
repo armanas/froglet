@@ -144,12 +144,11 @@ run_unit() {
   if has_node; then
     step node --test \
       integrations/openclaw/froglet/test/plugin.test.js \
-      integrations/openclaw/froglet/test/config-profiles.test.mjs \
-      integrations/openclaw/froglet/test/doctor.test.mjs \
-      integrations/openclaw/froglet/test/froglet-client.test.mjs || rc=1
+      integrations/openclaw/froglet/test/*.test.mjs || rc=1
 
     if ensure_mcp_deps; then
-      step node --test integrations/mcp/froglet/test/server.test.mjs || rc=1
+      step node --test integrations/mcp/froglet/test/*.test.mjs || rc=1
+      step node --test integrations/shared/froglet-lib/test/*.test.mjs || rc=1
     fi
   else
     skip_warn "node >= 18 not found"

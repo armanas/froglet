@@ -27,3 +27,23 @@ _Avoid_: Buyer, client, caller
 **Service Manifest**:
 The metadata and binding information that lets an operator turn a named or data service invocation into a Froglet workload.
 _Avoid_: Tool definition, plugin manifest
+
+**Publication**:
+The agent-controlled process that turns a Service Manifest plus workload or data into an externally verified, optionally listed Froglet offering.
+_Avoid_: Deploy, upload
+
+**Publication Revision**:
+An immutable, content-addressed version of a publication whose workload, configuration, and signed offer can be verified and activated or rolled back as one unit.
+_Avoid_: Latest version, mutable deployment
+
+**Reachability Lease**:
+A renewable, identity-authenticated claim to a public endpoint that forwards traffic to a Froglet Node without changing Kernel semantics.
+_Avoid_: DNS record, tunnel URL
+
+**Managed Deployment**:
+An operator-run Froglet workload revision with explicit compute, storage, secret, health, and lifecycle requirements, independent of the infrastructure provider that satisfies them.
+_Avoid_: AWS stack, cloud service
+
+**Release Bundle**:
+The signed manifest that pins every binary, image, agent integration, checksum, and compatibility fact shipped as one Froglet release.
+_Avoid_: Latest tag, download list

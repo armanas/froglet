@@ -4,33 +4,38 @@ description: Operator setup and verification for the local/self-hosted x402 adap
 ---
 
 :::caution[Experimental surface]
-x402 is **experimental**: implemented at the **daemon level** for self-hosted
-operators on the generic compute endpoints, **not** covered by the kernel
-conformance vectors, and **not** exposed on the marketplace publish path
+x402's local facilitator adapter is **experimental**: implemented at the
+**daemon level** for self-hosted operators on the generic compute endpoints
+and **not** exposed on the marketplace publish path
 (`marketplace_publish` / `froglet-node publish`). Per the
 [versioning policy](https://github.com/armanas/froglet/blob/main/docs/VERSIONING.md),
 experimental surfaces may change or be removed without a major version — do
 not build on it for anything that must outlive a release cycle. To publish a
 paid marketplace service, use [Lightning](/learn/payment-lightning/) or
-[Stripe](/learn/payment-stripe/). `x402_usdc` is a lower-level payment *kind*,
-not a kernel receipt settlement method.
+[Stripe](/learn/payment-stripe/). The separate `x402.eip3009.v1` kernel method
+has conformance vectors, but this `x402_usdc` adapter is not yet wired into the
+signed marketplace Deal flow.
 :::
 
 ## Setup
 
-Provide the Base wallet address that will back the authorization flow:
+Provide the Base wallet address and an x402 v2 facilitator endpoint. The
+endpoint must either authenticate requests upstream itself or be an
+operator-managed transparent proxy that does so; Froglet does not synthesize
+CDP API JWTs from an unauthenticated URL.
 
 ```bash
 cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> \
+FROGLET_X402_FACILITATOR_URL=<authenticated-facilitator-or-proxy-url> \
 ./scripts/setup-payment.sh x402
 ```
 
-Optional overrides:
+The only optional override is the currently fixed network alias:
 
 ```bash
 cd froglet && FROGLET_X402_WALLET_ADDRESS=<base-wallet-address> \
 FROGLET_X402_NETWORK=base \
-FROGLET_X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402 \
+FROGLET_X402_FACILITATOR_URL=<authenticated-facilitator-or-proxy-url> \
 ./scripts/setup-payment.sh x402
 ```
 
@@ -44,7 +49,11 @@ The setup helper validates the wallet syntax locally, requires `FROGLET_X402_NET
 POST <facilitator>/verify
 ```
 
-The probe treats a real `200`, `400`, `401`, `403`, or `422` response from `/verify` as proof that the facilitator endpoint is there and speaking the expected protocol surface. It does not claim that a payment is fully spendable until a real authorization is presented at runtime.
+The probe accepts a real `200`, `400`, or `422` response from `/verify` as
+proof that the endpoint is present. It rejects `401` and `403`, because the
+running node would be unable to settle through an endpoint that still expects
+credentials Froglet has not supplied. The probe does not claim that a payment
+is fully spendable until a real authorization is presented at runtime.
 
 The current public adapter expects the signed token amount to exactly match the
 configured numeric service price. It does not perform FX conversion from sats

@@ -1,143 +1,207 @@
 ---
 title: Publish A Froglet Service
-description: "One MCP call (or one CLI command) takes a service from idea to live marketplace offer. The four DNS-free hosting backends are now implementation details, not user concerns."
+description: "Build and verify locally, approve one exact disclosure, then activate that exact service through a provider-neutral public transport."
 ---
 
 <div class="learn-hero compact">
   <div>
     <div class="learn-pill">Agent-grade publish</div>
-    <p class="learn-lead">One MCP call. One CLI command. Live marketplace offer in seconds.</p>
-    <p class="learn-sublead">An LLM with the Froglet MCP attached takes a one-sentence prompt to a published service. Humans use <code>froglet-node init</code> + <code>froglet-node publish</code>. Both wrap the same engine — there is no second path to maintain.</p>
+    <p class="learn-lead">One authoring contract. Two deliberate calls for anything public.</p>
+    <p class="learn-sublead">The first call builds the exact package and returns a non-mutating consent summary. The second rebuilds once and proceeds only when the user approves that exact hash. CLI and native MCP use the same Rust engine.</p>
   </div>
 </div>
 
-## TL;DR
+## The safe default
 
-**Through Claude / Codex / Cursor (MCP):**
+Installation and publication are separate approvals:
 
-```
-User: "Publish a Froglet service that translates English to Spanish."
-Claude: Calls `marketplace_publish` with name + source_inline + hosting.
-        → returns provider_id, marketplace URL, invoke command.
-```
+1. Bootstrap verifies and installs the exact Release Bundle, starts the local
+   node, configures the native MCP bridge, and proves free local execution.
+2. `marketplace_publish` builds the service without publishing it and returns
+   `status: "approval_required"` plus a `consent_hash`.
+3. The agent shows the user the package/build digests, schemas, capabilities,
+   limits, provider identity, exact endpoint, relay trust boundary, price,
+   settlement rail, and commerce responsibility.
+4. Only after approval does the agent repeat the same call with the exact
+   `consent_hash`.
 
-**At a shell:**
+The approved call rebuilds the package once. If source, data, dependency lock,
+schema, capabilities, price, provider identity, or endpoint changed, the hash
+changes and publication stops before the provider-control mutation.
 
-```bash
-curl -fsSL https://froglet.dev/agent | bash    # installs froglet-node
-froglet-node init my-translator
-cd my-translator
-$EDITOR handler.py
-froglet-node publish --host tor                 # done
-```
+## Native MCP call shape
 
-Both paths run the same `froglet-publish-engine` pipeline: build →
-host → sign → register → verify. One source of truth.
-
-## The MCP call shape
+Author a directory containing `froglet-service.toml` and the referenced source
+or data file. Then call the single `froglet` tool:
 
 ```json
 {
   "action": "marketplace_publish",
-  "name": "translator-en-es",
-  "source_inline": "def handler(event, context):\n    return {\"translated\": event[\"text\"]}\n",
-  "hosting": { "kind": "tor" },
-  "summary": "Translate English to Spanish",
-  "settlement": { "method": "none" }
+  "project_dir": "/absolute/path/to/my-service",
+  "host": "relay"
 }
 ```
 
-Returns:
+The first response is a plan, not a published service:
 
 ```json
 {
-  "provider_id": "c9ecac3ae190…",
-  "public_url": "http://abc123…onion",
-  "offer_hash": "0123abcd…",
-  "marketplace_offer_url": "https://marketplace.froglet.dev/v1/offers/…",
-  "invoke_command": "froglet-node invoke translator-en-es '{}'",
-  "warnings": []
+  "status": "approval_required",
+  "consent_hash": "<64 lowercase hex characters>",
+  "summary": {
+    "service_id": "my-service",
+    "hosting": "relay",
+    "provider_id": "<provider identity>",
+    "public_url": "https://<identity-assigned-host>",
+    "package_digest": "<exact package digest>",
+    "publish_request_digest": "<exact canonical request digest>",
+    "settlement_method": "none"
+  }
 }
 ```
 
-Behind the scenes the MCP handler shells out to `froglet-node publish --json`,
-which scaffolds the manifests, builds the artifact, posts to the local
-daemon's `/v1/provider/artifacts/publish` (daemon signs + persists),
-POSTs `/v1/registrations` on the marketplace, then polls
-`/v1/providers/<id>` until the indexer projects the offer.
+After the user approves that exact summary:
 
-## What you need running
+```json
+{
+  "action": "marketplace_publish",
+  "project_dir": "/absolute/path/to/my-service",
+  "host": "relay",
+  "consent_hash": "<the exact approved hash>"
+}
+```
 
-- **Daemon**: `froglet-node serve` (in `provider` or `dual` mode)
-  reachable at `FROGLET_DAEMON_URL` (default `http://127.0.0.1:8080`)
-- **Provider-control token**: the file at
-  `$FROGLET_DATA_DIR/runtime/froglet-control.token`, automatically
-  generated on first daemon boot
-- **For Tor hosting**: `FROGLET_NETWORK_MODE=tor` or `dual` on the daemon
-- **For self-hosted**: a public HTTPS URL serving the daemon; loopback,
-  private-network, `.local`, `.internal`, and plain-public-HTTP URLs are
-  rejected before marketplace registration
+Do not infer approval from the original prompt, retry automatically with a new
+hash, or hide warnings. A stale approval is intentionally unusable.
 
-The default `curl https://froglet.dev/agent | bash` install gets you a
-daemon running with sensible defaults. You can `froglet-node whoami`
-to verify reachability.
+The approved response contains requester-canary and marketplace offer evidence
+only when the external marketplace activates the exact candidate. Tor,
+self-hosted, paid, or policy-held candidates can truthfully return
+`pending_review` with no active offer URL or requester canary. A successful
+local relay composition does not prove that a first-party public relay or its
+DNS/TLS ingress is deployed.
 
-## Hosting backends
+## Shell equivalent
 
-The `hosting.kind` field of the MCP call (or the `--host` flag of the
-CLI) picks one of five backends. **Tor is the right default.** Phase 1A
-ships three; Phase 1B adds the other two.
+From the authored service directory:
 
-| Backend | Status | When to use |
-|---|---|---|
-| `tor` | ✓ Phase 1A | Default. No DNS, no TLS, no public IP. |
-| `local` | ✓ Phase 1A | Private development, never registered with marketplace. |
-| `self` | ✓ Phase 1A | You deploy daemon to your own URL (Fly/Render/VPS) and point at it. |
-| `managed` | Phase 1B | Marketplace allocates `<slug>.providers.froglet.dev`; you need a public IP + Caddy. |
-| `fly` | Phase 1B | Engine wraps `flyctl deploy` for you. |
+```bash
+froglet-node publish --host relay --plan --json
+```
 
-For most users the answer is just **tor**.
+Review the returned summary, then use its exact hash:
 
-## Settlement on the publish path
+```bash
+froglet-node publish --host relay \
+  --approve-consent <exact-consent-hash> --json
+```
 
-The publish path now accepts `settlement.method` ∈ `none` | `lightning` |
-`stripe`:
+For a private proof, `--host local` builds, verifies, and stores a local
+revision without opening a public transport or registering a listing.
 
-- **`none`** — free execution, no payment.
-- **`lightning`** — two-leg hold-invoice settlement (base + success fee),
-  proven end-to-end on regtest; the payment preimage is the cryptographic
-  proof. Real mainnet money is not yet proven (pending channel liquidity).
-- **`stripe`** — test-mode agentic rail on Stripe's Shared Payment Token
-  (SPT) model. froglet is the seller; US-only; settlement is attested by a
-  PaymentIntent reference, not a cryptographic proof. See
-  [Stripe](/learn/payment-stripe/) for the buyer/seller caveats.
+## What the approved pipeline proves
 
-For public onboarding, start with `none`. Do not ask ordinary providers or
-buyers to run LND, manage channel liquidity, or enter payment secrets. Use paid
-settlement only when the operator has already verified the rail and can hide the
-backend complexity from the buyer.
+The shared publication engine executes this order:
 
-Price a service with `[price] sats = N` plus `currency = "sat"` (satoshis →
-Lightning) or `currency = "usd"` (US cents → Stripe). The hosted trial at
-`try.froglet.dev` stays free-only. **x402** is defined in the protocol and
-implemented at the daemon level, but is not a publish-path option.
+```text
+build exact immutable package
+  -> read-only provider identity/transport preflight
+  -> exact consent hash
+  -> user approval
+  -> rebuild once and compare
+  -> provider-private fixture execution
+  -> signed immutable Publication Revision
+  -> approved endpoint confirmation
+  -> marketplace pending-validation candidate
+  -> marketplace-owned exact-revision canary
+  -> atomic activation and renewable health lease
+  -> exact offer projection
+  -> independent requester-side canary
+```
 
-## What v1 doesn't do yet
+Each claim remains separate. A local fixture does not prove reachability;
+reachability does not prove marketplace activation; activation does not prove
+an independent requester invocation; none of those proves a payment.
 
-- **WASM and OCI through `marketplace_publish`**: `runtime: "python"` +
-  `package_kind: "inline_source"` is the v1A scope for the one-call publish
-  tool. Lower-level local publication still supports prebuilt Wasm modules and
-  OCI-backed profiles through `publish_artifact`.
-- **Managed + Fly backends**: documented above, land in v1B.
+## Hosting choices
+
+| Choice | Public | Behind NAT | Extra account/dependency | Status |
+|---|---:|---:|---|---|
+| `local` | no | yes | none | implemented |
+| `relay` | yes | yes | live relay operator endpoint | implemented locally; public deployment tracked separately |
+| `tor` | yes | yes | Tor sidecar + marketplace Tor egress | implemented |
+| `self` | yes | depends | user-operated HTTPS origin | implemented |
+| `managed` | yes | yes | selected operator adapter | neutral manifest/operator contract implemented; publish-engine orchestration not yet wired |
+
+Relay is the intended dependency-minimal public path. The node dials outbound
+WSS and receives an identity-derived HTTPS origin; the user needs no inbound
+port, certificate, or DNS account. The relay terminates TLS, can observe
+plaintext, and applies operator quotas, so those facts are part of consent.
+Bootstrap plans the official relay URL and suffix dormant by default: that
+derives an endpoint but opens no WSS without an exact durable grant. A public
+publication plan fails before approval unless the configured relay is actually
+up and has returned the exact identity-derived HTTPS origin. That preflight
+proves this configured node-to-relay session, not general Internet reachability
+or a first-party deployment.
+
+`froglet-service/v4` uses a neutral managed target/profile. AWS Lightsail is a
+compatibility adapter in `froglet-services`, not a manifest variant or product
+architecture. The legacy v3 `hosting.fly` input is readable only for migration;
+new authoring must not invoke `flyctl` implicitly.
+
+## Data and function authoring
+
+The native builder supports:
+
+- read-only JSON, explicitly typed CSV, and SQLite data services;
+- embedded WAT/Wasm without an external compiler;
+- resolver-free locked Python bundles made from exact pure-Python wheels; and
+- digest-pinned OCI execution through a separate authenticated rootless worker.
+
+The clean-host bootstrap itself publishes and invokes a user-supplied JSON
+fixture, so installation proves a useful data service rather than only a health
+endpoint. Arbitrary OCI is an advanced capability, not a prerequisite for the
+first service.
+
+## Settlement
+
+Free (`none`) is the default and needs no payment account. A paid publication
+must explicitly select `lightning` or `stripe`, and consent binds the amounts,
+currency, rail, direct-provider payee responsibility, platform fee, external
+fee uncertainty, and refund boundary. The marketplace does not silently become
+merchant of record or payout intermediary.
+
+Stripe production publication expects a caller/platform-issued Shared Payment
+Token. Froglet's token-mint helper is test-only and refuses live keys. Do not
+claim live money movement from unit tests or test-mode PaymentIntents.
+
+## Lifecycle after publication
+
+The same native tool exposes bounded operations over immutable revisions:
+
+- `publication_status`
+- `publication_logs`
+- `publication_pause`
+- `publication_resume`
+- `publication_rollback` with an exact revision hash
+- `publication_unpublish` with `confirm_service_id` exactly matching the target
+
+Pause and unpublish remove the active projection without deleting signed
+history. Rollback activates only an already validated immutable revision.
+
+## Current proof boundary
+
+The implementation evidence matrix distinguishes local code/tests from live
+infrastructure. In particular, local relay composition can prove the real
+WebSocket tunnel, registration, canaries, projection, invocation, disconnect,
+and lease expiry while still not proving public DNS, trusted TLS, Internet
+ingress, a clean external host, or a live payment. Consult the matrix before
+telling a user a first-party public path is online.
 
 ## Full reference
 
-The canonical specification of both manifests and the publish pipeline
-lives in the repo:
-
-- [`docs/MANIFEST.md`](https://github.com/armanas/froglet/blob/main/docs/MANIFEST.md) —
-  schema for `froglet.toml` (project) + `froglet-service.toml` (per-service, v3)
-- [`docs/PROVIDER_ONBOARDING.md`](https://github.com/armanas/froglet/blob/main/docs/PROVIDER_ONBOARDING.md) —
-  the longer-form reference for this page
-- [`froglet-publish-engine/`](https://github.com/armanas/froglet/tree/main/froglet-publish-engine) —
-  Rust crate with the pipeline; `cargo doc --open` for API docs
+- [`docs/AGENT_FIRST_PUBLICATION_PLAN.md`](https://github.com/armanas/froglet/blob/main/docs/AGENT_FIRST_PUBLICATION_PLAN.md)
+- [`docs/PUBLICATION_CONTRACT.md`](https://github.com/armanas/froglet/blob/main/docs/PUBLICATION_CONTRACT.md)
+- [`docs/MANIFEST.md`](https://github.com/armanas/froglet/blob/main/docs/MANIFEST.md)
+- [`docs/RELAY.md`](https://github.com/armanas/froglet/blob/main/docs/RELAY.md)
+- [`froglet-publish-engine/`](https://github.com/armanas/froglet/tree/main/froglet-publish-engine)

@@ -124,8 +124,11 @@ local mode:
 ```
 
 Operational rule: the first task should call `status`. If the local node is not
-running or tokens are missing, call `plan_install`; only after the profile is
-confirmed should the agent call `get_install_guide` and run host-shell commands.
+running or tokens are missing, call `plan_install`; present its immutable
+release, hashes, filesystem/process impact, exact command preview, and approval
+hash. Only after explicit approval should the agent pass the exact returned
+`release_tag` and `install_approval_hash` to `get_install_guide` and run its
+host-shell command.
 After local health is verified, call `plan_use_case` before implementing the
 user's first workflow, especially for batch or GPU requests where unsupported
 boundaries must be named before execution. Claude Code also exposes `/froglet`,

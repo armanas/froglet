@@ -397,7 +397,7 @@ fn build_resolved_http_client(
         .copied()
         .map(|ip| SocketAddr::new(ip, port))
         .collect();
-    Client::builder()
+    crate::tls::reqwest_client_builder()
         .connect_timeout(Duration::from_secs(5))
         .redirect(RedirectPolicy::none())
         .resolve_to_addrs(host, &resolved_socket_addrs)
@@ -605,7 +605,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &test_policy(),
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[WASM_CAPABILITY_HTTP_FETCH.to_string()],
             &mut http_calls_used,
             HttpFetchRequest {
@@ -632,7 +632,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &test_policy(),
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[WASM_CAPABILITY_HTTP_FETCH.to_string()],
             &mut http_calls_used,
             HttpFetchRequest {
@@ -659,7 +659,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &test_policy(),
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[WASM_CAPABILITY_HTTP_FETCH.to_string()],
             &mut http_calls_used,
             HttpFetchRequest {
@@ -686,7 +686,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &test_policy(),
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[
                 WASM_CAPABILITY_HTTP_FETCH.to_string(),
                 format!("{WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX}github"),
@@ -716,7 +716,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &test_policy(),
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[
                 WASM_CAPABILITY_HTTP_FETCH.to_string(),
                 format!("{WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX}github"),
@@ -837,7 +837,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &test_policy(),
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[WASM_CAPABILITY_HTTP_FETCH.to_string()],
             &mut http_calls_used,
             HttpFetchRequest {
@@ -863,7 +863,7 @@ mod tests {
         let mut http_calls_used = 0;
         let error = fetch(
             &policy,
-            &Client::builder().build().unwrap(),
+            &crate::tls::reqwest_client_builder().build().unwrap(),
             &[WASM_CAPABILITY_HTTP_FETCH.to_string()],
             &mut http_calls_used,
             HttpFetchRequest {
