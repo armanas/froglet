@@ -255,8 +255,26 @@ async fn installation_preflight() -> Result<Value, CliError> {
         ports.push(socket.to_string());
         listeners.push(listener);
     }
+    let network_mode = std::env::var("FROGLET_NETWORK_MODE").unwrap_or_else(|_| "clearnet".into());
+    let relay_configured =
+        std::env::var("FROGLET_RELAY_URL").is_ok_and(|value| !value.trim().is_empty());
+    if matches!(network_mode.as_str(), "tor" | "dual") || relay_configured {
+        let backend = std::env::var("FROGLET_TOR_BACKEND_LISTEN_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:8082".into());
+        let socket: std::net::SocketAddr = backend.parse().map_err(|e| {
+            CliError::BadArgs(format!("invalid FROGLET_TOR_BACKEND_LISTEN_ADDR: {e}"))
+        })?;
+        if !socket.ip().is_loopback() {
+            return Err(CliError::BadArgs(
+                "FROGLET_TOR_BACKEND_LISTEN_ADDR must be a loopback address".into(),
+            ));
+        }
+        let listener = tokio::net::TcpListener::bind(socket).await.map_err(|e| CliError::Other(format!("port_unavailable: {socket}: {e}; the relay/Tor backend port is occupied; inspect the existing process before retrying setup")))?;
+        ports.push(socket.to_string());
+        listeners.push(listener);
+    }
     Ok(
-        json!({"status":"ok", "stage":"ports_available", "ports":ports, "evidence":"both addresses could be bound; node startup rechecks them"}),
+        json!({"status":"ok", "stage":"ports_available", "ports":ports, "evidence":"all required loopback addresses could be bound; node startup rechecks them"}),
     )
 }
 

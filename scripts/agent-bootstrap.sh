@@ -1689,6 +1689,7 @@ if [ "$install_mode" = "native" ] && [ "$existing_native" = true ]; then
   log "Reusing the installed release and persistent state; connecting only this agent."
 elif [ "$install_mode" = "native" ]; then
   FROGLET_PROVIDER_URL="$PROVIDER_URL" FROGLET_RUNTIME_URL="$RUNTIME_URL" \
+    FROGLET_NETWORK_MODE="$NETWORK_MODE" FROGLET_RELAY_URL="$RELAY_URL" \
     "$staging_dir/froglet-node" doctor --preflight --json >&2 || fail "local ports are unavailable; no service was activated"
   mkdir -p "$BOOTSTRAP_DIR"
   cp "$approved_installer" "$BOOTSTRAP_DIR/install.sh"
