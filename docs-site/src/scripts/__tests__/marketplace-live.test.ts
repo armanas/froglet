@@ -63,6 +63,18 @@ describe('marketplace runtime status', () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ status: 'ok' })));
     expect((await getMarketplaceSnapshot()).status).toBe('fail');
   });
+  it('shows a public HTTPS endpoint instead of a provider loopback endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('healthz') ? { status: 'ok' } : url.includes('providers') ? { items: [{
+        provider_id: 'p', descriptor: { transport_endpoints: [
+          { transport: 'http', uri: 'http://127.0.0.1:28080' },
+          { transport: 'https', uri: 'https://provider.relay.froglet.dev' },
+        ] },
+      }] } : url.includes('offers') ? { items: [] } : {}
+    ), { status: url.includes('deals') ? 404 : 200 })));
+    const result = await getMarketplaceSnapshot();
+    expect(result.providers[0].endpoint).toBe('https://provider.relay.froglet.dev');
+  });
   it('serves snapshot errors at runtime and never delegates the API to static assets', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     const assets = { fetch: vi.fn() };

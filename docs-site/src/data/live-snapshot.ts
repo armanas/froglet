@@ -95,6 +95,21 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
+function publicEndpoint(endpoints: unknown[]): string {
+	for (const item of endpoints) {
+		const endpoint = asRecord(item);
+		if (endpoint.transport !== 'https' || typeof endpoint.uri !== 'string') continue;
+		try {
+			const url = new URL(endpoint.uri);
+			if (url.protocol !== 'https:' || url.username || url.password || !url.hostname ||
+				url.hostname === 'localhost' || url.hostname.endsWith('.localhost') ||
+			url.hostname.startsWith('127.') || url.hostname === '[::1]') continue;
+			return endpoint.uri;
+		} catch { /* Ignore malformed descriptor endpoints. */ }
+	}
+	return '';
+}
+
 function asArray(value: unknown): unknown[] {
 	return Array.isArray(value) ? value : [];
 }
@@ -200,13 +215,12 @@ export async function getMarketplaceSnapshot(marketplaceUrl = MARKETPLACE_URL): 
 			const descriptor = asRecord(row.descriptor);
 			const trust = asRecord(row.trust);
 			const endpoints = asArray(descriptor.transport_endpoints);
-			const firstEndpoint = asRecord(endpoints[0]);
 			return {
 				providerId: String(row.provider_id ?? ''),
 				descriptorHash: String(row.current_descriptor_hash ?? descriptor.artifact_hash ?? ''),
 				serviceKinds: asStringArray(descriptor.service_kinds),
 				executionRuntimes: asStringArray(descriptor.execution_runtimes),
-				endpoint: String(firstEndpoint.uri ?? ''),
+				endpoint: publicEndpoint(endpoints),
 				successCount: asNumber(trust.success_count),
 				failureCount: asNumber(trust.failure_count),
 				totalSettledMsat: asNumber(trust.total_settled_msat),

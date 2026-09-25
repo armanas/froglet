@@ -33,7 +33,7 @@ function compactEndpoint(value: string | undefined): string {
 }
 
 function displayEndpoint(value: string | undefined): string {
-	if (!value) return 'n/a';
+	if (!value) return 'No public HTTPS endpoint';
 	try {
 		return new URL(value).host;
 	} catch {
