@@ -19845,30 +19845,19 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
     let pinned_marketplace_addresses = marketplace_endpoint.pinned_public_addresses;
 
     let transport_status = state.transport_status.lock().await.clone();
-    // Precedence: an operator-configured public base URL is explicit intent;
-    // otherwise a live relay tunnel beats the auto-derived clearnet URL
-    // (which is typically a loopback/docker-internal address the marketplace
-    // rejects); Tor last.
-    let explicit_clearnet = state.config.public_base_url.is_some();
-    let (provider_url, transport) = if let (true, Some(url)) =
-        (explicit_clearnet, transport_status.clearnet_url.as_ref())
-    {
-        (url.clone(), "clearnet")
-    } else if transport_status.relay_status == "up"
-        && let Some(url) = transport_status.relay_url
-    {
-        // Relay hostnames are public HTTPS; the marketplace treats them as
-        // clearnet endpoints.
-        (url, "clearnet")
-    } else if let Some(url) = transport_status.clearnet_url {
-        (url, "clearnet")
-    } else if let Some(url) = transport_status.tor_onion_url {
-        (url, "tor")
-    } else {
-        return Err(
-            "marketplace registration requires an advertised provider URL; set FROGLET_PUBLIC_BASE_URL, enable the relay tunnel, or enable Tor"
-                .to_string(),
-        );
+    let Some((provider_url, transport)) = marketplace_registration_endpoint(
+        transport_status.clearnet_url.as_deref(),
+        state.config.public_base_url.is_some(),
+        transport_status.relay_url.as_deref(),
+        transport_status.relay_status == "up",
+        transport_status.tor_onion_url.as_deref(),
+        state.config.marketplace_allow_local,
+    ) else {
+        // A native installation advertises its loopback provider URL for
+        // local calls. It is not a public registration candidate; exact
+        // publication registers the approved relay origin separately.
+        tracing::debug!("marketplace auto-registration deferred: no public provider endpoint");
+        return Ok(());
     };
 
     let registration_url = format!("{}/v1/registrations", marketplace_url.trim_end_matches('/'));
@@ -19900,6 +19889,33 @@ pub async fn register_with_marketplace(state: Arc<AppState>) -> Result<(), Strin
         "registered with marketplace"
     );
     Ok(())
+}
+
+fn marketplace_registration_endpoint(
+    clearnet_url: Option<&str>,
+    explicit_clearnet: bool,
+    relay_url: Option<&str>,
+    relay_up: bool,
+    tor_url: Option<&str>,
+    allow_local: bool,
+) -> Option<(String, &'static str)> {
+    // Public marketplace registration requires HTTPS. In the local-test mode,
+    // preserve HTTP registration against a local marketplace fixture.
+    let clearnet = clearnet_url.filter(|value| {
+        allow_local || url::Url::parse(value).is_ok_and(|parsed| parsed.scheme() == "https")
+    });
+    if explicit_clearnet && let Some(url) = clearnet {
+        return Some((url.to_string(), "clearnet"));
+    }
+    if relay_up && let Some(url) = relay_url {
+        // Relay hostnames are public HTTPS; the marketplace treats them as
+        // clearnet endpoints.
+        return Some((url.to_string(), "clearnet"));
+    }
+    if let Some(url) = clearnet {
+        return Some((url.to_string(), "clearnet"));
+    }
+    tor_url.map(|url| (url.to_string(), "tor"))
 }
 
 pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), String> {
@@ -22782,6 +22798,50 @@ mod tests {
     const VALID_WASM_HEX: &str = "0061736d01000000010c0260017f017f60027f7f017e03030200010503010001071803066d656d6f7279020005616c6c6f6300000372756e00010a0b02040041100b040042020b0b08010041000b023432";
     const TEST_CONFIDENTIAL_POLICY_TOML: &str =
         include_str!("../../examples/confidential_policy.example.toml");
+
+    #[test]
+    fn marketplace_registration_ignores_local_provider_until_public_transport_is_ready() {
+        let local = Some("http://127.0.0.1:8080");
+        let relay = Some("https://provider.relay.froglet.dev");
+        assert_eq!(
+            marketplace_registration_endpoint(local, true, relay, false, None, false),
+            None
+        );
+        assert_eq!(
+            marketplace_registration_endpoint(local, true, relay, true, None, false),
+            Some(("https://provider.relay.froglet.dev".into(), "clearnet"))
+        );
+        assert_eq!(
+            marketplace_registration_endpoint(local, true, relay, false, None, true),
+            Some(("http://127.0.0.1:8080".into(), "clearnet"))
+        );
+    }
+
+    #[test]
+    fn marketplace_registration_prefers_explicit_public_origin_and_keeps_tor_fallback() {
+        assert_eq!(
+            marketplace_registration_endpoint(
+                Some("https://provider.example"),
+                true,
+                Some("https://provider.relay.froglet.dev"),
+                true,
+                None,
+                false,
+            ),
+            Some(("https://provider.example".into(), "clearnet"))
+        );
+        assert_eq!(
+            marketplace_registration_endpoint(
+                Some("http://127.0.0.1:8080"),
+                true,
+                None,
+                false,
+                Some("http://provider.onion"),
+                false,
+            ),
+            Some(("http://provider.onion".into(), "tor"))
+        );
+    }
 
     struct BlockingBuiltinHandler;
 
