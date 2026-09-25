@@ -1795,19 +1795,16 @@ exit 0
         self.assertIn("subject-path: dist/agent-bootstrap.sh", workflow)
         self.assertIn("dist/agent-bootstrap.intoto.jsonl", workflow)
         self.assertIn("--assets-dir dist", workflow)
-        preflight = workflow.index(
-            "Require immutable releases before any release mutation"
+        draft_check = workflow.index(
+            "Require a draft created after operator immutable-release check"
         )
-        create_release = workflow.index("Create release if missing")
-        self.assertLess(preflight, create_release)
-        preflight_block = workflow[preflight:create_release]
-        self.assertIn(
-            '"/repos/${GITHUB_REPOSITORY}/immutable-releases"', preflight_block
-        )
-        self.assertIn("X-GitHub-Api-Version: 2026-03-10", preflight_block)
-        self.assertIn("--method GET", preflight_block)
-        self.assertIn("--jq '.enabled'", preflight_block)
-        self.assertIn('!= "true"', preflight_block)
+        asset_build = workflow.index("  build-release-assets:")
+        self.assertLess(draft_check, asset_build)
+        draft_block = workflow[draft_check:asset_build]
+        self.assertIn("--json isDraft -q .isDraft", draft_block)
+        self.assertIn('[[ "$current_draft" == "true" ]]', draft_block)
+        self.assertIn('[[ "$remote_tag_commit" == "$GITHUB_SHA" ]]', draft_block)
+        self.assertIn("published release is not immutable", workflow)
 
     def _run_installer(self, asset_dir: Path, extra_env=None, use_manifest_pin=True):
         env = os.environ.copy()

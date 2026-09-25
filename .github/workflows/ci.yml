@@ -243,13 +243,7 @@ jobs:
         run: docker compose build provider runtime
 
       - name: Start stack
-        # compose.ci.yaml overlays FROGLET_HOST_READABLE_CONTROL_TOKEN=true
-        # so /data/runtime/*.token files become host-readable. Needed for
-        # the verification step below to see the token file from the
-        # runner user. See compose.ci.yaml for rationale and the
-        # config::tests::compose_defaults_do_not_make_control_tokens_host_readable
-        # test that keeps compose.yaml itself free of this flag.
-        run: docker compose -f compose.yaml -f compose.ci.yaml up -d --wait provider runtime
+        run: docker compose up -d --wait provider runtime
 
       - name: Wait for provider health
         run: curl --retry 20 --retry-connrefused --retry-delay 2 --fail --silent --show-error http://127.0.0.1:8080/health
@@ -285,16 +279,22 @@ jobs:
           assert runtime_health.get("status") in ("ok", "healthy", True, "up"), runtime_health
           PY
 
-      - name: Stage runtime auth token for host-side MCP smoke
+      - name: Stage control tokens for host-side agent smokes
         run: |
+          docker compose exec -T provider cat /data/runtime/froglet-control.token > "$RUNNER_TEMP/froglet-provider-control.token"
           docker compose exec -T runtime cat /data/runtime/auth.token > "$RUNNER_TEMP/froglet-runtime-auth.token"
-          chmod 0600 "$RUNNER_TEMP/froglet-runtime-auth.token"
+          chmod 0600 "$RUNNER_TEMP/froglet-provider-control.token" "$RUNNER_TEMP/froglet-runtime-auth.token"
 
       - name: Smoke test OpenClaw plugin against compose-backed Froglet
+        env:
+          FROGLET_PROVIDER_AUTH_TOKEN_PATH: ${{ runner.temp }}/froglet-provider-control.token
+          FROGLET_RUNTIME_AUTH_TOKEN_PATH: ${{ runner.temp }}/froglet-runtime-auth.token
         run: node integrations/openclaw/froglet/test/compose-smoke.mjs
 
       - name: Smoke test MCP server against compose-backed Froglet
         env:
+          FROGLET_PROVIDER_AUTH_TOKEN_PATH: ${{ runner.temp }}/froglet-provider-control.token
+          FROGLET_PROVIDER_CONTROL_TOKEN_PATH: ${{ runner.temp }}/froglet-provider-control.token
           FROGLET_RUNTIME_AUTH_TOKEN_PATH: ${{ runner.temp }}/froglet-runtime-auth.token
         run: node integrations/mcp/froglet/test/compose-smoke.mjs
 

@@ -187,20 +187,19 @@ The Git tag must be prefixed with `v`, for example `v0.1.0-alpha.1`.
 The release workflow checks this and fails if they diverge.
 
 Repository or organization **immutable releases must be enabled before a tag
-is pushed**. Before creating or editing any release, the workflow performs a
-read-only `GET /repos/{owner}/{repo}/immutable-releases` preflight using API
-version `2026-03-10` and requires `enabled=true`; it never enables the setting
-itself. It then creates a draft, uploads every binary, checksum, manifest, and
-attestation asset, and publishes only after the bundle is complete. It also
-requires the published release to report `immutable: true`; immutable releases
-are intentionally not rebuildable or overwritable.
-
-Historical external blocker (read-only check on 2026-07-11): the official
-repository reported `{"enabled":false,"enforced_by_owner":false}`. Recheck
-this setting at release time; that historical observation does not establish
-its current value. A new release must fail before release mutation unless
-immutable releases are enabled. No release was created or published by that
-check. See GitHub's
+is created**. The GitHub Actions token cannot read this administration API:
+its attempt on `v0.4.1` returned HTTP 403, so that tag has no release assets.
+An operator with repository administration access must first run the read-only
+`GET /repos/{owner}/{repo}/immutable-releases` check with API version
+`2026-03-10` and require `enabled=true`. After the exact source commit is on
+`main`, the operator creates a **draft** GitHub release using an unused tag
+and `--target` set to that commit. GitHub creates the tag and triggers the
+workflow. The workflow requires the existing draft and verifies that the tag
+resolves to its source commit; it cannot create a release on its own. It then
+uploads every binary, checksum, manifest, and attestation asset and publishes
+only after the bundle is complete. The final job requires the published
+release to report `immutable: true`. Immutable releases are not rebuildable
+or overwritable. See GitHub's
 [immutable release model](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 and [release API](https://docs.github.com/en/rest/releases/releases).
 

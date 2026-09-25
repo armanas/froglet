@@ -364,8 +364,11 @@ validate_payment_environment() {
   local line name value seen_names backend mode permissions
   [[ -f "$path" && ! -L "$path" ]] || fail "payment environment must be a regular file"
   [[ -O "$path" ]] || fail "payment environment must be owned by the current user"
-  permissions="$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null)" || \
-    fail "could not inspect payment environment permissions"
+  permissions="$(stat -c '%a' "$path" 2>/dev/null || true)"
+  if [[ ! "$permissions" =~ ^[0-7]{3,4}$ ]]; then
+    permissions="$(stat -f '%Lp' "$path" 2>/dev/null)" || \
+      fail "could not inspect payment environment permissions"
+  fi
   [[ "$permissions" =~ ^[0-7]{3,4}$ ]] || fail "could not validate payment environment permissions"
   (( (8#$permissions & 077) == 0 )) || fail "payment environment must not be readable by group or other users"
   backend=""
