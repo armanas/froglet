@@ -14,7 +14,7 @@ The commands below require an immutable release containing `agent-bootstrap.sh`
 and its release manifest. If that bundle is missing, stop and use the
 [browser sample](/verify-receipt/) or [hosted demo](/learn/cloud-trial/).
 Do not bypass release verification to make an older release install.
-The public beta uses the exact `v0.4.4` release; GitHub's `releases/latest`
+The public beta uses the exact `v0.4.5` release; GitHub's `releases/latest`
 does not select prereleases.
 :::
 
@@ -71,7 +71,7 @@ set -eu
 repo=armanas/froglet
 metadata="$(mktemp "${TMPDIR:-/tmp}/froglet-release.XXXXXX")"
 bootstrap="$(mktemp "${TMPDIR:-/tmp}/froglet-agent-bootstrap.XXXXXX")"
-tag=v0.4.4
+tag=v0.4.5
 printf '%s' "$tag" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+-]*$'
 curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -H 'Accept: application/vnd.github+json' \
   -H 'X-GitHub-Api-Version: 2026-03-10' \

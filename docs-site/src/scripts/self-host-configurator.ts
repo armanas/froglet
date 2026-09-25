@@ -54,7 +54,7 @@ export function buildSelfHostScript(config: SelfHostConfig = DEFAULT_SELF_HOST_C
   lines.push('repo=armanas/froglet');
   lines.push('metadata="$(mktemp "${TMPDIR:-/tmp}/froglet-release.XXXXXX")"');
   lines.push('bootstrap="$(mktemp "${TMPDIR:-/tmp}/froglet-agent-bootstrap.XXXXXX")"');
-  lines.push('tag=v0.4.4');
+  lines.push('tag=v0.4.5');
   lines.push("printf '%s' \"$tag\" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+-]*$'");
   lines.push("curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \"https://api.github.com/repos/$repo/releases/tags/$tag\" -o \"$metadata\"");
   lines.push('[ "$(sed -n \'s/^  "immutable": \\([a-z]*\\),*$/\\1/p\' "$metadata")" = true ]');
