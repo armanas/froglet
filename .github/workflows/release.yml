@@ -183,9 +183,25 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
-      - name: Build release binaries
+      - name: Build Linux release binary against Debian 11 glibc
+        if: runner.os == 'Linux'
         run: |
-          cargo build --release --locked --bin froglet-node -p froglet
+          # Host runners may advance their glibc independently of Froglet's
+          # supported Linux hosts. Build both native architectures in the same
+          # pinned Debian 11 userland so the archive runs on glibc 2.31+ hosts.
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env CARGO_HOME=/tmp/cargo \
+            --env RUSTUP_HOME=/usr/local/rustup \
+            --volume "$PWD:/src" \
+            --workdir /src \
+            rust:1.91.0-bullseye@sha256:cf609cd5ae2e5bd97ddc9018dab531261f479084f7b290b09b6e18f93c4644a9 \
+            sh -c 'cargo build --release --locked --bin froglet-node -p froglet && ./target/release/froglet-node --help >/dev/null'
+
+      - name: Build macOS release binary
+        if: runner.os == 'macOS'
+        run: cargo build --release --locked --bin froglet-node -p froglet
 
       - name: Package archives
         env:
