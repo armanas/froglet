@@ -148,7 +148,22 @@ pub async fn inspect(link: &ServiceLink) -> Result<Value, CliError> {
     ))
     .await?;
     let descriptor = &descriptor["document"];
-    verified_inspection(link, revision, offer, descriptor)
+    let mut inspected = verified_inspection(link, revision, offer, descriptor)?;
+    let access = response["execution_access"].as_str().unwrap_or("unknown");
+    inspected["availability"]["execution_access"] = json!(match access {
+        "open" | "invite" | "private" | "trial" | "paid" => access,
+        _ => "unknown",
+    });
+    if access == "invite" {
+        inspected["next_action"] = json!(
+            "Ask the provider for an invitation credential file separately. Use invoke_service with access_token_file and schema-valid input. Never paste a token into the conversation or a share link."
+        );
+    } else if access == "private" {
+        inspected["free_call_supported"] = json!(false);
+        inspected["next_action"] =
+            json!("Private execution: only the provider can call this service.");
+    }
+    Ok(inspected)
 }
 
 fn artifact_hash(value: &Value) -> Result<&str, CliError> {

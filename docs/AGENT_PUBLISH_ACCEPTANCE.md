@@ -110,3 +110,21 @@ Final website deployment: Cloudflare Worker `froglet-docs`, version
 - `tests/llm_acceptance/test_native_publish.py`
 - `tests/llm_acceptance/README.md`
 - `docs/AGENT_PUBLISH_ACCEPTANCE.md` (this evidence record)
+
+## Local publication and invocation — 2026-09-27
+
+A fresh Codex CLI session with native MCP attached completed preparation, local
+publication and one free local invocation in 105.2 seconds. It used an isolated
+loopback-only provider, synthetic JSON, invitation mode, zero payment budget,
+and finite cumulative allowances. The agent made actual `prepare_service`,
+`marketplace_publish` and `invoke_service` calls. Independent checks confirmed
+that the source was unchanged, the snapshot and result contained exactly `id`
+and `name`, leading-zero IDs survived, and private notes were excluded.
+An idempotent replay verified the receipt and did not create another deal:
+`4d6b775f2fb4d5d0be5932fa72db5e9b38d0d56ef9dbdd9f74dca53809865de8`.
+Usage was one quote, one deal and 10,000 ms reserved. The fixture process was
+stopped afterward. Evidence is retained in the ignored
+`_tmp/protected-listings/agent-summary.json` and the private temporary directory
+named there. This is local development-binary evidence, not clean-machine,
+public HTTPS recipient, or first-time-human qualification. Claude Code still
+reported `loggedIn: false`; no sign-in or participant recruitment was attempted.

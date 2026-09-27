@@ -93,6 +93,16 @@ describe('service discovery cards', () => {
       <select data-marketplace-filter><option value="all">All</option><option value="ready">Ready</option><option value="free">Free</option></select>
       <div data-marketplace-service-cards></div><p data-marketplace-no-results hidden>No matches</p></main>`;
   }
+  it('labels invitation listings as metadata-only even when the reachability lease is healthy', async () => {
+    vi.useFakeTimers(); cardsPage();
+    await refresh(snapshot({ offers: [{
+      offerId:'invited-catalog', providerId:'ab'.repeat(32), settlementMethod:'none', baseFeeMsat:0, successFeeMsat:0,
+      availability:{status:'healthy', admission:'invitation_required', lastCheckedAt:Date.now()/1000, leaseExpiresAt:Date.now()/1000+60},
+    }] }));
+    expect(document.querySelector('.service-card')?.textContent).toContain('Invitation required');
+    expect(document.querySelector('.service-card')?.textContent).toContain('execution has not been tested');
+    expect(document.querySelector('.service-availability')?.textContent).toBe('Recently checked');
+  });
   it('requires an unexpired check and never labels stale data recently checked', () => {
     const offer = { availability: { status:'healthy', leaseExpiresAt:200, lastCheckedAt:100 } } as any;
     expect(serviceAvailability(offer, false, 150_000).ready).toBe(true);

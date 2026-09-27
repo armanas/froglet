@@ -19,7 +19,7 @@ export interface MarketplaceOfferSummary {
 	pricingKnown?: boolean;
 	serviceId?: string;
 	sharePath?: string;
-	availability?: { status: string; leaseExpiresAt: number; lastCheckedAt: number };
+	availability?: { admission?: string; status: string; leaseExpiresAt: number; lastCheckedAt: number };
 	providerId: string;
 	offerId: string;
 	offerKind: string;
@@ -248,6 +248,7 @@ export async function getMarketplaceSnapshot(marketplaceUrl = MARKETPLACE_URL): 
 				baseFeeMsat: asNumber(row.base_fee_msat),
 				successFeeMsat: asNumber(row.success_fee_msat),
 				availability: {
+					admission: String(asRecord(row.availability).admission ?? 'unknown'),
 					status: String(asRecord(row.availability).status ?? 'unknown'),
 					leaseExpiresAt: asNumber(asRecord(row.availability).lease_expires_at),
 					lastCheckedAt: asNumber(asRecord(row.availability).last_renewed_at),

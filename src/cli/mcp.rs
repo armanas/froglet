@@ -304,6 +304,13 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
         "invoke_service" if arguments.contains_key("service_url") => {
             let link = selected_service_link(arguments)?.expect("service_url validated");
             match super::service_link::inspect(&link).await {
+                Ok(inspected) if inspected["availability"]["execution_access"] == "private" => Err(CliError::Other(
+                    "provider_access_required: private execution is only available to the provider".into(),
+                )),
+                Ok(inspected) if inspected["availability"]["execution_access"] == "invite"
+                    && invoke_string(arguments, "access_token_file")?.is_none() => Err(CliError::Other(
+                    "invitation_required: ask the provider for a credential file and supply access_token_file; do not paste the credential into a prompt or share link".into(),
+                )),
                 Ok(inspected) if inspected["free_call_supported"] == true || invoke_price_cap(arguments)? > 0 => {
                     invoke_selected(
                         &link.service_id,

@@ -54,6 +54,11 @@ function renderServiceCards(root: HTMLElement, offers: MarketplaceOfferSummary[]
 			actions.append(share);
 		}
 		card.append(top, heading, description, identity, observed);
+		if (offer.availability?.admission === 'invitation_required') {
+			const access = document.createElement('p'); access.className = 'service-meta';
+			access.textContent = 'Invitation required. Listing checks metadata only; execution has not been tested by the marketplace.';
+			card.append(access);
+		}
 		if (!free && offer.pricingKnown !== false) { const terms = document.createElement('p'); terms.className = 'service-meta'; terms.textContent = 'Price is base + success fee; inspect payment terms before use.'; card.append(terms); }
 		card.append(actions); container.append(card);
 	}

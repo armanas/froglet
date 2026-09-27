@@ -18,7 +18,7 @@ export interface ServiceLinkView {
   presentation: { title: string; summary: string; example_input: unknown | null };
   contract: null | { revision_hash: string; offer_hash: string; runtime: string; input_schema: unknown | null; output_schema: unknown | null; limits: unknown; price: { kind: 'free' | 'paid'; currency: string; base_amount_minor: number; success_amount_minor: number; settlement_method: string; purchase_qualified: false } };
   evidence: { verification_state: 'verified' | 'not_checked' | 'invalid'; reason: string | null; publication_revision: unknown | null; offer: unknown | null; descriptor: unknown | null };
-  availability: { state: 'published_reachable' | 'published_unreachable' | 'unknown'; checked_at: string; valid_until: string; last_verified_at: string | null; marketplace_admission: 'active' | 'pending_or_offline' | 'not_verified'; requester_execution: 'not_run' };
+  availability: { execution_access?: 'open' | 'invite' | 'private' | 'trial' | 'paid' | 'unknown'; state: 'published_reachable' | 'published_unreachable' | 'unknown'; checked_at: string; valid_until: string; last_verified_at: string | null; marketplace_admission: 'active' | 'pending_or_offline' | 'not_verified'; requester_execution: 'not_run' };
   instructions: { summary: string; recipient_prompt: string; native_invoke: string | null; approval: string; verification: string };
 }
 
@@ -167,7 +167,12 @@ export async function resolveServiceLink(provider: string, service: string, orig
   view.availability.state = 'published_reachable';
   view.availability.valid_until = new Date(Date.now() + 30000).toISOString();
   view.availability.last_verified_at = view.availability.checked_at;
-  if (free) view.instructions.native_invoke = `froglet-node invoke ${service} - --provider-id ${provider} --provider-url ${providerUrl} --json`;
+  view.availability.execution_access = ['open', 'invite', 'private', 'trial', 'paid'].includes(data.execution_access) ? data.execution_access : 'unknown';
+  if (free && view.availability.execution_access !== 'private') view.instructions.native_invoke = `froglet-node invoke ${service} - --provider-id ${provider} --provider-url ${providerUrl} --json`;
+  if (view.availability.execution_access === 'invite') {
+    if (view.instructions.native_invoke) view.instructions.native_invoke += ' --access-token-file <invitation-file>';
+    view.instructions.recipient_prompt += ' This provider requires an invitation. Ask the provider for access separately and use access_token_file with invoke_service. Never place a credential in this page, a prompt, or a shared URL.';
+  }
   if (endpoints.marketplaceUrl) {
     if (!/^https:\/\/marketplace(?:-[a-z0-9]+)*\.froglet\.dev$/.test(endpoints.marketplaceUrl)) throw new Error('Invalid first-party marketplace origin.');
     try {
@@ -193,7 +198,7 @@ export async function restoreServiceLinkCache(raw: string, provider: string, ser
   return {
     ...view,
     evidence: { ...view.evidence, reason: 'Signed evidence was verified when this description was last observed; current publication is unconfirmed.' },
-    availability: { ...view.availability, state: 'published_unreachable', checked_at: new Date().toISOString(), valid_until: new Date().toISOString(), marketplace_admission: 'not_verified', requester_execution: 'not_run' },
-    instructions: { ...view.instructions, native_invoke: null, summary: 'This is a last-known description. Do not infer that the service is still offered or callable.' },
+    availability: { ...view.availability, state: 'published_unreachable', execution_access: 'unknown', checked_at: new Date().toISOString(), valid_until: new Date().toISOString(), marketplace_admission: 'not_verified', requester_execution: 'not_run' },
+    instructions: { ...view.instructions, recipient_prompt: recipientsPrompt(view.links.share), native_invoke: null, summary: 'This is a last-known description. Do not infer that the service is still offered or callable.' },
   };
 }

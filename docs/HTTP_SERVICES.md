@@ -160,11 +160,20 @@ uncertain invocation; creating a new key requests new work.
 
 ## Current boundaries
 
-- Private/invite services can be invoked directly over an operator-configured
-  public HTTPS endpoint. Public marketplace activation currently requires
-  anonymous execution canaries; it cannot activate these protected services.
-  Keep them local-published and share the provider address/identity privately.
-  A bounded `trial` provider is the existing option for a public demonstration.
+- Invitation services support non-executing marketplace admission when both the
+  provider/client and marketplace run the updated implementation. The exact
+  signed revision, offer, descriptor, active feed membership, HTTPS endpoint and
+  current `invite` policy are checked. No invitation or verification input is
+  sent to the marketplace and no admission invocation runs. Only zero-fee relay
+  services activate automatically; direct HTTPS and Tor still require review.
+  Listings report `availability.admission = "invitation_required"`; reachability
+  is separate from execution evidence. Publish output reports
+  `requester_execution_verified = false`. Issuing an invitation remains a
+  separate provider action, and the share link/QR code grants no access.
+- Private providers cannot use this admission path. Keep private services
+  local-published. Direct invited HTTPS calls remain supported without a listing.
+  The deployed v0.4.6-beta.1 / hosted beta.20 pair predates this admission path;
+  continue direct HTTPS until the updated pair is released and deployed.
 - Supports fixed GET (empty input) or POST JSON. No caller-selected URLs,
   redirects, retries, streaming, uploads, storage or arbitrary proxying.
 - Uses JSON Schema draft 2020-12 with finite definition size/depth. References,

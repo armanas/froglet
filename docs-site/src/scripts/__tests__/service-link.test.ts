@@ -34,6 +34,26 @@ function fetchSequence(...values: unknown[]) {
 }
 
 describe('agent-readable service link', () => {
+  it('separates invitation access from free pricing without sharing credentials', async () => {
+    const fetcher = fetchSequence({ ...reference, execution_access: 'invite' }, offer, descriptor);
+    const view = await resolveServiceLink(provider, service, origin, fetcher, {}, verifier);
+    expect(view.availability.execution_access).toBe('invite');
+    expect(view.availability.requester_execution).toBe('not_run');
+    expect(view.instructions.native_invoke).toContain('--access-token-file <invitation-file>');
+    expect(view.instructions.recipient_prompt).toContain('Never place a credential');
+    expect(view.links.share).toBe(`${origin}/s/${provider}/${service}`);
+    expect(renderServiceLinkHtml(view)).toContain('Invitation required');
+    expect(renderServiceLinkMarkdown(view)).toContain('Access: Invitation required');
+    const stale = await restoreServiceLinkCache(JSON.stringify(view), provider, service, origin, verifier);
+    expect(stale?.availability.execution_access).toBe('unknown');
+    expect(stale?.instructions.native_invoke).toBeNull();
+  });
+  it('does not offer a call command for a private provider', async () => {
+    const view = await resolveServiceLink(provider, service, origin,
+      fetchSequence({ ...reference, execution_access: 'private' }, offer, descriptor), {}, verifier);
+    expect(view.instructions.native_invoke).toBeNull();
+    expect(renderServiceLinkHtml(view)).toContain('Only the provider can run this service');
+  });
   it('builds HTML, Markdown and JSON from one signed active revision', async () => {
     const fetcher = fetchSequence(reference, offer, descriptor);
     const view = await resolveServiceLink(provider, service, origin, fetcher, {}, verifier);
