@@ -12,9 +12,9 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Versioning
 
-`v0.4.6-beta.1` is the immutable public beta release, built from source revision
-`71955ef96804fc40eb0e0c9610c1fd4ea4e770f8`. The hosted `v0.1.0-beta.20`
-candidate pins that exact revision. Future releases require a new tag,
+`v0.4.6-beta.2` is the immutable public beta release, built from source revision
+`2a9e908480ef7afac8e9929b9666794a98201c36`. Hosted `v0.1.0-beta.21`
+pins that exact revision. Future releases require a new tag,
 a verified immutable Release Bundle, and a refreshed services source pin and
 lockfile. CI and release jobs share that pin and require locked dependencies.
 
@@ -129,10 +129,10 @@ settlement, a paid model API, or the clean-agent and participant gates below.
 Payment rails remain deferred. See [HTTP services](HTTP_SERVICES.md) for operator
 setup, explicit finite allowances, and the current product boundaries.
 
-### Protected-listing candidate
+### Protected-listing qualification
 
-The v0.4.6-beta.2 provider/client candidate supports invitation-only relay
-admission when paired with the updated marketplace. Registration checks signed
+The v0.4.6-beta.2 provider/client supports invitation-only relay
+admission when paired with hosted v0.1.0-beta.21. Registration checks signed
 metadata and the exact active revision without execution; the listing discloses
 that boundary. The real local relay integration test uses zero quote/deal/runtime
 allowance and verifies all three counters remain zero, anonymous execution is
@@ -143,6 +143,14 @@ recorded separately from these local checks.
 A fresh native-MCP Codex local publication/invocation passed; see
 [agent evidence](AGENT_PUBLISH_ACCEPTANCE.md#local-publication-and-invocation--2026-09-27).
 The clean-machine and human gates below remain open.
+
+The immutable beta.2 Release Bundle, all eight asset digests, and its exact-source
+workflow attestation passed verification. A mandatory-attestation installation of
+the released Mac binary then published an isolated local catalog and made one
+call. The receipt was
+`17691175b179cebabfb4d711bc007551b5c30e4e453c693ea7f92690705a16a6`;
+usage was one quote, one deal, and 10,000 ms reserved. This proves the released
+Mac executable on the current host, not a clean installation or public listing.
 
 ### Required platform and external evidence
 

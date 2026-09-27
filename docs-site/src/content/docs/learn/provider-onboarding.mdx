@@ -74,8 +74,10 @@ After the user approves that exact summary:
 Do not infer approval from the original prompt, retry automatically with a new
 hash, or hide warnings. A stale approval is intentionally unusable.
 
-The approved response contains requester-canary and marketplace offer evidence
-only when the external marketplace activates the exact candidate. Tor,
+The approved response reports marketplace activation only when the external
+marketplace activates the exact candidate. Open services also report execution
+canaries. Invitation services use signed metadata admission, return
+`invitation_required`, and leave `requester_execution_verified` false. Tor,
 self-hosted, paid, or policy-held candidates can truthfully return
 `pending_review` with no active offer URL or requester canary. A successful
 local relay composition does not prove that a first-party public relay or its
@@ -112,16 +114,19 @@ build exact immutable package
   -> provider-private fixture execution
   -> signed immutable Publication Revision
   -> approved endpoint confirmation
+  -> inspect current execution access
+  -> requester canary for open services; metadata check for invitation services
   -> marketplace pending-validation candidate
-  -> marketplace-owned exact-revision canary
+  -> marketplace exact-revision check (execution or invitation metadata)
   -> atomic activation and renewable health lease
   -> exact offer projection
-  -> independent requester-side canary
 ```
 
 Each claim remains separate. A local fixture does not prove reachability;
 reachability does not prove marketplace activation; activation does not prove
-an independent requester invocation; none of those proves a payment.
+an independent requester invocation; none of those proves a payment. Invitation
+admission runs no external invocation and sends no credential or private fixture
+to the marketplace. Private services cannot use that admission path.
 
 ## Hosting choices
 
