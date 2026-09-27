@@ -4301,6 +4301,16 @@ pub async fn get_provider_service(
                 StatusCode::OK,
                 Json(ProviderServiceResponse {
                     service,
+                    execution_access: Some(
+                        match state.config.provider_policy.access_mode {
+                            crate::provider_policy::AccessMode::Open => "open",
+                            crate::provider_policy::AccessMode::Private => "private",
+                            crate::provider_policy::AccessMode::Invite => "invite",
+                            crate::provider_policy::AccessMode::Trial => "trial",
+                            crate::provider_policy::AccessMode::Paid => "paid",
+                        }
+                        .to_string(),
+                    ),
                     publication_revision,
                 }),
             )
@@ -30480,7 +30490,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn public_provider_service_detail_hides_hidden_services_and_binding_fields() {
-        let state = test_app_state(PaymentBackend::None);
+        let mut state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut state)
+            .expect("unique state")
+            .config
+            .provider_policy
+            .access_mode = crate::provider_policy::AccessMode::Invite;
         publish_test_service(
             &state,
             ProviderControlPublishArtifactRequest {
@@ -30561,6 +30576,7 @@ pub(crate) mod tests {
         let (public_status, public_payload): (StatusCode, Value) =
             response_json(public_response).await;
         assert_eq!(public_status, StatusCode::OK);
+        assert_eq!(public_payload["execution_access"], "invite");
         assert_eq!(public_payload["service"]["service_id"], "public-python");
         assert_eq!(public_payload["service"]["publication_state"], "active");
         assert_eq!(public_payload["service"]["inline_source"], Value::Null);

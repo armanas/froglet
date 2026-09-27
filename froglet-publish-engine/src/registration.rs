@@ -112,6 +112,7 @@ async fn requester_canary_client(
         });
     }
     crate::http_client_builder()
+        .no_proxy()
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(host, &addresses)
@@ -139,6 +140,8 @@ impl Default for PollPolicy {
 #[derive(Debug, Serialize)]
 struct RegistrationRequest<'a> {
     provider_url: &'a str,
+    /// Explicitly request non-executing admission for an invitation service.
+    metadata_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     transport: Option<&'a str>,
     /// Exact signed offer this registration candidate must expose. Legacy
@@ -197,6 +200,7 @@ pub async fn register_with_marketplace(
 
     let request = RegistrationRequest {
         provider_url,
+        metadata_only: publication_revision.is_some() && canary_input.is_none(),
         transport: transport_hint,
         offer_hash,
         publication_revision,
@@ -267,6 +271,85 @@ pub async fn register_with_marketplace(
 /// Run a requester-owned invocation after exact transport activation and
 /// before marketplace submission. This separate network round prevents a
 /// requester-side failure from leaving an avoidable active listing lease.
+/// Read current access policy without invoking the service. Only a matching,
+/// signed active revision may select the invitation-only admission path.
+pub async fn requires_invitation(
+    provider_url: &str,
+    revision: &SignedPublicationRevision,
+) -> Result<bool, PublishError> {
+    let failure = |reason: String| PublishError::Verification {
+        tries: 1,
+        url: provider_url.to_string(),
+        reason,
+    };
+    revision.verify().map_err(|e| failure(e.to_string()))?;
+    let mut endpoint = Url::parse(provider_url).map_err(|e| failure(e.to_string()))?;
+    if endpoint.scheme() != "https"
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+    {
+        return Err(failure(
+            "public metadata requires credential-free HTTPS".into(),
+        ));
+    }
+    endpoint
+        .path_segments_mut()
+        .map_err(|_| failure("invalid provider URL".into()))?
+        .clear()
+        .extend(["v1", "provider", "services", &revision.payload.service_id]);
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    let client = requester_canary_client(&endpoint, Duration::from_secs(5)).await?;
+    let mut response = client.get(endpoint).send().await?;
+    // Older providers still have to pass the existing execution canary.
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if !response.status().is_success() {
+        return Err(failure("public service metadata unavailable".into()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > 512 * 1024 {
+            return Err(failure("public service metadata exceeds 512 KiB".into()));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|_| failure("invalid public service metadata".into()))?;
+    invitation_metadata(&metadata, revision).map_err(failure)
+}
+
+fn invitation_metadata(
+    metadata: &serde_json::Value,
+    revision: &SignedPublicationRevision,
+) -> Result<bool, String> {
+    match metadata.get("execution_access").and_then(|v| v.as_str()) {
+        None | Some("open" | "trial" | "paid") => Ok(false),
+        Some("private") => {
+            Err("private providers cannot create public listings; use local publication".into())
+        }
+        Some("invite") => {
+            let observed: SignedPublicationRevision =
+                serde_json::from_value(metadata["publication_revision"].clone())
+                    .map_err(|_| "invitation service omitted its signed active revision")?;
+            observed
+                .verify()
+                .map_err(|_| "invitation service revision failed verification")?;
+            if observed.revision_hash != revision.revision_hash
+                || metadata["service"]["service_id"] != revision.payload.service_id
+                || metadata["service"]["provider_id"] != revision.payload.provider_id
+            {
+                return Err(
+                    "invitation service does not expose the exact approved revision".into(),
+                );
+            }
+            Ok(true)
+        }
+        Some(_) => Err("unsupported provider execution access policy".into()),
+    }
+}
+
 pub async fn run_requester_canary(
     provider_url: &str,
     revision: &SignedPublicationRevision,
@@ -631,8 +714,46 @@ mod tests {
     }
 
     #[test]
+    fn invitation_admission_requires_exact_signed_current_metadata() {
+        let (_, revision, _) = signed_revision_and_request();
+        let mut metadata = serde_json::json!({
+            "execution_access":"invite", "publication_revision":revision,
+            "service":{"provider_id":revision.payload.provider_id, "service_id":revision.payload.service_id}
+        });
+        assert!(invitation_metadata(&metadata, &revision).unwrap());
+        metadata["service"]["provider_id"] = serde_json::json!("wrong");
+        assert!(invitation_metadata(&metadata, &revision).is_err());
+        metadata["service"]["provider_id"] = serde_json::json!(revision.payload.provider_id);
+        metadata["publication_revision"]["payload"]["offer_hash"] =
+            serde_json::json!("33".repeat(32));
+        assert!(invitation_metadata(&metadata, &revision).is_err());
+        for mode in ["private", "future-mode"] {
+            metadata["execution_access"] = serde_json::json!(mode);
+            assert!(invitation_metadata(&metadata, &revision).is_err());
+        }
+        for mode in ["open", "trial", "paid"] {
+            metadata["execution_access"] = serde_json::json!(mode);
+            assert!(!invitation_metadata(&metadata, &revision).unwrap());
+        }
+        metadata.as_object_mut().unwrap().remove("execution_access");
+        assert!(!invitation_metadata(&metadata, &revision).unwrap());
+        let request = serde_json::to_value(RegistrationRequest {
+            provider_url: "https://provider.example",
+            metadata_only: true,
+            transport: Some("relay"),
+            offer_hash: Some(&revision.payload.offer_hash),
+            publication_revision: Some(&revision),
+            canary_input: None,
+        })
+        .unwrap();
+        assert_eq!(request["metadata_only"], true);
+        assert!(request.get("canary_input").is_none());
+    }
+
+    #[test]
     fn candidate_registration_binds_exact_offer_hash() {
         let value = serde_json::to_value(RegistrationRequest {
+            metadata_only: false,
             provider_url: "https://provider.example",
             transport: Some("clearnet"),
             offer_hash: Some("offer-abc"),
@@ -648,6 +769,7 @@ mod tests {
     #[test]
     fn legacy_registration_omits_offer_hash() {
         let value = serde_json::to_value(RegistrationRequest {
+            metadata_only: false,
             provider_url: "https://provider.example",
             transport: Some("clearnet"),
             offer_hash: None,

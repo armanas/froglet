@@ -461,7 +461,13 @@ pub async fn publish(
         .map(|revision| revision.payload.offer_hash.as_str())
         .unwrap_or(evidence.offer_hash.as_str())
         .to_string();
-    let requester_canary = if prepared.register_with_marketplace {
+    let invitation_required = if prepared.register_with_marketplace {
+        registration::requires_invitation(
+            &prepared.public_url,
+            exact_revision.ok_or_else(|| daemon_plan_mismatch("publication_revision"))?,
+        ).await?
+    } else { false };
+    let requester_canary = if prepared.register_with_marketplace && !invitation_required {
         let requester_input = input
             .service
             .verification
@@ -509,7 +515,7 @@ pub async fn publish(
                 transport_hint,
                 exact_revision.map(|_| exact_offer_hash.as_str()),
                 exact_revision,
-                exact_revision.and_then(|_| {
+                exact_revision.filter(|_| !invitation_required).and_then(|_| {
                     input
                         .service
                         .verification
@@ -649,11 +655,12 @@ pub async fn publish(
         .unwrap_or_else(|| evidence.offer_id.clone());
     let progress = PublicationProgress {
         local_verified: evidence.local_verification.is_some(),
-        public_reachable: requester_canary.as_ref().map(|_| true),
+        public_reachable: if invitation_required { Some(true) } else { requester_canary.as_ref().map(|_| true) },
         marketplace_active: marketplace_offer_url.is_some(),
         requester_execution_verified: requester_canary.is_some(),
     };
-    let status = if progress.marketplace_active && progress.requester_execution_verified { "healthy" }
+    let status = if progress.marketplace_active && invitation_required { "invitation_required" }
+        else if progress.marketplace_active && progress.requester_execution_verified { "healthy" }
         else if progress.marketplace_active { "marketplace_active" }
         else if !prepared.register_with_marketplace && progress.local_verified { "local_verified" }
         else if !prepared.register_with_marketplace { "local_published" }
@@ -665,9 +672,10 @@ pub async fn publish(
             &invoke_service_id,
         ))
     } else { None };
-    let invoke_command = if prepared.register_with_marketplace {
+    let mut invoke_command = if prepared.register_with_marketplace {
         format!("froglet-node invoke {invoke_service_id} '<json_input>' --provider-id {} --provider-url {}", evidence.provider_id, prepared.public_url)
     } else { format!("froglet-node invoke {invoke_service_id} '<json_input>'") };
+    if invitation_required { invoke_command.push_str(" --access-token-file <invitation-file>"); }
     Ok(PublishOutput {
         status, progress, share_url, invoke_command,
         provider_id: evidence.provider_id,

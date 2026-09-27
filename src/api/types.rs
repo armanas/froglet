@@ -746,6 +746,9 @@ pub struct ProviderServicesResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProviderServiceResponse {
     pub service: ProviderServiceRecord,
+    /// Current operator policy, observed over HTTP; not signed offer terms.
+    #[serde(default)]
+    pub execution_access: Option<String>,
     /// Public, provider-signed evidence for the currently active revision.
     /// Private verification inputs and authoring metadata are never included.
     #[serde(default, skip_serializing_if = "Option::is_none")]

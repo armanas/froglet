@@ -163,6 +163,12 @@ and deal. Invitations cover the provider's services; they do not grant operator
 control. Use `invite_revoke` to stop new work while preserving result recovery.
 Never put credentials in share links, QR codes, or prompts.
 
+The next provider/client and marketplace implementation supports invitation-only
+relay listings through metadata checks. Such listings say **Invitation required**;
+`requester_execution_verified` stays false, and neither a listing nor its QR code
+grants access. This is not available in the deployed v0.4.6-beta.1 / hosted beta.20
+pair yet.
+
 Publish protected services with `host: "local"` and use the configured public
 HTTPS endpoint for direct invited calls. Marketplace activation currently
 requires anonymous canaries, so it cannot activate protected services. Do not

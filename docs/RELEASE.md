@@ -129,6 +129,21 @@ settlement, a paid model API, or the clean-agent and participant gates below.
 Payment rails remain deferred. See [HTTP services](HTTP_SERVICES.md) for operator
 setup, explicit finite allowances, and the current product boundaries.
 
+### Protected-listing candidate
+
+The v0.4.6-beta.2 provider/client candidate supports invitation-only relay
+admission when paired with the updated marketplace. Registration checks signed
+metadata and the exact active revision without execution; the listing discloses
+that boundary. The real local relay integration test uses zero quote/deal/runtime
+allowance and verifies all three counters remain zero, anonymous execution is
+refused, and disconnected listings expire from discovery. Kernel artifacts and
+payment rails are unchanged. Hosted release/deployment qualification must be
+recorded separately from these local checks.
+
+A fresh native-MCP Codex local publication/invocation passed; see
+[agent evidence](AGENT_PUBLISH_ACCEPTANCE.md#local-publication-and-invocation--2026-09-27).
+The clean-machine and human gates below remain open.
+
 ### Required platform and external evidence
 
 | Target | Codex on a clean machine | Claude Code on a clean machine |
