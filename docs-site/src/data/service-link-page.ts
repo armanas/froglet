@@ -34,24 +34,38 @@ function stateText(view: ServiceLinkView): string {
   return 'Current publication and availability could not be established.';
 }
 
+function previewText(value: string, limit: number): string {
+  const text = value.replace(/\s+/g, ' ').trim();
+  const points = Array.from(text);
+  return points.length <= limit ? text : `${points.slice(0, limit - 1).join('').trimEnd()}…`;
+}
+
 export function renderServiceLinkHtml(view: ServiceLinkView): string {
   const title = `${view.presentation.title} · Froglet service`;
+  const previewTitle = `🐸 Froglet — ${previewText(view.presentation.title, 65)}`;
+  const previewImage = new URL('/og/service.png', view.links.share).toString();
   const path = new URL(view.links.share).pathname;
   const collections = Object.entries(collectionsIn(view.contract?.output_schema));
   const inspect = JSON.stringify({action:'inspect_service', service_url:view.links.share, response_format:'compact'}, null, 2);
   const scope = collections.length ? `<article><h2>Data you can query</h2><p>Choose a table, select fields, and filter rows. Only the tables and fields listed here are exposed; a summary count does not imply access to the underlying individual records.</p><div class="table-scroll"><table><thead><tr><th>Table</th><th>Available fields</th></tr></thead><tbody>${collections.map(([name, fields]) => `<tr><th scope="row">${html(name)}</th><td>${fields.map(field => `<code>${html(field)}</code>`).join(' · ')}</td></tr>`).join('')}</tbody></table></div><p class="note">Field names come from the signed schema. Ask the publisher for definitions and source references where they are not supplied.</p></article>` : '';
 
-  const description = view.availability.state === 'published_reachable' ? view.presentation.summary.slice(0, 180) : stateText(view);
+  const description = view.availability.state === 'published_reachable'
+    ? previewText(view.presentation.summary, 140)
+    : view.availability.state === 'published_unreachable'
+      ? `Availability unconfirmed. ${previewText(view.presentation.summary, 114)}`
+      : 'Service details and availability could not be checked. Ask the sender to confirm the service is still published.';
   const example = view.presentation.example_input === null ? 'No schema-checked example input is available.' : JSON.stringify(view.presentation.example_input, null, 2);
   const terms = priceText(view);
   const ld = { '@context': 'https://schema.org', '@type': 'Service', name: view.presentation.title, description: view.presentation.summary, url: view.links.share, provider: { '@type': 'Organization', identifier: view.service_key.provider_id }, offers: view.contract?.price.kind === 'free' ? { '@type': 'Offer', price: '0', priceCurrency: view.contract.price.currency === 'usd' ? 'USD' : undefined } : undefined };
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>${html(title)}</title><meta name="description" content="${html(description)}">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="canonical" href="${html(view.links.share)}"><link rel="alternate" type="application/json" href="${html(view.links.manifest)}" title="Froglet machine-readable service manifest">
 <link rel="alternate" type="text/markdown" href="${html(view.links.agent)}" title="Agent-readable service description">
-<meta property="og:type" content="website"><meta property="og:site_name" content="Froglet"><meta property="og:title" content="${html(title)}"><meta property="og:description" content="${html(description)}"><meta property="og:url" content="${html(view.links.share)}"><meta property="og:image" content="${html(new URL('/og/default.png', view.links.share))}">
-<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${html(title)}"><meta name="twitter:description" content="${html(description)}"><meta name="twitter:image" content="${html(new URL('/og/default.png', view.links.share))}">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Froglet"><meta property="og:title" content="${html(previewTitle)}"><meta property="og:description" content="${html(description)}"><meta property="og:url" content="${html(view.links.share)}"><meta property="og:image" content="${html(previewImage)}">
+<meta property="og:image:type" content="image/png"><meta property="og:image:width" content="512"><meta property="og:image:height" content="512"><meta property="og:image:alt" content="Froglet frog mark">
+<meta name="twitter:card" content="summary"><meta name="twitter:title" content="${html(previewTitle)}"><meta name="twitter:description" content="${html(description)}"><meta name="twitter:image" content="${html(previewImage)}"><meta name="twitter:image:alt" content="Froglet frog mark">
 <script type="application/ld+json">${jsonScript(ld)}</script>
 <style>body{margin:0;background:#101417;color:#edf2ef;font:16px/1.55 system-ui,sans-serif}a{color:#9fe0bd}header,main,footer{max-width:900px;margin:auto;padding:1.2rem}header{border-bottom:1px solid #3b4c43}header a{text-decoration:none;font-weight:700}main{padding-top:2rem;padding-bottom:3rem}h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.12}h2{margin-top:0}article{background:#18211d;border:1px solid #3b4c43;border-radius:12px;padding:1.3rem;margin:1.2rem 0}dl{display:grid;grid-template-columns:minmax(8rem,14rem) 1fr;gap:.6rem 1rem}dt{font-weight:700}dd{margin:0;overflow-wrap:anywhere}pre,textarea{box-sizing:border-box;width:100%;background:#0b100d;color:#e8f1ec;border:1px solid #52675b;border-radius:8px;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere}textarea{min-height:11rem;font:inherit}p,li{max-width:75ch}.eyebrow{color:#9fe0bd;text-transform:uppercase;letter-spacing:.09em;font-size:.8rem;font-weight:700}.status{font-weight:700}.note{color:#b5c5bb}a:focus-visible,button:focus-visible,summary:focus-visible,textarea:focus-visible{outline:3px solid #9fe0bd;outline-offset:3px}.actions{display:flex;gap:.75rem;flex-wrap:wrap;margin:1rem 0}.actions a,button{display:inline-block;padding:.65rem 1rem;border:1px solid #52675b;border-radius:8px;background:#24382c;color:#edf2ef;font:inherit;cursor:pointer;text-decoration:none}summary{cursor:pointer;font-weight:600}details{margin:1rem 0}details[open]>summary{margin-bottom:1rem}.share-link{min-height:5rem}.qr{display:block;width:min(100%,280px);height:auto;background:white;border-radius:8px;margin:1rem 0}.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:.75rem;border-bottom:1px solid #3b4c43;vertical-align:top}td{overflow-wrap:anywhere}code{font-size:.9em}h1{overflow-wrap:anywhere}.note{font-size:.94rem}@media(max-width:600px){dl{grid-template-columns:1fr}dd{margin-bottom:.6rem}main{padding-top:1rem}}</style><script src="/service-share.js" defer></script></head>
 <body><header><a href="/">Froglet</a></header><main><p class="eyebrow">Shared service</p><h1>${html(view.presentation.title)}</h1><p>${html(view.presentation.summary)}</p><p class="status" role="status">${html(stateText(view))}</p>
