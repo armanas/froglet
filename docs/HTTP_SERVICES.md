@@ -160,8 +160,8 @@ uncertain invocation; creating a new key requests new work.
 
 ## Current boundaries
 
-- Invitation services support non-executing marketplace admission when both the
-  provider/client and marketplace run the updated implementation. The exact
+- Invitation services support non-executing marketplace admission with public
+  `v0.4.6-beta.2` and hosted `v0.1.0-beta.21` or later. The exact
   signed revision, offer, descriptor, active feed membership, HTTPS endpoint and
   current `invite` policy are checked. No invitation or verification input is
   sent to the marketplace and no admission invocation runs. Only zero-fee relay
@@ -172,8 +172,6 @@ uncertain invocation; creating a new key requests new work.
   separate provider action, and the share link/QR code grants no access.
 - Private providers cannot use this admission path. Keep private services
   local-published. Direct invited HTTPS calls remain supported without a listing.
-  The deployed v0.4.6-beta.1 / hosted beta.20 pair predates this admission path;
-  continue direct HTTPS until the updated pair is released and deployed.
 - Supports fixed GET (empty input) or POST JSON. No caller-selected URLs,
   redirects, retries, streaming, uploads, storage or arbitrary proxying.
 - Uses JSON Schema draft 2020-12 with finite definition size/depth. References,
