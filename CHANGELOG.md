@@ -10,6 +10,16 @@ Lightning rail and MCP registry distribution.
 
 ## [Unreleased]
 
+## [0.4.6-beta.4] - 2026-09-27
+
+### Fixed
+
+- Explicitly release the Unix identity custody lock when its operation ends,
+  even if a concurrently spawned child still holds an inherited descriptor.
+  Active operations remain exclusive; identity formats and signatures are unchanged.
+- Includes the offline invocation recovery correction from the unpublished beta.3
+  candidate, whose release gate exposed the inherited-descriptor race.
+
 ## [0.4.6-beta.3] - 2026-09-27
 
 ### Fixed
