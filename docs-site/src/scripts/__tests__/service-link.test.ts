@@ -89,6 +89,9 @@ describe('agent-readable service link', () => {
     const page = new DOMParser().parseFromString(renderServiceLinkHtml(view), 'text/html');
     const meta = (name: string) => page.querySelector(`meta[property="${name}"],meta[name="${name}"]`)?.getAttribute('content');
     expect(meta('twitter:card')).toBe('summary');
+    // Existing unbranded SVGs can remain in browser caches for a day.
+    expect(page.querySelector('.qr')?.getAttribute('src')).toBe(`/s/${provider}/${service}/qr.svg?v=2`);
+    expect(page.querySelector('a[download]')?.getAttribute('href')).toBe(`/s/${provider}/${service}/qr.svg?v=2&download=1`);
     expect(meta('og:title')).toBe('🐸 Froglet — Catalog of public specimens');
     expect(meta('twitter:title')).toBe(meta('og:title'));
     expect(meta('og:description')).toBe(view.presentation.summary);
