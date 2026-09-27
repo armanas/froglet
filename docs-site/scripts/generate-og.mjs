@@ -1,6 +1,6 @@
-// Generates 1200x630 OG/Twitter social cards as PNGs.
+// Generates 1200x630 page cards and a square 512x512 service thumbnail as PNGs.
 // Pipeline: satori (HTML/JSX-like tree -> SVG) + @resvg/resvg-js (SVG -> PNG).
-// Idempotent: skips work when all PNGs and cached fonts exist.
+// Landscape cards are reused when cached; the small service mark is refreshed.
 
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -207,9 +207,21 @@ async function allOutputsExist() {
   return true;
 }
 
+async function generateServiceThumbnail() {
+  // Use the existing mark; this small, static asset needs no provider request.
+  const mark = await readFile(join(ROOT, 'public', 'logo-mark.svg'), 'utf8');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#101417"/>${mark.replace('<svg ', '<svg x="40" y="184" width="432" height="144" ').replace('currentColor', '#52c72a')}</svg>`;
+  const png = new Resvg(svg, { font: { fontFiles: [join(FONT_DIR, 'JetBrainsMono-Bold.ttf')], defaultFontFamily: 'JetBrains Mono', loadSystemFonts: false } }).render().asPng();
+  await writeFile(join(OUT_DIR, 'service.png'), png);
+  console.log('[og] wrote square service thumbnail');
+}
+
 async function main() {
   await mkdir(FONT_DIR, { recursive: true });
   await mkdir(OUT_DIR, { recursive: true });
+
+  await fetchFont(FONTS[2]);
+  await generateServiceThumbnail();
 
   if (await allOutputsExist()) {
     console.log('[og] up to date');

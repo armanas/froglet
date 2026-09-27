@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
 import { resolveServiceLink, restoreServiceLinkCache } from '../../data/service-link';
 import { renderServiceLinkHtml, renderServiceLinkMarkdown } from '../../data/service-link-page';
@@ -82,6 +84,54 @@ describe('agent-readable service link', () => {
     expect(JSON.stringify(view)).toContain('froglet.service-link.v1');
   });
 
+  it('provides a compact service-specific preview and a public square PNG without JavaScript', async () => {
+    const view = await resolveServiceLink(provider, service, origin, fetchSequence(reference, offer, descriptor), {}, verifier);
+    const page = new DOMParser().parseFromString(renderServiceLinkHtml(view), 'text/html');
+    const meta = (name: string) => page.querySelector(`meta[property="${name}"],meta[name="${name}"]`)?.getAttribute('content');
+    expect(meta('twitter:card')).toBe('summary');
+    // Existing unbranded SVGs can remain in browser caches for a day.
+    expect(page.querySelector('.qr')?.getAttribute('src')).toBe(`/s/${provider}/${service}/qr.svg?v=2`);
+    expect(page.querySelector('a[download]')?.getAttribute('href')).toBe(`/s/${provider}/${service}/qr.svg?v=2&download=1`);
+    expect(meta('og:title')).toBe('🐸 Froglet — Catalog of public specimens');
+    expect(meta('twitter:title')).toBe(meta('og:title'));
+    expect(meta('og:description')).toBe(view.presentation.summary);
+    expect(meta('twitter:description')).toBe(meta('og:description'));
+    expect(meta('og:url')).toBe(view.links.share);
+    expect(page.querySelector('link[rel="canonical"]')?.getAttribute('href')).toBe(view.links.share);
+    expect(page.querySelector('link[rel="icon"]')?.getAttribute('href')).toBe('/favicon.svg');
+    expect(meta('og:image')).toBe(`${origin}/og/service.png`);
+    expect(meta('twitter:image')).toBe(meta('og:image'));
+    expect(meta('og:image:alt')).toBe('Froglet frog mark');
+    expect(meta('twitter:image:alt')).toBe(meta('og:image:alt'));
+    expect(meta('og:image:type')).toBe('image/png');
+    const image = await sharp(readFileSync('public/og/service.png')).metadata();
+    expect(image.format).toBe('png');
+    expect(image.width).toBe(512);
+    expect(image.height).toBe(512);
+    expect(meta('og:image:width')).toBe(String(image.width));
+    expect(meta('og:image:height')).toBe(String(image.height));
+  });
+
+  it('keeps previews short, escaped, and honest about unavailable services', async () => {
+    const view = await resolveServiceLink(provider, service, origin, fetchSequence(reference, offer, descriptor), {}, verifier);
+    view.presentation.title = '"/><script>alert(1)</script> ' + '🐸'.repeat(80);
+    view.presentation.summary = 'A catalog.\n\t' + '🧬'.repeat(200);
+    const getPreview = (value: typeof view) => new DOMParser().parseFromString(renderServiceLinkHtml(value), 'text/html');
+    const page = getPreview(view);
+    expect(page.querySelectorAll('script')).toHaveLength(2);
+    expect(page.querySelector('meta[property="og:title"]')?.getAttribute('content')).toContain('"/><script>');
+    const summary = page.querySelector('meta[property="og:description"]')?.getAttribute('content') ?? '';
+    expect(Array.from(summary)).toHaveLength(140);
+    expect(summary).not.toMatch(/[\n\t\uFFFD]/);
+    expect(summary.endsWith('…')).toBe(true);
+    const stale = { ...view, availability: { ...view.availability, state: 'published_unreachable' as const } };
+    const staleDescription = getPreview(stale).querySelector('meta[property="og:description"]')?.getAttribute('content') ?? '';
+    expect(staleDescription).toMatch(/^Availability unconfirmed\. /);
+    expect(Array.from(staleDescription).length).toBeLessThanOrEqual(140);
+    const unknown = { ...view, availability: { ...view.availability, state: 'unknown' as const } };
+    expect(getPreview(unknown).querySelector('meta[property="og:description"]')?.getAttribute('content')).toContain('could not be checked');
+  });
+
   it('escapes untrusted publisher text in initial HTML and JSON-LD', async () => {
     const poisoned = structuredClone(reference);
     poisoned.publication_revision.payload.service.summary = '<script>alert(1)</script> public catalog';
@@ -154,5 +204,12 @@ describe('agent-readable service link', () => {
     expect(stale?.availability.state).toBe('published_unreachable');
     expect(stale?.availability.marketplace_admission).toBe('not_verified');
     expect(stale?.instructions.native_invoke).toBeNull();
+    // Older cached pages predate the readable catalog-title fallback.
+    view.presentation.title = 'Query published catalog data: products (id, name, price_eur)';
+    view.presentation.summary = view.presentation.title;
+    const legacy = await restoreServiceLinkCache(JSON.stringify(view), provider, service, origin, verifier);
+    expect(legacy?.presentation.title).toBe('Test Catalog');
+    expect(legacy?.presentation.summary).toBe('Open the service details to inspect its inputs, outputs, and availability.');
+    expect(renderServiceLinkHtml(legacy!)).toContain('🐸 Froglet — Test Catalog');
   });
 });

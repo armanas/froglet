@@ -197,6 +197,7 @@ export async function restoreServiceLinkCache(raw: string, provider: string, ser
   } catch { return null; }
   return {
     ...view,
+    presentation: { ...view.presentation, title: displayTitle(view.presentation.title, service), summary: serviceDescription(view.presentation.summary, service, view.contract?.output_schema) },
     evidence: { ...view.evidence, reason: 'Signed evidence was verified when this description was last observed; current publication is unconfirmed.' },
     availability: { ...view.availability, state: 'published_unreachable', execution_access: 'unknown', checked_at: new Date().toISOString(), valid_until: new Date().toISOString(), marketplace_admission: 'not_verified', requester_execution: 'not_run' },
     instructions: { ...view.instructions, recipient_prompt: recipientsPrompt(view.links.share), native_invoke: null, summary: 'This is a last-known description. Do not infer that the service is still offered or callable.' },

@@ -43,6 +43,9 @@ describe('Worker service-link routes', () => {
     expect(html).toContain(`${root}/manifest.json`);
     expect(html).toContain('Price</dt><dd>Free');
     expect(page.headers.get('link')).toContain('agent.md');
+    expect(html).toContain('name="twitter:card" content="summary"');
+    expect(html).toContain('property="og:title" content="🐸 Froglet — Public catalog for agents"');
+    expect(html).toContain('content="https://froglet.dev/og/service.png"');
 
     readyFetch();
     const manifest = await worker.fetch(new Request(`${root}/manifest.json`), env);
@@ -134,7 +137,9 @@ describe('portable link sharing', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('image/svg+xml');
     expect(response.headers.get('content-disposition')).toBe('attachment; filename="catalog-qr.svg"');
-    expect(await response.text()).toContain('<svg');
+    const svg = await response.text();
+    expect(svg).toContain('<svg');
+    expect(svg).toContain('Froglet logo');
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
