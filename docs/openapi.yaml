@@ -4832,6 +4832,129 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/provider/invites:
+    get:
+      tags: [Provider Control]
+      operationId: listProviderInvitations
+      summary: List invitation hashes, expiry, request allowances and revocation
+      security:
+        - ProviderControlBearerAuth: []
+      responses:
+        '200': {description: Invitations; raw credentials are never listed.}
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+    post:
+      tags: [Provider Control]
+      operationId: issueProviderInvitation
+      summary: Issue a bounded provider-wide invitation in invite access mode
+      security:
+        - ProviderControlBearerAuth: []
+      description: >
+        Returns a random access_token once with Cache-Control no-store; only its
+        SHA-256 hash is stored. Clients send X-Froglet-Access-Token on quote and
+        deal creation over HTTPS. A normal invocation consumes two requests;
+        refused or failed requests also count. This is provider-wide access,
+        not a per-service grant or operator authority. It does not bypass the
+        provider's persistent global allowances. Credentials never belong in URLs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, expires_at, max_requests]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 80}
+                expires_at: {type: integer, description: Unix seconds; future expiry within 30 days.}
+                max_requests: {type: integer, minimum: 2, maximum: 10000}
+      responses:
+        '201': {description: id (token hash) and access_token (returned once).}
+        '400': {description: Invalid input or invitation capacity reached.}
+        '409': {description: Provider is not in invite access mode.}
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+  /v1/provider/invites/{id}/revoke:
+    post:
+      tags: [Provider Control]
+      operationId: revokeProviderInvitation
+      summary: Immediately revoke an invitation without preventing completed-deal recovery
+      security:
+        - ProviderControlBearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, pattern: '^[0-9a-f]{64}$'}
+      responses:
+        '200': {description: Revocation persisted; also supports legacy configured hashes.}
+        '400': {description: Invalid invitation id or store error.}
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+
+  /v1/provider/usage:
+    get:
+      tags: [Provider Control]
+      operationId: providerSafeguardStatus
+      summary: Inspect effective provider safeguards and remaining allowance
+      security:
+        - ProviderControlBearerAuth: []
+      responses:
+        '200':
+          description: Effective access policy, durable usage and pause, storage checks, active deals, and process-lifetime quota decisions. Runtime reservations are not cloud currency.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [policy, usage, paused, remaining, active_deals]
+                properties:
+                  policy: {type: object}
+                  usage: {type: object}
+                  paused: {type: boolean}
+                  pause_reason: {type: [string, 'null']}
+                  remaining: {type: object}
+                  active_deals: {type: integer, minimum: 0}
+                  storage: {type: [object, 'null']}
+                  requests: {type: object}
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+  /v1/provider/control:
+    post:
+      tags: [Provider Control]
+      operationId: updateProviderPause
+      summary: Persistently pause or resume new work without resetting usage
+      security:
+        - ProviderControlBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [paused]
+              properties:
+                paused: {type: boolean}
+                reason: {type: string, minLength: 1, maxLength: 256}
+      responses:
+        '200': {description: Updated effective safeguard status; admitted work is not canceled.}
+        '400': {description: Invalid pause reason.}
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '503': {description: Control state could not be persisted; pause was not confirmed.}
+  /v1/provider/maintenance:
+    post:
+      tags: [Provider Control]
+      operationId: pruneProviderDisposableCache
+      summary: Remove derived CSV indexes older than 24 hours
+      security:
+        - ProviderControlBearerAuth: []
+      responses:
+        '200': {description: Count of removed disposable cache files. Original data, financial records and usage accounting are retained.}
+        '401':
+          $ref: '#/components/responses/ProviderControlUnauthorized'
+        '503': {description: Cache maintenance failed.}
+
   /v1/provider/artifacts/publish:
     post:
       operationId: publishProviderArtifact

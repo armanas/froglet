@@ -304,6 +304,7 @@ fn lightning_app_state_custom(
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -375,6 +376,10 @@ fn lightning_app_state_custom(
         event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             std::time::Duration::from_secs(60),
+        )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
         )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -459,6 +464,7 @@ fn stripe_app_state_with_mock_spend(
         }),
         buyer_stripe: buyer_config,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -549,6 +555,10 @@ fn stripe_app_state_with_mock_spend(
         event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             std::time::Duration::from_secs(60),
+        )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
         )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -1201,6 +1211,8 @@ fn prepaid_preimage_and_hash() -> (String, String) {
 struct MockPhoenixdState {
     calls: std::sync::Mutex<Vec<String>>,
     paid: std::sync::atomic::AtomicBool,
+    pause_payment: std::sync::atomic::AtomicBool,
+    payment_gate: tokio::sync::Notify,
     created_invoice: std::sync::Mutex<Option<(String, String)>>,
     preimage_hex: String,
     payment_hash_hex: String,
@@ -1236,6 +1248,8 @@ async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::
     let state = Arc::new(MockPhoenixdState {
         calls: std::sync::Mutex::new(Vec::new()),
         paid: std::sync::atomic::AtomicBool::new(false),
+        pause_payment: std::sync::atomic::AtomicBool::new(false),
+        payment_gate: tokio::sync::Notify::new(),
         created_invoice: std::sync::Mutex::new(None),
         preimage_hex,
         payment_hash_hex,
@@ -1280,6 +1294,9 @@ async fn start_mock_phoenixd() -> (String, Arc<MockPhoenixdState>, tokio::task::
             .lock()
             .unwrap()
             .push(format!("payinvoice:{body}"));
+        if state.pause_payment.load(Ordering::SeqCst) {
+            state.payment_gate.notified().await;
+        }
         state.paid.store(true, std::sync::atomic::Ordering::SeqCst);
         AxumJson(json!({
             "paymentHash": state.payment_hash_hex,
@@ -1409,6 +1426,7 @@ fn phoenixd_app_state_with_mock_spend(
             http_password: Zeroizing::new("test-phoenixd-pw".to_string()),
             api_base_url: Some(mock_base_url.to_string()),
         }),
+        provider_policy: Default::default(),
         requester_spend,
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -1493,6 +1511,10 @@ fn phoenixd_app_state_with_mock_spend(
             1000,
             std::time::Duration::from_secs(60),
         )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
+        )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             std::time::Duration::from_secs(60),
@@ -1529,7 +1551,16 @@ fn phoenixd_app_state_with_mock_spend(
 #[tokio::test]
 async fn phoenixd_prepaid_full_paid_deal_produces_settled_receipt() {
     let (mock_base_url, mock_phoenixd, _mock_handle) = start_mock_phoenixd().await;
-    let state = phoenixd_app_state_with_mock(&mock_base_url);
+    mock_phoenixd.pause_payment.store(true, Ordering::SeqCst);
+    let mut state = phoenixd_app_state_with_mock(&mock_base_url);
+    Arc::get_mut(&mut state).unwrap().config.provider_policy =
+        froglet::provider_policy::ProviderPolicy {
+            require_payment: true,
+            max_total_deals: Some(1),
+            max_total_runtime_ms: Some(10_000),
+            max_total_quotes: Some(2),
+            ..Default::default()
+        };
 
     // Drive the Lightning settlement reconcile loop so paid prepaid deals are
     // promoted and executed (no separate server task starts it in tests).
@@ -1560,13 +1591,46 @@ async fn phoenixd_prepaid_full_paid_deal_produces_settled_receipt() {
         "kind": "wasm",
         "submission": test_wasm_submission(),
     });
-    let (create_status, create_resp): (StatusCode, Value) = http_post_json(
-        &client,
-        &format!("{}/v1/runtime/deals", runtime.base_url),
-        Some("test-runtime-token"),
-        &create_body,
-    )
-    .await;
+    let create_client = client.clone();
+    let create_url = format!("{}/v1/runtime/deals", runtime.base_url);
+    let creating = tokio::spawn(async move {
+        http_post_json::<Value>(
+            &create_client,
+            &create_url,
+            Some("test-runtime-token"),
+            &create_body,
+        )
+        .await
+    });
+    // Hold the payer before settlement and observe an actual provider poll.
+    // An admitted invoice alone must never start the workload.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let calls = mock_phoenixd.calls.lock().unwrap().clone();
+            if calls.iter().any(|call| call.starts_with("payinvoice:"))
+                && calls.iter().any(|call| call.ends_with(":paid=false"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("provider must observe the unpaid invoice");
+    let pending = state
+        .db
+        .with_read_conn(|conn| {
+            conn.query_row("SELECT status, result_json FROM deals", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    assert_eq!(pending.0, deals::DEAL_STATUS_PAYMENT_PENDING);
+    assert!(pending.1.is_none(), "unpaid execution must have no result");
+    mock_phoenixd.payment_gate.notify_one();
+    let (create_status, create_resp) = creating.await.unwrap();
     assert_eq!(
         create_status,
         StatusCode::OK,
@@ -1626,6 +1690,23 @@ async fn phoenixd_prepaid_full_paid_deal_produces_settled_receipt() {
         receipt.payload.settlement_refs.method, "lightning.prepaid.v1",
         "settlement method must be lightning.prepaid.v1"
     );
+
+    let usage = state
+        .db
+        .with_read_conn(froglet::provider_policy::usage)
+        .await
+        .unwrap();
+    assert_eq!(usage.reserved_deals, 1);
+    assert_eq!(usage.issued_quotes, 1);
+    let (blocked_status, _): (StatusCode, Value) = http_post_json(
+        &client,
+        &format!("{}/v1/provider/quotes", provider.base_url),
+        None,
+        &json!({"offer_id":"execute.compute", "requester_id":state.identity.node_id(),
+            "kind":"wasm", "submission":test_wasm_submission()}),
+    )
+    .await;
+    assert_eq!(blocked_status, StatusCode::SERVICE_UNAVAILABLE);
 
     // The cryptographic proof of payment: invoice_hash (preimage) hashes to the
     // payment_hash.

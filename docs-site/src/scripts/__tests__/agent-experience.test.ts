@@ -50,12 +50,14 @@ describe('agent-facing website experience', () => {
     expect(hostedProof?.must_not_claim).toContain('paid Lightning, Stripe, or x402 settlement');
   });
 
-  it('keeps llms.txt canonical and points agents to the task manifest', () => {
+  it('separates the root task router from the optional hosted proof', () => {
     const canonical = readRepoFile('docs/llms/try.froglet.dev.txt');
     const publicCopy = readRepoFile('docs-site/public/llms.txt');
     const cloudTrial = readRepoFile('docs-site/src/content/docs/learn/cloud-trial.mdx');
 
-    expect(publicCopy).toEqual(canonical);
+    expect(publicCopy).toContain('https://froglet.dev/publish/agent.md');
+    expect(publicCopy).toContain('not a prerequisite');
+    expect(canonical).not.toContain('finish the hosted proof first');
     for (const text of [canonical, publicCopy, cloudTrial]) {
       expect(text).toContain('/agent-tasks.json');
       expect(text).toContain('receipt-artifact-verify');

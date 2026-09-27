@@ -1,5 +1,16 @@
-use crate::config::PricingConfig;
+use crate::config::{PaymentBackend, PricingConfig};
 use serde::{Deserialize, Serialize};
+
+/// Match the default settlement rail's native units. Configured Stripe prices
+/// are USD cents; Lightning takes precedence when both rails are configured.
+pub fn configured_price_currency(backends: &[PaymentBackend]) -> &'static str {
+    if backends.contains(&PaymentBackend::Stripe) && !backends.contains(&PaymentBackend::Lightning)
+    {
+        "usd"
+    } else {
+        "sat"
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ServiceId {

@@ -48,8 +48,16 @@ Ask your agent to report these checks separately:
 - **Local example passed:** the recorded data proof shows a successful run and cleanup.
 
 The temporary example is removed after setup. That is expected. Next, ask your
-agent to [publish a small local service](/learn/provider-onboarding/).
+agent to [publish a selected catalog](/learn/share-services/).
 Payments and public access are separate choices you can make later.
+
+Use the exact `froglet_node` path and `data_dir` returned by bootstrap, or the
+MCP entry it configured. An older `froglet-node` may still be first on your
+shell's `PATH`, especially after an isolated installation. Do not substitute
+that binary or its default data directory. If `prepare-service` prints
+“Froglet Node is Starting” and then “Address already in use”, check the binary
+path first: older binaries can mistake an unknown command for a daemon start.
+Keep the working node running and use the installed command recorded by setup.
 
 ## If you get stuck
 

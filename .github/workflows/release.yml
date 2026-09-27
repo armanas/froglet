@@ -11,8 +11,15 @@ permissions:
   packages: write
 
 jobs:
+  verify-release-checks:
+    name: Verify release commit
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   verify-release-metadata:
     name: Verify Release Metadata
+    needs: [verify-release-checks]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}

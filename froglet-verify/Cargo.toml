@@ -16,7 +16,7 @@ name = "froglet-verify"
 path = "src/bin/froglet-verify.rs"
 
 [dependencies]
-froglet-protocol = { path = "../froglet-protocol", default-features = false }
+froglet-protocol = { path = "../froglet-protocol", default-features = false, features = ["publication"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

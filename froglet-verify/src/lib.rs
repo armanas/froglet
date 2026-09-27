@@ -15,6 +15,8 @@
 //! document whose envelope verifies but whose payload carries unknown fields
 //! reports `envelope_only`, never a false signature failure.
 
+use froglet_protocol::protocol::{ARTIFACT_KIND_DESCRIPTOR, ARTIFACT_KIND_OFFER};
+use froglet_protocol::publication::SignedPublicationRevision;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -25,6 +27,158 @@ pub use froglet_protocol::protocol::{
     QuotePayload, ReceiptPayload, SignedArtifact, TRANSPORT_TYPE_INVOICE_BUNDLE, VerifiedArtifact,
     VerifyError, validate_full_chain, verify_artifact, verify_typed_document,
 };
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceLinkEvidenceReport {
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+fn service_link_error(reason: impl Into<String>) -> ServiceLinkEvidenceReport {
+    ServiceLinkEvidenceReport {
+        valid: false,
+        reason: Some(reason.into()),
+    }
+}
+
+/// Verify the existing signed evidence for one active service link. This is a
+/// presentation adapter, not a new artifact or signing domain.
+pub fn verify_service_link_evidence(
+    revision_json: &Value,
+    offer_json: &Value,
+    descriptor_json: &Value,
+) -> ServiceLinkEvidenceReport {
+    let revision: SignedPublicationRevision = match serde_json::from_value(revision_json.clone()) {
+        Ok(value) => value,
+        Err(error) => {
+            return service_link_error(format!("publication revision is invalid: {error}"));
+        }
+    };
+    if let Err(error) = revision.verify() {
+        return service_link_error(format!("publication revision failed verification: {error}"));
+    }
+    let offer = match verify_typed_document(offer_json, ARTIFACT_KIND_OFFER) {
+        Ok(VerifiedArtifact::Offer(value)) => value,
+        Ok(_) => return service_link_error("expected a signed Offer"),
+        Err(error) => return service_link_error(format!("Offer failed verification: {error}")),
+    };
+    let descriptor = match verify_typed_document(descriptor_json, ARTIFACT_KIND_DESCRIPTOR) {
+        Ok(VerifiedArtifact::Descriptor(value)) => value,
+        Ok(_) => return service_link_error("expected a signed Descriptor"),
+        Err(error) => {
+            return service_link_error(format!("Descriptor failed verification: {error}"));
+        }
+    };
+    let payload = &revision.payload;
+    let profile = &offer.payload.execution_profile;
+    if payload.provider_id != offer.payload.provider_id
+        || payload.provider_id != descriptor.payload.provider_id
+        || payload.offer_id != offer.payload.offer_id
+        || payload.offer_hash != offer.hash
+        || offer.payload.descriptor_hash != descriptor.hash
+        || payload.price.offer_settlement_method != offer.payload.settlement_method
+        || payload.price.base_amount_minor.checked_mul(1000)
+            != Some(offer.payload.price_schedule.base_fee_msat)
+        || payload.price.success_amount_minor.checked_mul(1000)
+            != Some(offer.payload.price_schedule.success_fee_msat)
+        || payload.runtime != profile.runtime.as_str()
+        || payload.package_kind != profile.package_kind
+        || payload.service.contract_version != profile.contract_version
+        || payload.service.contract_version != profile.abi_version
+        || payload.service.capabilities != profile.capabilities
+        || payload.service.capabilities != profile.access_handles
+        || payload.limits.max_input_bytes != profile.max_input_bytes
+        || payload.limits.max_runtime_ms != profile.max_runtime_ms
+        || payload.limits.max_memory_bytes != profile.max_memory_bytes
+        || payload.limits.max_output_bytes != profile.max_output_bytes
+        || payload.limits.fuel_limit != profile.fuel_limit
+    {
+        return service_link_error("signed revision, Offer, and Descriptor do not agree");
+    }
+    ServiceLinkEvidenceReport {
+        valid: true,
+        reason: None,
+    }
+}
+
+#[cfg(test)]
+mod service_link_tests {
+    use super::*;
+    use froglet_protocol::{
+        crypto,
+        publication::{PublicationRevisionPayload, sign_publication_revision},
+    };
+    use serde_json::json;
+
+    #[test]
+    fn verifies_bound_service_link_evidence_and_rejects_tampering() {
+        let fixture: Value = serde_json::from_str(include_str!("../../conformance/kernel_v1.json"))
+            .expect("conformance fixture");
+        let descriptor = fixture["artifacts"]["descriptor"]["artifact"].clone();
+        let mut offer_payload: OfferPayload = serde_json::from_value(
+            fixture["artifacts"]["free_offer"]["artifact"]["payload"].clone(),
+        )
+        .expect("offer payload");
+        offer_payload.execution_profile.package_kind = "inline_module".to_string();
+        offer_payload.execution_profile.contract_version = "froglet.wasm.run_json.v1".to_string();
+        let key = crypto::signing_key_from_seed_bytes(&[0x11; 32]).expect("fixture key");
+        let provider = crypto::public_key_hex(&key);
+        assert_eq!(provider, offer_payload.provider_id);
+        let offer = serde_json::to_value(
+            froglet_protocol::protocol::sign_artifact(
+                &provider,
+                |message| crypto::sign_message_hex(&key, message),
+                ARTIFACT_TYPE_OFFER,
+                1_700_000_001,
+                offer_payload,
+            )
+            .expect("signed Offer"),
+        )
+        .expect("Offer JSON");
+        let payload: PublicationRevisionPayload = serde_json::from_value(json!({
+            "schema_version": "froglet.publication-revision.v1",
+            "provider_id": provider,
+            "service_id": "catalog",
+            "offer_id": offer["payload"]["offer_id"],
+            "offer_hash": offer["hash"],
+            "binding_hash": "22".repeat(32),
+            "package_digest": "22".repeat(32),
+            "runtime": "wasm",
+            "package_kind": "inline_module",
+            "service": {
+                "summary": "Read a sample catalog",
+                "starter": "{\"op\":\"describe\"}",
+                "source_kind": "artifact",
+                "entrypoint_kind": "handler",
+                "entrypoint": "run",
+                "contract_version": "froglet.wasm.run_json.v1",
+                "mode": "sync",
+                "input_schema": {"type":"object"},
+                "output_schema": {"type":"object"}
+            },
+            "limits": {"max_input_bytes": 131072, "max_runtime_ms": 30000, "max_memory_bytes": 8388608, "max_output_bytes": 131072, "fuel_limit": 50000000},
+            "price": {"settlement_method":"none", "currency":"sat", "base_amount_minor":0, "success_amount_minor":0, "offer_settlement_method":"none"},
+            "local_verification": {"input_hash":"33".repeat(32), "result_hash":"44".repeat(32)}
+        }))
+        .expect("revision payload");
+        let revision =
+            sign_publication_revision(payload, |message| crypto::sign_message_hex(&key, message))
+                .expect("signed revision");
+        let mut signed_json = serde_json::to_value(&revision).expect("revision JSON");
+        assert!(verify_service_link_evidence(&signed_json, &offer, &descriptor).valid);
+        signed_json["payload"]["service"]["summary"] = json!("Changed after signing");
+        assert!(!verify_service_link_evidence(&signed_json, &offer, &descriptor).valid);
+        assert!(
+            !verify_service_link_evidence(
+                &serde_json::to_value(revision).unwrap(),
+                &descriptor,
+                &offer
+            )
+            .valid
+        );
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;

@@ -6,7 +6,7 @@ import SiteFooter from '../components/SiteFooter.astro';
 import AgentMeta from '../components/AgentMeta.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 const siteOrigin = import.meta.env.FROGLET_SITE_ORIGIN || 'https://froglet.dev';
-const prompt = `Make this catalog usable by another agent with Froglet. Read ${new URL('/learn/share-services/', siteOrigin)}. Inspect the source and propose useful tables and fields. Show what will be included and omitted, prepare a separate snapshot, and run a local example. Ask me separately before persistent installation and before publishing the exact selected data. Start free. Keep my existing files and agent settings.`;
+const prompt = `Make this catalog usable by another agent with Froglet. Read ${new URL('/publish/agent.md', siteOrigin)}. Use the configured Froglet tool or verified installation. Inspect the source and propose useful tables and fields. Show what will be included and omitted, prepare a separate snapshot, and verify the example through Froglet itself. Ask me separately before persistent installation and before publishing the exact selected data. Start free. Keep my existing files and agent settings.`;
 ---
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Publish a service · Froglet</title><meta name="description" content="Ask your agent to turn a catalog into a service. Preview selected data, approve publication, and share a link."/><link rel="canonical" href="https://froglet.dev/publish/"/><ThemeProvider /><AgentMeta route="publish" /></head>
 <body><SiteHeader currentPath={Astro.url.pathname}/><main class="froglet-home-main publish-page">

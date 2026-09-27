@@ -28,6 +28,9 @@ struct AddOutput {
 pub struct AddHandler;
 
 impl BuiltinServiceHandler for AddHandler {
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        crate::builtin_worker::WorkerSpec::local("demo.add", serde_json::json!({}))
+    }
     fn execute<'a>(
         &'a self,
         input: Value,

@@ -100,6 +100,7 @@ fn in_memory_state() -> AppState {
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -172,6 +173,10 @@ fn in_memory_state() -> AppState {
         event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             std::time::Duration::from_secs(60),
+        )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
         )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -933,6 +938,7 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
         }),
         buyer_stripe: None,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -1028,6 +1034,10 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
         event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             std::time::Duration::from_secs(60),
+        )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
         )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,

@@ -88,6 +88,7 @@ def bearer_auth_headers(token_path: Path) -> dict[str, str]:
 
 def high_test_quota_env() -> dict[str, str]:
     return {
+        "FROGLET_PUBLIC_REQUEST_QUOTA": "100000",
         "FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY": "100000",
         "FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY": "100000",
         "FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY": "100000",

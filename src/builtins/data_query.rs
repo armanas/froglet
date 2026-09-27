@@ -94,7 +94,7 @@ impl DataQueryHandlerCache {
         }
     }
 
-    pub(crate) async fn get_or_try_init<F, Fut>(
+    pub async fn get_or_try_init<F, Fut>(
         &self,
         contract_version: &str,
         package_digest: &str,
@@ -228,7 +228,7 @@ impl fmt::Display for DataQuerySourceKind {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DataQueryLimits {
     pub max_json_bytes: usize,
     pub max_json_rows: usize,
@@ -319,6 +319,7 @@ fn default_limit() -> usize {
 pub struct DataQueryHandler {
     source: DataSource,
     limits: DataQueryLimits,
+    worker_config: Value,
 }
 
 impl DataQueryHandler {
@@ -354,7 +355,11 @@ impl DataQueryHandler {
                 DataSource::Sqlite(Arc::new(SqliteDataset::open(&source_path, limits)?))
             }
         };
-        Ok(Self { source, limits })
+        Ok(Self {
+            source,
+            limits,
+            worker_config: json!({"root":root.as_ref(), "file":relative_path.as_ref(), "kind":source_kind, "limits":limits}),
+        })
     }
 
     /// Validate and import an explicitly-typed CSV snapshot into a private
@@ -416,7 +421,9 @@ impl DataQueryHandler {
             &expected_metadata,
             limits,
         )?;
+        let worker_config = json!({"root":root, "file":relative_path.as_ref(), "kind":"csv", "limits":limits, "schema":schema, "digest":package_digest});
         Ok(Self {
+            worker_config,
             source: DataSource::Csv {
                 dataset: Arc::new(dataset),
                 schema,
@@ -444,6 +451,9 @@ impl DataQueryHandler {
 }
 
 impl BuiltinServiceHandler for DataQueryHandler {
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        crate::builtin_worker::WorkerSpec::local("data.bound-query", self.worker_config.clone())
+    }
     fn execute<'a>(
         &'a self,
         input: Value,

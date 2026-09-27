@@ -632,6 +632,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            provider_policy: Default::default(),
             requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
@@ -703,6 +704,10 @@ mod tests {
             event_publish_quota: Arc::new(crate::public_quota::IdentityQuota::new(
                 1000,
                 std::time::Duration::from_secs(60),
+            )),
+            public_request_quota: std::sync::Arc::new(crate::public_quota::IdentityQuota::new(
+                6000,
+                std::time::Duration::from_secs(900),
             )),
             quote_create_quota: Arc::new(crate::public_quota::IdentityQuota::new(
                 1000,

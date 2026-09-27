@@ -47,10 +47,12 @@ describe('hosted trial docs copy', () => {
     expect(index).not.toContain(strongPrompt);
   });
 
-  it('serves the canonical llms.txt from the website public root', () => {
-    expect(readRepoFile('docs-site/public/llms.txt')).toEqual(
-      readRepoFile('docs/llms/try.froglet.dev.txt'),
-    );
+  it('routes optional hosted trials to their own contract', () => {
+    const root = readRepoFile('docs-site/public/llms.txt');
+    expect(root).toContain('https://try.froglet.dev/llms.txt');
+    expect(root).toContain('https://froglet.dev/publish/agent.md');
+    expect(root).not.toContain('finish the hosted proof first');
+    expect(root).not.toContain('POST /api/sessions');
   });
 
   it('documents the five free hosted demo services', () => {

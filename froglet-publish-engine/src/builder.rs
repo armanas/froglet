@@ -103,7 +103,7 @@ pub async fn build_python_locked(
     })
 }
 
-/// Build a pure `froglet.wasm.run_json.v1` inline module without invoking an
+/// Build an inline Wasm module without invoking an
 /// external compiler. `.wasm` files are snapshotted as-is; `.wat` files and
 /// inline text are compiled by the exact `wat` crate embedded in the released
 /// Froglet binary.

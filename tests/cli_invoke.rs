@@ -129,6 +129,7 @@ fn create_dual_state(payment_backends: Vec<PaymentBackend>) -> AppState {
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -201,6 +202,10 @@ fn create_dual_state(payment_backends: Vec<PaymentBackend>) -> AppState {
         event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             Duration::from_secs(60),
+        )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
         )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -279,6 +284,7 @@ async fn spawn_dual_node(payment_backends: Vec<PaymentBackend>, demo_builtins: b
 
 fn invoke_options(node: &DualNode, service_id: &str, input: Value) -> InvokeOptions {
     InvokeOptions {
+        access_token_file: None,
         service_id: service_id.to_string(),
         input,
         daemon_url: node.provider.base_url.clone(),
@@ -286,6 +292,7 @@ fn invoke_options(node: &DualNode, service_id: &str, input: Value) -> InvokeOpti
         runtime_token: "test-runtime-token".to_string(),
         provider_id_override: None,
         idempotency_key: None,
+        max_price_sats: None,
         wait_timeout: Duration::from_secs(30),
         poll_interval: Duration::from_millis(100),
     }
@@ -517,5 +524,203 @@ async fn unknown_service_reports_not_published_with_mcp_pointer() {
     assert!(
         message.contains("invoke_service"),
         "expected MCP pointer in error, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn private_provider_owner_invocation_uses_bounded_signed_flow() {
+    let _env_lock = test_env_lock().lock().await;
+    let _env = ScopedEnvVar::unset("FROGLET_RUNTIME_PROVIDER_BASE_URL");
+    let mut state = create_dual_state(vec![PaymentBackend::None]);
+    state.config.provider_policy = froglet::provider_policy::ProviderPolicy {
+        access_mode: froglet::provider_policy::AccessMode::Private,
+        max_total_deals: Some(2),
+        max_total_quotes: Some(2),
+        max_total_runtime_ms: Some(60_000),
+        ..Default::default()
+    };
+    state.builtin_services = froglet::builtins::demo_handlers();
+    let state = Arc::new(state);
+    froglet::builtins::register_demo_offers(&state)
+        .await
+        .unwrap();
+    let provider = spawn_server(public_router(state.clone())).await;
+    let runtime = spawn_server(runtime_router(state.clone())).await;
+    state
+        .transport_status
+        .lock()
+        .await
+        .local_provider_bound_addr = Some(provider.addr);
+    let node = DualNode {
+        state,
+        provider,
+        runtime,
+    };
+    let mut options = invoke_options(&node, "demo.add", json!({"a":2,"b":3}));
+    options.idempotency_key = Some("private-owner-call".into());
+    let first = invoke_local_service(&options).await.unwrap();
+    assert_eq!(first.status, "succeeded");
+    assert_eq!(first.result, Some(json!({"sum":5})));
+    let replay = invoke_local_service(&options).await.unwrap();
+    assert_eq!(first.deal_id, replay.deal_id);
+    let usage = node
+        .state
+        .db
+        .with_read_conn(froglet::provider_policy::usage)
+        .await
+        .unwrap();
+    assert_eq!(usage.reserved_deals, 1);
+    assert_eq!(usage.issued_quotes, 1);
+    node.state
+        .db
+        .with_write_conn(|conn| froglet::provider_policy::set_pause(conn, Some("test")))
+        .await
+        .unwrap();
+    options.idempotency_key = Some("paused-owner-call".into());
+    assert!(invoke_local_service(&options).await.is_err());
+    options.idempotency_key = Some("private-owner-call".into());
+    let recovered = invoke_local_service(&options).await.unwrap();
+    assert_eq!(recovered.deal_id, first.deal_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_mcp_issues_private_invite_file_and_revokes_without_secret_output() {
+    use tokio::io::AsyncWriteExt;
+    let mut state = create_dual_state(vec![PaymentBackend::None]);
+    state.config.provider_policy = froglet::provider_policy::ProviderPolicy {
+        access_mode: froglet::provider_policy::AccessMode::Invite,
+        max_total_deals: Some(2),
+        max_total_quotes: Some(4),
+        max_total_runtime_ms: Some(60_000),
+        ..Default::default()
+    };
+    let state = Arc::new(state);
+    let server = spawn_server(public_router(state.clone())).await;
+    let directory = tempfile::tempdir().unwrap();
+    let token_path = directory.path().join("recipient.token");
+    let call = |arguments: Value| {
+        let base = server.base_url.clone();
+        let directory = directory.path().to_path_buf();
+        async move {
+            let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_froglet-node"))
+                .arg("mcp")
+                .env("FROGLET_DAEMON_URL", base)
+                .env("FROGLET_PROVIDER_CONTROL_TOKEN", "test-provider-token")
+                .env("FROGLET_DATA_DIR", directory)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"froglet","arguments":arguments}});
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            let output = child.wait_with_output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let value: Value = serde_json::from_str(&stdout).unwrap();
+            (
+                value["result"].clone(),
+                stdout,
+                String::from_utf8(output.stderr).unwrap(),
+            )
+        }
+    };
+    let arguments = json!({"action":"invite_create","name":"Recipient","expires_at":froglet::settlement::current_unix_timestamp()+600,"max_requests":2,"token_file":token_path});
+    let (result, stdout, stderr) = call(arguments.clone()).await;
+    assert_eq!(result["isError"], false, "{result}");
+    let token = froglet::cli::invoke::read_access_token_file(&token_path).unwrap();
+    assert!(!stdout.contains(token.as_str()));
+    assert!(!stderr.contains(token.as_str()));
+    let id = result["structuredContent"]["id"].as_str().unwrap();
+    assert_eq!(id, froglet::crypto::sha256_hex(token.as_bytes()));
+    assert_eq!(
+        call(arguments).await.0["isError"],
+        true,
+        "existing file must not be replaced"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&token_path).unwrap(),
+        token.as_str()
+    );
+    assert_eq!(
+        state
+            .db
+            .with_read_conn(froglet::provider_policy::list_invites)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let listed = call(json!({"action":"invite_list"})).await;
+    assert!(!listed.1.contains(token.as_str()));
+    assert_eq!(
+        call(json!({"action":"invite_revoke","invite_id":id}))
+            .await
+            .0["isError"],
+        false
+    );
+    assert!(
+        state
+            .db
+            .with_read_conn(froglet::provider_policy::list_invites)
+            .await
+            .unwrap()[0]
+            .revoked
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(froglet::cli::invoke::read_access_token_file(&token_path).is_err());
+        let symlink = directory.path().join("alias");
+        std::os::unix::fs::symlink(&token_path, &symlink).unwrap();
+        assert!(froglet::cli::invoke::read_access_token_file(&symlink).is_err());
+    }
+    server._handle.abort();
+}
+
+#[tokio::test]
+async fn native_node_refuses_http_operations_without_protected_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let policy = directory.path().join("policy.toml");
+    std::fs::write(&policy, format!("[http]\noperations_only = true\noperation_hashes = [\"{}\"]\nallowed_hosts = [\"api.example.com\"]\n", "a".repeat(64))).unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_froglet-node"))
+            .env_clear()
+            .env("FROGLET_NETWORK_MODE", "clearnet")
+            .env("FROGLET_PAYMENT_BACKEND", "none")
+            .env("FROGLET_DATA_DIR", directory.path().join("data"))
+            .env("FROGLET_PROVIDER_ACCESS_MODE", "open")
+            .env("FROGLET_WASM_POLICY_PATH", policy)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    let diagnostics = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        diagnostics.contains("approved HTTP operations require"),
+        "{diagnostics}"
+    );
+    assert!(
+        !directory.path().join("data").exists(),
+        "startup must reject before provisioning state"
     );
 }

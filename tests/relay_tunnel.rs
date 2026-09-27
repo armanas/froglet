@@ -85,6 +85,7 @@ fn relay_test_state() -> Arc<AppState> {
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),

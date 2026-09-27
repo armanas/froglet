@@ -191,6 +191,7 @@ pub struct AppState {
     pub hosted_trial_session_quota: Arc<IdentityQuota>,
     pub event_publish_quota: Arc<IdentityQuota>,
     pub quote_create_quota: Arc<IdentityQuota>,
+    pub public_request_quota: Arc<IdentityQuota>,
     pub confidential_session_quota: Arc<IdentityQuota>,
     pub lnd_rest_client: Option<Arc<LndRestClient>>,
     /// Concrete phoenixd client used by the prepaid (`lightning.prepaid.v1`)
@@ -228,6 +229,11 @@ pub fn ensure_storage_dirs(config: &NodeConfig) -> Result<(), String> {
 }
 
 pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
+    config.provider_policy.validate()?;
+    crate::config::validate_http_operation_admission(
+        config.wasm.policy.as_ref(),
+        &config.provider_policy,
+    )?;
     tls::ensure_rustls_crypto_provider();
     // Identity recovery deliberately precedes general directory creation:
     // a journaled restore owns the not-yet-installed identity directory and
@@ -386,6 +392,10 @@ pub fn build_app_state(config: NodeConfig) -> Result<Arc<AppState>, String> {
         hosted_trial_deal_quota,
         hosted_trial_session_quota,
         event_publish_quota,
+        public_request_quota: Arc::new(IdentityQuota::new(
+            config.public_quota.requests_per_window,
+            std::time::Duration::from_secs(config.public_quota.public_write_window_secs),
+        )),
         quote_create_quota,
         confidential_session_quota,
         lnd_rest_client,
@@ -447,6 +457,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            provider_policy: Default::default(),
             requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: PathBuf::from("./data"),

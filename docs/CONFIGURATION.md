@@ -51,12 +51,129 @@ silently replace an identity:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_PRICE_EVENTS_QUERY` | `0` | Price in sats per events query (0 = free) |
-| `FROGLET_PRICE_EXEC_WASM` | `0` | Price in sats per WASM execution (0 = free) |
+| `FROGLET_PRICE_EVENTS_QUERY` | `0` | Whole minor units per events query: sats with Lightning, USD cents with Stripe-only (0 = free) |
+| `FROGLET_PRICE_EXEC_WASM` | `0` | Whole minor units per execution: sats with Lightning, USD cents with Stripe-only (0 = free) |
 
-The current public Stripe and x402 runtime adapters reuse that configured
-numeric price directly on the local `/v1/node/*` flow. They do not perform FX
-conversion from sats into backend-native fiat or token units.
+The Stripe and x402 runtime adapters reuse the configured numeric price in
+backend-native units. They do not perform FX conversion. When Lightning and
+Stripe are both configured, the default built-in offer uses Lightning; use an
+explicit USD/Stripe publication for a separate fiat offer.
+
+## Provider access, pause controls, and usage allowances
+
+These settings are local operator policy, outside the signed Kernel artifacts.
+They take effect only after deploying a build that supports them and restarting
+the provider with the settings loaded.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FROGLET_PROVIDER_ACCESS_MODE` | `open` | `open` preserves legacy access; `private` requires the provider-control bearer token for new work; `invite` requires an approved access token; `trial` permits public work within explicit cumulative limits; `paid` additionally requires the existing payment policy. |
+| `FROGLET_PROVIDER_INVITE_HASH_FILE` | *(none)* | Private regular file (0600 on Unix), one lowercase SHA-256 access-token hash per line, at most 1000 hashes / 64 KiB. Optional legacy invitations. New invitations can be issued and revoked immediately through the authenticated API or native MCP/CLI. Raw tokens belong only with invited clients. |
+| `FROGLET_PROVIDER_MIN_FREE_BYTES` | `0` | Reject new work when available filesystem space falls below this reserve. `0` disables this check. Check failures refuse admission. |
+| `FROGLET_PROVIDER_MAX_DATABASE_BYTES` | *(none)* | Reject new work at this high-water size for the node database plus WAL/SHM files. In-flight writes can exceed the threshold; leave headroom for recovery. |
+| `FROGLET_PROVIDER_REQUIRE_PAYMENT` | `false` | Reject free, mock-paid, and success-fee-only execution. Require a nonzero upfront fee through configured phoenixd, real LND, or live Stripe. |
+| `FROGLET_PROVIDER_MAX_TOTAL_DEALS` | *(none)* | Cumulative number of admitted deals/probes in this database. Required for every protected access mode; `0` prevents new admissions. |
+| `FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS` | *(none)* | Cumulative sum of admitted maximum runtimes in milliseconds. Required for every protected access mode; `0` prevents new execution admissions. |
+| `FROGLET_PROVIDER_MAX_TOTAL_QUOTES` | *(none)* | Cumulative quote requests and confidential-session openings, counted before wallet/resource work. Required for every protected access mode; `0` prevents new quotes/sessions. |
+
+All three allowances are non-negative integers, at most `9223372036854775807`.
+Admission uses a persistent, transactional ledger: concurrent requests cannot
+overbook it; retries of an existing deal reuse its reservation. Failed or unpaid
+reservations are not refunded. Restarting does not replenish an allowance.
+Raise limits deliberately to admit additional work; do not replace the database
+to reset usage. Limits apply to this database, not an entire cloud account or
+independent provider instances. Already admitted work can finish after a limit
+is lowered; this is a stop for **new** work, not cancellation of existing deals.
+
+Inspect policy and counters with `GET /v1/provider/usage`, authenticated with the
+provider control token. Paid-only mode hides ineligible offers from public
+discovery and rejects old free quotes. Legacy direct query/execution/job routes
+require signed deals when payment or an execution allowance is enabled.
+Event publication requires the owner control token whenever an access policy or
+cumulative allowance is enabled; a trial/invite cannot bypass admission by
+writing events. Public canary
+executions consume an execution reservation too.
+
+For operation while payment selection is deferred, use `FROGLET_PAYMENT_BACKEND=none`,
+`FROGLET_PROVIDER_REQUIRE_PAYMENT=false`, and `FROGLET_PROVIDER_ACCESS_MODE=private`.
+Explicitly set all three cumulative allowances. Zero pauses admission; positive
+values permit a finite amount of owner-authorized work. Private/invite/trial
+modes refuse startup without these allowances. Configuration alone does not
+alter already-running or previously deployed nodes.
+
+Invited callers send `X-Froglet-Access-Token` only on quote/deal requests.
+The native client reads it from a private file and forwards it through the local
+authenticated runtime over HTTPS to a remote provider. Issue/list/revoke via
+`froglet-node safeguards invite-create|invite-list|invite-revoke` or the matching
+native MCP actions. Database invitations have an expiry (within 30 days), a
+finite request allowance (2–10000), and immediate revocation. The provider stores
+only hashes. A normal invocation uses two requests; failures count too. Scope
+is the entire provider, not one service. Only operator controls issue credentials.
+See [HTTP_SERVICES.md](HTTP_SERVICES.md) for the complete flow and file rules.
+
+Legacy hash-file invitations remain supported. Restart after editing that file;
+the revoke API can immediately revoke a legacy hash using a persistent tombstone.
+Never put access credentials in service URLs or QR codes. The provider-control
+token is for the owner only. Standard discovery and completed-deal recovery remain
+available under independent bounded quotas.
+
+The operator CLI uses `FROGLET_DAEMON_URL` and the existing provider-control token
+file (or `FROGLET_PROVIDER_CONTROL_TOKEN_PATH`):
+
+```sh
+froglet-node safeguards status --json
+froglet-node safeguards pause --reason "operator maintenance"
+froglet-node safeguards resume
+froglet-node safeguards prune-cache
+```
+
+Status reports **effective running configuration**, remaining cumulative allowances,
+active deals, process slots, storage checks, and process-lifetime rate-limit
+decisions. Pause is persistent and stops new work; it does not cancel admitted
+work. Resume never resets usage. Cache maintenance removes only derived CSV
+indexes older than 24 hours (up to 10,000 directory entries per call). It never
+removes signed artifacts, original datasets, receipts, results, or accounting.
+Retain those records and set finite admission allowances and storage reserves.
+
+Public new-work, recovery, authenticated operator, and health requests use separate
+bounded quota buckets. These are application controls; they cannot guarantee
+availability against saturated network links or exhausted host resources.
+
+Builtin handlers run in supervised child processes on Unix. Timeout, cancellation,
+and supervisor death terminate the worker process group; input/output pipes are
+bounded. Linux also applies CPU/address-space limits. macOS requires a container
+or host limit for a hard memory ceiling. A handler without `worker_spec()` is
+refused rather than run in-process. A custom host binary must implement the
+`__builtin-worker` entrypoint using `builtin_worker::read_request()` and
+`write_result()`, dispatch only trusted registered handlers, and explicitly
+allowlist any worker environment (never forward the provider wallet/control keys).
+Standard and native-data workers are implemented by `froglet-node`. Native data
+queries reopen and validate their source in the child and reuse the disposable
+on-disk CSV index. This trades process-start overhead for enforceable termination.
+Integration tests in other workspaces can set `FROGLET_TEST_BUILTIN_WORKER` to an
+absolute prebuilt worker binary; this override applies only to Cargo executables
+under `deps/`, not running production binaries.
+
+Use `scripts/setup-payment.sh lightning --mode phoenixd --paid-only` or
+`scripts/setup-payment.sh stripe --paid-only` after securely providing the
+receiving-account configuration, positive built-in prices, and all three
+allowances. The script writes a mode-0600 environment snippet; load it in the
+actual service environment. It also sets a zero buyer spend budget, conservative
+request/concurrency limits, and a five-second execution timeout by default.
+Stripe requires a live key and `FROGLET_STRIPE_LIVE_CONFIRM=fresh`; the sandbox
+SPT helper cannot supply a production customer's payment credential.
+
+Existing named publications retain their signed prices. Republish each with
+appropriate upfront terms before re-enabling it. No automatic currency conversion
+is performed. Verify the signed quote's currency and amount before accepting
+real money. The current x402 adapter is for direct HTTP requests and is not a
+payment rail for these signed deals; paid-only setup rejects it.
+
+These are workload limits, **not a monetary cap on a cloud bill**. Hosting,
+storage, ingress/proxy handling, network egress, and payment-provider overhead
+can still cost money while execution is stopped. Apply infrastructure limits,
+edge rate limits, storage/log retention, and a reviewed shutdown procedure
+separately. Do not describe billing alerts as a guaranteed spending ceiling.
 
 ## Payment & Lightning
 
@@ -129,45 +246,26 @@ payee; Froglet does not route a marketplace payout or take a platform fee.
 
 ### GPU
 
-GPU support is opt-in and provider-local. A provider only advertises GPU
-capabilities when explicitly configured; the hosted proof remains free-only and
-does not prove GPU execution.
+The current reference OCI worker does not attach or account for GPU devices.
+GPU execution is refused for every runtime, including OCI, and no `compute.gpu`
+capabilities are advertised. `/v1/node/capabilities` reports GPU execution as
+disabled. The following retained configuration fields describe operator-supplied
+inventory only; setting them does not enable execution:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FROGLET_GPU_ENABLED` | `false` | Enable GPU capability advertisement and GPU-gated container execution |
-| `FROGLET_GPU_COUNT` | `1` when enabled, otherwise `0` | Number of GPUs available to this provider |
-| `FROGLET_GPU_VENDOR` | *(none)* | Optional vendor label, for example `nvidia` |
-| `FROGLET_GPU_MODEL` | *(none)* | Optional model label shown in `/v1/node/capabilities` |
-| `FROGLET_GPU_MEMORY_MB` | *(none)* | Optional GPU memory per provider in MB |
-| `FROGLET_GPU_CONTAINER_RUNTIME` | `docker` when enabled | Container runtime expected to expose GPUs. Current execution wiring supports Docker with `--gpus all` |
+| `FROGLET_GPU_ENABLED` | `false` | Retained inventory configuration flag |
+| `FROGLET_GPU_COUNT` | `1` when configured, otherwise `0` | Declared GPU count |
+| `FROGLET_GPU_VENDOR` | *(none)* | Optional vendor label |
+| `FROGLET_GPU_MODEL` | *(none)* | Optional model label |
+| `FROGLET_GPU_MEMORY_MB` | *(none)* | Declared GPU memory in MB |
+| `FROGLET_GPU_CONTAINER_RUNTIME` | `docker` when configured | Declared runtime |
 
-Publishing a service with `capabilities: ["compute.gpu"]` fails unless
-`FROGLET_GPU_ENABLED=1` is set. When GPU is enabled, the generic compute offer
-advertises the provider GPU capabilities so direct container workloads can
-request them. Runtime invocation grants GPU access only when the requested
-capability is listed in the signed offer. Non-GPU providers, and non-container
-workloads that request GPU, return clear errors instead of silently falling back
-to CPU.
-
-Verified smoke: on 2026-05-01, a self-hosted GCP `nvidia-tesla-t4` VM ran a
-digest-pinned container through `POST /v1/runtime/deals` with
-`requested_access: ["compute.gpu"]`. The signed quote granted `compute.gpu`,
-Docker was invoked with `--gpus all`, the container observed `Tesla T4` plus
-`FROGLET_GPU_CAPABILITIES=["compute.gpu"]`, and the signed receipt recorded
-`deal_state: "succeeded"` with deal id
-`63bcf0c2b5a9c60ca3799d8e6be910fa`. This proves the single-node Docker GPU
-path, not cross-provider scheduling, marketplace routing, or production
-capacity management.
-
-Run the same proof on a GPU host with Docker NVIDIA support:
-
-```bash
-FROGLET_GPU_SMOKE_EXPECTED_GPU="Tesla T4" ./scripts/gpu_smoke.sh
-```
-
-The script writes the request, quote/deal/receipt, Docker invocation log, and
-GPU probe output under its printed evidence directory.
+The earlier 2026-05-01 Docker/GCP T4 smoke described a previous execution path.
+It does not qualify the current out-of-process OCI worker. GPU support requires
+worker device attachment, resource accounting and a new hardware smoke before
+capability advertisement can be restored. `scripts/gpu_smoke.sh` remains a
+qualification tool, not evidence that this build supports GPU execution.
 
 ## Confidential Execution
 
@@ -181,6 +279,7 @@ GPU probe output under its printed evidence directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `FROGLET_PUBLIC_REQUEST_QUOTA` | `6000` | Global requests across all routes on the public listener per public-write window (1-100000). Shared across origins, so changing IP addresses does not bypass it. In-memory: resets on process restart. |
 | `FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY` | `10` | Hosted trial deal creations allowed per request-origin identity/window |
 | `FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY` | `20` | Hosted trial session creations allowed per origin identity/window |
 | `FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY` | `60` | Public event publishes allowed per request-origin identity/window |
@@ -194,6 +293,10 @@ Public write quotas use a request-origin identity, not body fields such as
 `requester_id` or event public keys. Keep
 `FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS=false` unless a trusted proxy strips
 client-supplied forwarding headers before forwarding to the node.
+Identity-quota maps hold at most 10,000 active identities; new identities are
+refused when full until expired buckets can be reclaimed. The global request
+limit returns HTTP 429, including on public status/payment routes; size it for
+legitimate polling and apply edge abuse controls before traffic reaches the VM.
 
 ## Storage
 

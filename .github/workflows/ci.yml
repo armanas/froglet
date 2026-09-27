@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
   workflow_dispatch:
+  workflow_call:
   schedule:
     - cron: '17 3 * * *'  # Nightly at 03:17 UTC
 
@@ -64,6 +65,9 @@ jobs:
         run: npm audit --prefix integrations/mcp/froglet --audit-level=high
 
       - name: Run strict verification matrix
+        env:
+          RUST_TEST_THREADS: '4'
+          FROGLET_RUN_LINUX_SANDBOX_TESTS: '1'
         run: ./scripts/strict_checks.sh
 
   code-coverage:

@@ -23,7 +23,7 @@ const RAIL_DOT: Record<MaturityStatus, string> = {
 };
 
 const siteOrigin = import.meta.env.FROGLET_SITE_ORIGIN || 'https://froglet.dev';
-const homepagePrompt = `Make this catalog usable by another agent with Froglet. Read ${siteOrigin}/learn/share-services/. Propose useful tables and fields, prepare a separate snapshot, and show a local example. Ask me separately before installation and before publishing the exact selected data. Start free and preserve my existing files and agent settings.`;
+const homepagePrompt = `Make this catalog usable by another agent with Froglet. Read ${siteOrigin}/publish/agent.md. Use the configured Froglet tool or verified installation. Propose useful tables and fields, prepare a separate snapshot, and verify the example through Froglet itself. Ask me separately before installation and before publishing the exact selected data. Start free and preserve my existing files and agent settings.`;
 
 const promptVariants = [
   {

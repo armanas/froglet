@@ -659,10 +659,11 @@ pub async fn publish(
         else if !prepared.register_with_marketplace { "local_published" }
         else { "pending_review" }.to_string();
     let share_url = if matches!(hosting, HostingChoice::Relay) {
-        let mut url = configured_share_site_origin();
-        url.set_path("/service/");
-        url.query_pairs_mut().append_pair("provider", &evidence.provider_id).append_pair("service", &invoke_service_id);
-        Some(url.to_string())
+        Some(share_service_url(
+            configured_share_site_origin(),
+            &evidence.provider_id,
+            &invoke_service_id,
+        ))
     } else { None };
     let invoke_command = if prepared.register_with_marketplace {
         format!("froglet-node invoke {invoke_service_id} '<json_input>' --provider-id {} --provider-url {}", evidence.provider_id, prepared.public_url)
@@ -701,6 +702,11 @@ fn configured_share_site_origin() -> Url {
         .ok()
         .and_then(|value| first_party_share_site_origin(&value))
         .unwrap_or_else(|| Url::parse("https://froglet.dev/").expect("static share origin"))
+}
+
+fn share_service_url(mut site_origin: Url, provider_id: &str, service_id: &str) -> String {
+    site_origin.set_path(&format!("/s/{provider_id}/{service_id}"));
+    site_origin.to_string()
 }
 
 fn first_party_share_site_origin(value: &str) -> Option<Url> {
@@ -1639,7 +1645,21 @@ mod pipeline {
                 // The immutable runtime interface always exports `run`.
                 request.entrypoint_kind = Some("module".to_string());
                 request.entrypoint = Some("run".to_string());
-                request.contract_version = Some("froglet.wasm.run_json.v1".to_string());
+                let contract = input
+                    .service
+                    .contract_version
+                    .as_deref()
+                    .unwrap_or("froglet.wasm.run_json.v1");
+                if !matches!(
+                    contract,
+                    "froglet.wasm.run_json.v1" | "froglet.wasm.host_json.v1"
+                ) {
+                    return Err(PublishError::InvalidInput {
+                        field: "contract_version",
+                        reason: "inline Wasm requires froglet.wasm.run_json.v1 or froglet.wasm.host_json.v1".into(),
+                    });
+                }
+                request.contract_version = Some(contract.to_string());
                 request.source_kind = Some("wasm".to_string());
             }
             ("builtin", "builtin") => {
@@ -1815,6 +1835,21 @@ mod tests {
         ] {
             assert!(first_party_share_site_origin(value).is_none(), "{value}");
         }
+    }
+
+    #[test]
+    fn share_url_uses_the_agent_readable_service_route() {
+        assert_eq!(
+            share_service_url(
+                Url::parse("https://candidate.froglet.dev/").unwrap(),
+                &"ab".repeat(32),
+                "catalog-v1"
+            ),
+            format!(
+                "https://candidate.froglet.dev/s/{}/catalog-v1",
+                "ab".repeat(32)
+            )
+        );
     }
 
     fn minimal_service_manifest(hosting_default: &str) -> ServiceManifest {

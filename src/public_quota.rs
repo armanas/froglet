@@ -6,6 +6,7 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct PublicQuotaConfig {
+    pub requests_per_window: u32,
     pub hosted_trial_deals_per_identity: u32,
     pub hosted_trial_sessions_per_identity: u32,
     pub event_publishes_per_identity: u32,
@@ -19,6 +20,7 @@ pub struct PublicQuotaConfig {
 impl Default for PublicQuotaConfig {
     fn default() -> Self {
         Self {
+            requests_per_window: 6_000,
             hosted_trial_deals_per_identity: 10,
             hosted_trial_sessions_per_identity: 20,
             event_publishes_per_identity: 60,
@@ -47,7 +49,12 @@ pub struct IdentityQuota {
     max_per_window: u32,
     window: Duration,
     buckets: Mutex<HashMap<String, QuotaBucket>>,
+    blocked: std::sync::atomic::AtomicU64,
+    allowed: std::sync::atomic::AtomicU64,
 }
+
+// Bound attacker-controlled identity storage as well as request frequency.
+const MAX_IDENTITY_BUCKETS: usize = 10_000;
 
 impl IdentityQuota {
     pub fn new(max_per_window: u32, window: Duration) -> Self {
@@ -55,16 +62,36 @@ impl IdentityQuota {
             max_per_window: max_per_window.max(1),
             window: window.max(Duration::from_secs(1)),
             buckets: Mutex::new(HashMap::new()),
+            blocked: std::sync::atomic::AtomicU64::new(0),
+            allowed: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     pub fn check_and_increment(&self, identity: &str) -> QuotaDecision {
-        self.check_and_increment_at(identity, Instant::now())
+        let decision = self.check_and_increment_at(identity, Instant::now());
+        match decision {
+            QuotaDecision::Allowed { .. } => &self.allowed,
+            QuotaDecision::Rejected { .. } => &self.blocked,
+        }
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        decision
+    }
+
+    pub fn counters(&self) -> serde_json::Value {
+        serde_json::json!({"allowed":self.allowed.load(std::sync::atomic::Ordering::Relaxed), "blocked":self.blocked.load(std::sync::atomic::Ordering::Relaxed), "scope":"current_process"})
     }
 
     fn check_and_increment_at(&self, identity: &str, now: Instant) -> QuotaDecision {
         let key = normalize_identity_key(identity);
         let mut buckets = self.lock();
+        if !buckets.contains_key(&key) && buckets.len() >= MAX_IDENTITY_BUCKETS {
+            buckets.retain(|_, bucket| now.duration_since(bucket.window_started) < self.window);
+            if buckets.len() >= MAX_IDENTITY_BUCKETS {
+                return QuotaDecision::Rejected {
+                    retry_after_secs: self.window.as_secs().max(1),
+                };
+            }
+        }
         let bucket = buckets.entry(key).or_insert(QuotaBucket {
             window_started: now,
             count: 0,
@@ -128,6 +155,32 @@ mod tests {
             quota.check_and_increment_at("identity-a", now),
             QuotaDecision::Rejected { .. }
         ));
+    }
+
+    #[test]
+    fn identity_rotation_is_bounded_and_expired_buckets_are_reclaimed() {
+        let quota = IdentityQuota::new(2, Duration::from_secs(60));
+        let now = Instant::now();
+        for index in 0..MAX_IDENTITY_BUCKETS {
+            assert!(matches!(
+                quota.check_and_increment_at(&index.to_string(), now),
+                QuotaDecision::Allowed { .. }
+            ));
+        }
+        assert!(matches!(
+            quota.check_and_increment_at("new-identity", now),
+            QuotaDecision::Rejected { .. }
+        ));
+        assert_eq!(quota.lock().len(), MAX_IDENTITY_BUCKETS);
+        assert!(matches!(
+            quota.check_and_increment_at("0", now),
+            QuotaDecision::Allowed { .. }
+        ));
+        assert!(matches!(
+            quota.check_and_increment_at("new-identity", now + Duration::from_secs(61)),
+            QuotaDecision::Allowed { .. }
+        ));
+        assert_eq!(quota.lock().len(), 1);
     }
 
     #[test]

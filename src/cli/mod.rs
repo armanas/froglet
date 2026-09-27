@@ -22,12 +22,15 @@ pub mod attest;
 pub mod build;
 pub mod configure_agent;
 pub mod doctor;
+pub mod http_service;
 pub mod identity;
 pub mod init;
 pub mod invoke;
 pub mod mcp;
 pub mod prepare;
 pub mod publish;
+pub mod safeguards;
+pub mod service_link;
 pub mod whoami;
 
 use std::fmt;

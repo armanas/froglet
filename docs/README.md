@@ -28,7 +28,9 @@ Public launch entry points:
 - [VERSIONING.md](VERSIONING.md): stability policy — what is frozen, what may change, how `froglet/v2` would happen
 - [THREAT_MODEL.md](THREAT_MODEL.md): assets, trust boundaries, key-compromise runbook, accepted risks
 - [SERVICE_BINDING.md](SERVICE_BINDING.md): service-binding contract — service_id, offer_kind, product shapes
+- [HTTP_SERVICES.md](HTTP_SERVICES.md): bounded HTTP JSON services, invitations, limits and release qualification
 - [MANIFEST.md](MANIFEST.md): service manifest format (`froglet-service.toml`)
+- [SHAREABLE_SERVICE_LINK.md](SHAREABLE_SERVICE_LINK.md): proposed human/social/agent-readable service URL contract
 - [openapi.yaml](openapi.yaml): HTTP API reference (OpenAPI)
 
 ## Architecture

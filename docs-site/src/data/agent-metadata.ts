@@ -18,7 +18,7 @@ export const routeAgentMetadata = {
 		relevant_tasks: ['publish-service', 'consume-service', 'hosted-proof', 'receipt-artifact-verify'],
 		evidence_boundary: 'Public beta; stable qualification remains open. Local evidence does not prove public activation or recipient execution.',
 		canonical_sources: ['/llms.txt', '/agent-tasks.json', '/learn/cloud-trial/'],
-		preferred_next_action: 'Read /learn/share-services/, inspect the source, and show a selected preview before public approval.',
+		preferred_next_action: 'Read /publish/agent.md, inspect the source, and show a selected preview before public approval.',
 	},
 	publish: {
         route: '/publish/',
@@ -27,7 +27,7 @@ export const routeAgentMetadata = {
         primary_task: 'publish-service',
         relevant_tasks: ['publish-service', 'local-install-proposal'],
         evidence_boundary: 'Public beta; stable qualification remains open. Installation, local execution, public reachability, marketplace activation, and recipient execution are separate evidence.',
-        canonical_sources: ['/learn/share-services/', '/agent-tasks.json', '/learn/llm-self-install/'],
+        canonical_sources: ['/publish/agent.md', '/agent-tasks.json', '/install/agent.md'],
         preferred_next_action: 'Inspect the source and propose the smallest useful selection. Preserve existing files and settings.',
     },
     service: {

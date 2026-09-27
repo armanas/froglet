@@ -152,11 +152,9 @@ if [[ "${FROGLET_RUN_TOR_INTEGRATION:-0}" == "1" ]]; then
 fi
 
 if [[ "${FROGLET_RUN_LINUX_SANDBOX_TESTS:-0}" == "1" ]]; then
-  # The landlock+seccomp sandbox tests need Linux kernel capabilities the
-  # default GitHub Actions runner does not grant (CAP_SYS_ADMIN-equivalent
-  # privileges for seccomp/landlock syscalls). On a capable runner — a
-  # self-hosted runner, a bare Linux VM, or local Linux with the right
-  # priv set — export FROGLET_RUN_LINUX_SANDBOX_TESTS=1 to exercise them.
+  # Require real Landlock ABI v3+ and seccomp enforcement. These run without
+  # privilege escalation under NO_NEW_PRIVS; an unsupported runner must fail
+  # qualification rather than silently skipping the sandbox checks.
   echo "[strict] linux sandbox tests (landlock + seccomp)"
   CARGO_INCREMENTAL=0 RUSTFLAGS="$strict_rustflags" \
     cargo test --locked --workspace --all-targets -- --ignored \

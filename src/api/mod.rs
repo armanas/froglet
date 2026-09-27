@@ -449,6 +449,17 @@ async fn relay_ingress_guard(
 
 fn provider_control_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
+        .route("/v1/provider/usage", get(provider_usage_status))
+        .route(
+            "/v1/provider/invites",
+            get(provider_invite_list).post(provider_invite_create),
+        )
+        .route(
+            "/v1/provider/invites/:id/revoke",
+            post(provider_invite_revoke),
+        )
+        .route("/v1/provider/control", post(provider_control_update))
+        .route("/v1/provider/maintenance", post(provider_maintenance))
         .route(
             "/v1/provider/artifacts/publish",
             post(publish_artifact).layer(DefaultBodyLimit::max(MAX_PROVIDER_PUBLISH_BODY_BYTES)),
@@ -693,10 +704,369 @@ pub fn public_router(state: Arc<AppState>) -> Router {
     router
         .layer(middleware::from_fn_with_state(
             state.clone(),
+            public_request_limit,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
             relay_ingress_guard,
         ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
+}
+
+async fn public_request_limit(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let operator = require_provider_control_auth(request.headers(), state.as_ref()).is_ok();
+    let recovery = path.starts_with("/v1/provider/deals/")
+        || path == "/v1/webhooks/stripe"
+        || path.starts_with("/v1/provider/confidential/sessions/");
+    // Fixed class names bound the map and preserve independently limited
+    // recovery/control capacity under discovery or new-work floods.
+    let class = if operator {
+        "operator"
+    } else if path == "/health" {
+        "health"
+    } else if recovery {
+        "recovery"
+    } else {
+        "public"
+    };
+    if let Err(response) =
+        enforce_identity_quota(&state.public_request_quota, class, "public request")
+    {
+        return response.into_response();
+    }
+    if is_new_provider_work(request.method(), path) {
+        if !operator && !provider_access_allowed(state.as_ref(), request.headers(), path).await {
+            return error_json(StatusCode::FORBIDDEN, json!({"error":"provider execution requires an access credential", "code":"provider_access_required"})).into_response();
+        }
+        if let Err((status, body)) = provider_storage_admission(state.as_ref()) {
+            return error_json(status, body).into_response();
+        }
+        if let Err(error) = state
+            .db
+            .with_read_conn(crate::provider_policy::require_not_paused)
+            .await
+        {
+            return error_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":error,"code":"provider_paused"}),
+            )
+            .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+fn is_new_provider_work(method: &axum::http::Method, path: &str) -> bool {
+    *method == axum::http::Method::POST
+        && (matches!(
+            path,
+            "/v1/provider/quotes"
+                | "/v1/provider/deals"
+                | "/v1/provider/confidential/sessions"
+                | "/v1/node/execute/wasm"
+                | "/v1/node/jobs"
+                | "/v1/node/events/query"
+                | "/v1/node/events/publish"
+                | "/v1/provider/artifacts/publish"
+                | "/v1/provider/artifacts/preflight"
+        ) || path == "/v1/runtime/deals"
+            || path == "/api/sessions"
+            || (path.starts_with("/v1/provider/managed-publications/")
+                && !path.starts_with("/v1/provider/managed-publications/operations/"))
+            || (path.starts_with("/v1/publications/") && path.ends_with("/canary")))
+}
+
+async fn provider_access_allowed(state: &AppState, headers: &HeaderMap, path: &str) -> bool {
+    use crate::provider_policy::AccessMode;
+    let policy = &state.config.provider_policy;
+    match policy.access_mode {
+        AccessMode::Open | AccessMode::Trial | AccessMode::Paid => true,
+        AccessMode::Private => false,
+        AccessMode::Invite => {
+            // An invitation never grants publication, arbitrary legacy execution,
+            // event writes, or operator privileges.
+            if !matches!(path, "/v1/provider/quotes" | "/v1/provider/deals") {
+                return false;
+            }
+            let Some(token) = headers
+                .get("x-froglet-access-token")
+                .and_then(|h| h.to_str().ok())
+                .filter(|s| (32..=256).contains(&s.len()))
+            else {
+                return false;
+            };
+            let hash = crypto::sha256_hex(token.as_bytes());
+            let policy = policy.clone();
+            state
+                .db
+                .with_write_conn(move |conn| {
+                    crate::provider_policy::authorize_invite(
+                        conn,
+                        &policy,
+                        &hash,
+                        crate::settlement::current_unix_timestamp(),
+                    )
+                })
+                .await
+                .unwrap_or(false)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderInviteCreate {
+    name: String,
+    expires_at: i64,
+    max_requests: u64,
+}
+
+async fn provider_invite_create(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ProviderInviteCreate>,
+) -> Response {
+    if state.config.provider_policy.access_mode != crate::provider_policy::AccessMode::Invite {
+        return error_json(
+            StatusCode::CONFLICT,
+            json!({"error":"start this provider in invite mode before issuing invitations"}),
+        )
+        .into_response();
+    }
+    let result = state
+        .db
+        .with_write_conn(move |conn| {
+            crate::provider_policy::create_invite(
+                conn,
+                &request.name,
+                request.expires_at,
+                request.max_requests,
+                crate::settlement::current_unix_timestamp(),
+            )
+        })
+        .await;
+    match result {
+        Ok((id, token)) => {
+            let mut response = error_json(StatusCode::CREATED, json!({"id":id,"access_token":token,"scope":"new quotes and deals on this provider; not operator access", "token_visibility":"returned once; keep private and never include in a URL", "request_accounting":"one quote plus one deal normally consumes two requests"})).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        Err(error) => error_json(StatusCode::BAD_REQUEST, json!({"error":error})).into_response(),
+    }
+}
+async fn provider_invite_list(State(state): State<Arc<AppState>>) -> Response {
+    match state
+        .db
+        .with_read_conn(crate::provider_policy::list_invites)
+        .await
+    {
+        Ok(invites) => error_json(StatusCode::OK, json!({"invites":invites})).into_response(),
+        Err(_) => error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"invitation store unavailable"}),
+        )
+        .into_response(),
+    }
+}
+async fn provider_invite_revoke(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state
+        .db
+        .with_write_conn(move |conn| crate::provider_policy::revoke_invite(conn, &id))
+        .await
+    {
+        Ok(()) => error_json(
+            StatusCode::OK,
+            json!({"revoked":true,"existing_deals":"remain recoverable"}),
+        )
+        .into_response(),
+        Err(error) => error_json(StatusCode::BAD_REQUEST, json!({"error":error})).into_response(),
+    }
+}
+
+fn provider_storage_admission(state: &AppState) -> Result<(), ApiFailure> {
+    let status = crate::provider_policy::storage_status(
+        &state.config.provider_policy,
+        &state.config.storage.data_dir,
+        &state.config.storage.db_path,
+    )
+    .map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"storage safety check unavailable"}),
+        )
+    })?;
+    if let Some(reason) = status.blocked_reason {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":reason,"code":"provider_storage_limit"}),
+        ));
+    }
+    Ok(())
+}
+
+async fn provider_usage_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let snapshot = state.db.with_read_conn(|conn| {
+        let usage = crate::provider_policy::usage(conn)?;
+        let pause = crate::provider_policy::pause_reason(conn)?;
+        let active: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE status IN ('accepted','running','payment_pending','result_ready','settlement_pending')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        Ok::<_, String>((usage, pause, active))
+    }).await;
+    match snapshot {
+        Ok((usage, pause, active)) => {
+            let policy = &state.config.provider_policy;
+            let storage = crate::provider_policy::storage_status(
+                policy,
+                &state.config.storage.data_dir,
+                &state.config.storage.db_path,
+            );
+            error_json(
+                StatusCode::OK,
+                json!({"policy":policy,"usage":usage,"paused":pause.is_some(),"pause_reason":pause,"active_deals":active,
+                "remaining":{"deals":policy.max_total_deals.map(|n|n.saturating_sub(usage.reserved_deals)),"runtime_ms":policy.max_total_runtime_ms.map(|n|n.saturating_sub(usage.reserved_runtime_ms)),"quotes":policy.max_total_quotes.map(|n|n.saturating_sub(usage.issued_quotes))},
+                "requests":state.public_request_quota.counters(),"storage":storage.as_ref().ok(),"storage_check_available":storage.is_ok(),
+                "running_builtin_or_process_jobs":state.config.process_limits.concurrency.saturating_sub(state.process_execution_semaphore.available_permits()),
+                "runtime_accounting":"reserved maximum durations; not cloud currency", "configuration_scope":"effective settings on this running node"}),
+            )
+        }
+        Err(_) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error":"failed to read provider safeguards"}),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderControlUpdate {
+    paused: bool,
+    reason: Option<String>,
+}
+async fn provider_control_update(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<ProviderControlUpdate>,
+) -> impl IntoResponse {
+    let reason = if update.paused {
+        Some(update.reason.unwrap_or_else(|| "paused by operator".into()))
+    } else {
+        None
+    };
+    if reason
+        .as_ref()
+        .is_some_and(|s| s.is_empty() || s.len() > 256)
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"pause reason must contain 1-256 bytes"}),
+        )
+        .into_response();
+    }
+    match state
+        .db
+        .with_write_conn(move |conn| crate::provider_policy::set_pause(conn, reason.as_deref()))
+        .await
+    {
+        Ok(()) => provider_usage_status(State(state)).await.into_response(),
+        Err(_) => error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"could not persist provider control state"}),
+        )
+        .into_response(),
+    }
+}
+async fn provider_maintenance(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let root = state.config.storage.data_dir.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::provider_policy::prune_cache(&root, Duration::from_secs(86400))
+    })
+    .await
+    {
+        Ok(Ok(removed)) => error_json(
+            StatusCode::OK,
+            json!({"removed_disposable_cache_files":removed,"accounting_preserved":true}),
+        ),
+        _ => error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"cache maintenance failed"}),
+        ),
+    }
+}
+
+fn enforce_provider_payment_policy(
+    state: &AppState,
+    method: &str,
+    base_fee_msat: u64,
+    success_fee_msat: u64,
+) -> Result<(), ApiFailure> {
+    if !state.config.provider_policy.require_payment {
+        return Ok(());
+    }
+    let real_rail = match method {
+        "lightning.prepaid.v1" => {
+            state
+                .config
+                .payment_backends
+                .contains(&PaymentBackend::Lightning)
+                && state.config.lightning.mode == LightningMode::Phoenixd
+        }
+        "lightning.base_fee_plus_success_fee.v1" => {
+            state
+                .config
+                .payment_backends
+                .contains(&PaymentBackend::Lightning)
+                && state.config.lightning.mode == LightningMode::LndRest
+        }
+        "stripe_mpp.v1" => state
+            .config
+            .payment_backends
+            .contains(&PaymentBackend::Stripe),
+        _ => false,
+    };
+    if !real_rail || base_fee_msat == 0 || base_fee_msat.checked_add(success_fee_msat).is_none() {
+        return Err((
+            StatusCode::PAYMENT_REQUIRED,
+            json!({
+                "error": "provider requires a real payment rail and a nonzero upfront fee; free and mock-paid execution is disabled",
+                "code": "provider_payment_required"
+            }),
+        ));
+    }
+    Ok(())
+}
+
+async fn reserve_provider_quote(state: &AppState) -> Result<(), ApiFailure> {
+    provider_storage_admission(state)?;
+    let policy = state.config.provider_policy.clone();
+    state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                crate::provider_policy::reserve_quote(conn, &policy)
+            })
+        })
+        .await
+        .map_err(provider_allowance_failure)
+}
+
+fn provider_allowance_failure(error: String) -> ApiFailure {
+    let status = if error == crate::provider_policy::EXHAUSTED {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        json!({ "error": error, "code": "provider_allowance_unavailable" }),
+    )
 }
 
 pub fn runtime_router(state: Arc<AppState>) -> Router {
@@ -748,6 +1118,10 @@ pub async fn openapi_spec() -> impl IntoResponse {
 pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let transport_status = state.transport_status.lock().await.clone();
     let settlement_descriptor = settlement::driver_descriptor(state.as_ref());
+    let mut pricing = state.pricing.info().clone();
+    let currency = crate::pricing::configured_price_currency(&state.config.payment_backends);
+    pricing.events_query.price_currency = Some(currency.to_string());
+    pricing.execute_wasm.price_currency = Some(currency.to_string());
     let container_runtime_available = crate::oci_worker::ConfiguredOciWorker::from_env()
         .map(|worker| worker.is_enabled())
         .unwrap_or(false);
@@ -790,7 +1164,7 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
                 entrypoints: vec!["alloc".to_string(), "run".to_string()],
             },
             gpu: GpuInfo {
-                enabled: state.config.gpu.enabled,
+                enabled: false,
                 count: state.config.gpu.count,
                 vendor: state.config.gpu.vendor.clone(),
                 model: state.config.gpu.model.clone(),
@@ -816,7 +1190,7 @@ pub async fn node_capabilities(State(state): State<Arc<AppState>>) -> impl IntoR
                 .hosted_trial_deals_per_identity,
             hosted_trial_quota_window_secs: state.config.public_quota.hosted_trial_window_secs,
         },
-        pricing: state.pricing.info().clone(),
+        pricing,
         payments: PaymentsInfo {
             backend: settlement_descriptor.backend,
             verifier_mode: (settlement_descriptor.mode != "disabled")
@@ -1029,7 +1403,7 @@ where
     T: DeserializeOwned,
     B: Serialize + ?Sized,
 {
-    remote_json_request_inner(state, method, url, body, false, pinned_addresses).await
+    remote_json_request_inner(state, method, url, body, false, pinned_addresses, None).await
 }
 
 async fn remote_json_request_with_client_error_passthrough_and_pinned_addresses<T, B>(
@@ -1051,10 +1425,12 @@ where
         body,
         preserve_client_errors,
         pinned_addresses,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn remote_json_request_inner<T, B>(
     state: &AppState,
     method: reqwest::Method,
@@ -1062,6 +1438,7 @@ async fn remote_json_request_inner<T, B>(
     body: Option<&B>,
     preserve_client_errors: bool,
     pinned_addresses: &[IpAddr],
+    access: Option<(&str, &str)>,
 ) -> Result<T, ApiFailure>
 where
     T: DeserializeOwned,
@@ -1078,6 +1455,16 @@ where
         })?
     };
     let mut request = client.request(method, &url);
+    if let Some((header, token)) = access {
+        let mut value = reqwest::header::HeaderValue::from_str(token).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({"error":"invalid provider access credential"}),
+            )
+        })?;
+        value.set_sensitive(true);
+        request = request.header(header, value);
+    }
     if let Some(body) = body {
         request = request.json(body);
     }
@@ -1101,6 +1488,14 @@ where
             json!({ "error": "failed to read upstream response", "details": error, "url": url }),
         )
     })?;
+    if let Some((_, token)) = access
+        && String::from_utf8_lossy(&body).contains(token)
+    {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            json!({"error":"upstream response contained access credentials"}),
+        ));
+    }
     let body_text = String::from_utf8_lossy(&body).into_owned();
     if !status.is_success() {
         if preserve_client_errors && status.is_client_error() {
@@ -2169,6 +2564,7 @@ pub async fn hosted_trial_runtime_create_deal(
         state,
         payload,
         RuntimeCreateDealScope::HostedTrial { quota_identity },
+        None,
     )
     .await
 }
@@ -2181,7 +2577,24 @@ pub async fn runtime_create_deal(
     if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
         return error_json(error.0, error.1).into_response();
     }
-    runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::Full).await
+    let access_token = match headers.get("x-froglet-access-token") {
+        None => None,
+        Some(value) => match value
+            .to_str()
+            .ok()
+            .filter(|v| (32..=256).contains(&v.len()))
+        {
+            Some(value) => Some(value.to_string()),
+            None => {
+                return error_json(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"invalid provider access credential"}),
+                )
+                .into_response();
+            }
+        },
+    };
+    runtime_create_deal_inner(state, payload, RuntimeCreateDealScope::Full, access_token).await
 }
 
 /// Holds a `reserved` row in the requester spend ledger until either the
@@ -2274,6 +2687,7 @@ async fn runtime_create_deal_inner(
     state: Arc<AppState>,
     payload: RuntimeCreateDealRequest,
     scope: RuntimeCreateDealScope,
+    access_token: Option<String>,
 ) -> Response {
     if let Err(response) = validate_workload_spec(&payload.spec) {
         return response.into_response();
@@ -2407,6 +2821,35 @@ async fn runtime_create_deal_inner(
     {
         return error_json(error.0, error.1).into_response();
     }
+    let trusted_local_endpoint = match provider_resolution::configured_runtime_provider_base_url() {
+        Ok(Some(url)) => Some(url),
+        Ok(None) => state
+            .transport_status
+            .lock()
+            .await
+            .local_provider_bound_addr
+            .map(|addr| format!("http://{addr}")),
+        Err(error) => return error_json(error.0, error.1).into_response(),
+    };
+    let owner_credential;
+    let provider_access = if !scope.is_hosted_trial()
+        && provider.provider_id == state.identity.node_id()
+        && trusted_local_endpoint.as_deref() == Some(provider.provider_sync_url.as_str())
+    {
+        owner_credential = format!("Bearer {}", state.provider_control_auth_token);
+        Some(("authorization", owner_credential.as_str()))
+    } else if let Some(token) = access_token.as_deref() {
+        if !provider.provider_sync_url.starts_with("https://") {
+            return error_json(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"remote invitation credentials require HTTPS"}),
+            )
+            .into_response();
+        }
+        Some(("x-froglet-access-token", token))
+    } else {
+        None
+    };
     let expected_workload_kind = payload.spec.workload_kind().to_string();
     let expected_workload_hash = match payload.spec.request_hash() {
         Ok(hash) => hash,
@@ -2421,7 +2864,7 @@ async fn runtime_create_deal_inner(
     let expected_confidential_session_hash =
         payload.spec.confidential_session_hash().map(str::to_string);
 
-    let quote = match remote_json_request_with_pinned_addresses::<SignedArtifact<QuotePayload>, _>(
+    let quote = match remote_json_request_inner::<SignedArtifact<QuotePayload>, _>(
         state.as_ref(),
         reqwest::Method::POST,
         format!("{}/v1/provider/quotes", provider.provider_sync_url),
@@ -2435,7 +2878,9 @@ async fn runtime_create_deal_inner(
                 payload.max_price_sats
             },
         }),
+        true,
         &provider.pinned_public_addresses,
+        provider_access,
     )
     .await
     {
@@ -2802,7 +3247,7 @@ async fn runtime_create_deal_inner(
         .into_response();
     }
 
-    let remote_deal = match remote_json_request_with_pinned_addresses::<deals::DealRecord, _>(
+    let remote_deal = match remote_json_request_inner::<deals::DealRecord, _>(
         state.as_ref(),
         reqwest::Method::POST,
         format!("{}/v1/provider/deals", provider.provider_sync_url),
@@ -2813,7 +3258,9 @@ async fn runtime_create_deal_inner(
             idempotency_key: idempotency_key.clone(),
             payment: payment_for_deal,
         }),
+        true,
         &provider.pinned_public_addresses,
+        provider_access,
     )
     .await
     {
@@ -4847,6 +5294,16 @@ pub async fn publish_event(
     headers: HeaderMap,
     Json(payload): Json<PublishRequest>,
 ) -> impl IntoResponse {
+    let policy = &state.config.provider_policy;
+    if (policy.require_payment
+        || policy.access_mode != crate::provider_policy::AccessMode::Open
+        || policy.max_total_deals.is_some()
+        || policy.max_total_runtime_ms.is_some()
+        || policy.max_total_quotes.is_some())
+        && let Err((status, body)) = require_provider_control_auth(&headers, state.as_ref())
+    {
+        return error_json(status, json!(body));
+    }
     let event = payload.event;
 
     if event.content.len() > MAX_EVENT_CONTENT_BYTES {
@@ -4973,7 +5430,15 @@ pub async fn query_events(
         Err(error) => return error_json(error.status_code(), error.details()),
     };
 
-    match query_events_with_capacity(state.as_ref(), payload.kinds, payload.limit).await {
+    match query_events_with_capacity(
+        state.as_ref(),
+        payload.kinds,
+        payload.limit,
+        Duration::from_secs(state.config.execution_timeout_secs),
+        &state.config.process_limits,
+    )
+    .await
+    {
         Ok(events) => {
             let receipt = match finalize_payment(state.as_ref(), reservation).await {
                 Ok(receipt) => receipt,
@@ -5268,6 +5733,20 @@ fn legacy_paid_endpoint_requires_protocol_deal(
     service_id: ServiceId,
     endpoint_path: &str,
 ) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    if state.config.provider_policy.require_payment
+        || state.config.provider_policy.access_mode != crate::provider_policy::AccessMode::Open
+        || state.config.provider_policy.max_total_deals.is_some()
+        || state.config.provider_policy.max_total_runtime_ms.is_some()
+    {
+        return Some(error_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "provider policy requires signed paid deals with resource admission",
+                "quote_path": "/v1/provider/quotes", "deal_path": "/v1/provider/deals",
+                "requires_protocol_deal": true
+            }),
+        ));
+    }
     let price_sats = state.pricing.price_for(service_id);
     if !state
         .config
@@ -5438,16 +5917,6 @@ fn events_query_capacity_error() -> serde_json::Value {
     })
 }
 
-fn try_acquire_events_query_permit(
-    state: &AppState,
-) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
-    state
-        .events_query_semaphore
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| EVENTS_QUERY_CAPACITY_EXHAUSTED.to_string())
-}
-
 enum BuiltinRuntimePermit {
     Process(Arc<tokio::sync::OwnedSemaphorePermit>),
     Events(tokio::sync::OwnedSemaphorePermit),
@@ -5457,6 +5926,8 @@ async fn query_events_db(
     state: &AppState,
     kinds: Vec<String>,
     limit: Option<usize>,
+    timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
 ) -> Result<Vec<NodeEventEnvelope>, String> {
     if kinds.len() > db::MAX_EVENT_QUERY_KINDS {
         return Err(format!(
@@ -5465,18 +5936,31 @@ async fn query_events_db(
         ));
     }
 
-    state
-        .db
-        .with_read_conn(move |conn| db::query_events_by_kind(conn, &kinds, limit))
+    let _permit = acquire_process_execution_permit(state)
         .await
+        .map_err(|_| EVENTS_QUERY_CAPACITY_EXHAUSTED.to_string())?;
+    let worker = crate::builtin_worker::WorkerSpec::local(
+        "native.events-query",
+        json!({"database":state.config.storage.db_path}),
+    )?;
+    let result = crate::builtin_worker::execute(
+        worker,
+        json!({"kinds":kinds,"limit":limit}),
+        timeout,
+        process_limits,
+    )
+    .await?;
+    serde_json::from_value(result).map_err(|e| e.to_string())
 }
 
 async fn query_events_with_capacity(
     state: &AppState,
     kinds: Vec<String>,
     limit: Option<usize>,
+    timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
 ) -> Result<Vec<NodeEventEnvelope>, String> {
-    query_events_with_permit(state, kinds, limit, None).await
+    query_events_with_permit(state, kinds, limit, None, timeout, process_limits).await
 }
 
 async fn query_events_with_permit(
@@ -5484,12 +5968,26 @@ async fn query_events_with_permit(
     kinds: Vec<String>,
     limit: Option<usize>,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
 ) -> Result<Vec<NodeEventEnvelope>, String> {
-    let _permit = match permit {
-        Some(permit) => permit,
-        None => try_acquire_events_query_permit(state)?,
+    // Route concurrency limits bound public waiters. Waiting consumes the same
+    // deadline as execution; a burst never increases active worker capacity.
+    let operation = async {
+        let _permit = match permit {
+            Some(permit) => permit,
+            None => state
+                .events_query_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| EVENTS_QUERY_CAPACITY_EXHAUSTED.to_string())?,
+        };
+        query_events_db(state, kinds, limit, timeout, process_limits).await
     };
-    query_events_db(state, kinds, limit).await
+    tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|_| EVENTS_QUERY_CAPACITY_EXHAUSTED.to_string())?
 }
 
 async fn dispatch_builtin_workload(
@@ -5497,11 +5995,19 @@ async fn dispatch_builtin_workload(
     execution: &ExecutionWorkload,
     caller_id: Option<&str>,
     timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
     permit: Option<BuiltinRuntimePermit>,
 ) -> Result<Value, String> {
     match tokio::time::timeout(
         timeout,
-        dispatch_builtin_workload_inner(state, execution, caller_id, permit),
+        dispatch_builtin_workload_inner(
+            state,
+            execution,
+            caller_id,
+            timeout,
+            process_limits,
+            permit,
+        ),
     )
     .await
     {
@@ -5517,6 +6023,8 @@ async fn dispatch_builtin_workload_inner(
     state: &AppState,
     execution: &ExecutionWorkload,
     caller_id: Option<&str>,
+    timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
     permit: Option<BuiltinRuntimePermit>,
 ) -> Result<Value, String> {
     let builtin_name = execution
@@ -5537,7 +6045,15 @@ async fn dispatch_builtin_workload_inner(
             }
             None => None,
         };
-        execute_builtin_handler_off_thread(state, Arc::clone(handler), input, process_permit).await
+        execute_builtin_handler_off_thread(
+            state,
+            Arc::clone(handler),
+            input,
+            timeout,
+            process_limits,
+            process_permit,
+        )
+        .await
     } else if let Some((kinds, limit)) = execution.events_query_params() {
         let events_permit = match permit {
             Some(BuiltinRuntimePermit::Events(permit)) => Some(permit),
@@ -5547,7 +6063,7 @@ async fn dispatch_builtin_workload_inner(
             None => None,
         };
         Ok(json!({
-            "events": query_events_with_permit(state, kinds, limit, events_permit).await?,
+            "events": query_events_with_permit(state, kinds, limit, events_permit, timeout, process_limits).await?,
             "cursor": null
         }))
     } else if matches!(
@@ -5561,118 +6077,64 @@ async fn dispatch_builtin_workload_inner(
             }
             None => None,
         };
-        dispatch_native_data_query(state, execution, process_permit).await
+        dispatch_native_data_query(state, execution, timeout, process_limits, process_permit).await
     } else {
         Err(format!("unsupported builtin service: {builtin_name}"))
     }
 }
 
-/// Isolate third-party builtin futures from Tokio worker threads. A handler
-/// that performs synchronous work before yielding cannot stall the runtime,
-/// and its owned permit remains held if a caller deadline expires while the
-/// non-cooperative worker is still unwinding.
+/// Public builtin execution always runs in a killable worker. The owned permit
+/// lasts until completion or supervisor cancellation; no detached handler runs.
 async fn execute_builtin_handler_off_thread(
     state: &AppState,
     handler: Arc<dyn BuiltinServiceHandler>,
     input: Value,
+    timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
     permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
 ) -> Result<Value, String> {
-    let permit = match permit {
+    let _permit = match permit {
         Some(permit) => permit,
         None => Arc::new(try_acquire_process_execution_permit(state)?),
     };
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        runtime.block_on(handler.execute(input))
-    })
-    .await
-    .map_err(|error| format!("builtin execution worker failed: {error}"))?
+    crate::builtin_worker::execute(handler.worker_spec()?, input, timeout, process_limits).await
 }
 
 async fn dispatch_native_data_query(
     state: &AppState,
     execution: &ExecutionWorkload,
+    timeout: Duration,
+    process_limits: &crate::config::ProcessLimitsConfig,
     permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
 ) -> Result<Value, String> {
-    let content_hash = execution
+    let digest = execution
         .module_hash
         .as_deref()
-        .ok_or_else(|| "native data query is missing its immutable binding hash".to_string())?;
-    if content_hash.len() != 64
-        || !content_hash
+        .ok_or("native data query is missing its immutable binding hash")?;
+    if digest.len() != 64
+        || !digest
             .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return Err("native data query has an invalid binding hash".to_string());
+        return Err("native data query has an invalid binding hash".into());
     }
-    let (extension, source_kind) = match execution.contract_version.as_str() {
-        DATA_QUERY_JSON_CONTRACT_V1 => ("json", DataQuerySourceKind::Json),
-        DATA_QUERY_CSV_CONTRACT_V1 => ("csv", DataQuerySourceKind::Csv),
-        DATA_QUERY_SQLITE_CONTRACT_V1 => ("sqlite", DataQuerySourceKind::Sqlite),
-        _ => return Err("unsupported native data query contract".to_string()),
+    let kind = match execution.contract_version.as_str() {
+        DATA_QUERY_JSON_CONTRACT_V1 => "json",
+        DATA_QUERY_CSV_CONTRACT_V1 => "csv",
+        DATA_QUERY_SQLITE_CONTRACT_V1 => "sqlite",
+        _ => return Err("unsupported native data query contract".into()),
     };
-    let root = state.config.storage.data_dir.join("publication-data");
-    let file_name = format!("{content_hash}.{extension}");
-    let contract_version = execution.contract_version.clone();
-    let package_digest = content_hash.to_string();
-    let package_digest_for_open = package_digest.clone();
-    let blocking_capacity = Arc::clone(&state.process_execution_semaphore);
-    let initialization_permit = permit.clone();
-    let handler = state
-        .native_data_query_handlers
-        .get_or_try_init(&contract_version, &package_digest, move || async move {
-            let permit =
-                match initialization_permit {
-                    Some(permit) => permit,
-                    None => Arc::new(blocking_capacity.try_acquire_owned().map_err(|_| {
-                        "process execution concurrency limit exhausted".to_string()
-                    })?),
-                };
-            let handler = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                let path = root.join(&file_name);
-                let bytes = fs::read(&path).map_err(|error| {
-                    format!("failed to read immutable data query snapshot: {error}")
-                })?;
-                if source_kind != DataQuerySourceKind::Csv
-                    && crypto::sha256_hex(&bytes) != package_digest_for_open
-                {
-                    return Err(
-                        "native data query snapshot no longer matches its revision binding"
-                            .to_string(),
-                    );
-                }
-                let handler = if source_kind == DataQuerySourceKind::Csv {
-                    let schema_path =
-                        root.join(format!("{package_digest_for_open}.csv.schema.json"));
-                    let schema_bytes = fs::read(&schema_path)
-                        .map_err(|error| format!("failed to read immutable CSV schema: {error}"))?;
-                    let schema: PublicationCsvSchema = serde_json::from_slice(&schema_bytes)
-                        .map_err(|error| format!("invalid immutable CSV schema: {error}"))?;
-                    if canonical_json::to_vec(&schema).map_err(|error| error.to_string())?
-                        != schema_bytes
-                    {
-                        return Err("immutable CSV schema is not canonical JSON".to_string());
-                    }
-                    DataQueryHandler::open_csv_indexed(
-                        &root,
-                        &file_name,
-                        schema,
-                        &package_digest_for_open,
-                    )?
-                } else {
-                    DataQueryHandler::open(&root, &file_name, source_kind)?
-                };
-                Ok(Arc::new(handler))
-            })
-            .await
-            .map_err(|error| format!("native data query initialization failed: {error}"))??;
-            Ok(handler)
-        })
-        .await?;
-    let handler: Arc<dyn BuiltinServiceHandler> = handler;
-    execute_builtin_handler_off_thread(state, handler, execution.input.clone(), permit).await
+    let _permit = match permit {
+        Some(permit) => permit,
+        None => Arc::new(try_acquire_process_execution_permit(state)?),
+    };
+    let spec = crate::builtin_worker::WorkerSpec::local(
+        "native.data-query",
+        json!({
+            "root": state.config.storage.data_dir.join("publication-data"), "digest": digest, "kind": kind
+        }),
+    )?;
+    crate::builtin_worker::execute(spec, execution.input.clone(), timeout, process_limits).await
 }
 
 async fn ensure_protocol_root_artifacts(state: &AppState) -> Result<(), String> {
@@ -5893,6 +6355,9 @@ pub async fn open_confidential_session(
             json!({ "error": "confidential execution is not enabled on this provider" }),
         );
     };
+    if let Err((status, body)) = reserve_provider_quote(state.as_ref()).await {
+        return error_json(status, body);
+    }
     let requester_id = match normalize_hex_field("requester_id", payload.requester_id.clone(), 64) {
         Ok(value) => value,
         Err(response) => return response,
@@ -6371,20 +6836,13 @@ fn capabilities_include_gpu(capabilities: &[String]) -> bool {
 }
 
 fn validate_gpu_capabilities_supported_by_execution(
-    execution: &ExecutionWorkload,
+    _execution: &ExecutionWorkload,
     capabilities: &[String],
 ) -> Result<(), String> {
     if !capabilities_include_gpu(capabilities) {
         return Ok(());
     }
-    match (&execution.runtime, &execution.package_kind) {
-        (ExecutionRuntime::Container, ExecutionPackageKind::OciImage)
-        | (ExecutionRuntime::Python, ExecutionPackageKind::OciImage) => Ok(()),
-        _ => Err(
-            "GPU capability requires container OCI execution; refusing to fall back to CPU"
-                .to_string(),
-        ),
-    }
+    Err("GPU execution is not supported by this executor: device attachment and accounting are not implemented; refusing to fall back to CPU".to_string())
 }
 
 fn validate_provider_offer_capabilities_for_node(
@@ -8825,6 +9283,21 @@ async fn publication_canary(
         )
         .into_response();
     }
+    let policy = state.config.provider_policy.clone();
+    let key = format!("canary:{}", protocol::new_artifact_id());
+    let max_runtime_ms = definition.max_runtime_ms;
+    if let Err(error) = state
+        .db
+        .with_write_conn(move |conn| {
+            db::with_immediate_transaction(conn, |conn| {
+                crate::provider_policy::reserve_deal(conn, &policy, &key, max_runtime_ms)
+            })
+        })
+        .await
+    {
+        let (status, body) = provider_allowance_failure(error);
+        return error_json(status, body).into_response();
+    }
     let local_verification = match verify_provider_offer_locally(state.as_ref(), &definition).await
     {
         Ok(Some(evidence)) => evidence,
@@ -9323,7 +9796,10 @@ fn builtin_provider_offer_definitions(
             base_fee_msat: None,
             success_fee_msat: None,
             settlement_method: None,
-            price_currency: None, // builtins are always priced in sat
+            price_currency: Some(
+                crate::pricing::configured_price_currency(&state.config.payment_backends)
+                    .to_string(),
+            ),
             publication_state: default_offer_publication_state(),
             starter: None,
             module_hash: None,
@@ -9429,7 +9905,10 @@ fn builtin_provider_offer_definitions(
             base_fee_msat: None,
             success_fee_msat: None,
             settlement_method: None,
-            price_currency: None, // confidential profiles are always priced in sat
+            price_currency: Some(
+                crate::pricing::configured_price_currency(&state.config.payment_backends)
+                    .to_string(),
+            ),
             publication_state: default_offer_publication_state(),
             starter: None,
             module_hash: None,
@@ -11778,6 +12257,10 @@ pub async fn current_advertised_services(
         .await?
         .into_iter()
         .filter(|definition| definition.publication_state == "active")
+        .filter(|definition| {
+            let (method, base, success) = resolved_provider_offer_terms(state, definition);
+            enforce_provider_payment_policy(state, &method, base, success).is_ok()
+        })
         .map(|definition| {
             let (_, base_fee_msat, success_fee_msat) =
                 resolved_provider_offer_terms(state, &definition);
@@ -11821,6 +12304,17 @@ pub(crate) async fn current_offer_records(
                 payload_from_provider_offer_definition(state, &descriptor_hash, &definition);
             persist_signed_artifact(state, ARTIFACT_KIND_OFFER, payload).await?
         };
+        if !include_hidden
+            && enforce_provider_payment_policy(
+                state,
+                &offer.payload.settlement_method,
+                offer.payload.price_schedule.base_fee_msat,
+                offer.payload.price_schedule.success_fee_msat,
+            )
+            .is_err()
+        {
+            continue;
+        }
         let offer_id = definition.offer_id.clone();
         let record = provider_offer_record_from_parts(&definition, offer);
         match records.entry(offer_id.clone()) {
@@ -12047,6 +12541,12 @@ pub(crate) async fn current_service_records(
     let mut services = Vec::new();
     for definition in current_offer_definitions(state).await? {
         if !include_hidden && definition.publication_state == "hidden" {
+            continue;
+        }
+        let (method, base, success) = resolved_provider_offer_terms(state, &definition);
+        if !include_hidden
+            && enforce_provider_payment_policy(state, &method, base, success).is_err()
+        {
             continue;
         }
         if let Some(service) =
@@ -14016,6 +14516,13 @@ async fn create_quote_record(
             json!({ "error": "offer not found", "offer_id": payload.offer_id }),
         ));
     };
+    enforce_provider_payment_policy(
+        state.as_ref(),
+        &offer.payload.settlement_method,
+        offer.payload.price_schedule.base_fee_msat,
+        offer.payload.price_schedule.success_fee_msat,
+    )?;
+    reserve_provider_quote(state.as_ref()).await?;
     if state.config.session_pool.enabled {
         let Some(offer_record) =
             provider_control_offer_record(state.as_ref(), &payload.offer_id, false)
@@ -14548,6 +15055,12 @@ async fn create_deal_record(
         ));
     }
 
+    enforce_provider_payment_policy(
+        state.as_ref(),
+        &payload.quote.payload.settlement_terms.method,
+        payload.quote.payload.settlement_terms.base_fee_msat,
+        payload.quote.payload.settlement_terms.success_fee_msat,
+    )?;
     if state.config.session_pool.enabled {
         if payload.payment.is_some() {
             return Err(hosted_trial_policy_error(
@@ -15068,6 +15581,7 @@ async fn create_deal_record(
     let deal_artifact_ref = json!({ "artifact_hash": deal_hash.clone() });
     let materialization_for_db = pending_materialization.clone();
     let immediate_rejection_for_db = immediate_rejection.clone();
+    let provider_policy = state.config.provider_policy.clone();
     let insert_result = state
         .db
         .with_write_conn(move |conn| {
@@ -15140,6 +15654,13 @@ async fn create_deal_record(
 
                 let insert_outcome = deals::insert_or_get_deal(conn, deal_for_db.clone())?;
                 if insert_outcome.created {
+                    crate::provider_policy::reserve_deal(
+                        conn,
+                        &provider_policy,
+                        &deal_artifact.hash,
+                        payload.quote.payload.execution_limits.max_runtime_ms,
+                    )?;
+
                     let workload_evidence_hash = db::insert_execution_evidence(
                         conn,
                         "deal",
@@ -15235,7 +15756,9 @@ async fn create_deal_record(
     let insert_result = match insert_result {
         Ok(result) => result,
         Err(error) => {
-            let status = if error.contains("idempotency key reused")
+            let status = if error == crate::provider_policy::EXHAUSTED {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if error.contains("idempotency key reused")
                 || error.contains(deals::QUOTE_ALREADY_USED_ERROR)
                 || error.contains(deals::QUOTE_ADMISSION_IN_PROGRESS_ERROR)
             {
@@ -17052,16 +17575,16 @@ json.dump(result, sys.stdout, separators=(",", ":"))
 async fn run_container_execution(
     execution: &ExecutionWorkload,
     granted_access: &[String],
-    gpu_config: &crate::config::GpuConfig,
+    _gpu_config: &crate::config::GpuConfig,
     timeout: Duration,
     process_limits: &crate::config::ProcessLimitsConfig,
 ) -> Result<crate::oci_worker::OciWorkerResult, String> {
     let gpu_requested = granted_access
         .iter()
         .any(|capability| capability_requires_gpu(capability));
-    if gpu_requested && !gpu_config.enabled {
+    if gpu_requested {
         return Err(
-            "GPU capability requested but FROGLET_GPU_ENABLED is not enabled on this provider"
+            "GPU execution is not supported: device attachment and accounting are not implemented"
                 .to_string(),
         );
     }
@@ -20430,6 +20953,15 @@ async fn run_job_spec_now_with_permit(
     spec: JobSpec,
     mut job_permit: JobRuntimePermit,
 ) -> Result<Value, String> {
+    if state.config.provider_policy.require_payment
+        || state.config.provider_policy.max_total_deals.is_some()
+        || state.config.provider_policy.max_total_runtime_ms.is_some()
+    {
+        return Err(
+            "provider policy requires resource-admitted protocol deals; legacy jobs are disabled"
+                .into(),
+        );
+    }
     let timeout = execution_timeout(state);
     match spec {
         JobSpec::Execution { execution } => match (&execution.runtime, &execution.package_kind) {
@@ -20520,7 +21052,15 @@ async fn run_job_spec_now_with_permit(
             }
             (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin) => {
                 let permit = take_builtin_job_permit(&mut job_permit)?;
-                dispatch_builtin_workload(state, &execution, None, timeout, Some(permit)).await
+                dispatch_builtin_workload(
+                    state,
+                    &execution,
+                    None,
+                    timeout,
+                    &state.config.process_limits,
+                    Some(permit),
+                )
+                .await
             }
             _ => Err("unsupported execution runtime/package for job".to_string()),
         },
@@ -21039,9 +21579,15 @@ async fn run_workload_spec_with_admission_limits(
                     Ok(output)
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, None) => {
-                    let result =
-                        dispatch_builtin_workload(state, &execution, caller_id, timeout, None)
-                            .await?;
+                    let result = dispatch_builtin_workload(
+                        state,
+                        &execution,
+                        caller_id,
+                        timeout,
+                        &process_limits,
+                        None,
+                    )
+                    .await?;
                     Ok(run_output_for_plain_result(result))
                 }
                 (ExecutionRuntime::Builtin, ExecutionPackageKind::Builtin, Some(_)) => {
@@ -21167,7 +21713,8 @@ async fn run_workload_spec_with_admission_limits(
             .await
         }
         (WorkloadSpec::EventsQuery { kinds, limit }, None) => {
-            let events = query_events_with_capacity(state, kinds, limit).await?;
+            let events =
+                query_events_with_capacity(state, kinds, limit, timeout, &process_limits).await?;
             Ok(run_output_for_plain_result(json!({
                 "events": events,
                 "cursor": null
@@ -22255,6 +22802,32 @@ async fn process_deal_with_reserved_permit(
         }
     };
 
+    let policy_check = enforce_provider_payment_policy(
+        state.as_ref(),
+        &deal.quote.payload.settlement_terms.method,
+        deal.quote.payload.settlement_terms.base_fee_msat,
+        deal.quote.payload.settlement_terms.success_fee_msat,
+    );
+    let policy = state.config.provider_policy.clone();
+    let key = deal.artifact.hash.clone();
+    let max_runtime_ms = deal.quote.payload.execution_limits.max_runtime_ms;
+    let allowance_check = if policy_check.is_ok() {
+        state
+            .db
+            .with_write_conn(move |conn| {
+                db::with_immediate_transaction(conn, |conn| {
+                    crate::provider_policy::reserve_deal(conn, &policy, &key, max_runtime_ms)
+                })
+            })
+            .await
+    } else {
+        Err("provider payment policy does not admit this execution".into())
+    };
+    if let Err(error) = allowance_check {
+        reject_deal_before_execution(&state, &deal, deals::DEAL_STATUS_ACCEPTED, error).await;
+        return;
+    }
+
     let execution_permit = match (&deal.spec, reserved_execution_permit) {
         (WorkloadSpec::Execution { execution }, maybe_permit) => {
             if execution.requires_wasm_permit() {
@@ -22761,7 +23334,7 @@ async fn process_deal_with_reserved_permit(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         config::{
@@ -22956,6 +23529,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            provider_policy: Default::default(),
             requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: temp_dir.clone(),
@@ -23036,6 +23610,10 @@ mod tests {
                 1000,
                 std::time::Duration::from_secs(60),
             )),
+            public_request_quota: std::sync::Arc::new(crate::public_quota::IdentityQuota::new(
+                6000,
+                std::time::Duration::from_secs(900),
+            )),
             quote_create_quota: Arc::new(crate::public_quota::IdentityQuota::new(
                 1000,
                 std::time::Duration::from_secs(60),
@@ -23081,7 +23659,9 @@ mod tests {
         test_app_state_with_lightning_mode(payment_backend, LightningMode::Mock)
     }
 
-    fn test_app_state_with_free_pricing(payment_backend: PaymentBackend) -> Arc<AppState> {
+    pub(crate) fn test_app_state_with_free_pricing(
+        payment_backend: PaymentBackend,
+    ) -> Arc<AppState> {
         let mut state = test_app_state(payment_backend);
         let state_mut = Arc::get_mut(&mut state).expect("unique app state");
         state_mut.config.pricing.events_query = 0;
@@ -23198,6 +23778,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn configured_builtin_prices_advertise_the_settlement_currency() {
+        for (backend, currency) in [
+            (PaymentBackend::Stripe, "usd"),
+            (PaymentBackend::Lightning, "sat"),
+        ] {
+            let state = test_app_state(backend);
+            let services = current_advertised_services(&state).await.unwrap();
+            assert!(!services.is_empty());
+            assert!(
+                services
+                    .iter()
+                    .all(|service| service.price_currency.as_deref() == Some(currency))
+            );
+            let response = public_router(state)
+                .oneshot(runtime_request(
+                    Method::GET,
+                    "/v1/node/capabilities",
+                    None,
+                    None,
+                ))
+                .await
+                .unwrap();
+            let (status, body): (StatusCode, Value) = response_json(response).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["pricing"]["events_query"]["price_currency"], currency);
+            assert_eq!(body["pricing"]["execute_wasm"]["price_currency"], currency);
+        }
+        assert_eq!(
+            crate::pricing::configured_price_currency(&[
+                PaymentBackend::Stripe,
+                PaymentBackend::Lightning
+            ]),
+            "sat"
+        );
+    }
+
     #[test]
     fn descriptor_relay_endpoint_can_bind_reserved_valid_unique_transport() {
         let state = test_app_state_with_lightning_mode_and_public_base_url(
@@ -23297,7 +23914,7 @@ mod tests {
         let (status, payload): (StatusCode, Value) = response_json(response).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(payload["execution"]["gpu"]["enabled"], Value::Bool(true));
+        assert_eq!(payload["execution"]["gpu"]["enabled"], Value::Bool(false));
         assert_eq!(
             payload["execution"]["gpu"]["count"],
             Value::Number(2.into())
@@ -23305,18 +23922,11 @@ mod tests {
         assert_eq!(payload["execution"]["gpu"]["vendor"], "NVIDIA");
         assert_eq!(payload["execution"]["gpu"]["model"], "L4");
         assert_eq!(payload["execution"]["gpu"]["memory_mb"], 24_576);
-        assert_eq!(
-            payload["execution"]["gpu"]["capabilities"],
-            json!([
-                "compute.gpu",
-                "compute.gpu.runtime.docker",
-                "compute.gpu.vendor.nvidia"
-            ])
-        );
+        assert_eq!(payload["execution"]["gpu"]["capabilities"], json!([]));
     }
 
     #[tokio::test]
-    async fn generic_compute_offer_advertises_gpu_when_configured() {
+    async fn generic_compute_offer_does_not_advertise_unimplemented_gpu() {
         let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
         let state_mut = Arc::get_mut(&mut state).expect("unique app state");
         state_mut.config.gpu = GpuConfig {
@@ -23334,11 +23944,7 @@ mod tests {
                 .expect("offer records")
                 .expect("generic compute offer");
 
-        let expected = vec![
-            "compute.gpu".to_string(),
-            "compute.gpu.runtime.docker".to_string(),
-            "compute.gpu.vendor.nvidia".to_string(),
-        ];
+        let expected: Vec<String> = vec![];
         assert_eq!(offer.capabilities, expected);
         assert_eq!(offer.offer.payload.execution_profile.capabilities, expected);
     }
@@ -23370,7 +23976,21 @@ mod tests {
             Ok(_) => panic!("GPU-requested Python inline source should fail"),
             Err(error) => error,
         };
-        assert!(error.contains("GPU capability requires container OCI execution"));
+        assert!(error.contains("GPU execution is not supported"));
+        let container = ExecutionWorkload::container_oci(
+            ExecutionRuntime::Container,
+            "registry.example/gpu".into(),
+            "ab".repeat(32),
+            ExecutionEntrypointKind::Module,
+            "run".into(),
+            json!({}),
+        )
+        .unwrap();
+        assert!(
+            validate_gpu_capabilities_supported_by_execution(&container, &["compute.gpu".into()])
+                .unwrap_err()
+                .contains("device attachment")
+        );
     }
 
     async fn publish_test_service(
@@ -25567,7 +26187,7 @@ mod tests {
             Some(ExecutionLimits {
                 max_input_bytes: 4096,
                 max_runtime_ms: 2_500,
-                max_memory_bytes: 1,
+                max_memory_bytes: 512 * 1024 * 1024,
                 max_output_bytes: 4096,
                 fuel_limit: 0,
             }),
@@ -25701,7 +26321,7 @@ mod tests {
             Some(ExecutionLimits {
                 max_input_bytes: 4_096,
                 max_runtime_ms: 2_500,
-                max_memory_bytes: 1,
+                max_memory_bytes: 512 * 1024 * 1024,
                 max_output_bytes: 4_096,
                 fuel_limit: 0,
             }),
@@ -28826,9 +29446,9 @@ mod tests {
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 1024,
                     max_runtime_ms,
-                    // Recovery fixtures execute `test_wasm_submission`, whose
-                    // module declares one 64 KiB WebAssembly memory page.
-                    max_memory_bytes: 64 * 1024,
+                    // Recovery fixtures include native event-query workers, so
+                    // allow the process budget as well as Wasm linear memory.
+                    max_memory_bytes: 512 * 1024 * 1024,
                     max_output_bytes: 1024,
                     fuel_limit: 10_000,
                 },
@@ -30234,7 +30854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signed_runtime_limit_bounds_blocking_builtin_handler() {
+    async fn unsupported_blocking_builtin_is_rejected_before_execution() {
         let mut state = test_app_state(PaymentBackend::None);
         Arc::get_mut(&mut state)
             .expect("unique test state")
@@ -30273,7 +30893,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "builtin execution exceeded runtime deadline after 25ms"
+            "builtin handler has no supervised worker; in-process execution is disabled"
         );
         assert!(
             started.elapsed() < Duration::from_millis(200),
@@ -32057,6 +32677,12 @@ mod tests {
             response_json(create_response).await;
         assert_eq!(create_status, StatusCode::OK);
 
+        wait_for_deal_status(
+            &state,
+            &create_payload.deal.deal_id,
+            deals::DEAL_STATUS_SUCCEEDED,
+        )
+        .await;
         let get_response = public
             .clone()
             .oneshot(hosted_trial_runtime_request(
@@ -33985,7 +34611,7 @@ mod tests {
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 1024,
                     max_runtime_ms: 1_000,
-                    max_memory_bytes: 64 * 1024,
+                    max_memory_bytes: 512 * 1024 * 1024,
                     max_output_bytes: 1024,
                     fuel_limit: 10_000,
                 },
@@ -34744,5 +35370,721 @@ mod tests {
             "succeeded+canceled receipt must be REJECTED by the kernel \
              (this was the bug: the old code emitted this invalid artifact)"
         );
+    }
+    fn strict_provider_policy() -> crate::provider_policy::ProviderPolicy {
+        crate::provider_policy::ProviderPolicy {
+            require_payment: true,
+            max_total_deals: Some(2),
+            max_total_runtime_ms: Some(10_000),
+            max_total_quotes: Some(4),
+            ..Default::default()
+        }
+    }
+
+    async fn free_policy_test_deal(state: &Arc<AppState>, input: Value) -> CreateDealRequest {
+        let spec = WorkloadSpec::Wasm {
+            submission: Box::new(test_wasm_submission_with_input(input)),
+        };
+        let quote = create_quote_record(
+            state.clone(),
+            CreateQuoteRequest {
+                offer_id: "execute.compute".into(),
+                requester_id: state.identity.node_id().into(),
+                spec: spec.clone(),
+                max_price_sats: Some(0),
+            },
+        )
+        .await
+        .unwrap();
+        let deal = build_runtime_requester_deal_artifact(
+            state,
+            &quote,
+            &"11".repeat(32),
+            settlement::current_unix_timestamp(),
+            false,
+        )
+        .unwrap();
+        CreateDealRequest {
+            quote,
+            deal,
+            spec,
+            idempotency_key: None,
+            payment: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_policy_blocks_old_free_quotes_and_hides_free_offers() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let request = free_policy_test_deal(&state, Value::Null).await;
+        Arc::get_mut(&mut state).unwrap().config.provider_policy = strict_provider_policy();
+        let (status, body) = create_deal_record(state.clone(), request)
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(body["code"], "provider_payment_required");
+        assert!(
+            current_offer_records(&state, false)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !current_offer_records(&state, true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let usage = state
+            .db
+            .with_read_conn(crate::provider_policy::usage)
+            .await
+            .unwrap();
+        assert_eq!(usage.reserved_deals, 0);
+    }
+
+    #[test]
+    fn provider_policy_rejects_mock_and_success_only_payment() {
+        let mut state = test_app_state(PaymentBackend::Lightning);
+        Arc::get_mut(&mut state).unwrap().config.provider_policy = strict_provider_policy();
+        assert!(
+            enforce_provider_payment_policy(
+                &state,
+                "lightning.base_fee_plus_success_fee.v1",
+                1_000,
+                0
+            )
+            .is_err()
+        );
+        Arc::get_mut(&mut state).unwrap().config.lightning.mode = LightningMode::LndRest;
+        assert!(
+            enforce_provider_payment_policy(
+                &state,
+                "lightning.base_fee_plus_success_fee.v1",
+                0,
+                1_000
+            )
+            .is_err()
+        );
+        assert!(
+            enforce_provider_payment_policy(
+                &state,
+                "lightning.base_fee_plus_success_fee.v1",
+                1_000,
+                0
+            )
+            .is_ok()
+        );
+        Arc::get_mut(&mut state).unwrap().config.lightning.mode = LightningMode::Phoenixd;
+        assert!(enforce_provider_payment_policy(&state, "lightning.prepaid.v1", 1_000, 0).is_ok());
+    }
+
+    #[tokio::test]
+    async fn provider_policy_budget_rejection_rolls_back_deal_storage() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let request = free_policy_test_deal(&state, Value::Null).await;
+        let deal_hash = request.deal.hash.clone();
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .config
+            .provider_policy
+            .max_total_deals = Some(0);
+        let (status, _) = create_deal_record(state.clone(), request)
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            find_existing_deal_by_artifact_hash(&state, &deal_hash)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .db
+                .with_read_conn(crate::provider_policy::usage)
+                .await
+                .unwrap()
+                .reserved_deals,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_policy_blocks_legacy_routes_and_usage_requires_auth() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        Arc::get_mut(&mut state).unwrap().config.provider_policy = strict_provider_policy();
+        let runtime = runtime_router(state.clone());
+        for (path, body) in [
+            (
+                "/v1/node/execute/wasm",
+                json!({"submission": test_wasm_submission()}),
+            ),
+            (
+                "/v1/node/jobs",
+                json!({"kind": "wasm", "submission": test_wasm_submission()}),
+            ),
+        ] {
+            let response = runtime
+                .clone()
+                .oneshot(runtime_request(
+                    Method::POST,
+                    path,
+                    Some(&state.runtime_auth_token),
+                    Some(body),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
+        }
+        let public = public_router(state.clone());
+        let response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/events/query",
+                None,
+                Some(json!({"kinds":[], "limit":1})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response = public
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/usage",
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = public
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/usage",
+                Some(&state.provider_control_auth_token),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn provider_policy_global_request_quota_cannot_be_bypassed_by_rotating_origins() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        Arc::get_mut(&mut state).unwrap().public_request_quota = Arc::new(
+            crate::public_quota::IdentityQuota::new(1, Duration::from_secs(60)),
+        );
+        let public = public_router(state);
+        let first = public
+            .clone()
+            .oneshot(runtime_request(Method::GET, "/health", None, None))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let mut request = runtime_request(Method::GET, "/health", None, None);
+        request
+            .headers_mut()
+            .insert("x-forwarded-for", "198.51.100.7".parse().unwrap());
+        assert_eq!(
+            public.oneshot(request).await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    #[tokio::test]
+    async fn provider_policy_keeps_recovery_operator_and_health_capacity() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        Arc::get_mut(&mut state).unwrap().public_request_quota = Arc::new(
+            crate::public_quota::IdentityQuota::new(1, Duration::from_secs(60)),
+        );
+        let app = public_router(state.clone());
+        for expected in [StatusCode::OK, StatusCode::TOO_MANY_REQUESTS] {
+            let r = app
+                .clone()
+                .oneshot(runtime_request(
+                    Method::GET,
+                    "/v1/node/identity",
+                    None,
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), expected);
+        }
+        for (path, token, expected) in [
+            ("/health", None, StatusCode::OK),
+            ("/v1/provider/deals/missing", None, StatusCode::NOT_FOUND),
+            (
+                "/v1/provider/usage",
+                Some(state.provider_control_auth_token.as_str()),
+                StatusCode::OK,
+            ),
+        ] {
+            let r = app
+                .clone()
+                .oneshot(runtime_request(Method::GET, path, token, None))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), expected, "{path}");
+        }
+    }
+    #[tokio::test]
+    async fn provider_policy_private_invite_and_pause_are_enforced_before_work() {
+        use crate::provider_policy::AccessMode;
+        for mode in [AccessMode::Private, AccessMode::Invite] {
+            let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+            let token = "invite-token-with-at-least-32-characters";
+            let policy = &mut Arc::get_mut(&mut state).unwrap().config.provider_policy;
+            policy.access_mode = mode;
+            policy.invite_token_hashes = vec![crypto::sha256_hex(token.as_bytes())];
+            let app = public_router(state.clone());
+            for path in [
+                "/v1/provider/quotes",
+                "/v1/provider/deals",
+                "/v1/node/events/publish",
+                "/v1/node/events/query",
+                "/v1/provider/confidential/sessions",
+            ] {
+                let r = app
+                    .clone()
+                    .oneshot(runtime_request(Method::POST, path, None, Some(json!({}))))
+                    .await
+                    .unwrap();
+                assert_eq!(r.status(), StatusCode::FORBIDDEN, "{path}");
+            }
+            let mut request =
+                runtime_request(Method::POST, "/v1/provider/quotes", None, Some(json!({})));
+            request
+                .headers_mut()
+                .insert("x-froglet-access-token", token.parse().unwrap());
+            let r = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                r.status(),
+                if mode == AccessMode::Invite {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                } else {
+                    StatusCode::FORBIDDEN
+                }
+            );
+            let r = app
+                .clone()
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/control",
+                    Some(&state.provider_control_auth_token),
+                    Some(json!({"paused":true,"reason":"test"})),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            let r = app
+                .oneshot(runtime_request(
+                    Method::POST,
+                    "/v1/provider/quotes",
+                    Some(&state.provider_control_auth_token),
+                    Some(json!({})),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
+    #[tokio::test]
+    async fn builtin_worker_enforces_quoted_output_limit_before_returning_result() {
+        let mut state = test_app_state(PaymentBackend::None);
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .builtin_services
+            .insert("demo.echo".into(), Arc::new(crate::builtins::EchoHandler));
+        let execution = ExecutionWorkload::builtin_service(
+            "demo.echo".into(),
+            json!({"data":"x".repeat(1024)}),
+        )
+        .unwrap();
+        let error = run_workload_spec_with_admission_limits(
+            &state,
+            WorkloadSpec::Execution {
+                execution: Box::new(execution),
+            },
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            Some(ExecutionLimits {
+                max_input_bytes: 4096,
+                max_runtime_ms: 2000,
+                max_memory_bytes: 0,
+                max_output_bytes: 32,
+                fuel_limit: 0,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("builtin worker output limit"), "{error}");
+    }
+    #[test]
+    fn safeguard_pause_does_not_gate_managed_operation_recovery() {
+        for suffix in ["reconcile", "compensate", "complete"] {
+            assert!(!is_new_provider_work(
+                &Method::POST,
+                &format!("/v1/provider/managed-publications/operations/existing/{suffix}")
+            ));
+        }
+        assert!(is_new_provider_work(
+            &Method::POST,
+            "/v1/provider/managed-publications/activate"
+        ));
+    }
+    #[tokio::test]
+    async fn protected_trial_cannot_bypass_admission_through_event_storage() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .config
+            .provider_policy
+            .access_mode = crate::provider_policy::AccessMode::Trial;
+        let event = signed_test_event(&crypto::generate_signing_key(), "test", "storage write");
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/node/events/publish",
+                None,
+                Some(json!({"event":event})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    #[tokio::test]
+    async fn event_query_capacity_wait_is_bounded_by_execution_deadline() {
+        let state = test_app_state(PaymentBackend::None);
+        let capacity = state.process_execution_semaphore.available_permits();
+        let held = state
+            .process_execution_semaphore
+            .clone()
+            .acquire_many_owned(capacity as u32)
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let error = query_events_with_capacity(
+            &state,
+            vec![],
+            Some(1),
+            Duration::from_millis(20),
+            &state.config.process_limits,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, EVENTS_QUERY_CAPACITY_EXHAUSTED);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(state.process_execution_semaphore.available_permits(), 0);
+        drop(held);
+        assert_eq!(
+            state.process_execution_semaphore.available_permits(),
+            capacity
+        );
+    }
+    #[tokio::test]
+    async fn invitation_control_and_immediate_revocation() {
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .config
+            .provider_policy
+            .access_mode = crate::provider_policy::AccessMode::Invite;
+        let app = public_router(state.clone());
+        let request = json!({"name":"Alice","expires_at":crate::settlement::current_unix_timestamp()+3600,"max_requests":4});
+        let denied = app
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/invites",
+                None,
+                Some(request.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .clone()
+            .oneshot(runtime_request(
+                Method::POST,
+                "/v1/provider/invites",
+                Some(&state.provider_control_auth_token),
+                Some(request),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let issued: Value = serde_json::from_slice(&body).unwrap();
+        let id = issued["id"].as_str().unwrap();
+        let token = issued["access_token"].as_str().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-froglet-access-token", token.parse().unwrap());
+        assert!(provider_access_allowed(&state, &headers, "/v1/provider/quotes").await);
+        assert!(!provider_access_allowed(&state, &headers, "/v1/node/jobs").await);
+        let response = app
+            .clone()
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/provider/invites",
+                Some(&state.provider_control_auth_token),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            !String::from_utf8(
+                to_bytes(response.into_body(), 65536)
+                    .await
+                    .unwrap()
+                    .to_vec()
+            )
+            .unwrap()
+            .contains(token)
+        );
+        let response = app
+            .oneshot(runtime_request(
+                Method::POST,
+                &format!("/v1/provider/invites/{id}/revoke"),
+                Some(&state.provider_control_auth_token),
+                Some(json!({})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!provider_access_allowed(&state, &headers, "/v1/provider/deals").await);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn prepared_http_publication_invited_recipient_and_recovery() {
+        use crate::http_operation::tests::{fixture, operation, policy};
+        use froglet_publish_engine::{
+            ControlAuth, DaemonClient, HostingChoice, PublishInput, SourceLocator,
+        };
+        let upstream = fixture().await;
+        let op = operation(format!("{}/tool", upstream.url));
+        let project = tempfile::tempdir().unwrap();
+        let destination = project.path().join("service");
+        crate::cli::http_service::prepare(crate::cli::http_service::PrepareHttpService {
+            destination: destination.clone(),
+            service_id: "http-tool".into(),
+            summary: "Bounded tool".into(),
+            operation: op.clone(),
+            example_input: json!({"text":"hello"}),
+        })
+        .unwrap();
+        assert!(upstream.seen.lock().unwrap().is_empty());
+        let mut state = test_app_state_with_free_pricing(PaymentBackend::None);
+        let mutable = Arc::get_mut(&mut state).unwrap();
+        mutable.config.provider_policy = crate::provider_policy::ProviderPolicy {
+            access_mode: crate::provider_policy::AccessMode::Invite,
+            max_total_deals: Some(3),
+            max_total_quotes: Some(3),
+            max_total_runtime_ms: Some(90_000),
+            ..Default::default()
+        };
+        mutable.wasm_host = Some(Arc::new(crate::wasm_host::WasmHostEnvironment {
+            policy: crate::config::WasmPolicy {
+                http: Some(policy(&op)),
+                sqlite: None,
+            },
+            http_client: Some(upstream.client.clone()),
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        state
+            .transport_status
+            .lock()
+            .await
+            .local_provider_bound_addr = Some(address);
+        let base = format!("http://{address}");
+        let router = public_router(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let daemon = DaemonClient::new(
+            base.parse().unwrap(),
+            ControlAuth::Value(state.provider_control_auth_token.clone()),
+        )
+        .unwrap();
+        let input = PublishInput {
+            project: None,
+            service: froglet_protocol::manifest::ServiceManifest::from_toml(
+                &std::fs::read_to_string(destination.join("froglet-service.toml")).unwrap(),
+            )
+            .unwrap()
+            .0,
+            source: SourceLocator::File(destination.join("operation.wasm")),
+            hosting_override: Some(HostingChoice::Local),
+            marketplace_url: "https://marketplace.example".parse().unwrap(),
+            approved_consent_hash: None,
+        };
+        let plan = froglet_publish_engine::plan_publication(&input, &daemon)
+            .await
+            .unwrap();
+        assert!(
+            upstream.seen.lock().unwrap().is_empty(),
+            "planning cannot call upstream"
+        );
+        let published = froglet_publish_engine::publish(
+            PublishInput {
+                approved_consent_hash: Some(plan.consent_hash),
+                ..input
+            },
+            &daemon,
+        )
+        .await
+        .unwrap();
+        assert_eq!(published.status, "local_verified");
+        assert!(published.local_verification.is_some());
+        assert_eq!(
+            upstream.seen.lock().unwrap().len(),
+            1,
+            "one publication verification"
+        );
+
+        let service = provider_service_record(&state, "http-tool", false, true)
+            .await
+            .unwrap()
+            .unwrap();
+        let execution = crate::cli::invoke::build_service_addressed_execution(
+            &service,
+            json!({"text":"recipient"}),
+        )
+        .unwrap();
+        let spec = WorkloadSpec::Execution {
+            execution: Box::new(execution),
+        };
+        let recipient = test_app_state_with_free_pricing(PaymentBackend::None);
+        assert_ne!(recipient.identity.node_id(), state.identity.node_id());
+        let now = settlement::current_unix_timestamp();
+        let (id, token) = state
+            .db
+            .with_write_conn(move |conn| {
+                crate::provider_policy::create_invite(conn, "recipient", now + 600, 2, now)
+            })
+            .await
+            .unwrap();
+        let quote_request = CreateQuoteRequest {
+            offer_id: service.offer_id,
+            requester_id: recipient.identity.node_id().into(),
+            spec: spec.clone(),
+            max_price_sats: Some(0),
+        };
+        let client = crate::tls::configured_reqwest_client_builder(None)
+            .unwrap()
+            .build()
+            .unwrap();
+        let denied = client
+            .post(format!("{base}/v1/provider/quotes"))
+            .json(&quote_request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        // Exercise the same credential transport used by runtime quote/deal calls.
+        // The fixture is local HTTP; public recipient resolution requires HTTPS.
+        let quote: SignedArtifact<QuotePayload> = remote_json_request_inner(
+            &recipient,
+            reqwest::Method::POST,
+            format!("{base}/v1/provider/quotes"),
+            Some(&quote_request),
+            true,
+            &[],
+            Some(("x-froglet-access-token", &token)),
+        )
+        .await
+        .unwrap();
+        assert!(protocol::verify_artifact(&quote));
+        let signed =
+            build_runtime_requester_deal_artifact(&recipient, &quote, &"11".repeat(32), now, false)
+                .unwrap();
+        let created: deals::DealRecord = remote_json_request_inner(
+            &recipient,
+            reqwest::Method::POST,
+            format!("{base}/v1/provider/deals"),
+            Some(&CreateDealRequest {
+                quote,
+                deal: signed,
+                spec,
+                idempotency_key: Some("independent-recipient".into()),
+                payment: None,
+            }),
+            true,
+            &[],
+            Some(("x-froglet-access-token", &token)),
+        )
+        .await
+        .unwrap();
+        let recovery_url = format!("{base}/v1/provider/deals/{}", created.deal_id);
+        let completed: deals::DealRecord = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let record: deals::DealRecord = client
+                    .get(&recovery_url)
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                if record.receipt.is_some() {
+                    break record;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completed.status, "succeeded", "{completed:?}");
+        assert_eq!(completed.result, Some(json!({"length":9})));
+        assert!(protocol::verify_artifact(
+            completed.receipt.as_ref().unwrap()
+        ));
+        assert_eq!(
+            completed.receipt.as_ref().unwrap().payload.requester_id,
+            recipient.identity.node_id()
+        );
+        assert_eq!(upstream.seen.lock().unwrap().len(), 2);
+        let refused = client
+            .post(format!("{base}/v1/provider/quotes"))
+            .header("x-froglet-access-token", &token)
+            .json(&quote_request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        state
+            .db
+            .with_write_conn(move |conn| {
+                crate::provider_policy::revoke_invite(conn, &id)?;
+                crate::provider_policy::set_pause(conn, Some("test recovery"))
+            })
+            .await
+            .unwrap();
+        // Simulate losing the first response: recovery by deal id performs no
+        // new execution, even after pause/revoke. Reopen the store as a restart.
+        let recovered: deals::DealRecord = client
+            .get(&recovery_url)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(recovered.result_hash, completed.result_hash);
+        assert_eq!(upstream.seen.lock().unwrap().len(), 2);
+        let reopened = crate::db::initialize_db(&state.config.storage.db_path).unwrap();
+        let usage = crate::provider_policy::usage(&reopened).unwrap();
+        assert_eq!(usage.reserved_deals, 1);
+        assert!(crate::provider_policy::list_invites(&reopened).unwrap()[0].revoked);
+        server.abort();
     }
 }

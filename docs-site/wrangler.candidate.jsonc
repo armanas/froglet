@@ -5,14 +5,18 @@
   "compatibility_date": "2026-04-22",
   "workers_dev": false,
   "vars": {
+    "FROGLET_SITE_ORIGIN": "https://candidate.froglet.dev",
     "FROGLET_RELAY_SUFFIX": "relay-candidate.froglet.dev",
     "FROGLET_MARKETPLACE_URL": "https://marketplace-candidate.froglet.dev"
   },
+  "kv_namespaces": [
+    { "binding": "SERVICE_LINK_CACHE", "id": "e11c1231dc584ff08872360782c57042" }
+  ],
   "assets": {
     "binding": "ASSETS",
     "directory": "./dist",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/s/*", "/service", "/service/*"]
   },
   "routes": [
     { "pattern": "candidate.froglet.dev", "custom_domain": true }

@@ -1,3 +1,5 @@
+import { readJson, serviceReference } from './shared-service';
+import { serviceDescription } from './service-presentation';
 export type ProbeState = 'pass' | 'fail';
 
 export interface MarketplaceProviderSummary {
@@ -13,6 +15,11 @@ export interface MarketplaceProviderSummary {
 }
 
 export interface MarketplaceOfferSummary {
+	summary?: string;
+	pricingKnown?: boolean;
+	serviceId?: string;
+	sharePath?: string;
+	availability?: { status: string; leaseExpiresAt: number; lastCheckedAt: number };
 	providerId: string;
 	offerId: string;
 	offerKind: string;
@@ -237,11 +244,38 @@ export async function getMarketplaceSnapshot(marketplaceUrl = MARKETPLACE_URL): 
 				runtime: String(row.runtime ?? ''),
 				packageKind: String(row.package_kind ?? ''),
 				settlementMethod: String(row.settlement_method ?? ''),
+				pricingKnown: [row.base_fee_msat, row.success_fee_msat].every(value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0),
 				baseFeeMsat: asNumber(row.base_fee_msat),
 				successFeeMsat: asNumber(row.success_fee_msat),
+				availability: {
+					status: String(asRecord(row.availability).status ?? 'unknown'),
+					leaseExpiresAt: asNumber(asRecord(row.availability).lease_expires_at),
+					lastCheckedAt: asNumber(asRecord(row.availability).last_renewed_at),
+				},
 				artifactHash: String(row.artifact_hash ?? ''),
 			};
 		});
+
+		// Enrich known first-party relay publications only. Never proxy arbitrary
+		// descriptor URLs, and never make service details a dependency of the index.
+		await Promise.all(providers.slice(0, 12).map(async provider => {
+			try {
+				const suffix = new URL(provider.endpoint).hostname.split('.').slice(1).join('.');
+				const reference = serviceReference(provider.providerId, 'catalog', suffix);
+				if (reference.providerUrl !== provider.endpoint.replace(/\/$/, '')) return;
+				const body = await readJson(`${reference.providerUrl}/v1/provider/services`, fetch);
+				for (const entry of asArray(body.services)) {
+					const service = asRecord(entry);
+					if (service.provider_id !== provider.providerId || typeof service.service_id !== 'string' || !service.binding_hash) continue;
+					serviceReference(provider.providerId, service.service_id, suffix);
+					const offer = offers.find(offer => offer.providerId === provider.providerId && offer.offerId === service.offer_id);
+					if (!offer) continue;
+					offer.serviceId = service.service_id;
+					offer.sharePath = `/s/${provider.providerId}/${encodeURIComponent(service.service_id)}`;
+					offer.summary = serviceDescription(service.summary, service.service_id, service.output_schema);
+				}
+			} catch { /* The offer remains listed with explicit unknown details. */ }
+		}));
 
 		return {
 			checkedAt,

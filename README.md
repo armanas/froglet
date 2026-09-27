@@ -410,13 +410,19 @@ and `install_approval_hash` unchanged to `get_install_guide` and run its
 verified-temp-file command through the host shell. After local health is
 verified, use `plan_use_case` before
 implementing consumer, provider, evidence, payments, batch, or GPU workflows.
-Batch and GPU planning stays truthful: current MCP can plan and verify
-boundaries. GPU capability advertisement, generic-compute offer metadata,
-Docker `--gpus all` gating, no-CPU-fallback errors, and one self-hosted GCP T4
-container workload with a signed receipt are verified. True batch fan-out, GPU
-scheduling/provider selection, marketplace GPU routing, and production capacity
-management remain separate work. The public no-install proof remains the HTTP
-flow at `https://froglet.dev/llms.txt`; it is not an installed MCP action.
+The native `froglet-node mcp` bridge also prepares fixed HTTPS JSON services,
+issues expiring invitations into private files, and controls durable admission
+limits. See [bounded HTTP services and invitations](docs/HTTP_SERVICES.md).
+Payments remain a separate operator decision. Public marketplace canaries
+currently require anonymous access; private/invite services use direct provider
+invocation.
+
+GPU execution is currently unavailable: the reference OCI worker does not
+attach or account for devices. GPU capabilities are not advertised and GPU
+requests fail explicitly. Earlier Docker/GCP hardware proof does not qualify
+this worker. Batch fan-out, GPU scheduling and general storage remain separate
+work. The public no-install proof remains the HTTP flow at
+`https://froglet.dev/llms.txt`; it is not an installed MCP action.
 
 For a local node, use the local profile:
 

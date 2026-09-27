@@ -20,7 +20,7 @@ export function serviceReference(provider: string, service: string, relaySuffix 
   return { provider, service, providerUrl: `https://${label}.${relaySuffix}` };
 }
 
-async function readJson(url: string, fetcher: typeof fetch): Promise<any> {
+export async function readJson(url: string, fetcher: typeof fetch): Promise<any> {
   const response = await fetcher(url, { redirect: 'manual', signal: AbortSignal.timeout(6000), headers: { accept: 'application/json' } });
   if (!response.ok || !response.body) throw new Error(`Read unavailable (${response.status})`);
   const reader = response.body.getReader();

@@ -416,6 +416,41 @@ fi
         self.assertIn("must start with whsec_", result.stderr)
         self.assertEqual(self.curl_log.read_text(encoding="utf-8"), "")
 
+    def test_paid_only_setup_refuses_mock_and_test_money_before_writing(self):
+        out_path = self.root / "paid.env"
+        for args in (["lightning", "--mode", "mock"], ["stripe"]):
+            result = self._run([str(SETUP_PAYMENT), *args, "--paid-only", "--out", str(out_path)],
+                               extra_env={"FROGLET_STRIPE_SECRET_KEY": "sk_test_example"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(out_path.exists())
+            self.assertEqual(self.curl_log.read_text(), "")
+
+    def test_paid_only_setup_requires_explicit_caps_and_writes_closed_profile(self):
+        out_path = self.root / "paid.env"
+        config = {
+            "FROGLET_LIGHTNING_PHOENIXD_URL": "http://127.0.0.1:9740",
+            "FROGLET_LIGHTNING_PHOENIXD_HTTP_PASSWORD": "test-only-password",
+            "FROGLET_PRICE_EVENTS_QUERY": "100",
+            "FROGLET_PRICE_EXEC_WASM": "100",
+            "FROGLET_PROVIDER_MAX_TOTAL_DEALS": "10",
+            "FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS": "50000",
+            "FROGLET_PROVIDER_MAX_TOTAL_QUOTES": "30",
+        }
+        args = [str(SETUP_PAYMENT), "lightning", "--mode", "phoenixd", "--paid-only", "--no-verify", "--out", str(out_path)]
+        missing = dict(config)
+        del missing["FROGLET_PROVIDER_MAX_TOTAL_DEALS"]
+        result = self._run(args, extra_env=missing)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(out_path.exists())
+        result = self._run(args, extra_env=config)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = out_path.read_text()
+        self.assertIn("FROGLET_PROVIDER_REQUIRE_PAYMENT=true", content)
+        self.assertIn("FROGLET_PROVIDER_MAX_TOTAL_DEALS=10", content)
+        self.assertIn("FROGLET_REQUESTER_SPEND_BUDGET_MSAT=0", content)
+        self.assertEqual(stat.S_IMODE(out_path.stat().st_mode), 0o600)
+        self.assertNotIn("test-only-password", result.stdout + result.stderr)
+
     def test_setup_payment_generates_x402_env_and_probes_facilitator(self):
         out_path = self.root / "x402.env"
         result = self._run(

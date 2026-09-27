@@ -13,6 +13,9 @@ use std::pin::Pin;
 pub struct EchoHandler;
 
 impl BuiltinServiceHandler for EchoHandler {
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        crate::builtin_worker::WorkerSpec::local("demo.echo", serde_json::json!({}))
+    }
     fn execute<'a>(
         &'a self,
         input: Value,
