@@ -63,7 +63,7 @@ JSON catalogs must be an array of row objects or an object whose collection valu
 
 For example, transform `{"metadata":{"version":"1"},"items":[{"id":"a","name":"A"}]}` into `{"metadata":[{"version":"1"}],"items":[{"id":"a","name":"A"}]}` in a **new file**. For dictionaries keyed by a category, preserve each key in an explicit field when converting the values to rows. Show this transformation and check that it retains the intended values. Inspect the normalized copy with `prepare_service` before selecting fields. Keep both source paths in your report; change detection tracks the file passed to preparation, so edits to the original require regenerating and preparing the normalized copy. Do not claim automatic tracking of the original export.
 
-Prefer the automatically generated example when it answers the user's task. For a custom example, use only the supported operations above and pass it into `prepare_service`. If the request fails, correct it and repeat preparation; do not fabricate a successful example. The released `v0.4.6-beta.2` preparation request accepts only `source`, `destination`, `service_id`, `summary`, `selection`, `csv_columns`, and `example_input` (plus `action` for MCP). Do not add fields from an unreleased source checkout.
+Prefer the automatically generated example when it answers the user's task. For a custom example, use only the supported operations above and pass it into `prepare_service`. If the request fails, correct it and repeat preparation; do not fabricate a successful example. The released `v0.4.6-beta.4` preparation request accepts only `source`, `destination`, `service_id`, `summary`, `selection`, `csv_columns`, and `example_input` (plus `action` for MCP). Do not add fields from an unreleased source checkout.
 
 For a small agent-authored `.wat` or `.wasm` function, use the same action with an explicit destination, service ID, and meaningful `example_input`. The `froglet.wasm.run_json.v1` ABI and existing sandbox limits apply. Python remains an advanced Linux option; never bypass its sandbox on macOS.
 
@@ -79,7 +79,7 @@ The consent must come from the configured Froglet node, not a prose summary inve
 
 Reuse this canonical publication action. Do not implement registration, relay grants, or publication policy in the agent. `local_verified` means local evidence only; `pending_review` is not marketplace activation. Report `progress.local_verified`, `public_reachable`, `marketplace_active`, and `requester_execution_verified` separately. Return `share_url`, but disclose pending or unavailable states. A share link does not prove a recipient has executed anything.
 
-The `v0.4.6-beta.2` publisher returns the agent-readable `/s/{provider_id}/{service_id}` link. Share the returned link as-is. Older `/service/?provider=…&service=…` links still redirect to that same provider/service reference.
+The `v0.4.6-beta.4` publisher returns the agent-readable `/s/{provider_id}/{service_id}` link. Share the returned link as-is. Older `/service/?provider=…&service=…` links still redirect to that same provider/service reference.
 
 ## Receive a link
 
@@ -125,11 +125,18 @@ by Froglet; opening it does not execute or pay for anything.
 
 ### Callers with URL support
 
-Check the connected tool's advertised schema. Native callers from `v0.4.6-beta.2` can inspect a link with `inspect_service` and `service_url`,
+Check the connected tool's advertised schema. Native callers from `v0.4.6-beta.4` can inspect a link with `inspect_service` and `service_url`,
 then execute a requested free query with `invoke_service`, the same
 `service_url`, and `input`. The caller resolves the provider and verifies the
 signed metadata automatically. Older callers can continue using the explicit provider identity and endpoint
 from the manifest.
+
+For a completed call, reuse the same provider, service, input, and
+`idempotency_key` to recover the saved result and verify its receipt, even after
+the provider stops or unpublishes the service. Upgrade both the native caller
+and its requester runtime to `v0.4.6-beta.4` and retain the requester's data
+directory. Recovery does not require the old invitation file or create a new
+execution. Pending calls still need a reachable provider to refresh their status.
 
 Clients that read MCP structured results can request
 `response_format: "compact"` to avoid duplicate JSON text. Older clients
@@ -138,13 +145,13 @@ should keep the default full response.
 
 ## Invite access and bounded HTTP tools
 
-The `v0.4.6-beta.2` native CLI and MCP tool can prepare a fixed HTTPS JSON
+The `v0.4.6-beta.4` native CLI and MCP tool can prepare a fixed HTTPS JSON
 operation using `prepare_http_service` (`prepare-http-service` in the CLI).
 Use it for one lookup, classifier, or inference operation with fixed upstream
 settings, strict input/output schemas, a deadline, and byte limits. The provider
 approves the exact operation hash and keeps upstream credentials in its private
 policy file. Preparation makes no upstream call; publication verification makes
-one. Follow the [bounded HTTP service and invitation guide](https://github.com/armanas/froglet/blob/v0.4.6-beta.2/docs/HTTP_SERVICES.md)
+one. Follow the [bounded HTTP service and invitation guide](https://github.com/armanas/froglet/blob/v0.4.6-beta.4/docs/HTTP_SERVICES.md)
 for the complete request and operator configuration.
 
 Before offering an operation that can incur costs, choose `private`, `invite`,
@@ -163,7 +170,7 @@ and deal. Invitations cover the provider's services; they do not grant operator
 control. Use `invite_revoke` to stop new work while preserving result recovery.
 Never put credentials in share links, QR codes, or prompts.
 
-With public `v0.4.6-beta.2` and hosted `v0.1.0-beta.21`, use `host: "relay"`
+With public `v0.4.6-beta.4` and hosted `v0.1.0-beta.23`, use `host: "relay"`
 for invitation-only marketplace listings. Admission checks the exact signed
 metadata and active publication without invoking the service. Such listings say
 **Invitation required**; `requester_execution_verified` stays false. Neither
