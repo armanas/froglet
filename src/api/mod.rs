@@ -35820,7 +35820,9 @@ pub(crate) mod tests {
             None,
             Some(ExecutionLimits {
                 max_input_bytes: 4096,
-                max_runtime_ms: 2000,
+                // This test isolates output admission, not cold-start latency.
+                // Worker timeout/cancellation have dedicated short-deadline tests.
+                max_runtime_ms: 10_000,
                 max_memory_bytes: 0,
                 max_output_bytes: 32,
                 fuel_limit: 0,
