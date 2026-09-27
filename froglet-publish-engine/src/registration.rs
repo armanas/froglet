@@ -268,9 +268,6 @@ pub async fn register_with_marketplace(
     }
 }
 
-/// Run a requester-owned invocation after exact transport activation and
-/// before marketplace submission. This separate network round prevents a
-/// requester-side failure from leaving an avoidable active listing lease.
 /// Read current access policy without invoking the service. Only a matching,
 /// signed active revision may select the invitation-only admission path.
 pub async fn requires_invitation(
@@ -350,6 +347,9 @@ fn invitation_metadata(
     }
 }
 
+/// Run a requester-owned invocation after exact transport activation and
+/// before marketplace submission. This separate network round prevents a
+/// requester-side failure from leaving an avoidable active listing lease.
 pub async fn run_requester_canary(
     provider_url: &str,
     revision: &SignedPublicationRevision,
