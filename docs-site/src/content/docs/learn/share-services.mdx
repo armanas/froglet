@@ -63,7 +63,7 @@ JSON catalogs must be an array of row objects or an object whose collection valu
 
 For example, transform `{"metadata":{"version":"1"},"items":[{"id":"a","name":"A"}]}` into `{"metadata":[{"version":"1"}],"items":[{"id":"a","name":"A"}]}` in a **new file**. For dictionaries keyed by a category, preserve each key in an explicit field when converting the values to rows. Show this transformation and check that it retains the intended values. Inspect the normalized copy with `prepare_service` before selecting fields. Keep both source paths in your report; change detection tracks the file passed to preparation, so edits to the original require regenerating and preparing the normalized copy. Do not claim automatic tracking of the original export.
 
-Prefer the automatically generated example when it answers the user's task. For a custom example, use only the supported operations above and pass it into `prepare_service`. If the request fails, correct it and repeat preparation; do not fabricate a successful example. The released `v0.4.5` preparation request accepts only `source`, `destination`, `service_id`, `selection`, `csv_columns`, and `example_input` (plus `action` for MCP). Do not add fields from an unreleased source checkout.
+Prefer the automatically generated example when it answers the user's task. For a custom example, use only the supported operations above and pass it into `prepare_service`. If the request fails, correct it and repeat preparation; do not fabricate a successful example. The released `v0.4.6-beta.1` preparation request accepts only `source`, `destination`, `service_id`, `selection`, `csv_columns`, and `example_input` (plus `action` for MCP). Do not add fields from an unreleased source checkout.
 
 For a small agent-authored `.wat` or `.wasm` function, use the same action with an explicit destination, service ID, and meaningful `example_input`. The `froglet.wasm.run_json.v1` ABI and existing sandbox limits apply. Python remains an advanced Linux option; never bypass its sandbox on macOS.
 
@@ -79,7 +79,7 @@ The consent must come from the configured Froglet node, not a prose summary inve
 
 Reuse this canonical publication action. Do not implement registration, relay grants, or publication policy in the agent. `local_verified` means local evidence only; `pending_review` is not marketplace activation. Report `progress.local_verified`, `public_reachable`, `marketplace_active`, and `requester_execution_verified` separately. Return `share_url`, but disclose pending or unavailable states. A share link does not prove a recipient has executed anything.
 
-The current immutable `v0.4.5` publisher returns a `/service/?provider=…&service=…` link. The site redirects that exact provider/service reference to the agent-readable `/s/{provider_id}/{service_id}` page. Share the returned link as-is; the redirect preserves its identity. A later publisher release will return `/s/…` directly.
+The `v0.4.6-beta.1` publisher returns the agent-readable `/s/{provider_id}/{service_id}` link. Share the returned link as-is. Older `/service/?provider=…&service=…` links still redirect to that same provider/service reference.
 
 ## Receive a link
 
@@ -125,13 +125,47 @@ by Froglet; opening it does not execute or pay for anything.
 
 ### Callers with URL support
 
-Check the connected tool's advertised schema. Callers built from the current
-source checkout can inspect a link with `inspect_service` and `service_url`,
+Check the connected tool's advertised schema. Native callers from `v0.4.6-beta.1` can inspect a link with `inspect_service` and `service_url`,
 then execute a requested free query with `invoke_service`, the same
 `service_url`, and `input`. The caller resolves the provider and verifies the
-signed metadata automatically. Existing released callers can continue using
-the explicit provider identity and endpoint from the manifest.
+signed metadata automatically. Older callers can continue using the explicit provider identity and endpoint
+from the manifest.
 
 Clients that read MCP structured results can request
 `response_format: "compact"` to avoid duplicate JSON text. Older clients
 should keep the default full response.
+
+
+## Invite access and bounded HTTP tools
+
+The `v0.4.6-beta.1` native CLI and MCP tool can prepare a fixed HTTPS JSON
+operation using `prepare_http_service` (`prepare-http-service` in the CLI).
+Use it for one lookup, classifier, or inference operation with fixed upstream
+settings, strict input/output schemas, a deadline, and byte limits. The provider
+approves the exact operation hash and keeps upstream credentials in its private
+policy file. Preparation makes no upstream call; publication verification makes
+one. Follow the [bounded HTTP service and invitation guide](https://github.com/armanas/froglet/blob/v0.4.6-beta.1/docs/HTTP_SERVICES.md)
+for the complete request and operator configuration.
+
+Before offering an operation that can incur costs, choose `private`, `invite`,
+or bounded `trial` access and explicit cumulative quote, deal, and runtime
+allowances. Inspect `safeguards_status` and use `safeguards_pause` to stop new
+work. These counters persist across restarts; they are not currency budgets and
+do not cap ongoing hosting or upstream work already started. Payment rails
+remain deferred for this workflow.
+
+Issue an invitation with `invite_create`, an expiry, a request allowance, and a
+new absolute `token_file`. Send that file through a trusted channel. A recipient
+calls `invoke_service` with the explicit provider identity, public HTTPS
+`provider_url`, service ID, input, stable `idempotency_key`, and
+`access_token_file`. A normal call uses two invitation requests, for its quote
+and deal. Invitations cover the provider's services; they do not grant operator
+control. Use `invite_revoke` to stop new work while preserving result recovery.
+Never put credentials in share links, QR codes, or prompts.
+
+Publish protected services with `host: "local"` and use the configured public
+HTTPS endpoint for direct invited calls. Marketplace activation currently
+requires anonymous canaries, so it cannot activate protected services. Do not
+claim that local publication created a public marketplace listing. Arbitrary
+URL proxying, uploads, storage, streaming, GPU scheduling, and open-ended agent
+loops are outside this adapter.

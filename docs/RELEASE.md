@@ -12,9 +12,9 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Versioning
 
-`v0.4.5` is the immutable public beta release, built from source revision
-`602e41ef4a966aaeb4f2fb4259e591a1f65510b8`. Hosted services release
-`v0.1.0-beta.19` pins that exact revision. Future releases require a new tag,
+`v0.4.6-beta.1` is the immutable public beta release, built from source revision
+`71955ef96804fc40eb0e0c9610c1fd4ea4e770f8`. The hosted `v0.1.0-beta.20`
+candidate pins that exact revision. Future releases require a new tag,
 a verified immutable Release Bundle, and a refreshed services source pin and
 lockfile. CI and release jobs share that pin and require locked dependencies.
 
@@ -102,6 +102,32 @@ An isolated macOS agent probe on 2026-09-25 did not satisfy the agent-connection
 gate: Claude Code's CLI required login, and Codex discovered the native MCP
 tool but its non-interactive approval policy blocked execution. Do not count a
 discovered tool, a CLI health check, or an attempted call as an agent execution.
+
+### Nonpayment beta qualification (2026-09-27)
+
+The immutable `v0.4.6-beta.1` bundle and every downloaded asset were verified
+against GitHub's recorded digests, its release-workflow attestation, and source
+`71955ef96804fc40eb0e0c9610c1fd4ea4e770f8`. The release workflow passed Linux
+strict checks, real Landlock/seccomp tests, native-worker address-space denial,
+Docker Compose, packaged installation, and extended tests. Hosted CI also passed
+the real rootless Podman worker test against a digest-pinned JSON echo container.
+
+A fresh Mac requester using the released native binary called a separate Linux
+provider over trusted public HTTPS. The fixed operation read Froglet's own health
+JSON, with no paid upstream. All three admitted deals returned verified signed
+receipts; the first receipt was
+`24e8c3292ba0926dc6700267bed0cd4722d63ab70035bed55123ff318339b12b`.
+Anonymous, expired, revoked, paused, and exhausted invitations were refused.
+Revoked replay recovered the same deal and receipt. Pausing and cumulative
+exhaustion survived provider restarts. The provider admitted exactly three deals
+and reserved 15,000 ms, then remained exhausted after another restart. The
+temporary ingress was removed and the provider stopped after qualification.
+
+This qualifies the direct HTTPS invitation path through those released assets;
+it does not qualify protected marketplace listing activation, live payment
+settlement, a paid model API, or the clean-agent and participant gates below.
+Payment rails remain deferred. See [HTTP services](HTTP_SERVICES.md) for operator
+setup, explicit finite allowances, and the current product boundaries.
 
 ### Required platform and external evidence
 
@@ -197,7 +223,8 @@ An operator with repository administration access must first run the read-only
 `GET /repos/{owner}/{repo}/immutable-releases` check with API version
 `2026-03-10` and require `enabled=true`. After the exact source commit is on
 `main`, the operator creates a **draft** GitHub release using an unused tag
-and `--target` set to that commit. GitHub creates the tag and triggers the
+and `--target` set to that commit. Creating the draft does not create a Git tag.
+Then create and push that exact tag at the same source commit to trigger the
 workflow. The workflow requires the existing draft and verifies that the tag
 resolves to its source commit; it cannot create a release on its own. It then
 uploads every binary, checksum, manifest, and attestation asset and publishes
