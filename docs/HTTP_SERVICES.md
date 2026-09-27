@@ -158,6 +158,15 @@ and not a symlink. Revocation takes effect immediately; existing completed deals
 remain recoverable. Reuse the same idempotency key and input to reconcile an
 uncertain invocation; creating a new key requests new work.
 
+Native CLI/MCP recovery first checks the authenticated requester ledger using the
+key, original service/provider and canonical input hash. A saved completed result
+and verified receipt remain available after unpublish or provider shutdown,
+without an invitation file. Keep the requester data directory across restarts.
+A mismatched input/service/provider or lower price ceiling fails closed; a missing
+key follows normal admission. Pending records still need the provider to refresh
+status. Older runtimes without this read-only lookup fall back to their existing
+invocation path and cannot guarantee offline recovery.
+
 ## Current boundaries
 
 - Invitation services support non-executing marketplace admission with public

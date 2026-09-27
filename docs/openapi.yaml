@@ -4217,6 +4217,68 @@ paths:
   # ---------------------------------------------------------------------------
 
   /v1/runtime/deals:
+    get:
+      operationId: runtimeFindInvocation
+      summary: Recover a saved invocation by its idempotency key
+      description: >
+        Reads the authenticated requester's local ledger without contacting the
+        provider, creating work, consuming an invitation or initiating payment.
+        Requires the original service, canonical JSON input hash, and at least
+        one provider reference; supplied references must all match. A completed
+        result can be recovered after unpublish or provider shutdown. Pending
+        records remain pending; use the deal-status route to refresh them.
+      tags: [Deals (Runtime)]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: idempotency_key
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+        - in: query
+          name: service_id
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - in: query
+          name: input_hash
+          required: true
+          schema: {type: string, pattern: '^[0-9a-f]{64}$'}
+        - in: query
+          name: provider_id
+          schema: {type: string}
+        - in: query
+          name: provider_url
+          schema: {type: string}
+        - in: query
+          name: max_price_sats
+          schema: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Saved invocation; payment_intent is null and no new work is admitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider_id, provider_url, quote, deal]
+                properties:
+                  provider_id: {type: string}
+                  provider_url: {type: string}
+                  quote:
+                    $ref: '#/components/schemas/SignedArtifact'
+                  deal:
+                    $ref: '#/components/schemas/RequesterDealRecord'
+                  payment_intent_path: {type: string, nullable: true}
+                  payment_intent: {nullable: true}
+        '400':
+          description: Invalid lookup parameters.
+        '401':
+          description: Missing or invalid runtime Bearer token.
+        '404':
+          description: No saved invocation has this key (invocation_not_found).
+        '409':
+          description: Input, service, provider or price cap conflicts with the saved invocation (invocation_conflict).
+        '500':
+          description: Requester ledger unavailable; do not create a new key.
     post:
       operationId: runtimeCreateDeal
       summary: Create an outbound deal via a provider

@@ -303,33 +303,19 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
         }
         "invoke_service" if arguments.contains_key("service_url") => {
             let link = selected_service_link(arguments)?.expect("service_url validated");
-            match super::service_link::inspect(&link).await {
-                Ok(inspected) if inspected["availability"]["execution_access"] == "private" => Err(CliError::Other(
-                    "provider_access_required: private execution is only available to the provider".into(),
-                )),
-                Ok(inspected) if inspected["availability"]["execution_access"] == "invite"
-                    && invoke_string(arguments, "access_token_file")?.is_none() => Err(CliError::Other(
-                    "invitation_required: ask the provider for a credential file and supply access_token_file; do not paste the credential into a prompt or share link".into(),
-                )),
-                Ok(inspected) if inspected["free_call_supported"] == true || invoke_price_cap(arguments)? > 0 => {
-                    invoke_selected(
-                        &link.service_id,
-                        arguments.get("input").cloned().unwrap_or(Value::Null),
-                        Some(&link.provider_id),
-                        Some(&link.provider_url),
-                        invoke_string(arguments, "idempotency_key")?,
-                        invoke_price_cap(arguments)?,
-                        invoke_string(arguments, "access_token_file")?,
-                    )
-                    .await
-                }
-                Ok(_) => Err(CliError::Other(
-                    "payment_required: paid sharing calls require an explicit max_price_sats and a configured buyer wallet and spend budget"
-                        .into(),
-                )),
-                Err(error) => Err(error),
-            }
+            invoke_selected(
+                &link.service_id,
+                arguments.get("input").cloned().unwrap_or(Value::Null),
+                Some(&link.provider_id),
+                Some(&link.provider_url),
+                invoke_string(arguments, "idempotency_key")?,
+                invoke_price_cap(arguments)?,
+                invoke_string(arguments, "access_token_file")?,
+                Some(&link),
+            )
+            .await
         }
+
         "invoke_service" => {
             let service_id = arguments
                 .get("service_id")
@@ -344,6 +330,7 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
                 invoke_string(arguments, "idempotency_key")?,
                 invoke_price_cap(arguments)?,
                 invoke_string(arguments, "access_token_file")?,
+                None,
             )
             .await
         }
@@ -885,9 +872,10 @@ fn invoke_price_cap(arguments: &serde_json::Map<String, Value>) -> Result<u64, S
 }
 
 async fn invoke(service_id: &str, input: Value) -> Result<Value, CliError> {
-    invoke_selected(service_id, input, None, None, None, 0, None).await
+    invoke_selected(service_id, input, None, None, None, 0, None, None).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn invoke_selected(
     service_id: &str,
     input: Value,
@@ -896,11 +884,15 @@ async fn invoke_selected(
     idempotency_key: Option<&str>,
     max_price_sats: u64,
     access_token_file: Option<&str>,
+    link: Option<&super::service_link::ServiceLink>,
 ) -> Result<Value, CliError> {
     let options = InvokeOptions {
         service_id: service_id.to_string(),
         input,
-        daemon_url: base_url("FROGLET_PROVIDER_URL", DEFAULT_PROVIDER_URL),
+        daemon_url: base_url(
+            "FROGLET_DAEMON_URL",
+            &base_url("FROGLET_PROVIDER_URL", DEFAULT_PROVIDER_URL),
+        ),
         runtime_url: base_url("FROGLET_RUNTIME_URL", DEFAULT_RUNTIME_URL),
         runtime_token: resolve_runtime_auth_token().await?,
         access_token_file: access_token_file.map(PathBuf::from),
@@ -910,7 +902,9 @@ async fn invoke_selected(
         wait_timeout: Duration::from_secs(60),
         poll_interval: Duration::from_millis(250),
     };
-    let report = if provider_id.is_some() || provider_url.is_some() {
+    let report = if let Some(link) = link {
+        super::invoke::invoke_shared_service(&options, link).await?
+    } else if provider_id.is_some() || provider_url.is_some() {
         invoke_remote_service(&options, provider_url).await?
     } else {
         invoke_local_service(&options).await?
