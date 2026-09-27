@@ -10,6 +10,32 @@ Lightning rail and MCP registry distribution.
 
 ## [Unreleased]
 
+## [0.4.6-beta.1] - 2026-09-27
+
+### Added
+
+- Private, invitation and bounded trial admission with persistent request, deal
+  and runtime allowances, pause/recovery controls, and isolated builtin workers.
+- Durable invitation issue/list/revoke, private token files, and native CLI/MCP
+  invocation over HTTPS. Invitations are provider-wide and expire.
+- Fixed, operator-approved HTTPS JSON services with schema validation, protected
+  upstream credentials and finite request/response/deadline limits.
+- Agent-readable service pages, clearer marketplace service descriptions, and
+  QR codes for sharing public service links.
+
+### Fixed
+
+- Preserve the host-enabled Wasm ABI during publication. Reject unsupported GPU
+  execution instead of advertising capabilities the worker cannot enforce.
+- Gate release publication on CI, Linux sandbox enforcement and install checks.
+- Bound execution, retained data and public request handling. These are resource
+  limits, not monetary caps; base hosting and rejected traffic still cost money.
+
+Payments remain deferred. Protected services use direct HTTPS invitations;
+marketplace activation still requires anonymous canaries.
+
+## Earlier 0.4.x beta changes
+
 ### Added
 
 - **`froglet-node invoke <service_id> [json_input]` — CLI invocation of

@@ -1,13 +1,3 @@
-# Froglet agent journeys
-
-Choose the task from the user's intent:
-
-- Publish a catalog or small Wasm function: follow https://froglet.dev/learn/share-services/ and task `publish-service` in https://froglet.dev/agent-tasks.json. Native Codex/Claude Code; macOS arm64 and Linux x86_64/arm64; free first use. Public beta; stable qualification is pending. Verify an immutable release exists before installing. Use separate approvals for persistent installation and exact publication. Never overwrite unrelated agent settings or publish automatically after a source change.
-- Receive a provider/service link: use task `consume-service` and the same native installation. Validate identity, HTTPS endpoint, free signed offer, and the result receipt. A stale webpage or marketplace listing does not prove a successful call.
-- Try a sample without installation: use the hosted proof below or https://froglet.dev/verify-receipt/. This is optional; it is not a prerequisite for preparing the user's own catalog.
-
-The publishing computer must stay awake and online. No npm runtime is required for the supported native journey. Public release, clean-machine qualification, and first-time-user timing remain separate evidence gates.
-
 # try.froglet.dev llms.txt canonical source
 
 Purpose: guide an LLM or agent through the public hosted Froglet trial without overstating what it proves.
@@ -111,7 +101,7 @@ Decision rules:
 - If the user asks for stronger evidence and provides a URL they own or control, run `hosted-proof-with-witness` using `demo.fetch-witness`.
 - If the user provides a URL and an expected SHA-256 hash, use `demo.hash-verify`.
 - If the user provides a file hash or content hash but no fetchable URL, use `demo.notarize`.
-- If the user asks about local install, publishing services, paid rails, persistent identity, marketplace actions, batch, GPU, Tor, or private data workflows, finish the hosted proof first, then move to `local-install-proposal`.
+- If the user asks to publish their catalog, go directly to https://froglet.dev/publish/agent.md. If they need installation, use https://froglet.dev/install/agent.md. The hosted proof is optional; do not make it a prerequisite for their task. Advanced paid rails, batch, GPU, and Tor retain their own documented limits.
 - If the user asks what the marketplace currently shows, run `marketplace-evidence` and cite observed counts plus source links.
 - If the user pastes a receipt or artifact envelope, run `receipt-artifact-verify` and report the actual WASM verification result and its scope.
 - If the user asks for "the best next step for my project" and you cannot inspect their files, repo, tools, config, or workflow, say that context is missing and ask for the minimum context needed after the evidence report.

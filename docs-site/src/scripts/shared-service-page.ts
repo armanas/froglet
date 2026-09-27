@@ -13,8 +13,7 @@ try {
   element('service-title').textContent = service;
   element('service-provider').textContent = provider;
   const siteOrigin = location.origin || 'https://froglet.dev';
-  const link = new URL('/service/', siteOrigin);
-  link.searchParams.set('provider', provider); link.searchParams.set('service', service);
+  const link = new URL(`/s/${provider}/${encodeURIComponent(service)}`, siteOrigin);
   prompt.value = `Use this Froglet service: ${link}. Read ${new URL('/learn/share-services/', siteOrigin)} first. If Froglet is missing, prepare its native installation and ask me to approve it. Verify the provider identity and signed offer; make one free call using the current example input and report the result, receipt verification, and anything not verified. Do not accept a paid offer.`;
 } catch (error) {
   element('availability').textContent = String(error);

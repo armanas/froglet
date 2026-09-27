@@ -136,7 +136,7 @@ fn initialize_result(_request: &Value) -> Value {
 }
 
 fn tools_list() -> Value {
-    json!({
+    let mut schema = json!({
         "tools": [{
             "name": "froglet",
             "description": "Inspect, invoke, prove, publish, and operate publications through the locally installed Froglet node. marketplace_publish is a two-step plan/approval action for public hosting; lifecycle actions delegate to the node's canonical provider-control API.",
@@ -148,10 +148,13 @@ fn tools_list() -> Value {
                         "type": "string",
                         "enum": [
                             "status",
-                            "prepare_service",
+                            "safeguards_status", "safeguards_pause", "safeguards_resume",
+                            "invite_create", "invite_list", "invite_revoke",
+                            "prepare_service", "prepare_http_service",
                             "check_updates",
                             "doctor",
                             "open_status",
+                            "inspect_service",
                             "invoke_service",
                             "local_proof",
                             "marketplace_publish",
@@ -168,8 +171,12 @@ fn tools_list() -> Value {
                     },
                     "service_id": {
                         "type": "string",
-                        "description": "Canonical local publication service identifier. Required for invoke_service and publication lifecycle actions."
+                        "description": "Service identifier; invoke_service accepts service_url instead. Required for publication lifecycle actions."
                     },
+                    "max_price_sats": {"type":"integer", "minimum":0, "description":"Explicit per-call Lightning price ceiling for invoke_service; defaults to 0 (free only). Paid calls also require a buyer wallet and runtime cumulative spend budget."},
+                    "service_url": {"type":"string", "description":"Froglet share URL. inspect_service verifies public metadata without executing; invoke_service resolves the same URL. Cannot be combined with service_id or provider overrides."},
+                    "response_format": {"enum":["full","compact"], "description":"full (default) includes JSON text for older clients. compact avoids duplicating structured results in text for inspect_service and invoke_service."},
+                    "summary": {"type":"string", "description":"Plain-language service purpose and scope for prepare_service, up to 500 characters."},
                     "input": {},
                     "source": {"type":"string", "description":"Absolute path to JSON, CSV, SQLite, WAT or Wasm source. Preparation only."},
                     "destination": {"type":"string", "description":"Explicit absolute directory for generated service material; existing unrelated projects are never overwritten."},
@@ -226,7 +233,18 @@ fn tools_list() -> Value {
                 "required": ["action"]
             }
         }]
-    })
+    });
+    schema["tools"][0]["inputSchema"]["properties"].as_object_mut().unwrap().extend(json!({
+                    "operation": {"type":"object","description":"Fixed HTTP operation: HTTPS url, GET/POST method, input_schema/output_schema (draft 2020-12), optional auth_profile/fixed_body, timeout_ms, max_request_bytes and max_response_bytes. Provider separately approves its exact hash; preparation makes no upstream call."},
+                    "access_token_file": {"type":"string","description":"Absolute private mode-0600 invitation file for invocation; never paste credentials into prompts."},
+                    "token_file": {"type":"string","description":"New absolute private file in which invite_create stores the credential; never overwritten."},
+                    "name": {"type":"string","description":"Invitation recipient label."},
+                    "expires_at": {"type":"integer","description":"Invitation expiry, Unix seconds, within 30 days."},
+                    "max_requests": {"type":"integer","minimum":2,"maximum":10000,"description":"Invitation quote/deal request allowance; a normal invocation uses two requests."},
+                    "invite_id": {"type":"string","description":"Invitation id from invite_list/create to revoke immediately."},
+                    "reason": {"type":"string","description":"Reason for pausing new provider work."}
+    }).as_object().unwrap().clone());
+    schema
 }
 
 async fn handle_tool_call(request: &Value) -> Result<Value, String> {
@@ -246,8 +264,27 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| "froglet action is required".to_string())?;
 
+    let compact = match arguments.get("response_format").and_then(Value::as_str) {
+        None if !arguments.contains_key("response_format") => false,
+        Some("full") if matches!(action, "inspect_service" | "invoke_service") => false,
+        Some("compact") if matches!(action, "inspect_service" | "invoke_service") => true,
+        _ => {
+            return Err(
+                "response_format is only supported for inspection/invocation and must be full or compact".into(),
+            );
+        }
+    };
     let payload = match action {
         "status" => status_snapshot().await,
+        "safeguards_status" | "safeguards_pause" | "safeguards_resume" | "invite_create"
+        | "invite_list" | "invite_revoke" => super::safeguards::action(action, arguments).await,
+        "prepare_http_service" => {
+            let mut request = arguments.clone();
+            request.remove("action");
+            let request = serde_json::from_value(Value::Object(request))
+                .map_err(|e| format!("invalid prepare_http_service request: {e}"))?;
+            super::http_service::prepare(request)
+        }
         "prepare_service" => {
             let mut request = arguments.clone();
             request.remove("action");
@@ -259,6 +296,33 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
         "doctor" => Ok(super::doctor::snapshot(&super::prepare::data_root()).await),
         "open_status" => crate::local_status::open(&super::prepare::data_root()).await,
         "local_proof" => local_proof().await,
+        "inspect_service" => {
+            let link = selected_service_link(arguments)?
+                .ok_or_else(|| "inspect_service requires service_url".to_string())?;
+            super::service_link::inspect(&link).await
+        }
+        "invoke_service" if arguments.contains_key("service_url") => {
+            let link = selected_service_link(arguments)?.expect("service_url validated");
+            match super::service_link::inspect(&link).await {
+                Ok(inspected) if inspected["free_call_supported"] == true || invoke_price_cap(arguments)? > 0 => {
+                    invoke_selected(
+                        &link.service_id,
+                        arguments.get("input").cloned().unwrap_or(Value::Null),
+                        Some(&link.provider_id),
+                        Some(&link.provider_url),
+                        invoke_string(arguments, "idempotency_key")?,
+                        invoke_price_cap(arguments)?,
+                        invoke_string(arguments, "access_token_file")?,
+                    )
+                    .await
+                }
+                Ok(_) => Err(CliError::Other(
+                    "payment_required: paid sharing calls require an explicit max_price_sats and a configured buyer wallet and spend budget"
+                        .into(),
+                )),
+                Err(error) => Err(error),
+            }
+        }
         "invoke_service" => {
             let service_id = arguments
                 .get("service_id")
@@ -271,6 +335,8 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
                 invoke_string(arguments, "provider_id")?,
                 invoke_string(arguments, "provider_url")?,
                 invoke_string(arguments, "idempotency_key")?,
+                invoke_price_cap(arguments)?,
+                invoke_string(arguments, "access_token_file")?,
             )
             .await
         }
@@ -288,6 +354,10 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
     };
 
     match payload {
+        Ok(payload) if compact => Ok(json!({
+            "content":[{"type":"text","text":"Froglet result is in structuredContent; verification and evidence references are included there."}],
+            "structuredContent":payload, "isError":false
+        })),
         Ok(payload) => tool_result(payload, false),
         Err(error) => tool_result(super::doctor::error_report(&error), true),
     }
@@ -768,6 +838,25 @@ async fn local_proof() -> Result<Value, CliError> {
     }))
 }
 
+fn selected_service_link(
+    arguments: &serde_json::Map<String, Value>,
+) -> Result<Option<super::service_link::ServiceLink>, String> {
+    let Some(raw) = invoke_string(arguments, "service_url")? else {
+        return Ok(None);
+    };
+    if ["service_id", "provider_id", "provider_url"]
+        .iter()
+        .any(|key| arguments.contains_key(*key))
+    {
+        return Err(
+            "service_url cannot be combined with service_id, provider_id, or provider_url".into(),
+        );
+    }
+    super::service_link::ServiceLink::parse(raw)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 fn invoke_string<'a>(
     arguments: &'a serde_json::Map<String, Value>,
     key: &str,
@@ -779,8 +868,17 @@ fn invoke_string<'a>(
     }
 }
 
+fn invoke_price_cap(arguments: &serde_json::Map<String, Value>) -> Result<u64, String> {
+    match arguments.get("max_price_sats") {
+        None => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| "max_price_sats must be a non-negative integer".into()),
+    }
+}
+
 async fn invoke(service_id: &str, input: Value) -> Result<Value, CliError> {
-    invoke_selected(service_id, input, None, None, None).await
+    invoke_selected(service_id, input, None, None, None, 0, None).await
 }
 
 async fn invoke_selected(
@@ -789,6 +887,8 @@ async fn invoke_selected(
     provider_id: Option<&str>,
     provider_url: Option<&str>,
     idempotency_key: Option<&str>,
+    max_price_sats: u64,
+    access_token_file: Option<&str>,
 ) -> Result<Value, CliError> {
     let options = InvokeOptions {
         service_id: service_id.to_string(),
@@ -796,8 +896,10 @@ async fn invoke_selected(
         daemon_url: base_url("FROGLET_PROVIDER_URL", DEFAULT_PROVIDER_URL),
         runtime_url: base_url("FROGLET_RUNTIME_URL", DEFAULT_RUNTIME_URL),
         runtime_token: resolve_runtime_auth_token().await?,
+        access_token_file: access_token_file.map(PathBuf::from),
         provider_id_override: provider_id.map(str::to_string),
         idempotency_key: idempotency_key.map(str::to_string),
+        max_price_sats: Some(max_price_sats),
         wait_timeout: Duration::from_secs(60),
         poll_interval: Duration::from_millis(250),
     };
@@ -849,6 +951,32 @@ mod tests {
     use url::Url;
 
     #[tokio::test]
+    async fn service_url_rejects_conflicting_identity_before_network_access() {
+        for field in ["service_id", "provider_id", "provider_url"] {
+            let mut arguments = json!({"action":"invoke_service", "service_url":format!("https://froglet.dev/s/{}/catalog", "11".repeat(32)), "input":{"op":"describe"}});
+            arguments[field] = json!("conflicting");
+            let response = handle_request(json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"froglet","arguments":arguments}})).await.unwrap();
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cannot be combined")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn inspection_requires_a_link_and_compact_is_not_used_for_consent() {
+        for arguments in [
+            json!({"action":"inspect_service"}),
+            json!({"action":"marketplace_publish", "response_format":"compact"}),
+        ] {
+            let response = handle_request(json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"froglet","arguments":arguments}})).await.unwrap();
+            assert_eq!(response["error"]["code"], -32602);
+        }
+    }
+
+    #[tokio::test]
     async fn initialize_and_tools_list_are_shape_stable() {
         let initialized = handle_request(json!({
             "jsonrpc": "2.0",
@@ -896,8 +1024,19 @@ mod tests {
             .pointer("/result/tools/0/inputSchema/properties/action/enum")
             .and_then(Value::as_array)
             .expect("action enum");
-        assert_eq!(actions.len(), 17);
-        for action in ["prepare_service", "doctor", "check_updates", "open_status"] {
+        for action in [
+            "prepare_service",
+            "doctor",
+            "check_updates",
+            "open_status",
+            "prepare_http_service",
+            "invite_create",
+            "invite_list",
+            "invite_revoke",
+            "safeguards_status",
+            "safeguards_pause",
+            "safeguards_resume",
+        ] {
             assert!(actions.iter().any(|value| value == action));
         }
         assert!(actions.iter().any(|action| action == "marketplace_publish"));

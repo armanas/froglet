@@ -10,14 +10,14 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Marketplace · Froglet</title>
-<meta name="description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
+<meta name="description" content="Discover Froglet services, see what they do and cost, check recent availability, and share a service with your agent." />
 <link rel="canonical" href="https://froglet.dev/marketplace/" />
 <meta name="color-scheme" content="dark" />
 <!-- OpenGraph -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Froglet" />
 <meta property="og:title" content="Marketplace · Froglet" />
-<meta property="og:description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
+<meta property="og:description" content="Discover Froglet services, see what they do and cost, check recent availability, and share a service with your agent." />
 <meta property="og:url" content="https://froglet.dev/marketplace/" />
 <meta property="og:image" content="https://froglet.dev/og/marketplace.png" />
 <meta property="og:image:width" content="1200" />
@@ -25,7 +25,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Marketplace · Froglet" />
-<meta name="twitter:description" content="Live Froglet marketplace: registered providers, indexed offers, execution receipts, and public deal feed." />
+<meta name="twitter:description" content="Discover Froglet services, see what they do and cost, check recent availability, and share a service with your agent." />
 <meta name="twitter:image" content="https://froglet.dev/og/marketplace.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <AgentMeta route="marketplace" />
@@ -39,20 +39,29 @@ import ThemeProvider from '../components/ThemeProvider.astro';
   <div class="mkt-title">
     <div class="mkt-title-main"><h1>Marketplace</h1><button type="button" class="mkt-action" data-marketplace-copy-summary>Copy evidence</button></div>
     <div class="search" role="search" aria-label="Marketplace search" data-marketplace-search-form>
-      <label class="sr-only" for="marketplace-search">Search loaded providers and offers</label>
-      <input id="marketplace-search" type="search" placeholder="Search loaded providers and offers…" autocomplete="off" spellcheck="false" data-marketplace-search />
+      <label class="sr-only" for="marketplace-search">Search services</label>
+      <input id="marketplace-search" type="search" placeholder="Search by service, purpose, or provider…" autocomplete="off" spellcheck="false" data-marketplace-search />
       <output class="search-count" for="marketplace-search" data-marketplace-search-count>Loading</output>
     </div>
   </div>
+  <p class="mkt-intro">Find a service your agent can use.</p>
+  <p class="mkt-sub">Browse what each service does, check its price, then open it for example inputs and sharing.</p>
   <p class="mkt-sub">Catalog from <code class="inline">marketplace.froglet.dev</code>. Last successful check: <strong data-marketplace-field="checkedAt">waiting</strong>.</p>
   <noscript><p>JavaScript is required for current catalog data. Use the Providers JSON and Offers JSON links below.</p></noscript>
+  <section aria-labelledby="services-heading" class="services-section">
+    <div class="services-toolbar"><div><h2 id="services-heading">Services</h2><p class="mkt-sub"><strong data-marketplace-field="recentServices">—</strong> recently checked in the loaded sample · up to 24 offers</p></div><label class="service-filter">Show <select data-marketplace-filter><option value="all">All services</option><option value="ready">Recently checked</option><option value="free">Free services</option></select></label></div>
+    <p class="mkt-sub">“Recently checked” means the marketplace recorded a successful provider check that has not expired. Open a service to verify its details before calling.</p>
+    <div class="service-grid" data-marketplace-service-cards><p>Loading services…</p></div>
+    <p class="service-empty" data-marketplace-no-results hidden>No services match. Try another search or show all services.</p>
+  </section>
+  <details class="marketplace-evidence"><summary>Marketplace evidence and technical details</summary>
+  <p class="mkt-sub">Catalog counts cover all indexed entries. Receipt statistics and prices below cover the loaded sample. Receipts are provider statements, not independently assessed quality or unique buyers.</p>
   <div class="metrics">
-    <div class="metric"><div class="k">Registered froglets</div><div class="v" data-marketplace-field="froglets">—</div><div class="d">indexed providers</div></div>
+    <div class="metric"><div class="k">Providers</div><div class="v" data-marketplace-field="froglets">—</div><div class="d">indexed identities</div></div>
     <div class="metric"><div class="k">Offers</div><div class="v" data-marketplace-field="offers">—</div><div class="d">Sample: <span data-marketplace-field="freeOffers">—</span> free · <span data-marketplace-field="paidOffers">—</span> priced</div></div>
     <div class="metric"><div class="k">Receipts in sample</div><div class="v" data-marketplace-field="receipts">—</div><div class="d"><span data-marketplace-field="successRate">—</span> reported success rate</div></div>
     <div class="metric"><div class="k">Receipt value</div><div class="v" data-marketplace-field="settledSats">—</div><div class="d">sampled indexed receipt totals</div></div>
   </div>
-  <p class="mkt-sub">Receipts record provider statements, not independently assessed quality or unique buyers. Listed endpoints are signed claims, not live reachability checks. Pricing alone does not establish that a paid route is live.</p>
   <div class="panel panel--table">
     <div class="panel-head"><h3>Providers by reported receipts</h3><button type="button" class="panel-action" data-marketplace-copy-provider>Copy top provider</button></div>
     <table class="providers"><thead><tr><th>Identity</th><th>Endpoint</th><th>Services</th><th>OK</th><th>Fail</th><th>Receipts</th></tr></thead>
@@ -67,6 +76,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
   </div>
   <div class="panel section-gap"><div class="panel-head"><h3>Runtimes in offer sample</h3></div><div class="svc-break" data-marketplace-services-breakdown></div></div>
   <p class="mkt-sub" data-marketplace-field="dealFeedDetail">A public deal feed is not available. Catalog counts do not measure customer activity.</p>
+  </details>
   <div class="mkt-footer">
     <span data-marketplace-field="detail" role="status">Checking the read API…</span>
     <nav aria-label="Marketplace data">
@@ -76,13 +86,18 @@ import ThemeProvider from '../components/ThemeProvider.astro';
     </nav>
   </div>
 </main>
-<style>
+<style is:global>
+.mkt-intro{font-size:clamp(1.3rem,3vw,1.8rem);font-weight:500;color:var(--fg1);margin:1.2rem 0 .5rem}
+.services-section{margin:2rem 0}.services-toolbar{display:flex;justify-content:space-between;align-items:center;gap:1rem}.services-toolbar h2{font-size:1.3rem;margin:0}.service-filter{display:flex;align-items:center;gap:.6rem;font-size:.9rem}.service-filter select{font:inherit;padding:.6rem;background:var(--bg);color:var(--fg1);border:1px solid var(--border);border-radius:6px}
+.service-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-top:1rem}.service-card{border:1px solid var(--border);border-radius:10px;padding:1.25rem;display:flex;flex-direction:column;background:var(--bg-elevated);min-width:0}.service-card[hidden]{display:none}.service-card h3{font-size:1.2rem;margin:1rem 0 .5rem;overflow-wrap:anywhere}.service-card-top{display:flex;align-items:center;justify-content:space-between;gap:.8rem;font-size:.85rem}.service-availability{border:1px solid var(--border);border-radius:5px;padding:.25rem .5rem;color:var(--fg2)}.service-availability[data-ready="true"]{color:var(--accent,#55ae75);border-color:currentColor}.service-description{font-size:.98rem;line-height:1.6;color:var(--fg2);margin:0 0 1rem;overflow-wrap:anywhere}.service-meta{font-size:.8rem;color:var(--fg2);margin:.2rem 0;overflow-wrap:anywhere}.service-actions{display:flex;justify-content:space-between;gap:1rem;align-items:center;margin-top:auto;padding-top:1.25rem}.service-actions a{font-size:.9rem;color:var(--fg1);text-decoration:underline;text-underline-offset:4px}.service-open{font-weight:600}.marketplace-evidence{margin:2rem 0;border-top:1px solid var(--border);padding-top:1.25rem}.marketplace-evidence>summary{cursor:pointer;font-weight:600;margin-bottom:1.2rem}.service-empty{padding:1rem;border:1px solid var(--border);border-radius:8px}.mkt-shell :focus-visible{outline:2px solid var(--fg1);outline-offset:4px}
+@media(max-width:650px){.service-grid{grid-template-columns:1fr}.services-toolbar{align-items:flex-start;flex-direction:column}.mkt-title{flex-direction:column;align-items:stretch}.mkt-shell .mkt-title .search{width:100%;box-sizing:border-box;flex:0 0 auto}.service-card{padding:1rem}.service-actions{flex-wrap:wrap}}
+
 .marketplace-status { color: var(--muted, #b0b8c2); font: 12px monospace; }
 .marketplace-status[data-status="live"] { color: #7bdf9c; }
 .marketplace-status[data-status="stale"], .marketplace-status[data-status="unavailable"] { color: #f2c879; }
 .panel--table { overflow-x: auto; }
 table.providers.offer-book th:nth-child(n), table.providers.offer-book td:nth-child(n) { width: 20%; }
-:global(.mkt-sub), :global(.metric .k), :global(table.providers th), :global(.search-count) { color: var(--fg2); }
+.mkt-sub, .metric .k, table.providers th, .search-count { color: var(--fg2); }
 </style>
 <script>
   import { initMarketplaceLive } from '../scripts/marketplace-live';

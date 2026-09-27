@@ -1,13 +1,14 @@
 {
   "schema_version": "froglet.agent-tasks.v1",
   "name": "Froglet public agent task manifest",
-  "updated": "2026-09-25",
+  "updated": "2026-09-26",
   "purpose": "Give HTTP-capable agents exact Froglet task contracts, evidence boundaries, and report fields before they run or recommend a hosted or local Froglet workflow.",
   "canonical_sources": [
     "https://froglet.dev/llms.txt",
     "https://try.froglet.dev/llms.txt",
     "https://froglet.dev/learn/cloud-trial/",
-    "https://froglet.dev/agent-tasks.json"
+    "https://froglet.dev/agent-tasks.json",
+    "https://froglet.dev/publish/agent.md"
   ],
   "default_task_id": "publish-service",
   "task_contracts": [
@@ -16,7 +17,7 @@
       "title": "Publish a selected catalog or Wasm function",
       "kind": "native_agent_publication",
       "when_to_use": "The user wants their data or a small function usable by another agent.",
-      "entrypoint": "https://froglet.dev/learn/share-services/",
+      "entrypoint": "https://froglet.dev/publish/agent.md",
       "supported_agents": [
         "Codex",
         "Claude Code"
@@ -28,10 +29,10 @@
       ],
       "release_status": "public_beta_stable_qualification_pending",
       "steps": [
-        "Inspect installation and current agent settings; use the exact immutable-release installation plan and separate approval if needed.",
+        "Prefer the existing native froglet MCP tool. Otherwise read only the Froglet agent configuration entry and use its exact binary and environment. Check --help and status; never assume PATH points to the configured installation. If setup is missing, use the exact immutable-release installation plan and separate approval.",
         "Call native status from the actual agent; shell probes are not agent attachment.",
-        "Inspect source with prepare_service, propose relevant fields, clarify CSV types, and request an explicit destination.",
-        "Prepare a selected snapshot and show included and omitted fields, source fingerprint, public example, and local result.",
+        "Inspect source with prepare_service. Normalize mixed JSON to a separate named-row-collections file when necessary; preserve the original and report both paths. Propose relevant fields, clarify CSV types, and request an explicit destination.",
+        "Prepare a selected snapshot. Use only the advertised describe/select and scalar equals query contract; verify the example through Froglet itself. Show included/omitted fields, source fingerprint, example and actual local result.",
         "Call marketplace_publish to obtain exact consent, then wait for publication approval.",
         "Publish with that consent hash. Report local verification, public reachability, marketplace activation, and requester execution separately.",
         "Return share_url with observed availability. Explain sleep/offline behavior and check_updates/open_status."
@@ -54,7 +55,10 @@
         "excluded data is absent without inspecting the snapshot",
         "clean-machine or human qualification before it is run",
         "automatic republication",
-        "managed always-on hosting"
+        "managed always-on hosting",
+        "custom query simulation proves Froglet execution",
+        "a port conflict during preparation requires killing the healthy daemon",
+        "a prose consent invented by the agent authorizes publication"
       ]
     },
     {

@@ -63,6 +63,28 @@ impl WasmExecutionContext {
 
         let response =
             match request {
+                HostCallRequest::HttpOperation { operation, input } => {
+                    let policy = self
+                        .environment
+                        .policy
+                        .http
+                        .as_ref()
+                        .ok_or("HTTP operations are not enabled on this provider")?;
+                    let client = self
+                        .environment
+                        .http_client
+                        .as_ref()
+                        .ok_or("HTTP client unavailable")?;
+                    crate::http_operation::execute(
+                        operation,
+                        input,
+                        policy,
+                        client,
+                        &self.granted_capabilities,
+                        &mut self.http_calls_used,
+                        self.execution_deadline,
+                    )?
+                }
                 HostCallRequest::HttpFetch { request } => {
                     let http_policy =
                         self.environment.policy.http.as_ref().ok_or_else(|| {
@@ -104,6 +126,11 @@ impl WasmExecutionContext {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op")]
 enum HostCallRequest {
+    #[serde(rename = "http.operation")]
+    HttpOperation {
+        operation: crate::http_operation::HttpOperation,
+        input: serde_json::Value,
+    },
     #[serde(rename = "http.fetch")]
     HttpFetch { request: HttpFetchRequest },
     #[serde(rename = "db.query")]

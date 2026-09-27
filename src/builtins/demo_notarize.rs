@@ -88,6 +88,9 @@ fn validate_context(raw: Option<String>) -> Result<Option<String>, String> {
 }
 
 impl BuiltinServiceHandler for NotarizeHandler {
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        crate::builtin_worker::WorkerSpec::local("demo.notarize", serde_json::json!({}))
+    }
     fn execute<'a>(
         &'a self,
         input: Value,

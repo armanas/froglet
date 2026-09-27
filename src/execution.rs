@@ -18,6 +18,11 @@ pub use froglet_protocol::ExecutionRuntime;
 /// output that becomes the deal result.  Handlers capture their own state
 /// (database pools, caches, etc.) at construction time.
 pub trait BuiltinServiceHandler: Send + Sync + 'static {
+    /// Registered handlers must provide a killable worker for public execution.
+    /// Direct `execute` remains available inside the supervised worker only.
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        Err("builtin handler has no supervised worker; in-process execution is disabled".into())
+    }
     fn execute<'a>(
         &'a self,
         input: Value,

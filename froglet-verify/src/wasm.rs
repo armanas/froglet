@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::{validate_chain_documents, verify_document};
+use crate::{validate_chain_documents, verify_document, verify_service_link_evidence};
 
 fn error_json(message: &str) -> String {
     serde_json::json!({ "error": message }).to_string()
@@ -40,5 +40,20 @@ pub fn validate_chain_json(documents_json: &str, now_unix: Option<f64>) -> Strin
         Err(error) => return error_json(&error),
     };
     let report = validate_chain_documents(&documents, parse_now(now_unix));
+    serde_json::to_string(&report).unwrap_or_else(|error| error_json(&error.to_string()))
+}
+
+/// Verify a signed publication revision, Offer, and Descriptor together.
+#[wasm_bindgen]
+pub fn verify_service_link_evidence_json(evidence_json: &str) -> String {
+    let evidence: serde_json::Value = match serde_json::from_str(evidence_json) {
+        Ok(value) => value,
+        Err(error) => return error_json(&format!("input is not valid JSON: {error}")),
+    };
+    let report = verify_service_link_evidence(
+        &evidence["publication_revision"],
+        &evidence["offer"],
+        &evidence["descriptor"],
+    );
     serde_json::to_string(&report).unwrap_or_else(|error| error_json(&error.to_string()))
 }

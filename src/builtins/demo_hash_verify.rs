@@ -84,6 +84,9 @@ fn parse_sha256_hex(raw: &str) -> Result<String, String> {
 }
 
 impl BuiltinServiceHandler for HashVerifyHandler {
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        crate::builtin_worker::WorkerSpec::local("demo.hash-verify", serde_json::json!({}))
+    }
     fn execute<'a>(
         &'a self,
         input: Value,

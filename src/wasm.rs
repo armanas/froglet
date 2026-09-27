@@ -342,7 +342,8 @@ pub fn normalize_requested_capabilities(capabilities: &[String]) -> Result<Vec<S
 }
 
 fn validate_capability_name(capability: &str) -> Result<(), String> {
-    let valid = capability == WASM_CAPABILITY_HTTP_FETCH
+    let valid = capability.starts_with("net.http.operation.")
+        || capability == WASM_CAPABILITY_HTTP_FETCH
         || capability.starts_with(WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX)
         || capability.starts_with(WASM_CAPABILITY_SQLITE_QUERY_READ_PREFIX);
 

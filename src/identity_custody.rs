@@ -2861,6 +2861,7 @@ mod tests {
             stripe: None,
             buyer_stripe: None,
             buyer_phoenixd: None,
+            provider_policy: Default::default(),
             requester_spend: Default::default(),
             storage: StorageConfig {
                 data_dir: root.to_path_buf(),

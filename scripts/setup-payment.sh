@@ -7,14 +7,19 @@ shift || true
 
 out_path=""
 verify=1
+paid_only=0
 lightning_mode="${FROGLET_LIGHTNING_MODE:-mock}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/setup-payment.sh lightning|stripe|x402 [--out PATH] [--mode mock|lnd_rest|phoenixd] [--no-verify]
+  scripts/setup-payment.sh lightning|stripe|x402 [--out PATH] [--mode mock|lnd_rest|phoenixd] [--no-verify] [--paid-only]
 
 Writes an env snippet for one launch payment rail and runs a verification probe.
+
+--paid-only requires phoenixd or live Stripe, explicit positive built-in prices,
+and explicit cumulative provider allowances. Zero allowances pause new work.
+Named published services must be republished with an upfront price separately.
 
 Lightning modes:
   mock      local stub, no wallet (development)
@@ -143,6 +148,17 @@ add_optional_env_line() {
 }
 
 write_current_snippet() {
+  if [[ "$paid_only" -eq 1 ]]; then
+    add_env_line FROGLET_PROVIDER_REQUIRE_PAYMENT true
+    for name in FROGLET_PRICE_EVENTS_QUERY FROGLET_PRICE_EXEC_WASM FROGLET_PROVIDER_MAX_TOTAL_DEALS FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS FROGLET_PROVIDER_MAX_TOTAL_QUOTES; do
+      add_env_line "$name" "${!name}"
+    done
+    add_env_line FROGLET_REQUESTER_SPEND_BUDGET_MSAT 0
+    add_env_line FROGLET_PUBLIC_REQUEST_QUOTA "${FROGLET_PUBLIC_REQUEST_QUOTA:-120}"
+    add_env_line FROGLET_EXECUTION_TIMEOUT_SECS "${FROGLET_EXECUTION_TIMEOUT_SECS:-5}"
+    add_env_line FROGLET_WASM_CONCURRENCY_LIMIT "${FROGLET_WASM_CONCURRENCY_LIMIT:-2}"
+    add_env_line FROGLET_PROCESS_CONCURRENCY "${FROGLET_PROCESS_CONCURRENCY:-1}"
+  fi
   write_snippet "${snippet_lines[@]}"
   snippet_lines=()
 }
@@ -321,6 +337,10 @@ while [[ $# -gt 0 ]]; do
       verify=0
       shift
       ;;
+    --paid-only)
+      paid_only=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -330,6 +350,21 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$paid_only" -eq 1 ]]; then
+  case "$rail:$lightning_mode" in
+    lightning:phoenixd) ;;
+    stripe:*)
+      [[ "${FROGLET_STRIPE_SECRET_KEY:-}" == sk_live_* && "${FROGLET_STRIPE_LIVE_CONFIRM:-}" == fresh ]] || fail "--paid-only requires live Stripe credentials and FROGLET_STRIPE_LIVE_CONFIRM=fresh"
+      ;;
+    *) fail "--paid-only supports prepaid phoenixd or live Stripe; mock payments and the direct-only x402 rail cannot protect marketplace deals" ;;
+  esac
+  for name in FROGLET_PRICE_EVENTS_QUERY FROGLET_PRICE_EXEC_WASM FROGLET_PROVIDER_MAX_TOTAL_DEALS FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS FROGLET_PROVIDER_MAX_TOTAL_QUOTES; do
+    require_env "$name"
+    [[ "${!name}" =~ ^(0|[1-9][0-9]*)$ ]] || fail "$name must be a non-negative integer"
+  done
+  [[ "$FROGLET_PRICE_EVENTS_QUERY" != 0 && "$FROGLET_PRICE_EXEC_WASM" != 0 ]] || fail "--paid-only requires positive built-in prices"
+fi
 
 case "$rail" in
   lightning)
@@ -397,6 +432,7 @@ case "$rail" in
     begin_snippet
     add_env_line FROGLET_PAYMENT_BACKEND stripe
     add_env_line FROGLET_STRIPE_SECRET_KEY "${FROGLET_STRIPE_SECRET_KEY}"
+    add_optional_env_line FROGLET_STRIPE_LIVE_CONFIRM
     add_env_line FROGLET_STRIPE_API_VERSION "${FROGLET_STRIPE_API_VERSION:-2026-04-22.preview}"
     add_optional_env_line FROGLET_STRIPE_WEBHOOK_SECRET
     write_current_snippet

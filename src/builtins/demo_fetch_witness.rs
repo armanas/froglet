@@ -63,6 +63,9 @@ struct FetchWitnessOutput {
 pub struct FetchWitnessHandler;
 
 impl BuiltinServiceHandler for FetchWitnessHandler {
+    fn worker_spec(&self) -> Result<crate::builtin_worker::WorkerSpec, String> {
+        crate::builtin_worker::WorkerSpec::local("demo.fetch-witness", serde_json::json!({}))
+    }
     fn execute<'a>(
         &'a self,
         input: Value,

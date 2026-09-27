@@ -49,6 +49,9 @@ pub fn fetch(
     request: HttpFetchRequest,
     deadline: Option<Instant>,
 ) -> Result<Value, String> {
+    if policy.operations_only {
+        return Err("raw HTTP fetch is disabled; use an approved operation".into());
+    }
     require_capability(granted_capabilities, WASM_CAPABILITY_HTTP_FETCH)?;
 
     if *http_calls_used >= policy.max_calls_per_execution {
@@ -398,6 +401,7 @@ fn build_resolved_http_client(
         .map(|ip| SocketAddr::new(ip, port))
         .collect();
     crate::tls::reqwest_client_builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(5))
         .redirect(RedirectPolicy::none())
         .resolve_to_addrs(host, &resolved_socket_addrs)
@@ -575,6 +579,8 @@ mod tests {
 
     fn test_policy() -> WasmHttpPolicy {
         WasmHttpPolicy {
+            operations_only: false,
+            operation_hashes: vec![],
             allowed_hosts: vec![
                 "127.0.0.1".to_string(),
                 "localhost.".to_string(),

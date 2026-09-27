@@ -17,6 +17,7 @@ pub fn init_logging() {
 pub use froglet_protocol::canonical_json;
 pub use froglet_protocol::crypto;
 
+pub mod builtin_worker;
 pub mod builtins;
 pub mod cli;
 
@@ -47,6 +48,7 @@ pub mod oci_worker;
 pub mod pricing;
 pub mod process_runtime;
 pub mod protocol;
+pub mod provider_policy;
 pub mod public_quota;
 pub mod python_sandbox;
 pub mod relay_tunnel;
@@ -73,3 +75,5 @@ pub(crate) mod tor;
 pub(crate) mod wasm_db;
 pub(crate) mod wasm_host;
 pub(crate) mod wasm_http;
+
+pub mod http_operation;

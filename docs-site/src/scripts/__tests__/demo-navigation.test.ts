@@ -35,10 +35,18 @@ describe('demo navigation state', () => {
     document.body.innerHTML = '';
   });
 
-  it('labels the next button as Skip while the terminal animation is typing', () => {
+  it('labels the next button as Skip while the terminal animation is typing', async () => {
     initDemo();
 
     const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
     expect(nextBtn.textContent).toBe('Skip');
+
+    // Finish the started animation before jsdom tears down its global rAF.
+    nextBtn.click();
+    for (let tick = 0; tick < 8; tick++) {
+      for (const callback of rafCallbacks.splice(0)) callback(now);
+      await Promise.resolve();
+    }
+    expect(nextBtn.textContent).toBe('Continue');
   });
 });

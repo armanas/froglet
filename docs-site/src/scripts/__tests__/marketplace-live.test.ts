@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initMarketplaceLive } from '../marketplace-live';
+vi.mock('../../data/service-link-verifier', () => ({ verifyServiceLinkEvidence: () => ({ valid: true }) }));
+import { initMarketplaceLive, serviceAvailability } from '../marketplace-live';
 import { getMarketplaceSnapshot } from '../../data/live-snapshot';
 import worker from '../../worker';
 
@@ -45,7 +46,7 @@ describe('marketplace runtime status', () => {
   });
   it('marks a successful snapshot stale when the next request fails', async () => {
     vi.useFakeTimers(); page(); await refresh(snapshot({ providerCount: 3 }));
-    expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('LIVE');
+    expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('CATALOG UPDATED');
     vi.mocked(fetch).mockRejectedValue(new Error('network offline'));
     await vi.advanceTimersByTimeAsync(30_000);
     expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('STALE');
@@ -82,5 +83,52 @@ describe('marketplace runtime status', () => {
     expect(response.status).toBe(502);
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(assets.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('service discovery cards', () => {
+  function cardsPage() {
+    document.body.innerHTML = `<span data-marketplace-field="refresh"></span><main data-marketplace-live>
+      <div data-marketplace-search-form><input data-marketplace-search /><output data-marketplace-search-count></output></div>
+      <select data-marketplace-filter><option value="all">All</option><option value="ready">Ready</option><option value="free">Free</option></select>
+      <div data-marketplace-service-cards></div><p data-marketplace-no-results hidden>No matches</p></main>`;
+  }
+  it('requires an unexpired check and never labels stale data recently checked', () => {
+    const offer = { availability: { status:'healthy', leaseExpiresAt:200, lastCheckedAt:100 } } as any;
+    expect(serviceAvailability(offer, false, 150_000).ready).toBe(true);
+    expect(serviceAvailability(offer, false, 200_000).label).toBe('Check expired');
+    expect(serviceAvailability(offer, true, 150_000).ready).toBe(false);
+    expect(serviceAvailability({} as any).ready).toBe(false);
+  });
+  it('does not advertise incomplete pricing as free or include it in the free filter', async () => {
+    vi.useFakeTimers(); cardsPage();
+    await refresh(snapshot({offers:[{offerId:'unknown-price', providerId:'ab'.repeat(32), pricingKnown:false, settlementMethod:'none', baseFeeMsat:0, successFeeMsat:0}]}));
+    expect(document.querySelector('.service-card-top')?.textContent).toContain('Price unavailable');
+    const filter = document.querySelector('select')!;
+    filter.value='free'; filter.dispatchEvent(new Event('change'));
+    expect(document.querySelector<HTMLElement>('.service-card')?.hidden).toBe(true);
+  });
+  it('renders safe readable links, supports multiword searches and filters, and expires checks', async () => {
+    vi.useFakeTimers(); cardsPage();
+    const provider = 'ab'.repeat(32);
+    await refresh(snapshot({offers:[{
+      offerId:'hla-catalog', providerId:provider, offerKind:'catalog', runtime:'builtin', settlementMethod:'none', baseFeeMsat:0, successFeeMsat:0,
+      sharePath:`/s/${provider}/hla-catalog`, summary:'Skin peptide catalog <script>bad()</script>',
+      availability:{status:'healthy', lastCheckedAt:Date.now()/1000, leaseExpiresAt:Date.now()/1000+20},
+    }]}));
+    expect(document.querySelector('.service-card h3')?.textContent).toBe('HLA Catalog');
+    expect(document.querySelector('.service-card script')).toBeNull();
+    expect(document.querySelector('.service-open')?.getAttribute('href')).toBe(`/s/${provider}/hla-catalog`);
+    const input = document.querySelector('input')!;
+    input.value = 'skin peptide'; input.dispatchEvent(new Event('input'));
+    expect(document.querySelector<HTMLElement>('.service-card')?.hidden).toBe(false);
+    const space = new KeyboardEvent('keydown', {key:' ',bubbles:true,cancelable:true});
+    input.dispatchEvent(space); expect(space.defaultPrevented).toBe(false);
+    const filter = document.querySelector('select')!;
+    filter.value = 'ready'; filter.dispatchEvent(new Event('change'));
+    expect(document.querySelector('[data-marketplace-search-count]')?.textContent).toBe('1 service');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(document.querySelector<HTMLElement>('.service-card')?.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>('[data-marketplace-no-results]')?.hidden).toBe(false);
   });
 });

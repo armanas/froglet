@@ -1,4 +1,65 @@
 import type { MarketplaceOfferSummary, MarketplaceProviderSummary, MarketplaceSnapshot } from '../data/live-snapshot';
+import { serviceName } from '../data/service-presentation';
+
+export function serviceAvailability(offer: MarketplaceOfferSummary, stale = false, now = Date.now()): { label: string; ready: boolean } {
+	if (stale) return { label: 'Status needs refresh', ready: false };
+	const a = offer.availability;
+	if (a?.status === 'healthy' && a.leaseExpiresAt * 1000 > now && a.lastCheckedAt > 0 && a.lastCheckedAt * 1000 <= now + 60_000) return { label: 'Recently checked', ready: true };
+	if (a?.leaseExpiresAt && a.leaseExpiresAt * 1000 <= now) return { label: 'Check expired', ready: false };
+	return { label: a?.status === 'offline' ? 'Offline' : 'Availability not confirmed', ready: false };
+}
+
+const offerDescriptions: Record<string, string> = {
+	'events.query': 'Read events recorded by this Froglet node.',
+	'compute.wasm.v1': 'Run a WebAssembly workload and receive a signed execution receipt.',
+	'compute.execution.v1': 'Run a supported compute workload and receive a signed execution receipt.',
+	'marketplace.provider': 'Look up a provider and its advertised capabilities.',
+	'marketplace.receipts': 'Query execution receipts indexed by the marketplace.',
+	'marketplace.search': 'Search the marketplace for providers and offers.',
+};
+
+function renderServiceCards(root: HTMLElement, offers: MarketplaceOfferSummary[], stale = false): void {
+	const container = root.querySelector('[data-marketplace-service-cards]');
+	if (!container) return;
+	container.replaceChildren();
+	const sorted = [...offers].sort((a, b) => Number(serviceAvailability(b, stale).ready) - Number(serviceAvailability(a, stale).ready));
+	for (const offer of sorted) {
+		const availability = serviceAvailability(offer, stale);
+		const free = offer.pricingKnown !== false && offer.settlementMethod === 'none' && offer.baseFeeMsat === 0 && offer.successFeeMsat === 0;
+		const card = document.createElement('article');
+		card.className = 'service-card';
+		card.dataset.marketplaceSearchRow = '';
+		card.dataset.marketplaceKind = 'offer';
+		card.dataset.ready = String(availability.ready);
+		card.dataset.free = String(free);
+		card.dataset.searchText = `${offer.offerId} ${offer.providerId} ${offer.runtime} ${offer.summary || ''}`;
+		const top = document.createElement('div'); top.className = 'service-card-top';
+		const badge = document.createElement('span'); badge.className = 'service-availability'; badge.dataset.ready = String(availability.ready); badge.textContent = availability.label;
+		const price = document.createElement('strong'); price.textContent = offer.pricingKnown === false ? 'Price unavailable' : free ? 'Free' : `${offer.baseFeeMsat / 1000} + ${offer.successFeeMsat / 1000} sats`;
+		top.append(badge, price);
+		const heading = document.createElement('h3'); heading.textContent = serviceName(offer.serviceId || offer.offerId);
+		const description = document.createElement('p'); description.className = 'service-description';
+		description.textContent = offer.summary || offerDescriptions[offer.offerKind] || 'Provider-published service. Inspect its input and output contract before calling.';
+		const identity = document.createElement('p'); identity.className = 'service-meta'; identity.textContent = `Provider ${compactId(offer.providerId)}`; identity.title = offer.providerId;
+		const observed = document.createElement('p'); observed.className = 'service-meta';
+		observed.textContent = offer.availability?.lastCheckedAt ? `Provider check: ${formatSnapshotTime(new Date(offer.availability.lastCheckedAt * 1000).toISOString())} UTC` : 'No recent provider check in the catalog.';
+		const actions = document.createElement('div'); actions.className = 'service-actions';
+		const validPath = offer.sharePath && /^\/s\/[a-f0-9]{64}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(offer.sharePath);
+		const link = document.createElement('a'); link.className = 'service-open';
+		link.href = validPath ? offer.sharePath! : '/marketplace/overview/';
+		link.textContent = validPath ? 'Open service →' : 'How to use this offer →';
+		actions.append(link);
+		if (validPath) {
+			const share = document.createElement('a'); share.href = `${offer.sharePath}#share`; share.textContent = 'Share / QR';
+			actions.append(share);
+		}
+		card.append(top, heading, description, identity, observed);
+		if (!free && offer.pricingKnown !== false) { const terms = document.createElement('p'); terms.className = 'service-meta'; terms.textContent = 'Price is base + success fee; inspect payment terms before use.'; card.append(terms); }
+		card.append(actions); container.append(card);
+	}
+	if (!offers.length) { const empty = document.createElement('p'); empty.textContent = 'No services are listed in this snapshot.'; container.append(empty); }
+	setText(root, '[data-marketplace-field="recentServices"]', offers.filter(offer => serviceAvailability(offer, stale).ready).length);
+}
 
 function compactId(value: string): string {
 	if (value.length <= 18) return value;
@@ -132,7 +193,7 @@ function renderOfferRow(offer: MarketplaceOfferSummary): HTMLTableRowElement {
 		offer.offerId,
 		offer.runtime || 'n/a',
 		offer.settlementMethod || 'n/a',
-		String(offer.baseFeeMsat + offer.successFeeMsat),
+		offer.pricingKnown === false ? 'Price unavailable' : String(offer.baseFeeMsat + offer.successFeeMsat),
 		compactId(offer.providerId),
 	]) {
 		const cell = document.createElement('td');
@@ -223,29 +284,26 @@ function initMarketplaceSearch(root: HTMLElement): () => void {
 			.split(/\s+/)
 			.filter(Boolean);
 		const rows = Array.from(root.querySelectorAll<HTMLElement>('[data-marketplace-search-row]'));
+		const filter = root.querySelector<HTMLSelectElement>('[data-marketplace-filter]')?.value || 'all';
 		let shown = 0;
 
 		for (const row of rows) {
-			const visible = terms.length === 0 || terms.every((term) => searchableText(row).includes(term));
+			const matches = terms.length === 0 || terms.every((term) => searchableText(row).includes(term));
+			const visible = matches && (row.dataset.marketplaceKind !== 'offer' || filter === 'all' || (filter === 'ready' && row.dataset.ready === 'true') || (filter === 'free' && row.dataset.free === 'true'));
 			row.hidden = !visible;
-			if (visible) shown += 1;
+			if (visible && row.dataset.marketplaceKind === 'offer') shown += 1;
 		}
 
+		const empty = root.querySelector<HTMLElement>('[data-marketplace-no-results]');
+		if (empty) empty.hidden = shown !== 0 || root.dataset.catalogLoaded !== 'true';
 		if (count) {
-			count.textContent = terms.length === 0
-				? 'All indexed rows'
-				: `${shown} match${shown === 1 ? '' : 'es'}`;
+			count.textContent = root.dataset.catalogLoaded === 'true' ? `${shown} service${shown === 1 ? '' : 's'}` : 'Loading';
 		}
 	};
 
 	input.addEventListener('input', apply);
+	root.querySelector('[data-marketplace-filter]')?.addEventListener('change', apply);
 	form?.addEventListener('click', () => input.focus());
-	form?.addEventListener('keydown', (event) => {
-		if (event.key === 'Enter' || event.key === ' ') {
-			event.preventDefault();
-			input.focus();
-		}
-	});
 	form?.addEventListener('submit', (event) => {
 		event.preventDefault();
 		apply();
@@ -356,13 +414,14 @@ function renderOfferBook(root: ParentNode, offers: MarketplaceOfferSummary[]): v
 }
 
 function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void {
+	root.dataset.catalogLoaded = 'true';
 	const successCount = snapshot.providers.reduce((sum, provider) => sum + provider.successCount, 0);
 	const failureCount = snapshot.providers.reduce((sum, provider) => sum + provider.failureCount, 0);
 	const totalReceipts = successCount + failureCount;
 	const freeOffers = snapshot.offers.filter(
-		(offer) => offer.settlementMethod === 'none' && offer.baseFeeMsat === 0 && offer.successFeeMsat === 0,
+		(offer) => offer.pricingKnown !== false && offer.settlementMethod === 'none' && offer.baseFeeMsat === 0 && offer.successFeeMsat === 0,
 	).length;
-	const paidOffers = snapshot.offers.length - freeOffers;
+	const paidOffers = snapshot.offers.filter(offer => offer.pricingKnown !== false).length - freeOffers;
 	const freeShare = snapshot.offers.length === 0 ? 0 : Math.round((freeOffers / snapshot.offers.length) * 100);
 	const primaryProvider = snapshot.providers[0];
 	const endpointCount = snapshot.providers.filter((provider) => provider.endpoint.length > 0).length;
@@ -400,6 +459,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot): void 
 	setText(root, '[data-marketplace-field="offerNames"]', offerNames);
 	setText(root, '[data-marketplace-field="ticker"]', offerNames);
 	setBar(root, '.terminal-meter', freeShare);
+	renderServiceCards(root, snapshot.offers, Date.now() - Date.parse(snapshot.checkedAt) > 90_000);
 	renderProviderTable(root, snapshot.providers);
 	renderOfferBook(root, snapshot.offers);
 	renderServicesBreakdown(root, snapshot.offers);
@@ -416,9 +476,13 @@ export function initMarketplaceLive(): void {
 	function state(status: 'live' | 'stale' | 'unavailable', detail?: string) {
 		root!.dataset.status = status;
 		const badge = document.querySelector<HTMLElement>('[data-marketplace-field="refresh"]');
-		if (badge) { badge.textContent = status.toUpperCase(); badge.dataset.status = status; }
+		if (badge) { badge.textContent = status === 'live' ? 'CATALOG UPDATED' : status.toUpperCase(); badge.dataset.status = status; }
+		if (lastSnapshot) { renderServiceCards(root!, lastSnapshot.offers, status !== 'live'); applySearch(); }
 		if (detail) setText(root!, '[data-marketplace-field="detail"]', detail);
 		if (!lastSnapshot) {
+			const cards = root!.querySelector('[data-marketplace-service-cards]');
+			if (cards) cards.textContent = 'The catalog is unavailable. Retrying automatically.';
+			setText(root!, '[data-marketplace-search-count]', 'Unavailable');
 			for (const field of ['froglets', 'offers', 'freeOffers', 'paidOffers', 'receipts', 'successRate', 'settledSats']) {
 				setText(root!, `[data-marketplace-field="${field}"]`, '—');
 			}

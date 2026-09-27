@@ -27,6 +27,8 @@ pub struct PrepareRequest {
     #[serde(default)]
     pub service_id: Option<String>,
     #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
     pub selection: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub csv_columns: Vec<PublicationCsvColumn>,
@@ -47,7 +49,7 @@ pub struct Preparation {
 
 pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     let _json = pop_flag(&mut args, "--json");
-    let request_path = pop_kv(&mut args, "--request").ok_or_else(|| CliError::BadArgs("usage: froglet-node prepare-service --request FILE [--json]; FILE contains source, destination, service_id, selection and optional csv_columns/example_input".into()))?;
+    let request_path = pop_kv(&mut args, "--request").ok_or_else(|| CliError::BadArgs("usage: froglet-node prepare-service --request FILE [--json]; FILE contains source, destination, service_id, selection and optional summary/csv_columns/example_input".into()))?;
     if !args.is_empty() {
         return Err(CliError::BadArgs(
             "unexpected prepare-service arguments".into(),
@@ -143,7 +145,7 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     {
         return Ok(
             json!({"status":"decision_required", "stage":"select_data", "collections":description,
-            "source_sha256":source_hash, "next_action":"Propose the useful tables and fields. Supply an explicit new destination, service_id, and selection. CSV requires explicit csv_columns types validated against every row. Wasm requires example_input."}),
+            "source_sha256":source_hash, "next_action":"Propose the useful tables and fields and a plain-language summary. Supply an explicit new destination, service_id, and selection. CSV requires explicit csv_columns types validated against every row. Wasm requires example_input."}),
         );
     }
     let service_id = request.service_id.as_deref().unwrap();
@@ -157,6 +159,15 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     {
         return Err(bad(
             "service_id must contain 1–63 lowercase letters, digits, or interior hyphens",
+        ));
+    }
+    if let Some(summary) = &request.summary
+        && (summary.trim().is_empty()
+            || summary.len() > 500
+            || summary.chars().any(char::is_control))
+    {
+        return Err(bad(
+            "summary must be 1–500 non-control characters describing what the service provides",
         ));
     }
     let requested_destination = request.destination.as_ref().unwrap();
@@ -283,7 +294,22 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
         "snapshot-{snapshot_hash}.{}",
         if wasm { "wasm" } else { "json" }
     );
-    let mut manifest = json!({"schema_version":"froglet-service/v4", "service_id":service_id, "summary":format!("Shared {}", service_id), "hosting":{"default":"relay"}, "settlement":{"method":"none"}, "price":{"sats":0}, "verification":{"input":example_input}});
+    let summary = request.summary.clone().unwrap_or_else(|| {
+        if wasm {
+            format!("Run the {service_id} function")
+        } else {
+            format!(
+                "Query selected {} fields from this catalog",
+                request
+                    .selection
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    });
+    let mut manifest = json!({"schema_version":"froglet-service/v4", "service_id":service_id, "summary":summary, "hosting":{"default":"relay"}, "settlement":{"method":"none"}, "price":{"sats":0}, "verification":{"input":example_input}});
     if wasm {
         manifest["runtime"] = json!("wasm");
         manifest["package_kind"] = json!("inline_module");
@@ -828,6 +854,7 @@ mod tests {
             source: root.join(source),
             destination: Some(root.join("service")),
             service_id: Some("catalog".into()),
+            summary: Some("Browse a small public produce catalog".into()),
             selection: BTreeMap::from([("rows".into(), vec!["id".into(), "name".into()])]),
             csv_columns: vec![],
             example_input: None,
@@ -846,6 +873,11 @@ mod tests {
         let output = prepare(req.clone(), &root.join("state")).await.unwrap();
         assert_eq!(output["status"], "prepared");
         let record = read_preparation(&root.join("service")).unwrap().unwrap();
+        assert!(
+            fs::read_to_string(root.join("service/froglet-service.toml"))
+                .unwrap()
+                .contains("Browse a small public produce catalog")
+        );
         let snapshot = fs::read_to_string(root.join("service").join(record.snapshot_file)).unwrap();
         assert!(!snapshot.contains("secret"));
         assert!(!snapshot.contains("never publish"));

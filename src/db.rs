@@ -730,7 +730,26 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         "INTEGER",
     )?;
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS deal_quarantine (
+        "CREATE TABLE IF NOT EXISTS provider_admissions (
+            admission_key TEXT PRIMARY KEY,
+            max_runtime_ms INTEGER NOT NULL CHECK (max_runtime_ms >= 0)
+         );
+         CREATE TABLE IF NOT EXISTS provider_allowance (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            issued_quotes INTEGER NOT NULL CHECK (issued_quotes >= 0)
+         );
+         INSERT OR IGNORE INTO provider_allowance (id, issued_quotes) VALUES (1, 0);
+         CREATE TABLE IF NOT EXISTS provider_control (id INTEGER PRIMARY KEY CHECK (id = 1), pause_reason TEXT);
+         INSERT OR IGNORE INTO provider_control (id, pause_reason) VALUES (1, NULL);
+         CREATE TABLE IF NOT EXISTS provider_invites (
+            token_hash TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            max_requests INTEGER NOT NULL CHECK (max_requests > 0),
+            used_requests INTEGER NOT NULL DEFAULT 0 CHECK (used_requests >= 0),
+            revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0, 1))
+         );
+         CREATE TABLE IF NOT EXISTS deal_quarantine (
             quarantine_id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_rowid INTEGER NOT NULL,
             deal_id TEXT,

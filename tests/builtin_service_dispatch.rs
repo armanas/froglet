@@ -67,6 +67,9 @@ impl EchoHandler {
 }
 
 impl BuiltinServiceHandler for EchoHandler {
+    fn worker_spec(&self) -> Result<froglet::builtin_worker::WorkerSpec, String> {
+        froglet::builtin_worker::WorkerSpec::local("demo.echo", json!({}))
+    }
     fn execute<'a>(
         &'a self,
         input: Value,
@@ -125,6 +128,7 @@ fn create_test_state_with_handler(
         stripe: None,
         buyer_stripe: None,
         buyer_phoenixd: None,
+        provider_policy: Default::default(),
         requester_spend: Default::default(),
         storage: StorageConfig {
             data_dir: temp_dir.clone(),
@@ -201,6 +205,10 @@ fn create_test_state_with_handler(
         event_publish_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
             std::time::Duration::from_secs(60),
+        )),
+        public_request_quota: std::sync::Arc::new(froglet::public_quota::IdentityQuota::new(
+            6000,
+            std::time::Duration::from_secs(900),
         )),
         quote_create_quota: Arc::new(froglet::public_quota::IdentityQuota::new(
             1000,
@@ -309,41 +317,10 @@ async fn builtin_service_handler_dispatch_through_jobs_api() {
     )
     .expect("builtin execution workload");
 
-    let response = app
-        .oneshot(runtime_request(
-            axum::http::Method::POST,
-            "/v1/node/jobs",
-            Some(json!({
-                "kind": "execution",
-                "execution": execution,
-                "idempotency_key": "builtin-dispatch-test",
-            })),
-        ))
-        .await
-        .expect("job create response");
-
-    let (status, payload) = response_json(response).await;
-    assert_eq!(
-        status,
-        StatusCode::ACCEPTED,
-        "job should be accepted: {payload}"
-    );
-
-    let _job_id = payload["job_id"].as_str().expect("job_id").to_string();
-
-    // Jobs execute asynchronously. Wait for the handler to be called.
-    for _ in 0..20 {
-        if echo.calls() > 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
-    assert_eq!(
-        echo.calls(),
-        1,
-        "handler should have been called exactly once"
-    );
+    let result = run_job_to_terminal(&app, execution, "builtin-dispatch-test").await;
+    assert_eq!(result, json!({"query":"hello froglet"}));
+    // Real output came from the worker; the in-process execute method was not called.
+    assert_eq!(echo.calls(), 0);
 }
 
 /// Test: the events.query builtin still works even with custom handlers registered,
@@ -511,7 +488,7 @@ async fn sqlite_data_query_builtin_invokes_through_jobs_api() {
 }
 
 #[tokio::test]
-async fn repeated_csv_native_invocation_reuses_validated_handler() {
+async fn repeated_csv_native_invocation_reuses_disk_index_in_fresh_workers() {
     use froglet_protocol::publication::{
         PublicationCsvColumn, PublicationCsvColumnType, PublicationCsvSchema,
         PublicationDataFormat, PublicationDataSource,
@@ -573,11 +550,12 @@ async fn repeated_csv_native_invocation_reuses_validated_handler() {
     let first = run_job_to_terminal(&app, workload("Ada"), "csv-cache-first").await;
     assert_eq!(first["rows"], json!([{"name": "Ada"}]));
 
-    // A second invocation can only succeed after these immutable inputs are
-    // removed if the already-validated handler is reused rather than opened
-    // and validated again.
-    std::fs::remove_file(&source_path).expect("remove staged CSV after first invocation");
-    std::fs::remove_file(&schema_path).expect("remove staged schema after first invocation");
+    let cache_path = publication_root.join(format!("{package_digest}.csv.sqlite"));
+    let before = std::fs::metadata(&cache_path).unwrap().modified().unwrap();
     let second = run_job_to_terminal(&app, workload("Grace"), "csv-cache-second").await;
     assert_eq!(second["rows"], json!([{"name": "Grace"}]));
+    assert_eq!(
+        std::fs::metadata(cache_path).unwrap().modified().unwrap(),
+        before
+    );
 }

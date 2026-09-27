@@ -695,13 +695,18 @@ impl WasmPolicy {
         let mut capabilities = Vec::new();
 
         if let Some(http) = &self.http {
-            capabilities.push(crate::wasm::WASM_CAPABILITY_HTTP_FETCH.to_string());
-            for profile in http.auth_profiles.keys() {
-                capabilities.push(format!(
-                    "{}{}",
-                    crate::wasm::WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX,
-                    profile
-                ));
+            for hash in &http.operation_hashes {
+                capabilities.push(format!("net.http.operation.{hash}"));
+            }
+            if !http.operations_only {
+                capabilities.push(crate::wasm::WASM_CAPABILITY_HTTP_FETCH.to_string());
+                for profile in http.auth_profiles.keys() {
+                    capabilities.push(format!(
+                        "{}{}",
+                        crate::wasm::WASM_CAPABILITY_HTTP_FETCH_AUTH_PREFIX,
+                        profile
+                    ));
+                }
             }
         }
 
@@ -723,6 +728,11 @@ impl WasmPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmHttpPolicy {
+    /// Only exact published operation digests may use HTTP credentials in this mode.
+    #[serde(default)]
+    pub operations_only: bool,
+    #[serde(default)]
+    pub operation_hashes: Vec<String>,
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
     #[serde(default)]
@@ -794,44 +804,10 @@ pub struct GpuConfig {
 
 impl GpuConfig {
     pub fn advertised_capabilities(&self) -> Vec<String> {
-        if !self.enabled || self.count == 0 {
-            return Vec::new();
-        }
-        let mut capabilities = vec!["compute.gpu".to_string()];
-        if let Some(vendor) = self.vendor.as_deref().and_then(gpu_capability_segment) {
-            capabilities.push(format!("compute.gpu.vendor.{vendor}"));
-        }
-        if let Some(runtime) = self
-            .container_runtime
-            .as_deref()
-            .and_then(gpu_capability_segment)
-        {
-            capabilities.push(format!("compute.gpu.runtime.{runtime}"));
-        }
-        capabilities.sort();
-        capabilities.dedup();
-        capabilities
+        // Inventory is operator-supplied metadata, not execution evidence. The
+        // reference OCI executor does not attach or account for GPU devices.
+        Vec::new()
     }
-}
-
-fn gpu_capability_segment(value: &str) -> Option<String> {
-    let segment = value
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .filter_map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                Some(character)
-            } else if character.is_ascii_whitespace() {
-                Some('-')
-            } else {
-                None
-            }
-        })
-        .collect::<String>()
-        .trim_matches(['-', '_', '.'])
-        .to_string();
-    (!segment.is_empty()).then_some(segment)
 }
 
 /// Short-lived session-pool config for the public `try.froglet.dev` surface.
@@ -945,6 +921,7 @@ pub struct NodeConfig {
     pub buyer_stripe: Option<BuyerStripeConfig>,
     pub buyer_phoenixd: Option<BuyerPhoenixdConfig>,
     pub requester_spend: RequesterSpendConfig,
+    pub provider_policy: crate::provider_policy::ProviderPolicy,
     pub storage: StorageConfig,
     pub wasm: WasmConfig,
     pub gpu: GpuConfig,
@@ -973,6 +950,19 @@ pub struct NodeConfig {
 
 impl NodeConfig {
     pub fn from_env() -> Result<Self, String> {
+        let provider_policy = crate::provider_policy::ProviderPolicy {
+            require_payment: env_bool("FROGLET_PROVIDER_REQUIRE_PAYMENT", false)?,
+            access_mode: crate::provider_policy::AccessMode::parse(
+                &env::var("FROGLET_PROVIDER_ACCESS_MODE").unwrap_or_else(|_| "open".into()),
+            )?,
+            invite_token_hashes: load_invite_hashes()?,
+            min_free_bytes: env_u64("FROGLET_PROVIDER_MIN_FREE_BYTES", 0)?,
+            max_database_bytes: provider_allowance_env("FROGLET_PROVIDER_MAX_DATABASE_BYTES")?,
+            max_total_deals: provider_allowance_env("FROGLET_PROVIDER_MAX_TOTAL_DEALS")?,
+            max_total_runtime_ms: provider_allowance_env("FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS")?,
+            max_total_quotes: provider_allowance_env("FROGLET_PROVIDER_MAX_TOTAL_QUOTES")?,
+        };
+        provider_policy.validate()?;
         let network_mode = match env::var("FROGLET_NETWORK_MODE") {
             Ok(val) => NetworkMode::parse(&val)?,
             Err(_) => NetworkMode::Clearnet,
@@ -1063,6 +1053,9 @@ impl NodeConfig {
                     .to_string()
             })?;
             require_stripe_live_confirm("FROGLET_STRIPE_SECRET_KEY", &seller_key)?;
+            if provider_policy.require_payment && !seller_key.starts_with("sk_live_") {
+                return Err("paid-only providers require a live Stripe key; sandbox payments cannot purchase real compute".into());
+            }
         }
 
         let stripe = if stripe_active {
@@ -1276,6 +1269,7 @@ impl NodeConfig {
             Some(path) => Some(load_wasm_policy(path, &db_path)?),
             None => None,
         };
+        validate_http_operation_admission(wasm_policy.as_ref(), &provider_policy)?;
         let confidential_policy_path = env::var("FROGLET_CONFIDENTIAL_POLICY_PATH")
             .ok()
             .map(PathBuf::from);
@@ -1335,6 +1329,11 @@ impl NodeConfig {
         let marketplace_allow_local = env_bool("FROGLET_MARKETPLACE_ALLOW_LOCAL", false)?;
         let default_public_quota = PublicQuotaConfig::default();
         let public_quota = PublicQuotaConfig {
+            requests_per_window: env_u64(
+                "FROGLET_PUBLIC_REQUEST_QUOTA",
+                u64::from(default_public_quota.requests_per_window),
+            )?
+            .clamp(1, 100_000) as u32,
             hosted_trial_deals_per_identity: env_u64(
                 "FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY",
                 u64::from(default_public_quota.hosted_trial_deals_per_identity),
@@ -1404,6 +1403,7 @@ impl NodeConfig {
             buyer_stripe: BuyerStripeConfig::from_env()?,
             buyer_phoenixd: BuyerPhoenixdConfig::from_env()?,
             requester_spend: RequesterSpendConfig::from_env()?,
+            provider_policy,
             storage: StorageConfig {
                 data_dir,
                 db_path,
@@ -1436,6 +1436,56 @@ impl NodeConfig {
             public_quota,
             hosted_trial_origin_secret,
         })
+    }
+}
+
+fn load_invite_hashes() -> Result<Vec<String>, String> {
+    let Some(path) = env::var_os("FROGLET_PROVIDER_INVITE_HASH_FILE") else {
+        return Ok(Vec::new());
+    };
+    read_invite_hashes(std::path::Path::new(&path))
+}
+
+fn read_invite_hashes(path: &std::path::Path) -> Result<Vec<String>, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "cannot read invite-hash file")?;
+    if !metadata.is_file() || metadata.len() > 64 * 1024 {
+        return Err("invite-hash file must be a regular file of at most 64 KiB".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("invite-hash file must be private (mode 0600)".into());
+        }
+    }
+    let content = std::fs::read_to_string(path).map_err(|_| "cannot read invite-hash file")?;
+    let hashes: Vec<String> = content
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    if hashes.len() > 1000
+        || hashes.iter().any(|s| {
+            s.len() != 64
+                || !s
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    {
+        return Err("invite file must contain at most 1000 lowercase SHA-256 token hashes".into());
+    }
+    Ok(hashes)
+}
+
+fn provider_allowance_env(name: &str) -> Result<Option<u64>, String> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("{name} must be a non-negative integer")),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err(format!("{name} must be valid UTF-8")),
     }
 }
 
@@ -1570,6 +1620,22 @@ fn normalize_public_base_url(url: &str) -> Result<String, String> {
     }
 }
 
+pub(crate) fn validate_http_operation_admission(
+    wasm: Option<&WasmPolicy>,
+    provider: &crate::provider_policy::ProviderPolicy,
+) -> Result<(), String> {
+    if wasm
+        .and_then(|p| p.http.as_ref())
+        .is_some_and(|http| !http.operation_hashes.is_empty())
+    {
+        if provider.access_mode == crate::provider_policy::AccessMode::Open {
+            return Err("approved HTTP operations require an explicit private, invite, trial or paid provider access mode and finite cumulative allowances".into());
+        }
+        provider.validate()?;
+    }
+    Ok(())
+}
+
 fn load_wasm_policy(path: &Path, internal_db_path: &Path) -> Result<WasmPolicy, String> {
     let document = fs::read_to_string(path).map_err(|error| {
         format!(
@@ -1578,11 +1644,34 @@ fn load_wasm_policy(path: &Path, internal_db_path: &Path) -> Result<WasmPolicy, 
         )
     })?;
     let policy: WasmPolicy = toml::from_str(&document).map_err(|error| {
+        let missing = if error.message().starts_with("missing field ") { error.message() } else { "invalid TOML policy" };
         format!(
-            "Failed to parse FROGLET_WASM_POLICY_PATH {}: {error}",
-            path.display()
+            "Failed to parse FROGLET_WASM_POLICY_PATH {} at {:?}: {missing}; source withheld because it may contain credentials",
+            path.display(), error.span(),
         )
     })?;
+    if policy
+        .http
+        .as_ref()
+        .is_some_and(|http| http.operations_only && !http.auth_profiles.is_empty())
+    {
+        let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() {
+            return Err(
+                "HTTP operation credential policy must be a regular file, not a symlink".into(),
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.mode() & 0o777 != 0o600 || metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(
+                    "HTTP operation credential policy must be owned by this user with mode 0600"
+                        .into(),
+                );
+            }
+        }
+    }
     validate_wasm_policy(&policy, internal_db_path)?;
     Ok(policy)
 }
@@ -1603,6 +1692,22 @@ fn load_confidential_policy(
 /// be aware this is a startup-time check, not a runtime enforcement.
 fn validate_wasm_policy(policy: &WasmPolicy, internal_db_path: &Path) -> Result<(), String> {
     if let Some(http) = &policy.http {
+        if !http.operation_hashes.is_empty() && !http.operations_only {
+            return Err("HTTP operation hashes require operations_only=true; general HTTP access cannot share operation credentials".into());
+        }
+        if http.operation_hashes.len() > 128
+            || http.operation_hashes.iter().any(|hash| {
+                hash.len() != 64
+                    || !hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        {
+            return Err(
+                "HTTP operation_hashes must contain at most 128 lowercase SHA-256 hashes".into(),
+            );
+        }
+
         if http.max_calls_per_execution == 0 {
             return Err(
                 "Wasm HTTP policy max_calls_per_execution must be greater than zero".into(),
@@ -1987,6 +2092,69 @@ header_value = "Bearer token"
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn operation_policy_credentials_require_private_file_and_errors_hide_source() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.toml");
+        let source = format!(
+            r#"
+[http]
+operations_only = true
+operation_hashes = ["{}"]
+allowed_hosts = ["api.example.com"]
+[http.auth_profiles.example]
+scheme = "https"
+host = "api.example.com"
+port = 443
+path_prefix = "/v1"
+header_name = "authorization"
+header_value = "Bearer fixture-secret-redaction"
+"#,
+            "a".repeat(64)
+        );
+        std::fs::write(&path, &source).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            load_wasm_policy(&path, &dir.path().join("node.db"))
+                .unwrap_err()
+                .contains("0600")
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let policy = load_wasm_policy(&path, &dir.path().join("node.db")).unwrap();
+        use crate::provider_policy::{AccessMode, ProviderPolicy};
+        assert!(
+            validate_http_operation_admission(Some(&policy), &ProviderPolicy::default()).is_err()
+        );
+        let mut admission = ProviderPolicy {
+            access_mode: AccessMode::Invite,
+            ..Default::default()
+        };
+        assert!(validate_http_operation_admission(Some(&policy), &admission).is_err());
+        admission.max_total_deals = Some(0);
+        admission.max_total_quotes = Some(0);
+        admission.max_total_runtime_ms = Some(0);
+        validate_http_operation_admission(Some(&policy), &admission).unwrap();
+        let alias = dir.path().join("alias.toml");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert!(
+            load_wasm_policy(&alias, &dir.path().join("node.db"))
+                .unwrap_err()
+                .contains("symlink")
+        );
+        std::fs::write(
+            &path,
+            source.replace(
+                "\"Bearer fixture-secret-redaction\"",
+                "fixture-secret-redaction",
+            ),
+        )
+        .unwrap();
+        let error = load_wasm_policy(&path, &dir.path().join("node.db")).unwrap_err();
+        assert!(!error.contains("fixture-secret-redaction"));
+    }
+
     #[test]
     fn test_load_wasm_policy_rejects_internal_db_handle() {
         let temp_dir = unique_temp_dir("wasm-policy-internal-db");
@@ -2159,5 +2327,22 @@ path = "{}"
             // Non-secret URL stays visible.
             assert!(output.contains("127.0.0.1:974"));
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn invite_hash_files_reject_public_permissions_symlinks_and_bad_content() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invites");
+        std::fs::write(&path, format!("{}\n", "a".repeat(64))).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_invite_hashes(&path).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_invite_hashes(&path).unwrap(), vec!["a".repeat(64)]);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_invite_hashes(&link).is_err());
+        std::fs::write(&path, "raw-secret-is-not-a-hash").unwrap();
+        assert!(read_invite_hashes(&path).is_err());
     }
 }

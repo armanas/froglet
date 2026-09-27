@@ -1,10 +1,54 @@
-# Phase 4 — LLM acceptance matrix
+# Native publishing acceptance
 
-The launch gate for "agent-grade publish actually works." The default
+`run_native_publish.py` exercises the current free native catalog journey with
+a real, fresh Codex session, starting from the public publishing guide. It uses
+synthetic mixed-shape JSON, string IDs with leading zeros, nested stock values,
+and a field the user explicitly excludes. The test supplies ordinary installed
+agent configuration, but no repository checkout, prior conversation, commands,
+query implementation, or corrective hints. It inherits the installed Codex CLI's
+default model; it does not select a model override.
+
+```bash
+python3 tests/llm_acceptance/run_native_publish.py \
+  --froglet-config /absolute/path/to/project/.codex/config.toml --mode mcp
+python3 tests/llm_acceptance/run_native_publish.py \
+  --froglet-config /absolute/path/to/project/.codex/config.toml --mode cli
+python3 tests/llm_acceptance/run_native_publish.py \
+  --froglet-config /absolute/path/to/project/.codex/config.toml --mode discovery
+python3 -m unittest discover -s tests/llm_acceptance -v
+```
+
+Requires Python 3.11+, a signed-in Codex CLI, network access, and an existing
+running native Froglet installation. The CLI scenario exposes the installation
+record in `.mcp.json` without attaching the tool, so discovery must recover the
+exact binary and environment even when an old binary occupies `PATH`. The
+`discovery` scenario supplies neither MCP nor a project installation record: the
+agent must discover the existing user service. The validator still receives the
+expected profile privately to check the resulting identity and plan. No scenario
+installs or restarts anything. Each **stops at exact public consent**;
+it does not approve or publish. The runner independently checks the original
+source, the actual served snapshot, every selected value, excluded data absence,
+Froglet's local example, and the daemon's exact consent hash. A model saying
+"success" is insufficient. Outputs, transcripts, and an explicit summary go to
+the printed temporary directory. Synthetic preparation records remain registered
+locally for inspection; no public service should be created.
+
+This is a repeatable acceptance probe, not universal LLM compatibility or a
+statistical success-rate estimate. Installation, other agents/platforms, approved
+public execution, and a separate recipient still need their own checks. Claude
+Code must be signed in before its independent journey can be qualified.
+
+## Historical Python publication matrix
+
+The older matrix below tests a different Python/JavaScript publication surface.
+Its count gate **does not qualify the current native catalog journey** and must
+not be used as evidence that a first-time native agent can publish a catalog.
+
+The historical launch gate for "agent-grade publish actually works." The default
 matrix is **30 cells** (5 prompts × 2 Claude models × 3 hosting
 backends) and the pass bar is **≥27 of 30 (≥90%, with both a count
-and a percentage gate that must clear)**. If the matrix passes, Phase
-6 (public launch) is unblocked. If it fails, the failure category
+and a percentage gate that must clear)**. In that plan, passing unblocked Phase
+6 (public launch). If it fails, the failure category
 tells us what to fix.
 
 GPT-4 / OpenAI driving is intentionally NOT in the default matrix —

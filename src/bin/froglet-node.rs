@@ -10,6 +10,14 @@ async fn main() -> ExitCode {
 
     let args: Vec<String> = std::env::args().collect();
     let subcommand = args.get(1).map(String::as_str);
+    if subcommand == Some(froglet::builtin_worker::SUBCOMMAND) {
+        let result = match froglet::builtin_worker::read_request() {
+            Ok(request) => froglet::builtin_worker::dispatch_standard(request).await,
+            Err(error) => Err(error),
+        };
+        froglet::builtin_worker::write_result(result);
+        return ExitCode::SUCCESS;
+    }
 
     // CLI subcommands (Phase 2 of agent-grade publish): cli::* modules
     // handle init / build / publish / invoke / whoami. They share a
@@ -142,9 +150,11 @@ make_sync_handler!(ConfigureAgentHandler, froglet::cli::configure_agent::run);
 make_async_handler!(BuildHandler, froglet::cli::build::run);
 make_async_handler!(PublishHandler, froglet::cli::publish::run);
 make_async_handler!(WhoamiHandler, froglet::cli::whoami::run);
+make_async_handler!(SafeguardsHandler, froglet::cli::safeguards::run);
 make_async_handler!(InvokeHandler, froglet::cli::invoke::run);
 make_async_handler!(McpHandler, froglet::cli::mcp::run);
 make_async_handler!(PrepareHandler, froglet::cli::prepare::run);
+make_async_handler!(PrepareHttpHandler, froglet::cli::http_service::run);
 make_sync_handler!(UpdatesHandler, froglet::cli::prepare::run_updates);
 make_async_handler!(DoctorHandler, froglet::cli::doctor::run);
 make_async_handler!(StatusHandler, froglet::local_status::run);
@@ -158,8 +168,10 @@ fn lookup_cli_handler(name: &str) -> Option<Box<dyn CliHandler>> {
         "build" => Some(Box::new(BuildHandler)),
         "publish" => Some(Box::new(PublishHandler)),
         "whoami" => Some(Box::new(WhoamiHandler)),
+        "safeguards" => Some(Box::new(SafeguardsHandler)),
         "invoke" => Some(Box::new(InvokeHandler)),
         "mcp" => Some(Box::new(McpHandler)),
+        "prepare-http-service" => Some(Box::new(PrepareHttpHandler)),
         "prepare-service" => Some(Box::new(PrepareHandler)),
         "check-updates" => Some(Box::new(UpdatesHandler)),
         "doctor" => Some(Box::new(DoctorHandler)),
@@ -228,9 +240,17 @@ fn print_help() {
            froglet-node build                    validate manifests + build artifact (no publish)\n  \
            froglet-node publish [--host X]       publish service to marketplace via the local daemon\n  \
            froglet-node whoami                   print identity + daemon info\n  \
-           froglet-node invoke <id> [input]      invoke a local service or an exact remote provider/service\n\
+           froglet-node safeguards status       inspect effective limits, activity and pause state\n  \
+           froglet-node safeguards pause        stop new admissions without clearing usage\n  \
+           froglet-node safeguards resume       resume within remaining allowances\n  \
+           froglet-node safeguards prune-cache  remove disposable indexes older than 24 hours\n  \
+           froglet-node safeguards invite-create  issue an expiring invitation to a private file\n  \
+           froglet-node safeguards invite-list    list invitation usage and expiry\n  \
+           froglet-node safeguards invite-revoke  revoke an invitation immediately\n  \
+           froglet-node invoke <id|share-url> [input]  invoke a service; share URLs require verified free terms\n\
            froglet-node mcp [--probe]            native agent MCP bridge / command-line probe\n\
          \n\
+           froglet-node prepare-http-service --request FILE  prepare a fixed HTTP operation\n\
            froglet-node prepare-service --request FILE  inspect or prepare a selected catalog/Wasm service\n\
            froglet-node check-updates --json     check registered source files\n\
            froglet-node doctor --json            diagnose installation, runtime, relay, and agent\n\

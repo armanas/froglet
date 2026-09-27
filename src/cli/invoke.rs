@@ -58,11 +58,15 @@ pub struct InvokeOptions {
     pub runtime_url: String,
     /// Bearer token for the runtime API.
     pub runtime_token: String,
+    /// Private invitation file; contents are sent only to the authenticated local runtime.
+    pub access_token_file: Option<PathBuf>,
     /// Caller-asserted provider id; remote calls verify this against the service,
     /// signed publication revision (when supplied), quote, and receipt.
     pub provider_id_override: Option<String>,
     /// Reuse this key only to reconcile the same invocation after uncertainty.
     pub idempotency_key: Option<String>,
+    /// Explicit per-call Lightning price cap. Remote calls default to zero.
+    pub max_price_sats: Option<u64>,
     /// How long to poll for a terminal deal state. Zero means "do not
     /// poll" (`--no-wait`).
     pub wait_timeout: Duration,
@@ -106,20 +110,48 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
         })?,
         None => DEFAULT_WAIT_TIMEOUT_SECS,
     };
-    let provider_id_override = pop_kv(&mut args, "--provider-id");
-    let provider_url_override = pop_kv(&mut args, "--provider-url");
+    let max_price_sats = pop_kv(&mut args, "--max-price-sats")
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                CliError::BadArgs("--max-price-sats must be a non-negative integer".into())
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let mut provider_id_override = pop_kv(&mut args, "--provider-id");
+    let mut provider_url_override = pop_kv(&mut args, "--provider-url");
     let idempotency_key = pop_kv(&mut args, "--idempotency-key");
+    let access_token_file = pop_kv(&mut args, "--access-token-file").map(PathBuf::from);
 
     if args.is_empty() || args.len() > 2 || args[0].starts_with("--") {
         return Err(CliError::BadArgs(
             "usage: froglet-node invoke <service_id> [json_input] [--json] [--no-wait] \
              [--timeout-secs N] [--provider-id ID] [--provider-url HTTPS_ORIGIN] \
-             [--idempotency-key KEY]\n  json_input defaults to null; pass '-' to \
+             [--idempotency-key KEY] [--max-price-sats N] [--access-token-file FILE]\n  json_input defaults to null; pass '-' to \
              read it from stdin"
                 .to_string(),
         ));
     }
-    let service_id = args[0].clone();
+    let service_id = if args[0].contains("://") {
+        if provider_id_override.is_some() || provider_url_override.is_some() {
+            return Err(CliError::BadArgs(
+                "a share URL cannot be combined with provider overrides".into(),
+            ));
+        }
+        let link = super::service_link::ServiceLink::parse(&args[0])?;
+        let inspection = super::service_link::inspect(&link).await?;
+        if inspection["free_call_supported"] != true && max_price_sats == 0 {
+            return Err(CliError::Other(
+                "payment_required: paid Lightning calls require --max-price-sats plus a configured buyer wallet and cumulative spend budget"
+                    .into(),
+            ));
+        }
+        provider_id_override = Some(link.provider_id);
+        provider_url_override = Some(link.provider_url);
+        link.service_id
+    } else {
+        args[0].clone()
+    };
     let input = parse_input_arg(args.get(1).map(String::as_str))?;
 
     let daemon_url = base_url_from_env(
@@ -134,8 +166,10 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
         daemon_url,
         runtime_url,
         runtime_token: resolve_runtime_auth_token().await?,
+        access_token_file,
         provider_id_override,
         idempotency_key,
+        max_price_sats: Some(max_price_sats),
         wait_timeout: if no_wait {
             Duration::ZERO
         } else {
@@ -235,7 +269,7 @@ pub async fn invoke_local_service(options: &InvokeOptions) -> Result<InvokeRepor
         &service,
         node_id,
         options.daemon_url.clone(),
-        None,
+        options.max_price_sats,
     )
     .await
 }
@@ -323,7 +357,12 @@ pub async fn invoke_remote_service(
     )
     .await
     .map_err(|e| CliError::Daemon(format!("provider_unavailable: {e}")))?;
-    validate_remote_service(&response.service, &options.service_id, provider_id)?;
+    validate_remote_service(
+        &response.service,
+        &options.service_id,
+        provider_id,
+        options.max_price_sats.unwrap_or(0),
+    )?;
     if let Some(revision) = &response.publication_revision {
         revision
             .verify()
@@ -345,7 +384,7 @@ pub async fn invoke_remote_service(
         &response.service,
         provider_id.to_string(),
         endpoint,
-        Some(0),
+        Some(options.max_price_sats.unwrap_or(0)),
     )
     .await
 }
@@ -398,6 +437,7 @@ fn validate_remote_service(
     service: &ProviderServiceRecord,
     service_id: &str,
     provider_id: &str,
+    max_price_sats: u64,
 ) -> Result<(), CliError> {
     if service.service_id != service_id || service.provider_id != provider_id {
         return Err(CliError::Other(
@@ -409,7 +449,21 @@ fn validate_remote_service(
         || service.success_fee_msat != 0
         || service.settlement_method != "none"
     {
-        return Err(CliError::Other("payment_required: this native sharing journey only invokes free services; no deal was created".into()));
+        let total_msat = service
+            .base_fee_msat
+            .checked_add(service.success_fee_msat)
+            .ok_or_else(|| CliError::Other("payment_required: service price overflows".into()))?;
+        if max_price_sats == 0
+            || total_msat > max_price_sats.saturating_mul(1000)
+            || service.price_sats > max_price_sats
+            || !matches!(service.price_currency.as_deref(), None | Some("sat"))
+            || !matches!(
+                service.settlement_method.as_str(),
+                "lightning.prepaid.v1" | "lightning.base_fee_plus_success_fee.v1"
+            )
+        {
+            return Err(CliError::Other("payment_required: paid sharing calls require a sufficient explicit Lightning price cap in sats; Stripe calls use the runtime payment-token API".into()));
+        }
     }
     Ok(())
 }
@@ -552,7 +606,7 @@ fn verify_invocation_receipt(
 /// parity matters: the daemon hashes this workload into the quote, so a
 /// shape divergence between the CLI and the JS client would produce
 /// different `workload_hash`es for the same service + input.
-fn build_service_addressed_execution(
+pub(crate) fn build_service_addressed_execution(
     service: &ProviderServiceRecord,
     input: Value,
 ) -> Result<ExecutionWorkload, String> {
@@ -860,18 +914,23 @@ async fn create_runtime_deal(
     request: &RuntimeCreateDealRequest,
 ) -> Result<RuntimeCreateDealResponse, CliError> {
     let url = format!("{}/v1/runtime/deals", options.runtime_url);
-    let response = http
+    let mut builder = http
         .post(&url)
         .bearer_auth(&options.runtime_token)
-        .json(request)
-        .send()
-        .await
-        .map_err(|error| {
-            CliError::Daemon(format!(
-                "POST {url} failed: {error}; is the runtime API up? (runtime URL comes from \
+        .json(request);
+    if let Some(path) = options.access_token_file.as_deref() {
+        let token = read_access_token_file(path)?;
+        let mut value = reqwest::header::HeaderValue::from_str(&token)
+            .map_err(|_| CliError::BadArgs("invalid access token".into()))?;
+        value.set_sensitive(true);
+        builder = builder.header("x-froglet-access-token", value);
+    }
+    let response = builder.send().await.map_err(|error| {
+        CliError::Daemon(format!(
+            "POST {url} failed: {error}; is the runtime API up? (runtime URL comes from \
                  FROGLET_RUNTIME_URL, default {DEFAULT_RUNTIME_URL})"
-            ))
-        })?;
+        ))
+    })?;
     let status = response.status();
     if status.is_success() {
         return response.json().await.map_err(|error| {
@@ -1006,6 +1065,47 @@ fn print_human_report(report: &InvokeReport) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Never accept an invite through command-line token text, URLs, or MCP output.
+pub fn read_access_token_file(
+    path: &std::path::Path,
+) -> Result<zeroize::Zeroizing<String>, CliError> {
+    if !path.is_absolute() {
+        return Err(CliError::BadArgs(
+            "access_token_file must be absolute".into(),
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > 257 {
+        return Err(CliError::BadArgs(
+            "access token must be a small regular file".into(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o777 != 0o600 || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(CliError::BadArgs(
+                "access token file must be owned by this user with mode 0600".into(),
+            ));
+        }
+    }
+    let mut token = String::new();
+    file.take(258).read_to_string(&mut token)?;
+    let token = zeroize::Zeroizing::new(token.trim_end_matches(['\n', '\r']).to_string());
+    if !(32..=256).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(CliError::BadArgs("invalid access token file".into()));
+    }
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1038,16 +1138,42 @@ mod tests {
     fn remote_metadata_requires_exact_identity_and_free_terms() {
         let mut service = python_service_record();
         service.settlement_method = "none".into();
-        assert!(validate_remote_service(&service, "text.summarize", &"aa".repeat(32)).is_ok());
-        assert!(validate_remote_service(&service, "other", &"aa".repeat(32)).is_err());
-        assert!(validate_remote_service(&service, "text.summarize", &"bb".repeat(32)).is_err());
+        assert!(validate_remote_service(&service, "text.summarize", &"aa".repeat(32), 0).is_ok());
+        assert!(validate_remote_service(&service, "other", &"aa".repeat(32), 0).is_err());
+        assert!(validate_remote_service(&service, "text.summarize", &"bb".repeat(32), 0).is_err());
         service.success_fee_msat = 1;
         assert!(
-            validate_remote_service(&service, "text.summarize", &"aa".repeat(32))
+            validate_remote_service(&service, "text.summarize", &"aa".repeat(32), 0)
                 .unwrap_err()
                 .to_string()
                 .contains("payment_required")
         );
+    }
+
+    #[test]
+    fn remote_paid_calls_require_an_explicit_sufficient_lightning_cap() {
+        let mut service = python_service_record();
+        service.price_sats = 30;
+        service.base_fee_msat = 30_000;
+        service.settlement_method = "lightning.prepaid.v1".into();
+        service.price_currency = Some("sat".into());
+        let validate = |service: &ProviderServiceRecord, cap| {
+            validate_remote_service(service, "text.summarize", &"aa".repeat(32), cap)
+        };
+        assert!(validate(&service, 0).is_err());
+        assert!(validate(&service, 29).is_err());
+        assert!(validate(&service, 30).is_ok());
+        service.success_fee_msat = 1;
+        assert!(validate(&service, 30).is_err());
+        assert!(validate(&service, 31).is_ok());
+        service.price_currency = Some("usd".into());
+        assert!(validate(&service, 31).is_err());
+        service.price_currency = Some("sat".into());
+        service.settlement_method = "stripe_mpp.v1".into();
+        assert!(validate(&service, 31).is_err());
+        service.settlement_method = "lightning.prepaid.v1".into();
+        service.base_fee_msat = u64::MAX;
+        assert!(validate(&service, u64::MAX).is_err());
     }
 
     fn python_service_record() -> ProviderServiceRecord {
