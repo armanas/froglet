@@ -166,6 +166,15 @@ The subsequent recovery correction is verified in the `v0.4.6-beta.3` candidate:
 requester ledger after process restart and provider unpublish, without supplying
 an invitation. This does not extend the earlier beta.2 executable's capabilities.
 
+The beta.3 tagged release gate exposed a pre-existing Unix custody-lock race
+before publication. A concurrently spawned child can retain the lock's open file
+description until exec, briefly extending a completed operation's lock lifetime.
+The beta.4 correction releases the lock explicitly at the guard boundary. A
+regression retains a duplicate descriptor and checks both release and continued
+exclusion while a replacement operation holds the lock. This changes no identity
+material, canonical artifact, signature or recovery-journal format. Beta.3 remains
+an unpublished candidate; beta.4 requires its own immutable release evidence.
+
 ### Required platform and external evidence
 
 | Target | Codex on a clean machine | Claude Code on a clean machine |

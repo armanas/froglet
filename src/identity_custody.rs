@@ -2703,8 +2703,8 @@ impl IdentityLock {
                 })?;
             // SAFETY: `file` owns a valid descriptor for the lifetime of the
             // returned guard. `flock` neither retains the pointer nor accesses
-            // Rust-managed memory, and closing the descriptor releases it even
-            // if the process exits unexpectedly.
+            // Rust-managed memory. The guard explicitly unlocks on normal
+            // return; the OS also releases it when all descriptor copies close.
             let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
             if locked != 0 {
                 let error = std::io::Error::last_os_error();
@@ -2730,6 +2730,20 @@ impl IdentityLock {
                 path: path.to_path_buf(),
             })
         }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for IdentityLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // A child spawned on another thread can inherit this open file
+        // description until exec. Closing only our descriptor can then leave
+        // a completed operation locked. Release it at the guard's lifetime
+        // boundary; the child never owns or performs this custody operation.
+        // SAFETY: the guard still owns this valid descriptor. LOCK_UN accesses
+        // no Rust memory, and File::drop closes it immediately afterwards.
+        unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
@@ -3348,6 +3362,25 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn custody_guard_release_does_not_wait_for_an_inherited_descriptor() {
+        let temp = TempDir::new().unwrap();
+        let lock_path = temp.path().join(".identity-custody.lock");
+        let guard = IdentityLock::acquire(&lock_path).unwrap();
+        // dup and fork share the open file description. A concurrently spawned
+        // child can retain it until exec even with close-on-exec enabled.
+        let inherited = guard._file.try_clone().unwrap();
+        assert!(IdentityLock::acquire(&lock_path).is_err());
+        drop(guard);
+        let replacement = IdentityLock::acquire(&lock_path)
+            .expect("the completed custody operation must release its lock");
+        drop(inherited);
+        assert!(IdentityLock::acquire(&lock_path).is_err());
+        drop(replacement);
+        IdentityLock::acquire(&lock_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn generate_and_backup_never_create_a_third_key_during_rotation_recovery() {
         for crash_at in [
             RotationCheckpoint::NextSeedDurable,
@@ -3469,7 +3502,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn rotation_lock_is_released_by_descriptor_close_not_file_removal() {
+    fn rotation_lock_is_released_by_guard_drop_not_file_removal() {
         let temp = TempDir::new().expect("tempdir");
         let paths = paths(temp.path());
         initialize(&paths);
@@ -3482,7 +3515,7 @@ mod tests {
             "live descriptor lock must exclude a second rotation"
         );
         drop(first);
-        IdentityLock::acquire(&lock_path).expect("descriptor close releases lock");
+        IdentityLock::acquire(&lock_path).expect("guard drop releases lock");
     }
 
     #[test]
