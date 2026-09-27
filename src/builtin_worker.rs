@@ -479,6 +479,35 @@ mod tests {
         .unwrap();
         assert_eq!(result, serde_json::json!(7));
     }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn worker_address_space_limit_is_enforced_before_execution() {
+        let spec = WorkerSpec::local("demo.echo", serde_json::json!({})).unwrap();
+        let limits = ProcessLimitsConfig {
+            memory_max_bytes: 1,
+            ..Default::default()
+        };
+        assert!(
+            execute(
+                spec.clone(),
+                serde_json::json!({"memory_probe": true}),
+                Duration::from_secs(2),
+                &limits,
+            )
+            .await
+            .is_err(),
+            "a native worker cannot execute with one byte of address space"
+        );
+        let output = execute(
+            spec,
+            serde_json::json!({"memory_probe": true}),
+            Duration::from_secs(2),
+            &ProcessLimitsConfig::default(),
+        )
+        .await
+        .expect("the same worker must execute with the configured process budget");
+        assert_eq!(output, serde_json::json!({"memory_probe": true}));
+    }
     #[tokio::test]
     async fn worker_deadline_kills_descendants_that_keep_pipes_open() {
         let dir = tempfile::tempdir().unwrap();

@@ -26187,7 +26187,7 @@ pub(crate) mod tests {
             Some(ExecutionLimits {
                 max_input_bytes: 4096,
                 max_runtime_ms: 2_500,
-                max_memory_bytes: 1,
+                max_memory_bytes: 512 * 1024 * 1024,
                 max_output_bytes: 4096,
                 fuel_limit: 0,
             }),
@@ -26321,7 +26321,7 @@ pub(crate) mod tests {
             Some(ExecutionLimits {
                 max_input_bytes: 4_096,
                 max_runtime_ms: 2_500,
-                max_memory_bytes: 1,
+                max_memory_bytes: 512 * 1024 * 1024,
                 max_output_bytes: 4_096,
                 fuel_limit: 0,
             }),
@@ -29446,9 +29446,9 @@ pub(crate) mod tests {
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 1024,
                     max_runtime_ms,
-                    // Recovery fixtures execute `test_wasm_submission`, whose
-                    // module declares one 64 KiB WebAssembly memory page.
-                    max_memory_bytes: 64 * 1024,
+                    // Recovery fixtures include native event-query workers, so
+                    // allow the process budget as well as Wasm linear memory.
+                    max_memory_bytes: 512 * 1024 * 1024,
                     max_output_bytes: 1024,
                     fuel_limit: 10_000,
                 },
@@ -34611,7 +34611,7 @@ pub(crate) mod tests {
                 execution_limits: ExecutionLimits {
                     max_input_bytes: 1024,
                     max_runtime_ms: 1_000,
-                    max_memory_bytes: 64 * 1024,
+                    max_memory_bytes: 512 * 1024 * 1024,
                     max_output_bytes: 1024,
                     fuel_limit: 10_000,
                 },
