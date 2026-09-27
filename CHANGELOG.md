@@ -10,6 +10,16 @@ Lightning rail and MCP registry distribution.
 
 ## [Unreleased]
 
+## [0.4.6-beta.3] - 2026-09-27
+
+### Fixed
+
+- Native CLI and MCP recover saved invocations before querying current provider
+  metadata. Completed signed results survive unpublish, provider shutdown and
+  requester restart, with exact input/service/provider checks and no new work.
+- Native MCP invocation honors `FROGLET_DAEMON_URL` consistently with CLI and
+  publication operations.
+
 ## [0.4.6-beta.1] - 2026-09-27
 
 ### Added

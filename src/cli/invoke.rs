@@ -5,7 +5,7 @@
 use super::{CliError, pop_flag, pop_kv};
 use crate::api::{
     ProviderServiceRecord, ProviderServiceResponse, RuntimeCreateDealRequest,
-    RuntimeCreateDealResponse, RuntimeDealResponse, RuntimeProviderRef,
+    RuntimeCreateDealResponse, RuntimeDealResponse, RuntimeInvocationQuery, RuntimeProviderRef,
 };
 use crate::execution::{
     CONTRACT_BUILTIN_EVENTS_QUERY_V1, ExecutionEntrypoint, ExecutionEntrypointKind,
@@ -132,6 +132,7 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
                 .to_string(),
         ));
     }
+    let mut service_link = None;
     let service_id = if args[0].contains("://") {
         if provider_id_override.is_some() || provider_url_override.is_some() {
             return Err(CliError::BadArgs(
@@ -139,16 +140,11 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
             ));
         }
         let link = super::service_link::ServiceLink::parse(&args[0])?;
-        let inspection = super::service_link::inspect(&link).await?;
-        if inspection["free_call_supported"] != true && max_price_sats == 0 {
-            return Err(CliError::Other(
-                "payment_required: paid Lightning calls require --max-price-sats plus a configured buyer wallet and cumulative spend budget"
-                    .into(),
-            ));
-        }
-        provider_id_override = Some(link.provider_id);
-        provider_url_override = Some(link.provider_url);
-        link.service_id
+        provider_id_override = Some(link.provider_id.clone());
+        provider_url_override = Some(link.provider_url.clone());
+        let service_id = link.service_id.clone();
+        service_link = Some(link);
+        service_id
     } else {
         args[0].clone()
     };
@@ -181,7 +177,9 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
     let remote_url = provider_url_override
         .as_deref()
         .filter(|url| url.trim_end_matches('/') != options.daemon_url);
-    let report = if remote_url.is_some() || options.provider_id_override.is_some() {
+    let report = if let Some(link) = service_link.as_ref() {
+        invoke_shared_service(&options, link).await?
+    } else if remote_url.is_some() || options.provider_id_override.is_some() {
         invoke_remote_service(&options, remote_url).await?
     } else {
         invoke_local_service(&options).await?
@@ -241,6 +239,9 @@ pub async fn invoke_local_service(options: &InvokeOptions) -> Result<InvokeRepor
         .build()
         .map_err(|error| CliError::Other(format!("failed to build HTTP client: {error}")))?;
 
+    if let Some(report) = recover_invocation(&http, options, Some(&options.daemon_url)).await? {
+        return Ok(report);
+    }
     let service = fetch_local_service(&http, &options.daemon_url, &options.service_id).await?;
     let node_id = fetch_local_node_id(&http, &options.daemon_url).await?;
 
@@ -280,6 +281,21 @@ pub async fn invoke_remote_service(
     options: &InvokeOptions,
     provider_url: Option<&str>,
 ) -> Result<InvokeReport, CliError> {
+    invoke_remote_service_inner(options, provider_url, None).await
+}
+
+pub async fn invoke_shared_service(
+    options: &InvokeOptions,
+    link: &super::service_link::ServiceLink,
+) -> Result<InvokeReport, CliError> {
+    invoke_remote_service_inner(options, Some(&link.provider_url), Some(link)).await
+}
+
+async fn invoke_remote_service_inner(
+    options: &InvokeOptions,
+    provider_url: Option<&str>,
+    link: Option<&super::service_link::ServiceLink>,
+) -> Result<InvokeReport, CliError> {
     let provider_id = options.provider_id_override.as_deref().ok_or_else(|| {
         CliError::BadArgs("remote invocation requires provider_id from the service link".into())
     })?;
@@ -297,6 +313,20 @@ pub async fn invoke_remote_service(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| CliError::Other(e.to_string()))?;
+    if let Some(report) = recover_invocation(&http, options, provider_url).await? {
+        return Ok(report);
+    }
+    if let Some(link) = link {
+        let inspected = super::service_link::inspect(link).await?;
+        match inspected["availability"]["execution_access"].as_str() {
+            Some("private") => return Err(CliError::Other("provider_access_required: private execution is only available to the provider".into())),
+            Some("invite") if options.access_token_file.is_none() => return Err(CliError::Other("invitation_required: ask the provider for a credential file and supply access_token_file; do not paste it into a prompt or share link".into())),
+            _ => {}
+        }
+        if inspected["free_call_supported"] != true && options.max_price_sats.unwrap_or(0) == 0 {
+            return Err(CliError::Other("payment_required: paid sharing calls require an explicit price cap and configured payment backend".into()));
+        }
+    }
     // Preserve explicit references to this node, without treating arbitrary
     // loopback URLs as trusted remote services.
     if provider_url.is_none()
@@ -510,6 +540,86 @@ async fn invoke_resolved_service(
         CliError::Structured { report, exit_code: error.exit_code() }
     })?;
 
+    finish_invocation(http, options, created, node_id, idempotency_key).await
+}
+
+async fn recover_invocation(
+    http: &reqwest::Client,
+    options: &InvokeOptions,
+    provider_url: Option<&str>,
+) -> Result<Option<InvokeReport>, CliError> {
+    let Some(key) = options.idempotency_key.as_deref() else {
+        return Ok(None);
+    };
+    if key.trim().is_empty() || key.len() > 256 {
+        return Err(CliError::BadArgs(
+            "idempotency_key must contain 1–256 characters".into(),
+        ));
+    }
+    let query = RuntimeInvocationQuery {
+        idempotency_key: key.to_string(),
+        service_id: options.service_id.clone(),
+        input_hash: crypto::sha256_hex(
+            canonical_json::to_vec(&options.input).map_err(|e| CliError::BadArgs(e.to_string()))?,
+        ),
+        provider_id: options.provider_id_override.clone(),
+        provider_url: provider_url.map(str::to_string),
+        max_price_sats: options.max_price_sats,
+    };
+    let response = http
+        .get(format!("{}/v1/runtime/deals", options.runtime_url))
+        .bearer_auth(&options.runtime_token)
+        .query(&query)
+        .send()
+        .await
+        .map_err(|e| CliError::Daemon(format!("invocation recovery unavailable: {e}")))?;
+    // Older runtimes expose POST only. A missing operation may follow the
+    // normal admission path; auth, conflicts and storage errors must not.
+    if matches!(
+        response.status(),
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+    ) {
+        return Ok(None);
+    }
+    let status = response.status();
+    let value: Value = crate::http_body::read_json_response_limited(
+        response,
+        16 * 1024 * 1024,
+        "invocation recovery",
+    )
+    .await
+    .map_err(CliError::Daemon)?;
+    if !status.is_success() {
+        return Err(CliError::Daemon(format!(
+            "invocation recovery returned {status}: {value}"
+        )));
+    }
+    let created: RuntimeCreateDealResponse = serde_json::from_value(value)
+        .map_err(|e| CliError::Daemon(format!("invalid invocation recovery response: {e}")))?;
+    if created.deal.idempotency_key.as_deref() != Some(key)
+        || options
+            .provider_id_override
+            .as_deref()
+            .is_some_and(|id| id != created.provider_id)
+        || created.deal.provider_id != created.provider_id
+    {
+        return Err(CliError::Daemon(
+            "invocation recovery identity mismatch".into(),
+        ));
+    }
+    let provider = created.provider_id.clone();
+    finish_invocation(http, options, created, provider, key.to_string())
+        .await
+        .map(Some)
+}
+
+async fn finish_invocation(
+    http: &reqwest::Client,
+    options: &InvokeOptions,
+    created: RuntimeCreateDealResponse,
+    node_id: String,
+    idempotency_key: String,
+) -> Result<InvokeReport, CliError> {
     let receipt_verification = verify_invocation_receipt(&created.deal, &node_id)?;
     let mut report = InvokeReport {
         stage: "requester_execution".into(),

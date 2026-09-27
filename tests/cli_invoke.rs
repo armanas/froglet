@@ -89,7 +89,13 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 /// Dual-node test state. `payment_backends` selects free-only
 /// (`PaymentBackend::None`) or mock-Lightning (paid quotes) behavior.
 fn create_dual_state(payment_backends: Vec<PaymentBackend>) -> AppState {
-    let temp_dir = unique_temp_dir("state");
+    create_dual_state_at(payment_backends, unique_temp_dir("state"))
+}
+
+fn create_dual_state_at(
+    payment_backends: Vec<PaymentBackend>,
+    temp_dir: std::path::PathBuf,
+) -> AppState {
     let db_path = temp_dir.join("node.db");
     let node_config = NodeConfig {
         network_mode: NetworkMode::Clearnet,
@@ -581,6 +587,137 @@ async fn private_provider_owner_invocation_uses_bounded_signed_flow() {
     options.idempotency_key = Some("private-owner-call".into());
     let recovered = invoke_local_service(&options).await.unwrap();
     assert_eq!(recovered.deal_id, first.deal_id);
+
+    // Lookup must authenticate and must bind a reused key to the exact request.
+    let client = reqwest::Client::new();
+    let query = froglet::api::RuntimeInvocationQuery {
+        idempotency_key: "private-owner-call".into(),
+        service_id: "demo.add".into(),
+        input_hash: froglet::crypto::sha256_hex(
+            froglet::canonical_json::to_vec(&options.input).unwrap(),
+        ),
+        provider_id: Some(node.state.identity.node_id().to_string()),
+        provider_url: None,
+        max_price_sats: Some(0),
+    };
+    let lookup = format!("{}/v1/runtime/deals", node.runtime.base_url);
+    assert_eq!(
+        client
+            .get(&lookup)
+            .query(&query)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    for (field, value, status) in [
+        ("input_hash", json!("f".repeat(64)), 409),
+        ("service_id", json!("other.service"), 409),
+        ("provider_id", json!("f".repeat(64)), 409),
+        ("provider_url", json!("https://other.example"), 409),
+        ("idempotency_key", json!("unknown-key"), 404),
+        ("input_hash", json!("invalid"), 400),
+    ] {
+        let mut bad = serde_json::to_value(&query).unwrap();
+        bad.as_object_mut().unwrap().retain(|_, v| !v.is_null());
+        bad[field] = value;
+        let response = client
+            .get(&lookup)
+            .bearer_auth("test-runtime-token")
+            .query(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), status, "{field}");
+    }
+
+    // Alice must be able to recover her completed result when Bob is offline.
+    node.provider._handle.abort();
+    node.provider._handle.await.unwrap_err();
+    let recovered = invoke_local_service(&options).await.unwrap();
+    assert_eq!(recovered.deal_id, first.deal_id);
+    assert_eq!(recovered.receipt_verification, first.receipt_verification);
+    assert_eq!(recovered.result, first.result);
+
+    // Reopen the persisted requester database through a new runtime listener.
+    node.runtime._handle.abort();
+    node.runtime._handle.await.unwrap_err();
+    let restarted = Arc::new(create_dual_state_at(
+        vec![PaymentBackend::None],
+        node.state.config.storage.data_dir.clone(),
+    ));
+    let runtime = spawn_server(runtime_router(restarted.clone())).await;
+    options.runtime_url = runtime.base_url.clone();
+    let recovered = invoke_local_service(&options).await.unwrap();
+    assert_eq!(recovered.deal_id, first.deal_id);
+    assert_eq!(recovered.receipt_verification, first.receipt_verification);
+
+    // Exercise both native entrypoints, not just their shared Rust helper.
+    let command = || {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_froglet-node"));
+        command
+            .env_clear()
+            .env("FROGLET_DAEMON_URL", &options.daemon_url)
+            .env("FROGLET_RUNTIME_URL", &options.runtime_url)
+            .env("FROGLET_RUNTIME_AUTH_TOKEN", "test-runtime-token")
+            .env("FROGLET_DATA_DIR", &node.state.config.storage.data_dir)
+            .kill_on_drop(true);
+        command
+    };
+    let output = command()
+        .args([
+            "invoke",
+            "demo.add",
+            "{\"a\":2,\"b\":3}",
+            "--idempotency-key",
+            "private-owner-call",
+            "--json",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cli["deal_id"], first.deal_id);
+    assert_eq!(cli["receipt_verification"], first.receipt_verification);
+    use tokio::io::AsyncWriteExt;
+    let mut child = command()
+        .arg("mcp")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"froglet","arguments":{"action":"invoke_service","service_id":"demo.add","input":{"a":2,"b":3},"idempotency_key":"private-owner-call"}}});
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mcp: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(mcp["result"]["isError"], false, "{mcp}");
+    assert_eq!(mcp["result"]["structuredContent"]["deal_id"], first.deal_id);
+    let usage = restarted
+        .db
+        .with_read_conn(froglet::provider_policy::usage)
+        .await
+        .unwrap();
+    assert_eq!(usage.reserved_deals, 1);
+    assert_eq!(usage.issued_quotes, 1);
+    runtime._handle.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

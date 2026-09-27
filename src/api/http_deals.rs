@@ -12,7 +12,10 @@ pub(crate) fn provider_materialization_routes() -> Router<Arc<AppState>> {
 
 pub(crate) fn runtime_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/runtime/deals", post(super::runtime_create_deal))
+        .route(
+            "/v1/runtime/deals",
+            post(super::runtime_create_deal).get(super::runtime_find_invocation),
+        )
         .route("/v1/runtime/deals/:deal_id", get(super::runtime_get_deal))
         .route(
             "/v1/runtime/archive/:subject_kind/:subject_id",

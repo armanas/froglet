@@ -152,6 +152,20 @@ call. The receipt was
 usage was one quote, one deal, and 10,000 ms reserved. This proves the released
 Mac executable on the current host, not a clean installation or public listing.
 
+On 2026-09-27, the released beta.2 provider and separate requester passed the
+production HTTPS invitation-listing drill against hosted beta.21. Metadata-only
+admission used zero quote/deal/runtime allowance; anonymous execution was refused.
+One invited call returned verified receipt
+`fa67171171ea8ef57e7df5846efaf5a0b056dd04df71060d3aa35f8450f34254`.
+Replay after revocation returned the same receipt with one quote, one deal and
+10,000 ms reserved. Live rendered inspection confirmed invitation instructions and
+QR sharing without embedding access credentials. The synthetic publication was
+unpublished, its processes stopped, and its feed suspended with history retained.
+
+The subsequent recovery correction is verified in the `v0.4.6-beta.3` candidate: native CLI and MCP recovered that receipt by share URL from the same
+requester ledger after process restart and provider unpublish, without supplying
+an invitation. This does not extend the earlier beta.2 executable's capabilities.
+
 ### Required platform and external evidence
 
 | Target | Codex on a clean machine | Claude Code on a clean machine |

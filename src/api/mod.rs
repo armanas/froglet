@@ -3495,6 +3495,94 @@ pub async fn hosted_trial_runtime_get_deal(
     runtime_get_deal_inner(state, deal_id).await
 }
 
+/// Read only the requester ledger. Recovery must not depend on current service
+/// metadata, provider availability, an invitation, or fresh payment admission.
+pub async fn runtime_find_invocation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<RuntimeInvocationQuery>,
+) -> Response {
+    if let Err(error) = require_runtime_auth(&headers, state.as_ref()) {
+        return error_json(error.0, error.1).into_response();
+    }
+    if let Err(response) = normalize_idempotency_key(Some(query.idempotency_key.clone())) {
+        return response.into_response();
+    }
+    if query.service_id.is_empty()
+        || query.service_id.len() > 128
+        || query.input_hash.len() != 64
+        || !query
+            .input_hash
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || (query.provider_id.as_deref().is_none_or(str::is_empty)
+            && query.provider_url.as_deref().is_none_or(str::is_empty))
+    {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"service_id, input_hash and a provider reference are required"}),
+        )
+        .into_response();
+    }
+    let key = query.idempotency_key.clone();
+    let stored = match state.db.with_read_conn(move |conn| requester_deals::find_requester_deal_by_idempotency_key(conn, &key)).await {
+        Ok(Some(stored)) => stored,
+        Ok(None) => return error_json(StatusCode::NOT_FOUND, json!({"code":"invocation_not_found", "error":"no invocation has this idempotency key"})).into_response(),
+        Err(error) => {
+            tracing::error!("invocation lookup failed: {error}");
+            return error_json(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":"internal error"})).into_response();
+        }
+    };
+    let same_input = match &stored.spec {
+        WorkloadSpec::Execution { execution } => {
+            execution
+                .security
+                .service_id
+                .as_deref()
+                .or(execution.builtin_name.as_deref())
+                == Some(query.service_id.as_str())
+                && execution.input_hash == query.input_hash
+        }
+        _ => false,
+    };
+    let same_provider = query
+        .provider_id
+        .as_deref()
+        .is_none_or(|id| id == stored.provider_id)
+        && query.provider_url.as_deref().is_none_or(|url| {
+            url.trim_end_matches('/') == stored.provider_url.trim_end_matches('/')
+                || url.trim_end_matches('/') == stored.sync_provider_url().trim_end_matches('/')
+        });
+    let amount = stored
+        .quote
+        .payload
+        .settlement_terms
+        .base_fee_msat
+        .checked_add(stored.quote.payload.settlement_terms.success_fee_msat);
+    if !same_input
+        || !same_provider
+        || query
+            .max_price_sats
+            .is_some_and(|maximum| amount.is_none_or(|n| n > maximum.saturating_mul(1000)))
+    {
+        return error_json(StatusCode::CONFLICT, json!({"code":"invocation_conflict", "error":"idempotency key belongs to different input, service, provider or price limit"})).into_response();
+    }
+    let payment_intent_path = quote_uses_lightning_bundle(state.as_ref(), &stored.quote)
+        .then(|| runtime_payment_intent_path(&stored.deal_id));
+    (
+        StatusCode::OK,
+        Json(json!(RuntimeCreateDealResponse {
+            provider_id: stored.provider_id.clone(),
+            provider_url: stored.provider_url.clone(),
+            quote: stored.quote.clone(),
+            deal: stored.public_record(),
+            payment_intent_path,
+            payment_intent: None,
+        })),
+    )
+        .into_response()
+}
+
 pub async fn runtime_get_deal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

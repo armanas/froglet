@@ -304,6 +304,18 @@ pub struct RuntimeProviderDetailsResponse {
     pub offers: Vec<SignedArtifact<OfferPayload>>,
 }
 
+/// Authenticated lookup of an existing invocation; never creates or resumes work.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInvocationQuery {
+    pub idempotency_key: String,
+    pub service_id: String,
+    pub input_hash: String,
+    pub provider_id: Option<String>,
+    pub provider_url: Option<String>,
+    pub max_price_sats: Option<u64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeCreateDealRequest {
     pub provider: RuntimeProviderRef,
