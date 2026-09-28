@@ -7,7 +7,7 @@ description: Connect Froglet to Claude Code, Codex, OpenClaw, and other MCP host
   <div>
     <div class="learn-pill">Agent setup</div>
     <p class="learn-lead">Connect agents to a real local or self-hosted Froglet node.</p>
-    <p class="learn-sublead">The no-clone install configures the native MCP bridge in the checksum-verified Froglet binary. Use `llms.txt` for the no-install hosted proof; use the npm server only when you need its broader compatibility actions.</p>
+    <p class="learn-sublead">The verified installer connects Codex or Claude Code through Froglet's native MCP bridge. Start with <a href="/publish/">the sharing walkthrough</a>. The optional npm server provides broader compatibility actions; the hosted trial is not a setup prerequisite.</p>
   </div>
 </div>
 
@@ -94,8 +94,11 @@ call:
 - service, settlement, marketplace, and publication actions only after the
   local node is reachable
 
-The hosted proof is intentionally separate. It lives at
-`https://froglet.dev/llms.txt` and covers only public free `demo.*` services.
+The optional hosted trial is separate and currently unavailable; check
+[its status and contract](/learn/cloud-trial/) before attempting it.
+Its agent instructions are at `https://try.froglet.dev/llms.txt` and cover
+only public free `demo.*` services. The root `https://froglet.dev/llms.txt`
+routes agents to the appropriate workflow.
 Paid rails, persistent identity, custom service publication, long-running jobs,
 batch, and GPU workloads are local/self-hosted concerns.
 

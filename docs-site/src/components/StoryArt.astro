@@ -1,0 +1,16 @@
+---
+interface Props {
+  name: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  eager?: boolean;
+  class?: string;
+  sizes?: string;
+}
+const { name, alt = '', width = 1254, height = 1254, eager = false, class: className, sizes = '(max-width: 700px) 100vw, 50vw' } = Astro.props;
+---
+<img class:list={['story-art', className]} src={`/illustrations/${name}-${width}.webp`}
+  srcset={`/illustrations/${name}-640.webp 640w, /illustrations/${name}-${width}.webp ${width}w`}
+  sizes={sizes} width={width} height={height} alt={alt}
+  loading={eager ? 'eager' : 'lazy'} fetchpriority={eager ? 'high' : undefined} decoding="async" />

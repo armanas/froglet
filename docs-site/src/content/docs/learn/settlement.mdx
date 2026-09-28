@@ -7,7 +7,7 @@ import SettlementVizInit from '../../../components/SettlementVizInit.astro';
 import SettlementCalcInit from '../../../components/SettlementCalcInit.astro';
 
 :::note
-**Launch posture**: the publish path (`marketplace_publish` MCP tool and `froglet-node publish` CLI) accepts `settlement.method` ∈ `none` | `lightning` | `stripe`. The hosted trial at `try.froglet.dev` stays free-only — `demo.add` is its canonical proof. **Lightning** settlement is proven end-to-end on regtest (real-LND, 2026-05-15; see [PAYMENT_MATRIX § 7](https://github.com/armanas/froglet/blob/main/docs/PAYMENT_MATRIX.md#7-regtest-run-log)); real mainnet money is not yet proven (pending channel liquidity). **Stripe** is a test-mode agentic rail using Stripe's Agentic Commerce Shared Payment Token (SPT) model: froglet is the seller, US-only, attested by a PaymentIntent reference (not a cryptographic proof). **x402** ships at the daemon level only and is not exposed on the publish path. The local operator guides for all three adapters live under [Payment Rails](/learn/payment-rails/). No real money has moved yet anywhere (test-mode / regtest only).
+**Start with a free service.** The publish path accepts `settlement.method` ∈ `none` | `lightning` | `stripe`. Lightning's recorded end-to-end evidence is regtest, not mainnet ([payment test matrix](https://github.com/armanas/froglet/blob/main/docs/PAYMENT_MATRIX.md#7-regtest-run-log)). Stripe is a test-mode adapter; its PaymentIntent reference is an attestation, not a Lightning-style preimage proof. x402 is a daemon-level prototype, outside the publish path. See [Payment Rails](/learn/payment-rails/) for setup and maturity. The optional [hosted trial is currently marked unavailable](/learn/cloud-trial/).
 :::
 
 ## The Lightning Network
@@ -26,18 +26,25 @@ Lightning payments use **HTLCs**:
 
 ## Froglet's two-leg model
 
-Every paid deal splits into two Lightning payments:
+For `lightning.base_fee_plus_success_fee.v1`, a deal has a base fee and an optional
+success fee. Other payment methods have different rules. This page and its
+calculators describe the **two-leg Lightning model**:
 
 | Leg | Amount | When | Purpose |
 |-----|--------|------|---------|
-| **Base fee** | Fixed (e.g., 1000 msat) | Locks on admission | Prevents free-riding |
-| **Success fee** | Fixed (e.g., 4000 msat) | Settles on success | Fair to requester |
+| **Base fee** | Fixed (e.g., 1000 msat) | Settles before admission | Pays for admission and reserved resources |
+| **Success fee** | Fixed (e.g., 4000 msat) | Held before admission; settles on requester acceptance | Makes this fee conditional |
 
 ### Why two legs?
 
-- **Requester protection**: If the provider fails, the success fee is never charged
+- **Requester protection**: On failure, the held success fee is canceled under the protocol; the settled base fee remains paid
 - **Provider protection**: The base fee compensates for reserved resources
 - **No third-party escrow**: The Lightning HTLCs bind the success fee to the requester's acceptance cryptographically
+
+The kernel also defines free, prepaid Lightning, Stripe, and x402 methods.
+Prepaid Lightning pays upfront; it does not provide the conditional success
+fee described here. Only the two-leg method permits a nonzero success fee.
+See the [kernel settlement rules](/spec/kernel/) before integrating another rail.
 
 :::caution[Know your recourse before you pay]
 The **base fee is non-refundable** — if execution fails, the requester still
@@ -102,7 +109,7 @@ Plug in your own numbers to see how the two-leg model settles under each scenari
 1 satoshi    = 1,000 millisatoshis (msat)
 
 Froglet prices in msat.
-Typical compute deal: 5,000 msat = 5 sats
+Example price: 5,000 msat = 5 sats
 ```
 
 :::note

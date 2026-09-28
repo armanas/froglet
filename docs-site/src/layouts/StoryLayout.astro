@@ -1,0 +1,39 @@
+---
+import '../styles/custom.css';
+import '../styles/story-pages.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+interface Props { title: string; description: string; path: string; }
+const { title, description, path } = Astro.props;
+const canonical = new URL(path, 'https://froglet.dev');
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Froglet" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content="https://froglet.dev/illustrations/05-walkthrough-share-1536.webp" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content="https://froglet.dev/illustrations/05-walkthrough-share-1536.webp" />
+    <ThemeProvider />
+    <slot name="head" />
+  </head>
+  <body class="story-site">
+    <a class="story-skip" href="#main">Skip to content</a>
+    <SiteHeader currentPath={Astro.url.pathname} />
+    <main id="main" class="story-main"><slot /></main>
+    <SiteFooter />
+  </body>
+</html>

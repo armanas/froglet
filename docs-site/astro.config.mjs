@@ -36,19 +36,16 @@ export default defineConfig({
 						label: 'Start Here',
 						items: [
 							{ label: 'Docs Home', slug: 'docs' },
-							{ label: 'Try In Cloud', slug: 'learn/cloud-trial' },
+							{ label: 'What Is Froglet?', slug: 'learn/introduction' },
+							{ label: 'Share Data or a Tool', slug: 'learn/share-services' },
 							{ label: 'Run Locally', slug: 'learn/quickstart' },
-							{ label: 'Publish A Service', slug: 'learn/provider-onboarding' },
 							{ label: 'Connect Agents', slug: 'learn/agents' },
-							{ label: 'LLM Install Contract', slug: 'learn/llm-self-install' },
-							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
-							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
+							{ label: 'Hosted Trial Status', slug: 'learn/cloud-trial' },
 						],
 					},
 					{
 						label: 'Concepts',
 						items: [
-							{ label: 'Protocol Overview', slug: 'learn/introduction' },
 							{ label: 'Identity', slug: 'learn/identity' },
 							{ label: 'Deal Flow', slug: 'learn/deal-flow' },
 							{ label: 'Settlement', slug: 'learn/settlement' },
@@ -59,6 +56,10 @@ export default defineConfig({
 					{
 						label: 'Reference',
 						items: [
+							{ label: 'Provider Setup', slug: 'learn/provider-onboarding' },
+							{ label: 'LLM Install Contract', slug: 'learn/llm-self-install' },
+							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
+							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
 							{ label: 'Marketplace', slug: 'marketplace/overview' },
 							{ label: 'Kernel', slug: 'spec/kernel' },
 							{ label: 'Conformance', slug: 'spec/conformance' },

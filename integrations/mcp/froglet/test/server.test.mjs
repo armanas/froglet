@@ -877,8 +877,13 @@ describe("froglet MCP actions", () => {
       join(REPO_ROOT, "docs-site/src/pages/index.astro"),
       "utf8"
     )
-    assert.match(landingPage, /initSelfHostConfigurator/)
-    assert.match(landingPage, /self-host-card/)
+    assert.match(landingPage, /href="\/open-source\/"/)
+    const operatorPage = await readFile(join(REPO_ROOT, "docs-site/src/pages/open-source.astro"), "utf8")
+    assert.match(operatorPage, /import OperatorSetup from ['"]\.\.\/components\/OperatorSetup\.astro['"];/)
+    assert.match(operatorPage, /<OperatorSetup\s*\/>/)
+    const operatorSetup = await readFile(join(REPO_ROOT, "docs-site/src/components/OperatorSetup.astro"), "utf8")
+    assert.match(operatorSetup, /initSelfHostConfigurator\(\)/)
+    assert.match(operatorSetup, /self-host-card/)
 
     const configurator = await readFile(
       join(REPO_ROOT, "docs-site/src/scripts/self-host-configurator.ts"),

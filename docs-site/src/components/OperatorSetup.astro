@@ -1,0 +1,63 @@
+---
+import '../styles/index-page.css';
+---
+        <div class="entry-card" id="self-host-card">
+          <div class="entry-num">Local operator setup</div>
+          <h3>Run locally</h3>
+          <p>Pick an agent and start free. The installer sets up a local node and connects it to your agent. Review the changes before installation; payment and public publishing can wait.</p>
+          <p class="config-hint">Use the <a href="/learn/quickstart/">setup guide</a> to verify the immutable release before installation. If its bundle is unavailable, stop and use the browser sample while publication finishes.</p>
+
+          <details class="onboarding-details">
+          <summary>Advanced: installation command</summary>
+
+          <div class="config-group">
+            <span class="config-label">Install</span>
+            <div class="config-options" data-group="install">
+              <button class="config-btn is-active" type="button" data-value="linux" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux x86_64</button>
+              <button class="config-btn" type="button" data-value="linux-arm" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux arm64</button>
+              <button class="config-btn" type="button" data-value="macos" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/apple.svg')" aria-hidden="true"></span>macOS arm64</button>
+              <button class="config-btn" type="button" data-value="docker" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</button>
+            </div>
+          </div>
+
+          <div class="config-group">
+            <span class="config-label">Agent</span>
+            <div class="config-options" data-group="agent">
+              <button class="config-btn is-active" type="button" data-value="claude-code" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</button>
+              <button class="config-btn" type="button" data-value="codex" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</button>
+              <button class="config-btn" type="button" data-value="manual" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>Manual</button>
+            </div>
+          </div>
+
+          <details class="onboarding-details">
+          <summary>Optional operator payment setup</summary>
+          <div class="config-group">
+            <span class="config-label">Operator Payment</span>
+            <div class="config-options" data-group="payment">
+              <button class="config-btn is-active" type="button" data-value="none" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>None</button>
+              <button class="config-btn" type="button" data-value="lightning-mock" aria-pressed="false"><span class="brand-icon" style="color: var(--bolt); --logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning mock</button>
+              <button class="config-btn" type="button" data-value="stripe-test" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe test</button>
+              <button class="config-btn" type="button" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402 <small>daemon-only</small></button>
+            </div>
+            <p class="config-hint">Normal users should keep this at None. The other choices configure the local node's own payment backend for an operator after the free path is healthy.</p>
+          </div>
+
+          <p class="config-hint">Enter credentials only in your local environment. This website does not need your payment keys.</p>
+          </details>
+
+          <div class="config-shell">
+            <pre class="config-code" id="config-output"><code></code></pre>
+            <button class="config-copy" id="config-copy-btn" type="button" title="Copy to clipboard">Copy</button>
+          </div>
+          </details>
+
+          <a class="entry-cta" href="/learn/quickstart/">docs / quickstart →</a>
+          <div class="entry-proves">
+            <b>What it proves:</b> persistent identity, MCP wiring, local provider/runtime health, and free service publication.<br>
+            <b>What it does not prove:</b> live paid rails, public registration, or external backend connectivity until the agent guides those steps after local health passes.
+          </div>
+        </div>
+<script>
+import { initSelfHostConfigurator } from '../scripts/self-host-configurator';
+initSelfHostConfigurator();
+</script>

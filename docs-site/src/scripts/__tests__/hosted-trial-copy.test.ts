@@ -13,8 +13,6 @@ function readRepoFile(path: string): string {
 const strongPrompt =
   'Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.';
 
-const homepagePrompt = 'Make this catalog usable by another agent with Froglet.';
-
 const hostedCopyFiles = [
   'docs/HOSTED_TRIAL.md',
   'docs-site/src/content/docs/learn/cloud-trial.mdx',
@@ -36,14 +34,16 @@ describe('hosted trial docs copy', () => {
     }
   });
 
-  it('uses a compact prompt on the homepage hero', () => {
+  it('keeps setup on the publishing page and optional hosted tasks in their guide', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
-    expect(index).toContain(homepagePrompt);
-    expect(index).toContain('show a preview before asking to publish');
-    expect(index).toContain('hosted-proof-with-witness');
-    expect(index).toContain('receipt-feed-check');
-    expect(index).toContain('local-install-proposal');
-    expect(index).toContain('data-prompt-copy');
+    const publish = readRepoFile('docs-site/src/pages/publish.astro');
+    expect(index).toContain('href="/publish/"');
+    expect(index).not.toContain('try.froglet.dev');
+    expect(publish).toContain('show a preview before asking to publish');
+    expect(publish).toContain('copy-publisher-prompt');
+    expect(publish).toContain("new URL('/publish/agent.md', siteOrigin)");
+    expect(publish).toContain('Ask me separately before persistent installation and before publishing');
+    expect(publish).toContain('Preserve my existing files and agent settings');
     expect(index).not.toContain(strongPrompt);
   });
 
@@ -162,11 +162,12 @@ describe('hosted trial docs copy', () => {
     }
   });
 
-  it('does not imply hosted Lightning payment in the homepage proof strip', () => {
+  it('does not promote the unavailable hosted demo as a working homepage proof', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
-    expect(index).toContain('proof-strip');
-    expect(index).toContain('5 free demos');
-    expect(index).toContain('receipt + feed');
+    const developers = readRepoFile('docs-site/src/pages/open-source.astro');
+    expect(index).not.toContain('proof-strip');
+    expect(index).not.toContain('5 free demos');
+    expect(developers).toContain('hosted live demo is temporarily unavailable');
     expect(index).not.toContain('500 sats');
     expect(index).not.toContain('600 sats');
     expect(index).not.toContain('paid ·');
@@ -181,8 +182,10 @@ describe('hosted trial docs copy', () => {
     expect(paymentRails).toMatch(/Do not present it as normal customer\s+onboarding/);
     expect(quickstart).toContain('Ordinary buyers should not configure LND');
     expect(quickstart).toMatch(/Pick `none` for the first demo and for normal\s+customer evaluation/);
-    expect(index).toContain('Pick an agent and start free');
-    expect(index).toContain('Normal users should keep this at None');
+    const setup = readRepoFile('docs-site/src/components/OperatorSetup.astro');
+    expect(setup).toContain('Pick an agent and start free');
+    expect(setup).toContain('Normal users should keep this at None');
+    expect(index).not.toContain('data-group="payment"');
     expect(index).not.toContain('Pick an agent and the first payment decision');
   });
 
@@ -197,19 +200,17 @@ describe('hosted trial docs copy', () => {
     expect(marketplace).not.toContain('lightning + stripe + x402');
   });
 
-  it('lists batch and GPU without claiming hosted GPU is live', () => {
+  it('routes advanced runtimes to their guide without claiming hosted GPU is live', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
-    expect(index).toContain('Batch');
-    expect(index).toContain('async task status');
-    expect(index).toContain('No fan-out');
-    expect(index).toContain('GPU');
-    expect(index).toContain('Docker --gpus');
-    expect(index).toContain('Self-host T4');
-    expect(index).not.toContain('T4 verified');
-    expect(index).toContain('Tor');
-    expect(index).toContain('onion v3');
-    expect(index).toContain('Self-host');
-    expect(index).not.toContain('Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span>');
+    const developers = readRepoFile('docs-site/src/pages/open-source.astro');
+    expect(developers).toContain('current batch and GPU constraints');
+    expect(developers).toContain('href="/learn/cloud-trial/"');
+    expect(developers).toContain('Tor is an advanced self-hosted path');
+    expect(developers).toContain('Confidential execution and selective disclosure remain specifications');
+    for (const page of [index, developers]) {
+      expect(page).not.toContain('T4 verified');
+      expect(page).not.toContain('GPU is live');
+    }
   });
 
   it('keeps the README aligned with the deployed five-service catalog', () => {

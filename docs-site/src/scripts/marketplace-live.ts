@@ -480,6 +480,11 @@ export function initMarketplaceLive(): void {
 
 	function state(status: 'live' | 'stale' | 'unavailable', detail?: string) {
 		root!.dataset.status = status;
+		setText(root!, '[data-marketplace-field="message"]', status === 'live'
+			? 'Catalog updated. Open a service to see what it does.'
+			: status === 'stale'
+				? 'Showing an earlier catalog. Availability may have changed; we are checking again.'
+				: 'We could not load the catalog. We will try again automatically.');
 		const badge = document.querySelector<HTMLElement>('[data-marketplace-field="refresh"]');
 		if (badge) { badge.textContent = status === 'live' ? 'CATALOG UPDATED' : status.toUpperCase(); badge.dataset.status = status; }
 		if (lastSnapshot) { renderServiceCards(root!, lastSnapshot.offers, status !== 'live'); applySearch(); }

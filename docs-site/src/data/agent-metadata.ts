@@ -62,13 +62,13 @@ export const routeAgentMetadata = {
 	},
 	managed: {
 		route: '/managed/',
-		page_role: 'coming_soon_boundary',
-		agent_purpose: 'Keep managed-product claims separate from the protocol and local/self-hosted paths available today.',
+		page_role: 'organization_vision_and_current_controls',
+		agent_purpose: 'Distinguish current self-hosted sharing and invitation controls from planned contract automation and managed hosting.',
 		primary_task: 'local-install-proposal',
 		relevant_tasks: ['local-install-proposal', 'hosted-proof'],
-		evidence_boundary: 'Managed cloud-hosted nodes are not available today; direct users to hosted proof or local install.',
-		canonical_sources: ['/managed/', '/learn/cloud-trial/', '/learn/quickstart/', '/agent-tasks.json'],
-		preferred_next_action: 'If the user wants managed features today, report that they are not wired up and offer hosted proof or local install planning.',
+		evidence_boundary: 'Managed hosting, arbitrary contract automation, and SLA management are not available. Current invitations are provider-scoped and require technical setup and deployed verification.',
+		canonical_sources: ['/managed/', '/learn/share-services/', '/learn/quickstart/', '/agent-tasks.json'],
+		preferred_next_action: 'Choose one small non-confidential exchange and evaluate supported self-hosted controls. Do not promise managed hosting or automatic enforcement of an agreement.',
 	},
 	openSource: {
 		route: '/open-source/',

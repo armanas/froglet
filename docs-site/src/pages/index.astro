@@ -1,397 +1,68 @@
 ---
-import '../styles/custom.css';
-import '../styles/index-page.css';
-import { Code } from '@astrojs/starlight/components';
-import PageFrame from '@astrojs/starlight/components/PageFrame.astro';
+import StoryLayout from '../layouts/StoryLayout.astro';
+import StoryArt from '../components/StoryArt.astro';
 import AgentMeta from '../components/AgentMeta.astro';
-import SiteHeader from '../components/SiteHeader.astro';
-import SiteFooter from '../components/SiteFooter.astro';
-import ThemeProvider from '../components/ThemeProvider.astro';
-import { RAILS, statusLabel, type MaturityStatus } from '../data/maturity';
-
-Astro.locals.starlightRoute = { hasSidebar: false };
-
-// Payment-rail rows render from src/data/maturity.ts so a status shown here
-// cannot drift from the evidence that substantiates it. See
-// __tests__/maturity-data.test.ts, which fails the build if the evidence file
-// behind any row disappears.
-const RAIL_DOT: Record<MaturityStatus, string> = {
-  spec: 'var(--fg3)',
-  prototype: 'var(--bolt)',
-  beta: 'var(--info)',
-  production: 'var(--frog-400)',
-};
-
 const siteOrigin = import.meta.env.FROGLET_SITE_ORIGIN || 'https://froglet.dev';
-const homepagePrompt = `Make this catalog usable by another agent with Froglet. Read ${siteOrigin}/publish/agent.md. Use the configured Froglet tool or verified installation. Propose useful tables and fields, prepare a separate snapshot, and verify the example through Froglet itself. Ask me separately before installation and before publishing the exact selected data. Start free and preserve my existing files and agent settings.`;
-
-const promptVariants = [
-  {
-    k: 'fast proof',
-    title: 'Hosted proof',
-    prompt: 'Open https://try.froglet.dev/llms.txt and run task hosted-proof. Report the expected evidence fields, what was proved, what was not proved, and one next experiment for my current project.',
-  },
-  {
-    k: 'strict audit',
-    title: 'Evidence audit',
-    prompt: 'Open https://try.froglet.dev/llms.txt and run task hosted-proof. Return the Expected report shape exactly. Do not summarize Froglet until HTTP statuses, service IDs, deal status, result, receipt presence, feed shape, and mismatches are reported.',
-  },
-  {
-    k: 'follow-up',
-    title: 'Proof + witness',
-    prompt: 'Open https://try.froglet.dev/llms.txt and run task hosted-proof-with-witness. Use only a URL, hash, or content hash I own or control. Report demo.add first, then the witness/hash/notarize follow-up evidence.',
-  },
-  {
-    k: 'local path',
-    title: 'Install proposal',
-    prompt: 'Open https://try.froglet.dev/llms.txt and run task local-install-proposal. Finish the hosted evidence report first, then ask for the local install profile before suggesting commands.',
-  },
-  {
-    k: 'feed',
-    title: 'Receipt check',
-    prompt: 'Open https://try.froglet.dev/llms.txt, run hosted-proof, then run receipt-feed-check. Match feed evidence by signed deal_hash or quote_hash, not by runtime deal_id.',
-  },
-];
+const agentGuide = `${siteOrigin}/publish/agent.md`;
 ---
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Froglet &#8212; the evidence layer for agent transactions</title>
-<meta name="description" content="The rail-neutral evidence layer for agent transactions. Whatever rail moves the money, Froglet produces a signed record that a transaction was authorised, scoped, and attested — verifiable offline by anyone." />
-<link rel="canonical" href="https://froglet.dev/" />
-<meta name="color-scheme" content="dark" />
-<!-- OpenGraph -->
-<meta property="og:type" content="website" />
-<meta property="og:site_name" content="Froglet" />
-<meta property="og:title" content="Froglet &#8212; the evidence layer for agent transactions" />
-<meta property="og:description" content="The rail-neutral evidence layer for agent transactions. Whatever rail moves the money, Froglet produces a signed record that a transaction was authorised, scoped, and attested — verifiable offline by anyone." />
-<meta property="og:url" content="https://froglet.dev/" />
-<meta property="og:image" content="https://froglet.dev/og/default.png" />
-<meta property="og:image:width" content="1200" />
-<meta property="og:image:height" content="630" />
-<!-- Twitter -->
-<meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Froglet &#8212; the evidence layer for agent transactions" />
-<meta name="twitter:description" content="The rail-neutral evidence layer for agent transactions. Whatever rail moves the money, Froglet produces a signed record that a transaction was authorised, scoped, and attested — verifiable offline by anyone." />
-<meta name="twitter:image" content="https://froglet.dev/og/default.png" />
-<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-<AgentMeta route="home" />
-<ThemeProvider />
-</head>
-<body data-screen-label="Marketing · Home">
-<PageFrame>
-  <SiteHeader slot="header" currentPath={Astro.url.pathname} />
-  <main class="froglet-home-main">
-    {/* ── Hero (2-col: copy + agent prompt, above the fold) ── */}
-    <section class="hero hero--split">
-      <div class="hero-copy">
-        <span class="eyebrow">froglet — share a useful service</span>
-        <h1>Make your catalog useful <em>to another agent.</em></h1>
-        <p class="lede">
-          Ask your agent to prepare a service. Preview exactly what you are sharing, approve publication, and send a link. Each call leaves a signed record you can verify.
-        </p>
-        <div class="hero-cta">
-          <a class="btn primary" href="/publish/">Publish a service</a>
-          <a class="btn ghost" href="/verify-receipt/">Try a browser sample</a>
-        </div>
-        <p class="hero-agent-hint">Codex or Claude Code · Apple Silicon macOS and Linux · Free first use. Keep your hosting computer online. Public beta; stable qualification is still underway.</p>
+<StoryLayout title="Froglet — Share data and tools. On your terms." description="Make your data and useful tools available to other people and their AI assistants. Choose what to share, review it, and send a link." path="/">
+  <AgentMeta slot="head" route="home" />
+  <div class="story-wrap">
+    <section class="story-hero">
+      <div class="story-hero__copy">
+        <span class="story-kicker">Useful work deserves to be used.</span>
+        <h1>Share data<br />and tools.<br /><span class="story-accent">On your terms.</span></h1>
+        <p class="story-lede">Let someone look up information or run a useful task. Choose what they can use, review it with your AI assistant, and share a link.</p>
+        <div class="story-actions"><a class="btn primary" href="/publish/">Share something useful</a><a class="btn secondary" href="#how-it-works">See how it works</a></div>
+        <p class="story-note">Public beta · Start with a free service on your own computer.</p>
       </div>
-
-      <aside class="hero-agent">
-        <span class="eyebrow hero-agent-eyebrow">Start in your project</span>
-        <span class="lbl">Prompt for your AI agent</span>
-        <div class="hero-prompt">
-          <Code
-            code={homepagePrompt}
-            lang="md"
-          />
-        </div>
-        <p class="hero-agent-hint">
-          Paste into Codex or Claude Code and identify your source file. Your agent should show a preview before asking to publish.
-        </p>
-        <details class="onboarding-details">
-        <summary>More agent tasks</summary>
-        <p class="hero-agent-hint">Hosted proof tasks currently stop at session creation because the old origin is unavailable. Use the publishing prompt above or the local browser verifier.</p>
-        <div class="prompt-variants" aria-label="Agent prompt variants">
-          {promptVariants.map((variant) => (
-            <div class="prompt-card">
-              <span class="prompt-k">{variant.k}</span>
-              <strong>{variant.title}</strong>
-              <button type="button" class="prompt-copy" data-prompt-copy data-prompt={variant.prompt} aria-label={`Copy ${variant.title} prompt`}>Copy</button>
-            </div>
-          ))}
-        </div>
-        </details>
-      </aside>
+      <div class="story-hero__art story-hero__art--scene"><StoryArt name="01-homepage-hero" width={1600} height={900} eager sizes="(max-width: 760px) 155vw, 850px" alt="Bob shares a service from his desk. Alice uses it from hers." /></div>
     </section>
+    <div class="story-strip"><span>Your choice of data</span><span>Your own hosting</span><span>Open source</span><span>For people and their AI assistants</span></div>
 
-    {/* ── Agent proof checklist ──────────────────────── */}
-    <div class="proof-strip" aria-label="What the hosted demo should prove">
-      <div class="proof-card proof-card--lead">
-        <span class="proof-k">agent report</span>
-        <strong>No trust tour.</strong>
-        <span>Make the model bring back evidence from the live service.</span>
-      </div>
-      <div class="proof-card">
-        <span class="proof-k">catalog</span>
-        <strong>5 free demos</strong>
-        <code>demo.add + witness/hash</code>
-      </div>
-      <div class="proof-card">
-        <span class="proof-k">result</span>
-        <strong>sum = 12</strong>
-        <code>{"{"}a:7,b:5{"}"}</code>
-      </div>
-      <div class="proof-card">
-        <span class="proof-k">evidence</span>
-        <strong>receipt + feed</strong>
-        <code>descriptor · offer · receipt</code>
-      </div>
-    </div>
-
-    {/* ── Launch: two public entry points ────────────── */}
-    <section class="block" id="launch">
-      <span class="eyebrow">Launch</span>
-      <h2>Ready to try your own workflow?</h2>
-      <p class="section-lede">Start by <a href="/publish/">publishing your catalog</a>. The browser verifier is available; the hosted live demo is temporarily unavailable while its origin is moved.</p>
-
-      <div class="entry-grid">
-        <div class="entry-card">
-          <div class="entry-num">01 · hosted</div>
-          <h3>Hosted demo · temporarily unavailable</h3>
-          <p>Session creation currently fails at the old origin. The browser verifier still checks a signed sample locally; return to the hosted demo after its origin is restored.</p>
-          <a class="entry-cta" href="/verify-receipt/">Verify the signed sample →</a>
-          <div class="entry-proves">
-            <b>When restored, it can prove:</b> shared-session auth, live discovery, five free hosted demos, and a signed receipt for the canonical flow.<br>
-            <b>What it does not prove:</b> paid rails, persistent identity, service publication, or marketplace depth.
-          </div>
-        </div>
-
-        <div class="entry-card" id="self-host-card">
-          <div class="entry-num">02 · local</div>
-          <h3>Run locally</h3>
-          <p>Pick an agent and start free. The installer sets up a local node and connects it to your agent. Review the changes before installation; payment and public publishing can wait.</p>
-          <p class="config-hint">Use the <a href="/learn/quickstart/">setup guide</a> to verify the immutable release before installation. If its bundle is unavailable, stop and use the browser sample while publication finishes.</p>
-
-          <details class="onboarding-details">
-          <summary>Advanced: installation command</summary>
-
-          <div class="config-group">
-            <span class="config-label">Install</span>
-            <div class="config-options" data-group="install">
-              <button class="config-btn is-active" type="button" data-value="linux" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux x86_64</button>
-              <button class="config-btn" type="button" data-value="linux-arm" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/linux.svg')" aria-hidden="true"></span>Linux arm64</button>
-              <button class="config-btn" type="button" data-value="macos" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/apple.svg')" aria-hidden="true"></span>macOS arm64</button>
-              <button class="config-btn" type="button" data-value="docker" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/docker.svg')" aria-hidden="true"></span>Docker</button>
-            </div>
-          </div>
-
-          <div class="config-group">
-            <span class="config-label">Agent</span>
-            <div class="config-options" data-group="agent">
-              <button class="config-btn is-active" type="button" data-value="claude-code" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/anthropic.svg')" aria-hidden="true"></span>Claude Code</button>
-              <button class="config-btn" type="button" data-value="codex" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/codex.svg')" aria-hidden="true"></span>Codex</button>
-              <button class="config-btn" type="button" data-value="manual" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>Manual</button>
-            </div>
-          </div>
-
-          <details class="onboarding-details">
-          <summary>Optional operator payment setup</summary>
-          <div class="config-group">
-            <span class="config-label">Operator Payment</span>
-            <div class="config-options" data-group="payment">
-              <button class="config-btn is-active" type="button" data-value="none" aria-pressed="true"><span class="brand-icon" style="--logo: url('/logos/mcp.svg')" aria-hidden="true"></span>None</button>
-              <button class="config-btn" type="button" data-value="lightning-mock" aria-pressed="false"><span class="brand-icon" style="color: var(--bolt); --logo: url('/logos/lightning.svg')" aria-hidden="true"></span>Lightning mock</button>
-              <button class="config-btn" type="button" data-value="stripe-test" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/stripe.svg')" aria-hidden="true"></span>Stripe test</button>
-              <button class="config-btn" type="button" data-value="x402" aria-pressed="false"><span class="brand-icon" style="--logo: url('/logos/x402.svg')" aria-hidden="true"></span>x402 <small>daemon-only</small></button>
-            </div>
-            <p class="config-hint">Normal users should keep this at None. The other choices configure the local node's own payment backend for an operator after the free path is healthy.</p>
-          </div>
-
-          <p class="config-hint">Enter credentials only in your local environment. This website does not need your payment keys.</p>
-          </details>
-
-          <div class="config-shell">
-            <pre class="config-code" id="config-output"><code></code></pre>
-            <button class="config-copy" id="config-copy-btn" type="button" title="Copy to clipboard">Copy</button>
-          </div>
-          </details>
-
-          <a class="entry-cta" href="/learn/quickstart/">docs / quickstart →</a>
-          <div class="entry-proves">
-            <b>What it proves:</b> persistent identity, MCP wiring, local provider/runtime health, and free service publication.<br>
-            <b>What it does not prove:</b> live paid rails, public registration, or external backend connectivity until the agent guides those steps after local health passes.
-          </div>
-        </div>
+    <section class="story-section" id="what-you-can-share">
+      <div class="story-heading"><span class="story-kicker">More than sending a file</span><h2>Share something people can use.</h2><p>A file gives someone a copy. A Froglet service lets them ask a question or run a task and get a result. Their AI assistant handles the connection.</p></div>
+      <div class="story-grid">
+        <article class="story-use"><span class="story-kicker">01 / Data</span><h3>A useful collection</h3><p>A research catalog, a product list, or a table that translates your terminology into someone else’s. Share the fields you choose.</p></article>
+        <article class="story-use"><span class="story-kicker">02 / Functions</span><h3>A repeatable task</h3><p>A calculation, a lookup, or a small analysis. Someone provides an input; your tool returns the answer.</p></article>
+        <article class="story-use"><span class="story-kicker">03 / Existing tools</span><h3>One useful operation</h3><p>Give access to a specific task your system already performs, with defined inputs and limits. This takes additional setup.</p></article>
       </div>
     </section>
 
-    {/* ── Game theory ────────────────────────────────── */}
-    <section class="block full-bleed" id="game-theory">
-      <div class="inner">
-        <span class="eyebrow">What the evidence does</span>
-        <h2>Three moves. Each one leaves a signed record.</h2>
-        <p class="section-lede">Froglet does not stop a counterparty from misbehaving. Signed artifacts attribute commitments and results to keys, giving both parties evidence to inspect. Resolving a dispute still requires checking the work and applying the agreed policy.</p>
+    <section class="story-section" id="how-it-works">
+      <div class="story-heading"><span class="story-kicker">Bob has something useful. Alice needs it.</span><h2>A small service.<br />A simple way to share it.</h2></div>
+      <div class="story-grid">
+        <article class="story-step"><StoryArt name="02-walkthrough-choose" sizes="(max-width: 760px) 100vw, 360px" /><span class="story-kicker">01 / Choose</span><h3>Pick what to share.</h3><p>Bob asks his assistant to prepare a useful part of his work. Only the selected data goes into the shared copy.</p></article>
+        <article class="story-step"><StoryArt name="03-walkthrough-preview" sizes="(max-width: 760px) 100vw, 360px" /><span class="story-kicker">02 / Review</span><h3>See it work first.</h3><p>Bob sees what is included, what is left out, and an example result. He approves before anything is published.</p></article>
+        <article class="story-step"><StoryArt name="04-walkthrough-publish" sizes="(max-width: 760px) 100vw, 360px" /><span class="story-kicker">03 / Share</span><h3>Send Alice a link.</h3><p>Alice’s assistant reads what the service does and helps her decide whether to use it. Invitation access, when required, is sent separately.</p></article>
+      </div>
+      <a href="/publish/">Walk through your first service</a>
+    </section>
 
-        <div class="gt-grid">
-          <div class="gt-card">
-            <div class="gt-n">move 01</div>
-            <h4>Provider delivers</h4>
-            <p>Executes the work and signs a receipt committing to the result hash, the limits applied, and the settlement state. Anyone holding the chain can verify all of it offline.</p>
-            <div class="gt-eq">signed chain · independently checkable</div>
-          </div>
-          <div class="gt-card">
-            <div class="gt-n">move 02</div>
-            <h4>Provider returns a bad result</h4>
-            <p>The receipt is still signed — by them, over that result hash. A provider that signs wrong results signs the evidence against itself. Detection still requires someone to check the work.</p>
-            <div class="gt-eq gt-eq--bad">attributable · not auto-detected</div>
-          </div>
-          <div class="gt-card">
-            <div class="gt-n">move 03</div>
-            <h4>Requester walks away</h4>
-            <p>The signed quote and deal show exactly what they committed to and when. On escrow rails the funds were already locked; on the others the record is what remains.</p>
-            <div class="gt-eq gt-eq--bad">non-repudiable · rail-dependent recovery</div>
-          </div>
-        </div>
+    <section class="story-section story-split" id="your-control">
+      <div><span class="story-kicker">You decide the scope</span><h2>Share the useful part.<br />Keep the rest yours.</h2><ul class="story-checks">
+        <li><strong>Choose the data and the task.</strong><span>Review the exact fields or operation that others will be able to use.</span></li>
+        <li><strong>Decide who can use it.</strong><span>Start with public sharing, or set up invitations with expiry and request limits.</span></li>
+        <li><strong>Change your mind.</strong><span>Review updates before publishing them. Pause the service or revoke invitations to stop new work.</span></li>
+      </ul><p class="story-note">A shared result can be kept by its recipient. Stopping access prevents new work; it cannot recall a result already delivered.</p></div>
+      <StoryArt name="06-discovery" alt="Alice examines the service that is relevant to her work." />
+    </section>
 
-        <div class="gt-plot">
-          <div class="gt-plot-head">
-            <span class="lbl">Design preview</span>
-            <span class="gt-plot-title">stake / deal_value &gt; <strong id="threshold-val">2.0</strong></span>
-            <input id="threshold-slider" type="range" min="1" max="50" step="1" value="20" aria-label="Stake-to-deal-value safety threshold" />
-          </div>
-          <canvas id="trust-threshold" width="780" height="302" role="img" aria-label="Stake-to-deal-value safety check across example deals"></canvas>
-          <p class="gt-plot-result" id="threshold-result"></p>
-          <p class="gt-plot-note">
-            <strong>Not live.</strong> Staked identity is designed, not deployed — the schema and endpoints exist but are disabled pending settlement-backed stake receipts. This model shows what the threshold would do if it were: bars above the dashed line are deals where a stake would exceed what cheating could earn. See <a href="/learn/economics/">economics</a> for the full status.
-          </p>
-        </div>
+    <section class="story-section" id="organizations">
+      <div class="story-org"><div class="story-split"><div><span class="story-kicker">For organizations</span><h2>Collaboration shouldn’t start with an infrastructure project.</h2></div><div><p class="story-lede">Agree what can be shared, who can use it, and under which conditions.</p><p>Our direction is to turn those decisions into a working service. Today, Froglet provides selected data sharing, invitations, execution limits, and signed records. Broader contract and SLA automation is still ahead.</p><a href="/managed/">Explore the organization vision</a></div></div><StoryArt name="11-distributed-world" width={1600} height={900} sizes="(max-width: 760px) 100vw, 1080px" alt="Independent workspaces connected directly, without a central platform." /></div>
+    </section>
+
+    <section class="story-section" id="questions">
+      <div class="story-heading"><span class="story-kicker">A few practical questions</span><h2>Understand it before you start.</h2></div>
+      <div class="story-faq">
+        <details><summary>Is this like a shared folder?</summary><p>That is a useful starting point. Froglet shares a service: something another person’s assistant can query or run. You host it on a computer you control. It is not a hosted file-storage account, and there is no drag-and-drop web workspace today.</p></details>
+        <details><summary>Do I need to know how to code?</summary><p>For a small data catalog, your assistant can help prepare it. Today you use a file-capable assistant such as Codex or Claude Code on Apple Silicon macOS or Linux. Installation and publishing still require your review. Connecting an existing system or setting up invitations needs more technical configuration.</p></details>
+        <details><summary>What is private, and what becomes public?</summary><p>You choose the data included in the service. Public services are accessible to others; invited services need a separate access credential. A service’s description, example, and selected package information may still be public. Keep confidential data and credentials out of that material.</p><p>Invitations currently cover the services on one Froglet host. Use separate hosts when different recipients should have different access. <a href="/learn/share-services/#invite-access-and-bounded-http-tools">Read the access guide</a>.</p></details>
+        <details><summary>Can I charge for what I share?</summary><p>Paid services are part of the vision, and payment integrations exist with different levels of maturity. The guided publishing journey starts free. It is not yet a ready-to-use sales and billing service. <a href="/open-source/#integrations">See payment integration status</a>.</p></details>
+        <details><summary>Where does my service run?</summary><p>On your computer or infrastructure. That machine needs to stay awake, online, and running Froglet. Managed always-on hosting is not available yet. This is a public beta; clean-machine and first-time-user qualification are still pending.</p></details>
+        <details><summary>Does Froglet enforce every part of an agreement?</summary><p>It can apply supported technical controls, such as selected data, invitation access, and execution limits. Signed records make an exchange inspectable. They do not establish that a result is correct or automatically enforce legal terms, data-use promises, or an uptime SLA.</p></details>
       </div>
     </section>
-
-    {/* ── Integrations matrix ────────────────────────── */}
-    <section class="block" id="integrations">
-      <span class="eyebrow">Integrations</span>
-      <h2>One protocol. Multiple rails, runtimes, and clients.</h2>
-      <p class="section-lede">Each integration has one primitive and one status. Start with free native services. Other integrations are advanced and have separate qualification limits.</p>
-
-      <div class="matrix">
-        <table>
-          <thead><tr>
-            <th>Integration</th>
-            <th>Kind</th>
-            <th>Primitive</th>
-            <th>Status</th>
-          </tr></thead>
-          <tbody>
-            {RAILS.map((rail) => (
-              <tr>
-                <td class="name">
-                  {rail.logo ? <span class="int-logo"><img src={rail.logo} alt="" /></span> : null}
-                  {rail.name}
-                </td>
-                <td>{rail.kind}</td>
-                <td><code>{rail.primitive}</code></td>
-                <td class="state"><span class="st" title={rail.note}><span class="dot" style={`background:${RAIL_DOT[rail.status]}`}></span>{statusLabel(rail.status)}</span></td>
-              </tr>
-            ))}
-            <tr><td class="name"><span class="int-logo"><img src="/logos/anthropic.svg" alt=""></span>Claude Code</td><td>agent client</td><td><code>Native MCP</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Candidate</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/codex.svg" alt=""></span>Codex</td><td>agent client</td><td><code>Native MCP</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Candidate</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/mcp.svg" alt=""></span>MCP</td><td>transport</td><td><code>stdio</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/openclaw.svg" alt=""></span>OpenClaw</td><td>tool protocol</td><td><code>claw.json</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Source verified</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/wasm.svg" alt=""></span>WASM</td><td>runtime</td><td><code>wasi-preview-2</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Beta</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/python.svg" alt=""></span>Python</td><td>runtime</td><td><code>Linux sandbox</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Advanced Linux</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/docker.svg" alt=""></span>Docker</td><td>runtime</td><td><code>OCI image</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--frog-400)"></span>Live</span></td></tr>
-            <tr><td class="name"><span class="int-logo int-logo-text">B</span>Batch</td><td>execution mode</td><td><code>async task status</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>No fan-out</span></td></tr>
-            <tr><td class="name"><span class="int-logo int-logo-text">G</span>GPU</td><td>accelerator</td><td><code>Docker --gpus</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--bolt)"></span>Self-host T4</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/tor.svg" alt=""></span>Tor</td><td>transport</td><td><code>onion v3</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Self-host</span></td></tr>
-            <tr><td class="name"><span class="int-logo"><img src="/logos/lock.svg" alt=""></span>TEE</td><td>runtime</td><td><code>SGX · Nitro</code></td><td class="state"><span class="st"><span class="dot" style="background:var(--fg3)"></span>Spec</span></td></tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="matrix-note">Logos are trademarks of their respective owners. Shown for compatibility reference only.</p>
-    </section>
-
-    {/* ── Non-goals ──────────────────────────────────── */}
-    <section class="block" id="non-goals">
-      <div class="inner">
-        <span class="eyebrow">Non-goals</span>
-        <h2>What Froglet is not.</h2>
-        <p class="section-lede">The rails compete on moving money. Froglet does not, and being explicit about that is what makes it safe to put underneath any of them.</p>
-        <ul class="nongoal-list">
-          <li><strong>Not a payment rail.</strong> The protocol records agreements and settlement evidence. Optional node adapters submit payments to your configured rails.</li>
-          <li><strong>No custody.</strong> The protocol does not hold funds. Self-hosted nodes can use wallet credentials that you configure and control.</li>
-          <li><strong>No settlement finality.</strong> A receipt is evidence <em>about</em> settlement. Finality belongs to the rail.</li>
-          <li><strong>No consensus, no chain, no token.</strong> There is no global ordering and no shared state machine. Artifacts are verified independently by whoever holds them.</li>
-          <li><strong>Not proof of correctness.</strong> A receipt proves a provider signed a result hash — not that the result is right. Verifying execution without re-running it is an open research problem, and we say so instead of implying otherwise.</li>
-        </ul>
-        <p class="matrix-note">Full detail in <a href="/spec/kernel/">the specification</a>.</p>
-      </div>
-    </section>
-
-    {/* ── Pull quote ─────────────────────────────────── */}
-    <section class="pull">
-      <blockquote>"Whatever rail moves the money,<br><em>the evidence outlives the session.</em>"</blockquote>
-    </section>
-
-    <SiteFooter />
-  </main>
-</PageFrame>
-
-<script>
-  import { initSelfHostConfigurator } from '../scripts/self-host-configurator';
-  import { initTrustThreshold } from '../scripts/trust-threshold';
-
-  // Self-host configurator (Run locally entry card)
-  initSelfHostConfigurator();
-
-  // Trust threshold plot (Game theory section)
-  const canvas = document.querySelector<HTMLCanvasElement>('#trust-threshold');
-  const slider = document.querySelector<HTMLInputElement>('#threshold-slider');
-  const display = document.getElementById('threshold-val');
-  const result = document.getElementById('threshold-result');
-  if (canvas && slider && display && result) {
-    initTrustThreshold(canvas, slider, display, result);
-  }
-
-  async function copyPrompt(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {}
-
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    const copied = document.execCommand('copy');
-    textarea.remove();
-    if (!copied) throw new Error('copy command failed');
-  }
-
-  document.querySelectorAll<HTMLButtonElement>('[data-prompt-copy]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const prompt = button.dataset.prompt;
-      if (!prompt) return;
-      try {
-        await copyPrompt(prompt);
-        button.textContent = 'Copied';
-        window.setTimeout(() => {
-          button.textContent = 'Copy';
-        }, 1600);
-      } catch {
-        button.textContent = 'Copy failed';
-        window.setTimeout(() => {
-          button.textContent = 'Copy';
-        }, 1600);
-      }
-    });
-  });
-</script>
-</body>
-</html>
+    <section class="story-closing"><span class="story-kicker">Start small</span><h2>What do you have<br />that someone else could use?</h2><p>One catalog. One lookup. One useful calculation.</p><div class="story-actions"><a class="btn primary" href="/publish/">Prepare your first service</a><a class="btn secondary" href="/marketplace/">Explore services</a></div><p class="story-note" style="margin-top:24px"><a href={agentGuide}>Instructions for your AI assistant</a> · <a href="/open-source/">For developers</a></p></section>
+  </div>
+</StoryLayout>

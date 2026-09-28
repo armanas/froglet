@@ -8,6 +8,7 @@ function page() {
   document.body.innerHTML = `<span data-marketplace-field="refresh">CHECKING</span>
     <main data-marketplace-live><span data-marketplace-field="froglets">—</span>
     <span data-marketplace-field="paidOffers">—</span><span data-marketplace-field="detail"></span>
+    <span data-marketplace-field="message"></span>
     <table><tbody data-marketplace-provider-table></tbody></table></main>`;
 }
 const snapshot = (overrides = {}) => ({
@@ -24,6 +25,15 @@ async function refresh(body: unknown, status = 200) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.innerHTML = ''; });
 
 describe('marketplace runtime status', () => {
+  it('explains a malformed response plainly while retaining diagnostics', async () => {
+    vi.useFakeTimers(); page();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<!DOCTYPE html>Unavailable')));
+    initMarketplaceLive();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(document.querySelector('[data-marketplace-field="message"]')?.textContent).toBe('We could not load the catalog. We will try again automatically.');
+    expect(document.querySelector('[data-marketplace-field="detail"]')?.textContent).toContain('JSON');
+    expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('UNAVAILABLE');
+  });
   it('reports an upstream HTTP failure without leaking a JSON parser error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('error code: 1016', { status: 530 })));
     const result = await getMarketplaceSnapshot();

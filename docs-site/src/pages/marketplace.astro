@@ -9,14 +9,14 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Marketplace · Froglet</title>
+<title>Explore services · Froglet</title>
 <meta name="description" content="Discover Froglet services, see what they do and cost, check recent availability, and share a service with your agent." />
 <link rel="canonical" href="https://froglet.dev/marketplace/" />
 <meta name="color-scheme" content="dark" />
 <!-- OpenGraph -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Froglet" />
-<meta property="og:title" content="Marketplace · Froglet" />
+<meta property="og:title" content="Explore services · Froglet" />
 <meta property="og:description" content="Discover Froglet services, see what they do and cost, check recent availability, and share a service with your agent." />
 <meta property="og:url" content="https://froglet.dev/marketplace/" />
 <meta property="og:image" content="https://froglet.dev/og/marketplace.png" />
@@ -24,7 +24,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 <meta property="og:image:height" content="630" />
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Marketplace · Froglet" />
+<meta name="twitter:title" content="Explore services · Froglet" />
 <meta name="twitter:description" content="Discover Froglet services, see what they do and cost, check recent availability, and share a service with your agent." />
 <meta name="twitter:image" content="https://froglet.dev/og/marketplace.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -37,15 +37,15 @@ import ThemeProvider from '../components/ThemeProvider.astro';
 </SiteHeader>
 <main class="mkt-shell" data-marketplace-live data-status="pending">
   <div class="mkt-title">
-    <div class="mkt-title-main"><h1>Marketplace</h1><button type="button" class="mkt-action" data-marketplace-copy-summary>Copy evidence</button></div>
+    <div class="mkt-title-main"><h1>Explore services</h1><button type="button" class="mkt-action" data-marketplace-copy-summary>Copy evidence</button></div>
     <div class="search" role="search" aria-label="Marketplace search" data-marketplace-search-form>
       <label class="sr-only" for="marketplace-search">Search services</label>
       <input id="marketplace-search" type="search" placeholder="Search by service, purpose, or provider…" autocomplete="off" spellcheck="false" data-marketplace-search />
       <output class="search-count" for="marketplace-search" data-marketplace-search-count>Loading</output>
     </div>
   </div>
-  <p class="mkt-intro">Find a service your agent can use.</p>
-  <p class="mkt-sub">Browse what each service does, check its price, then open it for example inputs and sharing.</p>
+  <p class="mkt-intro">Find data and tools for your next task.</p>
+  <p class="mkt-sub">Each service does a specific job, such as looking up information or running a calculation. Check an example and its price, then give the link to your AI assistant. Opening a link does not run or pay for anything.</p>
   <p class="mkt-sub">Catalog from <code class="inline">marketplace.froglet.dev</code>. Last successful check: <strong data-marketplace-field="checkedAt">waiting</strong>.</p>
   <noscript><p>JavaScript is required for current catalog data. Use the Providers JSON and Offers JSON links below.</p></noscript>
   <section aria-labelledby="services-heading" class="services-section">
@@ -55,6 +55,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
     <p class="service-empty" data-marketplace-no-results hidden>No services match. Try another search or show all services.</p>
   </section>
   <details class="marketplace-evidence"><summary>Marketplace evidence and technical details</summary>
+  <p class="mkt-sub" data-marketplace-field="detail">Checking the catalog connection…</p>
   <p class="mkt-sub">Catalog counts cover all indexed entries. Receipt statistics and prices below cover the loaded sample. Receipts are provider statements, not independently assessed quality or unique buyers.</p>
   <div class="metrics">
     <div class="metric"><div class="k">Providers</div><div class="v" data-marketplace-field="froglets">—</div><div class="d">indexed identities</div></div>
@@ -78,7 +79,7 @@ import ThemeProvider from '../components/ThemeProvider.astro';
   <p class="mkt-sub" data-marketplace-field="dealFeedDetail">A public deal feed is not available. Catalog counts do not measure customer activity.</p>
   </details>
   <div class="mkt-footer">
-    <span data-marketplace-field="detail" role="status">Checking the read API…</span>
+    <span data-marketplace-field="message" role="status">Checking for services…</span>
     <nav aria-label="Marketplace data">
       <a href="https://marketplace.froglet.dev/v1/providers?limit=12">Providers JSON</a>
       <a href="https://marketplace.froglet.dev/v1/offers?limit=24">Offers JSON</a>

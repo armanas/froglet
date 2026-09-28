@@ -1,80 +1,78 @@
 ---
 title: What is Froglet?
-description: A cryptographic protocol for buying and selling compute.
+description: Share selected data or a useful task, with clear access rules and a record of each use.
 ---
 
-<div class="learn-hero compact">
+<div class="learn-hero compact" style="grid-template-columns:1fr">
   <div>
-    <div class="learn-pill">Orientation</div>
-    <p class="learn-lead">Froglet turns compute into a cryptographically provable service.</p>
-    <p class="learn-sublead">A provider describes what it offers, a requester commits to a quote, the workload executes, and the final receipt becomes signed evidence. The protocol itself requires no accounts, no platform state, and no trusted registry — hosted marketplaces are optional, operator-run convenience layers on top.</p>
+    <div class="learn-pill">Start here</div>
+    <p class="learn-lead">Make your useful work available to someone else.</p>
+    <p class="learn-sublead">Choose some data or a task your computer can do. Review an example, approve what becomes available, and share a link. Froglet handles the service connection on infrastructure you control.</p>
     <div class="learn-chip-row">
-      <span class="learn-chip">Identity by keypair</span>
-      <span class="learn-chip">Execution by receipt</span>
-      <span class="learn-chip">Settlement by explicit terms</span>
-    </div>
-  </div>
-  <div class="learn-grid">
-    <div class="learn-card tight">
-      <span class="learn-kicker">Identity</span>
-      <strong>Every artifact is attributable.</strong>
-      <p>Your public key is your node identity. Signatures are the protocol's source of truth.</p>
-    </div>
-    <div class="learn-card tight">
-      <span class="learn-kicker">Execution</span>
-      <strong>Every interaction becomes evidence.</strong>
-      <p>Descriptor, offer, quote, deal, and receipt form a chain anyone can verify.</p>
-    </div>
-    <div class="learn-card tight">
-      <span class="learn-kicker">Settlement</span>
-      <strong>Payments are part of the protocol.</strong>
-      <p>Base fees protect providers, success fees protect requesters, and free services still use the same flow.</p>
+      <span class="learn-chip">Choose</span>
+      <span class="learn-chip">Review</span>
+      <span class="learn-chip">Share</span>
     </div>
   </div>
 </div>
 
-## Froglet in one loop
+## Bob has something Alice can use
 
-<div class="protocol-chain">
-  <div class="protocol-step"><strong>1. Discover</strong><span>Find a provider directly or through a marketplace service.</span></div>
-  <div class="protocol-step"><strong>2. Verify</strong><span>Check signatures, hashes, pricing, and limits before you commit.</span></div>
-  <div class="protocol-step"><strong>3. Quote</strong><span>The provider prices your exact workload and signs the quote.</span></div>
-  <div class="protocol-step"><strong>4. Deal</strong><span>The requester signs the commitment and, if needed, settles the base fee.</span></div>
-  <div class="protocol-step"><strong>5. Execute</strong><span>The provider runs the workload under declared runtime limits.</span></div>
-  <div class="protocol-step"><strong>6. Prove</strong><span>The receipt binds execution outcome, hashes, and settlement state.</span></div>
-</div>
+Bob's lab has a table that matches different names for the same research terms.
+Alice needs those matches for her own analysis. She does not need Bob's entire database.
 
-## Why?
+1. **Bob chooses the useful part.** His assistant prepares a separate copy containing only the selected collections and fields.
+2. **Bob checks an example.** He sees what is included, what is omitted, and what Alice would receive from a lookup.
+3. **Bob approves sharing.** He chooses public access or an invitation and sends Alice the service link. Invitation credentials travel separately.
+4. **Alice decides whether it helps.** She or her assistant inspects the description, example, and terms before using the service.
 
-AI agents need to buy and sell compute from each other without intermediaries. An agent running on your laptop needs GPU time from a provider across the world. It needs to:
+This is the idea behind a **service**: something useful another person can ask
+your computer to do. It could look up a record, return a selected dataset, or
+run a specific calculation. It does not give someone general access to your computer.
 
-<div class="learn-grid two">
-  <div class="learn-card">
-    <span class="learn-kicker">Find</span>
-    <p>Locate a provider without assuming a platform owns the market.</p>
-  </div>
-  <div class="learn-card">
-    <span class="learn-kicker">Verify</span>
-    <p>Check identity, offers, and outcomes without social trust.</p>
-  </div>
-  <div class="learn-card">
-    <span class="learn-kicker">Pay</span>
-    <p>Settle small payments without opening a traditional merchant relationship.</p>
-  </div>
-  <div class="learn-card">
-    <span class="learn-kicker">Prove</span>
-    <p>End with signed evidence instead of a hand-wavy status page.</p>
-  </div>
-</div>
+[Walk through sharing your first service →](/publish/)
 
-Froglet solves those needs with signed artifacts, explicit execution terms, and verifiable settlement. The first public path is free: no buyer should configure payment infrastructure just to try Froglet. **Lightning** is the reference operator rail — proven end-to-end on regtest, with the payment preimage as cryptographic proof. **Stripe** is a test-mode agentic rail on Stripe's Shared Payment Token model (production buyers are external ACP agents, not froglet nodes; US-only; attested by a PaymentIntent, not cryptographic). **x402** is defined in the protocol and runs at the daemon level, but is not exposed on the marketplace publish path.
+## What you control
+
+- **The material:** selected data or a specific operation, with an example you can review.
+- **Access:** public use or invitations; current invitations apply to the provider, not to one individual service.
+- **Limits:** the supported input and execution limits for the chosen service type.
+- **Availability:** you run the provider and can pause access. Already delivered results cannot be recalled.
+
+The [sharing guide](/learn/share-services/) explains these controls and their limits.
+The supported first-use path is **free**. Paid rails have separate setup and
+[maturity limits](/learn/payment-rails/).
+
+## The words you will see in the docs
+
+| Term | Plain meaning |
+| --- | --- |
+| Provider | Bob's Froglet node: the computer making a service available. |
+| Requester | Alice's Froglet node: the computer asking to use it. |
+| Offer | The description of what a service accepts, returns, and costs. |
+| Quote and deal | The proposed terms for one request and the requester's commitment. |
+| Receipt | A signed record of the provider's reported outcome and relevant hashes. |
+
+Signed records let people check which key signed a commitment and whether the
+record was changed. They do **not** establish a person's legal identity or prove
+that a result is correct. Read [Trust & Economics](/learn/economics/) for that boundary.
+
+## What is available today
+
+The current public beta supports guided free sharing with **Codex or Claude Code**
+on **Apple Silicon macOS and Linux x86_64/arm64**. The provider's computer must
+stay awake and online. See the [release and setup requirements](/learn/share-services/).
+
+For organizations, the direction is to turn agreed sharing rules into a working
+service. Froglet does not currently interpret arbitrary legal agreements or
+automatically deliver every SLA. [The organization page](/managed/) separates
+current controls from that longer-term direction.
 
 ## Read next
 
 <div class="chapter-grid">
-  <a class="chapter-card" href="/learn/quickstart/"><strong>Run Locally</strong><small>Start a node, generate agent config, and use the free path first.</small></a>
-  <a class="chapter-card" href="/learn/deal-flow/"><strong>Deal Flow</strong><small>See the exact descriptor → quote → deal → receipt chain.</small></a>
-  <a class="chapter-card" href="/learn/settlement/"><strong>Settlement</strong><small>Understand the payment model before you wire in a real rail.</small></a>
-  <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>What is guaranteed today, what is operator policy, and the staked-trust roadmap.</small></a>
-  <a class="chapter-card" href="/spec/kernel/"><strong>Kernel Spec</strong><small>Read the signed payload rules only if you need protocol-level detail.</small></a>
+  <a class="chapter-card" href="/publish/"><strong>Start sharing</strong><small>See the walkthrough and a prompt for your assistant.</small></a>
+  <a class="chapter-card" href="/learn/share-services/"><strong>Sharing guide</strong><small>Setup, approvals, invitations, and recovery.</small></a>
+  <a class="chapter-card" href="/learn/deal-flow/"><strong>How a request works</strong><small>Follow the technical offer, quote, deal, and receipt flow.</small></a>
+  <a class="chapter-card" href="/learn/economics/"><strong>Trust & Economics</strong><small>What the records establish and what still needs judgment.</small></a>
 </div>
