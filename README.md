@@ -42,6 +42,12 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Overview
 
+**Development checkpoint, 28 September 2026:** the public website is temporarily
+showing “Coming back soon.” See [current status and restart tasks](TODO.md#current-checkpoint--28-september-2026)
+and [website restoration](docs-site/README.md#temporary-pause-2026-09-28).
+File-sharing work is locally implemented but unreleased; general CPU jobs and
+GPU rental remain unfinished. Payment work is deferred.
+
 The current product candidate starts with **“Make this catalog usable by another
 agent.”** Codex or Claude Code can prepare selected JSON, typed CSV, or SQLite
 data, or a small Wasm function; run a local example; ask for exact publication
@@ -50,7 +56,7 @@ existing agent settings. Recipients use the same native integration without npm.
 
 See [the publishing workflow](docs-site/src/content/docs/learn/share-services.mdx)
 and [the qualification gates](docs/RELEASE.md#effortless-publishing-qualification).
-This is an uncommitted candidate: clean-machine agent tests, the real public
+This is a development candidate: clean-machine agent tests, the real public
 relay journey, and first-time-user acceptance remain release gates. Supported
 targets are Apple Silicon macOS and Linux x86_64/arm64. The host must stay online.
 
