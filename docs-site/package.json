@@ -8,7 +8,9 @@
     "build": "npm run build:verifier && node scripts/generate-og.mjs && astro build",
     "preview": "astro preview",
     "preview:workers": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
+    "preview:maintenance": "wrangler dev --config wrangler.maintenance.jsonc",
+    "deploy": "wrangler deploy --config wrangler.maintenance.jsonc",
+    "deploy:site": "npm run build && wrangler deploy --config wrangler.jsonc",
     "astro": "astro",
     "test": "vitest --run",
     "build:verifier": "node scripts/build-verifier.mjs"
