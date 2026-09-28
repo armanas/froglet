@@ -106,7 +106,7 @@ client → relay   {"id": "<opaque>", "type": "response", "status": 200,
   receive a node-generated 413 below 10 MiB.
 - Header forwarding is allowlist-based in both directions (content-type,
   accept, authorization, content-length, plus `x-froglet-*`). The relay adds
-  `x-forwarded-for` and `x-froglet-relay: v1`.
+  `x-froglet-relay: v1`, without forwarding client IP headers or cookies.
 - Per-request timeout: 60s from frame dispatch to response frame; the relay
   answers 504 on expiry and discards late responses by `id`.
 - Streaming responses and WebSocket pass-through are out of scope for
@@ -204,3 +204,19 @@ marketplace projection remain separate gates from reachability.
 3. Multi-relay federation and `relay.<region>.froglet.dev` naming.
 4. Frame encoding: JSON is v1 for debuggability; CBOR is a candidate
    `frame.v2` if profiling shows overhead.
+
+### Bounded file downloads
+
+File delivery adds `origin`, `range`, `access-control-request-method` and
+`access-control-request-headers` to the request allowlist. Responses additionally
+allow `content-disposition`, `content-length`, `etag`, `cache-control`,
+`x-content-type-options`, the CORS allow-origin/methods/headers/expose-headers
+fields, and `vary`. Redirect locations and cookies remain excluded. The relay
+rejects duplicate or inconsistent response lengths; HEAD may declare a file
+length but must have no response bytes.
+
+The node replaces the internal `x-froglet-relay-response-limit` value with the
+negotiated limit, so a caller cannot raise it. A file larger than that limit is
+refused before file allowance reservation. F1 files are at most 8 MiB; relay v1
+continues to buffer bounded base64 frames. It does not stream or resume them and
+this feature does not raise the configured global relay allowance.

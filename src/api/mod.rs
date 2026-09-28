@@ -109,6 +109,7 @@ mod http_deals;
 mod http_discovery;
 mod http_events;
 mod http_execution;
+mod http_files;
 mod http_settlement;
 mod sessions;
 pub(crate) mod types;
@@ -450,6 +451,7 @@ async fn relay_ingress_guard(
 fn provider_control_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/provider/usage", get(provider_usage_status))
+        .route("/v1/provider/files/abort", post(http_files::abort))
         .route(
             "/v1/provider/invites",
             get(provider_invite_list).post(provider_invite_create),
@@ -919,10 +921,11 @@ async fn provider_usage_status(State(state): State<Arc<AppState>>) -> impl IntoR
         let usage = crate::provider_policy::usage(conn)?;
         let pause = crate::provider_policy::pause_reason(conn)?;
         let active: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE status IN ('accepted','running','payment_pending','result_ready','settlement_pending')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-        Ok::<_, String>((usage, pause, active))
+        let files=crate::file_download::usage(conn,"provider")?;
+        Ok::<_, String>((usage, pause, active, files))
     }).await;
     match snapshot {
-        Ok((usage, pause, active)) => {
+        Ok((usage, pause, active, files)) => {
             let policy = &state.config.provider_policy;
             let storage = crate::provider_policy::storage_status(
                 policy,
@@ -931,7 +934,7 @@ async fn provider_usage_status(State(state): State<Arc<AppState>>) -> impl IntoR
             );
             error_json(
                 StatusCode::OK,
-                json!({"policy":policy,"usage":usage,"paused":pause.is_some(),"pause_reason":pause,"active_deals":active,
+                json!({"policy":policy,"usage":usage,"file_transfers":files,"paused":pause.is_some(),"pause_reason":pause,"active_deals":active,
                 "remaining":{"deals":policy.max_total_deals.map(|n|n.saturating_sub(usage.reserved_deals)),"runtime_ms":policy.max_total_runtime_ms.map(|n|n.saturating_sub(usage.reserved_runtime_ms)),"quotes":policy.max_total_quotes.map(|n|n.saturating_sub(usage.issued_quotes))},
                 "requests":state.public_request_quota.counters(),"storage":storage.as_ref().ok(),"storage_check_available":storage.is_ok(),
                 "running_builtin_or_process_jobs":state.config.process_limits.concurrency.saturating_sub(state.process_execution_semaphore.available_permits()),
@@ -6166,7 +6169,10 @@ async fn dispatch_builtin_workload_inner(
         }))
     } else if matches!(
         execution.contract_version.as_str(),
-        DATA_QUERY_JSON_CONTRACT_V1 | DATA_QUERY_CSV_CONTRACT_V1 | DATA_QUERY_SQLITE_CONTRACT_V1
+        DATA_QUERY_JSON_CONTRACT_V1
+            | DATA_QUERY_CSV_CONTRACT_V1
+            | DATA_QUERY_SQLITE_CONTRACT_V1
+            | froglet_protocol::file_download::CONTRACT
     ) {
         let process_permit = match permit {
             Some(BuiltinRuntimePermit::Process(permit)) => Some(permit),
@@ -6220,6 +6226,7 @@ async fn dispatch_native_data_query(
         DATA_QUERY_JSON_CONTRACT_V1 => "json",
         DATA_QUERY_CSV_CONTRACT_V1 => "csv",
         DATA_QUERY_SQLITE_CONTRACT_V1 => "sqlite",
+        froglet_protocol::file_download::CONTRACT => "file",
         _ => return Err("unsupported native data query contract".into()),
     };
     let _permit = match permit {
@@ -12777,6 +12784,7 @@ enum ValidatedPublicationDataKind {
         canonical_schema_bytes: Vec<u8>,
     },
     Sqlite,
+    File,
 }
 
 #[derive(Debug)]
@@ -13114,12 +13122,26 @@ fn validate_publication_data_source_with_tempdir(
     } else {
         crypto::sha256_hex(&bytes)
     };
+    if source.format == PublicationDataFormat::File {
+        let (metadata, _) = froglet_protocol::file_download::decode(&bytes)
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({"error":error})))?;
+        return Ok(ValidatedPublicationData {
+            bytes,
+            file_name: format!("{content_hash}.file"),
+            content_hash,
+            source_kind: "file.download".into(),
+            kind: ValidatedPublicationDataKind::File,
+            input_schema: froglet_protocol::file_download::input_schema(),
+            output_schema: metadata.output_schema(),
+        });
+    }
     let (extension, source_kind, query_kind) = match source.format {
         PublicationDataFormat::Json => ("json", "data_query.json", DataQuerySourceKind::Json),
         PublicationDataFormat::Csv => ("csv", "data_query.csv", DataQuerySourceKind::Csv),
         PublicationDataFormat::Sqlite => {
             ("sqlite", "data_query.sqlite", DataQuerySourceKind::Sqlite)
         }
+        PublicationDataFormat::File => unreachable!("file source handled above"),
     };
     let file_name = format!("{content_hash}.{extension}");
     let source_path = tempdir.path().join(&file_name);
@@ -13257,6 +13279,15 @@ fn stage_publication_data_source(
         })?;
     }
     staging.acquire_publication_lock(&root)?;
+    if matches!(kind, ValidatedPublicationDataKind::File) {
+        crate::file_download::check_storage(
+            &root,
+            &file_name,
+            bytes.len() as u64,
+            state.config.provider_policy.file_download.as_ref(),
+        )
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, json!({"error":error})))?;
+    }
     let final_path = root.join(&file_name);
     stage_content_addressed_file(
         &final_path,
@@ -13271,7 +13302,9 @@ fn stage_publication_data_source(
             schema,
             canonical_schema_bytes,
         } => Some((schema, canonical_schema_bytes)),
-        ValidatedPublicationDataKind::Json | ValidatedPublicationDataKind::Sqlite => None,
+        ValidatedPublicationDataKind::Json
+        | ValidatedPublicationDataKind::Sqlite
+        | ValidatedPublicationDataKind::File => None,
     };
     if let Some((_, schema_bytes)) = csv.as_ref() {
         let schema_name = format!("{content_hash}.csv.schema.json");
@@ -13563,6 +13596,7 @@ fn resolve_artifact_provider_offer_definition(
                     PublicationDataFormat::Json => DATA_QUERY_JSON_CONTRACT_V1,
                     PublicationDataFormat::Csv => DATA_QUERY_CSV_CONTRACT_V1,
                     PublicationDataFormat::Sqlite => DATA_QUERY_SQLITE_CONTRACT_V1,
+                    PublicationDataFormat::File => froglet_protocol::file_download::CONTRACT,
                 }
                 .to_string()
             },
@@ -13857,6 +13891,7 @@ fn resolve_artifact_provider_offer_definition(
                 PublicationDataFormat::Json => DATA_QUERY_JSON_CONTRACT_V1,
                 PublicationDataFormat::Csv => DATA_QUERY_CSV_CONTRACT_V1,
                 PublicationDataFormat::Sqlite => DATA_QUERY_SQLITE_CONTRACT_V1,
+                PublicationDataFormat::File => froglet_protocol::file_download::CONTRACT,
             };
             if entrypoint_kind != ExecutionEntrypointKind::Builtin
                 || entrypoint != service_id
@@ -13873,6 +13908,40 @@ fn resolve_artifact_provider_offer_definition(
                 ));
             }
             let validated = validate_publication_data_source(data_source)?;
+            if data_source.format == PublicationDataFormat::File {
+                if payload
+                    .input_schema
+                    .as_ref()
+                    .is_some_and(|s| s != &validated.input_schema)
+                    || payload
+                        .output_schema
+                        .as_ref()
+                        .is_some_and(|s| s != &validated.output_schema)
+                {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"file schemas must match the immutable snapshot metadata"}),
+                    ));
+                }
+                let limits = state.config.provider_policy.file_download.as_ref().ok_or_else(||
+                    (StatusCode::SERVICE_UNAVAILABLE, json!({"error":"file downloads are disabled; configure finite file allowances"})))?;
+                let (metadata, _) = froglet_protocol::file_download::decode(&validated.bytes)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, json!({"error":e})))?;
+                crate::file_download::validate_publication(&metadata, limits)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, json!({"error":e})))?;
+                if payload.price_sats != 0
+                    || payload.base_fee_msat.unwrap_or(0) != 0
+                    || payload.success_fee_msat.unwrap_or(0) != 0
+                    || payload
+                        .settlement_method
+                        .is_some_and(|m| m != PublicationSettlement::None)
+                {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"file payments are deferred; file downloads require zero fees"}),
+                    ));
+                }
+            }
             if payload
                 .source_kind
                 .as_deref()
@@ -19632,6 +19701,7 @@ struct RecoveredJobResume {
     job_id: String,
     previous_status: String,
     reset_running_status: bool,
+    external_outcome_unknown: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -20009,11 +20079,18 @@ async fn classify_deal_recovery(
         )));
     }
 
+    // A disconnected external worker may still be running or may have finished.
+    // Hold the existing operation and reservation until it can be reconciled;
+    // returning it to accepted would dispatch a second container.
+    let external_outcome_unknown = deal.status == deals::DEAL_STATUS_RUNNING
+        && matches!(&deal.spec, WorkloadSpec::Execution { execution } if external_container(execution));
     Ok(DealRecoveryDecision::Requeue(RecoveredDealResume {
         deal_id: deal.deal_id,
         previous_status: deal.status.clone(),
-        reset_running_status: deal.status == deals::DEAL_STATUS_RUNNING,
-        spawn_after_recovery: deal.status != deals::DEAL_STATUS_PAYMENT_PENDING,
+        reset_running_status: deal.status == deals::DEAL_STATUS_RUNNING
+            && !external_outcome_unknown,
+        spawn_after_recovery: deal.status != deals::DEAL_STATUS_PAYMENT_PENDING
+            && !external_outcome_unknown,
     }))
 }
 
@@ -20031,6 +20108,15 @@ async fn apply_recovery_plan(
         .with_write_conn(move |conn| {
             db::with_immediate_transaction(conn, |conn| {
                 for job in &recovered_jobs_for_db {
+                    let Some(current) = jobs::get_job(conn, &job.job_id)? else { continue; };
+                    if current.status != job.previous_status { continue; }
+                    if job.external_outcome_unknown {
+                        let error = "external execution outcome is unknown after node restart; it was not retried; worker termination must be reconciled";
+                        let evidence = db::insert_execution_evidence(conn, "job", &job.job_id,
+                            "execution_failure", &json!({"code":"external_outcome_unknown", "cleanup":"unverified"}), recovered_at)?;
+                        jobs::complete_job_failure(conn, &job.job_id, error, Some(&evidence), recovered_at)?;
+                        continue;
+                    }
                     if job.reset_running_status
                         && !jobs::reset_running_job_to_queued(conn, &job.job_id, recovered_at)?
                     {
@@ -20058,6 +20144,11 @@ async fn apply_recovery_plan(
                     };
                     if current.status != deal.previous_status {
                         continue;
+                    }
+                    if !deal.spawn_after_recovery && current.status == deals::DEAL_STATUS_RUNNING
+                        && matches!(&current.spec, WorkloadSpec::Execution { execution } if external_container(execution)) {
+                        conn.execute("UPDATE deals SET error = ?2, updated_at = ?3 WHERE deal_id = ?1 AND status = ?4",
+                            rusqlite::params![deal.deal_id, "external execution outcome is unknown after restart; held for reconciliation without retry", recovered_at, deals::DEAL_STATUS_RUNNING]).map_err(|e| e.to_string())?;
                     }
                     if deal.reset_running_status
                         && !deals::reset_running_deal_to_accepted(
@@ -20173,7 +20264,9 @@ async fn apply_recovery_plan(
         .await?;
 
     for job in recovered_jobs {
-        tokio::spawn(process_job(state.clone(), job.job_id));
+        if !job.external_outcome_unknown {
+            tokio::spawn(process_job(state.clone(), job.job_id));
+        }
     }
 
     for deal in recovered_deals {
@@ -20539,6 +20632,14 @@ fn marketplace_registration_endpoint(
     tor_url.map(|url| (url.to_string(), "tor"))
 }
 
+fn external_container(execution: &ExecutionWorkload) -> bool {
+    execution.package_kind == ExecutionPackageKind::OciImage
+        && matches!(
+            execution.runtime,
+            ExecutionRuntime::Container | ExecutionRuntime::Python
+        )
+}
+
 pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), String> {
     recover_orphaned_deal_materializations_local(state.clone()).await?;
     stage_interrupted_stripe_deals_for_recovery(state.as_ref()).await?;
@@ -20574,6 +20675,8 @@ pub async fn recover_runtime_state_local(state: Arc<AppState>) -> Result<(), Str
     let recovered_jobs: Vec<RecoveredJobResume> = incomplete_jobs
         .into_iter()
         .map(|job| RecoveredJobResume {
+            external_outcome_unknown: job.status == jobs::JOB_STATUS_RUNNING
+                && matches!(&job.spec, JobSpec::Execution { execution } if external_container(execution)),
             job_id: job.job_id,
             previous_status: job.status.clone(),
             reset_running_status: job.status == jobs::JOB_STATUS_RUNNING,
@@ -23434,6 +23537,10 @@ async fn process_deal_with_reserved_permit(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    mod file_download_tests {
+        use super::*;
+        include!("http_files_tests.rs");
+    }
     use crate::{
         config::{
             GpuConfig, IdentityConfig, LightningConfig, LightningMode, NetworkMode, NodeConfig,
@@ -34032,6 +34139,120 @@ pub(crate) mod tests {
             deal_evidence
                 .iter()
                 .any(|record| record.evidence_kind == "recovery_action")
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_does_not_reexecute_unknown_external_containers() {
+        let state = test_app_state(PaymentBackend::None);
+        let now = settlement::current_unix_timestamp();
+        let execution = ExecutionWorkload::container_oci(
+            ExecutionRuntime::Container,
+            "registry.example/approved/tool".into(),
+            "ab".repeat(32),
+            ExecutionEntrypointKind::Handler,
+            "default".into(),
+            json!({}),
+        )
+        .unwrap();
+        let requester = crypto::generate_signing_key();
+        let quote = signed_free_quote(
+            state.as_ref(),
+            crypto::public_key_hex(&requester),
+            now - 5,
+            now + 60,
+            1_000,
+        );
+        let artifact = build_requester_signed_deal_artifact(
+            &quote,
+            &requester,
+            &"11".repeat(32),
+            now - 5,
+            false,
+        )
+        .unwrap();
+        let job_id = jobs::new_job_id();
+        let deal_id = protocol::new_artifact_id();
+        state
+            .db
+            .with_write_conn({
+                let job_id = job_id.clone();
+                let deal_id = deal_id.clone();
+                move |conn| {
+                    let spec = JobSpec::Execution {
+                        execution: Box::new(execution.clone()),
+                    };
+                    jobs::insert_or_get_job(
+                        conn,
+                        NewJob {
+                            job_id: job_id.clone(),
+                            idempotency_key: Some("unknown-container".into()),
+                            request_hash: spec.request_hash()?,
+                            service_id: ServiceId::ExecuteWasm.as_str().into(),
+                            spec,
+                            created_at: now - 5,
+                        },
+                    )?;
+                    jobs::try_start_job(conn, &job_id, now - 4)?;
+                    deals::insert_or_get_deal(
+                        conn,
+                        NewDeal {
+                            deal_id,
+                            idempotency_key: Some("unknown-container-deal".into()),
+                            quote,
+                            spec: WorkloadSpec::Execution {
+                                execution: Box::new(execution),
+                            },
+                            deal_artifact_hash: artifact.hash.clone(),
+                            artifact,
+                            workload_evidence_hash: None,
+                            payment_method: None,
+                            payment_token_hash: None,
+                            payment_amount_sats: None,
+                            initial_status: deals::DEAL_STATUS_RUNNING.into(),
+                            created_at: now - 5,
+                        },
+                    )?;
+                    Ok::<(), String>(())
+                }
+            })
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            recover_runtime_state_local(state.clone()).await.unwrap();
+            let job = state
+                .db
+                .with_read_conn({
+                    let id = job_id.clone();
+                    move |c| jobs::get_job(c, &id)
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(job.status, jobs::JOB_STATUS_FAILED);
+            assert!(job.error.unwrap().contains("outcome is unknown"));
+            let deal = load_test_deal(&state, &deal_id).await;
+            assert_eq!(deal.status, deals::DEAL_STATUS_RUNNING);
+            assert!(deal.error.unwrap().contains("held for reconciliation"));
+            assert!(deal.result.is_none());
+            assert!(deal.receipt.is_none());
+        }
+        let evidence = state
+            .db
+            .with_read_conn(move |c| db::list_execution_evidence_for_subject(c, "job", &job_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            evidence
+                .iter()
+                .filter(|e| e.evidence_kind == "execution_failure")
+                .count(),
+            1
+        );
+        assert!(
+            !evidence
+                .iter()
+                .any(|e| e.evidence_kind == "execution_result")
         );
     }
 

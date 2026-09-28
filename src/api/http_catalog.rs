@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .merge(super::http_files::routes())
         .route("/v1/provider/descriptor", get(super::protocol_descriptor))
         .route("/v1/provider/offers", get(super::list_offers))
         .route("/v1/provider/services", get(super::list_provider_services))

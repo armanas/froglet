@@ -154,7 +154,7 @@ fn tools_list() -> Value {
                             "check_updates",
                             "doctor",
                             "open_status",
-                            "inspect_service",
+                            "inspect_service", "download_file", "file_abort",
                             "invoke_service",
                             "local_proof",
                             "marketplace_publish",
@@ -178,7 +178,8 @@ fn tools_list() -> Value {
                     "response_format": {"enum":["full","compact"], "description":"full (default) includes JSON text for older clients. compact avoids duplicating structured results in text for inspect_service and invoke_service."},
                     "summary": {"type":"string", "description":"Plain-language service purpose and scope for prepare_service, up to 500 characters."},
                     "input": {},
-                    "source": {"type":"string", "description":"Absolute path to JSON, CSV, SQLite, WAT or Wasm source. Preparation only."},
+                    "source": {"type":"string", "description":"Absolute path to JSON, CSV, SQLite, WAT or Wasm, or a regular file when file options are supplied. Preparation only."},
+                    "file": {"type":"object", "description":"Download-only file options; explicitly choose filename, expiry and finite allowances.", "additionalProperties":false,"required":["filename","expires_at","max_downloads","max_transfer_bytes"],"properties":{"filename":{"type":"string"},"media_type":{"type":"string"},"expires_at":{"type":"integer"},"max_downloads":{"type":"integer","minimum":1},"max_transfer_bytes":{"type":"integer","minimum":1}}},
                     "destination": {"type":"string", "description":"Explicit absolute directory for generated service material; existing unrelated projects are never overwritten."},
                     "selection": {"type":"object", "additionalProperties":{"type":"array", "items":{"type":"string"}}, "description":"Source collection names mapped to the fields to include. JSON arrays and CSV use rows."},
                     "csv_columns": {"type":"array", "items":{"type":"object", "properties":{"name":{"type":"string"},"type":{"enum":["string","integer","number","boolean"]},"nullable":{"type":"boolean"},"indexed":{"type":"boolean"}}, "required":["name","type"], "additionalProperties":false}},
@@ -236,7 +237,7 @@ fn tools_list() -> Value {
     });
     schema["tools"][0]["inputSchema"]["properties"].as_object_mut().unwrap().extend(json!({
                     "operation": {"type":"object","description":"Fixed HTTP operation: HTTPS url, GET/POST method, input_schema/output_schema (draft 2020-12), optional auth_profile/fixed_body, timeout_ms, max_request_bytes and max_response_bytes. Provider separately approves its exact hash; preparation makes no upstream call."},
-                    "access_token_file": {"type":"string","description":"Absolute private mode-0600 invitation file for invocation; never paste credentials into prompts."},
+                    "access_token_file": {"type":"string","description":"Absolute private mode-0600 invitation file for invocation or download; never paste credentials into prompts."},
                     "token_file": {"type":"string","description":"New absolute private file in which invite_create stores the credential; never overwritten."},
                     "name": {"type":"string","description":"Invitation recipient label."},
                     "expires_at": {"type":"integer","description":"Invitation expiry, Unix seconds, within 30 days."},
@@ -276,8 +277,10 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
     };
     let payload = match action {
         "status" => status_snapshot().await,
-        "safeguards_status" | "safeguards_pause" | "safeguards_resume" | "invite_create"
-        | "invite_list" | "invite_revoke" => super::safeguards::action(action, arguments).await,
+        "file_abort" | "safeguards_status" | "safeguards_pause" | "safeguards_resume"
+        | "invite_create" | "invite_list" | "invite_revoke" => {
+            super::safeguards::action(action, arguments).await
+        }
         "prepare_http_service" => {
             let mut request = arguments.clone();
             request.remove("action");
@@ -300,6 +303,19 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
             let link = selected_service_link(arguments)?
                 .ok_or_else(|| "inspect_service requires service_url".to_string())?;
             super::service_link::inspect(&link).await
+        }
+        "download_file" => {
+            let link =
+                selected_service_link(arguments)?.ok_or("download_file requires service_url")?;
+            let destination = invoke_string(arguments, "destination")?
+                .ok_or("download_file requires destination")?;
+            let token = invoke_string(arguments, "access_token_file")?;
+            super::download::download(
+                &link,
+                std::path::Path::new(destination),
+                token.map(std::path::Path::new),
+            )
+            .await
         }
         "invoke_service" if arguments.contains_key("service_url") => {
             let link = selected_service_link(arguments)?.expect("service_url validated");

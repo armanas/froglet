@@ -37,6 +37,7 @@ pub mod confidential;
 pub mod config;
 pub mod db;
 pub mod execution;
+pub mod file_download;
 pub(crate) mod http_body;
 pub mod identity;
 pub mod identity_custody;

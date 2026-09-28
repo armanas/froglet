@@ -730,7 +730,10 @@ fn configure_connection(conn: &Connection) -> SqlResult<()> {
         "INTEGER",
     )?;
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS provider_admissions (
+        "CREATE TABLE IF NOT EXISTS file_transfer_usage (
+            scope TEXT PRIMARY KEY, downloads INTEGER NOT NULL CHECK(downloads>=0), bytes INTEGER NOT NULL CHECK(bytes>=0)
+         );
+         CREATE TABLE IF NOT EXISTS provider_admissions (
             admission_key TEXT PRIMARY KEY,
             max_runtime_ms INTEGER NOT NULL CHECK (max_runtime_ms >= 0)
          );

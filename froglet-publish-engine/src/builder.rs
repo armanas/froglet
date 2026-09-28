@@ -300,12 +300,25 @@ pub async fn build_data_source(
                 "CSV data publication requires an explicit schema".to_string(),
             ));
         }
-        (PublicationDataFormat::Json | PublicationDataFormat::Sqlite, Some(_)) => {
+        (
+            PublicationDataFormat::Json
+            | PublicationDataFormat::Sqlite
+            | PublicationDataFormat::File,
+            Some(_),
+        ) => {
             return Err(PublishError::Build(
                 "CSV schema is not valid for JSON or SQLite data".to_string(),
             ));
         }
-        (PublicationDataFormat::Json | PublicationDataFormat::Sqlite, None) => {}
+        (
+            PublicationDataFormat::Json
+            | PublicationDataFormat::Sqlite
+            | PublicationDataFormat::File,
+            None,
+        ) => {}
+    }
+    if format == PublicationDataFormat::File {
+        froglet_protocol::file_download::decode(&bytes).map_err(PublishError::Build)?;
     }
     let source_hash = hex::encode(Sha256::digest(&bytes));
     let data_source = PublicationDataSource {

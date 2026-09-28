@@ -213,3 +213,49 @@ describe('agent-readable service link', () => {
     expect(renderServiceLinkHtml(legacy!)).toContain('🐸 Froglet — Test Catalog');
   });
 });
+
+describe('download-only share pages', () => {
+  function fileReference() {
+    const result: any = structuredClone(reference);
+    result.execution_access='invite';
+    result.publication_revision.payload.service.contract_version='froglet.builtin.file_download.v1';
+    result.publication_revision.payload.service.output_schema={type:'object',const:{filename:'sample.html',media_type:'text/html',size_bytes:4,sha256:'ab'.repeat(32),expires_at:Math.floor(Date.now()/1000)+60,max_downloads:2,max_transfer_bytes:8}};
+    return result;
+  }
+  it('renders an explicit checksum download without fetching the file or putting access in the link', async () => {
+    const fetcher=fetchSequence(fileReference(),offer,descriptor);
+    const view=await resolveServiceLink(provider,service,origin,fetcher,{},verifier);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(view.links.download).toMatch(new RegExp(`/files/${revisionHash}/download$`));
+    const page=new DOMParser().parseFromString(renderServiceLinkHtml(view),'text/html');
+    expect(page.querySelector('[data-file-download]')?.hasAttribute('disabled')).toBe(false);
+    expect(page.querySelector('#file-invitation')?.getAttribute('type')).toBe('password');
+    expect(page.querySelector('#file-download-config')?.textContent).toContain('sample.html');
+    expect(page.querySelector('#download')?.textContent).toContain('4 bytes');
+    expect(page.querySelector('#agent')?.textContent).toContain('download_file');
+    expect(view.instructions.native_invoke).toBeNull();
+    expect(renderServiceLinkMarkdown(view)).toContain('File download: https://');
+    expect(JSON.stringify(view)).not.toContain('access_token=');
+  });
+  it('disables downloads for expired, private and cached publications', async () => {
+    for (const kind of ['expired','private','cached']) {
+      const source=fileReference();
+      if (kind==='expired') source.publication_revision.payload.service.output_schema.const.expires_at=1;
+      if (kind==='private') source.execution_access='private';
+      let view=await resolveServiceLink(provider,service,origin,fetchSequence(source,offer,descriptor),{},verifier);
+      if (kind==='cached') view=(await restoreServiceLinkCache(JSON.stringify(view),provider,service,origin,verifier))!;
+      const page=new DOMParser().parseFromString(renderServiceLinkHtml(view),'text/html');
+      expect(page.querySelector('[data-file-download]')?.hasAttribute('disabled')).toBe(true);
+      expect(page.querySelector('#file-download-config')).toBeNull();
+      expect(page.querySelector('#file-invitation')).toBeNull();
+    }
+  });
+  it('rejects unsafe filenames and oversized metadata before offering a download', async () => {
+    for (const change of [{filename:'../../secret'},{filename:'x" onerror="bad'},{size_bytes:8388609}]) {
+      const source=fileReference();Object.assign(source.publication_revision.payload.service.output_schema.const,change);
+      const view=await resolveServiceLink(provider,service,origin,fetchSequence(source,offer,descriptor),{},verifier);
+      expect(view.links.download).toBeUndefined();
+      expect(renderServiceLinkHtml(view)).not.toContain('data-file-download');
+    }
+  });
+});

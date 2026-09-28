@@ -1,3 +1,4 @@
+import { fileMetadata } from './file-download';
 import { serviceName, serviceDescription } from './service-presentation';
 import { readJson, serviceReference, type SharedServiceEndpoints } from './shared-service';
 
@@ -14,9 +15,9 @@ export type EvidenceVerifier = (revision: unknown, offer: unknown, descriptor: u
 export interface ServiceLinkView {
   schema_version: 'froglet.service-link.v1';
   service_key: { provider_id: string; service_id: string };
-  links: { share: string; manifest: string; agent: string; provider: string; offer: string | null; descriptor: string | null; call: string | null };
+  links: { share: string; manifest: string; agent: string; provider: string; offer: string | null; descriptor: string | null; call: string | null; download?: string | null };
   presentation: { title: string; summary: string; example_input: unknown | null };
-  contract: null | { revision_hash: string; offer_hash: string; runtime: string; input_schema: unknown | null; output_schema: unknown | null; limits: unknown; price: { kind: 'free' | 'paid'; currency: string; base_amount_minor: number; success_amount_minor: number; settlement_method: string; purchase_qualified: false } };
+  contract: null | { revision_hash: string; offer_hash: string; runtime: string; contract_version?: string; input_schema: unknown | null; output_schema: unknown | null; limits: unknown; price: { kind: 'free' | 'paid'; currency: string; base_amount_minor: number; success_amount_minor: number; settlement_method: string; purchase_qualified: false } };
   evidence: { verification_state: 'verified' | 'not_checked' | 'invalid'; reason: string | null; publication_revision: unknown | null; offer: unknown | null; descriptor: unknown | null };
   availability: { execution_access?: 'open' | 'invite' | 'private' | 'trial' | 'paid' | 'unknown'; state: 'published_reachable' | 'published_unreachable' | 'unknown'; checked_at: string; valid_until: string; last_verified_at: string | null; marketplace_admission: 'active' | 'pending_or_offline' | 'not_verified'; requester_execution: 'not_run' };
   instructions: { summary: string; recipient_prompt: string; native_invoke: string | null; approval: string; verification: string };
@@ -160,7 +161,7 @@ export async function resolveServiceLink(provider: string, service: string, orig
 
   const summary = serviceDescription(payload.service.summary, service, payload.service.output_schema);
   view.presentation = { title: displayTitle(payload.service.summary, service), summary, example_input: exampleInput(payload.service.starter, payload.service.input_schema) };
-  view.contract = { revision_hash: revision.revision_hash, offer_hash: offer.hash, runtime: String(payload.runtime ?? ''), input_schema: payload.service.input_schema ?? null, output_schema: payload.service.output_schema ?? null, limits: payload.limits, price: { kind: free ? 'free' : 'paid', currency: String(price.currency ?? ''), base_amount_minor: price.base_amount_minor, success_amount_minor: price.success_amount_minor, settlement_method: price.offer_settlement_method, purchase_qualified: false } };
+  view.contract = { revision_hash: revision.revision_hash, offer_hash: offer.hash, runtime: String(payload.runtime ?? ''), contract_version: String(payload.service.contract_version ?? ''), input_schema: payload.service.input_schema ?? null, output_schema: payload.service.output_schema ?? null, limits: payload.limits, price: { kind: free ? 'free' : 'paid', currency: String(price.currency ?? ''), base_amount_minor: price.base_amount_minor, success_amount_minor: price.success_amount_minor, settlement_method: price.offer_settlement_method, purchase_qualified: false } };
   view.links.offer = `${providerUrl}/v1/artifacts/${offer.hash}`;
   view.links.descriptor = `${providerUrl}/v1/artifacts/${descriptor.hash}`;
   view.links.call = null;
@@ -172,6 +173,11 @@ export async function resolveServiceLink(provider: string, service: string, orig
   if (view.availability.execution_access === 'invite') {
     if (view.instructions.native_invoke) view.instructions.native_invoke += ' --access-token-file <invitation-file>';
     view.instructions.recipient_prompt += ' This provider requires an invitation. Ask the provider for access separately and use access_token_file with invoke_service. Never place a credential in this page, a prompt, or a shared URL.';
+  }
+  if (fileMetadata(view.contract)) {
+    view.links.download = `${providerUrl}/v1/provider/services/${encodeURIComponent(service)}/files/${revision.revision_hash}/download`;
+    view.instructions.native_invoke = null;
+    view.instructions.recipient_prompt = `Inspect this file share and its signed metadata: ${view.links.share}. Download only when I ask, verify the size and SHA-256, and never overwrite an existing file. Use a private access_token_file if an invitation is required; never put credentials in the conversation or URL.`;
   }
   if (endpoints.marketplaceUrl) {
     if (!/^https:\/\/marketplace(?:-[a-z0-9]+)*\.froglet\.dev$/.test(endpoints.marketplaceUrl)) throw new Error('Invalid first-party marketplace origin.');
@@ -197,6 +203,7 @@ export async function restoreServiceLinkCache(raw: string, provider: string, ser
   } catch { return null; }
   return {
     ...view,
+    links: { ...view.links, download: null },
     presentation: { ...view.presentation, title: displayTitle(view.presentation.title, service), summary: serviceDescription(view.presentation.summary, service, view.contract?.output_schema) },
     evidence: { ...view.evidence, reason: 'Signed evidence was verified when this description was last observed; current publication is unconfirmed.' },
     availability: { ...view.availability, state: 'published_unreachable', execution_access: 'unknown', checked_at: new Date().toISOString(), valid_until: new Date().toISOString(), marketplace_admission: 'not_verified', requester_execution: 'not_run' },

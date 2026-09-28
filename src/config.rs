@@ -951,6 +951,7 @@ pub struct NodeConfig {
 impl NodeConfig {
     pub fn from_env() -> Result<Self, String> {
         let provider_policy = crate::provider_policy::ProviderPolicy {
+            file_download: crate::file_download::FileLimits::from_env()?,
             require_payment: env_bool("FROGLET_PROVIDER_REQUIRE_PAYMENT", false)?,
             access_mode: crate::provider_policy::AccessMode::parse(
                 &env::var("FROGLET_PROVIDER_ACCESS_MODE").unwrap_or_else(|_| "open".into()),

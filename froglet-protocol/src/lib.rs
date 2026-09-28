@@ -1,5 +1,7 @@
 pub mod canonical_json;
 pub mod crypto;
+#[cfg(feature = "publication")]
+pub mod file_download;
 #[cfg(feature = "managed")]
 pub mod managed_deployment;
 #[cfg(feature = "managed")]

@@ -31,6 +31,7 @@ Public launch entry points:
 - [HTTP_SERVICES.md](HTTP_SERVICES.md): bounded HTTP JSON services, invitations, limits and release qualification
 - [MANIFEST.md](MANIFEST.md): service manifest format (`froglet-service.toml`)
 - [SHAREABLE_SERVICE_LINK.md](SHAREABLE_SERVICE_LINK.md): proposed human/social/agent-readable service URL contract
+- [FILE_AND_COMPUTE_SCOPE.md](FILE_AND_COMPUTE_SCOPE.md): paused implementation checkpoint and release gates for files, CPU containers, and GPU jobs; payments deferred
 - [openapi.yaml](openapi.yaml): HTTP API reference (OpenAPI)
 
 ## Architecture

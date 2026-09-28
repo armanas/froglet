@@ -36,6 +36,7 @@ pub async fn run(mut args: Vec<String>) -> Result<(), CliError> {
             "status" => "safeguards_status",
             "pause" => "safeguards_pause",
             "resume" => "safeguards_resume",
+            "abort-files" => "file_abort",
             "prune-cache" => "prune_cache",
             "invite-create" => "invite_create",
             "invite-list" => "invite_list",
@@ -68,6 +69,7 @@ pub async fn action(action: &str, args: &Map<String, Value>) -> Result<Value, Cl
             "/v1/provider/control".into(),
             Some(json!({"paused":action=="safeguards_pause","reason":args.get("reason")})),
         ),
+        "file_abort" => ("/v1/provider/files/abort".into(), Some(json!({}))),
         "prune_cache" => ("/v1/provider/maintenance".into(), Some(json!({}))),
         "invite_list" => ("/v1/provider/invites".into(), None),
         "invite_create" => (

@@ -210,7 +210,7 @@ impl FetchPolicy {
 /// are rejected (since a different host would re-enter system DNS and
 /// re-open the rebinding window).
 pub async fn safe_fetch(raw_url: &str, policy: FetchPolicy) -> Result<SafeFetchOutcome, String> {
-    safe_request(raw_url, Method::GET, None, policy).await
+    safe_request(raw_url, Method::GET, None, policy, false, None).await
 }
 
 /// POST a JSON request through the same SSRF-hardened transport as
@@ -237,8 +237,28 @@ where
         ));
     }
 
-    let outcome = safe_request(raw_url, Method::POST, Some(body), policy).await?;
+    let outcome = safe_request(raw_url, Method::POST, Some(body), policy, false, None).await?;
     decode_json_response("safe_post_json", outcome)
+}
+
+/// File credentials are sent to one validated HTTPS origin, without redirects.
+pub async fn safe_file_fetch(
+    raw_url: &str,
+    token: Option<&str>,
+    policy: FetchPolicy,
+) -> Result<SafeFetchOutcome, String> {
+    let url = validate_fetch_url(raw_url)?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "file download requires an HTTPS URL without credentials or query parameters".into(),
+        );
+    }
+    safe_request(raw_url, Method::GET, None, policy, true, token).await
 }
 
 async fn safe_request(
@@ -246,6 +266,8 @@ async fn safe_request(
     method: Method,
     json_body: Option<Vec<u8>>,
     policy: FetchPolicy,
+    file_download: bool,
+    access_token: Option<&str>,
 ) -> Result<SafeFetchOutcome, String> {
     let validated = validate_fetch_url_with_policy(raw_url, policy.allow_private_networks)?;
     let policy = policy.clamped();
@@ -299,6 +321,9 @@ async fn safe_request(
             }
             attempt.follow()
         }));
+    if file_download {
+        builder = builder.redirect(RedirectPolicy::none()).no_proxy();
+    }
     if let Some(addrs) = pinned_addrs.as_ref() {
         builder = builder.resolve_to_addrs(&host, addrs);
     }
@@ -317,6 +342,12 @@ async fn safe_request(
     let mut request = client
         .request(method, validated.clone())
         .header("user-agent", "froglet-demo-fetch/0.1");
+    if let Some(token) = access_token {
+        let mut header = reqwest::header::HeaderValue::from_str(token)
+            .map_err(|_| "invalid invitation credential")?;
+        header.set_sensitive(true);
+        request = request.header("x-froglet-access-token", header);
+    }
     if let Some(body) = json_body {
         request = request
             .header(reqwest::header::CONTENT_TYPE, "application/json")

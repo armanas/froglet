@@ -965,7 +965,13 @@ fn validate_publish_evidence_against_plan(
                 ("wasm", "inline_module") => "artifact".to_string(),
                 _ => runtime.to_string(),
             },
-            |data| format!("data_query.{}", data.format),
+            |data| {
+                if data.format == PublicationDataFormat::File {
+                    "file.download".into()
+                } else {
+                    format!("data_query.{}", data.format)
+                }
+            },
         )
     });
     let expected_summary = intent
@@ -1442,10 +1448,13 @@ fn publication_consent_for_request(
             PublishError::Build("canonical publish request has no package_kind".to_string())
         })?,
         source_kind: intent.source_kind.clone().or_else(|| {
-            intent
-                .data_source
-                .as_ref()
-                .map(|data| format!("data_query.{}", data.format))
+            intent.data_source.as_ref().map(|data| {
+                if data.format == PublicationDataFormat::File {
+                    "file.download".into()
+                } else {
+                    format!("data_query.{}", data.format)
+                }
+            })
         }),
         source_binding: build_evidence.source_digest.clone(),
         package_digest: build_evidence.artifact_digest.clone(),
@@ -1685,6 +1694,7 @@ mod pipeline {
                     "json" => PublicationDataFormat::Json,
                     "csv" => PublicationDataFormat::Csv,
                     "sqlite" => PublicationDataFormat::Sqlite,
+                    "file" => PublicationDataFormat::File,
                     other => {
                         return Err(PublishError::InvalidInput {
                             field: "data.format",
@@ -1704,10 +1714,15 @@ mod pipeline {
                         PublicationDataFormat::Json => "froglet.builtin.data_query.json.v1",
                         PublicationDataFormat::Csv => "froglet.builtin.data_query.csv.v1",
                         PublicationDataFormat::Sqlite => "froglet.builtin.data_query.sqlite.v1",
+                        PublicationDataFormat::File => froglet_protocol::file_download::CONTRACT,
                     }
                     .to_string(),
                 );
-                request.source_kind = Some(format!("data_query.{format}"));
+                request.source_kind = Some(if format == PublicationDataFormat::File {
+                    "file.download".into()
+                } else {
+                    format!("data_query.{format}")
+                });
             }
             (rt, pk) => {
                 return Err(PublishError::NotImplemented {

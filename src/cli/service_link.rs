@@ -163,6 +163,15 @@ pub async fn inspect(link: &ServiceLink) -> Result<Value, CliError> {
         inspected["next_action"] =
             json!("Private execution: only the provider can call this service.");
     }
+    if inspected["contract_version"] == froglet_protocol::file_download::CONTRACT {
+        inspected["next_action"] = json!(
+            "Use download_file with service_url and a new absolute destination path only when the user requests a download. For invitations use access_token_file, never a token in chat. A download verifies bytes but is not an execution receipt."
+        );
+        inspected["scope"] = json!(
+            "Download-only immutable file; metadata is public, file bytes require download admission."
+        );
+        inspected["free_call_supported"] = json!(false);
+    }
     Ok(inspected)
 }
 
@@ -222,7 +231,7 @@ fn verified_inspection(
     Ok(json!({
         "status":"ok", "service_url":link.url, "provider_id":link.provider_id,
         "provider_url":link.provider_url, "service_id":link.service_id,
-        "summary":service["summary"], "input_schema":service["input_schema"],
+        "contract_version":service["contract_version"], "summary":service["summary"], "input_schema":service["input_schema"],
         "output_schema":service["output_schema"], "example_input":example,
         "limits":payload["limits"], "price":price, "free_call_supported":free,
         "availability":{"state":"provider_responded", "checked_at_unix":now, "requester_execution":"not_run"},

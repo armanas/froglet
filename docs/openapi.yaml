@@ -1652,7 +1652,7 @@ components:
       properties:
         format:
           type: string
-          enum: [json, csv, sqlite]
+          enum: [json, csv, sqlite, file]
         content_base64:
           type: string
           format: byte
@@ -3405,6 +3405,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/provider/services/{service_id}/files/{revision}/download:
+    parameters:
+      - in: path
+        name: service_id
+        required: true
+        schema: {type: string}
+      - in: path
+        name: revision
+        required: true
+        schema: {type: string, pattern: '^[0-9a-f]{64}$'}
+    get:
+      summary: Download an admitted immutable file snapshot
+      description: >-
+        Requires the active signed file revision, enabled finite provider file limits,
+        zero-fee terms, and provider access. Invite mode accepts x-froglet-access-token;
+        private mode requires the provider control bearer. Reserves download count and
+        full bytes before responding. Failed attempts are not refunded. Maximum 8 MiB;
+        ranges are unsupported. First-party CORS only; always no-store and attachment.
+      parameters:
+        - in: header
+          name: x-froglet-access-token
+          schema: {type: string, minLength: 32, maxLength: 256}
+      responses:
+        '200':
+          description: Exact snapshot bytes; Content-Length, ETag and X-Froglet-File-Sha256 identify them
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '403': {description: Access or origin denied}
+        '404': {description: No permitted file publication}
+        '410': {description: Revision inactive, expired or paused}
+        '413': {description: Relay response limit is below the file size}
+        '416': {description: Range requests are unsupported}
+        '429': {description: Transfer capacity or allowance exhausted}
+        '503': {description: File sharing disabled or snapshot unavailable}
+    head:
+      summary: Inspect admitted file headers without transferring the file
+      description: Performs access and lifecycle checks; does not reserve file count or bytes. Invitation admission is counted.
+      responses:
+        '200': {description: File headers without a body}
+    options:
+      summary: First-party browser download preflight
+      responses:
+        '204': {description: Allowed download methods and request headers}
+        '403': {description: Origin is not allowed}
+  /v1/provider/files/abort:
+    post:
+      summary: Abort active provider file responses
+      description: Requires provider control bearer authentication. Already received bytes cannot be revoked. Usage is preserved.
+      security:
+        - ProviderControlBearerAuth: []
+      responses:
+        '200': {description: Abort generation advanced}
+        '401': {description: Provider control authentication required}
   /v1/provider/deals:
     post:
       operationId: createDeal
