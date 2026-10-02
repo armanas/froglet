@@ -335,6 +335,7 @@ fn lightning_app_state_custom(
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     let db = DbPool::open(&db_path).expect("db pool");
@@ -495,6 +496,7 @@ fn stripe_app_state_with_mock_spend(
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     let db = DbPool::open(&db_path).expect("db pool");
@@ -1457,6 +1459,7 @@ fn phoenixd_app_state_with_mock_spend(
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     let db = DbPool::open(&db_path).expect("db pool");

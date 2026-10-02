@@ -4,8 +4,15 @@ import StoryArt from '../components/StoryArt.astro';
 import AgentMeta from '../components/AgentMeta.astro';
 const siteOrigin = import.meta.env.FROGLET_SITE_ORIGIN || 'https://froglet.dev';
 const agentGuide = `${siteOrigin}/publish/agent.md`;
+const socialImage = {
+  src: 'https://froglet.dev/og/home.png',
+  width: 1200,
+  height: 630,
+  type: 'image/png',
+  alt: 'Froglet: share data and tools on your terms. Bob shares a service from his desk and Alice uses it from hers.',
+};
 ---
-<StoryLayout title="Froglet — Share data and tools. On your terms." description="Make your data and useful tools available to other people and their AI assistants. Choose what to share, review it, and send a link." path="/">
+<StoryLayout title="Froglet — Share data and tools. On your terms." description="Make your data and useful tools available to other people and their AI assistants. Choose what to share, review it, and send a link." path="/" image={socialImage}>
   <AgentMeta slot="head" route="home" />
   <div class="story-wrap">
     <section class="story-hero">
@@ -15,6 +22,10 @@ const agentGuide = `${siteOrigin}/publish/agent.md`;
         <p class="story-lede">Let someone look up information or run a useful task. Choose what they can use, review it with your AI assistant, and share a link.</p>
         <div class="story-actions"><a class="btn primary" href="/publish/">Share something useful</a><a class="btn secondary" href="#how-it-works">See how it works</a></div>
         <p class="story-note">Public beta · Start with a free service on your own computer.</p>
+        <div class="story-needs" role="group" aria-labelledby="hero-needs-label">
+          <span class="story-needs__label" id="hero-needs-label">Today you’ll need</span>
+          <ul role="list"><li>Codex or Claude Code</li><li>Apple Silicon macOS or Linux</li><li>A computer that stays online</li></ul>
+        </div>
       </div>
       <div class="story-hero__art story-hero__art--scene"><StoryArt name="01-homepage-hero" width={1600} height={900} eager sizes="(max-width: 760px) 155vw, 850px" alt="Bob shares a service from his desk. Alice uses it from hers." /></div>
     </section>
@@ -36,7 +47,7 @@ const agentGuide = `${siteOrigin}/publish/agent.md`;
         <article class="story-step"><StoryArt name="03-walkthrough-preview" sizes="(max-width: 760px) 100vw, 360px" /><span class="story-kicker">02 / Review</span><h3>See it work first.</h3><p>Bob sees what is included, what is left out, and an example result. He approves before anything is published.</p></article>
         <article class="story-step"><StoryArt name="04-walkthrough-publish" sizes="(max-width: 760px) 100vw, 360px" /><span class="story-kicker">03 / Share</span><h3>Send Alice a link.</h3><p>Alice’s assistant reads what the service does and helps her decide whether to use it. Invitation access, when required, is sent separately.</p></article>
       </div>
-      <a href="/publish/">Walk through your first service</a>
+      <a href="/publish/">Share something useful</a>
     </section>
 
     <section class="story-section story-split" id="your-control">
@@ -49,7 +60,7 @@ const agentGuide = `${siteOrigin}/publish/agent.md`;
     </section>
 
     <section class="story-section" id="organizations">
-      <div class="story-org"><div class="story-split"><div><span class="story-kicker">For organizations</span><h2>Collaboration shouldn’t start with an infrastructure project.</h2></div><div><p class="story-lede">Agree what can be shared, who can use it, and under which conditions.</p><p>Our direction is to turn those decisions into a working service. Today, Froglet provides selected data sharing, invitations, execution limits, and signed records. Broader contract and SLA automation is still ahead.</p><a href="/managed/">Explore the organization vision</a></div></div><StoryArt name="11-distributed-world" width={1600} height={900} sizes="(max-width: 760px) 100vw, 1080px" alt="Independent workspaces connected directly, without a central platform." /></div>
+      <div class="story-org"><div class="story-split"><div><span class="story-kicker">For organizations</span><h2>Collaboration shouldn’t start with an infrastructure project.</h2></div><div><p class="story-lede">Agree what can be shared, who can use it, and under which conditions.</p><p>Our direction is to turn those decisions into a working service. Today, Froglet provides selected data sharing, invitations, execution limits, and signed records. Broader contract and SLA automation is still ahead.</p><a href="/managed/">See what organizations can control today</a></div></div><StoryArt name="11-distributed-world" width={1600} height={900} sizes="(max-width: 760px) 100vw, 1080px" alt="Independent workspaces connected directly, without a central platform." /></div>
     </section>
 
     <section class="story-section" id="questions">
@@ -59,10 +70,11 @@ const agentGuide = `${siteOrigin}/publish/agent.md`;
         <details><summary>Do I need to know how to code?</summary><p>For a small data catalog, your assistant can help prepare it. Today you use a file-capable assistant such as Codex or Claude Code on Apple Silicon macOS or Linux. Installation and publishing still require your review. Connecting an existing system or setting up invitations needs more technical configuration.</p></details>
         <details><summary>What is private, and what becomes public?</summary><p>You choose the data included in the service. Public services are accessible to others; invited services need a separate access credential. A service’s description, example, and selected package information may still be public. Keep confidential data and credentials out of that material.</p><p>Invitations currently cover the services on one Froglet host. Use separate hosts when different recipients should have different access. <a href="/learn/share-services/#invite-access-and-bounded-http-tools">Read the access guide</a>.</p></details>
         <details><summary>Can I charge for what I share?</summary><p>Paid services are part of the vision, and payment integrations exist with different levels of maturity. The guided publishing journey starts free. It is not yet a ready-to-use sales and billing service. <a href="/open-source/#integrations">See payment integration status</a>.</p></details>
+        <details><summary>Can someone run their own program on my computer?</summary><p>Yes, if you choose to offer bounded computation. Alice can supply a compatible WebAssembly program and input; Bob’s Froglet Node runs it with agreed memory, time, and execution limits. The native agent tool supports this, with an optional A2A connection between configured Nodes.</p><p>The repeatable demo uses two local Nodes and free jobs. Public setup and real payments need further qualification. This does not let arbitrary programs use your files or network. <a href="/learn/agent-interoperability/">See the working flow and its limits</a>.</p></details>
         <details><summary>Where does my service run?</summary><p>On your computer or infrastructure. That machine needs to stay awake, online, and running Froglet. Managed always-on hosting is not available yet. This is a public beta; clean-machine and first-time-user qualification are still pending.</p></details>
         <details><summary>Does Froglet enforce every part of an agreement?</summary><p>It can apply supported technical controls, such as selected data, invitation access, and execution limits. Signed records make an exchange inspectable. They do not establish that a result is correct or automatically enforce legal terms, data-use promises, or an uptime SLA.</p></details>
       </div>
     </section>
-    <section class="story-closing"><span class="story-kicker">Start small</span><h2>What do you have<br />that someone else could use?</h2><p>One catalog. One lookup. One useful calculation.</p><div class="story-actions"><a class="btn primary" href="/publish/">Prepare your first service</a><a class="btn secondary" href="/marketplace/">Explore services</a></div><p class="story-note" style="margin-top:24px"><a href={agentGuide}>Instructions for your AI assistant</a> · <a href="/open-source/">For developers</a></p></section>
+    <section class="story-closing"><span class="story-kicker">Start small</span><h2>What do you have<br />that someone else could use?</h2><p>One catalog. One lookup. One useful calculation.</p><div class="story-actions"><a class="btn primary" href="/publish/">Share something useful</a><a class="btn secondary" href="/marketplace/">Explore services</a></div><p class="story-note" style="margin-top:24px"><a href={agentGuide}>Instructions for your AI assistant</a> · <a href="/open-source/">For developers</a></p></section>
   </div>
 </StoryLayout>

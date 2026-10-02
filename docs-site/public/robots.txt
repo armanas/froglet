@@ -1,0 +1,8 @@
+# https://froglet.dev/robots.txt
+User-agent: *
+Allow: /
+# Worker API endpoints are data, not pages. Shared-service pages under /s/ stay
+# crawlable on purpose: they carry a noindex tag, which crawlers must be able to read.
+Disallow: /api/
+
+Sitemap: https://froglet.dev/sitemap-index.xml

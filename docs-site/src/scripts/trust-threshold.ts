@@ -30,8 +30,8 @@ export const THRESHOLD_LAYOUT = {
     HEIGHT: 34,
     RADIUS: 6,
     GAP: 10,
-    LABEL_FONT: "600 12px 'Inter', system-ui, sans-serif",
-    VALUE_FONT: "11px 'JetBrains Mono', ui-monospace, Menlo, monospace",
+    LABEL_FONT: "600 12px 'Inter Variable', 'Inter', system-ui, sans-serif",
+    VALUE_FONT: "11px 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, monospace",
     /** Vertical offset of the deal label from the bar's vertical centre. */
     LABEL_OFFSET: -7,
     /** Vertical offset of the ratio text from the bar's vertical centre. */
@@ -45,7 +45,7 @@ export const THRESHOLD_LAYOUT = {
     WIDTH: 1.5,
     DASH: [6, 4],
     COLOR: '#f5c518',
-    LABEL_FONT: "bold 11px 'JetBrains Mono', ui-monospace, Menlo, monospace",
+    LABEL_FONT: "bold 11px 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, monospace",
   },
   // Canvas can't read CSS vars, so keep these in sync with --frog-400 / --danger / --fg1 / --fg3.
   COLORS: {

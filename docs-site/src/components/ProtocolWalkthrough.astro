@@ -1,0 +1,51 @@
+---
+/**
+ * Interactive protocol walkthrough, embedded in the docs at /demo/.
+ * Element ids are the contract with src/scripts/demo/index.ts.
+ */
+import '../styles/walkthrough.css';
+---
+
+<section
+	class="plot-shell walkthrough not-content"
+	data-walkthrough
+	data-pagefind-ignore
+	role="group"
+	aria-label="Interactive protocol walkthrough"
+	tabindex="0"
+>
+	<div class="walkthrough__stage">
+		<div id="lesson-wrap">
+			<div id="lesson-card" aria-live="polite"></div>
+			<div id="annotation"></div>
+		</div>
+		<div id="scene">
+			<canvas id="net" role="img" aria-label="Animated whiteboard illustrating the current protocol step"></canvas>
+		</div>
+		<div id="term">
+			<div id="term-bar">
+				<div class="traffic" aria-hidden="true"><div class="tl tl-close"></div><div class="tl tl-min"></div><div class="tl tl-max"></div></div>
+				<div id="term-title">froglet &#8212; zsh</div>
+			</div>
+			<div id="term-body"></div>
+		</div>
+	</div>
+	<div id="nav">
+		<div class="pips" id="pips"></div>
+		<button id="prevBtn" class="btn secondary" type="button">Back</button>
+		<button id="nextBtn" class="btn primary" type="button">Continue</button>
+	</div>
+	<p class="walkthrough__hint">Click the walkthrough, then use the &larr; and &rarr; keys to change steps. Esc skips the typing animation.</p>
+	<noscript>
+		<p class="walkthrough__noscript">
+			This walkthrough needs JavaScript. The same steps are covered in
+			<a href="/learn/deal-flow/">The Deal Flow</a>, <a href="/learn/identity/">Identity</a> and
+			<a href="/learn/settlement/">Settlement</a>.
+		</p>
+	</noscript>
+</section>
+
+<script>
+	import { initDemo } from '../scripts/demo/index';
+	initDemo();
+</script>

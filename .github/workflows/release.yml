@@ -232,7 +232,7 @@ jobs:
     name: Publish Docker Images
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [verify-release-metadata]
+    needs: [verify-release-metadata, ensure-release]
     outputs:
       provider_image: ${{ steps.provider_image.outputs.reference }}
       runtime_image: ${{ steps.runtime_image.outputs.reference }}

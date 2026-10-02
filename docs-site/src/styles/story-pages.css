@@ -27,6 +27,10 @@
 .story-hero { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: center; gap: 24px; min-height: 630px; padding-block: 70px 58px; }
 .story-hero__copy { position: relative; z-index: 1; }
 .story-hero__copy > .story-note { margin-top: 22px; max-width: 53ch; }
+.story-needs { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 4px; max-width: 62ch; }
+.story-needs__label { color: var(--fg2); font: 500 13px/1.5 var(--font-mono); letter-spacing: .09em; text-transform: uppercase; }
+.story-needs ul { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.story-needs li { padding: 4px 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-elevated); color: var(--fg1); font: 500 13px/1.5 var(--font-mono); }
 .story-art { display: block; width: 100%; height: auto; background: #0f1310; border-radius: 6px; }
 .story-hero__art { overflow: hidden; background: #0f1310; border-radius: 6px; }
 .story-hero__art--scene .story-art { width: 155%; max-width: none; margin-left: -55%; }
@@ -95,7 +99,7 @@
   .story-step p { max-width: none; }
   .story-org { padding: 28px; }
   .story-lede { font-size: 18px; }
-  .story-strip { font-size: 12px; justify-content: flex-start; gap: 12px 24px; }
+  .story-strip { font-size: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
   .story-closing { padding-block: 56px; }
   .story-prompt { padding: 22px; }
   .story-prompt textarea { min-height: 360px; }

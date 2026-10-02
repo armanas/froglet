@@ -878,9 +878,13 @@ describe("froglet MCP actions", () => {
       "utf8"
     )
     assert.match(landingPage, /href="\/open-source\/"/)
-    const operatorPage = await readFile(join(REPO_ROOT, "docs-site/src/pages/open-source.astro"), "utf8")
-    assert.match(operatorPage, /import OperatorSetup from ['"]\.\.\/components\/OperatorSetup\.astro['"];/)
-    assert.match(operatorPage, /<OperatorSetup\s*\/>/)
+    // The Developers page sends people to the setup guide, which carries the approval-gated commands checked above,
+    // instead of embedding the interactive configurator. The component and its script stay covered below, so an
+    // unsafe command cannot come back if the configurator is mounted on a page again.
+    const developersPage = await readFile(join(REPO_ROOT, "docs-site/src/pages/open-source.astro"), "utf8")
+    assert.match(developersPage, /\['Run it locally', '\/learn\/quickstart\/'\]/)
+    assert.doesNotMatch(developersPage, /froglet\.dev\/agent \| bash/)
+    assert.doesNotMatch(developersPage, /git clone https:\/\/github\.com\/armanas\/froglet\.git/)
     const operatorSetup = await readFile(join(REPO_ROOT, "docs-site/src/components/OperatorSetup.astro"), "utf8")
     assert.match(operatorSetup, /initSelfHostConfigurator\(\)/)
     assert.match(operatorSetup, /self-host-card/)
@@ -973,17 +977,30 @@ describe("froglet MCP actions", () => {
 
     // The checked-in config is existing user state from setup's perspective.
     // Repository-only setup without the native merger must preserve it.
-    const originalConfig = await readFile(join(checkoutDir, ".mcp.json"), "utf8")
+    // A full qualification run can supply a native binary to other tests.
+    // Isolate this fixture's repo-only mode without changing the parent env.
+    const setupEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("FROGLET_"))
+    )
+    setupEnv.FROGLET_MCP_MODE = "repo"
+    const existingConfigPath = join(checkoutDir, ".mcp.json")
+    const existingConfig = JSON.parse(await readFile(existingConfigPath, "utf8"))
+    existingConfig.mcpServers.unrelatedFixtureServer = {
+      command: "printf", args: ["preserve unrelated server configuration"]
+    }
+    const originalConfig = `${JSON.stringify(existingConfig, null, 2)}\n`
+    await writeFile(existingConfigPath, originalConfig)
     await assert.rejects(execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code"], {
-      cwd: checkoutDir, timeout: 10000
+      cwd: checkoutDir, env: setupEnv, timeout: 10000
     }), /existing agent config requires/)
-    assert.equal(await readFile(join(checkoutDir, ".mcp.json"), "utf8"), originalConfig)
+    assert.equal(await readFile(existingConfigPath, "utf8"), originalConfig)
     const generatedConfig = join(checkoutDir, ".mcp-generated.json")
     await execFile("bash", ["scripts/setup-agent.sh", "--target", "claude-code", "--out", generatedConfig], {
-      cwd: checkoutDir, timeout: 10000
+      cwd: checkoutDir, env: setupEnv, timeout: 10000
     })
+    assert.equal(await readFile(existingConfigPath, "utf8"), originalConfig)
     await execFile("bash", ["scripts/setup-payment.sh", "lightning"], {
-      cwd: checkoutDir
+      cwd: checkoutDir, env: setupEnv
     })
 
     const mcpConfig = JSON.parse(await readFile(generatedConfig, "utf8"))
@@ -1003,7 +1020,7 @@ describe("froglet MCP actions", () => {
           "-lc",
           "set -a && . ./.froglet/payment/lightning.env && export FROGLET_HOST_READABLE_CONTROL_TOKEN=true && set +a && docker compose config >/dev/null"
         ],
-        { cwd: checkoutDir }
+        { cwd: checkoutDir, env: setupEnv }
       )
     } catch (error) {
       const message = `${error?.stderr ?? ""}${error?.stdout ?? ""}${error}`

@@ -88,12 +88,21 @@ same stages:
 3. commit or capture
 4. cancellation or release
 
-Only Lightning currently extends that lifecycle into standardized
-quote/deal settlement terms and invoice-bundle artifacts. The rail-specific
-docs below explain how each backend maps the local runtime stages to its own
-provider.
+The signed Quote → Deal → Receipt flow admits configured Lightning and
+`stripe_mpp.v1` settlement methods. Lightning's base-fee-plus-success-fee escrow
+method uses an InvoiceBundle. Prepaid Lightning and Stripe do not; Stripe binds a
+manual-capture PaymentIntent to the signed terms and terminal Receipt. The
+Kernel also defines x402 artifact semantics, but the current provider Deal
+runtime does not admit x402. Its payment path remains a separate HTTP endpoint.
+The rail-specific guides explain the required authorization and lifecycle.
 
-Priced async jobs are not a paid-rail proof today. Use the synchronous
-`/v1/node/events/query` or `/v1/node/execute/wasm` helpers for Stripe/x402
-token-settled work, and use the signed quote/deal flow for Lightning-priced
-work, until durable async payment reservations are implemented.
+Native MCP `run_compute` defaults to free-only. Paid computation requires an
+explicit price ceiling, the configured wallet and cumulative spending policy.
+It has no caller-supplied Stripe SPT argument; advanced Stripe callers supply
+externally issued tokens through the requester runtime API. Froglet's built-in
+SPT minting helper is sandbox-only.
+
+A passing synchronous helper call or mock paid lifecycle test does not qualify
+production paid jobs. Qualify execution, acceptance, settlement and restart on
+the selected deployment, and record a fresh live payment/refund proof before
+claiming live fiat support.

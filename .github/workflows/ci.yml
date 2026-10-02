@@ -18,7 +18,7 @@ jobs:
   strict-checks:
     name: Strict Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Check out repo
@@ -67,6 +67,7 @@ jobs:
       - name: Run strict verification matrix
         env:
           RUST_TEST_THREADS: '4'
+          FROGLET_REQUIRE_SOFTWARE_CHECKS: '1'
           FROGLET_RUN_LINUX_SANDBOX_TESTS: '1'
         run: ./scripts/strict_checks.sh
 
@@ -155,7 +156,7 @@ jobs:
   docs-site:
     name: Docs Site
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Check out repo
@@ -180,10 +181,20 @@ jobs:
           toolchain: 1.91.0
           targets: wasm32-unknown-unknown
 
-      - name: Build the locked browser verifier
-        run: npm run build:verifier --prefix docs-site
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Build the locked browser WebAssembly (verifier, playground kernel, sample services)
+        run: npm run build:wasm --prefix docs-site
+
+      - name: Build the node for browser interoperability tests
+        run: cargo build --locked -p froglet --bin froglet-node
 
       - name: Run docs site tests
+        env:
+          FROGLET_PLAYGROUND_REAL_PROVIDER: '1'
+          FROGLET_PLAYGROUND_REAL_REQUESTER: '1'
+          FROGLET_NODE_BIN: ${{ github.workspace }}/target/debug/froglet-node
         run: npm test --prefix docs-site
 
       - name: Build docs site

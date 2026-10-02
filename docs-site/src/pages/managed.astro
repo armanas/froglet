@@ -2,26 +2,207 @@
 import StoryLayout from '../layouts/StoryLayout.astro';
 import StoryArt from '../components/StoryArt.astro';
 import AgentMeta from '../components/AgentMeta.astro';
+import { MATURITY, MATURITY_LADDER, statusLabel } from '../data/maturity';
+import '../styles/organizations.css';
+
+const image = {
+  src: 'https://froglet.dev/og/organizations.png',
+  width: 1200,
+  height: 630,
+  type: 'image/png',
+  alt: 'Share one service. Set the limits. Keep the record. Froglet for organizations, in public beta.',
+};
+
+// Every status pill is built from the maturity data: its label, its meaning and its evidence come from
+// there, so this page cannot claim a maturity the repository does not substantiate.
+const pill = (id: string) => {
+  const entry = MATURITY.find((item) => item.id === id);
+  if (!entry) throw new Error(`Unknown maturity entry "${id}"`);
+  return entry;
+};
+
+interface Control {
+  ask: string;
+  control: string;
+  today: string;
+  gap: string;
+  maturity?: string[];
+  links?: Array<{ label: string; href: string }>;
+}
+
+// One row per question an agreement has to answer. `today` is what the software applies now;
+// `gap` is what does not exist yet. Every sentence is sourced from the repository:
+// share-services.mdx, docs/HTTP_SERVICES.md, docs/CONFIGURATION.md (access mode, spend budget), docs/RELAY.md (trust
+// boundary), docs/THREAT_MODEL.md, docs/IDENTITY_CUSTODY.md, docs/KERNEL.md, src/provider_policy.rs (invitation limits),
+// src/api/mod.rs (the public feed is not gated by access mode), src/cli/mcp.rs (max_price_sats defaults to 0) and
+// docs-site/src/data/maturity.ts.
+const controls: Control[] = [
+  {
+    ask: 'What is shared?',
+    control: 'Scope',
+    today: 'You pick the exact tables and fields, a small function, or one fixed HTTPS operation of a tool you run. Your assistant shows a preview, and nothing is published until you approve that exact preview.',
+    gap: 'No organization-wide sharing policy, and nothing reads a data-sharing agreement for you.',
+    links: [{ label: 'How to prepare a service', href: '/learn/share-services/' }],
+  },
+  {
+    ask: 'What becomes public?',
+    control: 'Disclosure',
+    today: 'Your source files, omitted columns, and upstream credentials stay private. The description, the example, the names of the tables and fields you expose, the price, and the limits are published.',
+    gap: 'Signed receipts appear on the provider’s public feed, even for invite-only services. They name the requester’s key and carry timing, outcome, and a hash of the result, but not the result.',
+  },
+  {
+    ask: 'Who may use it?',
+    control: 'Access',
+    today: 'Services are open by default. You switch on private, invite-only, or bounded trial access in the node’s configuration and restart it. An invitation lasts up to 30 days and allows 2 to 10,000 requests; a normal call uses two.',
+    gap: 'An invitation covers every service on that Froglet host, so separate audiences need separate hosts. There are no roles, groups, or single sign-on.',
+    links: [{ label: 'Access and invitations', href: '/learn/share-services/#invite-access-and-bounded-http-tools' }],
+  },
+  {
+    ask: 'How much can they use?',
+    control: 'Limits',
+    today: 'A protected node will not start without finite allowances for quotes, deals, and runtime, and you can pause new work at any time. WebAssembly runs are fuel-metered, and an HTTP tool has a deadline and byte limits.',
+    gap: 'Allowances are provider-wide counters, not currency budgets or a cap on cloud costs, and they do not stop work already started. Nothing spans several hosts, teams, or an organization.',
+    maturity: ['wasm'],
+  },
+  {
+    ask: 'What if we stop?',
+    control: 'Withdrawal',
+    today: 'Pause or unpublish a service, or revoke invitations, and new work stops.',
+    gap: 'Deals already admitted still finish, and a recipient keeps results already delivered. Switching off the machine makes a service unavailable; it does not unpublish it.',
+  },
+  {
+    ask: 'Who can see it in transit?',
+    control: 'Confidentiality',
+    today: 'Requests and results travel over TLS. Publishing from your own public HTTPS endpoint sends calls straight to your node.',
+    gap: 'The guided path publishes through a Froglet relay that terminates TLS and can see requests and results. There is no end-to-end encryption or confidential-computing runtime yet.',
+    maturity: ['tee'],
+    links: [{ label: 'Relay trust boundary', href: 'https://github.com/armanas/froglet/blob/main/docs/RELAY.md' }],
+  },
+  {
+    ask: 'How do we show what happened?',
+    control: 'Evidence',
+    today: 'Each exchange leaves signed records of the offer, quote, deal, and receipt that anyone can verify offline, with no node and no network.',
+    gap: 'A signature shows what a key signed, not that the work was correct or who the legal signatory is. SLA monitoring and remedies are future work.',
+    maturity: ['verifier'],
+    links: [{ label: 'Inspect a sample record', href: '/verify-receipt/' }],
+  },
+  {
+    ask: 'Who is who?',
+    control: 'Identity',
+    today: 'Each node signs with its own key, kept as a private file on the node that is not encrypted at rest. Froglet can write an encrypted backup and rotate the key on a schedule, leaving a signed continuity record.',
+    gap: 'There is no protocol-level key revocation, so a leaked key means moving to a new identity. Tying a key to an organization through a DNS record is a prototype; the service that issues attestations is specified, not built.',
+    maturity: ['dns-attestation'],
+  },
+  {
+    ask: 'What does it cost?',
+    control: 'Payments',
+    today: 'The guided path is free. An assistant pays nothing by default: a paid call needs an explicit price ceiling, a buyer wallet, and a cumulative spend budget.',
+    gap: 'No live-money transcript and no complete billing workflow. Do not plan a pilot around revenue.',
+    maturity: ['lightning', 'stripe', 'x402'],
+    links: [{ label: 'Payment integration status', href: '/open-source/#integrations' }],
+  },
+  {
+    ask: 'Where does it run?',
+    control: 'Hosting',
+    today: 'On an Apple Silicon Mac or a Linux machine you control, which has to stay online. With the relay it only dials out, so no inbound firewall change is needed.',
+    gap: 'There is no managed product to sign in to today. Always-on managed hosting is future work, and Windows is not supported.',
+    links: [{ label: 'Hosted trial status', href: '/learn/cloud-trial/' }],
+  },
+];
+
+const exchange = [
+  { actor: 'Provider', title: 'Publish', text: 'Choose what to share and approve the exact preview. Your node signs a descriptor and an offer.', record: 'descriptor · offer' },
+  { actor: 'Partner', title: 'Discover', text: 'Their assistant opens your link or finds the service in the marketplace, and reads what it does.', record: 'public metadata' },
+  { actor: 'Provider', title: 'Quote', text: 'For one specific request, your node signs a quote. On an invited service, that is one invitation request.', record: 'quote' },
+  { actor: 'Partner', title: 'Agree', text: 'The partner signs a deal that accepts the quote. On an invited service, that is a second invitation request.', record: 'deal' },
+  { actor: 'Provider', title: 'Run and record', text: 'Your node runs the work inside its limits and signs a receipt for the result.', record: 'receipt' },
+];
+
+const pilot = [
+  { who: 'Business owner', title: 'Choose one exchange', text: 'Pick one small, non-confidential catalog or operation and one partner who needs it. Write down what is shared, who may use it, for how long, and what would make you stop.', done: 'Both sides can describe the exchange in one paragraph.' },
+  { who: 'Operator', title: 'Run it yourself', text: 'Use Codex or Claude Code on Apple Silicon macOS or Linux to install Froglet and prepare the service. Review the exact preview before anything is published.', done: 'The service answers a test request from your own machine.' },
+  { who: 'Operator and partner', title: 'Invite one partner', text: 'Publish the service with invite-only access: set it in the node’s configuration, restart, and create an invitation. The partner connects Froglet to their own assistant and calls the service. Test the deployed access controls before you rely on them.', done: 'The partner gets a result, an uninvited caller is refused, and new requests stop when the invitation expires or is revoked.' },
+  { who: 'Security or compliance', title: 'Review the record', text: 'Verify a signed record offline. Read what it says about who signed, what was agreed, and what was returned, and what it does not say.', done: 'The reviewer can state in writing what the record proves and what it does not.' },
+  { who: 'Business owner', title: 'Decide', text: 'Continue, widen the scope, or stop. To end the pilot, revoke the invitation and pause the service. Compare what you needed with the gaps listed above.', done: 'You have a written decision and the list of gaps that matter to you.' },
+];
+
+const questions = [
+  {
+    q: 'Is a new service private by default?',
+    a: ['No. A new service is open to anyone who can reach it until you configure private or invite-only access, or bound it with trial allowances, in the node’s configuration and restart it. A node in a protected mode refuses to start without finite allowances, and one that exposes an HTTP operation refuses to start in open mode. Test the deployed access controls before you rely on them.'],
+  },
+  {
+    q: 'Who can see our data?',
+    a: [
+      'The data you select is copied into a separate snapshot, and the original stays private and unchanged. A service’s description and public example are published as metadata, so keep confidential data and credentials out of them. Receipts for completed calls are listed on your public feed, even for invite-only services: they name the requester’s key and carry timing, outcome, and a hash of the result, not the result.',
+      'Calls travel over TLS. If you publish through the Froglet relay, which is the guided default, the relay terminates TLS and can see requests and results. Use non-confidential data for a pilot. Sensitive payloads need your own public HTTPS endpoint; an end-to-end encrypted tunnel is only a candidate for a later version.',
+    ],
+  },
+  {
+    q: 'How are keys and credentials handled?',
+    a: [
+      'Each node creates its own signing key on the machine that runs it. The key is a private file on that disk and is not encrypted at rest, so run the node on an encrypted disk. Froglet can write an encrypted backup with a separate recovery key, and an operator command lets a KMS or HSM protect that backup. You can rotate the provider key on a schedule. Upstream credentials for a connected tool sit in a private policy file on the node, which must be owned by its user with mode 0600 and is not encrypted.',
+      'There is no protocol-level revocation. If a key leaks, you stop the node, create a new identity, and republish under it.',
+    ],
+  },
+  {
+    q: 'What does a signed record prove?',
+    a: ['It shows which key signed the offer, quote, deal, and receipt, and that they have not been altered. Anyone can check that offline. It does not show that the work was correct, identify a legal signatory by itself, prove that a payment settled elsewhere, or resolve a dispute.'],
+  },
+  {
+    q: 'Is there support, an SLA, or a certification?',
+    a: ['No. Froglet is an open-source protocol in public beta. There is no support contract, SLA, or compliance certification, and no managed service to hold one. Community questions go to GitHub Discussions.'],
+  },
+  {
+    q: 'Who maintains it, and what if that stops?',
+    a: ['One person maintains Froglet today. The code is Apache-2.0, the specification and conformance vectors are public, and a second, independently written verifier in Python (alpha) checks the same vectors, so records stay verifiable and the protocol can be reimplemented. That reduces lock-in. It does not make a single-maintainer project low-risk, so plan accordingly.'],
+  },
+  {
+    q: 'What does public beta mean here?',
+    a: ['The clean-machine tests on the supported platforms and a first-time-user evaluation are still open, so this is not a stable release. Pin the release you test and expect changes. Codex or Claude Code on Apple Silicon macOS or Linux is the supported path; Windows is not.'],
+  },
+  {
+    q: 'How do we report a security problem?',
+    a: ['Follow the security policy in the repository. It promises an acknowledgement within 48 hours, an assessment within 7 days, and a fix or documented mitigation within 90 days. Only the latest release receives security fixes.'],
+    link: { label: 'Read the security policy', href: 'https://github.com/armanas/froglet/blob/main/SECURITY.md' },
+  },
+];
 ---
-<StoryLayout title="For organizations · Froglet" description="A clearer way to collaborate across organizations: agree what to share, define access and limits, and build on reusable services. Explore what works today and what comes next." path="/managed/">
+<StoryLayout title="For organizations · Froglet" description="Share one service with a partner, set the limits, and keep a signed record. What Froglet can apply today, what it cannot, and how to run a small pilot." path="/managed/" image={image}>
 <AgentMeta slot="head" route="managed" />
-<div class="story-wrap">
-  <section class="story-hero story-hero--compact"><div class="story-hero__copy"><span class="story-kicker">For organizations · Our direction</span><h1>Start with an agreement.<br /><span class="story-accent">Build less infrastructure.</span></h1><p class="story-lede">Your team knows what it wants to share. Your partner knows what it needs. Making that collaboration work should not become a project of its own.</p><div class="story-actions"><a class="btn primary" href="#today">What can we do today?</a><a class="btn secondary" href="#direction">Where we are heading</a></div></div><StoryArt name="10-open-source" width={1536} height={1024} eager alt="Bob and Alice assemble a shared service from a few useful pieces." /></section>
+<div class="story-wrap story-wrap--org">
+  <section class="story-hero story-hero--compact story-hero--org"><div class="story-hero__copy"><span class="story-kicker">For organizations · Public beta</span><h1>Share one service.<br />Set the limits.<br /><span class="story-accent">Keep the record.</span></h1><p class="story-lede">Your team knows what it wants to share, and your partner knows what it needs. Froglet turns that agreement into one small service that runs on infrastructure you control, with access limits you set and signed records you can check later.</p><div class="story-needs"><ul aria-label="At a glance"><li>Apache-2.0</li><li>Self-hosted</li><li>Public beta</li><li>Offline-verifiable records</li></ul></div><div class="story-actions"><a class="btn primary" href="#controls">See what you control</a><a class="btn secondary" href="#pilot">Plan a pilot</a></div></div><StoryArt name="10-open-source" width={1536} height={1024} eager alt="Bob and Alice assemble a shared service from a few useful pieces." /></section>
 
-  <section class="story-section story-split"><div><span class="story-kicker">The problem behind Froglet</span><h2>“We want to collaborate.”<br />Then the work stalls.</h2><p>Two teams use different names for the same thing. A useful table sits in a spreadsheet. A working analysis lives on one person’s machine. Everyone wants to share; someone still has to build and maintain the connection.</p><p>After 10 years building platforms in life sciences, this is the recurring problem that led Armanas to build Froglet.</p></div><div class="story-callout"><h3>A small, concrete starting point</h3><p>Bob’s lab has a table mapping its sample names to a shared vocabulary. Alice’s team needs that mapping for its own research.</p><p>Bob shares the selected lookup as a service. Alice can ask for a mapping from her own tools. The terminology still needs expert agreement; the service makes that agreed work reusable.</p></div></section>
+  <section class="story-section" id="controls"><div class="story-heading"><span class="story-kicker">From agreement to controls</span><h2 id="controls-heading">Every agreement asks<br />the same questions.</h2><p>Each row is a question your partnership has to settle. The middle column is what Froglet can apply today; the right column is what does not exist yet.</p></div>
+    <ul class="org-status-legend" aria-label="Maturity labels">{Object.entries(MATURITY_LADDER).map(([status, rung]) => <li><span class="org-pill" data-status={status}>{rung.label}</span><span>{rung.meaning}</span></li>)}</ul>
+    <div class="org-matrix"><table><caption class="sr-only">Agreement questions, what Froglet applies today, and what is not available yet</caption><thead><tr><th scope="col">The agreement asks</th><th scope="col">Works today</th><th scope="col">Not there yet</th></tr></thead><tbody>{controls.map((row) => <tr>
+      <th scope="row"><span class="org-ask">{row.ask}</span><span class="org-control">{row.control}</span></th>
+      <td class="org-today" data-label="Works today"><p>{row.today}</p>{(row.maturity || row.links) && <div class="org-meta">{row.maturity && <ul class="org-pills">{row.maturity.map((id) => { const entry = pill(id); return <li class="org-pill" data-status={entry.status} title={MATURITY_LADDER[entry.status].meaning}><span class="org-pill__name">{entry.name}</span>{statusLabel(entry.status)}</li>; })}</ul>}{row.links && row.links.map((link) => <a href={link.href}>{link.label}</a>)}</div>}</td>
+      <td class="org-gap" data-label="Not there yet"><p>{row.gap}</p></td>
+    </tr>)}</tbody></table></div>
+  </section>
 
-  <section class="story-section" id="direction"><div class="story-heading"><span class="story-kicker">The direction</span><h2>Describe the collaboration.<br />Make it operational.</h2><p>The long-term goal is to turn an agreement into configured services that people and their assistants can use. These are the decisions that should drive the setup.</p></div><div class="story-grid">
-    <article class="story-use"><span class="story-kicker">What</span><h3>The useful part</h3><p>Which data, fields, and operations are shared? What must stay out? What does the result mean?</p></article>
-    <article class="story-use"><span class="story-kicker">Who & how</span><h3>The conditions of access</h3><p>Which partner can use it? For how long, for which purpose, and within what limits?</p></article>
-    <article class="story-use"><span class="story-kicker">Commitments</span><h3>The terms of service</h3><p>Price, availability, support, permitted use, and what happens when something goes wrong.</p></article>
-  </div><div class="story-callout" style="margin-top:36px"><p><strong>This is the product direction.</strong> Froglet does not currently read an arbitrary contract and implement all its clauses. SLA monitoring, remedies, and organization-wide policy management are future work.</p></div></section>
+  <section class="story-section" id="exchange"><div class="story-heading"><span class="story-kicker">One exchange</span><h2>From a published service<br />to a signed record.</h2><p>Each side keeps its own records, and anyone holding them can check them offline. <a href="/verify-receipt/">Inspect a sample record</a>.</p></div>
+    <ol class="org-flow">{exchange.map((step, index) => <li class="org-flow__step"><span class="org-flow__n" aria-hidden="true">{index + 1}</span><span class="org-flow__actor">{step.actor}</span><h3>{step.title}</h3><p>{step.text}</p><code class="org-flow__record">{step.record}</code></li>)}</ol>
+  </section>
 
-  <section class="story-section" id="today"><div class="story-heading"><span class="story-kicker">A clear starting point</span><h2>Useful controls today.<br />A bigger vision ahead.</h2></div><div class="story-grid story-grid--two">
-    <article class="story-status"><span class="story-kicker">Available in the current beta</span><h3>Run a focused collaboration.</h3><ul><li>Prepare selected data or a small function.</li><li>Expose one existing tool operation with defined inputs and limits.</li><li>Set up invitations with expiry and request allowances.</li><li>Review publication, pause access, and inspect signed records.</li><li>Run the service on infrastructure you control.</li></ul><p class="story-note" style="margin-top:24px">Invitations and existing-tool connections require technical setup. Invitations cover one provider’s services; separate audiences need separate providers. Test the deployed access controls before relying on them.</p></article>
-    <article class="story-status"><span class="story-kicker">Not available yet</span><h3>The managed organization workspace.</h3><ul><li>Translate a whole agreement into service configuration.</li><li>Manage partner permissions across an organization.</li><li>Monitor service-level agreements and apply remedies.</li><li>Run always-on managed hosting through a Froglet account.</li><li>Use a complete commercial billing workflow.</li></ul><p class="story-note" style="margin-top:24px">There is no managed product to sign in to today. You can evaluate the self-hosted building blocks now.</p></article>
-  </div></section>
+  <section class="story-section" id="pilot"><div class="story-heading"><span class="story-kicker">Try it</span><h2>Test it with one partner<br />before you widen the scope.</h2><p>Froglet is in public beta, so treat it as a pilot rather than a platform purchase.</p></div>
+    <div class="story-grid story-grid--two">
+      <article class="story-status"><span class="story-kicker">A good first exchange</span><h3>Small, useful, and safe to share.</h3><ul class="org-list org-list--yes"><li>A non-confidential table, vocabulary, or mapping that a partner already asks you for, such as a lab’s map from its sample names to a shared vocabulary. Sources can be up to 16 MiB and 100,000 rows per table.</li><li>A small analysis function whose inputs, outputs, and limits fit in a paragraph.</li><li>One fixed HTTPS operation of a tool you already run, with strict input and output schemas.</li><li>A partner willing to try it and tell you what broke.</li></ul></article>
+      <article class="story-status"><span class="story-kicker">Wait for a later version</span><h3>If the exchange depends on any of these.</h3><ul class="org-list org-list--no"><li>Confidential, regulated, or personal data, because the guided path is not end-to-end encrypted.</li><li>A collaboration whose existence must stay private, because receipts are public.</li><li>An uptime commitment, support contract, or SLA.</li><li>Managed hosting, single sign-on, or per-service partner permissions.</li><li>Automatic enforcement of legal terms or data-use promises.</li><li>Live-money billing.</li></ul></article>
+    </div>
+    <div class="org-matrix org-matrix--pilot"><table><caption class="sr-only">Pilot plan: who does what, and how you know it worked</caption><thead><tr><th scope="col">Step</th><th scope="col">What you do</th><th scope="col">Done when</th></tr></thead><tbody>{pilot.map((step, index) => <tr>
+      <th scope="row"><span class="org-step__n" aria-hidden="true">{index + 1}</span><span class="org-ask">{step.title}</span><span class="org-control">{step.who}</span></th>
+      <td data-label="What you do"><p>{step.text}</p></td>
+      <td class="org-today" data-label="Done when"><p>{step.done}</p></td>
+    </tr>)}</tbody></table></div>
+  </section>
 
-  <section class="story-section story-split"><StoryArt name="07-signed-record" alt="Linked records of an exchange, ready to inspect." /><div><span class="story-kicker">Keep an inspectable record</span><h2>Know what was agreed.<br />See what was returned.</h2><p>Froglet records signed commitments and results so an exchange can be checked later, including when the original session has ended.</p><p>A signed record establishes what a key signed. It does not guarantee that the work is correct, identify a legal signatory by itself, or resolve a dispute.</p><a href="/verify-receipt/">Inspect a sample record</a></div></section>
-  <section class="story-closing"><span class="story-kicker">A practical first step</span><h2>Start with one useful exchange.</h2><p>Choose a small, non-confidential catalog or operation. Test it with a partner before widening the scope.</p><div class="story-actions"><a class="btn primary" href="/publish/">Prepare a first service</a><a class="btn secondary" href="/learn/share-services/">Read the implementation guide</a></div></section>
+  <section class="story-section" id="questions"><div class="story-heading"><span class="story-kicker">Questions your reviewers will ask</span><h2>Straight answers,<br />including the unwelcome ones.</h2></div>
+    <div class="story-faq">{questions.map((item) => <details><summary>{item.q}</summary>{item.a.map((text) => <p>{text}</p>)}{item.link && <p><a href={item.link.href}>{item.link.label}</a></p>}</details>)}</div>
+  </section>
+
+  <section class="story-section story-split" id="direction"><div><span class="story-kicker">Where this is heading</span><h2>Describe the collaboration.<br />Make it operational.</h2><p>The long-term goal is to turn an agreement into configured services that people and their assistants can use: what is shared, the conditions of access, and the terms of service such as price, availability, and support.</p><div class="story-callout"><p><strong>This is the product direction.</strong> Froglet does not currently read an arbitrary contract and implement all its clauses. SLA monitoring, remedies, and organization-wide policy management are future work. These are directions, not commitments or dates.</p></div></div><StoryArt name="12-agree-terms" alt="Alice reviews an agreement that she is about to turn into a service." /></section>
+  <section class="story-closing"><span class="story-kicker">A practical first step</span><h2>Start with one useful exchange.</h2><p>Choose a small, non-confidential catalog or operation. Test it with a partner before widening the scope.</p><div class="story-actions"><a class="btn primary" href="/publish/">Prepare a first service</a><a class="btn secondary" href="/learn/share-services/">Read the implementation guide</a></div><p class="story-note org-why">After 10 years building platforms in life sciences, this is the recurring problem that led Armanas to build Froglet.</p></section>
 </div>
 </StoryLayout>

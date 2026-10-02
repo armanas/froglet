@@ -4,6 +4,7 @@ import os
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -1157,6 +1158,214 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertGreaterEqual(calls.count("bootstrap "), 2, calls)
         self.assertIn("bootout ", calls)
         self.assertIn("kickstart -k ", calls)
+
+
+class A2aCounterpartySetupTests(unittest.TestCase):
+    """Private setup/review invariants, independent of runtime transport tests."""
+
+    def setUp(self):
+        from scripts import setup_a2a_counterparty as setup
+        self.setup = setup
+        self.directory = tempfile.TemporaryDirectory(prefix="froglet-counterparty-test-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        self.invite = self.root / "issued-invitation.token"
+        self.write_private(self.invite, b"admission-only-" + b"x" * 40)
+        self.request = {"kind": "provider", "destination": str(self.root / "bob-settings"),
+                        "provider_id": "a" * 64, "requester_id": "b" * 64,
+                        "provider_url": "https://bob.example", "offer_hashes": ["c" * 64],
+                        "admission_token_file": str(self.invite),
+                        "allowances": {"max_total_quotes": 20, "max_total_deals": 10,
+                                       "max_total_runtime_ms": 20000}}
+
+    @staticmethod
+    def write_private(path, value):
+        with path.open("xb") as output:
+            output.write(value)
+        path.chmod(0o600)
+
+    def provider(self):
+        plan, _, _ = self.setup.prepare(self.request)
+        result = self.setup.apply(self.request, plan["plan_sha256"])
+        return plan, result, Path(result["private_handoff_file"])
+
+    def test_plan_is_read_only_and_never_discloses_credentials(self):
+        plan, _, _ = self.setup.prepare(self.request)
+        self.assertFalse(Path(self.request["destination"]).exists())
+        self.assertEqual(set(self.root.iterdir()), {self.invite})
+        self.assertNotIn(self.invite.read_text(), json.dumps(plan))
+        self.assertEqual(plan["offer_hashes"], ["c" * 64])
+        self.assertFalse(plan["admission_verified"])
+
+    def test_provider_requester_round_trip_preserves_separate_authority(self):
+        plan, result, handoff_file = self.provider()
+        handoff = json.loads(handoff_file.read_bytes())
+        self.assertNotEqual(handoff["a2a_token"], handoff["admission_token"])
+        self.assertNotIn(handoff["a2a_token"], json.dumps(result))
+        self.assertNotIn(handoff["admission_token"], json.dumps(result))
+        request = {"kind": "requester", "destination": str(self.root / "alice-settings"),
+                   "handoff_file": str(handoff_file), "expected_provider_id": "a" * 64,
+                   "expected_requester_id": "b" * 64}
+        alice_plan, _, _ = self.setup.prepare(request)
+        alice = self.setup.apply(request, alice_plan["plan_sha256"])
+        config = json.loads(Path(alice["configuration"]).read_bytes())
+        self.assertEqual(config["clients"], [])
+        self.assertEqual(config["providers"], [{"provider_url": "https://bob.example",
+                                               "token": handoff["a2a_token"],
+                                               "allow_loopback": False}])
+        self.assertEqual(Path(alice["access_token_file"]).read_text(), self.invite.read_text())
+        bob_config = json.loads(Path(result["configuration"]).read_bytes())
+        self.assertEqual(bob_config["clients"][0]["requester_id"], "b" * 64)
+        self.assertEqual(bob_config["clients"][0]["offer_hashes"], ["c" * 64])
+        activation = (Path(self.request["destination"]) / "activate.sh").read_text()
+        self.assertIn("FROGLET_PROVIDER_ACCESS_MODE=invite", activation)
+        self.assertIn("FROGLET_PROVIDER_MAX_TOTAL_DEALS=10", activation)
+        self.assertIn("FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS=20000", activation)
+        for directory in (Path(self.request["destination"]), Path(request["destination"])):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+            for file in directory.iterdir():
+                self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o600)
+        self.assertTrue(result["restart_required"])
+
+    def test_stale_plan_refuses_changed_scope_credential_and_existing_config(self):
+        plan, _, _ = self.setup.prepare(self.request)
+        changed = dict(self.request, offer_hashes=["d" * 64])
+        with self.assertRaisesRegex(self.setup.SetupError, "setup_plan_changed"):
+            self.setup.apply(changed, plan["plan_sha256"])
+        self.invite.write_bytes(b"new-admission-token-" + b"y" * 40)
+        with self.assertRaisesRegex(self.setup.SetupError, "setup_plan_changed"):
+            self.setup.apply(self.request, plan["plan_sha256"])
+        self.assertFalse(Path(self.request["destination"]).exists())
+        old = self.root / "existing-a2a.json"
+        self.write_private(old, b'{}\n')
+        self.request["existing_config"] = str(old)
+        plan, _, _ = self.setup.prepare(self.request)
+        old.write_bytes(b'{"clients": [], "providers": []}\n')
+        with self.assertRaisesRegex(self.setup.SetupError, "setup_plan_changed"):
+            self.setup.apply(self.request, plan["plan_sha256"])
+        self.assertFalse(Path(self.request["destination"]).exists())
+
+    def test_merge_preserves_unrelated_counterparties_without_mutating_source(self):
+        old = {"clients": [{"requester_id": "d" * 64, "token": "other-client-" + "z" * 40,
+                             "offer_hashes": ["e" * 64]}],
+               "providers": [{"provider_url": "https://other.example", "token": "p" * 40}]}
+        path = self.root / "existing-a2a.json"
+        original = json.dumps(old).encode()
+        self.write_private(path, original)
+        self.request["existing_config"] = str(path)
+        _, result, _ = self.provider()
+        merged = json.loads(Path(result["configuration"]).read_bytes())
+        self.assertEqual(merged["clients"][0], old["clients"][0])
+        self.assertEqual(merged["providers"], old["providers"])
+        self.assertEqual(path.read_bytes(), original)
+        with self.assertRaisesRegex(self.setup.SetupError, "already exists"):
+            self.setup.apply(self.request, result["plan_sha256"])
+
+    def test_refuses_wrong_id_unapproved_origin_and_operator_token(self):
+        _, _, handoff = self.provider()
+        request = {"kind": "requester", "destination": str(self.root / "alice-settings"),
+                   "handoff_file": str(handoff), "expected_provider_id": "f" * 64,
+                   "expected_requester_id": "b" * 64}
+        with self.assertRaisesRegex(self.setup.SetupError, "identities"):
+            self.setup.prepare(request)
+        for url in ("http://bob.example", "https://user:secret@bob.example",
+                    "https://bob.example/a2a", "https://bob.example?secret=value"):
+            changed = dict(self.request, destination=str(self.root / "next"), provider_url=url)
+            with self.subTest(url=url), self.assertRaises(self.setup.SetupError):
+                self.setup.prepare(changed)
+        with mock.patch.dict(os.environ, {"FROGLET_RUNTIME_AUTH_TOKEN": self.invite.read_text()}):
+            changed = dict(self.request, destination=str(self.root / "next"))
+            with self.assertRaisesRegex(self.setup.SetupError, "operator/runtime"):
+                self.setup.prepare(changed)
+
+    def test_requires_finite_allowances_and_exact_nonempty_scopes(self):
+        for allowances in ({}, {"max_total_quotes": 0, "max_total_deals": 10,
+                               "max_total_runtime_ms": 20000},
+                           {"max_total_quotes": True, "max_total_deals": 10,
+                            "max_total_runtime_ms": 20000},
+                           {"max_total_quotes": 2**63, "max_total_deals": 10,
+                            "max_total_runtime_ms": 20000}):
+            with self.subTest(allowances=allowances), self.assertRaises(self.setup.SetupError):
+                self.setup.prepare(dict(self.request, allowances=allowances))
+        for scope in ([], ["*"], ["c" * 64, "c" * 64], ["C" * 64]):
+            with self.subTest(scope=scope), self.assertRaises(self.setup.SetupError):
+                self.setup.prepare(dict(self.request, offer_hashes=scope))
+
+    def test_private_files_symlinks_and_invalid_json_fail_without_source_disclosure(self):
+        self.invite.chmod(0o644)
+        with self.assertRaisesRegex(self.setup.SetupError, "0600"):
+            self.setup.prepare(self.request)
+        self.invite.chmod(0o600)
+        link = self.root / "symlink.token"
+        link.symlink_to(self.invite)
+        with self.assertRaises(OSError):
+            self.setup.prepare(dict(self.request, admission_token_file=str(link)))
+        invalid = self.root / "invalid.json"
+        self.write_private(invalid, b'{"token":"secret-source-never-output", broken}')
+        request_file = self.root / "request.json"
+        self.write_private(request_file, self.setup.encoded(dict(self.request, existing_config=str(invalid))))
+        result = subprocess.run([sys.executable, str(REPO_ROOT / "scripts/setup_a2a_counterparty.py"),
+                                 "--request", str(request_file), "--plan"],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("secret-source-never-output", result.stdout + result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_atomic_publication_failure_removes_partial_bundle(self):
+        plan, _, _ = self.setup.prepare(self.request)
+        with mock.patch.object(self.setup.os, "rename", side_effect=OSError("simulated failure")):
+            with self.assertRaises(OSError):
+                self.setup.apply(self.request, plan["plan_sha256"])
+        self.assertFalse(Path(self.request["destination"]).exists())
+        self.assertFalse(any(path.name.startswith(".froglet-a2a-") for path in self.root.iterdir()))
+
+    def test_apply_invalid_request_root_returns_redacted_structured_error(self):
+        path = self.root / "invalid-root.json"
+        self.write_private(path, b"[]\n")
+        result = subprocess.run([sys.executable, str(REPO_ROOT / "scripts/setup_a2a_counterparty.py"),
+                                 "--request", str(path), "--approved-plan-sha256", "a" * 64],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), {"status": "error", "error": "setup request must be an object"})
+        self.assertEqual(result.stderr, "")
+
+    def test_file_based_operator_credentials_cannot_be_delivered_as_invitations(self):
+        operator = self.root / "auth.token"
+        self.write_private(operator, self.invite.read_bytes())
+        with self.assertRaisesRegex(self.setup.SetupError, "operator/runtime token file"):
+            self.setup.prepare(dict(self.request, admission_token_file=str(operator)))
+        with mock.patch.dict(os.environ, {"FROGLET_RUNTIME_AUTH_TOKEN_PATH": str(operator)}):
+            with self.assertRaisesRegex(self.setup.SetupError, "operator/runtime credentials"):
+                self.setup.prepare(self.request)
+        for name in ("FROGLET_RUNTIME_AUTH_TOKEN", "FROGLET_PROVIDER_CONTROL_TOKEN"):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: " " + self.invite.read_text() + "\n"}):
+                with self.assertRaisesRegex(self.setup.SetupError, "operator/runtime credentials"):
+                    self.setup.prepare(self.request)
+        for alias in ("FROGLET_PROVIDER_AUTH_TOKEN_PATH", "FROGLET_AUTH_TOKEN_PATH"):
+            with self.subTest(alias=alias), mock.patch.dict(os.environ, {alias: str(operator)}):
+                with self.assertRaisesRegex(self.setup.SetupError, "operator/runtime credentials"):
+                    self.setup.prepare(self.request)
+
+    def test_provider_home_fallback_is_checked_when_only_data_root_is_set(self):
+        home = self.root / "home"
+        runtime = home / ".froglet/runtime"
+        runtime.mkdir(parents=True)
+        self.write_private(runtime / "froglet-control.token", self.invite.read_bytes())
+        with mock.patch.dict(os.environ, {"HOME": str(home), "FROGLET_DATA_ROOT": str(self.root / "other-data")}):
+            os.environ.pop("FROGLET_DATA_DIR", None)
+            with self.assertRaisesRegex(self.setup.SetupError, "operator/runtime credentials"):
+                self.setup.prepare(self.request)
+
+    def test_concurrent_operation_is_refused(self):
+        import fcntl
+        plan, _, _ = self.setup.prepare(self.request)
+        path = Path(self.request["destination"] + ".froglet-lock")
+        self.write_private(path, b"")
+        with path.open("rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(self.setup.SetupError, "another setup"):
+                self.setup.apply(self.request, plan["plan_sha256"])
+        self.assertFalse(Path(self.request["destination"]).exists())
 
 
 if __name__ == "__main__":

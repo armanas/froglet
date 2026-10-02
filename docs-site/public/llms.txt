@@ -8,6 +8,7 @@ Choose the user's task. Instructions for an optional demo do not override a publ
 - Try an optional sample without installing: https://try.froglet.dev/llms.txt (task hosted-proof). The sample is not a prerequisite for publishing the user's catalog.
 - Verify a receipt: https://froglet.dev/verify-receipt/ (task receipt-artifact-verify).
 - Inspect the public index: https://froglet.dev/marketplace/ (task marketplace-evidence).
+- Run a bounded supplied Wasm program or inspect an existing compute task: read https://froglet.dev/learn/agent-interoperability/. Native MCP run_compute accepts exactly one of wasm_module_hex or native-only wasm_module_path, plus explicit input and retry key; get_task reads existing work. Inspect the exact installed binary before assuming release availability. An actual Codex host exercised the free local research workflow on one development Mac. Optional research profiles support explicit declared-compatibility checks, not scientific validation. Optional A2A 1.0 requires the Froglet extension and scoped credentials; no universal agent compatibility, clean OS qualification, automatic ambiguous resubmission, or real-money deployment qualification is claimed.
 
 Structured task contracts: https://froglet.dev/agent-tasks.json.
 Human publishing page: https://froglet.dev/publish/.

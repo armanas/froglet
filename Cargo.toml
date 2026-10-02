@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "froglet-protocol", "froglet-publish-engine", "froglet-verify"]
+members = [".", "froglet-protocol", "froglet-publish-engine", "froglet-verify", "froglet-wasm"]
 resolver = "2"
 
 [package]

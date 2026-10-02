@@ -1,0 +1,191 @@
+{
+  "active_offer_hashes": [
+    "66c9da40e6838eb9e2301dab111f5aadffb86c1ac14d199c2620a7d2e7d53ff3",
+    "bdf896bfc598e9037fe9c524e97b0fb7e276b4178892f93f8fb95ddf9681de2b",
+    "fdea8f08a87c0faeca682bbf37477c6e8bd2797abd2b5f028420c801a2bf64b5"
+  ],
+  "applied_cursor": 0,
+  "artifacts": [
+    {
+      "actor_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+      "created_at": 1790697368,
+      "cursor": 1,
+      "document": {
+        "artifact_type": "descriptor",
+        "created_at": 1790697368,
+        "hash": "a66dcbdd8dc59eb8a9a78b4eeddf03e5ead65cb5a4efb95a749c8652cca589ff",
+        "payload": {
+          "capabilities": {
+            "execution_runtimes": [
+              "any",
+              "builtin",
+              "wasm"
+            ],
+            "max_concurrent_deals": 16,
+            "service_kinds": [
+              "compute.execution.v1",
+              "compute.wasm.v1",
+              "events.query"
+            ]
+          },
+          "descriptor_seq": 1,
+          "linked_identities": [
+            {
+              "created_at": 1790697367,
+              "identity": "0789b3b3b5aef1224aa22e3ceca9374ef096f8349271a0eb3f996b6b74e4abcb",
+              "identity_kind": "nostr",
+              "linked_signature": "126c9d2dbb6167386547d5ee74812cae18251cbc171e462e163ca503c7f3ec6b6ece525eae0ad1dcb17fbea95718c48252052bd50b2b4c190a39c26c2ccd0509",
+              "scope": [
+                "publication.nostr"
+              ],
+              "signature_algorithm": "secp256k1_schnorr_bip340"
+            }
+          ],
+          "protocol_version": "froglet/v1",
+          "provider_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+          "transport_endpoints": [
+            {
+              "features": [
+                "quote_http",
+                "artifact_fetch",
+                "receipt_poll"
+              ],
+              "priority": 10,
+              "transport": "http",
+              "uri": "http://127.0.0.1:18080"
+            }
+          ]
+        },
+        "payload_hash": "47df7ce25f9890d624b78e7568ac3c04466c8290ec8cf86e9a8e8379df124b87",
+        "schema_version": "froglet/v1",
+        "signature": "a042e137ceb14a0063e2b216d291ee0e08f928797f8c5e6d7774ee78b2c6cb1545c56b5f61ff27ed6431a31a689f7a06ae06e3f9bc170224f1dc3d5d94a48112",
+        "signer": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3"
+      },
+      "hash": "a66dcbdd8dc59eb8a9a78b4eeddf03e5ead65cb5a4efb95a749c8652cca589ff",
+      "kind": "descriptor",
+      "payload_hash": "47df7ce25f9890d624b78e7568ac3c04466c8290ec8cf86e9a8e8379df124b87"
+    },
+    {
+      "actor_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+      "created_at": 1790697368,
+      "cursor": 2,
+      "document": {
+        "artifact_type": "offer",
+        "created_at": 1790697368,
+        "hash": "66c9da40e6838eb9e2301dab111f5aadffb86c1ac14d199c2620a7d2e7d53ff3",
+        "payload": {
+          "descriptor_hash": "a66dcbdd8dc59eb8a9a78b4eeddf03e5ead65cb5a4efb95a749c8652cca589ff",
+          "execution_profile": {
+            "abi_version": "froglet.builtin.events_query.v1",
+            "contract_version": "froglet.builtin.events_query.v1",
+            "fuel_limit": 0,
+            "max_input_bytes": 1048576,
+            "max_memory_bytes": 0,
+            "max_output_bytes": 1048576,
+            "max_runtime_ms": 10000,
+            "package_kind": "builtin",
+            "runtime": "builtin"
+          },
+          "offer_id": "events.query",
+          "offer_kind": "events.query",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "ecd5cd85d9871928efbaa7e5a4d3e70b3d164ccdc2f678c10b8a3e11bf2be639",
+        "schema_version": "froglet/v1",
+        "signature": "76d01796807e409821089d4fd0ed3eabc17caa02d7d7fc2b55f13c664b8081e2c337108d51d093ae6753c21d32290b09b36350893b0c8ca805518f3c1e7bd75f",
+        "signer": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3"
+      },
+      "hash": "66c9da40e6838eb9e2301dab111f5aadffb86c1ac14d199c2620a7d2e7d53ff3",
+      "kind": "offer",
+      "payload_hash": "ecd5cd85d9871928efbaa7e5a4d3e70b3d164ccdc2f678c10b8a3e11bf2be639"
+    },
+    {
+      "actor_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+      "created_at": 1790697368,
+      "cursor": 3,
+      "document": {
+        "artifact_type": "offer",
+        "created_at": 1790697368,
+        "hash": "bdf896bfc598e9037fe9c524e97b0fb7e276b4178892f93f8fb95ddf9681de2b",
+        "payload": {
+          "descriptor_hash": "a66dcbdd8dc59eb8a9a78b4eeddf03e5ead65cb5a4efb95a749c8652cca589ff",
+          "execution_profile": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "contract_version": "froglet.wasm.run_json.v1",
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 10000,
+            "package_kind": "inline_module",
+            "runtime": "wasm"
+          },
+          "offer_id": "execute.compute",
+          "offer_kind": "compute.wasm.v1",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "afd3d2798f8352608541e1db4437336b6d48218015ef4c540a01c208ec98d755",
+        "schema_version": "froglet/v1",
+        "signature": "65f3841567a16a66b832dec8f67bcf850b66db9ce4f441277737dcb75dbbbf2cb64e558ea079b6e5027660f6259aaad076a270e3ed0a218cd5d13fc47d72aea7",
+        "signer": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3"
+      },
+      "hash": "bdf896bfc598e9037fe9c524e97b0fb7e276b4178892f93f8fb95ddf9681de2b",
+      "kind": "offer",
+      "payload_hash": "afd3d2798f8352608541e1db4437336b6d48218015ef4c540a01c208ec98d755"
+    },
+    {
+      "actor_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+      "created_at": 1790697368,
+      "cursor": 4,
+      "document": {
+        "artifact_type": "offer",
+        "created_at": 1790697368,
+        "hash": "fdea8f08a87c0faeca682bbf37477c6e8bd2797abd2b5f028420c801a2bf64b5",
+        "payload": {
+          "descriptor_hash": "a66dcbdd8dc59eb8a9a78b4eeddf03e5ead65cb5a4efb95a749c8652cca589ff",
+          "execution_profile": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 10000,
+            "runtime": "any"
+          },
+          "offer_id": "execute.compute.generic",
+          "offer_kind": "compute.execution.v1",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "31540f5bf6fde0756ffd35a1670950b93aa0f82a3f6e412a5ff21afcaa4a585d",
+        "schema_version": "froglet/v1",
+        "signature": "cd7855ba92ca8a01b359aafc979405853370925565a6e04ffaed023183b75eb737c70455627cd88281c79a283f180c830d158b9333f42d33487bcfb8dfef3ab7",
+        "signer": "af47cab984ef46b69818f47186c802a3c88d80cef9161ccf03e2bf773cc59ac3"
+      },
+      "hash": "fdea8f08a87c0faeca682bbf37477c6e8bd2797abd2b5f028420c801a2bf64b5",
+      "kind": "offer",
+      "payload_hash": "31540f5bf6fde0756ffd35a1670950b93aa0f82a3f6e412a5ff21afcaa4a585d"
+    }
+  ],
+  "cursor_semantics": "exclusive_after",
+  "cursor_type": "artifact_sequence",
+  "has_more": false,
+  "next_cursor": 4,
+  "page_size": 50
+}

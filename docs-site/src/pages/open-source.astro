@@ -1,24 +1,315 @@
 ---
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import StoryLayout from '../layouts/StoryLayout.astro';
 import StoryArt from '../components/StoryArt.astro';
 import AgentMeta from '../components/AgentMeta.astro';
-import OperatorSetup from '../components/OperatorSetup.astro';
-import { MATURITY, RAILS, statusLabel } from '../data/maturity';
+import Terminal from '../components/Terminal.astro';
+import SupportMatrix from '../components/SupportMatrix.astro';
+import { MATURITY, MATURITY_LADDER, RAILS, statusLabel } from '../data/maturity';
+import '../styles/developers.css';
+import '../styles/playground.css';
+
+const GITHUB = 'https://github.com/armanas/froglet';
+const blob = (path: string) => `${GITHUB}/blob/main/${path}`;
+const tree = (path: string) => `${GITHUB}/tree/main/${path}`;
+
+// Every status pill is built from the maturity data, so this page cannot claim a maturity the repository
+// does not substantiate.
+const pill = (id: string) => {
+  const entry = MATURITY.find((item) => item.id === id);
+  if (!entry) throw new Error(`Unknown maturity entry "${id}"`);
+  return entry;
+};
+
+// This page shows the project, its tools and its status. Step-by-step material lives in the docs, so what
+// follows is examples and previews. The examples are read from the frozen conformance vectors, and from a page
+// a real node served, when the site is built, so they cannot drift from them. `dev-page.test.ts` checks the
+// output format against the verifier's own source.
+const fixture = JSON.parse(readFileSync(resolve(process.cwd(), '../conformance/kernel_v1.json'), 'utf8'));
+const feedPage = JSON.parse(readFileSync(resolve(process.cwd(), '../froglet-verify/tests/fixtures/node_feed_page.json'), 'utf8'));
+const artifact = (name: string) => fixture.artifacts[name].artifact;
+const paidChain = ['descriptor', 'offer', 'quote', 'deal', 'invoice_bundle', 'receipt'];
+const verifierOutput = [
+  ...paidChain.map((name) => `[ok ] ${String(artifact(name).artifact_type).padEnd(14)} ${String(fixture.artifacts[name].artifact_hash).slice(0, 12)}  envelope + semantics verified`),
+  'chain descriptor_offer: ok',
+  'chain offer_quote: ok',
+  'chain quote_invoice_bundle_deal: ok',
+  'chain quote_deal_receipt: ok',
+  'result: VALID',
+].join('\n');
+// A public feed holds a descriptor and offers, not a whole deal, so the verifier checks each artifact and
+// claims no chain.
+const feedOutput = [
+  ...feedPage.artifacts.map((entry) => `[ok ] ${String(entry.document.artifact_type).padEnd(14)} ${String(entry.document.hash).slice(0, 12)}  envelope + semantics verified`),
+  'result: VALID',
+].join('\n');
+const exampleOffer = JSON.stringify(artifact('free_offer'), null, 2);
+
+// Commands are copied verbatim from the README, and were run before they were written here.
+const commands = {
+  verifyRust: 'cargo run -p froglet-verify -- conformance/kernel_v1.json',
+  verifyPython: 'PYTHONPATH=python/froglet-verify python3 -m froglet_verify.conformance conformance/kernel_v1.json',
+  vectorsRust: 'cargo test -p froglet --test kernel_conformance_vectors',
+  node: 'FROGLET_NODE_ROLE=dual cargo run -p froglet --bin froglet-node',
+  feed: `curl -s 'localhost:8080/v1/feed?limit=50' | cargo run -q -p froglet-verify -- -`,
+};
+
+// A whole host for a froglet.wasm.run_json.v1 module. It runs unchanged in a browser or in Node, and the
+// conformance fixture's module returns 42 (dev-page.test.ts runs this text).
+const wasmHost = `// moduleBytes: a .wasm that exports memory, alloc and run, and imports nothing
+const { instance } = await WebAssembly.instantiate(moduleBytes, {});
+const input = new TextEncoder().encode(JSON.stringify(request));
+const ptr = instance.exports.alloc(input.length);
+new Uint8Array(instance.exports.memory.buffer, ptr, input.length).set(input);
+const packed = instance.exports.run(ptr, input.length);   // i64: result pointer in the high 32 bits, length in the low 32
+const at = Number(packed >> 32n), length = Number(packed & 0xffffffffn);
+const result = JSON.parse(new TextDecoder().decode(new Uint8Array(instance.exports.memory.buffer, at, length)));`;
+
+const cli = [
+  ['froglet-node init <name>', 'Scaffold a service project.'],
+  ['froglet-node build', 'Validate manifests and build the artifact, without publishing.'],
+  ['froglet-node publish [--host local|relay|tor|self]', 'Publish through the local daemon. Two calls: a plan, then the exact approval.'],
+  ['froglet-node prepare-service --request FILE', 'Prepare a selected catalog or a Wasm service and run its example.'],
+  ['froglet-node invoke <id|share-url> [input]', 'Call a service. Share URLs require verified free terms.'],
+  ['froglet-node doctor --json', 'Diagnose the installation, runtime, relay, and agent.'],
+  ['froglet-node identity <command>', 'Generate, back up, restore, rotate, or verify identity custody.'],
+  ['froglet-node mcp', 'Run the native MCP bridge for an agent host.'],
+];
+
+const layers = [
+  { id: 'services', name: 'Services', where: 'built on the protocol', text: 'Marketplace, brokers, curated lists. A service is a Froglet provider that is discovered, quoted, and settled through the same deal flow as any other.', chips: ['marketplace', 'brokers', 'curated lists'] },
+  { id: 'runtime', name: 'Node runtime', where: 'froglet · src/', text: 'The HTTP server, deal tracking, jobs, SQLite storage, auth, and configuration. One binary, froglet-node, runs as a provider, a runtime, or both.', chips: ['provider API :8080', 'runtime API :8081', 'SQLite'] },
+  { id: 'adapters', name: 'Adapters', where: 'execution and transport', text: 'What makes the kernel usable somewhere specific. Each one can change without changing how hashes, signatures, deals, or receipts work.', chips: ['MCP', 'A2A (optional)', 'Wasm', 'Python', 'OCI', 'Lightning', 'Tor', 'TLS', 'relay', 'Nostr', 'TEE (spec)'] },
+  { id: 'kernel', name: 'Economic kernel', where: 'froglet-protocol', text: 'The smallest irreversible surface: the signed envelope, canonical JSON, hashing, signatures, and six artifact types. It knows nothing about HTTP, databases, or sandboxes.', chips: ['RFC 8785 JCS', 'SHA-256', 'BIP-340', 'six artifacts'] },
+];
+
+const chain = [
+  { type: 'descriptor', signer: 'provider', text: 'Who the provider is, what it can do, and where to reach it.' },
+  { type: 'offer', signer: 'provider', text: 'One service, with its price and execution profile.' },
+  { type: 'quote', signer: 'provider', text: 'A price and limits for one specific workload and requester.' },
+  { type: 'deal', signer: 'requester', text: 'The requester commits to the quote.' },
+  { type: 'receipt', signer: 'provider', text: 'The outcome, the result hash, the limits applied, and the settlement state.' },
+];
+
+const specs = [
+  ['KERNEL.md', 'Normative kernel specification: artifacts, hashing, signing, state machines.'],
+  ['SPEC.md', 'Verification algorithm, chain validation and issue codes, settlement-method registry.'],
+  ['VERSIONING.md', 'What is frozen, what may be added, and how a v2 would happen.'],
+  ['THREAT_MODEL.md', 'Assets, trust boundaries, key-compromise runbook, accepted risks.'],
+];
+
+// What you can run, each with one command or a way to try it. How to use each one is in the docs.
+const tools = [
+  { name: 'Reference node', path: 'froglet-node · src/', maturity: [], text: 'One binary that runs as a provider, a runtime, or both. The role defaults to provider, and dual also serves the runtime API that agents use. The first start creates an identity and a ./data directory.', command: commands.node, links: [['Run it locally', '/learn/quickstart/'], ['Source', tree('src')]] },
+  { name: 'Offline verifier', path: 'froglet-verify/', maturity: ['verifier'], text: 'A library and a command line. They check every signature, hash, semantic rule, and chain link, with no node, network, or clock.', note: 'The command line does the same check as the panel above.', links: [['Conformance guide', '/spec/conformance/'], ['Source', tree('froglet-verify')]] },
+  { name: 'Browser verifier', path: 'froglet-verify · WebAssembly', maturity: ['verifier-wasm'], text: 'The same code compiled to WebAssembly. It runs the panel above and the receipt page, entirely in your tab.', note: 'Nothing is uploaded. Paste your own signed records on the receipt page.', links: [['Open the receipt verifier', '/verify-receipt/']] },
+  { name: 'Python verifier', path: 'python/froglet-verify/', maturity: [], text: 'An independent implementation with no dependencies. It verifies and does not sign.', command: commands.verifyPython, links: [['Source', tree('python/froglet-verify')]] },
+  { name: 'Conformance vectors', path: 'conformance/', maturity: ['conformance'], text: 'The frozen vectors that define froglet/v1, with their seeds, and the rules a conforming runner must assert.', command: commands.vectorsRust, links: [['The rules', blob('conformance/README.md')], ['The vectors', blob('conformance/kernel_v1.json')]] },
+];
+
+const integrations = [
+  { name: 'MCP', path: 'froglet-node mcp · integrations/mcp/froglet', maturity: ['mcp', 'claude-code'], text: 'One tool named froglet for compatible agent hosts. The native bridge needs no Node.js. It supports supplied Wasm jobs with run_compute and read-only recovery with get_task, as well as two-call publishing. Use a source build or release containing these actions.', links: [['Agent guide', '/learn/agents/'], ['Compute guide', '/learn/agent-interoperability/'], ['Source', tree('integrations/mcp/froglet')]] },
+  { name: 'A2A', path: 'A2A 1.0 HTTP+JSON · optional adapter', maturity: ['a2a'], text: 'Task communication between configured Nodes. Disabled by default; requires scoped credentials and the Froglet extension. Uses direct ingress and polling. The Froglet Node still executes the program and enforces its limits.', links: [['Scope and setup', '/learn/agent-interoperability/'], ['Counterparty review', '/learn/agent-interoperability/#review-counterparties-without-editing-credential-json']] },
+  { name: 'OpenClaw and NemoClaw', path: 'integrations/openclaw/froglet', maturity: ['openclaw'], text: 'The same froglet tool as a plugin. It needs Node.js 22.14 or newer.', links: [['Plugin distribution', '/learn/plugin-distribution/'], ['Source', tree('integrations/openclaw/froglet')]] },
+  { name: 'HTTP API', path: 'docs/openapi.yaml', maturity: [], text: 'OpenAPI 3.1. The provider API on port 8080 serves the public requester routes and Bearer-authenticated control routes. The runtime API on port 8081 is for the local operator.', links: [['OpenAPI document', blob('docs/openapi.yaml')], ['API errors', blob('docs/API_ERRORS.md')]] },
+  { name: 'Wasm services', path: 'froglet.wasm.run_json.v1', maturity: ['wasm'], text: 'Write a service in any language that compiles to WebAssembly. Export memory, alloc, and run; import nothing. The node adds fuel, memory, output, and wall-clock limits.', links: [['Service binding', '/spec/service-binding/'], ['Full specification', blob('docs/SERVICE_BINDING.md')]] },
+];
+
+const build = [
+  { name: 'Implement froglet/v1', text: 'The conformance vectors define it and include their seeds, so you can re-derive every signature. There is no certification beyond reproducing them.', links: [['Conformance guide', '/spec/conformance/'], ['The vectors', blob('conformance/kernel_v1.json')]] },
+  { name: 'Connect an agent', text: 'Attach the MCP server to Claude Code, Codex, or another agent host, or use the OpenClaw plugin.', links: [['Connect agents', '/learn/agents/'], ['Plugin distribution', '/learn/plugin-distribution/']] },
+  { name: 'Publish a service', text: 'Prepare a service, review an example, and approve it before anything is published from a node you run.', links: [['Provider setup', '/learn/provider-onboarding/'], ['Start sharing', '/publish/']] },
+  { name: 'Contribute', text: 'Sign off every commit with git commit -s. There is a Developer Certificate of Origin, and no CLA. A change to signing, hashing, or artifact structure must update conformance/kernel_v1.json and say why. Only the latest release receives fixes.', links: [['Contributing guide', blob('CONTRIBUTING.md')], ['Security policy', blob('SECURITY.md')], ['Discussions', 'https://github.com/armanas/froglet/discussions']] },
+];
 ---
-<StoryLayout title="Open source, built for developers · Froglet" description="Build on Froglet’s open protocol, reference implementation, and agent integrations. Find setup instructions and evidence-backed integration status." path="/open-source/">
+<StoryLayout title="Open source, built for developers · Froglet" description="Implement, run, and verify Froglet: an open signed-evidence protocol, a Rust reference node, an offline verifier that runs in your browser, and public conformance vectors." path="/open-source/">
 <AgentMeta slot="head" route="openSource" />
-<div class="story-wrap">
-  <section class="story-hero story-hero--compact"><div class="story-hero__copy"><span class="story-kicker">For developers · Apache-2.0</span><h1>Build on it.<br /><span class="story-accent">Make it yours.</span></h1><p class="story-lede">An open protocol and a working reference implementation for sharing services. Run it yourself, connect your tools, and inspect how it works.</p><div class="story-actions"><a class="btn primary" href="https://github.com/armanas/froglet" target="_blank" rel="noreferrer">View the source</a><a class="btn secondary" href="/docs/">Read the docs</a></div></div><StoryArt name="10-open-source" width={1536} height={1024} eager alt="Bob and Alice assemble an open service toolkit." /></section>
-  <section class="story-section"><div class="story-heading"><span class="story-kicker">Choose your entry point</span><h2>Start with the part you need.</h2></div><div class="story-grid">
-    <article class="story-use"><h3>Share a service</h3><p>Prepare selected data, a Wasm function, or a bounded HTTP operation. Review before publication.</p><p style="margin-top:20px"><a href="/learn/share-services/">Publishing and invitations</a></p></article>
-    <article class="story-use"><h3>Connect an assistant</h3><p>Use the native MCP integration or the OpenClaw adapter. Keep installation and publication as separate approvals.</p><p style="margin-top:20px"><a href="/learn/agents/">Agent integration guide</a></p></article>
-    <article class="story-use"><h3>Inspect the protocol</h3><p>Read the signed artifact formats, verification rules, and conformance vectors behind an exchange.</p><p style="margin-top:20px"><a href="/spec/kernel/">Kernel specification</a></p></article>
-  </div></section>
-  <section class="story-section" id="setup"><div class="story-heading"><span class="story-kicker">Local setup</span><h2>Run a small free service first.</h2><p>Use the guided publishing journey, or generate an installation command below. The hosted live demo is temporarily unavailable; <a href="/verify-receipt/">the browser verifier</a> can inspect a signed sample without installation.</p></div><OperatorSetup /></section>
-  <section class="story-section" id="integrations"><div class="story-heading"><span class="story-kicker">Implementation status</span><h2>Different pieces.<br />Different levels of maturity.</h2><p>These are source maturity labels, backed by repository evidence. They do not certify a deployment, live-money payments, or uptime.</p></div><div class="story-scroll"><table class="story-table"><caption class="sr-only">Payment integration maturity</caption><thead><tr><th scope="col">Payment integration</th><th scope="col">Status</th><th scope="col">Current boundary</th></tr></thead><tbody>{RAILS.map(rail => <tr><th scope="row">{rail.name}</th><td>{statusLabel(rail.status)}</td><td>{rail.note}</td></tr>)}</tbody></table></div>
-  <div class="story-faq" style="margin-top:32px"><details><summary>All runtimes, integrations, and evidence</summary><div class="story-scroll"><table class="story-table"><thead><tr><th scope="col">Integration</th><th scope="col">Status</th><th scope="col">Evidence and limits</th></tr></thead><tbody>{MATURITY.filter(item => item.kind !== 'payment rail').map(item => <tr><th scope="row">{item.name}</th><td>{statusLabel(item.status)}</td><td>{item.note} <a href={`https://github.com/armanas/froglet/blob/main/${item.evidence}`}>Source evidence</a></td></tr>)}</tbody></table></div></details></div>
-  <p class="story-note" style="margin-top:24px">For current batch and GPU constraints, see the <a href="/learn/cloud-trial/">advanced workflow boundaries</a>. Tor is an advanced self-hosted path. Confidential execution and selective disclosure remain specifications.</p></section>
-  <section class="story-section story-split"><div><span class="story-kicker">Evidence has limits</span><h2>A signed result<br />can still be wrong.</h2><p>Froglet makes commitments and result hashes attributable to signing keys. Correctness and usefulness still need evaluation. Payment settlement depends on the configured payment system.</p><p>Staked identity is designed, not deployed. It is not a live guarantee against misconduct.</p><div class="story-links"><a href="/learn/economics/">Trust and incentives</a><a href="/learn/payment-rails/">Payment setup and limits</a></div></div><StoryArt name="07-signed-record" /></section>
+<div class="story-wrap story-wrap--dev">
+  <section class="story-hero story-hero--compact story-hero--dev"><div class="story-hero__copy"><span class="story-kicker">For developers · Apache-2.0 · Public beta</span><h1>Implement it.<br />Run it.<br /><span class="story-accent">Verify it.</span></h1><p class="story-lede">Froglet combines signed service exchange with a runtime for bounded remote computation and an offline verifier. The kernel is frozen and covered by public vectors, so you can build on it or reimplement it.</p><div class="story-needs"><ul aria-label="At a glance"><li>froglet/v1 frozen</li><li>Rust 1.91</li><li>Apache-2.0</li><li>Public beta</li></ul></div><div class="story-actions"><a class="btn primary" href="#verify">Verify a chain now</a><a class="btn secondary" href="https://github.com/armanas/froglet" target="_blank" rel="noreferrer">View the source</a></div></div><StoryArt name="10-open-source" width={1536} height={1024} eager alt="Bob and Alice assemble an open service toolkit." /></section>
+
+  <nav class="dev-toc-wrap" aria-label="On this page"><ul class="dev-toc"><li><a href="#verify">Verify</a></li><li><a href="#playground">Playground</a></li><li><a href="#vision">Vision</a></li><li><a href="#remote-compute">Remote compute</a></li><li><a href="#tools">Tools</a></li><li><a href="#examples">Examples</a></li><li><a href="#integrations">Status</a></li><li><a href="#build">Build</a></li></ul></nav>
+
+  <section class="story-section" id="verify"><div class="story-heading"><span class="story-kicker">Start with the evidence</span><h2>Check a signed chain<br />without installing anything.</h2><p>The panel runs <code>froglet-verify</code>, compiled to WebAssembly, in this tab. Nothing is uploaded. It checks every signature, every hash, and the links between artifacts. It cannot tell you the work was right.</p></div>
+    <div class="dev-split">
+      <div class="dev-verify" data-dev-verify>
+        <div class="dev-verify__head"><strong>froglet-verify · WebAssembly</strong><span class="dev-verify__badge" data-dev-verify-badge data-status="idle">idle</span></div>
+        <p>Verifies the five-record free-deal chain from the frozen conformance vectors. The second button changes one field in the receipt first, so you can watch it fail.</p>
+        <div class="dev-verify__actions"><button class="btn primary" type="button" data-dev-verify-run="sample">Verify the sample chain</button><button class="btn secondary" type="button" data-dev-verify-run="tamper">Change the receipt, then verify</button></div>
+        <div class="dev-verify__out" data-dev-verify-output role="status" aria-live="polite" tabindex="-1">Nothing verified yet.</div>
+        <noscript><p class="dev-note">This panel needs JavaScript and WebAssembly. The command line does the same check.</p></noscript>
+      </div>
+      <div>
+        <h3>The same check on the command line</h3>
+        <Terminal code={commands.verifyRust} />
+        <Terminal code={verifierOutput} label="output" copy={false} />
+        <p class="dev-note">Exit code 0 is valid, 1 invalid, 2 a usage error. The other options, formats and runners are in the <a href="/spec/conformance/#run-the-vectors">conformance guide</a>, and <a href="/verify-receipt/">the full browser verifier</a> takes your own records.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="story-section" id="playground"><div class="story-heading"><span class="story-kicker">Play both sides</span><h2>Write a function.<br />Publish it. Call it. In this tab.</h2><p>Bob publishes a function and Alice calls it. Write Bob’s function in the editor and this page compiles it to a real WebAssembly module, then runs that module. Both sides run in your browser, on the Rust kernel a node uses, so the keys, signatures, and receipts are real. The two sides talk to each other inside this page, and what you write and what they sign never leaves your tab.</p></div>
+    <div class="play" data-playground hidden>
+      <div class="play__panel play__bob" data-play-bob>
+        <div class="play__head"><strong>Bob · provider</strong><span class="play__badge" data-play-bob-status data-status="idle">not published</span></div>
+        <div class="play__bob-grid" data-play-mode="function">
+          <div class="play__bob-side">
+            <fieldset class="play__choice"><legend>The function to publish</legend>
+              <div data-play-functions></div>
+              <label class="play__option"><input type="radio" name="play-function" value="upload" data-play-choice="upload" /><span><strong>Your own .wasm</strong> Upload a module</span></label>
+            </fieldset>
+            <p class="play__blurb" data-play-blurb></p>
+            <label class="play__field"><span>Service id</span><input type="text" value="demo.adder" spellcheck="false" autocomplete="off" data-play-service-id /></label>
+            <div class="play__upload" data-play-upload hidden>
+              <label class="play__field"><span>Module file</span><input type="file" accept=".wasm,application/wasm" data-play-file /></label>
+            </div>
+            <label class="play__check"><input type="checkbox" data-play-cheat-bob /><span>Bob cheats: he signs a receipt over a different result</span></label>
+            <div class="play__actions"><button class="btn primary" type="button" data-play-publish>Publish the function</button></div>
+            <dl class="play__facts" data-play-facts hidden></dl>
+            <p class="play__log" data-play-bob-log role="status" aria-live="polite"></p>
+            <p class="play__note" data-play-limits></p>
+          </div>
+          <div class="play__editor" data-play-editor>
+            <div class="play__editor-head"><strong>Source</strong><span class="play__hint">TypeScript-like, not JavaScript</span><button class="btn secondary" type="button" data-play-reset-source hidden>Reset to the original</button></div>
+            <div class="play__frame"><div class="play__gutter" data-play-gutter aria-hidden="true"></div><textarea class="play__source" data-play-source spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" maxlength="65536" aria-label="The function’s source code"></textarea></div>
+            <div class="play__problems" data-play-problems role="status" aria-live="polite"></div>
+            <details class="play__contract"><summary>The contract that follows your code</summary><pre data-play-contract tabindex="0"></pre></details>
+            <div class="play__actions"><button class="btn secondary" type="button" data-play-download disabled>Download the .wasm</button></div>
+            <p class="play__note">Compiled in this page by <a href="https://www.assemblyscript.org/" target="_blank" rel="noreferrer">AssemblyScript</a> and Binaryen, which load from this site the first time you compile (<a href="/licenses/AssemblyScript-toolchain.txt">licences</a>). Download the module to run the same bytes on your own node. The <a href="/spec/service-binding/">service binding</a> says what a node expects.</p>
+          </div>
+        </div>
+      </div>
+      <div class="play__row">
+        <div class="play__panel play__alice" data-side="alice">
+          <div class="play__head"><strong>Alice · consumer</strong><span class="play__badge" data-play-alice-status data-status="idle">waiting for Bob</span></div>
+          <p class="play__identity">Her key: <code data-play-alice-key>a new key when Bob publishes</code></p>
+          <label class="play__field"><span>The function to call</span><select data-play-service disabled><option value="">Publish a function first</option></select></label>
+          <label class="play__field"><span>Its input, as JSON</span><textarea data-play-input rows="3" spellcheck="false" placeholder="Publish a function first"></textarea></label>
+          <p class="play__hint">Use integers within ±9007199254740991. A browser rounds anything larger, so both sides refuse it.</p>
+          <label class="play__check"><input type="checkbox" data-play-cheat-alice /><span>Alice changes the deal after signing it</span></label>
+          <div class="play__actions"><button class="btn primary" type="button" data-play-call disabled>Call the function</button><button class="btn secondary" type="button" data-play-reset>Start over</button></div>
+          <ol class="play__steps" data-play-steps aria-label="Steps of the exchange"><li data-step="discover">Discover</li><li data-step="quote">Quote</li><li data-step="deal">Deal</li><li data-step="result">Result</li><li data-step="verify">Verify</li></ol>
+          <div class="play__out" data-play-outcome role="status" aria-live="polite" tabindex="-1" data-status="idle">Nothing called yet.</div>
+        </div>
+        <div class="play__panel play__wire">
+          <div class="play__head"><strong>The wire</strong><span class="play__count" data-play-wire-count>0 messages</span></div>
+          <p class="play__note">Every message between Alice and Bob in the latest call, as JSON text. Open one to read it. A repeated poll for the result is folded into one line.</p>
+          <ol class="play__list" data-play-wire aria-label="Messages between Alice and Bob"></ol>
+        </div>
+      </div>
+      <div class="play__panel play__evidence" data-play-evidence hidden>
+        <div class="play__head"><strong>The evidence</strong><span class="play__badge" data-play-chain-badge data-status="idle">not checked</span></div>
+        <ul class="play__rows" data-play-evidence-rows aria-label="The five signed records"></ul>
+        <div class="play__actions"><button class="btn secondary" type="button" data-play-tamper>Change the receipt, then verify</button><button class="btn secondary" type="button" data-play-copy>Copy the evidence</button></div>
+        <p class="play__verdict-out" data-play-evidence-out role="status" aria-live="polite"></p>
+        <details class="play__json"><summary>The evidence as JSON</summary><pre data-play-evidence-json tabindex="0"></pre></details>
+        <p class="play__note">Paste the copy into <a href="/verify-receipt/">the receipt verifier</a>, or save it to a file and run <code>cargo run -p froglet-verify -- evidence.json</code>.</p>
+      </div>
+      <details class="play__truth"><summary>What is real, and what is not</summary>
+        <div class="play__truth-grid">
+          <div><h4>Real</h4><ul>
+            <li>The keys, signatures, and hashes come from <code>froglet-protocol</code>, the Rust kernel, compiled to WebAssembly as <code>froglet-wasm</code>. With the conformance vectors’ seeds it reproduces their descriptor, offer, quote, deal, and receipt byte for byte.</li>
+            <li>Every check is <code>froglet-verify</code>, the same WebAssembly build as the panel above.</li>
+            <li>The routes and JSON are a node’s provider API. A real <code>froglet-node</code> served the same kind of exchange, and a test checks that this page’s responses have the same fields and value types. An opt-in test also has a real node’s requester call this provider.</li>
+            <li>The function you write is compiled in this tab by the AssemblyScript compiler, into a WebAssembly module that imports nothing. A real node accepts the same bytes, runs them, and reports the same module hash. An opt-in test checks this.</li>
+            <li>The function runs in a Web Worker that can import nothing. Bob stops it at his time limit, and adds a memory maximum to the module.</li>
+          </ul></div>
+          <div><h4>Not real</h4><ul>
+            <li>There is no network. Bob and Alice call each other inside this page, each message crosses as JSON text, and nobody else can reach Bob.</li>
+            <li>Deals are free: no invoice, no payment, no settlement.</li>
+            <li>Browsers cannot count fuel, so a node’s fuel limit is not enforced here. The time limit and the memory maximum stand in for it.</li>
+            <li>Nothing is saved. Reload the page and both identities, the function, and the evidence are gone.</li>
+            <li>You cannot write JavaScript here. The kernel has no JavaScript runtime, and an offer that names one is invalid, so the editor takes AssemblyScript. It looks like TypeScript, but its numbers are typed and it has no closures.</li>
+            <li>A tab is not a node. It has no access control, no storage, and no marketplace listing. To serve real callers, <a href="/learn/quickstart/">run <code>froglet-node</code></a>.</li>
+          </ul></div>
+        </div>
+      </details>
+    </div>
+    <!-- /playground -->
+    <noscript><p class="dev-note">The playground needs JavaScript and WebAssembly. The tools below run without a browser.</p></noscript>
+  </section>
+
+  <section class="story-section" id="vision"><div class="story-heading"><span class="story-kicker">The idea</span><h2>A small kernel.<br />Everything else can change.</h2><p>Froglet fixes only what has to be irreversible: the signed records two parties leave behind. Transports, storage, execution, and payment sit around that kernel as adapters, and services are built on top. The kernel does not hardwire a marketplace, a transport, a storage engine, or an execution runtime.</p></div>
+    <ol class="dev-layers" aria-label="Layers, from services down to the kernel">{layers.map((layer) => <li class="dev-layer" data-layer={layer.id}><div><span class="dev-layer__name">{layer.name}</span><span class="dev-layer__where">{layer.where}</span></div><div><p>{layer.text}</p><ul class="dev-chips">{layer.chips.map((chip) => <li>{chip}</li>)}</ul></div></li>)}</ol>
+    <h3 class="dev-gap">A free exchange leaves five signed records</h3>
+    <ol class="dev-chain" aria-label="The artifact chain">{chain.map((node) => <li class="dev-chain__node"><span class="dev-chain__type">{node.type}</span><span class="dev-chain__signer">signed by {node.signer}</span><p>{node.text}</p></li>)}</ol>
+    <p class="dev-note">The records bind identities, terms, workload and reported outcome through hashes. Anyone holding them can check those relationships. Lightning escrow adds an InvoiceBundle after the Deal; free and prepaid exchanges use five records. Step through it in the <a href="/demo/">protocol walkthrough</a>, or read <a href="/spec/kernel/#how-one-artifact-is-signed">how one artifact is signed</a>.</p>
+    <div class="story-callout dev-gap"><p><strong>Signed froglet/v1 artifacts verify forever.</strong> The <a href={blob('docs/VERSIONING.md')}>stability policy</a> forbids any change that alters the verification outcome of an existing one.</p><p><strong>A signed result can still be wrong.</strong> Froglet makes commitments and result hashes attributable to signing keys. Correctness and usefulness still need evaluation. Payment settlement depends on the configured payment system. Staked identity is designed, not deployed. It is not a live guarantee against misconduct. See <a href="/learn/economics/">trust and incentives</a> and <a href="/learn/payment-rails/">payment setup and limits</a>.</p></div>
+  </section>
+
+  <section class="story-section" id="remote-compute">
+    <div class="story-heading"><span class="story-kicker">Agent interfaces. A bounded executor.</span><h2>Your program.<br />Someone else’s machine.</h2><p>Alice supplies a compatible Wasm program and input. Bob offers computation with explicit limits. MCP connects Alice’s assistant; optional A2A carries the task between Nodes. Froglet’s runtime admits the work, executes it and returns signed evidence.</p></div>
+    <ul class="dev-cards" aria-label="Responsibilities in a remote compute request">
+      <li class="dev-card"><h3>Alice’s assistant</h3><p>Calls <code>run_compute</code> with the program, input, price cap and a retry key.</p><p class="dev-note">MCP is the tool interface.</p></li>
+      <li class="dev-card"><h3>Alice and Bob’s Nodes</h3><p>Bind the request to exact terms. The optional A2A adapter carries scoped, identity-bound tasks.</p><p class="dev-note">A2A is the task interface.</p></li>
+      <li class="dev-card"><h3>Bob’s executor</h3><p>Runs the program with memory, fuel, time and output limits. Alice verifies the returned records.</p><p class="dev-note">Froglet supplies the execution boundary.</p></li>
+    </ul>
+    <div class="story-callout dev-gap"><p><strong>A working local research example.</strong> Bob publishes a selected illustrative terminology table. Alice retrieves it, then runs a disposable mapping check on Bob’s executor: two observed terms have one target, one has multiple targets, and one is unmapped. The check follows Alice’s exact-string, one-target rule; it does not decide scientific meaning.</p><p><strong>Observable execution boundaries.</strong> The runner checks exact retry and changed-input refusal, stops an infinite loop at an execution limit, and recovers the same result after Bob restarts. An actual Codex session has also retrieved the rows, run a local compiled Wasm file remotely and recovered its verified result on one Mac. The native workflow also passed in an isolated Linux arm64 development environment; fresh-machine and Linux agent-host qualification remain open.</p><p><strong>Explicit research assumptions.</strong> An optional native research profile declares fields, namespaces, versions, units and provenance. Alice can detect differences before analysis. Matching declarations still need scientific evaluation.</p><p><strong>A specific scope.</strong> Free jobs, configured counterparties, direct ingress and polling. Public compute deployment, clean OS installation, independent user trials and real-money settlement need separate qualification. A2A requires Froglet’s extension; an arbitrary A2A client is not automatically compatible.</p><p><a href="/learn/agent-interoperability/#run-a-terminology-mapping-check">Run the terminology demo</a> · <a href="/learn/agent-interoperability/">Read what works today</a></p></div>
+  </section>
+
+  <section class="story-section" id="tools"><div class="story-heading"><span class="story-kicker">Tools</span><h2>What you can run<br />and build on today.</h2><p>You need Rust 1.91 to build from source. Each tool carries a maturity label, and <a href="#integrations">Status</a> lists them all with their evidence. The hosted live demo is temporarily unavailable, so run your own; <a href="/verify-receipt/">the browser verifier</a> can inspect a signed sample without installation.</p></div>
+    <h3>Run and verify</h3>
+    <ul class="dev-tools" aria-label="Run and verify">{tools.map((tool) => <li class="dev-tool"><div><h4>{tool.name}</h4><code class="dev-path">{tool.path}</code><p>{tool.text}</p>{tool.maturity.length > 0 && <p>{tool.maturity.map((id) => { const entry = pill(id); return <span class="dev-pill" data-status={entry.status} title={MATURITY_LADDER[entry.status].meaning}>{entry.name} · {statusLabel(entry.status)}</span>; })}</p>}<div class="dev-card__links">{tool.links.map(([label, href]) => <a href={href}>{label}</a>)}</div></div><div>{tool.command ? <Terminal code={tool.command} /> : <p class="dev-note">{tool.note}</p>}</div></li>)}</ul>
+    <div class="story-faq dev-gap"><details><summary>The author CLI</summary><div class="story-scroll"><table class="story-table dev-table"><caption class="sr-only">froglet-node author commands</caption><thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead><tbody>{cli.map(([command, text]) => <tr><th scope="row"><code>{command}</code></th><td>{text}</td></tr>)}</tbody></table></div></details></div>
+    <h3 class="dev-gap">Connect and build</h3>
+    <ul class="dev-cards">{integrations.map((item) => <li class="dev-card"><h4>{item.name}</h4><code class="dev-path">{item.path}</code><p>{item.text}</p>{item.maturity.length > 0 && <p>{item.maturity.map((id) => { const entry = pill(id); return <span class="dev-pill" data-status={entry.status} title={MATURITY_LADDER[entry.status].meaning}>{entry.name} · {statusLabel(entry.status)}</span>; })}</p>}<div class="dev-card__links">{item.links.map(([label, href]) => <a href={href}>{label}</a>)}</div></li>)}</ul>
+  </section>
+
+  <section class="story-section" id="examples"><div class="story-heading"><span class="story-kicker">Examples</span><h2>Real artifacts.<br />Real output.</h2><p>The signed records here come from the frozen vectors and from a page a real node served. The code runs as written.</p></div>
+    <div class="dev-split">
+      <div>
+        <h3>A signed offer</h3>
+        <Terminal code={exampleOffer} label="free_offer · conformance/kernel_v1.json" copy={false} scroll />
+        <p class="dev-note">One service, with its price and execution profile, signed by the provider.</p>
+      </div>
+      <div>
+        <h3>A node’s own feed, verified offline</h3>
+        <Terminal code={commands.feed} />
+        <Terminal code={feedOutput} label="output" copy={false} />
+        <p class="dev-note">The output is from a page a real node served, kept as a test fixture, so your hashes will differ. The feed is paged, so the verdict covers the page you fetched.</p>
+      </div>
+    </div>
+    <div class="dev-split dev-gap">
+      <div>
+        <h3>A whole Wasm host</h3>
+        <Terminal code={wasmHost} label="javascript" />
+      </div>
+      <div>
+        <h3>What it shows</h3>
+        <p class="dev-note">This runs in a browser as it stands. A real host also canonicalizes the request and enforces limits on fuel, memory, output size, and time; the node does, and browsers do not meter fuel.</p>
+        <p class="dev-note">The contract is <code>froglet.wasm.run_json.v1</code>. The <a href="/spec/service-binding/">service binding</a> page describes how it fits the deal flow.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="story-section" id="integrations"><div class="story-heading"><span class="story-kicker">Implementation status</span><h2>Different pieces.<br />Different levels of maturity.</h2><p>These are source maturity labels, backed by repository evidence. They do not certify a deployment, live-money payments, or uptime.</p></div>
+    <ul class="dev-legend" aria-label="Maturity labels">{Object.entries(MATURITY_LADDER).map(([status, rung]) => <li><span class="dev-pill" data-status={status}>{rung.label}</span><span>{rung.meaning}</span></li>)}</ul>
+    <div class="story-scroll"><table class="story-table dev-table"><caption class="sr-only">Payment integration maturity</caption><thead><tr><th scope="col">Payment integration</th><th scope="col">Status</th><th scope="col">Current boundary</th></tr></thead><tbody>{RAILS.map(rail => <tr><th scope="row">{rail.name}</th><td><span class="dev-pill" data-status={rail.status}>{statusLabel(rail.status)}</span></td><td>{rail.note}</td></tr>)}</tbody></table></div>
+    <h3 class="dev-gap">Implementations of froglet/v1</h3>
+    <div class="story-scroll"><table class="story-table dev-table"><caption class="sr-only">Implementations of the froglet/v1 kernel and verifier</caption><thead><tr><th scope="col">Implementation</th><th scope="col">Independent of the Rust code?</th><th scope="col">Scope</th></tr></thead><tbody>
+      <tr><th scope="row"><code>froglet-protocol</code> and <code>froglet-verify</code> (Rust)</th><td>The reference</td><td>Kernel, verifier, and CLI.</td></tr>
+      <tr><th scope="row">Browser build of the signing kernel, <code>froglet-wasm</code> (WebAssembly)</th><td>No, the same code</td><td>Signs and hashes for <a href="#playground">the playground</a>. {(() => { const entry = pill('playground'); return <span class="dev-pill" data-status={entry.status} title={MATURITY_LADDER[entry.status].meaning}>{statusLabel(entry.status)}</span>; })()}</td></tr>
+      <tr><th scope="row">Browser build of <code>froglet-verify</code> (WebAssembly)</th><td>No, the same code</td><td>Runs the panel above and <a href="/verify-receipt/">the receipt page</a>. {(() => { const entry = pill('verifier-wasm'); return <span class="dev-pill" data-status={entry.status} title={MATURITY_LADDER[entry.status].meaning}>{statusLabel(entry.status)}</span>; })()}</td></tr>
+      <tr><th scope="row"><code>python/froglet-verify</code> (Python 3.10+)</th><td>Yes</td><td>Verify only, no dependencies. Marked alpha in its package metadata.</td></tr>
+      <tr><th scope="row">Yours, in any language</th><td>Yes</td><td>Reproduce the vectors.</td></tr>
+    </tbody></table></div>
+    <p class="dev-note">Several Rust runners exercise different distribution paths, but they share one implementation and do not add diversity. The Python verifier is the only independent implementation so far, and it is verify-only.</p>
+    <div class="story-faq dev-gap"><details><summary>All runtimes, integrations, and evidence</summary><div class="story-scroll"><table class="story-table dev-table"><thead><tr><th scope="col">Integration</th><th scope="col">Status</th><th scope="col">Evidence and limits</th></tr></thead><tbody>{MATURITY.filter(item => item.kind !== 'payment rail').map(item => <tr><th scope="row">{item.name}</th><td><span class="dev-pill" data-status={item.status}>{statusLabel(item.status)}</span></td><td>{item.note} {['mcp', 'a2a'].includes(item.id) ? <a href="/learn/agent-interoperability/#source-and-release-support">Working candidate scope</a> : <a href={`https://github.com/armanas/froglet/blob/main/${item.evidence}`}>Source evidence</a>}</td></tr>)}</tbody></table></div></details></div>
+    <div class="story-faq dev-gap"><details><summary>Supported, experimental, disabled and planned functionality</summary><SupportMatrix id="developer-support-matrix" /></details></div>
+    <p class="story-note dev-gap">In a browser, you can verify signed records and run the playground above: a provider and a consumer for free deals that live in your tab. The node, the CLI, and the agent integrations run on a machine you control. For current batch and GPU constraints, see the <a href="/learn/cloud-trial/">advanced workflow boundaries</a>. Tor is an advanced self-hosted path. Confidential execution and selective disclosure remain specifications. The <a href="/learn/agent-interoperability/#fresh-program-evidence">newly generated program attempt</a> has independently correct outputs, but incomplete fresh-session qualification.</p></section>
+
+  <section class="story-section" id="build"><div class="story-heading"><span class="story-kicker">Build with it</span><h2>Reimplement it.<br />Connect it.<br />Contribute to it.</h2><p>The step-by-step guides are in the <a href="/docs/">docs</a>. These are the places to start.</p></div>
+    <ul class="dev-cards dev-cards--four">{build.map((item) => <li class="dev-card"><h3>{item.name}</h3><p>{item.text}</p><div class="dev-card__links">{item.links.map(([label, href]) => <a href={href}>{label}</a>)}</div></li>)}</ul>
+    <h3 class="dev-gap">Read the specification</h3>
+    <ul class="dev-doclist">{specs.map(([file, text]) => <li><a href={blob(`docs/${file}`)}><strong>{file}</strong></a> — {text}</li>)}</ul>
+  </section>
+
   <section class="story-closing"><h2>Make one useful thing work.</h2><div class="story-actions"><a class="btn primary" href="/publish/">Prepare a service</a><a class="btn secondary" href="https://github.com/armanas/froglet/discussions" target="_blank" rel="noreferrer">Join the discussion</a></div></section>
 </div>
 </StoryLayout>
+<script>
+  import { initDevPage } from '../scripts/dev-page';
+  import { startPlayground } from '../scripts/playground/browser';
+  initDevPage();
+  startPlayground();
+</script>

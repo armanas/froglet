@@ -93,11 +93,58 @@ export function summarizeProject(project) {
 }
 
 export function summarizeTask(task) {
+  return summarizeExecutionResult({ task })
+}
+
+export function executionResultDetails(response) {
+  const task = response?.task ?? response?.deal ?? response ?? {}
+  const receipt = task.receipt ?? response?.receipt ?? null
+  const receiptHash = receipt?.hash ?? task.receipt_hash ?? response?.receipt_hash ?? null
+  const details = {
+    task_id: task.task_id ?? task.deal_id ?? response?.deal_id ?? null,
+    status: task.status ?? response?.status ?? "unknown",
+    provider_id: task.provider_id ?? response?.provider_id ?? null,
+    result: firstDefined(response?.result, task.result) ?? null,
+    result_hash: task.result_hash ?? response?.result_hash ?? receipt?.payload?.result_hash ?? null,
+    error: firstDefined(response?.error, task.error) ?? null,
+    receipt_hash: receiptHash,
+    execution_state: task.execution_state ?? receipt?.payload?.execution_state ?? null,
+    settlement_state: task.settlement_state ?? receipt?.payload?.settlement_state ?? null,
+    signed_artifacts: {
+      quote: response?.quote ?? task.quote ?? null,
+      deal: task.deal ?? null,
+      receipt,
+    },
+    evidence: response?.evidence ?? task.evidence ?? null,
+    // A receipt, result hash or terminal status is not a cryptographic check.
+    // Preserve an upstream report verbatim; this JS adapter runs no verifier.
+    receipt_verification: response?.receipt_verification ?? task.receipt_verification ?? {
+      status: "not_available",
+      verified: false,
+      receipt_hash: receiptHash,
+      checks: [],
+      boundary: "This JavaScript adapter has not independently verified the signed receipt or result binding.",
+    },
+  }
+  for (const field of ["terminal", "idempotency_key", "next_action", "payment_intent_path", "verification"]) {
+    const value = firstDefined(response?.[field], task[field])
+    if (value !== undefined) details[field] = value
+  }
+  return details
+}
+
+export function summarizeExecutionResult(response) {
+  const task = executionResultDetails(response)
   return [
     `task_id: ${task?.task_id ?? task?.deal_id ?? "unknown"}`,
     `status: ${task?.status ?? "unknown"}`,
     `provider_id: ${task?.provider_id ?? "unknown"}`,
     `result: ${formatObject(task?.result)}`,
+    `result_hash: ${task.result_hash ?? "none"}`,
+    `receipt_hash: ${task.receipt_hash ?? "none"}`,
+    `execution_state: ${task.execution_state ?? "unknown"}`,
+    `settlement_state: ${task.settlement_state ?? "unknown"}`,
+    `receipt_verification: ${formatObject(task.receipt_verification)}`,
     `error: ${task?.error ?? "none"}`
   ]
 }

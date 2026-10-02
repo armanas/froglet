@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,6 +35,7 @@ describe('agent-facing website experience', () => {
     expect(taskIds).toEqual(expect.arrayContaining([
       'publish-service',
       'consume-service',
+      'bounded-compute',
       'hosted-proof',
       'hosted-proof-with-witness',
       'receipt-feed-check',
@@ -48,6 +49,11 @@ describe('agent-facing website experience', () => {
     expect(hostedProof?.entrypoint).toBe('https://try.froglet.dev/llms.txt');
     expect(hostedProof?.expected_report_fields).toContain('docs_live_mismatches');
     expect(hostedProof?.must_not_claim).toContain('paid Lightning, Stripe, or x402 settlement');
+
+    const compute = manifest.task_contracts.find((task) => task.task_id === 'bounded-compute');
+    expect(compute?.entrypoint).toBe('https://froglet.dev/learn/agent-interoperability/');
+    expect(compute?.expected_report_fields).toContain('receipt_verification');
+    expect(compute?.must_not_claim).toContain('a submission_pending reference proves provider admission');
   });
 
   it('separates the root task router from the optional hosted proof', () => {
@@ -77,7 +83,6 @@ describe('agent-facing website experience', () => {
     const pages = new Map([
       ['docs-site/src/pages/index.astro', 'route="home"'],
       ['docs-site/src/pages/marketplace.astro', 'route="marketplace"'],
-      ['docs-site/src/pages/demo.astro', 'route="demo"'],
       ['docs-site/src/pages/managed.astro', 'route="managed"'],
       ['docs-site/src/pages/open-source.astro', 'route="openSource"'],
       ['docs-site/src/pages/privacy.astro', 'route="privacy"'],
@@ -89,6 +94,21 @@ describe('agent-facing website experience', () => {
       expect(page, `${path} should import AgentMeta`).toContain('AgentMeta');
       expect(page, `${path} should declare its agent route`).toContain(routeAttribute);
     }
+  });
+
+  it('keeps route-level agent metadata on the docs-hosted walkthrough', () => {
+    const head = readRepoFile('docs-site/src/components/StarlightHead.astro');
+    const config = readRepoFile('docs-site/astro.config.mjs');
+    const metadata = readRepoFile('docs-site/src/data/agent-metadata.ts');
+
+    // The walkthrough is a docs entry at /demo/, so its metadata comes from the Starlight Head override.
+    expect(head).toContain('AgentMeta');
+    expect(head).toContain('routeAgentMetadata');
+    expect(config).toContain("Head: './src/components/StarlightHead.astro'");
+    expect(metadata).toContain("route: '/demo/'");
+    expect(readRepoFile('docs-site/src/content/docs/demo.mdx')).toContain('ProtocolWalkthrough');
+    // A standalone page at the same route would shadow the docs entry.
+    expect(existsSync(resolve(repoRoot, 'docs-site/src/pages/demo.astro'))).toBe(false);
   });
 
   it('adds local receipt verification with explicit limits', () => {

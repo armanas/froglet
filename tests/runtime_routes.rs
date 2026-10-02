@@ -218,6 +218,7 @@ fn create_test_state_with_identity_seed_and_public_base_url(
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     if let Some(seed) = identity_seed {

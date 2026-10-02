@@ -6,6 +6,6 @@ export const navLinks = [
 	{
 		href: '/docs/',
 		label: 'Docs',
-		activePrefixes: ['/docs/', '/learn/', '/architecture/', '/spec/', '/marketplace/overview/'],
+		activePrefixes: ['/docs/', '/demo/', '/learn/', '/architecture/', '/spec/', '/marketplace/overview/'],
 	},
 ] as const;

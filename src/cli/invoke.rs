@@ -30,6 +30,9 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Must exceed the runtime API's own 65s wait-route timeout so a slow
 /// provider sync surfaces the runtime's error instead of a client abort.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(70);
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+pub(super) const MAX_INLINE_WASM_HEX_BYTES: usize = 512 * 1024;
+const MAX_INLINE_WASM_INPUT_BYTES: usize = 128 * 1024;
 
 /// Deal states after which polling stops. Mirrors `TERMINAL_DEAL_STATES`
 /// in `integrations/shared/froglet-lib/froglet-client.js`.
@@ -80,10 +83,17 @@ pub struct InvokeReport {
     pub stage: String,
     pub code: String,
     pub retryable: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub service_id: String,
+    pub workload_kind: String,
+    pub workload_hash: String,
+    pub quote_hash: String,
+    pub deal_hash: String,
+    pub execution_limits: crate::protocol::ExecutionLimits,
     pub provider_id: String,
     pub provider_url: String,
     pub deal_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub idempotency_key: String,
     pub receipt_verification: Value,
     pub next_action: String,
@@ -498,6 +508,218 @@ fn validate_remote_service(
     Ok(())
 }
 
+/// Native agent computation is deliberately limited to the pure JSON Wasm ABI.
+/// Hashing and submission construction reuse the canonical workload types;
+/// the requester runtime owns Quote acceptance, signing, spending and replay.
+pub fn build_inline_wasm_submission(
+    module_hex: &str,
+    input: Value,
+) -> Result<crate::wasm::WasmSubmission, CliError> {
+    if module_hex.is_empty() || module_hex.len() > MAX_INLINE_WASM_HEX_BYTES {
+        return Err(CliError::BadArgs(
+            "wasm_module_hex must contain 1–524288 hexadecimal characters".into(),
+        ));
+    }
+    let module = hex::decode(module_hex)
+        .map_err(|_| CliError::BadArgs("wasm_module_hex must be valid even-length hex".into()))?;
+    if !module.starts_with(b"\0asm\x01\0\0\0") {
+        return Err(CliError::BadArgs(
+            "wasm_module_hex must contain a Wasm v1 binary, not WAT or source text".into(),
+        ));
+    }
+    let submission = crate::wasm::WasmSubmission {
+        schema_version: FROGLET_SCHEMA_V1.into(),
+        submission_type: crate::wasm::WASM_SUBMISSION_TYPE_V1.into(),
+        workload: crate::wasm::ComputeWasmWorkload::new(&module, &input)
+            .map_err(CliError::BadArgs)?,
+        // Normalize equivalent encodings before exact-spec idempotency comparison.
+        module_bytes_hex: hex::encode(module),
+        input,
+    };
+    submission
+        .validate_limits(MAX_INLINE_WASM_HEX_BYTES, MAX_INLINE_WASM_INPUT_BYTES)
+        .map_err(CliError::BadArgs)?;
+    submission.verify().map_err(CliError::BadArgs)?;
+    Ok(submission)
+}
+
+pub(crate) fn validate_idempotency_key(key: &str) -> Result<(), CliError> {
+    if key.trim().is_empty() || key.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        return Err(CliError::BadArgs(
+            "idempotency_key must contain 1–128 UTF-8 bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Submit or reconcile one requester-supplied program. Generic Wasm retries
+/// use POST's full-spec comparison; the service-specific GET recovery query
+/// cannot distinguish programs and must not be used here.
+pub async fn run_inline_wasm(
+    options: &InvokeOptions,
+    provider_url: Option<&str>,
+    module_hex: &str,
+) -> Result<InvokeReport, CliError> {
+    let key = options.idempotency_key.as_deref().ok_or_else(|| {
+        CliError::BadArgs("run_compute requires an explicit idempotency_key".into())
+    })?;
+    validate_idempotency_key(key)?;
+    let submission = build_inline_wasm_submission(module_hex, options.input.clone())?;
+    let spec = WorkloadSpec::Wasm {
+        submission: Box::new(submission),
+    };
+    let workload_hash = spec.request_hash().map_err(CliError::BadArgs)?;
+    let http = crate::tls::reqwest_client_builder()
+        .timeout(HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| CliError::Other(error.to_string()))?;
+    let provider_id = match options.provider_id_override.as_deref() {
+        Some(id) => {
+            if id.len() != 64
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(CliError::BadArgs(
+                    "provider_id must be a 64-character lowercase hexadecimal identity".into(),
+                ));
+            }
+            id.to_string()
+        }
+        None if provider_url.is_some() => {
+            return Err(CliError::BadArgs(
+                "provider_url requires provider_id".into(),
+            ));
+        }
+        None => fetch_local_node_id(&http, &options.daemon_url).await?,
+    };
+    // The configured local origin is trusted by the existing runtime only for
+    // its own provider identity. All remote selection/egress remains there.
+    let endpoint = match provider_url {
+        Some(url) => Some(url.to_string()),
+        None if options.provider_id_override.is_none() => Some(options.daemon_url.clone()),
+        None => None,
+    };
+    let request = RuntimeCreateDealRequest {
+        provider: RuntimeProviderRef {
+            provider_id: Some(provider_id.clone()),
+            provider_url: endpoint,
+        },
+        offer_id: "execute.compute".into(),
+        spec,
+        max_price_sats: Some(options.max_price_sats.unwrap_or(0)),
+        idempotency_key: Some(key.to_string()),
+        payment: None,
+    };
+    let preserve_retry = |error: CliError, task_id: Option<&str>| {
+        let mut report = super::doctor::error_report(&error);
+        report["idempotency_key"] = serde_json::json!(key);
+        report["workload_hash"] = serde_json::json!(workload_hash);
+        report["stage"] = serde_json::json!("requester_compute");
+        report["retryable"] = serde_json::json!(false);
+        if report.get("deal_id").is_none() {
+            report["next_action"] = serde_json::json!(
+                "If submission is uncertain, repeat the exact program, input, provider and idempotency_key. Do not replace the key. An unpersisted remote acceptance may remain unresolved; a retry is not a guarantee of recovery."
+            );
+        }
+        let error = CliError::Structured {
+            report,
+            exit_code: error.exit_code(),
+        };
+        match task_id {
+            Some(task_id) => preserve_task_reference(error, task_id, "requester_compute", "failed"),
+            None => error,
+        }
+    };
+    let created = create_runtime_deal(&http, options, &request)
+        .await
+        .map_err(|error| preserve_retry(error, None))?;
+    let task_id = created.deal.deal_id.clone();
+    if created.deal.quote.payload.workload_hash != workload_hash
+        || created.deal.quote.payload.workload_kind != crate::wasm::WORKLOAD_KIND_COMPUTE_WASM_V1
+        || created.provider_id != provider_id
+        || created.deal.idempotency_key.as_deref() != Some(key)
+    {
+        return Err(preserve_retry(
+            CliError::Daemon(
+                "compute_response_mismatch: runtime returned another workload, provider or retry key"
+                    .into(),
+            ),
+            Some(&task_id),
+        ));
+    }
+    finish_invocation(&http, options, created, provider_id, key.to_string())
+        .await
+        .map_err(|error| preserve_retry(error, Some(&task_id)))
+}
+
+fn preserve_task_reference(
+    error: CliError,
+    task_id: &str,
+    stage: &str,
+    verification_status: &str,
+) -> CliError {
+    let mut report = super::doctor::error_report(&error);
+    report["stage"] = serde_json::json!(stage);
+    report["deal_id"] = serde_json::json!(task_id);
+    report["task_id"] = serde_json::json!(task_id);
+    report["retryable"] = serde_json::json!(false);
+    report["receipt_verification"] =
+        serde_json::json!({"status":verification_status, "verified":false});
+    report["next_action"] = serde_json::json!(
+        "Inspect or refresh this same task reference with get_task. Returned evidence was not accepted; this error does not authorize new work or payment."
+    );
+    CliError::Structured {
+        report,
+        exit_code: error.exit_code(),
+    }
+}
+
+/// Read the local requester's durable operation. This never submits new work
+/// or authorizes payment. Runtime authentication still scopes the read.
+pub async fn get_task(options: &InvokeOptions, task_id: &str) -> Result<InvokeReport, CliError> {
+    if task_id.is_empty() || task_id.len() > 256 || task_id.chars().any(char::is_control) {
+        return Err(CliError::BadArgs(
+            "task_id must contain 1–256 non-control bytes".into(),
+        ));
+    }
+    let http = crate::tls::reqwest_client_builder()
+        .timeout(HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| CliError::Other(error.to_string()))?;
+    let deal = poll_runtime_deal(&http, options, task_id)
+        .await
+        .map_err(|error| {
+            preserve_task_reference(error, task_id, "requester_task_read", "not_checked")
+        })?;
+    if deal.deal_id != task_id {
+        return Err(preserve_task_reference(
+            CliError::Daemon("task_identity_mismatch: runtime returned another task".into()),
+            task_id,
+            "requester_task_read",
+            "failed",
+        ));
+    }
+    let provider = options
+        .provider_id_override
+        .as_deref()
+        .unwrap_or(&deal.provider_id);
+    let payment_intent_path = (deal.status == "payment_pending"
+        && deal.quote.payload.settlement_terms.method != "none")
+        .then(|| {
+            format!(
+                "/v1/runtime/deals/{}/payment-intent",
+                urlencoding::encode(task_id)
+            )
+        });
+    let report = report_from_deal("", &deal, provider, payment_intent_path).map_err(|error| {
+        preserve_task_reference(error, task_id, "requester_task_read", "failed")
+    })?;
+    Ok(finalize_report(report))
+}
+
 async fn invoke_resolved_service(
     http: &reqwest::Client,
     options: &InvokeOptions,
@@ -513,11 +735,7 @@ async fn invoke_resolved_service(
         .idempotency_key
         .clone()
         .unwrap_or_else(|| format!("native-{}", hex::encode(rand::random::<[u8; 16]>())));
-    if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
-        return Err(CliError::BadArgs(
-            "idempotency_key must contain 1–256 characters".into(),
-        ));
-    }
+    validate_idempotency_key(&idempotency_key)?;
     let request = RuntimeCreateDealRequest {
         provider: RuntimeProviderRef {
             provider_id: Some(node_id.clone()),
@@ -551,11 +769,7 @@ async fn recover_invocation(
     let Some(key) = options.idempotency_key.as_deref() else {
         return Ok(None);
     };
-    if key.trim().is_empty() || key.len() > 256 {
-        return Err(CliError::BadArgs(
-            "idempotency_key must contain 1–256 characters".into(),
-        ));
-    }
+    validate_idempotency_key(key)?;
     let query = RuntimeInvocationQuery {
         idempotency_key: key.to_string(),
         service_id: options.service_id.clone(),
@@ -620,25 +834,17 @@ async fn finish_invocation(
     node_id: String,
     idempotency_key: String,
 ) -> Result<InvokeReport, CliError> {
-    let receipt_verification = verify_invocation_receipt(&created.deal, &node_id)?;
-    let mut report = InvokeReport {
-        stage: "requester_execution".into(),
-        code: "invocation_pending".into(),
-        retryable: false,
-        receipt_verification,
-        next_action: "If still pending, inspect this deal before retrying; reuse its exact idempotency_key and input to reconcile.".into(),
-        idempotency_key,
-        service_id: options.service_id.clone(),
-        provider_id: created.provider_id,
-        provider_url: created.provider_url,
-        deal_id: created.deal.deal_id.clone(),
-        status: created.deal.status.clone(),
-        terminal: is_terminal_deal_status(&created.deal.status),
-        result: created.deal.result,
-        result_hash: created.deal.result_hash,
-        error: created.deal.error,
-        payment_intent_path: created.payment_intent_path,
-    };
+    if created.deal.idempotency_key.as_deref() != Some(idempotency_key.as_str()) {
+        return Err(CliError::Daemon(
+            "invocation retry identity mismatch".into(),
+        ));
+    }
+    let mut report = report_from_deal(
+        &options.service_id,
+        &created.deal,
+        &node_id,
+        created.payment_intent_path,
+    )?;
     if report.terminal || options.wait_timeout.is_zero() {
         return Ok(finalize_report(report));
     }
@@ -652,21 +858,70 @@ async fn finish_invocation(
                 // The mutation already has a durable deal identity. Preserve it
                 // in the report even if subsequent safe reads are unavailable.
                 report.error = Some(error.to_string());
-                report.next_action = "Status could not be refreshed. Reconcile using this exact idempotency_key and input; do not create another invocation key.".into();
+                report.next_action = "Status could not be refreshed. Use get_task with this deal_id; reconcile using this exact idempotency_key and input if needed. Do not create another invocation key.".into();
                 report.code = "status_unavailable".into();
                 return Ok(report);
             }
         };
-        report.receipt_verification = verify_invocation_receipt(&deal, &node_id)?;
-        report.status = deal.status;
-        report.terminal = is_terminal_deal_status(&report.status);
-        report.result = deal.result;
-        report.result_hash = deal.result_hash;
-        report.error = deal.error;
+        if deal.deal_id != report.deal_id
+            || deal.idempotency_key.as_deref() != Some(idempotency_key.as_str())
+            || deal.quote.hash != report.quote_hash
+            || deal.deal.hash != report.deal_hash
+        {
+            return Err(CliError::Daemon(
+                "invocation polling identity mismatch".into(),
+            ));
+        }
+        report = report_from_deal(
+            &options.service_id,
+            &deal,
+            &node_id,
+            report.payment_intent_path,
+        )?;
         if report.terminal || tokio::time::Instant::now() >= deadline {
             return Ok(finalize_report(report));
         }
     }
+}
+
+fn report_from_deal(
+    service_id: &str,
+    deal: &crate::requester_deals::RequesterDealRecord,
+    provider_id: &str,
+    payment_intent_path: Option<String>,
+) -> Result<InvokeReport, CliError> {
+    let chain = crate::protocol::validate_quote_deal(&deal.quote, &deal.deal, None);
+    if !chain.valid
+        || deal.provider_id != provider_id
+        || deal.quote.payload.provider_id != provider_id
+        || deal.workload_kind != deal.quote.payload.workload_kind
+    {
+        return Err(CliError::Daemon("invocation_evidence_invalid: Quote/Deal signatures, links or provider/workload identity do not verify".into()));
+    }
+    let receipt_verification = verify_invocation_receipt(deal, provider_id)?;
+    Ok(InvokeReport {
+        stage: "requester_execution".into(),
+        code: "invocation_pending".into(),
+        retryable: false,
+        receipt_verification,
+        next_action: "If still pending, use get_task with task_id=deal_id before retrying; reuse its exact idempotency_key, program and input to reconcile.".into(),
+        idempotency_key: deal.idempotency_key.clone().unwrap_or_default(),
+        service_id: service_id.into(),
+        workload_kind: deal.quote.payload.workload_kind.clone(),
+        workload_hash: deal.quote.payload.workload_hash.clone(),
+        quote_hash: deal.quote.hash.clone(),
+        deal_hash: deal.deal.hash.clone(),
+        execution_limits: deal.quote.payload.execution_limits.clone(),
+        provider_id: provider_id.into(),
+        provider_url: deal.provider_url.clone(),
+        deal_id: deal.deal_id.clone(),
+        status: deal.status.clone(),
+        terminal: is_terminal_deal_status(&deal.status),
+        result: deal.result.clone(),
+        result_hash: deal.result_hash.clone(),
+        error: deal.error.clone(),
+        payment_intent_path,
+    })
 }
 
 fn finalize_report(mut report: InvokeReport) -> InvokeReport {
@@ -704,9 +959,29 @@ fn verify_invocation_receipt(
         deal.result_hash.as_deref(),
     )
     .map_err(|(_, error)| CliError::Daemon(format!("receipt_verification_failed: {error}")))?;
+    let signed_status = match receipt.payload.deal_state.as_str() {
+        "succeeded" => "succeeded",
+        "rejected" => "rejected",
+        "failed" | "canceled" => "failed",
+        _ => {
+            return Err(CliError::Daemon(
+                "receipt_verification_failed: unknown signed state".into(),
+            ));
+        }
+    };
+    if deal.status != signed_status {
+        return Err(CliError::Daemon(
+            "receipt_verification_failed: unsigned task status differs from signed Receipt".into(),
+        ));
+    }
     Ok(
         serde_json::json!({"status":"verified", "verified":true, "receipt_hash":receipt.hash,
-        "checks":["signatures", "quote_deal_receipt_links", "provider_identity", "result_hash"],
+        "deal_state":receipt.payload.deal_state,
+        "execution_state":receipt.payload.execution_state,
+        "settlement_state":receipt.payload.settlement_state,
+        "limits_applied":receipt.payload.limits_applied,
+        "failure_code":receipt.payload.failure_code,
+        "checks":["signatures", "quote_deal_receipt_links", "provider_identity", "result_hash", "receipt_status"],
         "boundary":"Does not independently prove output correctness or external settlement."}),
     )
 }
@@ -1052,6 +1327,36 @@ async fn create_runtime_deal(
         .json()
         .await
         .unwrap_or_else(|_| Value::String("<non-JSON response body>".to_string()));
+    if let Some(deal_id) = body.get("deal_id").and_then(Value::as_str)
+        && !deal_id.is_empty()
+        && deal_id.len() <= 256
+        && !deal_id.chars().any(char::is_control)
+    {
+        // A configured transport may persist requester intent before a lost
+        // provider response. Keep the durable reference; acceptance is unknown.
+        let error = CliError::Daemon(format!(
+            "POST {url} returned HTTP {status}: {}",
+            body.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("submission state is uncertain")
+        ));
+        let mut report = super::doctor::error_report(&error);
+        report["deal_id"] = serde_json::json!(deal_id);
+        report["task_id"] = serde_json::json!(deal_id);
+        report["idempotency_key"] = serde_json::json!(request.idempotency_key);
+        if body.get("status").and_then(Value::as_str) == Some("submission_pending") {
+            report["status"] = serde_json::json!("submission_pending");
+        }
+        report["receipt_verification"] =
+            serde_json::json!({"status":"not_checked", "verified":false});
+        report["next_action"] = serde_json::json!(
+            "Use get_task with this existing task reference. Provider acceptance is not yet established; do not submit with another key or authorize payment merely to recover."
+        );
+        return Err(CliError::Structured {
+            report,
+            exit_code: 1,
+        });
+    }
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(CliError::Daemon(format!(
             "the runtime API rejected the auth token ({body}); the daemon writes the expected \
@@ -1464,6 +1769,41 @@ mod tests {
             ]
         );
         assert!(workload.validate_basic().is_ok());
+    }
+
+    #[test]
+    fn inline_compute_normalizes_bytes_and_bounds_input_before_submission() {
+        let module = "0061736D01000000";
+        let built = build_inline_wasm_submission(module, serde_json::json!({"b":2,"a":1})).unwrap();
+        assert_eq!(built.module_bytes_hex, module.to_lowercase());
+        assert_eq!(
+            built.workload.abi_version,
+            crate::wasm::WASM_RUN_JSON_ABI_V1
+        );
+        assert!(built.workload.requested_capabilities.is_empty());
+        assert!(built.verify().is_ok());
+        for module in ["", "not-wasm", "0", "0061736d02000000"] {
+            assert!(build_inline_wasm_submission(module, Value::Null).is_err());
+        }
+        assert!(
+            build_inline_wasm_submission(&"00".repeat(MAX_INLINE_WASM_HEX_BYTES), Value::Null)
+                .is_err()
+        );
+        assert!(
+            build_inline_wasm_submission(
+                module,
+                serde_json::json!("x".repeat(MAX_INLINE_WASM_INPUT_BYTES))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_key_limit_matches_runtime_utf8_byte_limit() {
+        assert!(validate_idempotency_key(&"é".repeat(64)).is_ok());
+        for key in ["".into(), " ".into(), "x".repeat(129), "é".repeat(65)] {
+            assert!(validate_idempotency_key(&key).is_err());
+        }
     }
 
     #[test]

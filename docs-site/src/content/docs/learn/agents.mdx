@@ -54,13 +54,61 @@ The generated Claude Code or Codex config runs the installed binary directly:
 froglet-node mcp
 ```
 
-Its focused clean-install tool supports `status`, `invoke_service`, two-step
-`marketplace_publish`, and exact publication status/logs/pause/resume/rollback/
+The native bridge's current source supports `status`, `invoke_service`,
+`run_compute`, read-only `get_task`, two-step `marketplace_publish`, and exact
+publication status/logs/pause/resume/rollback/
 confirmed-unpublish. For public publication, the first call is non-mutating and
 the second must carry the exact user-approved `consent_hash`.
 
+The available actions depend on the exact binary. Compute and task recovery are
+implemented in the current source; do not assume that every installed release
+contains them. Inspect the MCP tool listing for that installation. The
+[repeatable local demo](/learn/quickstart/#optional-run-the-local-compute-demo-from-source)
+builds the current checkout rather than substituting an older installed binary.
+
 `local_proof` invokes the bundled demo only when an operator deliberately
 enables that catalog. Clean installation does not seed it.
+
+### Submit one bounded Wasm program
+
+Native `run_compute` accepts complete Wasm v1 bytes as `wasm_module_hex` or a local
+compiled file through native-only `wasm_module_path`, and an
+explicit JSON `input` (`null` is allowed), using the
+`froglet.wasm.run_json.v1` ABI. It does not accept Python/source text, OCI
+packages, mounts or host capabilities. The file path must be absolute and refer
+to a regular nonsymlink file; supply exactly one module argument. The program
+is limited to 256 KiB and the canonical JSON input to 128 KiB; execution limits
+come from the provider's signed Quote.
+
+An actual Codex session has exercised retrieval, native file-based computation
+and result recovery on one development Mac. That evidence does not establish
+clean OS installation, first-time-user usability or every agent host.
+
+Supply an explicit, non-whitespace `idempotency_key` of 1–128 UTF-8 bytes.
+Keep the exact key, program, input and provider when reconciling an uncertain
+submission. Use a new key for new work. Reconciliation is not a guarantee that
+an ambiguous submission was recovered; if no durable admission can be found,
+inspect the reported uncertainty before resubmitting.
+
+`timeout_secs` is the polling window, from 0 to 60 seconds (default 15), not
+the program's execution limit. A pending response retains its `deal_id` and
+retry key. Call `get_task` with `task_id` set to that returned `deal_id` to read
+the existing operation without resubmitting work or making a new payment.
+Never replace the key merely because polling timed out.
+
+Calls are free-only when `max_price_sats` is omitted or `0`. Paid Lightning
+computation uses the configured wallet and the node's cumulative spending
+budget; an explicit per-call ceiling cannot override that budget. The native
+action has no caller-supplied Stripe token argument. Advanced Stripe callers
+use the requester runtime API; its optional automatic minting helper is
+sandbox-only. The local demo configures no wallet or paid backend. A successful
+receipt check binds the result and signed transaction evidence; it does not
+establish scientific correctness or usefulness.
+
+MCP supplies the agent tool interface. Optional A2A supplies configured remote
+task transport around the same runtime and signed deal. See
+[Agent Interoperability](/learn/agent-interoperability/) for the supported
+profile, setup and recovery limits.
 
 ## Broader compatibility MCP from npm
 
@@ -243,4 +291,6 @@ invocations through arbitrary Tor endpoints.
 
 ## Next step
 
-After the agent config exists, move to [Payment Rails](/learn/payment-rails/).
+After the agent config exists, try the free local compute workflow in
+[Agent Interoperability](/learn/agent-interoperability/). Use
+[Payment Rails](/learn/payment-rails/) when you deliberately choose paid work.

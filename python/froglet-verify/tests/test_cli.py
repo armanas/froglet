@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from _helpers import artifact, load_fixture
+from _helpers import NODE_FEED_PAGE_PATH, artifact, load_fixture, node_feed_page
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,6 +111,95 @@ class SingleArtifactCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(len(report["artifacts"]), 2)
+
+
+class NodeFeedPageCliTests(unittest.TestCase):
+    """The page a node really serves at ``/v1/feed`` (a captured copy), whose
+    entries wrap each signed artifact in a ``document`` field."""
+
+    KINDS = ["descriptor", "offer", "offer", "offer"]
+
+    def test_served_page_from_file_verifies(self) -> None:
+        result = _run_cli([str(NODE_FEED_PAGE_PATH)])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["valid"])
+        self.assertEqual([a["artifact_type"] for a in report["artifacts"]], self.KINDS)
+        for entry in report["artifacts"]:
+            self.assertTrue(entry["envelope_valid"], msg=entry)
+            self.assertTrue(entry["semantic_valid"], msg=entry)
+            self.assertTrue(entry["valid"], msg=entry)
+        # A public feed holds a descriptor and offers, not a whole deal.
+        self.assertIsNone(report["chain"])
+
+    def test_served_page_from_stdin_gives_the_same_report(self) -> None:
+        from_file = _run_cli([str(NODE_FEED_PAGE_PATH)])
+        from_stdin = _run_cli(["-"], stdin_text=NODE_FEED_PAGE_PATH.read_text("utf-8"))
+        self.assertEqual(from_stdin.returncode, 0, msg=from_stdin.stderr)
+        self.assertEqual(from_stdin.stdout, from_file.stdout)
+
+    def test_bare_array_of_entries_and_a_single_entry_are_accepted(self) -> None:
+        page = node_feed_page()
+        as_array = _run_cli(["-"], stdin_text=json.dumps(page["artifacts"]))
+        self.assertEqual(as_array.returncode, 0, msg=as_array.stdout + as_array.stderr)
+        self.assertEqual(len(json.loads(as_array.stdout)["artifacts"]), 4)
+
+        single = _run_cli(["-"], stdin_text=json.dumps(page["artifacts"][0]))
+        self.assertEqual(single.returncode, 0, msg=single.stdout + single.stderr)
+        report = json.loads(single.stdout)
+        self.assertEqual(
+            [a["artifact_type"] for a in report["artifacts"]], ["descriptor"]
+        )
+
+    def test_document_altered_inside_the_page_exits_one(self) -> None:
+        # Unwrapping must not skip verification: created_at is part of the
+        # signed bytes, so the altered offer fails and the others still pass.
+        page = node_feed_page()
+        page["artifacts"][1]["document"]["created_at"] += 1
+        result = _run_cli(["-"], stdin_text=json.dumps(page))
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["valid"])
+        self.assertEqual(
+            [a["valid"] for a in report["artifacts"]], [True, False, True, True]
+        )
+        self.assertFalse(report["artifacts"][1]["envelope_valid"])
+
+    def test_entry_without_a_signed_document_is_not_unwrapped(self) -> None:
+        # Only an entry whose ``document`` is itself an artifact is unwrapped;
+        # anything else is reported as the invalid item it is.
+        page = {"artifacts": [{"cursor": 1, "hash": "aa", "document": {}}]}
+        result = _run_cli(["-"], stdin_text=json.dumps(page))
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["valid"])
+        self.assertIsNone(report["artifacts"][0]["artifact_type"])
+        self.assertFalse(report["artifacts"][0]["envelope_valid"])
+
+    def test_non_string_artifact_types_return_invalid_json_reports(self) -> None:
+        for kind in ([], {}, 123, True, None):
+            doc = {"artifact_type": kind}
+            for source in (doc, [doc], {"artifacts": [{"document": doc}]}):
+                with self.subTest(kind=kind, source=source):
+                    result = _run_cli(["-"], stdin_text=json.dumps(source))
+                    self.assertEqual(result.returncode, 1, msg=result.stderr)
+                    report = json.loads(result.stdout)
+                    self.assertFalse(report["valid"])
+                    self.assertIsNone(report["chain"])
+                    self.assertIsNone(report["artifacts"][0]["artifact_type"])
+                    self.assertFalse(report["artifacts"][0]["envelope_valid"])
+
+    def test_malformed_entry_does_not_hide_valid_feed_artifacts(self) -> None:
+        page = node_feed_page()
+        page["artifacts"].append({"document": {"artifact_type": []}})
+        result = _run_cli(["-"], stdin_text=json.dumps(page))
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["valid"])
+        self.assertEqual(
+            [entry["valid"] for entry in report["artifacts"]],
+            [True, True, True, True, False],
+        )
 
 
 class FullChainCliTests(unittest.TestCase):

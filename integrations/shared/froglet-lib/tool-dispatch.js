@@ -27,10 +27,12 @@ import { runMarketplacePublish } from "./marketplace-publish.js"
 import { toolTextResult } from "./shared.js"
 import {
   appendRaw,
+  executionResultDetails,
   firstDefined,
   formatObject,
   serviceAuthorityNotes,
   summarizeService,
+  summarizeExecutionResult,
   summarizeTask
 } from "./summarize.js"
 
@@ -78,8 +80,11 @@ function installDeps(config) {
   return config?._deps?.install ?? {}
 }
 
-function renderResult(lines, response, includeRaw) {
-  return toolTextResult(appendRaw(lines, response, includeRaw).join("\n"))
+function renderResult(lines, response, includeRaw, structuredContent) {
+  return {
+    ...toolTextResult(appendRaw(lines, response, includeRaw).join("\n")),
+    ...(structuredContent !== undefined ? { structuredContent } : {}),
+  }
 }
 
 function resolvedProviderId(args) {
@@ -255,22 +260,19 @@ async function handleInvoke(args, config, includeRaw) {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
       service_id: resolvedServiceId(args),
-      input: args.input
+      input: args.input,
+      max_price_sats: args.max_price_sats,
+      idempotency_key: args.idempotency_key,
     }
   })
-  const effectiveResult =
-    response.result !== undefined ? response.result : response.task?.result
-  const lines = response.task
-    ? [
-        ...summarizeTask(response.task),
-        `terminal: ${response.terminal === true}`,
-        `result: ${formatObject(effectiveResult)}`,
-        ...(response.terminal === true
-          ? []
-          : ["pending: use wait_task with the returned task_id if you need the final result"])
-      ]
-    : [`status: ${response.status ?? "unknown"}`, `result: ${formatObject(effectiveResult)}`]
-  return renderResult(lines, response, includeRaw)
+  const lines = [
+    ...summarizeExecutionResult(response),
+    `terminal: ${response.terminal === true}`,
+    ...(response.terminal === true
+      ? []
+      : ["pending: use wait_task with the returned task_id if you need the final result"]),
+  ]
+  return renderResult(lines, response, includeRaw, executionResultDetails(response))
 }
 
 async function handleLocalServices(args, config, includeRaw) {
@@ -350,7 +352,7 @@ async function handleTask(args, config, includeRaw) {
       timeoutSecs: args.timeout_secs,
       pollIntervalSecs: args.poll_interval_secs
     })
-    return renderResult(summarizeTask(response.task ?? {}), response, includeRaw)
+    return renderResult(summarizeExecutionResult(response), response, includeRaw, executionResultDetails(response))
   }
 
   const response = await getTask({
@@ -358,7 +360,7 @@ async function handleTask(args, config, includeRaw) {
     ...runtimeCtx(config),
     taskId: args.task_id
   })
-  return renderResult(summarizeTask(response.task ?? {}), response, includeRaw)
+  return renderResult(summarizeExecutionResult(response), response, includeRaw, executionResultDetails(response))
 }
 
 async function handleCompute(args, config, includeRaw) {
@@ -372,6 +374,8 @@ async function handleCompute(args, config, includeRaw) {
     request: {
       provider_id: resolvedProviderId(args),
       provider_url: resolvedProviderUrl(args),
+      max_price_sats: args.max_price_sats,
+      idempotency_key: args.idempotency_key,
       input: args.input,
       artifact_path: args.artifact_path,
       wasm_module_hex: args.wasm_module_hex,
@@ -388,10 +392,8 @@ async function handleCompute(args, config, includeRaw) {
       timeout_secs: args.timeout_secs ?? 15
     }
   })
-  const lines = response.task
-    ? [...summarizeTask(response.task), `terminal: ${response.terminal === true}`]
-    : [`status: ${response.status ?? "unknown"}`, `result: ${formatObject(response.result)}`]
-  return renderResult(lines, response, includeRaw)
+  const lines = [...summarizeExecutionResult(response), `terminal: ${response.terminal === true}`]
+  return renderResult(lines, response, includeRaw, executionResultDetails(response))
 }
 
 async function handleWalletBalance(args, config, includeRaw) {

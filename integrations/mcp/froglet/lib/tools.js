@@ -7,14 +7,23 @@ import {
 } from "../../../shared/froglet-lib/tool-contract.js"
 
 function errorResult(error) {
+  const message = error?.message ?? String(error)
   return {
-    content: [{ type: "text", text: `Error: ${error?.message ?? String(error)}` }],
+    content: [{ type: "text", text: `Error: ${message}` }],
+    structuredContent: {
+      error: {
+        message,
+        ...(Number.isInteger(error?.httpStatus) ? { http_status: error.httpStatus } : {}),
+        ...(typeof error?.code === "string" ? { code: error.code } : {}),
+        ...(error?.payload !== undefined ? { details: error.payload } : {}),
+      },
+    },
     isError: true
   }
 }
 
 const frogletToolDescription =
-  "Authoritative Froglet MCP tool for a local or self-hosted Froglet node. Use exact Froglet actions instead of guessing. Start with status to verify provider/runtime reachability. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. For agent-grade public publishing use marketplace_publish twice: the first call is non-mutating and returns the exact relay/plaintext, quota, backup, limits, and price consent; present it to the user, then repeat with its consent_hash to publish and verify. publish_artifact remains the lower-level local-only path. For settlement visibility use get_wallet_balance, get_spend_status, reset_spend, list_settlement_activity, get_payment_intent, or get_invoice_bundle. For marketplace operations use the named marketplace actions. When asked to install, call plan_install, present its immutable release and exact impact, then pass the returned release_tag and install_approval_hash unchanged to get_install_guide only after user approval. Run approved commands through the host shell. The no-install public demo lives at https://froglet.dev/llms.txt."
+  "Authoritative Froglet MCP tool for a local or self-hosted Froglet node. Use exact Froglet actions instead of guessing. Start with status to verify provider/runtime reachability. For local services use list_local_services or get_local_service. For marketplace-backed remote services use discover_services or get_service. For named service execution use invoke_service and prefer provider_id from discovery results; provider_url is an optional override. Use run_compute for open-ended compute through the runtime deal flow. Execution is free-only unless an explicit max_price_sats is supplied; the node's global spend policy still applies. Supply an idempotency_key and reuse it unchanged for retries of the same invocation; this adapter never invents a retry key. Structured execution outputs preserve supplied receipt verification reports; the JavaScript adapter does not independently verify signatures. For agent-grade public publishing use marketplace_publish twice: the first call is non-mutating and returns the exact relay/plaintext, quota, backup, limits, and price consent; present it to the user, then repeat with its consent_hash to publish and verify. publish_artifact remains the lower-level local-only path. For settlement visibility use get_wallet_balance, get_spend_status, reset_spend, list_settlement_activity, get_payment_intent, or get_invoice_bundle. For marketplace operations use the named marketplace actions. When asked to install, call plan_install, present its immutable release and exact impact, then pass the returned release_tag and install_approval_hash unchanged to get_install_guide only after user approval. Run approved commands through the host shell. The no-install public demo lives at https://froglet.dev/llms.txt."
 
 export function frogletToolInputSchema(config) {
   return {
@@ -296,7 +305,14 @@ export function frogletToolInputSchema(config) {
       max_price_sats: {
         type: "integer",
         minimum: 0,
-        description: "Upper price bound in sats for marketplace_search results."
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: "Per-call upper price bound in sats for invoke_service and run_compute (omitted means 0, free-only). The requester node's cumulative budget and deal cap remain authoritative. Also filters marketplace_search results."
+      },
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+        description: "Optional exact retry identity for invoke_service or run_compute, at most 128 UTF-8 bytes and not whitespace-only. Reuse it unchanged for the same workload/provider on retries. Omission provides no explicit retry identity; do not retry paid work with a new key."
       },
       ...MARKETPLACE_ATTESTATION_PROPERTIES,
       status: {

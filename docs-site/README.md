@@ -4,7 +4,25 @@ Astro + Starlight source for the public Froglet documentation site.
 
 ## Local development
 
-Use Node.js 22.12 or newer and Rust 1.91. Run `rustup target add wasm32-unknown-unknown` from the repository first. From `docs-site/`, run `npm ci` and `npm run build:verifier` before development or tests. Generated WASM bindings are ignored and rebuilt from the locked Rust source.
+Use Node.js 22.12 or newer and Rust 1.91. Run `rustup target add wasm32-unknown-unknown` from the repository first. From `docs-site/`, run `npm ci` and `npm run build:wasm` before development or tests. It builds the browser verifier (`froglet-verify`), the playground's signing kernel (`froglet-wasm`), the Rust services in `examples/wasm-services` (the tests run them as the answer to check the editor's functions against), and the AssemblyScript compiler bundle that the playground's editor loads. Generated files are ignored and rebuilt from the locked source.
+
+Social cards use the licensed, source-controlled TTF inputs in
+[`scripts/fonts`](./scripts/fonts/README.md); building them does not download
+fonts or depend on the old ignored `.fonts` cache. This does not make a first
+site build offline: npm dependencies, Rust toolchains/targets, Cargo crates,
+and the exact `wasm-bindgen` CLI must already be installed or downloadable.
+`package-lock.json`, the Rust lockfiles and `rust-toolchain.toml` pin those
+software inputs. A preinstalled `WASM_BINDGEN` is accepted only when its version
+matches `Cargo.lock`.
+
+Two test files are opt-in because they need a built node. Run `cargo build -p froglet --bin froglet-node` from the repository first (`FROGLET_NODE_BIN` points at a different binary), then, from `docs-site/`:
+
+| Variable | Test file | What it does |
+| :------- | :-------- | :----------- |
+| `FROGLET_PLAYGROUND_REAL_REQUESTER=1` | `playground-real-requester.test.ts` | Starts a runtime-only `froglet-node` and has that node's requester call the playground's provider. |
+| `FROGLET_PLAYGROUND_REAL_PROVIDER=1` | `playground-real-provider.test.ts` | Starts a `froglet-node` as provider and runtime, publishes modules that the editor's compiler produced, and calls them with the playground's consumer. It checks the node's answers, its receipts' module hashes, and its failures against the playground's own. |
+
+For example, `FROGLET_PLAYGROUND_REAL_PROVIDER=1 npx vitest --run src/scripts/__tests__/playground-real-provider.test.ts`. Without its variable each file is skipped.
 
 Run from the `docs-site/` directory:
 
@@ -16,25 +34,29 @@ Run from the `docs-site/` directory:
 | `npm run preview` | Preview the production build locally |
 | `npm run preview:workers` | Build and preview the Cloudflare Workers deployment locally |
 | `npm run preview:maintenance` | Preview the temporary pause page locally |
-| `npm run deploy` | Deploy only the maintenance page while the site is paused |
-| `npm run deploy:site` | Explicitly build and publish the full site, ending the pause |
+| `npm run deploy` | Build and publish the full site |
+| `npm run deploy:site` | Build and publish the full site (same target) |
+| `npm run deploy:maintenance` | Explicitly replace the full site with the temporary pause page |
 
 ## Production deploy
 
 The public docs site is configured for Cloudflare Workers, not GitHub Pages.
-While the site is paused, `npm run deploy` uses
-[`wrangler.maintenance.jsonc`](./wrangler.maintenance.jsonc).
-[`wrangler.jsonc`](./wrangler.jsonc) remains the full-site configuration for
-local development and a deliberate future relaunch.
+The site was restored on 1 October 2026. `npm run deploy` now builds and
+publishes [`wrangler.jsonc`](./wrangler.jsonc); maintenance deployment requires
+`npm run deploy:maintenance` explicitly. The default no longer restores the
+September pause page. Current deployed version:
+`857f8336-ed78-48cb-8f08-959f0ff8bff6`. The previous restored full-site version
+`7dd4a560-b18d-478f-a7a1-bf1b6cd73eb2` is the rollback target for this update.
+Website publication remains separate from Node release or compute deployment.
 
-For a future full-site Cloudflare dashboard-backed build:
+For a full-site Cloudflare dashboard-backed build:
 
 - Build command: `npm run build`
 - Build environment: Rust 1.91, the `wasm32-unknown-unknown` target, and Cargo. The build installs the exact wasm-bindgen CLI version from Cargo.lock into the Cargo target directory.
 - Run `rustup target add wasm32-unknown-unknown` once before building locally.
 - Deploy command: `npx wrangler deploy`
 
-That direct command publishes the full site and ends the pause. Dashboard build
+That direct command publishes the full site. Dashboard build
 settings are external to this repository; they were not changed during cleanup.
 
 Attach `froglet.dev` to the Worker deployment. `docs.froglet.dev` previously
@@ -57,14 +79,15 @@ npx wrangler deploy --config wrangler.maintenance.jsonc --message "Temporary com
 
 Before the pause, production served version
 `213923ee-0ab4-4fe6-8493-114a5f5aae0a` at 100%. Restore that exact deployment,
-including its assets, when the pause is over:
+including its assets. The historical rollback command at that checkpoint was:
 
 ```sh
 npx wrangler rollback 213923ee-0ab4-4fe6-8493-114a5f5aae0a --config wrangler.jsonc --message "Restore site after temporary pause"
 ```
 
-`npm run deploy:site` and direct full-site Wrangler deployments replace this
-temporary page; the default `npm run deploy` preserves it. The candidate site,
+At the September checkpoint, the default `npm run deploy` preserved this
+page. Since the October restoration it publishes the full site; use the
+explicit maintenance command above for a new pause. The candidate site,
 provider services, relay, and marketplace backend are separate deployments and
 are not stopped by this website pause.
 

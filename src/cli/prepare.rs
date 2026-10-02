@@ -36,6 +36,8 @@ pub struct PrepareRequest {
     pub csv_columns: Vec<PublicationCsvColumn>,
     #[serde(default)]
     pub example_input: Option<Value>,
+    #[serde(default)]
+    pub research_profile: Option<crate::research_profile::ResearchProfile>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -170,6 +172,14 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     request.source = request.source.canonicalize()?;
     let file_share = request.file.is_some();
     let wasm = !file_share && matches!(extension(&request.source), "wat" | "wasm");
+    if let Some(profile) = &request.research_profile {
+        profile.validate().map_err(bad)?;
+        if wasm || file_share {
+            return Err(bad(
+                "research_profile currently requires a selected-data snapshot",
+            ));
+        }
+    }
     if file_share && (!request.selection.is_empty() || !request.csv_columns.is_empty()) {
         return Err(bad("file sharing cannot also select query fields"));
     }
@@ -321,6 +331,9 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
         (bytes, input, result, json!([]), json!([]))
     } else {
         let selected = select(&original, &request.selection, &description)?;
+        if let Some(profile) = &request.research_profile {
+            profile.validate_rows(&selected).map_err(bad)?;
+        }
         let bytes = serde_json::to_vec(&selected).map_err(|e| bad(e.to_string()))?;
         if bytes.len() > MAX_BYTES {
             return Err(bad("selected snapshot exceeds 16 MiB"));
@@ -422,6 +435,22 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     // publication consent. Keep it distinct from the private verification input.
     manifest["starter"] =
         json!(serde_json::to_string(&example_input).map_err(|e| bad(e.to_string()))?);
+    if let Some(profile) = &request.research_profile {
+        let collections = request
+            .selection
+            .iter()
+            .map(|(name, fields)| {
+                let mut fields = fields.clone();
+                fields.sort();
+                (name.clone(), fields)
+            })
+            .collect();
+        let mut schema = crate::builtins::data_query::data_query_output_schema(&collections);
+        schema[crate::research_profile::ANNOTATION] =
+            serde_json::to_value(profile).map_err(|error| bad(error.to_string()))?;
+        manifest["output_schema_json"] =
+            json!(serde_json::to_string(&schema).map_err(|error| bad(error.to_string()))?);
+    }
     let manifest_text = toml::to_string_pretty(&manifest).map_err(|e| bad(e.to_string()))?;
     froglet_protocol::manifest::ServiceManifest::from_toml(&manifest_text)?;
     let record = Preparation {
@@ -955,8 +984,66 @@ mod tests {
             selection: BTreeMap::from([("rows".into(), vec!["id".into(), "name".into()])]),
             csv_columns: vec![],
             example_input: None,
+            research_profile: None,
         }
     }
+    #[tokio::test]
+    async fn selected_research_profile_survives_manifest_without_private_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("catalog.json"),
+            br#"[{"id":1,"name":"Apple","secret":"excluded"}]"#,
+        )
+        .unwrap();
+        let mut req = request(root, "catalog.json");
+        req.research_profile = Some(serde_json::from_value(json!({
+            "schema_version":"froglet.research-profile/v1",
+            "collections":{"rows":{"fields":{
+                "id":{"type":"integer","nullable":false,"unit":"none"},
+                "name":{"type":"string","nullable":false,"unit":"none"}}}},
+            "provenance":{"source":"urn:synthetic:produce","version":"1","citation":"Synthetic fixture","license":"Apache-2.0"}
+        })).unwrap());
+        prepare(req.clone(), &root.join("state")).await.unwrap();
+        let (manifest, _) = froglet_protocol::manifest::ServiceManifest::from_toml(
+            &fs::read_to_string(root.join("service/froglet-service.toml")).unwrap(),
+        )
+        .unwrap();
+        let schema = manifest.output_schema.unwrap();
+        assert_eq!(
+            schema[crate::research_profile::ANNOTATION],
+            serde_json::to_value(req.research_profile.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(
+            schema["x-froglet-collections"]["rows"],
+            json!(["id", "name"])
+        );
+        assert!(!serde_json::to_string(&schema).unwrap().contains("secret"));
+        req.research_profile
+            .as_mut()
+            .unwrap()
+            .collections
+            .get_mut("rows")
+            .unwrap()
+            .fields
+            .get_mut("id")
+            .unwrap()
+            .kind = "string".into();
+        assert!(
+            prepare(req, &root.join("state"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("type mismatch")
+        );
+        // A failed re-preparation leaves the accepted manifest unchanged.
+        let (unchanged, _) = froglet_protocol::manifest::ServiceManifest::from_toml(
+            &fs::read_to_string(root.join("service/froglet-service.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unchanged.output_schema.unwrap(), schema);
+    }
+
     #[tokio::test]
     async fn prepares_download_snapshot_and_rejects_symlinks() {
         let dir = tempfile::tempdir().unwrap();

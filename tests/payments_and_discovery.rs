@@ -131,6 +131,7 @@ fn in_memory_state() -> AppState {
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -969,6 +970,7 @@ fn stripe_app_state(mock_base_url: &str) -> AppState {
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     // Temporarily set the Stripe API key so SettlementRegistry::new can

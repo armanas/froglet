@@ -288,4 +288,84 @@ mod tests {
         .unwrap();
         assert!(verified_inspection(&link, &json!({}), &json!({}), &json!({})).is_err());
     }
+
+    #[test]
+    fn verified_inspection_preserves_profile_and_refuses_unsigned_profile_changes() {
+        use froglet_protocol::{
+            crypto,
+            protocol::{
+                ARTIFACT_TYPE_DESCRIPTOR, ARTIFACT_TYPE_OFFER, DescriptorPayload, OfferPayload,
+                sign_artifact,
+            },
+            publication::{PublicationRevisionPayload, sign_publication_revision},
+        };
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../conformance/kernel_v1.json")).unwrap();
+        let key = crypto::signing_key_from_seed_bytes(&[0x11; 32]).unwrap();
+        let provider = crypto::public_key_hex(&key);
+        let now = crate::settlement::current_unix_timestamp();
+        let mut descriptor_payload: DescriptorPayload = serde_json::from_value(
+            fixture["artifacts"]["descriptor"]["artifact"]["payload"].clone(),
+        )
+        .unwrap();
+        descriptor_payload.expires_at = Some(now + 3600);
+        let descriptor = serde_json::to_value(
+            sign_artifact(
+                &provider,
+                |message| crypto::sign_message_hex(&key, message),
+                ARTIFACT_TYPE_DESCRIPTOR,
+                now,
+                descriptor_payload,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut offer_payload: OfferPayload = serde_json::from_value(
+            fixture["artifacts"]["free_offer"]["artifact"]["payload"].clone(),
+        )
+        .unwrap();
+        offer_payload.descriptor_hash = descriptor["hash"].as_str().unwrap().into();
+        offer_payload.expires_at = Some(now + 3600);
+        offer_payload.execution_profile.package_kind = "inline_module".into();
+        offer_payload.execution_profile.contract_version = "froglet.wasm.run_json.v1".into();
+        let limits = serde_json::to_value(&offer_payload.execution_profile).unwrap();
+        let offer = serde_json::to_value(
+            sign_artifact(
+                &provider,
+                |message| crypto::sign_message_hex(&key, message),
+                ARTIFACT_TYPE_OFFER,
+                now,
+                offer_payload,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let profile = json!({
+            "schema_version":"froglet.research-profile/v1",
+            "collections":{"rows":{"fields":{"id":{"type":"string","nullable":false,"unit":"none","identifier":{"namespace":"urn:demo","version":"1","prefix":"DEMO:"}}}}},
+            "provenance":{"source":"urn:synthetic","version":"1","citation":"Synthetic fixture","license":"Apache-2.0"}
+        });
+        let schema = json!({"type":"object",crate::research_profile::ANNOTATION:profile});
+        let payload: PublicationRevisionPayload = serde_json::from_value(json!({
+            "schema_version":"froglet.publication-revision.v1", "provider_id":provider,
+            "service_id":"catalog", "offer_id":offer["payload"]["offer_id"], "offer_hash":offer["hash"],
+            "binding_hash":"22".repeat(32),"package_digest":"22".repeat(32),"runtime":"wasm","package_kind":"inline_module",
+            "service":{"source_kind":"artifact","entrypoint_kind":"module","entrypoint":"run","contract_version":"froglet.wasm.run_json.v1","mode":"sync","output_schema":schema},
+            "limits":{"max_input_bytes":limits["max_input_bytes"],"max_runtime_ms":limits["max_runtime_ms"],"max_memory_bytes":limits["max_memory_bytes"],"max_output_bytes":limits["max_output_bytes"],"fuel_limit":limits["fuel_limit"]},
+            "price":{"settlement_method":"none","currency":"sat","base_amount_minor":0,"success_amount_minor":0,"offer_settlement_method":"none"},
+            "local_verification":{"input_hash":"33".repeat(32),"result_hash":"44".repeat(32)}
+        })).unwrap();
+        let revision =
+            sign_publication_revision(payload, |message| crypto::sign_message_hex(&key, message))
+                .unwrap();
+        let mut signed = serde_json::to_value(revision).unwrap();
+        let link =
+            ServiceLink::parse(&format!("https://froglet.dev/s/{provider}/catalog")).unwrap();
+        let inspected = verified_inspection(&link, &signed, &offer, &descriptor).unwrap();
+        assert_eq!(inspected["verification"]["status"], "verified");
+        assert_eq!(inspected["output_schema"], schema);
+        signed["payload"]["service"]["output_schema"][crate::research_profile::ANNOTATION]["provenance"]
+            ["version"] = json!("2");
+        assert!(verified_inspection(&link, &signed, &offer, &descriptor).is_err());
+    }
 }

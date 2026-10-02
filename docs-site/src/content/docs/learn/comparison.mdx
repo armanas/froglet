@@ -16,6 +16,7 @@ separate things.
 | Project | Main focus | Read the source |
 | --- | --- | --- |
 | **Froglet** | Service offers, per-request commitments, execution limits, and signed outcome records. | [Deal flow](/learn/deal-flow/) and [kernel](/spec/kernel/) |
+| **A2A** | Agent discovery and task communication, including capability and extension negotiation. The agent's implementation supplies execution. | [A2A specification](https://a2a-protocol.org/latest/specification/) |
 | **x402** | Payment over HTTP: a server requests payment and a client retries with payment information. | [x402 documentation](https://x402.org/) |
 | **L402** | Paid access to digital resources using a token bound to a Lightning invoice and its payment preimage. | [Lightning Labs documentation](https://docs.lightning.engineering/the-lightning-network/l402) |
 | **AP2** | Evidence of authorization for agent payments, using verifiable credentials and mandates. | [AP2 specification](https://ap2-protocol.org/) |
@@ -53,10 +54,23 @@ See [Trust & Economics](/learn/economics/) and [Settlement](/learn/settlement/).
 
 ## Possible combinations
 
+MCP connects an assistant to Froglet's native tool. The optional A2A adapter
+connects configured requester and provider Nodes using A2A 1.0 HTTP+JSON and a
+required Froglet extension. The Node supplies the bounded Wasm executor and
+signed deal lifecycle behind those interfaces. See the
+[working profile and local demo](/learn/agent-interoperability/).
+
+A2A plus a payment adapter and a suitable executor could support a similar
+application. Froglet is a particular implementation of the execution controls
+and transaction lifecycle; the claim is not that those capabilities are
+fundamentally unavailable in another stack.
+
 An authorization system could authorize a Froglet request, and a payment
 adapter could settle it. These are architectural possibilities, not claims
 that AP2, ACP, or L402 interoperability has been implemented and tested.
 Froglet's experimental x402 adapter has its own documented limits.
 
-This comparison describes responsibilities, not adoption rankings. Primary
-sources were checked on 27 September 2026; implementation status can change.
+This comparison describes responsibilities, not adoption rankings. The A2A
+specification and current Froglet integration were checked on 1 October 2026;
+the other primary sources were checked on 27 September 2026. Implementation
+status can change.

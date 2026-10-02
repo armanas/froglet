@@ -103,6 +103,10 @@ use crate::{
     wasm::{self, WasmSubmission},
 };
 
+pub(crate) mod a2a;
+#[cfg(test)]
+#[path = "a2a_recovery_tests.rs"]
+mod a2a_recovery_tests;
 mod http_catalog;
 mod http_confidential;
 mod http_deals;
@@ -111,6 +115,10 @@ mod http_events;
 mod http_execution;
 mod http_files;
 mod http_settlement;
+#[cfg(test)]
+#[path = "quote_issuance_tests.rs"]
+mod quote_issuance_tests;
+mod remote_client;
 mod sessions;
 pub(crate) mod types;
 pub use types::*;
@@ -224,6 +232,9 @@ async fn runtime_accessible_provider_endpoint(
     raw_url: &str,
     provider_id: Option<&str>,
 ) -> Result<provider_resolution::RuntimeProviderEndpoint, ApiFailure> {
+    if let Some(endpoint) = remote_client::configured_loopback_endpoint(state, raw_url)? {
+        return Ok(endpoint);
+    }
     provider_resolution::runtime_accessible_provider_endpoint(state, raw_url, provider_id).await
 }
 
@@ -608,7 +619,9 @@ fn provider_routes() -> Router<Arc<AppState>> {
                     DEAL_MATERIALIZATION_ROUTE_TIMEOUT_SECS,
                 ))),
         );
-    default_routes.merge(deal_materialization_routes)
+    default_routes
+        .merge(deal_materialization_routes)
+        .merge(a2a::routes())
 }
 
 fn publication_canary_routes() -> Router<Arc<AppState>> {
@@ -724,6 +737,7 @@ async fn public_request_limit(
     let path = request.uri().path();
     let operator = require_provider_control_auth(request.headers(), state.as_ref()).is_ok();
     let recovery = path.starts_with("/v1/provider/deals/")
+        || path.starts_with("/a2a/v1/tasks")
         || path == "/v1/webhooks/stripe"
         || path.starts_with("/v1/provider/confidential/sessions/");
     // Fixed class names bound the map and preserve independently limited
@@ -737,31 +751,64 @@ async fn public_request_limit(
     } else {
         "public"
     };
-    if let Err(response) =
-        enforce_identity_quota(&state.public_request_quota, class, "public request")
+    // A2A SendMessage multiplexes new work and recovery on one URL. Its
+    // authenticated bounded dispatcher selects the quota after validating
+    // exact task ownership; never let a caller-controlled header select it.
+    let deferred_a2a =
+        *request.method() == axum::http::Method::POST && path == "/a2a/v1/message:send";
+    if !deferred_a2a
+        && let Err(response) =
+            enforce_identity_quota(&state.public_request_quota, class, "public request")
     {
+        if path.starts_with(a2a::PREFIX) {
+            let mut response = a2a::from_failure((response.0, response.1.0));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/a2a+json"),
+            );
+            response
+                .headers_mut()
+                .insert("a2a-version", HeaderValue::from_static("1.0"));
+            return response;
+        }
         return response.into_response();
     }
-    if is_new_provider_work(request.method(), path) {
-        if !operator && !provider_access_allowed(state.as_ref(), request.headers(), path).await {
-            return error_json(StatusCode::FORBIDDEN, json!({"error":"provider execution requires an access credential", "code":"provider_access_required"})).into_response();
-        }
-        if let Err((status, body)) = provider_storage_admission(state.as_ref()) {
-            return error_json(status, body).into_response();
-        }
-        if let Err(error) = state
-            .db
-            .with_read_conn(crate::provider_policy::require_not_paused)
-            .await
-        {
-            return error_json(
+    if is_new_provider_work(request.method(), path)
+        && let Err((status, body)) =
+            admit_new_provider_work(state.as_ref(), request.headers(), path).await
+    {
+        return error_json(status, body).into_response();
+    }
+    next.run(request).await
+}
+
+// Shared by HTTP and A2A operations. Transport paths must not decide whether
+// polling/recovery is new work: A2A submission invokes this only after checking
+// for an authenticated exact durable replay.
+async fn admit_new_provider_work(
+    state: &AppState,
+    headers: &HeaderMap,
+    provider_path: &str,
+) -> Result<(), ApiFailure> {
+    let operator = require_provider_control_auth(headers, state).is_ok();
+    if !operator && !provider_access_allowed(state, headers, provider_path).await {
+        return Err((
+            StatusCode::FORBIDDEN,
+            json!({"error":"provider execution requires an access credential", "code":"provider_access_required"}),
+        ));
+    }
+    provider_storage_admission(state)?;
+    state
+        .db
+        .with_read_conn(crate::provider_policy::require_not_paused)
+        .await
+        .map_err(|error| {
+            (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"error":error,"code":"provider_paused"}),
             )
-            .into_response();
-        }
-    }
-    next.run(request).await
+        })?;
+    Ok(())
 }
 
 fn is_new_provider_work(method: &axum::http::Method, path: &str) -> bool {
@@ -1447,6 +1494,11 @@ where
     T: DeserializeOwned,
     B: Serialize + ?Sized,
 {
+    if let Some(result) =
+        remote_client::a2a_request(state, &method, &url, body, pinned_addresses, access).await
+    {
+        return result;
+    }
     let client = if pinned_addresses.is_empty() {
         state.http_client.clone()
     } else {
@@ -1501,6 +1553,13 @@ where
     }
     let body_text = String::from_utf8_lossy(&body).into_owned();
     if !status.is_success() {
+        if status == StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_slice::<Value>(&body)
+                .ok()
+                .is_some_and(|payload| is_quote_issuance_collision(&(status, payload)))
+        {
+            return Err(quote_issuance_collision());
+        }
         if preserve_client_errors && status.is_client_error() {
             if let Ok(payload) = serde_json::from_slice::<Value>(&body) {
                 return Err((status, payload));
@@ -1714,24 +1773,40 @@ enum ProviderDealProjection {
 
 fn unsigned_provider_transition_is_forward(from: &str, to: &str) -> bool {
     match from {
+        "submission_pending" => matches!(
+            to,
+            deals::DEAL_STATUS_PAYMENT_PENDING
+                | deals::DEAL_STATUS_ACCEPTED
+                | deals::DEAL_STATUS_RUNNING
+                | deals::DEAL_STATUS_RESULT_READY
+                | deals::DEAL_STATUS_SETTLEMENT_PENDING
+        ),
         deals::DEAL_STATUS_PAYMENT_PENDING => matches!(
             to,
             deals::DEAL_STATUS_PAYMENT_PENDING
                 | deals::DEAL_STATUS_ACCEPTED
                 | deals::DEAL_STATUS_RUNNING
                 | deals::DEAL_STATUS_RESULT_READY
+                | deals::DEAL_STATUS_SETTLEMENT_PENDING
         ),
         deals::DEAL_STATUS_ACCEPTED => matches!(
             to,
             deals::DEAL_STATUS_ACCEPTED
                 | deals::DEAL_STATUS_RUNNING
                 | deals::DEAL_STATUS_RESULT_READY
+                | deals::DEAL_STATUS_SETTLEMENT_PENDING
         ),
         deals::DEAL_STATUS_RUNNING => matches!(
             to,
-            deals::DEAL_STATUS_RUNNING | deals::DEAL_STATUS_RESULT_READY
+            deals::DEAL_STATUS_RUNNING
+                | deals::DEAL_STATUS_RESULT_READY
+                | deals::DEAL_STATUS_SETTLEMENT_PENDING
         ),
-        deals::DEAL_STATUS_RESULT_READY => to == deals::DEAL_STATUS_RESULT_READY,
+        deals::DEAL_STATUS_RESULT_READY => matches!(
+            to,
+            deals::DEAL_STATUS_RESULT_READY | deals::DEAL_STATUS_SETTLEMENT_PENDING
+        ),
+        deals::DEAL_STATUS_SETTLEMENT_PENDING => to == deals::DEAL_STATUS_SETTLEMENT_PENDING,
         _ => false,
     }
 }
@@ -1781,6 +1856,17 @@ fn verify_provider_deal_projection(
                         return Err(provider_bad_gateway(
                             "provider result_ready projection has inconsistent result fields",
                         ));
+                    }
+                }
+                deals::DEAL_STATUS_SETTLEMENT_PENDING => {
+                    match (&remote.result, &remote.result_hash) {
+                        (Some(result), Some(hash)) if canonical_result_hash(result) == *hash => {}
+                        (None, None) => {}
+                        _ => {
+                            return Err(provider_bad_gateway(
+                                "provider settlement_pending projection has inconsistent result fields",
+                            ));
+                        }
                     }
                 }
                 _ if remote.result.is_some()
@@ -2442,6 +2528,30 @@ async fn sync_requester_deal_from_provider(
     .await?;
 
     let projection = verify_provider_deal_projection(&stored, &remote)?;
+    // Recover the budget hold after an A2A submit response was lost. This
+    // preserves counted ambiguous spend; verified provider admission converts
+    // it to the same committed reservation used by the ordinary create path.
+    if remote_client::uses_a2a(state.as_ref(), stored.sync_provider_url()) {
+        let hash = stored.deal.hash.clone();
+        let id = stored.deal_id.clone();
+        state
+            .db
+            .with_write_conn(move |conn| {
+                crate::requester_budget::commit_spend(
+                    conn,
+                    &hash,
+                    &id,
+                    settlement::current_unix_timestamp(),
+                )
+            })
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"error":"failed to reconcile A2A spend reservation"}),
+                )
+            })?;
+    }
     match projection {
         ProviderDealProjection::Unchanged => {
             return Ok(SyncedRequesterDeal {
@@ -2686,6 +2796,23 @@ impl Drop for SpendReservationGuard {
     }
 }
 
+async fn persist_a2a_submission_intent(
+    state: Arc<AppState>,
+    pending: NewRequesterDeal,
+) -> Result<bool, ApiFailure> {
+    persist_requester_artifacts(state.clone(), &pending.quote, &pending.deal, None)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error":"failed to persist A2A requester artifacts"}),
+            )
+        })?;
+    state.db.with_write_conn(move|conn|requester_deals::insert_or_get_requester_deal(conn,pending)).await
+        .map_err(|_|(StatusCode::CONFLICT,json!({"error":"A2A requester intent conflicts with a durable operation"})))?
+        .created.then_some(true).ok_or_else(||(StatusCode::CONFLICT,json!({"error":"concurrent A2A requester intent already exists; retry its idempotency key"})))
+}
+
 async fn runtime_create_deal_inner(
     state: Arc<AppState>,
     payload: RuntimeCreateDealRequest,
@@ -2867,11 +2994,10 @@ async fn runtime_create_deal_inner(
     let expected_confidential_session_hash =
         payload.spec.confidential_session_hash().map(str::to_string);
 
-    let quote = match remote_json_request_inner::<SignedArtifact<QuotePayload>, _>(
+    let quote = match fetch_runtime_quote(
         state.as_ref(),
-        reqwest::Method::POST,
-        format!("{}/v1/provider/quotes", provider.provider_sync_url),
-        Some(&CreateQuoteRequest {
+        &provider,
+        &CreateQuoteRequest {
             offer_id: payload.offer_id.clone(),
             requester_id: state.identity.node_id().to_string(),
             spec: payload.spec.clone(),
@@ -2880,15 +3006,13 @@ async fn runtime_create_deal_inner(
             } else {
                 payload.max_price_sats
             },
-        }),
-        true,
-        &provider.pinned_public_addresses,
+        },
         provider_access,
     )
     .await
     {
         Ok(quote) => quote,
-        Err(error) => return error_json(error.0, error.1).into_response(),
+        Err(error) => return quote_failure_response(error),
     };
 
     if !protocol::verify_artifact(&quote) {
@@ -3131,6 +3255,24 @@ async fn runtime_create_deal_inner(
     //
     // If the caller explicitly supplied `payload.payment`, we honour it as-is
     // (allows advanced callers to pre-mint tokens externally).
+    // Prepare the exact A2A intent now, but persist only after deterministic
+    // payment validation and before the first token mint or Deal submission.
+    let mut a2a_intent_created = false;
+    let mut a2a_pending = remote_client::uses_a2a(state.as_ref(), &provider.provider_sync_url)
+        .then(|| NewRequesterDeal {
+            deal_id: deal_artifact.hash.clone(),
+            idempotency_key: idempotency_key.clone(),
+            provider_id: provider.provider_id.clone(),
+            provider_url: provider.provider_public_url.clone(),
+            provider_sync_url: Some(provider.provider_sync_url.clone()),
+            spec: payload.spec.clone(),
+            quote: quote.clone(),
+            deal: deal_artifact.clone(),
+            status: "submission_pending".into(),
+            success_preimage: success_preimage.clone(),
+            created_at: settlement::current_unix_timestamp(),
+        });
+
     let payment_for_deal: Option<settlement::ProvidedPayment> = if quote
         .payload
         .settlement_terms
@@ -3192,6 +3334,13 @@ async fn runtime_create_deal_inner(
                     }
                 };
 
+                if let Some(pending) = a2a_pending.take() {
+                    match persist_a2a_submission_intent(state.clone(), pending).await {
+                        Ok(created) => a2a_intent_created = created,
+                        Err(error) => return error_json(error.0, error.1).into_response(),
+                    }
+                }
+
                 if let Some(guard) = spend_guard.as_mut()
                     && let Err(error) = guard.mark_external_pending().await
                 {
@@ -3236,6 +3385,13 @@ async fn runtime_create_deal_inner(
     };
     // ── end buyer-side SPT minting ─────────────────────────────────────────
 
+    if let Some(pending) = a2a_pending.take() {
+        match persist_a2a_submission_intent(state.clone(), pending).await {
+            Ok(created) => a2a_intent_created = created,
+            Err(error) => return error_json(error.0, error.1).into_response(),
+        }
+    }
+
     // The provider Deal request is the first contractual external effect for
     // caller-supplied payments and all non-Stripe rails. Persist that boundary
     // before sending it so an error or crash cannot release actual spend.
@@ -3268,7 +3424,17 @@ async fn runtime_create_deal_inner(
     .await
     {
         Ok(deal) => deal,
-        Err(error) => return error_json(error.0, error.1).into_response(),
+        Err(error) => {
+            if a2a_intent_created {
+                let mut body = error.1;
+                body["deal_id"] = json!(deal_artifact.hash);
+                body["task_id"] = json!(deal_artifact.hash);
+                body["idempotency_key"] = json!(idempotency_key);
+                body["status"] = json!("submission_pending");
+                return error_json(error.0, body).into_response();
+            }
+            return error_json(error.0, error.1).into_response();
+        }
     };
 
     if let Err(error) = verify_provider_deal_artifact_chain(&remote_deal, &quote, &deal_artifact) {
@@ -3407,7 +3573,7 @@ async fn runtime_create_deal_inner(
     // ── Buyer-side prepaid Lightning payment ───────────────────────────────
     // Only the transaction that created the durable requester record may pay.
     // An identical provider retry reuses the record and never pays twice.
-    if insert_outcome.created
+    if (insert_outcome.created || a2a_intent_created)
         && let Some(invoice) = prepaid_invoice.as_ref()
     {
         let buyer_phoenixd = state
@@ -4708,7 +4874,7 @@ pub async fn create_quote(
     headers: HeaderMap,
     relay_scope: Option<Extension<RelayGrantScope>>,
     Json(payload): Json<CreateQuoteRequest>,
-) -> impl IntoResponse {
+) -> Response {
     if relay_scope
         .as_ref()
         .is_some_and(|Extension(scope)| !scope.permits_offer_id(&payload.offer_id))
@@ -4716,7 +4882,8 @@ pub async fn create_quote(
         return error_json(
             StatusCode::NOT_FOUND,
             json!({ "error": "offer not found", "offer_id": payload.offer_id }),
-        );
+        )
+        .into_response();
     }
     let quota_identity = public_quota_identity_from_request(
         &headers,
@@ -4726,12 +4893,12 @@ pub async fn create_quote(
     if let Err(response) =
         enforce_identity_quota(&state.quote_create_quota, &quota_identity, "quote creation")
     {
-        return response;
+        return response.into_response();
     }
 
     match create_quote_record(state.clone(), payload).await {
-        Ok(quote) => (StatusCode::CREATED, Json(json!(quote))),
-        Err(error) => error_json(error.0, error.1),
+        Ok(quote) => (StatusCode::CREATED, Json(json!(quote))).into_response(),
+        Err(error) => quote_failure_response(error),
     }
 }
 
@@ -13966,7 +14133,12 @@ fn resolve_artifact_provider_offer_definition(
             );
             let source_kind = validated.source_kind.clone();
             let input_schema = validated.input_schema.clone();
-            let output_schema = validated.output_schema.clone();
+            let output_schema = crate::research_profile::annotated_output_schema(
+                &validated.output_schema,
+                payload.output_schema.as_ref(),
+                &validated.bytes,
+            )
+            .map_err(|error| (StatusCode::BAD_REQUEST, json!({"error":error})))?;
             validated_data_source = Some(validated);
             (
                 service_id.clone(),
@@ -14117,7 +14289,16 @@ fn resolve_artifact_provider_offer_definition(
                 .unwrap_or_else(|| format!("Froglet service {}", offer_id)),
         ),
         input_schema: payload.input_schema.or(default_input_schema),
-        output_schema: payload.output_schema.or(default_output_schema),
+        output_schema: if validated_data_source.is_some()
+            && payload
+                .output_schema
+                .as_ref()
+                .is_some_and(|schema| schema.get(crate::research_profile::ANNOTATION).is_some())
+        {
+            default_output_schema
+        } else {
+            payload.output_schema.or(default_output_schema)
+        },
         verification: payload.verification,
         terms_hash: None,
         confidential_profile_hash: None,
@@ -14943,6 +15124,14 @@ async fn create_quote_record(
         )
     })?;
 
+    persist_created_quote(state, quote.clone()).await?;
+    Ok(quote)
+}
+
+async fn persist_created_quote(
+    state: Arc<AppState>,
+    quote: SignedArtifact<QuotePayload>,
+) -> Result<(), ApiFailure> {
     let artifact_json = serde_json::to_string(&quote).map_err(|error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -14958,6 +15147,12 @@ async fn create_quote_record(
         .db
         .with_write_conn(move |conn| {
             db::with_immediate_transaction(conn, |conn| {
+                // Kernel v1 Quotes are single-use unless an explicit reusable
+                // Quote extension is present. Identical second-resolution
+                // issuance must not give two callers the same admission token.
+                if deals::get_quote(conn, &quote_hash)?.is_some() {
+                    return Ok(false);
+                }
                 db::insert_artifact_document(
                     conn,
                     &quote_hash,
@@ -14967,22 +15162,87 @@ async fn create_quote_record(
                     quote_for_db.created_at,
                     &artifact_json,
                 )?;
-                if deals::get_quote(conn, &quote_hash)?.is_none() {
-                    deals::insert_quote(conn, &quote_for_db)?;
-                }
-                Ok(())
+                deals::insert_quote(conn, &quote_for_db)?;
+                Ok(true)
             })
         })
         .await;
 
-    persisted.map_err(|error| {
+    let created = persisted.map_err(|error| {
         tracing::error!("Failed to persist quote {}: {error}", quote.hash);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": "failed to persist quote" }),
         )
     })?;
-    Ok(quote)
+    if !created {
+        return Err(quote_issuance_collision());
+    }
+    Ok(())
+}
+
+const QUOTE_COLLISION_RETRIES: usize = 3;
+
+fn quote_issuance_collision() -> ApiFailure {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({
+            "error": "an identical single-use quote was already issued this second; retry quote creation",
+            "code": "quote_issuance_collision",
+            "a2a_reason": "QUOTE_ISSUANCE_COLLISION",
+            "retry_after_secs": 1,
+        }),
+    )
+}
+
+fn is_quote_issuance_collision(failure: &ApiFailure) -> bool {
+    failure.0 == StatusCode::SERVICE_UNAVAILABLE
+        && failure.1["code"] == "quote_issuance_collision"
+        && failure.1["retry_after_secs"] == 1
+}
+
+fn quote_failure_response(failure: ApiFailure) -> Response {
+    let retry = is_quote_issuance_collision(&failure);
+    let mut response = error_json(failure.0, failure.1).into_response();
+    if retry {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    }
+    response
+}
+
+async fn fetch_runtime_quote(
+    state: &AppState,
+    provider: &ResolvedProvider,
+    request: &CreateQuoteRequest,
+    access: Option<(&str, &str)>,
+) -> Result<SignedArtifact<QuotePayload>, ApiFailure> {
+    for attempt in 0..=QUOTE_COLLISION_RETRIES {
+        let result = remote_json_request_inner(
+            state,
+            reqwest::Method::POST,
+            format!("{}/v1/provider/quotes", provider.provider_sync_url),
+            Some(request),
+            true,
+            &provider.pinned_public_addresses,
+            access,
+        )
+        .await;
+        match result {
+            Err(ref failure)
+                if is_quote_issuance_collision(failure) && attempt < QUOTE_COLLISION_RETRIES =>
+            {
+                // No Deal, payment, spend reservation or durable submission
+                // intent exists yet. Never apply this retry to Deal submission
+                // errors or lost responses, which require exact intent recovery.
+                // Quote attempts remain metered by the provider's finite policy.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final quote attempt always returns")
 }
 
 const STRIPE_PAYMENT_MATERIALIZATION_KIND: &str = "stripe_payment_reservation";
@@ -23766,6 +24026,7 @@ pub(crate) mod tests {
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
             hosted_trial_origin_secret: None,
+            a2a: Default::default(),
         };
 
         let db = DbPool::open(&db_path).expect("db pool");
@@ -29726,7 +29987,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn test_lightning_bundle(
+    pub(super) fn test_lightning_bundle(
         state: &AppState,
         quote: &SignedArtifact<QuotePayload>,
         deal: &SignedArtifact<DealPayload>,
@@ -29750,7 +30011,7 @@ pub(crate) mod tests {
         .expect("bundle")
     }
 
-    fn signed_lightning_quote_for_state(
+    pub(super) fn signed_lightning_quote_for_state(
         state: &AppState,
         requester_id: String,
         created_at: i64,
@@ -30419,6 +30680,57 @@ pub(crate) mod tests {
             "unexpected payload: {}",
             error.1
         );
+    }
+
+    #[tokio::test]
+    async fn public_feed_page_verifies_offline_with_froglet_verify() {
+        // What a counterparty gets from `curl /v1/feed` must be what the offline
+        // verifier reads. These once drifted: the verifier expected the artifact
+        // itself in each `artifacts` item, while the node serves an index entry
+        // with the artifact under `document`.
+        let state = test_app_state(PaymentBackend::None);
+        publish_test_python_service(&state, "feed-verifier-demo", 0, "active").await;
+
+        let response = public_router(state)
+            .oneshot(runtime_request(
+                Method::GET,
+                "/v1/feed?limit=100",
+                None,
+                None,
+            ))
+            .await
+            .expect("public feed response");
+        let (status, feed): (StatusCode, Value) = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "unexpected feed response: {feed}");
+
+        let served: Vec<Value> = feed["artifacts"]
+            .as_array()
+            .expect("feed artifacts")
+            .iter()
+            .map(|entry| entry["document"].clone())
+            .collect();
+        let served_kinds =
+            |kind: &str| served.iter().filter(|d| d["artifact_type"] == kind).count();
+        assert!(
+            served_kinds(ARTIFACT_KIND_DESCRIPTOR) >= 1,
+            "no descriptor in {feed}"
+        );
+        assert!(served_kinds(ARTIFACT_KIND_OFFER) >= 1, "no offer in {feed}");
+
+        let documents = froglet_verify::extract_documents(&feed)
+            .expect("the verifier must accept the page the node serves");
+        assert_eq!(documents, served);
+        for document in &documents {
+            let report = froglet_verify::verify_document(document, None);
+            assert_eq!(
+                report.status,
+                froglet_verify::DocumentStatus::Verified,
+                "{} {} from the served feed did not verify offline: {:?}",
+                report.artifact_type,
+                report.hash,
+                report.semantics
+            );
+        }
     }
 
     #[tokio::test]
@@ -34759,12 +35071,12 @@ pub(crate) mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct ScriptedStripeDriver {
+    pub(super) struct ScriptedStripeDriver {
         state: Arc<std::sync::Mutex<ScriptedStripeDriverState>>,
     }
 
     impl ScriptedStripeDriver {
-        fn with_script(
+        pub(super) fn with_script(
             commit_results: impl IntoIterator<Item = bool>,
             release_results: impl IntoIterator<Item = bool>,
             reservation_states: impl IntoIterator<Item = settlement::PaymentReservationState>,
@@ -34779,7 +35091,7 @@ pub(crate) mod tests {
             }
         }
 
-        fn calls(&self) -> Vec<(String, String)> {
+        pub(super) fn calls(&self) -> Vec<(String, String)> {
             self.state.lock().expect("script lock").calls.clone()
         }
     }
@@ -34889,7 +35201,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn scripted_stripe_state(driver: &ScriptedStripeDriver) -> Arc<AppState> {
+    pub(super) fn scripted_stripe_state(driver: &ScriptedStripeDriver) -> Arc<AppState> {
         let mut state = test_app_state(PaymentBackend::Stripe);
         Arc::get_mut(&mut state)
             .expect("unique state")

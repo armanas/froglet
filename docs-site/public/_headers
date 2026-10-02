@@ -5,3 +5,7 @@
 /install/agent.md
   Content-Type: text/markdown; charset=utf-8
   X-Content-Type-Options: nosniff
+
+# Bundled build assets (fonts, scripts, styles) are content-hashed: a name never changes its content.
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable

@@ -1,6 +1,6 @@
 ---
 title: "The Deal Flow"
-description: Six artifacts, one evidence chain.
+description: Signed terms and reported outcomes, with an additional artifact for Lightning escrow.
 ---
 
 import ChainCanvasInit from '../../../components/ChainCanvasInit.astro';
@@ -12,13 +12,13 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
 <div class="plot-header">
   <div>
     <p class="plot-title">Click the chain or use the buttons below</p>
-    <p class="plot-subtitle">Every artifact references the previous one by hash. Tamper with any link and the chain breaks.</p>
+    <p class="plot-subtitle">Lightning escrow example: signed records bind identities, terms and reported outcomes through hashes. Changing a bound field breaks verification.</p>
   </div>
 </div>
 <div class="plot-metrics">
   <div class="plot-metric"><strong>5 provider signatures</strong><span>Descriptor, offer, quote, invoice bundle, and receipt come from the provider.</span></div>
-  <div class="plot-metric"><strong>1 requester signature</strong><span>The deal is the requester's cryptographic commitment to pay.</span></div>
-  <div class="plot-metric"><strong>1 terminal proof</strong><span>The receipt is the final artifact any third party can verify later.</span></div>
+  <div class="plot-metric"><strong>1 requester signature</strong><span>The deal is the requester's cryptographic commitment to the quoted terms.</span></div>
+  <div class="plot-metric"><strong>1 terminal record</strong><span>The receipt is the provider's signed report of the outcome, verifiable later.</span></div>
 </div>
 <canvas id="chain-canvas" class="plot-canvas" width="760" height="170" role="img" aria-label="Interactive artifact chain: descriptor, offer, quote, deal, invoice, receipt" style="height:170px;cursor:pointer"></canvas>
 <noscript>
@@ -30,7 +30,7 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
     <span style="color:#fbbf24">Invoice</span> →
     <span style="color:#4ade80">Receipt</span>
   </div>
-  <p class="plot-note">Each artifact references the previous one by SHA-256 hash. Enable JavaScript for the interactive version.</p>
+  <p class="plot-note">Artifacts bind the relevant signed records by SHA-256 hashes. Enable JavaScript for the interactive version.</p>
 </noscript>
 <div id="chain-buttons" class="plot-button-row"></div>
 <div id="chain-detail" class="learn-card plot-detail" style="margin-top:12px;min-height:60px"></div>
@@ -38,6 +38,12 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
 </div>
 
 <ChainCanvasInit />
+
+The diagram shows **Lightning escrow**, including its InvoiceBundle after the
+Deal. A free exchange uses five artifacts: Descriptor, Offer, Quote, Deal and
+Receipt (four provider signatures and one requester signature). Prepaid
+exchanges also omit the InvoiceBundle. A signature authenticates the provider's
+reported outcome; it is not proof that arbitrary computation was performed.
 
 ## Message exchange
 
@@ -70,13 +76,13 @@ import DealFlowSequenceInit from '../../../components/DealFlowSequenceInit.astro
 | Descriptor | **Provider** | Declares identity |
 | Offer | **Provider** | Commits to pricing |
 | Quote | **Provider** | Prices specific workload |
-| Deal | **Requester** | Commits to pay |
-| InvoiceBundle | **Provider** | Payment instructions |
-| Receipt | **Provider** | Proof of execution |
+| Deal | **Requester** | Accepts quoted terms |
+| InvoiceBundle | **Provider** | Lightning escrow payment instructions, when applicable |
+| Receipt | **Provider** | Signed reported outcome |
 
-The **Deal** is the only artifact signed by the requester — it's their cryptographic commitment to pay. Everything else is signed by the provider.
+The **Deal** is the only artifact signed by the requester — it accepts the Quote's terms, including payment when applicable. Everything else is signed by the provider.
 
-:::tip[The receipt is proof — of exactly this]
+:::tip[What the receipt establishes]
 Anyone holding the receipt can verify: the provider signed it, the result hash matches what the provider committed to, the recorded settlement state is internally consistent (on Lightning, attested by the payment preimage), and the chain is unbroken. What it does **not** prove is that the result is *correct* — a receipt makes outcomes attributable, not infallible. Disputes on the hosted marketplace go through an operator-adjudicated [arbiter](/learn/economics/#disputes-today-the-arbiter); the math fixes the evidence, not the verdict.
 :::
 

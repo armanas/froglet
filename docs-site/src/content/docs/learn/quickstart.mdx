@@ -59,6 +59,47 @@ that binary or its default data directory. If `prepare-service` prints
 path first: older binaries can mistake an unknown command for a daemon start.
 Keep the working node running and use the installed command recorded by setup.
 
+## Optional: run the local compute demo from source
+
+For an engineering evaluation of native MCP computation and the optional A2A
+adapter, use the current source checkout. This is separate from the verified
+release installation above: an older installed binary may not contain
+`run_compute` or read-only `get_task`.
+
+Prerequisites: Python 3.10+, Cargo/Rust, and the `wasm32-unknown-unknown` target.
+From a trusted Froglet checkout:
+
+```bash
+rustup target add wasm32-unknown-unknown
+python3 examples/a2a_compute_demo.py
+```
+
+The runner builds the node and Rust Wasm adder with locked dependencies, starts
+isolated Alice and Bob processes on localhost, and sends `{"a":6,"b":7}`
+through native MCP and configured A2A. It checks `{"sum":13,"product":42}`,
+receipt evidence, exact retry, changed-input refusal, termination of a
+nonterminating program and Bob's restart. The default run creates fresh
+identities and private state, then stops its processes. No wallet, payment
+backend or public endpoint is configured; this
+demonstrates a free configured-counterparty workflow, not real-money settlement.
+
+To keep both nodes available while connecting your agent host, after the first
+build run:
+
+```bash
+python3 examples/a2a_compute_demo.py --no-build --serve
+```
+
+Use the emitted private `mcp-host.json` and copyable `agent-call.json` while the
+runner remains active. It does not modify your agent settings. The call supplies
+an explicit retry key; retain the same key for the same program/input/provider,
+and recover with `get_task` using your call's returned `deal_id`. Ctrl-C stops
+both nodes and removes their temporary state. These protocol checks do not
+establish that a particular IDE or agent host has been configured.
+
+See [Agent Interoperability](/learn/agent-interoperability/) for the supported
+transport and recovery limits and the source-to-release deployment steps.
+
 ## If you get stuck
 
 | What you see | What to do next |
@@ -380,6 +421,7 @@ From a trusted checkout, run
 ## Related
 
 - [Connect Agents](/learn/agents/)
+- [Agent Interoperability](/learn/agent-interoperability/)
 - [Payment Rails](/learn/payment-rails/)
 - [Marketplace](/marketplace/overview/)
 

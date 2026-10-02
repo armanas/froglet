@@ -4,6 +4,7 @@ import '../styles/index-page.css';
 import AgentMeta from '../components/AgentMeta.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
+import FontPreload from '../components/FontPreload.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 
 const UPDATED = 'June 12, 2026';
@@ -30,6 +31,7 @@ const UPDATED = 'June 12, 2026';
 <meta name="twitter:image" content="https://froglet.dev/og/default.png" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <AgentMeta route="terms" />
+<FontPreload />
 <ThemeProvider />
 </head>
 <body data-screen-label="Terms">

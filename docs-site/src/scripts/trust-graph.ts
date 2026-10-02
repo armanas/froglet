@@ -61,10 +61,10 @@ export const TRUST_GRAPH_LAYOUT = {
   LARGE_NUMBER_THRESHOLD: 1000,
   FONTS: {
     axisLabel: '11px Inter, system-ui, sans-serif',
-    tick: '10px JetBrains Mono, monospace',
+    tick: "10px 'JetBrains Mono Variable', 'JetBrains Mono', monospace",
     zoneLabel: 'bold 11px Inter, system-ui, sans-serif',
     ratioLabel: 'bold 10px Inter, system-ui, sans-serif',
-    payoffLabel: '10px JetBrains Mono, monospace',
+    payoffLabel: "10px 'JetBrains Mono Variable', 'JetBrains Mono', monospace",
   },
   COLORS: {
     background: '#0d1117',

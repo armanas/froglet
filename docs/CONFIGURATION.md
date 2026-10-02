@@ -241,7 +241,7 @@ payee; Froglet does not route a marketplace payout or take a platform fee.
 | `FROGLET_WASM_CONCURRENCY_LIMIT` | `16` | Maximum concurrent WASM executions |
 | `FROGLET_WASM_MODULE_CACHE_CAPACITY` | `128` | Number of compiled WASM modules to cache |
 | `FROGLET_WASM_POLICY_PATH` | *(none)* | Path to a TOML WASM policy file for host capabilities (HTTP, SQLite) |
-| `FROGLET_PROCESS_CONCURRENCY` | `4` | Maximum concurrent Python/container process executions |
+| `FROGLET_PROCESS_CONCURRENCY` | `4` | Maximum concurrent process executions, including built-in selected-data services, Python and containers |
 | `FROGLET_PROCESS_OUTPUT_MAX_BYTES` | `1048576` | Maximum captured stdout/stderr bytes per process stream |
 | `FROGLET_PROCESS_MEMORY_MAX_BYTES` | `536870912` | Memory cap applied to Python rlimits and container `--memory` |
 | `FROGLET_PROCESS_PIDS_LIMIT` | `128` | PID/process cap applied to container `--pids-limit`; sandboxed inline Python is fixed to one process/thread |

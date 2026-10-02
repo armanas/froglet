@@ -1,0 +1,15 @@
+---
+// A command or output block. The copy button carries the exact text shown, so what is copied cannot drift
+// from what is displayed. Styled by developers.css.
+interface Props {
+  code: string;
+  label?: string;
+  copy?: boolean;
+  scroll?: boolean;
+}
+const { code, label = 'bash', copy = true, scroll = false } = Astro.props;
+---
+<figure class:list={['dev-term', scroll && 'dev-term--scroll']}>
+  <figcaption><span class="dev-term__label">{label}</span>{copy && <button type="button" class="dev-term__copy" data-copy={code} aria-label={`Copy the ${label} snippet`}>Copy</button>}</figcaption>
+  <pre tabindex="0"><code>{code}</code></pre>
+</figure>

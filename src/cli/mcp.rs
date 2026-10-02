@@ -139,7 +139,7 @@ fn tools_list() -> Value {
     let mut schema = json!({
         "tools": [{
             "name": "froglet",
-            "description": "Inspect, invoke, prove, publish, and operate publications through the locally installed Froglet node. marketplace_publish is a two-step plan/approval action for public hosting; lifecycle actions delegate to the node's canonical provider-control API.",
+            "description": "Inspect, invoke, compute, prove, publish, and operate publications through the locally installed Froglet node. run_compute accepts one bounded Wasm v1 JSON program as hex or an absolute local file path with an explicit idempotency_key; execution limits come from the provider's signed Quote. Paid work requires an explicit max_price_sats and the existing requester wallet/budget. get_task reads an existing deal without resubmitting or paying. marketplace_publish is a two-step plan/approval action for public hosting; lifecycle actions delegate to the node's canonical provider-control API.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -156,6 +156,7 @@ fn tools_list() -> Value {
                             "open_status",
                             "inspect_service", "download_file", "file_abort",
                             "invoke_service",
+                            "run_compute", "get_task",
                             "local_proof",
                             "marketplace_publish",
                             "publication_status",
@@ -173,11 +174,15 @@ fn tools_list() -> Value {
                         "type": "string",
                         "description": "Service identifier; invoke_service accepts service_url instead. Required for publication lifecycle actions."
                     },
-                    "max_price_sats": {"type":"integer", "minimum":0, "description":"Explicit per-call Lightning price ceiling for invoke_service; defaults to 0 (free only). Paid calls also require a buyer wallet and runtime cumulative spend budget."},
+                    "max_price_sats": {"type":"integer", "minimum":0, "description":"Explicit per-call Lightning price ceiling for invoke_service/run_compute; defaults to 0 (free only). Paid calls also require a buyer wallet and runtime cumulative spend budget."},
                     "service_url": {"type":"string", "description":"Froglet share URL. inspect_service verifies public metadata without executing; invoke_service resolves the same URL. Cannot be combined with service_id or provider overrides."},
-                    "response_format": {"enum":["full","compact"], "description":"full (default) includes JSON text for older clients. compact avoids duplicating structured results in text for inspect_service and invoke_service."},
+                    "response_format": {"enum":["full","compact"], "description":"full (default) includes JSON text for older clients. compact avoids duplicating structured results in text for inspect_service, invoke_service, run_compute and get_task."},
                     "summary": {"type":"string", "description":"Plain-language service purpose and scope for prepare_service, up to 500 characters."},
+                    "research_profile": {"type":"object", "description":"Optional selected-data declaration froglet.research-profile/v1: exact fields/types/units, identifier namespaces/versions/prefixes, public provenance and mapping assumptions. Preparation checks every selected row; publication signs it inside output_schema. Declarations do not establish scientific truth or authorization. Omit private names, paths or credentials."},
                     "input": {},
+                    "wasm_module_hex": {"type":"string", "minLength":16,"maxLength":524288,"pattern":"^[0-9a-fA-F]+$", "description":"run_compute: complete inline Wasm v1 binary in hex, exporting the froglet.wasm.run_json.v1 ABI. Source text, OCI packages, host capabilities and other runtimes are not supported by this native action."},
+                    "task_id": {"type":"string", "description":"Existing requester deal_id for read-only get_task. A pending submission returns this durable reference as deal_id."},
+                    "timeout_secs": {"type":"integer", "minimum":0,"maximum":60,"description":"run_compute polling duration after submission; defaults to 15 seconds. Zero returns immediately after admission. A timeout returns the existing deal and idempotency key for get_task recovery."},
                     "source": {"type":"string", "description":"Absolute path to JSON, CSV, SQLite, WAT or Wasm, or a regular file when file options are supplied. Preparation only."},
                     "file": {"type":"object", "description":"Download-only file options; explicitly choose filename, expiry and finite allowances.", "additionalProperties":false,"required":["filename","expires_at","max_downloads","max_transfer_bytes"],"properties":{"filename":{"type":"string"},"media_type":{"type":"string"},"expires_at":{"type":"integer"},"max_downloads":{"type":"integer","minimum":1},"max_transfer_bytes":{"type":"integer","minimum":1}}},
                     "destination": {"type":"string", "description":"Explicit absolute directory for generated service material; existing unrelated projects are never overwritten."},
@@ -185,8 +190,8 @@ fn tools_list() -> Value {
                     "csv_columns": {"type":"array", "items":{"type":"object", "properties":{"name":{"type":"string"},"type":{"enum":["string","integer","number","boolean"]},"nullable":{"type":"boolean"},"indexed":{"type":"boolean"}}, "required":["name","type"], "additionalProperties":false}},
                     "example_input": {"description":"A meaningful local example. Required for Wasm; a selected-row lookup is generated for data."},
                     "provider_id": {"type":"string", "pattern":"^[0-9a-f]{64}$", "description":"Provider identity from a shared service link. Selects remote invocation."},
-                    "idempotency_key": {"type":"string", "description":"Reuse the same key and input to reconcile an uncertain invocation; use a new key for a new call."},
-                    "provider_url": {"type":"string", "description":"Public HTTPS origin from a shared service link. Requires provider_id."},
+                    "idempotency_key": {"type":"string", "description":"Required for run_compute, 1–128 UTF-8 bytes. Reuse the same key, program, input and provider to reconcile an uncertain submission; use a new key for a new call."},
+                    "provider_url": {"type":"string", "description":"Provider origin; requires provider_id. invoke_service requires a public HTTPS share-link origin. run_compute delegates endpoint/egress validation and configured transport selection to the local requester runtime."},
                     "revision_hash": {
                         "type": "string",
                         "pattern": "^[0-9a-f]{64}$",
@@ -236,6 +241,7 @@ fn tools_list() -> Value {
         }]
     });
     schema["tools"][0]["inputSchema"]["properties"].as_object_mut().unwrap().extend(json!({
+                    "wasm_module_path": {"type":"string", "description":"Native run_compute only: absolute path to a local regular nonsymlink Wasm v1 binary, at most 262144 bytes. Mutually exclusive with wasm_module_hex. Reads the compiled program and uses the same bounded inline execution path; no source compilation or host capabilities."},
                     "operation": {"type":"object","description":"Fixed HTTP operation: HTTPS url, GET/POST method, input_schema/output_schema (draft 2020-12), optional auth_profile/fixed_body, timeout_ms, max_request_bytes and max_response_bytes. Provider separately approves its exact hash; preparation makes no upstream call."},
                     "access_token_file": {"type":"string","description":"Absolute private mode-0600 invitation file for invocation or download; never paste credentials into prompts."},
                     "token_file": {"type":"string","description":"New absolute private file in which invite_create stores the credential; never overwritten."},
@@ -267,8 +273,22 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
 
     let compact = match arguments.get("response_format").and_then(Value::as_str) {
         None if !arguments.contains_key("response_format") => false,
-        Some("full") if matches!(action, "inspect_service" | "invoke_service") => false,
-        Some("compact") if matches!(action, "inspect_service" | "invoke_service") => true,
+        Some("full")
+            if matches!(
+                action,
+                "inspect_service" | "invoke_service" | "run_compute" | "get_task"
+            ) =>
+        {
+            false
+        }
+        Some("compact")
+            if matches!(
+                action,
+                "inspect_service" | "invoke_service" | "run_compute" | "get_task"
+            ) =>
+        {
+            true
+        }
         _ => {
             return Err(
                 "response_format is only supported for inspection/invocation and must be full or compact".into(),
@@ -350,6 +370,8 @@ async fn handle_tool_call(request: &Value) -> Result<Value, String> {
             )
             .await
         }
+        "run_compute" => run_compute(arguments).await,
+        "get_task" => get_task(arguments).await,
         "marketplace_publish" => marketplace_publish(arguments).await,
         "publication_status"
         | "publication_logs"
@@ -891,6 +913,180 @@ async fn invoke(service_id: &str, input: Value) -> Result<Value, CliError> {
     invoke_selected(service_id, input, None, None, None, 0, None, None).await
 }
 
+fn require_action_fields(
+    arguments: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+) -> Result<(), CliError> {
+    if let Some(field) = arguments
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(CliError::BadArgs(format!(
+            "unsupported field {field:?} for this native action"
+        )));
+    }
+    Ok(())
+}
+
+async fn requester_options(
+    arguments: &serde_json::Map<String, Value>,
+    input: Value,
+    wait_timeout: Duration,
+) -> Result<InvokeOptions, CliError> {
+    let string = |field| invoke_string(arguments, field).map_err(CliError::BadArgs);
+    Ok(InvokeOptions {
+        service_id: String::new(),
+        input,
+        daemon_url: base_url(
+            "FROGLET_DAEMON_URL",
+            &base_url("FROGLET_PROVIDER_URL", DEFAULT_PROVIDER_URL),
+        ),
+        runtime_url: base_url("FROGLET_RUNTIME_URL", DEFAULT_RUNTIME_URL),
+        runtime_token: resolve_runtime_auth_token().await?,
+        access_token_file: string("access_token_file")?.map(PathBuf::from),
+        provider_id_override: string("provider_id")?.map(str::to_string),
+        idempotency_key: string("idempotency_key")?.map(str::to_string),
+        max_price_sats: Some(invoke_price_cap(arguments).map_err(CliError::BadArgs)?),
+        wait_timeout,
+        poll_interval: Duration::from_millis(250),
+    })
+}
+
+fn compute_module_hex(arguments: &serde_json::Map<String, Value>) -> Result<String, CliError> {
+    use std::io::Read;
+
+    let inline = invoke_string(arguments, "wasm_module_hex").map_err(CliError::BadArgs)?;
+    let path = invoke_string(arguments, "wasm_module_path").map_err(CliError::BadArgs)?;
+    match (inline, path) {
+        (Some(module), None) => Ok(module.to_owned()),
+        (None, Some(path)) => {
+            let path = std::path::Path::new(path);
+            if !path.is_absolute() {
+                return Err(CliError::BadArgs(
+                    "wasm_module_path must be absolute".into(),
+                ));
+            }
+            let invalid_file = || {
+                CliError::BadArgs(
+                    "wasm_module_path must be a readable regular nonsymlink file".into(),
+                )
+            };
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| invalid_file())?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(invalid_file());
+            }
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            }
+            let file = options.open(path).map_err(|_| invalid_file())?;
+            let metadata = file.metadata().map_err(|_| invalid_file())?;
+            if !metadata.is_file() {
+                return Err(invalid_file());
+            }
+            let limit = super::invoke::MAX_INLINE_WASM_HEX_BYTES / 2;
+            let too_large =
+                || CliError::BadArgs(format!("wasm_module_path exceeds the {limit}-byte limit"));
+            if metadata.len() > limit as u64 {
+                return Err(too_large());
+            }
+            let mut module = Vec::new();
+            file.take((limit + 1) as u64)
+                .read_to_end(&mut module)
+                .map_err(|_| invalid_file())?;
+            if module.len() > limit {
+                return Err(too_large());
+            }
+            Ok(hex::encode(module))
+        }
+        (Some(_), Some(_)) => Err(CliError::BadArgs(
+            "wasm_module_hex and wasm_module_path are mutually exclusive".into(),
+        )),
+        (None, None) => Err(CliError::BadArgs(
+            "run_compute requires wasm_module_hex or wasm_module_path".into(),
+        )),
+    }
+}
+
+async fn run_compute(arguments: &serde_json::Map<String, Value>) -> Result<Value, CliError> {
+    require_action_fields(
+        arguments,
+        &[
+            "action",
+            "wasm_module_hex",
+            "wasm_module_path",
+            "input",
+            "provider_id",
+            "provider_url",
+            "idempotency_key",
+            "max_price_sats",
+            "timeout_secs",
+            "response_format",
+            "access_token_file",
+        ],
+    )?;
+    let module = compute_module_hex(arguments)?;
+    let input = arguments.get("input").cloned().ok_or_else(|| {
+        CliError::BadArgs("run_compute requires explicit input (null is allowed)".into())
+    })?;
+    let key = invoke_string(arguments, "idempotency_key")
+        .map_err(CliError::BadArgs)?
+        .ok_or_else(|| {
+            CliError::BadArgs("run_compute requires an explicit idempotency_key".into())
+        })?;
+    super::invoke::validate_idempotency_key(key)?;
+    super::invoke::build_inline_wasm_submission(&module, input.clone())?;
+    let timeout = match arguments.get("timeout_secs") {
+        None => 15,
+        Some(value) => value.as_u64().filter(|value| *value <= 60).ok_or_else(|| {
+            CliError::BadArgs("timeout_secs must be an integer from 0 to 60".into())
+        })?,
+    };
+    let provider_url = invoke_string(arguments, "provider_url").map_err(CliError::BadArgs)?;
+    if provider_url.is_some()
+        && invoke_string(arguments, "provider_id")
+            .map_err(CliError::BadArgs)?
+            .is_none()
+    {
+        return Err(CliError::BadArgs(
+            "provider_url requires provider_id".into(),
+        ));
+    }
+    let options = requester_options(arguments, input, Duration::from_secs(timeout)).await?;
+    let report = super::invoke::run_inline_wasm(&options, provider_url, &module).await?;
+    let failed =
+        report.terminal && !matches!(report.status.as_str(), "succeeded" | "completed" | "done");
+    let payload = serde_json::to_value(report).map_err(|error| {
+        CliError::Other(format!("compute report serialization failed: {error}"))
+    })?;
+    if failed {
+        return Err(CliError::Structured {
+            report: payload,
+            exit_code: 1,
+        });
+    }
+    Ok(payload)
+}
+
+async fn get_task(arguments: &serde_json::Map<String, Value>) -> Result<Value, CliError> {
+    require_action_fields(
+        arguments,
+        &["action", "task_id", "provider_id", "response_format"],
+    )?;
+    let task_id = invoke_string(arguments, "task_id")
+        .map_err(CliError::BadArgs)?
+        .ok_or_else(|| {
+            CliError::BadArgs("get_task requires task_id from an existing deal".into())
+        })?;
+    let options = requester_options(arguments, Value::Null, Duration::ZERO).await?;
+    let report = super::invoke::get_task(&options, task_id).await?;
+    serde_json::to_value(report)
+        .map_err(|error| CliError::Other(format!("task report serialization failed: {error}")))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn invoke_selected(
     service_id: &str,
@@ -1042,6 +1238,8 @@ mod tests {
             .and_then(Value::as_array)
             .expect("action enum");
         for action in [
+            "run_compute",
+            "get_task",
             "prepare_service",
             "doctor",
             "check_updates",
@@ -1073,6 +1271,152 @@ mod tests {
                 .iter()
                 .any(|action| action == "managed_operation_compensate")
         );
+    }
+
+    #[tokio::test]
+    async fn compute_dispatch_rejects_incomplete_or_unsupported_work_before_network() {
+        let module = hex::encode(b"\0asm\x01\0\0\0");
+        for (arguments, expected) in [
+            (
+                json!({"action":"run_compute","wasm_module_hex":module,"input":null}),
+                "idempotency_key",
+            ),
+            (
+                json!({"action":"run_compute","wasm_module_hex":module,"idempotency_key":"key"}),
+                "explicit input",
+            ),
+            (
+                json!({"action":"run_compute","wasm_module_hex":"xyz","input":null,"idempotency_key":"key"}),
+                "valid even-length hex",
+            ),
+            (
+                json!({"action":"run_compute","wasm_module_hex":module,"input":null,"idempotency_key":"key","inline_source":"print(1)"}),
+                "unsupported field",
+            ),
+            (
+                json!({"action":"run_compute","wasm_module_hex":module,"input":null,"idempotency_key":"key","timeout_secs":61}),
+                "0 to 60",
+            ),
+            (
+                json!({"action":"get_task","task_id":"deal","max_price_sats":25}),
+                "unsupported field",
+            ),
+        ] {
+            let response = handle_request(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"froglet","arguments":arguments}}))
+            .await
+            .unwrap();
+            assert_eq!(response["result"]["isError"], true, "{response}");
+            assert!(
+                response["result"]["structuredContent"]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected),
+                "{response}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_file_and_hex_build_identical_workload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("program.wasm");
+        let module = b"\0asm\x01\0\0\0";
+        std::fs::write(&path, module).unwrap();
+        let file_args = json!({"wasm_module_path":path});
+        let inline_args = json!({"wasm_module_hex":hex::encode(module).to_uppercase()});
+        let input = json!({"terms":["DEMO:a"]});
+        let from_file = super::super::invoke::build_inline_wasm_submission(
+            &compute_module_hex(file_args.as_object().unwrap()).unwrap(),
+            input.clone(),
+        )
+        .unwrap();
+        let from_hex = super::super::invoke::build_inline_wasm_submission(
+            &compute_module_hex(inline_args.as_object().unwrap()).unwrap(),
+            input,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(from_file).unwrap(),
+            serde_json::to_value(from_hex).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn compute_file_rejects_ambiguous_invalid_and_oversized_paths_before_network() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("program.wasm");
+        std::fs::write(&path, b"\0asm\x01\0\0\0").unwrap();
+        let oversized = directory.path().join("oversized.wasm");
+        std::fs::write(
+            &oversized,
+            vec![0; super::super::invoke::MAX_INLINE_WASM_HEX_BYTES / 2 + 1],
+        )
+        .unwrap();
+        let invalid = directory.path().join("source.wat");
+        std::fs::write(&invalid, b"(module)").unwrap();
+        for (module_args, expected) in [
+            (json!({}), "requires wasm_module_hex or wasm_module_path"),
+            (
+                json!({"wasm_module_hex":"0061736d01000000", "wasm_module_path":path}),
+                "mutually exclusive",
+            ),
+            (
+                json!({"wasm_module_path":"program.wasm"}),
+                "must be absolute",
+            ),
+            (
+                json!({"wasm_module_path":directory.path()}),
+                "regular nonsymlink",
+            ),
+            (
+                json!({"wasm_module_path":directory.path().join("missing.wasm")}),
+                "regular nonsymlink",
+            ),
+            (json!({"wasm_module_path":oversized}), "262144-byte limit"),
+            (json!({"wasm_module_path":invalid}), "Wasm v1 binary"),
+        ] {
+            let mut arguments = module_args;
+            arguments["action"] = json!("run_compute");
+            arguments["input"] = Value::Null;
+            arguments["idempotency_key"] = json!("file-test");
+            let response = handle_request(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"froglet","arguments":arguments}}))
+            .await
+            .unwrap();
+            assert_eq!(response["result"]["isError"], true, "{response}");
+            let error = response["result"]["structuredContent"]["error"]
+                .as_str()
+                .unwrap();
+            assert!(error.contains(expected), "{response}");
+            assert!(
+                !error.contains("(module)"),
+                "source contents must not be echoed"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compute_file_refuses_symlinks_and_fifos_without_reading_them() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("program.wasm");
+        std::fs::write(&path, b"\0asm\x01\0\0\0").unwrap();
+        let link = directory.path().join("linked.wasm");
+        symlink(&path, &link).unwrap();
+        let fifo = directory.path().join("fifo.wasm");
+        let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        for candidate in [link, fifo] {
+            let args = json!({"wasm_module_path":candidate});
+            assert!(
+                compute_module_hex(args.as_object().unwrap())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("regular nonsymlink")
+            );
+        }
     }
 
     #[tokio::test]

@@ -2,9 +2,9 @@
 //!
 //! This crate is the distribution facade over the `froglet-protocol` kernel:
 //! a JSON-document-level API for counterparties and auditors who hold artifact
-//! JSON (from a feed page, a dispute bundle, or a conformance fixture) and
-//! want a verdict without running a node. It performs no network calls, reads
-//! no clock (expiry checks are opt-in via `now`), and builds for
+//! JSON (from a node's `/v1/feed` page, a dispute bundle, or a conformance
+//! fixture) and want a verdict without running a node. It performs no network
+//! calls, reads no clock (expiry checks are opt-in via `now`), and builds for
 //! `wasm32-unknown-unknown`.
 //!
 //! Verification algorithm (normative, see docs/SPEC.md):
@@ -177,6 +177,56 @@ mod service_link_tests {
             )
             .valid
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use froglet_protocol::crypto;
+    use serde_json::json;
+
+    /// The vectors' free offer, signed again by the vectors' provider with the runtime it names changed.
+    fn offer_naming(runtime: &str) -> Value {
+        let fixture: Value = serde_json::from_str(include_str!("../../conformance/kernel_v1.json"))
+            .expect("conformance fixture");
+        let mut payload = fixture["artifacts"]["free_offer"]["artifact"]["payload"].clone();
+        payload["execution_profile"]["runtime"] = json!(runtime);
+        let key = crypto::signing_key_from_seed_bytes(&[0x11; 32]).expect("fixture key");
+        let provider = crypto::public_key_hex(&key);
+        assert_eq!(payload["provider_id"], json!(provider));
+        serde_json::to_value(
+            froglet_protocol::protocol::sign_artifact(
+                &provider,
+                |message| crypto::sign_message_hex(&key, message),
+                ARTIFACT_TYPE_OFFER,
+                1_700_000_001,
+                payload,
+            )
+            .expect("signed Offer"),
+        )
+        .expect("Offer JSON")
+    }
+
+    /// The browser playground tells people they cannot write JavaScript there, because the kernel has no JavaScript
+    /// runtime. This is what that rests on: an offer that names one is invalid, though its signature and hashes are genuine.
+    #[test]
+    fn an_offer_naming_a_runtime_the_kernel_lacks_is_invalid_though_its_signature_is_genuine() {
+        let control = verify_document(&offer_naming("wasm"), None);
+        assert_eq!(control.status, DocumentStatus::Verified, "{control:?}");
+
+        for runtime in ["javascript", "js", "node", "typescript", "assemblyscript"] {
+            let report = verify_document(&offer_naming(runtime), None);
+            assert!(
+                report.envelope_valid,
+                "{runtime}: the signature and hashes are genuine"
+            );
+            assert_eq!(report.status, DocumentStatus::Invalid, "{runtime}");
+            let SemanticsOutcome::Invalid { error } = &report.semantics else {
+                panic!("{runtime}: expected the payload to be invalid, got {report:?}");
+            };
+            assert!(error.contains(runtime), "{runtime}: {error}");
+        }
     }
 }
 
@@ -485,9 +535,16 @@ pub fn validate_chain_documents(documents: &[Value], now: Option<i64>) -> ChainD
 }
 
 /// Unwrap the supported input shapes into a flat list of artifact documents:
-/// a single artifact object, a `{"artifacts": [...]}` feed page, a
+/// a single artifact object, a `{"artifacts": [...]}` page, a
 /// `{"artifact": {...}}` wrapper, an array of any of those, or a conformance
 /// fixture whose `artifacts` is a name→vector map.
+///
+/// The page a node serves at `GET /v1/feed` is accepted exactly as served. Its
+/// `artifacts` are index entries (`cursor`, `hash`, `payload_hash`, `kind`,
+/// `actor_id`, `created_at`) that each carry the signed artifact under
+/// `document`; that document is what is returned and verified. The entry's own
+/// fields are the node's bookkeeping and are not compared with the document.
+/// A feed is paged, so what comes back is the documents on the page given.
 ///
 /// A conformance fixture is ordered by its `conformance_path.artifact_order`
 /// when present, so the documents come back in chain order rather than the
@@ -497,10 +554,16 @@ pub fn extract_documents(input: &Value) -> Result<Vec<Value>, String> {
         if item.get("artifact_type").is_some() {
             return Ok(item.clone());
         }
-        if let Some(inner) = item.get("artifact")
-            && inner.get("artifact_type").is_some()
-        {
-            return Ok(inner.clone());
+        // A `{"artifact": {...}}` wrapper, or a node feed entry whose signed
+        // artifact sits under `document`. Either way the inner value must be
+        // an artifact itself, so an item that merely has such a key still
+        // fails with the error below.
+        for key in ["artifact", "document"] {
+            if let Some(inner) = item.get(key)
+                && inner.get("artifact_type").is_some()
+            {
+                return Ok(inner.clone());
+            }
         }
         Err("item is not an artifact document (no artifact_type)".to_string())
     }

@@ -55,6 +55,33 @@ use whichever is closer to your target language as a reference:
 The Python harness is deliberately dependency-light and is the better
 starting point for a port.
 
+## Run the vectors
+
+```bash
+# The standalone verifier, on the vectors
+cargo run -p froglet-verify -- conformance/kernel_v1.json
+
+# The Rust runner
+cargo test -p froglet --test kernel_conformance_vectors
+
+# The Python runner, which shares no code with the Rust one
+PYTHONPATH=python/froglet-verify python3 -m froglet_verify.conformance conformance/kernel_v1.json
+```
+
+`froglet-verify` reads one artifact, a JSON array, an `{"artifacts": [...]}`
+page, or a conformance fixture, from a file or stdin. That includes the page a
+node serves at `/v1/feed`, whose entries wrap each artifact in a `document`
+field. Exit code 0 means nothing was invalid, 1 that something was, and 2 a
+usage error. `--json` prints a machine-readable report and `--now <unix>` turns
+on expiry checks.
+
+To check what a running node publishes, pipe its feed straight in. The feed is
+paged, so the verdict covers the page you fetched:
+
+```bash
+curl -s 'http://127.0.0.1:8080/v1/feed?limit=50' | cargo run -q -p froglet-verify -- -
+```
+
 ## Stability
 
 The vectors are governed by the

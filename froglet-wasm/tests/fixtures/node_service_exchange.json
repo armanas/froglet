@@ -1,0 +1,448 @@
+{
+  "captured_from": "The responses of a real froglet-node (role dual, version 0.4.6-beta.4) that had published examples/wasm-services adder as the service demo.adder, for one free deal with input {\"a\": 6, \"b\": 7}. Shared by the node's shape test and the docs-site playground tests, so what the playground says about the wire is what a node sends.",
+  "input": {
+    "a": 6,
+    "b": 7
+  },
+  "descriptor": {
+    "artifact_type": "descriptor",
+    "created_at": 1790711269,
+    "hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+    "payload": {
+      "capabilities": {
+        "execution_runtimes": [
+          "any",
+          "builtin",
+          "wasm"
+        ],
+        "max_concurrent_deals": 16,
+        "service_kinds": [
+          "compute.execution.v1",
+          "compute.wasm.v1",
+          "events.query"
+        ]
+      },
+      "descriptor_seq": 1,
+      "linked_identities": [
+        {
+          "created_at": 1790711267,
+          "identity": "2a33245b2a31938b3b2d44aae84c158d6ad32447229436f929c6034b9f8a9282",
+          "identity_kind": "nostr",
+          "linked_signature": "9d60240923c9a0cbd1a5befbc0f0d3cb41be1891ff52bf8a7997eac7a4ecfb30b9d675c498b8c14e100091eb035f0c4fba4ca44cdf78053e0b41c156d5fc451c",
+          "scope": [
+            "publication.nostr"
+          ],
+          "signature_algorithm": "secp256k1_schnorr_bip340"
+        }
+      ],
+      "protocol_version": "froglet/v1",
+      "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+      "transport_endpoints": [
+        {
+          "features": [
+            "quote_http",
+            "artifact_fetch",
+            "receipt_poll"
+          ],
+          "priority": 10,
+          "transport": "http",
+          "uri": "http://127.0.0.1:18080"
+        }
+      ]
+    },
+    "payload_hash": "468880cf6f9f93de86e9c36f840c8824b427964fb960c176907f458600c14d73",
+    "schema_version": "froglet/v1",
+    "signature": "e099761cc1733617b738f5ccaa638bb849bc48551d92a52fe37c4c9e85a80ed6c6075ba21b6bf6d2c8363a70d147d146ea68c23143f513d5c4af83d51651c441",
+    "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+  },
+  "offers": {
+    "offers": [
+      {
+        "artifact_type": "offer",
+        "created_at": 1790711269,
+        "hash": "ba39bc7473ea70da31afce05f88255310c571f404b268369e145339ad3cc9fea",
+        "payload": {
+          "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+          "execution_profile": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "contract_version": "froglet.wasm.run_json.v1",
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 10000,
+            "package_kind": "inline_module",
+            "runtime": "wasm"
+          },
+          "offer_id": "demo.adder",
+          "offer_kind": "compute.execution.v1",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "aec9bab9f389534ee39fd0d5abee20e261968e509a006c3cc3d87b477dc36f99",
+        "schema_version": "froglet/v1",
+        "signature": "fa86331a81c9bd4bea9b5d649385df686acd293a3d0522658c8562d6eade68c3d00720aba24e9d8bae603fe18b3f86671f66c2ea0cb9ec72d229a58a2351b45a",
+        "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+      },
+      {
+        "artifact_type": "offer",
+        "created_at": 1790711269,
+        "hash": "87ba68d8b6a81583b41e92e4c58b9706f9efb400fbd5969548bccf0d11c6e3d4",
+        "payload": {
+          "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+          "execution_profile": {
+            "abi_version": "froglet.builtin.events_query.v1",
+            "contract_version": "froglet.builtin.events_query.v1",
+            "fuel_limit": 0,
+            "max_input_bytes": 1048576,
+            "max_memory_bytes": 0,
+            "max_output_bytes": 1048576,
+            "max_runtime_ms": 10000,
+            "package_kind": "builtin",
+            "runtime": "builtin"
+          },
+          "offer_id": "events.query",
+          "offer_kind": "events.query",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "43b931ffad48a011fb9429aea9ddb0858962ee2c15b55dae584b54e0c24e4856",
+        "schema_version": "froglet/v1",
+        "signature": "3497d7839464b3e0206760c864b42fdb7938cdb1aee874392d9d2e19293e21343763ea8ba31d856f02672082e3fa6ec733c432cf1a28695bd774b0d9541e0c48",
+        "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+      },
+      {
+        "artifact_type": "offer",
+        "created_at": 1790711269,
+        "hash": "744a7807d96eb3d55e759863c814cc8263d3a3bf8805b0ef0f2b657e3d1917f8",
+        "payload": {
+          "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+          "execution_profile": {
+            "abi_version": "froglet.wasm.run_json.v1",
+            "contract_version": "froglet.wasm.run_json.v1",
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 10000,
+            "package_kind": "inline_module",
+            "runtime": "wasm"
+          },
+          "offer_id": "execute.compute",
+          "offer_kind": "compute.wasm.v1",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "9b1f3bffaa80d271f2d8e849d59b9613014d1f73940490b41d559a1a0ee9b475",
+        "schema_version": "froglet/v1",
+        "signature": "ee82c449f298a6b1c36ff60173eaa656e1182ffa22efd6105087092129beaaeff61731688b464bf6a5ecb0375d17f4444279348772f7817ef78e4d50c012e586",
+        "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+      },
+      {
+        "artifact_type": "offer",
+        "created_at": 1790711269,
+        "hash": "5e3bc047ec1c8b56b0f6b38296ec7f23c7352e7df16686e9612c69227e5d0e54",
+        "payload": {
+          "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+          "execution_profile": {
+            "fuel_limit": 50000000,
+            "max_input_bytes": 131072,
+            "max_memory_bytes": 8388608,
+            "max_output_bytes": 131072,
+            "max_runtime_ms": 10000,
+            "runtime": "any"
+          },
+          "offer_id": "execute.compute.generic",
+          "offer_kind": "compute.execution.v1",
+          "price_schedule": {
+            "base_fee_msat": 0,
+            "success_fee_msat": 0
+          },
+          "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+          "quote_ttl_secs": 10,
+          "settlement_method": "none"
+        },
+        "payload_hash": "a634636fb2ee08b2f310b66ba81b1ed76ca6d603766e60c3664dab8cca1656e7",
+        "schema_version": "froglet/v1",
+        "signature": "76587450ca60c3f2de4e5ac0e8e7a54be03bc447c75f989dce6d781172f71ad996c398a5a90d5077d0296bdf018d88a8dff79dab258a0a4f0425b8415db4d47e",
+        "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+      }
+    ]
+  },
+  "services": {
+    "services": [
+      {
+        "service_id": "demo.adder",
+        "offer_id": "demo.adder",
+        "offer_kind": "compute.execution.v1",
+        "resource_kind": "service",
+        "summary": "adds and multiplies two integers",
+        "runtime": "wasm",
+        "package_kind": "inline_module",
+        "entrypoint_kind": "handler",
+        "entrypoint": "run",
+        "contract_version": "froglet.wasm.run_json.v1",
+        "mode": "sync",
+        "price_sats": 0,
+        "base_fee_msat": 0,
+        "success_fee_msat": 0,
+        "settlement_method": "none",
+        "publication_state": "active",
+        "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+        "module_hash": "c54d02ca8c6f9db3a301ef1eebd7ed87c03d89bfa69c382d1f8cac22fc968553",
+        "binding_hash": "c54d02ca8c6f9db3a301ef1eebd7ed87c03d89bfa69c382d1f8cac22fc968553"
+      }
+    ]
+  },
+  "service": {
+    "service": {
+      "service_id": "demo.adder",
+      "offer_id": "demo.adder",
+      "offer_kind": "compute.execution.v1",
+      "resource_kind": "service",
+      "summary": "adds and multiplies two integers",
+      "runtime": "wasm",
+      "package_kind": "inline_module",
+      "entrypoint_kind": "handler",
+      "entrypoint": "run",
+      "contract_version": "froglet.wasm.run_json.v1",
+      "mode": "sync",
+      "price_sats": 0,
+      "base_fee_msat": 0,
+      "success_fee_msat": 0,
+      "settlement_method": "none",
+      "publication_state": "active",
+      "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+      "module_hash": "c54d02ca8c6f9db3a301ef1eebd7ed87c03d89bfa69c382d1f8cac22fc968553",
+      "binding_hash": "c54d02ca8c6f9db3a301ef1eebd7ed87c03d89bfa69c382d1f8cac22fc968553"
+    },
+    "execution_access": "open"
+  },
+  "quote": {
+    "artifact_type": "quote",
+    "created_at": 1790711269,
+    "hash": "3e0911ce67d03c7c5d770dcbad4aae9b5fab37f7947a78c1966628afa6e8631b",
+    "payload": {
+      "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+      "execution_limits": {
+        "fuel_limit": 50000000,
+        "max_input_bytes": 131072,
+        "max_memory_bytes": 8388608,
+        "max_output_bytes": 131072,
+        "max_runtime_ms": 10000
+      },
+      "expires_at": 1790711329,
+      "offer_hash": "ba39bc7473ea70da31afce05f88255310c571f404b268369e145339ad3cc9fea",
+      "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+      "requester_id": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301",
+      "settlement_terms": {
+        "base_fee_msat": 0,
+        "destination_identity": "",
+        "max_base_invoice_expiry_secs": 0,
+        "max_success_hold_expiry_secs": 0,
+        "method": "none",
+        "min_final_cltv_expiry": 0,
+        "success_fee_msat": 0
+      },
+      "workload_hash": "b1ae043d5e9137ac87683a63fa30d9f6d525c4b1da06d33b32acaab2e7e765f3",
+      "workload_kind": "compute.execution.v1"
+    },
+    "payload_hash": "84d258688a05eccdc1f7686691852823658fbc3c9bef4163888874e9baeee8f3",
+    "schema_version": "froglet/v1",
+    "signature": "ce2fcf4746caece13f8ccbb67abaf740601babb1347cf29750a54f53106d1286779d343ba451981a5adc8f3a3dfbb1fdeab3ec4921669ca779017829264cbc5c",
+    "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+  },
+  "deal_created": {
+    "created_at": 1790711269,
+    "deal": {
+      "artifact_type": "deal",
+      "created_at": 1790711269,
+      "hash": "d430188f3cd8cfa9178180ecc0e48c3f7ca910e507be063740c84e453474e713",
+      "payload": {
+        "acceptance_deadline": 1790711339,
+        "admission_deadline": 1790711329,
+        "completion_deadline": 1790711339,
+        "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+        "quote_hash": "3e0911ce67d03c7c5d770dcbad4aae9b5fab37f7947a78c1966628afa6e8631b",
+        "requester_id": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301",
+        "success_payment_hash": "c6b0965f4b659ef7a9f88a3c7121ba027ea5bea1822c9e80968c8704e66251a4",
+        "workload_hash": "b1ae043d5e9137ac87683a63fa30d9f6d525c4b1da06d33b32acaab2e7e765f3"
+      },
+      "payload_hash": "fba9a0b36d2c9787b263d07b784e80df432d3fff04e770f1b19d8ecc03e2c81c",
+      "schema_version": "froglet/v1",
+      "signature": "ef470024f539745bbb6aaffa7349bc348ce56f2b0bbd91c6c144d9ff2aae7e4a47503c5b5a749b9207472a66c8f6a0ab216e29db0a08ddd8bc9852870825a8c2",
+      "signer": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301"
+    },
+    "deal_id": "42e65012fadb3b879d4519e95995727d",
+    "idempotency_key": "d40d1d4ca651865b669112dc85bdc4cd",
+    "quote": {
+      "artifact_type": "quote",
+      "created_at": 1790711269,
+      "hash": "3e0911ce67d03c7c5d770dcbad4aae9b5fab37f7947a78c1966628afa6e8631b",
+      "payload": {
+        "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+        "execution_limits": {
+          "fuel_limit": 50000000,
+          "max_input_bytes": 131072,
+          "max_memory_bytes": 8388608,
+          "max_output_bytes": 131072,
+          "max_runtime_ms": 10000
+        },
+        "expires_at": 1790711329,
+        "offer_hash": "ba39bc7473ea70da31afce05f88255310c571f404b268369e145339ad3cc9fea",
+        "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+        "requester_id": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301",
+        "settlement_terms": {
+          "base_fee_msat": 0,
+          "destination_identity": "",
+          "max_base_invoice_expiry_secs": 0,
+          "max_success_hold_expiry_secs": 0,
+          "method": "none",
+          "min_final_cltv_expiry": 0,
+          "success_fee_msat": 0
+        },
+        "workload_hash": "b1ae043d5e9137ac87683a63fa30d9f6d525c4b1da06d33b32acaab2e7e765f3",
+        "workload_kind": "compute.execution.v1"
+      },
+      "payload_hash": "84d258688a05eccdc1f7686691852823658fbc3c9bef4163888874e9baeee8f3",
+      "schema_version": "froglet/v1",
+      "signature": "ce2fcf4746caece13f8ccbb67abaf740601babb1347cf29750a54f53106d1286779d343ba451981a5adc8f3a3dfbb1fdeab3ec4921669ca779017829264cbc5c",
+      "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+    },
+    "status": "accepted",
+    "updated_at": 1790711269,
+    "workload_kind": "compute.execution.v1"
+  },
+  "deal_final": {
+    "created_at": 1790711269,
+    "deal": {
+      "artifact_type": "deal",
+      "created_at": 1790711269,
+      "hash": "d430188f3cd8cfa9178180ecc0e48c3f7ca910e507be063740c84e453474e713",
+      "payload": {
+        "acceptance_deadline": 1790711339,
+        "admission_deadline": 1790711329,
+        "completion_deadline": 1790711339,
+        "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+        "quote_hash": "3e0911ce67d03c7c5d770dcbad4aae9b5fab37f7947a78c1966628afa6e8631b",
+        "requester_id": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301",
+        "success_payment_hash": "c6b0965f4b659ef7a9f88a3c7121ba027ea5bea1822c9e80968c8704e66251a4",
+        "workload_hash": "b1ae043d5e9137ac87683a63fa30d9f6d525c4b1da06d33b32acaab2e7e765f3"
+      },
+      "payload_hash": "fba9a0b36d2c9787b263d07b784e80df432d3fff04e770f1b19d8ecc03e2c81c",
+      "schema_version": "froglet/v1",
+      "signature": "ef470024f539745bbb6aaffa7349bc348ce56f2b0bbd91c6c144d9ff2aae7e4a47503c5b5a749b9207472a66c8f6a0ab216e29db0a08ddd8bc9852870825a8c2",
+      "signer": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301"
+    },
+    "deal_id": "42e65012fadb3b879d4519e95995727d",
+    "idempotency_key": "d40d1d4ca651865b669112dc85bdc4cd",
+    "quote": {
+      "artifact_type": "quote",
+      "created_at": 1790711269,
+      "hash": "3e0911ce67d03c7c5d770dcbad4aae9b5fab37f7947a78c1966628afa6e8631b",
+      "payload": {
+        "descriptor_hash": "aa76dbec132ae72e9ef9bdf193bb4c1e07f8995a773b927572c95f416221b3e1",
+        "execution_limits": {
+          "fuel_limit": 50000000,
+          "max_input_bytes": 131072,
+          "max_memory_bytes": 8388608,
+          "max_output_bytes": 131072,
+          "max_runtime_ms": 10000
+        },
+        "expires_at": 1790711329,
+        "offer_hash": "ba39bc7473ea70da31afce05f88255310c571f404b268369e145339ad3cc9fea",
+        "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+        "requester_id": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301",
+        "settlement_terms": {
+          "base_fee_msat": 0,
+          "destination_identity": "",
+          "max_base_invoice_expiry_secs": 0,
+          "max_success_hold_expiry_secs": 0,
+          "method": "none",
+          "min_final_cltv_expiry": 0,
+          "success_fee_msat": 0
+        },
+        "workload_hash": "b1ae043d5e9137ac87683a63fa30d9f6d525c4b1da06d33b32acaab2e7e765f3",
+        "workload_kind": "compute.execution.v1"
+      },
+      "payload_hash": "84d258688a05eccdc1f7686691852823658fbc3c9bef4163888874e9baeee8f3",
+      "schema_version": "froglet/v1",
+      "signature": "ce2fcf4746caece13f8ccbb67abaf740601babb1347cf29750a54f53106d1286779d343ba451981a5adc8f3a3dfbb1fdeab3ec4921669ca779017829264cbc5c",
+      "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+    },
+    "receipt": {
+      "artifact_type": "receipt",
+      "created_at": 1790711269,
+      "hash": "ee21a53d9a2a0bb5a241449009d934a43266f4721e07051ae9ed27ac722c7e0e",
+      "payload": {
+        "deal_hash": "d430188f3cd8cfa9178180ecc0e48c3f7ca910e507be063740c84e453474e713",
+        "deal_state": "succeeded",
+        "execution_state": "succeeded",
+        "executor": {
+          "abi_version": "froglet.wasm.run_json.v1",
+          "module_hash": "c54d02ca8c6f9db3a301ef1eebd7ed87c03d89bfa69c382d1f8cac22fc968553",
+          "runtime": "wasm",
+          "runtime_version": "0.4.6-beta.4"
+        },
+        "finished_at": 1790711269,
+        "limits_applied": {
+          "fuel_limit": 50000000,
+          "max_input_bytes": 131072,
+          "max_memory_bytes": 8388608,
+          "max_output_bytes": 131072,
+          "max_runtime_ms": 10000
+        },
+        "provider_id": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305",
+        "quote_hash": "3e0911ce67d03c7c5d770dcbad4aae9b5fab37f7947a78c1966628afa6e8631b",
+        "requester_id": "24e535e3784540ab7166c956717b83bc3de6a0e626272f6f3dbe5f82dcbe7301",
+        "result_format": "application/json+jcs",
+        "result_hash": "cbd57862c0aa5922c29247b2380ed3cb542cebf33cda8c7f331d3100d8a7c311",
+        "settlement_refs": {
+          "base_fee": {
+            "amount_msat": 0,
+            "invoice_hash": "",
+            "payment_hash": "",
+            "state": "canceled"
+          },
+          "destination_identity": "",
+          "method": "none",
+          "success_fee": {
+            "amount_msat": 0,
+            "invoice_hash": "",
+            "payment_hash": "",
+            "state": "canceled"
+          }
+        },
+        "settlement_state": "none",
+        "started_at": 1790711269
+      },
+      "payload_hash": "2c8cea41441f7d0a7838dc41b6128d219bdd2c523bb89196c9ffebe136ed000d",
+      "schema_version": "froglet/v1",
+      "signature": "82ae16ddfb1be6e9b5c8851d7eb525bdf9e093cd3dbe921022da5ca1405a161f311ac088cace0b4c7cd767c2cd8548a30d7aeff162e74e31050893b34209e997",
+      "signer": "1c2875ddc59f14a6a6923e5304976e321bf52f8ce812ff2f9219645ca5721305"
+    },
+    "result": {
+      "product": 42,
+      "sum": 13
+    },
+    "result_hash": "cbd57862c0aa5922c29247b2380ed3cb542cebf33cda8c7f331d3100d8a7c311",
+    "status": "succeeded",
+    "updated_at": 1790711269,
+    "workload_kind": "compute.execution.v1"
+  }
+}

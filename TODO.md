@@ -5,10 +5,55 @@ design stubs. It is not the kernel specification. `docs/KERNEL.md` remains the
 authoritative source for canonical artifact payloads, hashing, signing bytes,
 state transitions, and settlement bindings.
 
-## Current checkpoint — 28 September 2026
+## Current checkpoint — 1 October 2026
 
-Product development is paused while the next direction is decided. Preserve the
-existing work; this checkpoint does not authorize a relaunch or new features.
+Launch preparation on 2 October keeps this free scope and its qualification
+limits. The [production handoff](docs/RELEASE.md#production-launch-preparation--2-october-2026)
+separates the software gate, immutable distribution, advertised agent/OS cells,
+public execution, operations and first-user evidence. The companion source pin
+must advance only after the matching public immutable release exists. Payments
+and compute-environment expansion remain deferred.
+
+The user has resumed work on a free native MCP workflow for selected-data
+sharing and bounded Wasm computation, with optional A2A between explicitly
+configured counterparties. The scope is one useful exchange between a data
+owner and an independent recipient. More features are not a substitute for
+qualification or evidence that this exchange solves a real problem.
+
+| Area | Current state | Next evidence |
+|---|---|---|
+| Native MCP and optional A2A | Final local candidate is pinned at binary SHA-256 `584e3887e9b12d9f433bef2a70487a6ebee65976cd2c146b603bd2b16d76b166`. | [Exact local qualification and remaining boundaries](docs/RELEASE.md#october-candidate-local-qualification). The immutable public release remains unpublished; an older release does not inherit the new actions. |
+| Installed agent host | Actual Codex CLI `0.154.0` on the current Mac completed four native tool calls; the extracted Mac demo bundle also passed outside the checkout. | Claude Code is logged out; its actual MCP session remains unrun. Clean OS/agent cells and first-time-human installation remain unrun. The bundle's Python setup helper and ad-hoc macOS signing do not qualify no-runtime setup, Gatekeeper downloads or every supported target. |
+| Captured generated program | Deterministic replay of Alice's retained new Wasm passed four frozen answers and independent verification of all seven admitted chains: six successes and one separate looping-program failure. Exact completed data/compute retries recovered cached results after Bob stopped and Alice restarted; `get_task` returned HTTP 502 while Bob was stopped. | [Local finalization evidence](docs/RELEASE.md#local-finalization--captured-program-replay). The earlier actual-agent qualification remains failed and preserved. A fresh Codex repeat still requires explicit approval for possible project-trust registration; no replay substitutes for that gate. |
+| Reproducible demo handoff | Deterministic allowlisted packaging with exact binary/module pins; extracted Mac/Python3.13 and Linux arm64/Python3.11 demos and optional TLS checks passed without build tools. | Local candidates only; public assets, Linux x86_64, downloaded Gatekeeper, fresh machines and first-time-human installation remain open. |
+| Linux arm64 runtime | Read-only production snapshot passed 625 library and nine MCP tests, plus the two-node terminology scenario; six chains were independently verified. | Docker development build only. Thirteen ignored tests, Python isolation, fresh Linux installation, release assets and Linux agent-host qualification remain outside this evidence. |
+| Selected-data research profile | Final pinned terminology flow produced six Deals and four matching oracle cases at the same 2,000 ms budget. A pinned public GO catalog was locally published and retrieved in 100- and 40-row pages with two verified receipts. | [Profile and exact metadata checks](docs/RESEARCH_PROFILE.md). Scientific interpretation, independent data-owner usefulness and demand remain unmeasured. |
+| Local capacity | Independent requesters completed tiny workflows without errors through concurrency eight in this short sweep. At 16/32, six selected-data tasks failed at the four-process limit with verified failure chains; 248 Bob Deals match 248 Alice intents, zero pending. | Shared-identity collisions fail before Deal admission but limit identical tuple Quotes to about one per second; 83 Bob Deals match 83 Alice intents, zero pending. [Recorded limits and counts](docs/RELEASE.md#october-candidate-local-qualification). Historical baseline timings remain invalid for performance comparison. |
+| Public free exchange | New MCP/A2A profile's public compute HTTPS and capacity remain unqualified. GCP authentication blocks public compute deployment. | Two independent machines, trusted HTTPS, exact requester/Offer authorization, bounded resource/concurrency limits, overload refusal, and lost-response/restart recovery. Local capacity does not establish public production capacity. |
+| First-user usefulness | The synthetic terminology checker proves a bounded consistency audit; it does not prove semantic truth, demand, or lower operating cost. | [Five-participant task and real catalog comparison kit](docs/AGENT_PUBLISH_ACCEPTANCE.md#first-user-trial-kit--1-october-2026). Real catalog, participants and independent recipients still need to be supplied; do not invent observations. |
+| Public website | Restored and updated on 1 October, current Worker `857f8336-ed78-48cb-8f08-959f0ff8bff6`. Homepage and both affected routes returned HTTP 200 and matched the final build; new scenario rows were rendered live. The hosted compute trial remains unavailable. | Local response/screenshot evidence: `_tmp/improvement-2026-10-01/continuation/site/`. Website publication does not qualify public compute or publish the Node candidate. |
+| File downloads, general CPU jobs, GPU and payments | Existing work is preserved. No new release claim for these paths. | Keep F1 separate. C1/G1 expansion, new rails, purchases, paid flows, and automatic allowance refill remain deferred. |
+
+Qualification commands and historical checkpoints below remain useful. The
+selected profile's acceptance record must identify the candidate binary and
+source, distinguish local from public execution, and report every skipped or
+unavailable gate. Preparing a trial kit does not establish participant results
+or authorize invitations.
+
+The local finalization checks passed the default matrix: 1,008 Rust tests,
+199 Node tests, 177 core Python tests, 228 verifier tests and 90 conformance
+checks. Eight Rust tests were ignored in this Mac run; OS-specific and live
+external gates remain separate. The final replay recorder corrections also
+passed eleven focused tests and actual two-node execution. The replay and
+reviewable source checkpoint remain unpublished local evidence, not a stable
+release or a newly qualified hosted service.
+
+<a id="current-checkpoint--28-september-2026"></a>
+
+## Historical paused checkpoint — 28 September 2026
+
+Product development was paused while the next direction was decided. The work
+below was preserved; the October checkpoint above defines the resumed scope.
 
 | Area | State | Where to resume |
 |---|---|---|
@@ -18,7 +63,7 @@ existing work; this checkpoint does not authorize a relaunch or new features.
 | GPU (G1) | Execution disabled in the current worker; not a rental capability. | Finish C1 first, then qualify actual NVIDIA hardware and exclusive-device cleanup. |
 | Payments | Deferred by the operator. | No new rails, purchases, paid flow, or automatic allowance refill. |
 
-When development resumes:
+The restart notes recorded at that checkpoint were:
 
 1. Choose the next user-facing outcome. The smallest prepared candidate is F1
    download-only sharing; do not bundle CPU/GPU or payment work into its release.
@@ -36,9 +81,9 @@ screenshots and raw logs remain ignored; do not discard them as part of Git clea
 
 ### Saved checkpoints
 
-Both repositories use the local branch `arma/paused-development-checkpoint`.
-These commits were not pushed or deployed during cleanup. Keep the main repo
-at this branch's tip to include the restart notes as well as the work below.
+Both repositories used the local branch `arma/paused-development-checkpoint`
+during cleanup. These commits were not pushed or deployed during that pass.
+They are historical recovery points, not a requirement to reset the resumed work.
 
 | Repository | Commit | Preserved work |
 |---|---|---|

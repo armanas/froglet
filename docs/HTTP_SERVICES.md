@@ -167,6 +167,13 @@ key follows normal admission. Pending records still need the provider to refresh
 status. Older runtimes without this read-only lookup fall back to their existing
 invocation path and cannot guarantee offline recovery.
 
+For a recipient using the optional A2A transport, the
+[reviewed counterparty setup helper](A2A_COUNTERPARTY_SETUP.md) prepares the
+separate requester-key/exact-Offer A2A configuration alongside an already-issued
+admission invitation. Both credentials are required under invite policy. The
+helper writes private configuration files after review; it does not activate a
+running Node, narrow this provider-wide invitation, or put credentials in links.
+
 ## Current boundaries
 
 - Invitation services support non-executing marketplace admission with public

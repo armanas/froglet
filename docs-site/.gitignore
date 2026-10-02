@@ -20,5 +20,5 @@ pnpm-debug.log*
 # macOS-specific files
 .DS_Store
 
-# OG card font cache
+# Legacy OG font cache; current source-controlled inputs live in scripts/fonts/
 scripts/.fonts/
