@@ -104,8 +104,13 @@ The local captured-program replay now has complete evidence: Alice's retained
 seven admitted signed chains were verified offline. The seven include an owner
 control, selected-data retrieval, four program executions and a separate looping
 program's budget failure. Exact completed data and compute retries recovered
-cached results after Bob stopped and Alice restarted. `get_task` currently
-refreshes provider state and returned HTTP 502 with Bob stopped.
+cached results after Bob stopped and Alice restarted. In that historical replay,
+`get_task` returned HTTP 502 with Bob stopped. The 3 October correction now
+revalidates saved terminal task evidence locally; unsigned or unresolved tasks
+still require Bob for refresh. Current-source local regressions pass; a fresh
+optimized native candidate also passed independent verification of all seven
+chains and all six saved Alice terminal task reads after Bob stopped and Alice
+restarted. Package/release gates and website publication remain separate checks.
 
 This is deterministic replay of a program created in an earlier actual Codex
 session. That earlier fresh-session qualification remains failed because its

@@ -104,6 +104,7 @@ bash -n scripts/agent-bootstrap.sh
 bash -n scripts/setup-agent.sh
 bash -n scripts/setup-payment.sh
 bash -n scripts/fresh_host_quickstart_smoke.sh
+bash -n scripts/fly_provider_smoke.sh
 sh -n docs-site/public/agent
 bash -n scripts/deploy_gcp_single_vm.sh
 bash -n scripts/gpu_smoke.sh
@@ -241,6 +242,8 @@ python3 -W error -m unittest \
   python.tests.test_install_script \
   python.tests.test_gitleaks_gate \
   python.tests.test_release_gate \
+  python.tests.test_release_metadata \
+  python.tests.test_fly_provider_smoke \
   python.tests.test_setup_scripts \
   python.tests.test_package_demo_bundle \
   python.tests.test_conformance_vectors -v

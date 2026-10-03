@@ -96,6 +96,15 @@ def verified_native_response(response, expected_status, read=False):
     return report
 
 
+def verified_cached_task(response, prior):
+    report = verified_native_response(response, prior["status"], read=True)
+    for field in ("deal_id", "deal_hash", "quote_hash", "workload_hash", "status", "result_hash",
+                  "result", "execution_limits", "receipt_verification"):
+        require(exact_json(report.get(field), prior.get(field)),
+                "Provider-stopped recovery changed " + field)
+    return report
+
+
 def pinned_file(path, expected, kind, maximum):
     require(re.fullmatch(r"[0-9a-f]{64}", expected or "") is not None, kind + " SHA-256 pin is required")
     path = Path(path)
@@ -428,15 +437,18 @@ def replay(args):
         offline_response = helpers.mcp(alice, {"action": "get_task", "task_id": first["deal_id"],
                                              "provider_id": bob_id, "response_format": "compact"}, environment)
         write_json(output / "provider-stopped-recovery-response.json", offline_response)
-        offline_read = {"available": False, "scope": "get_task refreshes provider state; stopped-provider refusal is retained as a boundary"}
-        if offline_response.get("isError") is False and offline_response.get("structuredContent", {}).get("status") == "succeeded":
-            offline = verified_native_response(offline_response, "succeeded", read=True)
-            for field in ("deal_id", "deal_hash", "result_hash", "result", "receipt_verification"):
-                require(offline.get(field) == records[first["deal_id"]][2].get(field), "Provider-stopped recovery changed " + field)
-            offline_read["available"] = True
-        else:
-            offline_read.update(error=offline_response.get("structuredContent", {}).get("error"),
-                                stage=offline_response.get("structuredContent", {}).get("stage"))
+        verified_cached_task(offline_response, records[first["deal_id"]][2])
+        offline_recovery = []
+        for deal_id, (label, _request, prior) in records.items():
+            response = offline_response if deal_id == first["deal_id"] else helpers.mcp(alice,
+                {"action": "get_task", "task_id": deal_id, "provider_id": bob_id,
+                 "response_format": "compact"}, environment)
+            write_json(output / (label + "-provider-stopped-recovery-response.json"), response)
+            recovered = verified_cached_task(response, prior)
+            offline_recovery.append({"label": label, "deal_id": deal_id, "status": recovered["status"],
+                                     "same_result_and_evidence": True})
+        offline_read = {"available": True, "scope": "Every saved terminal task is revalidated from its signed durable chain without contacting the stopped provider",
+                        "records": offline_recovery}
         offline_after = {"provider": helpers.counts(bob), "requester": helpers.counts(alice)}
         require(offline_after == offline_before, "Provider-stopped recovery created new work")
         offline_retry_response = helpers.mcp(alice, first_request, environment)

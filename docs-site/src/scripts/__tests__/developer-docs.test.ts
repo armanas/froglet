@@ -276,7 +276,8 @@ describe('The shared support matrix preserves implementation and qualification b
     expect(guide).toContain('do not silently turn the earlier fresh-session attempt into a pass');
     expect(guide).toContain('all seven new signed execution chains');
     expect(guide).toContain('returned HTTP 502 while he was offline');
-    expect(entry('recovery').boundary).toContain('get_task still needs Bob for status refresh');
+    expect(entry('recovery').boundary).toContain('get_task revalidates saved terminal receipts offline');
+    expect(entry('recovery').boundary).toContain('Unsigned or unresolved tasks still need Bob for refresh');
     expect(entry('public-compute').status).toBe('unqualified');
     expect(entry('batch').status).toBe('planned');
   });

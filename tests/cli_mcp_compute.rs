@@ -337,6 +337,361 @@ async fn deal_count(node: &DualNode) -> i64 {
         .unwrap()
 }
 
+async fn requester_read_snapshot(state: &Arc<AppState>) -> (i64, Vec<Value>) {
+    state.db.with_read_conn(|conn| -> rusqlite::Result<_> {
+        let count = conn.query_row("SELECT COUNT(*) FROM requester_deals", [], |row| row.get(0))?;
+        let mut statement = conn.prepare("SELECT deal_hash, COALESCE(deal_id, ''), provider_id, amount_msat, settlement_method, state, created_at, updated_at FROM requester_spend_ledger ORDER BY deal_hash")?;
+        let ledger = statement.query_map([], |row| Ok(json!([
+            row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?, row.get::<_, i64>(7)?
+        ])))?.collect::<Result<Vec<_>, _>>()?;
+        Ok((count, ledger))
+    }).await.unwrap()
+}
+
+#[tokio::test]
+async fn terminal_task_reads_survive_requester_restart_with_provider_offline() {
+    let (bob, alice, origin) = pair(0).await;
+    let mut options = compute_options(&alice, &bob, "offline-terminal-success");
+    let succeeded = run_inline_wasm(&options, Some(&origin), VALID_WASM_HEX)
+        .await
+        .unwrap();
+    let loop_module = wat::parse_str(
+        r#"(module
+        (memory (export "memory") 1)
+        (func (export "alloc") (param i32) (result i32) i32.const 16)
+        (func (export "run") (param i32 i32) (result i64)
+          (loop $forever br $forever) i64.const 0))"#,
+    )
+    .unwrap();
+    options.idempotency_key = Some("offline-terminal-failure".into());
+    let failed = run_inline_wasm(&options, Some(&origin), &hex::encode(loop_module))
+        .await
+        .unwrap();
+    assert_eq!(succeeded.status, "succeeded");
+    assert_eq!(failed.status, "failed");
+    let prior = [
+        serde_json::to_value(succeeded).unwrap(),
+        serde_json::to_value(failed).unwrap(),
+    ];
+    let before = requester_read_snapshot(&alice.state).await;
+    let provider_id = bob.state.identity.node_id().to_string();
+    let requester_id = alice.state.identity.node_id().to_string();
+    let restarted_state = requester_state(&bob, alice.state.config.storage.data_dir.clone());
+    assert_eq!(deal_count(&bob).await, 2);
+    drop(alice);
+    drop(bob);
+    let restarted = start_node(restarted_state).await;
+    assert_eq!(restarted.state.identity.node_id(), requester_id);
+    let http = froglet::tls::reqwest_client_builder().build().unwrap();
+    assert_eq!(
+        http.get(format!(
+            "{}/v1/runtime/deals/{}",
+            restarted.runtime.base_url,
+            prior[0]["deal_id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        http.get(format!(
+            "{}/v1/runtime/deals/unknown-task",
+            restarted.runtime.base_url
+        ))
+        .bearer_auth("test-runtime-token")
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    for expected in &prior {
+        let response = native_call(
+            &restarted,
+            json!({"action":"get_task",
+            "task_id":expected["deal_id"], "provider_id":provider_id, "response_format":"compact"}),
+        )
+        .await;
+        assert_eq!(response["isError"], false, "{response}");
+        let actual = &response["structuredContent"];
+        for field in [
+            "deal_id",
+            "deal_hash",
+            "quote_hash",
+            "workload_hash",
+            "status",
+            "result",
+            "result_hash",
+            "execution_limits",
+            "receipt_verification",
+        ] {
+            assert_eq!(actual[field], expected[field], "{field}: {response}");
+        }
+        assert_eq!(actual["receipt_verification"]["verified"], true);
+    }
+    assert_eq!(requester_read_snapshot(&restarted.state).await, before);
+
+    // A genuine local custody rotation changes the active key, while the old
+    // requester remains authenticated by its immutable signed Deal.
+    let config = restarted.state.config.clone();
+    let paths = froglet::identity_custody::IdentityPaths::from(&config);
+    drop(restarted);
+    let recovery = froglet::identity_custody::RecoveryKeyFileAdapter::create(
+        &config.storage.data_dir.join("test-recovery.key"),
+    )
+    .unwrap();
+    froglet::identity_custody::create_backup(
+        &paths,
+        &config.storage.data_dir.join("test-backup.json"),
+        &recovery,
+        None,
+    )
+    .unwrap();
+    let rotation = froglet::identity_custody::rotate_node_identity(
+        &paths,
+        &recovery,
+        None,
+        "historical terminal task read regression",
+    )
+    .unwrap();
+    let rotated = start_node(create_dual_state_at(
+        vec![PaymentBackend::None],
+        config.storage.data_dir,
+    ))
+    .await;
+    assert_ne!(rotation.new_node_id, requester_id);
+    assert_eq!(rotated.state.identity.node_id(), rotation.new_node_id);
+    for expected in &prior {
+        let response = native_call(
+            &rotated,
+            json!({"action":"get_task",
+            "task_id":expected["deal_id"], "response_format":"compact"}),
+        )
+        .await;
+        assert_eq!(response["isError"], false, "{response}");
+        assert_eq!(
+            response["structuredContent"]["deal_hash"],
+            expected["deal_hash"]
+        );
+        assert_eq!(
+            response["structuredContent"]["receipt_verification"],
+            expected["receipt_verification"]
+        );
+    }
+    assert_eq!(requester_read_snapshot(&rotated.state).await, before);
+}
+
+#[tokio::test]
+async fn terminal_task_reads_reject_tampered_cache_and_unsigned_offline_state() {
+    let (bob, alice, origin) = pair(0).await;
+    let options = compute_options(&alice, &bob, "offline-cache-integrity");
+    let completed = run_inline_wasm(&options, Some(&origin), VALID_WASM_HEX)
+        .await
+        .unwrap();
+    let id = completed.deal_id.clone();
+    let lookup = id.clone();
+    let stored = alice
+        .state
+        .db
+        .with_read_conn(move |conn| froglet::requester_deals::get_requester_deal(conn, &lookup))
+        .await
+        .unwrap()
+        .unwrap();
+    let pristine = serde_json::to_value(stored.public_record()).unwrap();
+    let before = requester_read_snapshot(&alice.state).await;
+    let restarted_state = requester_state(&bob, alice.state.config.storage.data_dir.clone());
+    drop(alice);
+    drop(bob);
+    // A fresh HTTP client cannot reuse an accepted provider keep-alive
+    // connection after aborting the fixture's listener.
+    let alice = start_node(restarted_state).await;
+    for (field, replacement) in [
+        ("/provider_id", json!("f".repeat(64))),
+        ("/status", json!("failed")),
+        ("/result", json!(43)),
+        ("/result_hash", json!("f".repeat(64))),
+        ("/quote/payload/workload_hash", json!("f".repeat(64))),
+        ("/deal/payload/requester_id", json!("f".repeat(64))),
+        ("/receipt/payload/requester_id", json!("f".repeat(64))),
+    ] {
+        let mut changed = pristine.clone();
+        *changed.pointer_mut(field).unwrap() = replacement;
+        let task_id = id.clone();
+        alice.state.db.with_write_conn(move |conn| conn.execute(
+            "UPDATE requester_deals SET provider_id=?2, status=?3, result_json=?4, result_hash=?5, quote_json=?6, deal_artifact_json=?7, receipt_artifact_json=?8 WHERE deal_id=?1",
+            rusqlite::params![task_id, changed["provider_id"].as_str(), changed["status"].as_str(),
+                serde_json::to_string(&changed["result"]).unwrap(), changed["result_hash"].as_str(),
+                serde_json::to_string(&changed["quote"]).unwrap(), serde_json::to_string(&changed["deal"]).unwrap(),
+                serde_json::to_string(&changed["receipt"]).unwrap()])).await.unwrap();
+        let response = native_call(
+            &alice,
+            json!({"action":"get_task", "task_id":id,
+            "response_format":"compact"}),
+        )
+        .await;
+        assert_eq!(response["isError"], true, "{field}: {response}");
+        assert_eq!(response["structuredContent"]["task_id"], id);
+        assert_eq!(
+            response["structuredContent"]["receipt_verification"]["verified"],
+            false
+        );
+        let message = response["structuredContent"]["error"].as_str().unwrap();
+        assert!(
+            !message.contains("error sending request"),
+            "cache corruption must fail before network refresh: {response}"
+        );
+    }
+    for status in [
+        "succeeded",
+        "result_ready",
+        "settlement_pending",
+        "payment_pending",
+        "submission_pending",
+    ] {
+        let original = pristine.clone();
+        let task_id = id.clone();
+        alice.state.db.with_write_conn(move |conn| conn.execute(
+            "UPDATE requester_deals SET provider_id=?2, status=?3, result_json=?4, result_hash=?5, quote_json=?6, deal_artifact_json=?7, receipt_artifact_json=NULL WHERE deal_id=?1",
+            rusqlite::params![task_id, original["provider_id"].as_str(), status,
+                serde_json::to_string(&original["result"]).unwrap(), original["result_hash"].as_str(),
+                serde_json::to_string(&original["quote"]).unwrap(), serde_json::to_string(&original["deal"]).unwrap()])).await.unwrap();
+        let response = native_call(
+            &alice,
+            json!({"action":"get_task", "task_id":id,
+            "response_format":"compact"}),
+        )
+        .await;
+        assert_eq!(response["isError"], true, "unsigned {status}: {response}");
+        assert_eq!(
+            response["structuredContent"]["receipt_verification"]["verified"],
+            false
+        );
+        assert_eq!(response["structuredContent"]["task_id"], id);
+    }
+    assert_eq!(requester_read_snapshot(&alice.state).await, before);
+}
+
+#[tokio::test]
+async fn terminal_task_reads_bind_signed_rejected_and_canceled_receipts() {
+    let (bob, alice, origin) = pair(0).await;
+    let options = compute_options(&alice, &bob, "offline-signed-terminal-states");
+    let completed = run_inline_wasm(&options, Some(&origin), VALID_WASM_HEX)
+        .await
+        .unwrap();
+    let task_id = completed.deal_id.clone();
+    let lookup = task_id.clone();
+    let stored = alice
+        .state
+        .db
+        .with_read_conn(move |conn| froglet::requester_deals::get_requester_deal(conn, &lookup))
+        .await
+        .unwrap()
+        .unwrap();
+    let original = stored.receipt.as_ref().unwrap();
+    let mut fixtures = Vec::new();
+    for (signed_state, runtime_status) in [("rejected", "rejected"), ("canceled", "failed")] {
+        // Signed fixtures exercise the cache's existing canonical terminal
+        // mappings; this does not claim these are fresh provider executions.
+        let mut payload = original.payload.clone();
+        payload.deal_state = signed_state.into();
+        payload.execution_state = "not_started".into();
+        payload.started_at = None;
+        payload.result_hash = None;
+        payload.result_format = None;
+        payload.result_ref = None;
+        payload.failure_code = Some(format!("test_{signed_state}"));
+        let receipt = froglet::protocol::sign_artifact(
+            bob.state.identity.node_id(),
+            |message| bob.state.identity.sign_message_hex(message),
+            froglet::protocol::ARTIFACT_TYPE_RECEIPT,
+            original.created_at,
+            payload,
+        )
+        .unwrap();
+        assert!(
+            froglet::protocol::validate_quote_deal_receipt(
+                &stored.quote,
+                &stored.deal,
+                &receipt,
+                None
+            )
+            .valid
+        );
+        fixtures.push((runtime_status, receipt));
+    }
+    let mut foreign_payload = original.payload.clone();
+    foreign_payload.requester_id = "f".repeat(64);
+    let foreign = froglet::protocol::sign_artifact(
+        bob.state.identity.node_id(),
+        |message| bob.state.identity.sign_message_hex(message),
+        froglet::protocol::ARTIFACT_TYPE_RECEIPT,
+        original.created_at,
+        foreign_payload,
+    )
+    .unwrap();
+    let before = requester_read_snapshot(&alice.state).await;
+    let restarted_state = requester_state(&bob, alice.state.config.storage.data_dir.clone());
+    drop(alice);
+    drop(bob);
+    let alice = start_node(restarted_state).await;
+    for (status, receipt) in fixtures {
+        let id = task_id.clone();
+        let receipt_json = serde_json::to_string(&receipt).unwrap();
+        alice.state.db.with_write_conn(move |conn| conn.execute(
+            "UPDATE requester_deals SET status=?2, result_json=NULL, result_hash=NULL, receipt_artifact_json=?3 WHERE deal_id=?1",
+            rusqlite::params![id, status, receipt_json],
+        )).await.unwrap();
+        let response = native_call(
+            &alice,
+            json!({"action":"get_task", "task_id":task_id,
+            "response_format":"compact"}),
+        )
+        .await;
+        assert_eq!(response["isError"], false, "{response}");
+        let actual = &response["structuredContent"];
+        assert_eq!(actual["status"], status);
+        assert_eq!(actual["terminal"], true);
+        assert_eq!(actual["receipt_verification"]["verified"], true);
+        assert_eq!(
+            actual["receipt_verification"]["deal_state"],
+            receipt.payload.deal_state
+        );
+        assert_eq!(
+            actual["receipt_verification"]["execution_state"],
+            "not_started"
+        );
+        assert!(actual["result"].is_null());
+    }
+    let id = task_id.clone();
+    alice.state.db.with_write_conn(move |conn| conn.execute(
+        "UPDATE requester_deals SET status='succeeded', result_json='42', result_hash=?2, receipt_artifact_json=?3 WHERE deal_id=?1",
+        rusqlite::params![id, foreign.payload.result_hash, serde_json::to_string(&foreign).unwrap()],
+    )).await.unwrap();
+    let response = native_call(
+        &alice,
+        json!({"action":"get_task", "task_id":task_id,
+        "response_format":"compact"}),
+    )
+    .await;
+    assert_eq!(response["isError"], true, "{response}");
+    assert_eq!(response["structuredContent"]["task_id"], task_id);
+    assert_eq!(
+        response["structuredContent"]["receipt_verification"]["verified"],
+        false
+    );
+    assert!(
+        !response["structuredContent"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("error sending request")
+    );
+    assert_eq!(requester_read_snapshot(&alice.state).await, before);
+}
+
 #[tokio::test]
 async fn native_stdio_computes_and_reads_verified_evidence_between_independent_nodes() {
     let (bob, alice, origin) = pair(0).await;

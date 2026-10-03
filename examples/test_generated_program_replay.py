@@ -28,6 +28,31 @@ class ReplayInputTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 replay.verified_native_response({"isError": False, "structuredContent": changed}, "succeeded")
 
+    def test_offline_cached_read_is_required_and_preserves_exact_signed_result(self):
+        prior = {"status": "succeeded", "deal_id": "cached-task", "deal_hash": "b" * 64,
+                 "quote_hash": "c" * 64, "workload_hash": "d" * 64, "result": {"count": 1},
+                 "result_hash": "e" * 64, "execution_limits": {"fuel_limit": 100},
+                 "receipt_verification": {"verified": True, "receipt_hash": "f" * 64}}
+        response = {"isError": False, "structuredContent": prior}
+        self.assertEqual(replay.verified_cached_task(response, prior), prior)
+        for field, changed in (("result", {"count": True}), ("deal_id", "another-task"),
+                               ("workload_hash", "e" * 64), ("execution_limits", {"fuel_limit": 200}),
+                               ("receipt_verification", {"verified": True, "receipt_hash": "a" * 64})):
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                replay.verified_cached_task({"isError": False, "structuredContent": {**prior, field: changed}}, prior)
+        for unavailable in ({**response, "isError": True},
+                            {"isError": True, "structuredContent": {"status": "error", "error": "HTTP 502"}},
+                            {"isError": False, "structuredContent": {**prior, "receipt_verification": {"verified": False}}}):
+            with self.assertRaises(RuntimeError):
+                replay.verified_cached_task(unavailable, prior)
+
+    def test_offline_cached_read_preserves_verified_failed_task_without_tool_error(self):
+        prior = {"status": "failed", "deal_id": "bounded-failure", "deal_hash": "a" * 64,
+                 "receipt_verification": {"verified": True, "failure_code": "execution_limit_exceeded"}}
+        self.assertEqual(replay.verified_cached_task({"isError": False, "structuredContent": prior}, prior), prior)
+        with self.assertRaises(RuntimeError):
+            replay.verified_cached_task({"isError": True, "structuredContent": prior}, prior)
+
     def test_expected_answers_preserve_json_numeric_types(self):
         self.assertFalse(replay.exact_json({"count": 1}, {"count": True}))
         self.assertFalse(replay.exact_json({"count": 1}, {"count": 1.0}))

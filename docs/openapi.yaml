@@ -4432,9 +4432,13 @@ paths:
       operationId: runtimeGetDeal
       summary: Get outbound deal status
       description: >
-        Fetches the latest state of an outbound deal by syncing with the
-        remote provider. Verifies the provider's receipt signature before
-        updating the local state. Returns the `RequesterDealRecord`.
+        Returns a saved terminal deal after revalidating its canonical
+        Quote, Deal and Receipt chain, provider identity, result hash and
+        signed terminal status. This read needs no provider connection and
+        creates no work, payment or ledger update. Without a Receipt, syncs
+        the latest state from the remote provider; unavailable providers
+        still prevent an unresolved task refresh. Invalid cached signed
+        evidence fails closed. Returns the `RequesterDealRecord`.
       tags: [Deals (Runtime)]
       security:
         - BearerAuth: []
@@ -4469,7 +4473,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '502':
-          description: Upstream provider error.
+          description: Upstream provider error or invalid cached signed evidence.
           content:
             application/json:
               schema:

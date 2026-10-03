@@ -48,7 +48,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: integrations/mcp/froglet/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            integrations/mcp/froglet/package-lock.json
+
+      - name: Install root MCP package dependencies
+        run: npm ci
 
       - name: Install MCP server dependencies
         run: npm ci --prefix integrations/mcp/froglet
@@ -62,7 +67,9 @@ jobs:
           cargo audit
 
       - name: Audit npm dependencies
-        run: npm audit --prefix integrations/mcp/froglet --audit-level=high
+        run: |
+          npm audit --audit-level=high
+          npm audit --prefix integrations/mcp/froglet --audit-level=high
 
       - name: Run strict verification matrix
         env:
@@ -172,9 +179,6 @@ jobs:
       - name: Install docs site dependencies
         run: npm ci --prefix docs-site
 
-      - name: Audit docs site dependencies
-        run: npm audit --prefix docs-site --audit-level=high
-
       - name: Set up Rust for browser verification
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
@@ -190,6 +194,11 @@ jobs:
       - name: Build the node for browser interoperability tests
         run: cargo build --locked -p froglet --bin froglet-node
 
+      - name: Build docs site
+        env:
+          SITE_URL: https://froglet.dev
+        run: npm run build --prefix docs-site
+
       - name: Run docs site tests
         env:
           FROGLET_PLAYGROUND_REAL_PROVIDER: '1'
@@ -197,10 +206,8 @@ jobs:
           FROGLET_NODE_BIN: ${{ github.workspace }}/target/debug/froglet-node
         run: npm test --prefix docs-site
 
-      - name: Build docs site
-        env:
-          SITE_URL: https://froglet.dev
-        run: npm run build --prefix docs-site
+      - name: Audit docs dependencies and verify advisory applicability
+        run: node docs-site/scripts/audit-dependencies.mjs
 
   openclaw-node18:
     name: OpenClaw Node 18

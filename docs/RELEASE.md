@@ -12,10 +12,10 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Versioning
 
-The last immutable public beta recorded in this qualification history is
-`v0.4.6-beta.2`, built from source revision
-`2a9e908480ef7afac8e9929b9666794a98201c36`. The historical hosted
-`v0.1.0-beta.21` pinned that revision. The current companion workspace is
+The current immutable public beta is `v0.4.6-beta.4`, built from source revision
+`49f4753427e7b8ee8173246da53d2c592a7629b6`. Its Release Bundle asset digest and
+GitHub workflow attestation were rechecked on 3 October. The historical hosted
+`v0.1.0-beta.21` pinned the earlier beta.2 revision. The current companion workspace is
 `0.1.0-beta.23`, with public source pin
 `49f4753427e7b8ee8173246da53d2c592a7629b6`; it remains separate from the
 unpublished candidate below. Future releases require a new tag,
@@ -42,7 +42,7 @@ fresh Bob/Alice agent attempt as passing because the deterministic replay passed
 | Immutable distribution | Exact tag/source, all target archives and checksums, bootstrap and manifest trust, workflow attestations and immutable published assets | Local packaging does not satisfy this gate |
 | Advertised OS and agent hosts | Actual installation and tool execution for every claimed host, including signed-in Claude and clean-machine cells below | Current Mac Codex and Linux arm64 development evidence do not cover all cells |
 | Public free execution | Independent requester/provider hosts, trusted HTTPS, exact Offer/requester authorization, independently verified receipts and finite allowances | New compute profile remains unqualified; GCP is the chosen host, not a protocol dependency |
-| Operational safeguards | Effective target configuration, overload/refusal tests, durable accounting, private control listener, backup restore and guarded rollback | Local fixtures and historical hosted evidence do not establish current production behavior |
+| Operational safeguards | Effective target configuration, overload/refusal tests, durable accounting, owner-control authentication and ingress boundary, backup restore and guarded rollback | Local fixtures and historical hosted evidence do not establish current production behavior |
 | First-user usefulness | Independent catalog owners and recipients complete the declared task with recorded observations | Trial kit is prepared; participant results remain absent |
 | Website and release copy | Deployed routes inspected against the exact released candidate and its qualified scope | Current support matrix and Alithea Bio attribution published on 3 October; six pages and the logo match the prepared build. The compute candidate remains unpublished |
 
@@ -95,6 +95,69 @@ Credentials quota-project mismatch, which was not changed. These checks do not
 establish deployment permissions, provider availability, operational safeguards
 or current hosted compute qualification. The earlier authentication blocker is
 historical; the public execution and operational gates above remain open.
+
+### Launch continuation — 3 October
+
+The next source candidate is `0.4.7-beta.1`; its tag was checked unused. Do not
+reuse or replace the immutable beta.4 tag. Cargo, npm distribution, nested MCP
+and registry metadata now use the candidate version consistently. Wasmtime is
+updated to the patched `36.0.17` line. Fresh Cargo, root npm and nested MCP npm
+audits report no vulnerabilities. The website's remaining cache-library advisory
+is **unresolved**, with a narrowly reviewed, expiring applicability policy:
+[`docs-site/DEPENDENCY_SECURITY.md`](../docs-site/DEPENDENCY_SECURITY.md).
+The policy verifies the actual custom Worker bundle and fails on other high or
+critical findings, reviewed-source/configuration drift, a newer cache-library
+release, or expiry on 17 October. It does not label the affected package fixed.
+
+Authenticated read-only inspection of `froglet-production` in
+`froglet-prod-eu/europe-west4-b` found all five containers running. The four
+Froglet service containers reference beta.23 configuration and immutable image
+digests; the provider advertises public beta.4. CPU, memory, process and log
+limits were inspected, and application ports are bound to host loopback. The
+public provider proxy exposes bearer-protected owner-control routes; loopback
+container ports do not make those proxied routes network-private.
+Effective provider usage reports private admission and zero quote/deal/runtime
+allowance. Public website, relay and marketplace health routes, marketplace
+stats and provider capabilities returned HTTP 200 with the normal HTTP client.
+This audits the existing deployment; it does not deploy the new candidate.
+Evidence is retained in ignored `_tmp/launch-continuation-2026-10-03/`.
+
+An isolated Fly smoke used the verified immutable beta.4 provider digest, after
+checking Release Bundle provenance and Linux amd64 image metadata. It passed
+HTTPS health, version/identity/origin and anonymous owner-control/quote/deal
+refusals. The created app was destroyed and its absence checked independently.
+This is reachability/refusal evidence for the existing release, not new compute,
+effective authenticated allowances, marketplace admission or paid execution.
+
+The new terminal-cache read path passed 43 targeted Rust tests: nine invocation,
+twelve native computation and twenty-two runtime-route cases. Successful and
+failed tasks survive requester restart and provider shutdown; signed rejected
+and canceled outcomes, historical identity rotation, authentication, unknown
+IDs, selected data, tampering and unsigned/pending refusal are covered. Only
+read-only task retrieval changes; payment mutation paths keep provider refresh.
+The optimized Apple Silicon build has SHA-256
+`1e6621c461d7f368328467ad15f7e1cc6280997bf438238ed62974c0a96a8c8f`.
+A fresh deterministic replay against that exact binary exported seven complete
+signed chains (six successes and one execution-limit failure), matched four
+previously frozen arithmetic answers, and recovered all six Alice terminal tasks
+with Bob stopped and Alice restarted. It includes the selected-data task and
+the signed failure, with no new admitted work during reads or exact retries.
+No fresh LLM session or compiler was used. The new-candidate software gate then
+passed all six selected steps: public-source/history secret scanning, locked
+native packaging, strict checks, website build/tests and packaged installation.
+The packaged executable retains the exact SHA-256 above. The strict run passed
+1,004 workspace Rust tests plus seven ontology tests, 199 JavaScript integration
+tests, 250 core Python tests, 46 example checks and 228 independent-verifier tests.
+Eight environment-specific Rust cases remained ignored. All 732 website tests
+passed, including fourteen opted-in real-node cases and sixty-six audit-guard
+cases. A fresh applicability check accepted only the documented unresolved
+website advisory and verified the actual Worker bundle. The updated recovery
+guide and expanded developer matrix were inspected in the rendered local build.
+Evidence is in `_tmp/launch-continuation-2026-10-03/software-gate-02/`, with the
+first aborted packaging attempt retained separately. This is local software
+qualification; exact-source public CI, immutable distribution and new cloud
+compute qualification remain open. The earlier beta.4-source candidate's
+results do not qualify this binary.
 
 Run the software gate from the candidate checkout with installed Rust 1.91,
 Clippy, `wasm32-unknown-unknown`, Python, OpenSSL and Node/npm prerequisites. Website

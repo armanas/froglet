@@ -2484,12 +2484,12 @@ async fn persist_requester_artifacts(
         .await
 }
 
-async fn sync_requester_deal_from_provider(
-    state: Arc<AppState>,
+async fn load_requester_deal(
+    state: &AppState,
     deal_id: &str,
-) -> Result<SyncedRequesterDeal, ApiFailure> {
+) -> Result<requester_deals::StoredRequesterDeal, ApiFailure> {
     let lookup_deal_id = deal_id.to_string();
-    let stored = state
+    state
         .db
         .with_read_conn(move |conn| requester_deals::get_requester_deal(conn, &lookup_deal_id))
         .await
@@ -2505,7 +2505,14 @@ async fn sync_requester_deal_from_provider(
                 StatusCode::NOT_FOUND,
                 json!({ "error": "deal not found", "deal_id": deal_id }),
             )
-        })?;
+        })
+}
+
+async fn sync_requester_deal_from_provider(
+    state: Arc<AppState>,
+    deal_id: &str,
+) -> Result<SyncedRequesterDeal, ApiFailure> {
+    let stored = load_requester_deal(state.as_ref(), deal_id).await?;
 
     let provider_endpoint = runtime_accessible_provider_endpoint(
         state.as_ref(),
@@ -3764,6 +3771,41 @@ pub async fn runtime_get_deal(
 }
 
 async fn runtime_get_deal_inner(state: Arc<AppState>, deal_id: String) -> Response {
+    let stored = match load_requester_deal(state.as_ref(), &deal_id).await {
+        Ok(stored) => stored,
+        Err(error) => return error_json(error.0, error.1).into_response(),
+    };
+    // A canonical Receipt is terminal evidence. Revalidate the durable chain
+    // before returning it, without DNS, provider requests or payment actions.
+    // Bind historical requester identity to the signed Deal, so rotation does
+    // not make previously completed operations unreadable.
+    if let Some(receipt) = stored.receipt.as_ref() {
+        if let Err(error) = verify_provider_receipt_artifact(
+            receipt,
+            &stored.quote,
+            &stored.deal,
+            &stored.provider_id,
+            &stored.deal.payload.requester_id,
+            stored.result.as_ref(),
+            stored.result_hash.as_deref(),
+        ) {
+            return error_json(error.0, error.1).into_response();
+        }
+        if stored.status != status_bound_to_receipt(receipt) {
+            return error_json(
+                StatusCode::BAD_GATEWAY,
+                json!({"error":"cached requester status does not match its signed Receipt"}),
+            )
+            .into_response();
+        }
+        return (
+            StatusCode::OK,
+            Json(json!(RuntimeDealResponse {
+                deal: stored.public_record()
+            })),
+        )
+            .into_response();
+    }
     match sync_requester_deal_from_provider(state, &deal_id).await {
         Ok(synced) => (
             StatusCode::OK,

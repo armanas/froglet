@@ -63,9 +63,17 @@ fresh-session attempt into a pass.
 
 After Bob stopped and Alice's requester restarted, exact `run_compute` and
 `invoke_service` retries recovered the saved results and receipts without new
-Deals. **`get_task` is different:** it still attempted to refresh Bob's status
-and returned HTTP 502 while he was offline. Exported chains can be verified
-offline; a live task-status lookup requires its provider.
+Deals. In that historical replay, `get_task` attempted to refresh Bob's status
+and returned HTTP 502 while he was offline. The 3 October current-source
+correction revalidates saved terminal Quote/Deal/Receipt evidence locally,
+including after Alice restarts. Local regressions cover completed selected-data
+and Wasm calls, signed failures and rejected/canceled fixtures, key rotation,
+authentication and corrupted records. Unsigned or unresolved tasks still need
+Bob for status refresh. The fresh optimized native candidate replay passed
+independent verification of all seven chains and all six saved Alice terminal
+task reads with Bob stopped and Alice restarted. The earlier failures are
+preserved. Package/release checks and website publication remain separate;
+this website copy does not qualify cloud execution or paid settlement.
 
 **A research collaboration:** Bob shares a selected terminology table as a data
 service. Alice can look up the mappings Bob supplied. If Alice and Bob disagree
@@ -243,7 +251,7 @@ Both actions use the single MCP tool named `froglet`.
 | Action | Required work or reference | Behavior |
 | --- | --- | --- |
 | `run_compute` | Either `wasm_module_hex` or native `wasm_module_path`, explicit JSON `input`, explicit `idempotency_key` | Submits or reconciles one bounded Wasm v1 program through the requester runtime. |
-| `get_task` | `task_id` from the returned `deal_id` | Reads and refreshes the existing requester operation from its provider; it does not submit new work or authorize payment. Bob must be reachable for this status refresh. |
+| `get_task` | `task_id` from the returned `deal_id` | Revalidates and reads a saved terminal operation locally, even while Bob is offline. Unsigned or unresolved operations refresh from Bob and require him to be reachable. It does not submit new work or authorize payment. |
 
 `run_compute` accepts a complete binary using the
 `froglet.wasm.run_json.v1` ABI. It imports no host capabilities. The native

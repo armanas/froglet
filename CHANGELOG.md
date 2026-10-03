@@ -10,6 +10,13 @@ Lightning rail and MCP registry distribution.
 
 ## [Unreleased]
 
+## [0.4.7-beta.1] - Prepared 2026-10-03
+
+This section records the beta candidate at preparation, before immutable
+publication. Its compute and interoperability evidence is local; new hosted compute, fresh
+agent-host sessions, clean-machine installation and paid operation still need
+their own qualification. Website publication does not establish those gates.
+
 ### Added
 
 - Native MCP `run_compute` and `get_task` for requester-supplied bounded Wasm,
@@ -22,6 +29,10 @@ Lightning rail and MCP registry distribution.
   establish ontology alignment or scientific correctness.
 - A shared website functionality matrix separates current source support,
   local qualification, experimental paths, disabled capabilities and plans.
+- A provider-only Fly smoke helper requires an exact released image digest,
+  expected node version and explicit organization. Its default private profile
+  allows no work and checks authenticated controls and anonymous refusals;
+  reachability does not qualify computation or payments.
 
 - `froglet-wasm`: the signing half of the kernel compiled for the browser
   (fresh identities, artifact signing for the five free-deal artifacts, and
@@ -48,6 +59,11 @@ Lightning rail and MCP registry distribution.
 
 ### Fixed
 
+- Native `get_task` recovers persisted terminal results after provider shutdown
+  and requester restart, validating the signed Quote/Deal/Receipt chain and
+  cached result before returning it. Pending or unsigned outcomes still refresh
+  from the provider; reading a cached Receipt does not authorize new payments
+  or establish live payment-rail confirmation.
 - Release software checks report skipped required or requested work as
   incomplete, require the core toolchain, and pass package arguments without
   interpolating them into shell code. Local packaging rebuilds the current
@@ -69,6 +85,12 @@ Lightning rail and MCP registry distribution.
   Unexpected example statuses report the verified failure code and budget;
   browser publication tests await compilation completion before checking the
   exact published service.
+- Release metadata checks include both npm locks and MCP Registry versions.
+  CI audits the root npm distribution dependency tree as well as the nested
+  MCP server tree. Compatible dependency updates remove the known advisories
+  from those two trees; Wasmtime is updated to the patched `36.0.17` line and
+  Wrangler to `4.143.1` with patched Undici. The separate, unpatched website
+  cache dependency advisory remains subject to its documented release gate.
 
 - The Python offline verifier returns an invalid JSON report for malformed
   artifact types in plain artifacts, arrays and wrapped feed entries. List or

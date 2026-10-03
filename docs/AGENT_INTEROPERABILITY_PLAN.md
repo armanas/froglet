@@ -1,17 +1,54 @@
 # Agent interoperability: MCP and A2A
 
 Status: selected scope implemented, with the documented local qualification
-on 1 October 2026. The later fresh generated-program sessions remain only
-partially qualified; their exact boundary is recorded below.
+on 1 October 2026 and the terminal-read regression qualification on 3 October
+2026. The fresh generated-program sessions remain only partially qualified;
+their exact boundary is recorded below.
 The optional A2A profile is limited to configured counterparties and the required
 Froglet extension. Production payment rails and full A2A TCK certification are
 not qualified by these checks.
 
 The [shared functionality matrix source](../docs-site/src/data/support-matrix.ts)
-feeds both the agent guide and developer page in the local website build/preview.
-These matrix updates are not yet publicly deployed. It separates source
+feeds both the agent guide and developer page. The 3 October website publication
+checked six public pages against the prepared build byte for byte, including
+the guide and developer page; that evidence is retained at
+`_tmp/launch-prep-2026-10-02/site-publication-2026-10-03-http.json`.
+The subsequent terminal-recovery row change remains local until republished.
+The matrix separates source
 implementation, local candidate evidence, experimental/disabled paths, plans
 and public deployment qualification.
+
+## Terminal task-read correction — 3 October 2026
+
+Authenticated native `get_task` now reads a saved terminal operation without
+contacting Bob. The runtime revalidates the canonical Quote/Deal/Receipt chain,
+provider identity, result hash and status bound to the Receipt before returning
+the record. This path submits no work and performs no payment or ledger update.
+Unsigned or unresolved records still need provider synchronization; invalid
+cached signed evidence fails closed. Existing payment mutation paths are
+unchanged. Historical requester identity remains bound to its signed Deal after
+a genuine local custody rotation.
+
+The current-source local Rust checks passed: `cli_mcp_compute` 12/12,
+`cli_invoke` 9/9 and `runtime_routes` 22/22, with warnings denied. They exercised
+success and execution-limit failure after requester restart/provider shutdown,
+selected-data recovery, signed rejected/canceled fixtures, key rotation,
+authentication, unknown tasks, tampering, a provider-signed foreign requester
+Receipt and missing-Receipt/pending failures. Logs are retained at
+`_tmp/launch-prep-2026-10-02/runtime/terminal-cache-suites.log`.
+The public deterministic replay now requires every saved Alice terminal task,
+including selected data, to return its original verified evidence offline.
+A fresh optimized native candidate then passed independent replay qualification:
+seven signed chains, four frozen arithmetic cases and all six saved Alice
+terminal task reads with Bob stopped and Alice restarted. Its binary SHA-256 is
+`1e6621c461d7f368328467ad15f7e1cc6280997bf438238ed62974c0a96a8c8f`;
+the independent report is retained at
+`_tmp/launch-prep-2026-10-02/runtime/terminal-cache-2026-10-03/independent-verification-final.json`
+(SHA-256 `1ed79f754c94f4358c742b0af7bfb2c7a56de6d8953aa77906fc5099f50966f6`).
+The original failed agent qualification and historical HTTP 502 evidence were
+rechecked unchanged. Package/release gates and publication of the changed
+website copy remain separate checks; the older binary/replay below cannot
+qualify these changed runtime inputs.
 
 ## Fresh generated-program checkpoint — 1 October 2026
 
@@ -40,8 +77,9 @@ condition in the earlier actual-agent sessions.
 
 After Bob stopped and Alice's requester restarted, exact `run_compute` and
 `invoke_service` retries recovered cached terminal results/receipts without new
-Deals. Native `get_task` instead attempted provider refresh and returned HTTP
-502; it is not an offline cache-read action. The independent report is retained
+Deals. At that checkpoint, native `get_task` instead attempted provider refresh
+and returned HTTP 502. This historical failure is preserved; it does not describe
+the corrected 3 October current-source read path. The independent report is retained
 at `_tmp/local-finalization-2026-10-01/replay/independent-verification.json`
 (SHA-256 `5df50cd4cb6b7a21b9791cc19d7fbe7c0048b7595a2b36337e462b57fd072f33`).
 

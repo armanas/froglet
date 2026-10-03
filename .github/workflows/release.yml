@@ -109,14 +109,20 @@ jobs:
           )
           lockfile_version = lockfile["version"]
           lockfile_root_version = lockfile["packages"][""]["version"]
+          root_lockfile = json.loads(Path("package-lock.json").read_text())
+          registry = json.loads(Path("server.json").read_text())
 
           mismatches = []
           for label, value in (
               ("root package.json", root_package_version),
+              ("root package-lock.json", root_lockfile["version"]),
+              ("root package-lock.json packages[\"\"]", root_lockfile["packages"][""]["version"]),
               ("package.json", package_version),
               ("mcp-manifest.json", manifest_version),
               ("package-lock.json", lockfile_version),
               ("package-lock.json packages[\"\"]", lockfile_root_version),
+              ("server.json", registry["version"]),
+              ("server.json npm package", registry["packages"][0]["version"]),
           ):
               if value != package_version:
                   mismatches.append(f"{label} version {value!r} does not match integrations/mcp/froglet/package.json {package_version!r}")

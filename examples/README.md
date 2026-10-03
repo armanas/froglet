@@ -122,10 +122,12 @@ The runner checks exact retries, refusal of changed input, a separate looping
 program stopped by its execution budget, and recovery after the provider
 restarts. It then exports **every admitted Deal** before stopping the provider
 and restarting the requester. Exact known compute and data invocations recover
-the cached signed results with their original keys. `get_task` refreshes provider
-state and currently refuses while the provider is stopped; its actual response
-is retained separately. Recovery of a known completed invocation does not imply
-recovery of all uncertain submissions.
+the cached signed results with their original keys. The runner also requires
+`get_task` to revalidate every saved terminal operation locally while the provider
+is stopped, including selected data and signed execution failure. The historical
+pre-correction HTTP 502 evidence remains preserved. Unsigned or unresolved tasks
+still need provider synchronization; recovery of a known completed invocation
+does not imply recovery of all uncertain submissions.
 
 Each run requires a **new** evidence directory and fresh temporary identities.
 The selected snapshot is preserved as actual bytes. Full Descriptor, Offer,

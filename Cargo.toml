@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "froglet"
-version = "0.4.6-beta.4"
+version = "0.4.7-beta.1"
 edition = "2024"
 autobins = false
 authors = ["Armanas Povilionis-Muradian"]
@@ -71,7 +71,7 @@ lightning-invoice = { version = "0.34", features = ["std"] }
 aes-gcm-siv = "0.11"
 
 # Security Sandbox (WASM)
-wasmtime = { version = "36.0.14", default-features = false, features = [
+wasmtime = { version = "36.0.17", default-features = false, features = [
     "cranelift",
     "runtime",
     "std",
