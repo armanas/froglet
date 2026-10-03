@@ -22,6 +22,9 @@ export const verifier: Verifier = verifierFrom(verifierBindings);
 export const vectors = JSON.parse(readFileSync(resolve(repoRoot, 'conformance/kernel_v1.json'), 'utf8'));
 export const nodeExchange = JSON.parse(readFileSync(resolve(repoRoot, 'froglet-wasm/tests/fixtures/node_service_exchange.json'), 'utf8'));
 
+/** Exact bytes named by the captured node's service and receipt, independent of this host's Rust rebuild. */
+export const capturedNodeModule = () => hexBytes(nodeExchange.published_module_hex);
+
 const PRELUDE = `const { parentPort } = require('node:worker_threads');
 globalThis.self = globalThis;
 globalThis.postMessage = (message) => parentPort.postMessage(message);

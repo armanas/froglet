@@ -158,6 +158,18 @@ fn the_captured_exchange_is_consistent_the_way_the_playground_relies_on() {
     let finished = &fixture["deal_final"];
     let receipt = &finished["receipt"];
 
+    // Exact bytes retained with this capture, not a host-dependent rebuild of the same Rust source.
+    let module = hex::decode(
+        fixture["published_module_hex"]
+            .as_str()
+            .expect("retained published module hex"),
+    )
+    .expect("retained published module bytes");
+    assert_eq!(
+        crypto::sha256_hex(module),
+        service["module_hash"].as_str().expect("module_hash")
+    );
+
     // One provider throughout, and the service is offered under its own id.
     let provider = fixture["descriptor"]["payload"]["provider_id"].clone();
     for (name, id) in [

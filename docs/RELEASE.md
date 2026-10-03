@@ -180,7 +180,7 @@ unchanged. Confirm the package version and changelog before
 cutting a real release; keep new changes under `Unreleased` until that decision.
 
 The companion repository has its own
-[`LAUNCH/README.md`](../../froglet-services/LAUNCH/README.md) and exact source
+[`LAUNCH/README.md`](https://github.com/armanas/froglet-services/blob/main/LAUNCH/README.md) and exact source
 pin. Publish and verify the public immutable release first, then update the
 companion pin and regenerate its lockfile against that exact source before
 building the matching hosted release. Do not point it at `main`, copy a local

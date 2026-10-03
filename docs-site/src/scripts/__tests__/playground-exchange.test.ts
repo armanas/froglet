@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,7 @@ import { createProvider, failureCodeFor, type ProviderEvent } from '../playgroun
 import { dealPayloadFor, executionFor, isFinished, PLAYGROUND_LIMITS, QUOTE_TTL_SECS, Refusal } from '../playground/protocol';
 import type { HttpRequest, HttpResponse, ModuleRunner, SignedArtifact, Transport } from '../playground/types';
 import { createWire } from '../playground/wire';
-import { counterHex, fakeClock, hexBytes, kernel, NEVER_ENDS_MODULE_HEX, nodeExchange, nodeRunner, samples, shapeOf, verifier, withSection } from './playground-helpers';
+import { capturedNodeModule, counterHex, fakeClock, hexBytes, kernel, NEVER_ENDS_MODULE_HEX, nodeExchange, nodeRunner, samples, shapeOf, verifier, withSection } from './playground-helpers';
 import { repoRoot } from './route-helpers';
 
 // Two parties in one page, run for real: Bob is createProvider and Alice is runExchange, joined by the wire. The kernel and
@@ -835,11 +836,32 @@ describe('the playground speaks the wire a real node speaks', () => {
   });
 
   it('gives the same answer the node gave for the same function and input', async () => {
-    const context = await setup();
+    // Rebuilds can embed host-specific Rust sysroot paths. Replay the exact retained bytes instead of treating a
+    // fresh compilation as the historical module; the other sample and real-node tests still exercise fresh builds.
+    const module = capturedNodeModule();
+    const moduleHash = createHash('sha256').update(module).digest('hex');
+    expect(moduleHash).toBe(nodeExchange.service.service.module_hash);
+    expect(moduleHash).toBe(nodeExchange.deal_final.receipt.payload.executor.module_hash);
+    const context = await setup({ publish: [] });
+    await context.provider.publish({ serviceId: 'demo.adder', summary: samples.adder.summary, module });
     const outcome = await context.exchange({ inputText: JSON.stringify(nodeExchange.input) });
     assertOk(outcome);
     expect(outcome.result).toEqual(nodeExchange.deal_final.result);
-    // The same module bytes, so the same module hash a real node reports for the same sample.
+    // The receipt must name the same bytes as the captured node, not just a function with the same answer.
     expect(outcome.artifacts.receipt.payload.executor.module_hash).toBe(nodeExchange.service.service.module_hash);
+  });
+
+  it('keeps different module bytes distinct even when they give the captured answer', async () => {
+    // An ignored Wasm custom section changes provenance, not execution. Hashing must still include these bytes.
+    const label = new TextEncoder().encode('different-build');
+    const module = withSection(capturedNodeModule(), 0, [label.length, ...label]);
+    const moduleHash = createHash('sha256').update(module).digest('hex');
+    expect(moduleHash).not.toBe(nodeExchange.service.service.module_hash);
+    const context = await setup({ publish: [] });
+    await context.provider.publish({ serviceId: 'demo.adder', summary: samples.adder.summary, module });
+    const outcome = await context.exchange({ inputText: JSON.stringify(nodeExchange.input) });
+    assertOk(outcome);
+    expect(outcome.result).toEqual(nodeExchange.deal_final.result);
+    expect(outcome.artifacts.receipt.payload.executor.module_hash).toBe(moduleHash);
   });
 });
