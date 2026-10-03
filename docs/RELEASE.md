@@ -673,6 +673,10 @@ An operator with repository administration access must first run the read-only
 `2026-03-10` and require `enabled=true`. After the exact source commit is on
 `main`, the operator creates a **draft** GitHub release using an unused tag
 and `--target` set to that commit. Creating the draft does not create a Git tag.
+For a beta, also set `--prerelease --latest=false`. Verify the draft's prerelease
+status and exact target before tagging; the workflow does not derive that
+status from the tag suffix. After publication, check that the stable `latest`
+release is unchanged.
 Then create and push that exact tag at the same source commit to trigger the
 workflow. The workflow requires the existing draft and verifies that the tag
 resolves to its source commit; it cannot create a release on its own. It then
