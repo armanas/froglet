@@ -44,7 +44,7 @@ fresh Bob/Alice agent attempt as passing because the deterministic replay passed
 | Public free execution | Independent requester/provider hosts, trusted HTTPS, exact Offer/requester authorization, independently verified receipts and finite allowances | New compute profile remains unqualified; GCP is the chosen host, not a protocol dependency |
 | Operational safeguards | Effective target configuration, overload/refusal tests, durable accounting, private control listener, backup restore and guarded rollback | Local fixtures and historical hosted evidence do not establish current production behavior |
 | First-user usefulness | Independent catalog owners and recipients complete the declared task with recorded observations | Trial kit is prepared; participant results remain absent |
-| Website and release copy | Deployed routes inspected against the exact released candidate and its qualified scope | Latest support-matrix changes are locally checked and not yet deployed |
+| Website and release copy | Deployed routes inspected against the exact released candidate and its qualified scope | Current support matrix and Alithea Bio attribution published on 3 October; six pages and the logo match the prepared build. The compute candidate remains unpublished |
 
 ### Local verification completed on 2 October
 
@@ -76,6 +76,25 @@ attached to executable `584e3887…` below.
 Full local logs, source hashes, retained failed gate runs and checkpoint records
 are under ignored `_tmp/launch-prep-2026-10-02/`. These are local qualification
 records, not published release assets or production-host evidence.
+
+### Website publication and cloud selection — 3 October
+
+The prepared documentation site and restored Alithea Bio footer were published
+to the existing `froglet-docs` Worker at version
+`1a07cc84-eeb2-4c1f-8951-471ac6676401`. Six public pages and the original logo
+returned HTTP 200 and matched the prepared build bytes. The prior full-site
+version `857f8336-ed78-48cb-8f08-959f0ff8bff6` is the rollback target. Build,
+secret-scan, deployment and HTTP evidence are retained under ignored
+`_tmp/launch-prep-2026-10-02/site-publication-2026-10-03-*`. Website publication
+does not publish the Node candidate or qualify public computation.
+
+At the user's request, the active GCP CLI project was changed to
+`froglet-prod-eu`; a read-only metadata check returned `ACTIVE`. Fly
+authentication was also confirmed. GCP reported a separate Application Default
+Credentials quota-project mismatch, which was not changed. These checks do not
+establish deployment permissions, provider availability, operational safeguards
+or current hosted compute qualification. The earlier authentication blocker is
+historical; the public execution and operational gates above remain open.
 
 Run the software gate from the candidate checkout with installed Rust 1.91,
 Clippy, `wasm32-unknown-unknown`, Python, OpenSSL and Node/npm prerequisites. Website

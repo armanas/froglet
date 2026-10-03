@@ -44,9 +44,14 @@ The public docs site is configured for Cloudflare Workers, not GitHub Pages.
 The site was restored on 1 October 2026. `npm run deploy` now builds and
 publishes [`wrangler.jsonc`](./wrangler.jsonc); maintenance deployment requires
 `npm run deploy:maintenance` explicitly. The default no longer restores the
-September pause page. Current deployed version:
-`857f8336-ed78-48cb-8f08-959f0ff8bff6`. The previous restored full-site version
-`7dd4a560-b18d-478f-a7a1-bf1b6cd73eb2` is the rollback target for this update.
+September pause page. The latest publication on 3 October restored the
+Alithea Bio footer attribution and published the current functionality matrix
+and qualification disclosures. Current deployed version:
+`1a07cc84-eeb2-4c1f-8951-471ac6676401`. The preceding full-site version
+`857f8336-ed78-48cb-8f08-959f0ff8bff6` is the rollback target for this update.
+Six public pages and the logo returned HTTP 200 and matched the prepared build
+bytes. The response checks are recorded in ignored
+`../_tmp/launch-prep-2026-10-02/site-publication-2026-10-03-http.json`.
 Website publication remains separate from Node release or compute deployment.
 
 For a full-site Cloudflare dashboard-backed build:
