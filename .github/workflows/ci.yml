@@ -191,6 +191,9 @@ jobs:
       - name: Build the locked browser WebAssembly (verifier, playground kernel, sample services)
         run: npm run build:wasm --prefix docs-site
 
+      - name: Verify browser WebAssembly across checkout paths and a fresh target cache
+        run: node docs-site/scripts/check-wasm-reproducibility.mjs --output "$RUNNER_TEMP/froglet-wasm-reproducibility"
+
       - name: Build the node for browser interoperability tests
         run: cargo build --locked -p froglet --bin froglet-node
 

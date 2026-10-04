@@ -15,6 +15,28 @@ and the exact `wasm-bindgen` CLI must already be installed or downloadable.
 software inputs. A preinstalled `WASM_BINDGEN` is accepted only when its version
 matches `Cargo.lock`.
 
+Browser Rust builds remap this checkout's source paths to `/froglet`, removing
+the checkout's absolute directory from source locations in generated Wasm.
+These builds preserve `CARGO_ENCODED_RUSTFLAGS` (including an explicitly empty
+value) ahead of space-separated `RUSTFLAGS`, then append the path remap.
+That final remap takes precedence over caller remaps matching repository paths.
+They do not merge `build.rustflags` or `target.*.rustflags` from Cargo config;
+use those environment variables for custom browser compiler flags. The native
+node and the host `wasm-bindgen` installation keep their usual Cargo settings.
+This controls checkout paths, not every possible build input: toolchains,
+dependency sources, Cargo home and compiler flags must still be held constant
+when comparing output bytes.
+
+After building once, run the checkout-path regression check from the repository
+root with `node docs-site/scripts/check-wasm-reproducibility.mjs --output
+/private/tmp/froglet-wasm-check-unique`. Use a new absolute output directory
+whose parent exists. The check needs POSIX process groups, the installed Node
+dependencies and the pinned `wasm-bindgen` CLI; it installs nothing and builds
+offline. It compares all twelve generated files from three copied source roots,
+including paths with spaces and a separate empty Cargo target cache. CI runs
+the same check after building the browser tools. This does not test different
+Cargo homes, OSes or full Astro output.
+
 Two test files are opt-in because they need a built node. Run `cargo build -p froglet --bin froglet-node` from the repository first (`FROGLET_NODE_BIN` points at a different binary), then, from `docs-site/`:
 
 | Variable | Test file | What it does |

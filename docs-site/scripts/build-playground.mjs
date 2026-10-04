@@ -1,20 +1,20 @@
 import { copyFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
-import { bindgen, run, site, target } from './wasm-tools.mjs';
+import { bindgen, buildWasm, run, site, target } from './wasm-tools.mjs';
 
 const generator = bindgen();
 
 // The signing half of the kernel (froglet-wasm), with its browser bindings. The playground verifies with the verifier
 // build, so this one stays small.
-run('cargo', ['build', '--locked', '--release', '-p', 'froglet-wasm', '--lib', '--target', 'wasm32-unknown-unknown', '--target-dir', target]);
+buildWasm(['--locked', '--release', '-p', 'froglet-wasm', '--lib', '--target', 'wasm32-unknown-unknown', '--target-dir', target]);
 const kernel = resolve(site, 'src/generated/kernel');
 mkdirSync(kernel, { recursive: true });
 run(generator, [resolve(target, 'wasm32-unknown-unknown/release/froglet_wasm.wasm'), '--target', 'web', '--out-dir', kernel]);
 
 // The Rust services that the editor's adder and Fibonacci functions are ports of. The page does not serve these builds: the
 // tests run them as the answer that each port must give. examples/wasm-services is its own workspace, built into the same target directory.
-run('cargo', ['build', '--locked', '--release', '--manifest-path', 'examples/wasm-services/Cargo.toml', '--target', 'wasm32-unknown-unknown', '--target-dir', target]);
+buildWasm(['--locked', '--release', '--manifest-path', 'examples/wasm-services/Cargo.toml', '--target', 'wasm32-unknown-unknown', '--target-dir', target]);
 const oracles = resolve(site, 'src/generated/playground');
 mkdirSync(oracles, { recursive: true });
 for (const name of ['adder', 'fibonacci']) copyFileSync(resolve(target, `wasm32-unknown-unknown/release/${name}.wasm`), resolve(oracles, `${name}.wasm`));
