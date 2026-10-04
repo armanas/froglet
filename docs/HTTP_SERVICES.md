@@ -158,6 +158,11 @@ and not a symlink. Revocation takes effect immediately; existing completed deals
 remain recoverable. Reuse the same idempotency key and input to reconcile an
 uncertain invocation; creating a new key requests new work.
 
+The legacy provider-deal status endpoint treats its opaque deal ID as a recovery
+capability: anyone possessing that ID can retrieve the deal’s status and saved
+result from the provider. Keep the ID private. Invitation expiry or revocation
+prevents new work but does not revoke this existing recovery capability.
+
 Native CLI/MCP recovery first checks the authenticated requester ledger using the
 key, original service/provider and canonical input hash. A saved completed result
 and verified receipt remain available after unpublish or provider shutdown,

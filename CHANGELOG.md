@@ -89,8 +89,10 @@ their own qualification. Website publication does not establish those gates.
   CI audits the root npm distribution dependency tree as well as the nested
   MCP server tree. Compatible dependency updates remove the known advisories
   from those two trees; Wasmtime is updated to the patched `36.0.17` line and
-  Wrangler to `4.143.1` with patched Undici. The separate, unpatched website
-  cache dependency advisory remains subject to its documented release gate.
+  Wrangler to `4.143.1` with patched Undici. The website cache library is
+  reviewed at `4.3.0`, whose separate Vary fixes do not change the disputed
+  max-stale/cookie behavior. A clean npm audit is not treated as behavioral
+  remediation; the actual deployment boundary remains guarded.
 
 - The Python offline verifier returns an invalid JSON report for malformed
   artifact types in plain artifacts, arrays and wrapped feed entries. List or

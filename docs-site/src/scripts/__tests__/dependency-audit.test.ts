@@ -1,8 +1,10 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
   evaluateAudit,
@@ -31,6 +33,35 @@ const report = () => ({
     '@astrojs/starlight': { name: '@astrojs/starlight', severity: 'high', via: ['astro'] },
   },
 });
+
+function runGuardWithCleanAudit(versions: string[], options: { symlink?: boolean; preserveSymlinksMain?: boolean } = {}) {
+  const directory = mkdtempSync(resolve(tmpdir(), 'froglet-clean-audit-'));
+  const calls = resolve(directory, 'calls.jsonl');
+  try {
+    const clean = { auditReportVersion: 2, vulnerabilities: {}, metadata: { vulnerabilities: { high: 0, critical: 0 } } };
+    const shim = String.raw`#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\n');
+if (JSON.stringify(args) === JSON.stringify(['audit', '--json'])) console.log(${JSON.stringify(JSON.stringify(clean))});
+else if (JSON.stringify(args) === JSON.stringify(['view', 'http-cache-semantics', 'versions', '--json', '--registry=https://registry.npmjs.org'])) console.log(${JSON.stringify(JSON.stringify(versions))});
+else process.exitCode = 99;
+`;
+    writeFileSync(resolve(directory, 'npm'), shim, { mode: 0o700 });
+    let entrypoint = resolve(siteRoot, 'scripts/audit-dependencies.mjs');
+    if (options.symlink) {
+      const link = resolve(directory, 'audit-dependencies.mjs');
+      symlinkSync(entrypoint, link);
+      entrypoint = link;
+    }
+    const args = options.preserveSymlinksMain ? ['--preserve-symlinks-main', entrypoint] : [entrypoint];
+    const result = spawnSync(process.execPath, args, {
+      cwd: siteRoot, encoding: 'utf8', timeout: 45_000,
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}` },
+    });
+    return { result, calls: readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) };
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
 
 describe('docs dependency audit policy', () => {
   it('allows only the exact reviewed advisory and its known dependency effects', () => {
@@ -111,13 +142,14 @@ describe('docs dependency audit policy', () => {
     expect(evaluateAudit(audit).exceptedPackages).toHaveLength(3);
   });
 
-  it('requires a review as soon as a newer stable dependency version is published', () => {
-    expect(() => validatePublishedVersions(['4.1.1', '4.2.0'])).not.toThrow();
-    expect(() => validatePublishedVersions(['4.2.0', '4.2.1'])).toThrow(/newer published/);
-    expect(() => validatePublishedVersions(['4.2.0', '4.2.1+build.1'])).toThrow(/newer published/);
-    expect(() => validatePublishedVersions(['4.2.0', '5.0.0+build.1'])).toThrow(/newer published/);
-    expect(() => validatePublishedVersions(['4.2.0', 'garbage'])).toThrow(/Invalid npm registry/);
-    expect(() => validatePublishedVersions(['4.2.0', '4.2.1-01'])).toThrow(/Invalid npm registry/);
+  it('requires a review as soon as a stable version newer than reviewed 4.3.0 is published', () => {
+    expect(() => validatePublishedVersions(['4.1.1', '4.2.0', '4.3.0'])).not.toThrow();
+    for (const newer of ['4.3.1', '4.3.1+build.1', '4.4.0', '5.0.0+build.1']) {
+      expect(() => validatePublishedVersions(['4.3.0', newer])).toThrow(/newer published/);
+    }
+    expect(() => validatePublishedVersions(['4.3.0', 'garbage'])).toThrow(/Invalid npm registry/);
+    expect(() => validatePublishedVersions(['4.3.0', '4.3.1-01'])).toThrow(/Invalid npm registry/);
+    expect(() => validatePublishedVersions(['4.2.0'])).toThrow(/Invalid npm registry/);
     expect(() => validatePublishedVersions({ error: 'offline' })).toThrow(/Invalid npm registry/);
   });
 });
@@ -144,6 +176,49 @@ describe('reviewed website applicability boundaries', () => {
   }, 30_000);
 
   const copy = () => structuredClone(baseline);
+
+  it('a clean npm audit still runs the real registry and deployment-bundle review', () => {
+    const { result, calls } = runGuardWithCleanAudit(['4.2.0', '4.3.0']);
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(calls).toEqual([
+      ['audit', '--json'],
+      ['view', 'http-cache-semantics', 'versions', '--json', '--registry=https://registry.npmjs.org'],
+    ]);
+    expect(result.stdout).toContain('Raw npm audit: high=0, critical=0.');
+    expect(result.stdout).toContain('Known max-stale/shared-cookie behavior is unchanged');
+    expect(result.stdout).toContain('even with a clean raw audit');
+    expect(result.stdout).toContain(`Actual dry-run Worker SHA-256: ${createHash('sha256').update(baseline.bundle.code).digest('hex')}`);
+  }, 45_000);
+
+  it('the real guard rejects a newer stable version even when npm audit is clean', () => {
+    const { result } = runGuardWithCleanAudit(['4.3.0', '4.3.1']);
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('A newer published http-cache-semantics version requires review');
+    expect(result.stdout).not.toContain('Actual dry-run Worker SHA-256:');
+  }, 45_000);
+
+  it.each([false, true])('executes the guard through a symlink (preserve-symlinks-main=%s)', (preserveSymlinksMain) => {
+    const { result, calls } = runGuardWithCleanAudit(['4.3.0', '4.3.1'], { symlink: true, preserveSymlinksMain });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('A newer published http-cache-semantics version requires review');
+    expect(calls).toEqual([
+      ['audit', '--json'],
+      ['view', 'http-cache-semantics', 'versions', '--json', '--registry=https://registry.npmjs.org'],
+    ]);
+  }, 45_000);
+
+  it('can be imported from Node stdin without treating the import as a CLI invocation', () => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+      cwd: siteRoot, encoding: 'utf8', timeout: 10_000,
+      input: `import ${JSON.stringify(new URL('../../../scripts/audit-dependencies.mjs', import.meta.url).href)}; console.log('Imported guard without invoking it.');`,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('Imported guard without invoking it.');
+  });
 
   it('checks an actual fresh Wrangler bundle against the reviewed source and static configuration', () => {
     expect(() => validateApplicability(baseline)).not.toThrow();

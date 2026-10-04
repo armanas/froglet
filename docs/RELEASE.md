@@ -109,6 +109,16 @@ The policy verifies the actual custom Worker bundle and fails on other high or
 critical findings, reviewed-source/configuration drift, a newer cache-library
 release, or expiry on 17 October. It does not label the affected package fixed.
 
+On 4 October, the guard blocked newly published `http-cache-semantics` 4.3.0
+until review. Its tarball preserves the reported max-stale/cookie behavior;
+upstream closed the proposed fixes unmerged and disputes the advisory. The
+selected 4.3.0 update includes separate Vary matching fixes. npm audit reports
+zero findings for that version, which is not evidence that the reproduced
+behavior was repaired. The deployment review retains its finite expiry and
+source/configuration/bundle boundaries, including when the package audit is
+clean. Fresh exact-source CI and publication remain required. See the updated
+[dependency review](../docs-site/DEPENDENCY_SECURITY.md) for the current proof.
+
 Authenticated read-only inspection of `froglet-production` in
 `froglet-prod-eu/europe-west4-b` found all five containers running. The four
 Froglet service containers reference beta.23 configuration and immutable image

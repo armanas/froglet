@@ -1,15 +1,16 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
-// This is an applicability exception, not a patched dependency. See DEPENDENCY_SECURITY.md.
+// Review the observed cache behavior even when npm no longer reports the advisory.
+// This is an application applicability review, not a cache-behavior patch. See DEPENDENCY_SECURITY.md.
 const ADVISORY = 'https://github.com/advisories/GHSA-ch52-4w7c-c8xp';
 const ADVISORY_TITLE = 'http-cache-semantics max-stale handling can disclose cross-user cached responses';
 const EXPIRES = Date.parse('2026-10-17T00:00:00Z');
-const VERSIONS = { astro: '7.3.5', 'http-cache-semantics': '4.2.0', wrangler: '4.143.1' };
+const VERSIONS = { astro: '7.3.5', 'http-cache-semantics': '4.3.0', wrangler: '4.143.1' };
 const EFFECTS = new Set(['http-cache-semantics', 'astro', '@astrojs/mdx', '@astrojs/starlight', 'astro-expressive-code']);
 const HASHES = {
   astroConfig: 'dc5fe264bffb94d9dc825976caba38584e8c2d239204254f0c75372841d92b79',
@@ -84,16 +85,17 @@ export function evaluateAudit(audit) {
 }
 
 export function validatePublishedVersions(versions) {
-  if (!Array.isArray(versions) || !versions.includes('4.2.0') || versions.some((version) => typeof version !== 'string')) {
+  if (!Array.isArray(versions) || !versions.includes(VERSIONS['http-cache-semantics']) || versions.some((version) => typeof version !== 'string')) {
     throw new Error('Invalid npm registry version response; exception cannot be applied.');
   }
+  const reviewed = VERSIONS['http-cache-semantics'].split('.').map(Number);
   for (const version of versions) {
     const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([\da-z-]+(?:\.[\da-z-]+)*))?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/i.exec(version);
     if (!match || match[4]?.split('.').some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) {
       throw new Error('Invalid npm registry version response; exception cannot be applied.');
     }
-    if (!match[4] && (Number(match[1]) > 4 || Number(match[1]) === 4 &&
-        (Number(match[2]) > 2 || Number(match[2]) === 2 && Number(match[3]) > 0))) {
+    if (!match[4] && (Number(match[1]) > reviewed[0] || Number(match[1]) === reviewed[0] &&
+        (Number(match[2]) > reviewed[1] || Number(match[2]) === reviewed[1] && Number(match[3]) > reviewed[2]))) {
       throw new Error('A newer published http-cache-semantics version requires review/update before using this exception.');
     }
   }
@@ -210,14 +212,13 @@ export async function inspectWorkerBundle(siteRoot) {
 }
 
 async function main() {
-  const siteRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const siteRoot = resolve(dirname(realpathSync(fileURLToPath(import.meta.url))), '..');
   const result = run('npm', ['audit', '--json'], siteRoot);
   if (result.status !== 0 && result.status !== 1) throw new Error(`npm audit failed: ${result.stderr}`);
-  const evaluation = evaluateAudit(JSON.parse(result.stdout));
-  if (!evaluation.exceptedPackages.length) {
-    console.log('Docs dependencies: no high/critical advisories.');
-    return;
-  }
+  const audit = JSON.parse(result.stdout);
+  const evaluation = evaluateAudit(audit);
+  // A clean audit is registry metadata, not evidence that the observed behavior
+  // changed. Keep the application/registry/bundle review mandatory at this pin.
   const context = loadApplicabilityContext(siteRoot);
   validateApplicability(context, { requireBundle: false });
   const registry = run('npm', ['view', 'http-cache-semantics', 'versions', '--json', '--registry=https://registry.npmjs.org'], siteRoot);
@@ -225,10 +226,12 @@ async function main() {
   validatePublishedVersions(JSON.parse(registry.stdout));
   context.bundle = await inspectWorkerBundle(siteRoot);
   validateApplicability(context);
-  console.log(`UNRESOLVED package advisory GHSA-ch52-4w7c-c8xp: reviewed as not applicable to the static site/custom Worker deployment bundle; exception expires 2026-10-17 UTC. Effects: ${evaluation.exceptedPackages.join(', ')}.`);
+  console.log(`Raw npm audit: high=${audit.metadata.vulnerabilities.high}, critical=${audit.metadata.vulnerabilities.critical}. Covered advisory packages: ${evaluation.exceptedPackages.join(', ') || 'none'}.`);
+  console.log(`Known max-stale/shared-cookie behavior is unchanged in reviewed http-cache-semantics ${VERSIONS['http-cache-semantics']}; this update does not change that behavior. Application review excludes that behavior from the static site/custom Worker deployment bundle and expires 2026-10-17 UTC, even with a clean raw audit.`);
   console.log(`Actual dry-run Worker SHA-256: ${hash(context.bundle.code)}. All other high/critical advisories remain blocking.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && existsSync(resolve(process.argv[1])) &&
+    realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]))) {
   main().catch((error) => { console.error(error.message); process.exitCode = 1; });
 }

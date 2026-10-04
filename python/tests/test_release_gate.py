@@ -41,7 +41,9 @@ class ReleaseGateTests(unittest.TestCase):
         self.commands = self.root / "commands"
         self.commands.mkdir()
         # Keep PATH independent of the developer's npm installation.
-        for name in ("bash", "sh", "env", "dirname", "date", "mkdir", "cp", "chmod", "tar", "mktemp", "rm", "touch", "grep", "sha256sum", "shasum", "python3"):
+        # GNU tar runs gzip via PATH; BSD tar's built-in compression can hide
+        # an omitted compressor in this otherwise isolated tool fixture.
+        for name in ("bash", "sh", "env", "dirname", "date", "mkdir", "cp", "chmod", "tar", "gzip", "mktemp", "rm", "touch", "grep", "sha256sum", "shasum", "python3"):
             executable = shutil.which(name)
             if executable:
                 self.commands.joinpath(name).symlink_to(executable)

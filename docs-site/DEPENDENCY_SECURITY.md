@@ -1,23 +1,30 @@
-# Website dependency applicability review — 2026-10-03
+# Website dependency applicability review — 2026-10-04
 
-`http-cache-semantics` **4.2.0 remains vulnerable** to
-[GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp).
-The reviewed versions have no published upstream fix as of this review.
-[Upstream issue 56](https://github.com/kornelski/http-cache-semantics/issues/56)
-describes shared-cache responses with security-zeroed lifetimes being reused
-when a different client supplies `Cache-Control: max-stale`, potentially
-disclosing another user's `Set-Cookie` credentials.
-[Proposed fix 58](https://github.com/kornelski/http-cache-semantics/pull/58) and
-[cumulative fix 60](https://github.com/kornelski/http-cache-semantics/pull/60)
-are open proposals, not released or maintainer-approved security fixes.
+The reviewed dependency is now `http-cache-semantics` **4.3.0**, selected for its
+Vary-wildcard correction. The installed source matches the published package
+at [upstream commit b1d4bd6](https://github.com/kornelski/http-cache-semantics/commit/b1d4bd682fbab0252985de45219f4e7497c0067c).
+The current raw npm audit reports zero findings because the reported range for
+[GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp)
+ends at 4.2.0. That metadata does **not** demonstrate remediation of the
+previously observed max-stale/shared-cookie behavior: the same synthetic
+comparison still reproduces it on the published 4.3.0 package.
 
-The docs CI policy applies one temporary **applicability exception** to this
-advisory and its known Astro dependency effects. It does not patch or hide the
-package finding. All other high/critical findings, audit/registry errors, or
-failed applicability checks block the job. The policy expires at
-**2026-10-17 00:00 UTC**, or earlier when a newer stable version is published.
-An updated dependency or changed advisory requires a fresh review; a clean
-audit passes without applying an exception.
+The maintainer disputes the advisory's interpretation and recommends explicit
+`Cache-Control: private` for private data. [Proposal 58](https://github.com/kornelski/http-cache-semantics/pull/58)
+and [cumulative proposal 60](https://github.com/kornelski/http-cache-semantics/pull/60)
+were closed without merging on October 4. Froglet does not describe 4.3.0 as a
+patch for that reported issue, and this application review does not resolve the
+upstream standards dispute.
+
+The October 3 review used 4.2.0, when the raw audit reported that advisory and
+its known Astro dependency effects. The previous guard correctly refused the
+newly published 4.3.0 before this review. This update retains a temporary
+**application applicability review** of the observed behavior. All other
+high/critical findings, audit/registry errors, or failed applicability checks
+block the job. The review expires at **2026-10-17 00:00 UTC**, or earlier when a
+stable version newer than the reviewed 4.3.0 is published. A clean raw audit
+still requires the version, source, configuration, registry, and actual Worker
+bundle checks below.
 
 ## Reviewed boundaries and evidence
 
@@ -45,20 +52,28 @@ audit passes without applying an exception.
 - A fresh Wrangler **4.143.1** production dry-run emitted a Worker containing
   `qrcode-generator`, Froglet's service-page/data code, and generated verifier
   glue. Its source map matched all 11 current source files exactly. Neither
-  Astro nor this cache library nor the vulnerable reuse methods appear in
+  Astro nor this cache library nor the observed reuse methods appear in
   the deployment JavaScript. All source hashes, the source set, and JavaScript
-  bundle bytes are checked again on every excepted audit. Only the content
+  bundle bytes are checked again on every guard run. Only the content
   hash in the generated verifier Wasm filename is normalized; JavaScript
   changes remain blocking. The separate Wasm asset must exist.
 - The local preview emulator contains a bundled older cache-policy copy,
   but its cache caller computes TTL, discards request Cache-Control, and
-  rejects stored Set-Cookie responses. It does not call the vulnerable
+  rejects stored Set-Cookie responses. It does not call the observed
   reuse method. Miniflare is not uploaded as part of this custom Worker;
   this review makes no claim about Cloudflare's internal cache implementation.
-- A synthetic, network-free reproduction on 4.2.0 confirmed `maxAge() === 0`,
-  ordinary reuse rejected, and `max-stale` reuse accepted with a fixture
-  Set-Cookie header. Passing the applicability guard does **not** mean the
-  library defect was disproven or repaired.
+- A synthetic, network-free comparison of the exact published 4.2.0 and
+  4.3.0 package sources reproduced the same cookie behavior: `storable()` was
+  true, `maxAge()` was zero, ordinary reuse was rejected, and a request with
+  `max-stale=99999` accepted reuse while retaining a fixture-only Set-Cookie
+  header. A `Cache-Control: private` control was not storable. The 4.3.0
+  source SHA-256 was
+  `ede1cc404a492fa348eb9d97a3007a0d72aa717bd22cd86a56bd0824c19729ca`.
+  Separate Vary-wildcard controls with `Vary: * ` and `Vary: accept, *` changed
+  from accepting reuse in 4.2.0 to rejecting it in 4.3.0. This verifies the
+  selected Vary correction; it does **not** establish a patch for the cookie
+  behavior or settle the disputed advisory. No real credentials or requests
+  were used.
 
 Run the full audit with the reviewed guard after the website build:
 
@@ -69,12 +84,20 @@ node docs-site/scripts/audit-dependencies.mjs
 
 The helper fetches the full npm audit, checks the official npm version list,
 and runs `wrangler deploy --dry-run` locally to inspect its actual output.
-It never deploys or changes dependencies. The raw command
-`npm audit --prefix docs-site --audit-level=high` still reports the unresolved
-advisory until upstream publishes a fix and dependencies are updated.
+These checks run **even when the raw audit contains no findings**. It never
+publishes or changes dependencies. Its output separates the raw high/critical
+counts from the application applicability review of the observed behavior.
+A subprocess regression runs the actual guard with clean synthetic npm metadata
+and checks its real Worker fingerprint; another rejects a future stable version
+under the same clean-audit condition. The CLI resolves its actual script and
+project paths before running; regressions cover symbolic-link invocation both
+with and without `--preserve-symlinks-main`, and importing it from Node stdin.
 
 Changing versions, configuration, reviewed Worker code/dependencies, bundle
-output, or adding asset/cache imports invalidates this exception. Reassess
+output, or adding asset/cache imports invalidates this review. Reassess
 before introducing SSR, private remote image data, an incoming-header cache,
 or another affected consumer. The CI helper deliberately fails closed instead
-of automatically broadening this review.
+of automatically broadening the review. The historical advisory allowlist is
+unchanged: changed advisory identity, range, severity, or dependency effects
+remain blocking; a clean raw audit cannot disable the separate application
+review.

@@ -44,22 +44,28 @@ The public docs site is configured for Cloudflare Workers, not GitHub Pages.
 The site was restored on 1 October 2026. `npm run deploy` now builds and
 publishes [`wrangler.jsonc`](./wrangler.jsonc); maintenance deployment requires
 `npm run deploy:maintenance` explicitly. The default no longer restores the
-September pause page. The latest publication on 3 October restored the
-Alithea Bio footer attribution and published the current functionality matrix
-and qualification disclosures. Current deployed version:
-`1a07cc84-eeb2-4c1f-8951-471ac6676401`. The preceding full-site version
-`857f8336-ed78-48cb-8f08-959f0ff8bff6` is the rollback target for this update.
+September pause page. The 3 October publication restored the Alithea Bio
+footer attribution and published the functionality matrix and qualification
+disclosures at version `1a07cc84-eeb2-4c1f-8951-471ac6676401`. A later update that
+day published tested terminal-recovery guidance at
+`c4faedb2-caf2-44da-ab03-ceab37f736f3`, retaining the preceding version for rollback.
 Six public pages and the logo returned HTTP 200 and matched the prepared build
-bytes. The response checks are recorded in ignored
-`../_tmp/launch-prep-2026-10-02/site-publication-2026-10-03-http.json`.
-Website publication remains separate from Node release or compute deployment.
+bytes at that checkpoint. Historical response checks remain in ignored launch
+evidence. These dated versions are not a claim about the current deployment;
+check `npx wrangler deployments list --config wrangler.jsonc` and record the
+current version and rollback target before another publication.
+
+Both full-site publication scripts build, run the dependency/deployment guard,
+and publish only if it passes. A clean package audit does not bypass the
+reviewed cache-behavior boundary. Website publication remains separate from
+Node release or compute deployment.
 
 For a full-site Cloudflare dashboard-backed build:
 
 - Build command: `npm run build`
 - Build environment: Rust 1.91, the `wasm32-unknown-unknown` target, and Cargo. The build installs the exact wasm-bindgen CLI version from Cargo.lock into the Cargo target directory.
 - Run `rustup target add wasm32-unknown-unknown` once before building locally.
-- Deploy command: `npx wrangler deploy`
+- Deploy command: `npm run deploy:site` (includes the required guard)
 
 That direct command publishes the full site. Dashboard build
 settings are external to this repository; they were not changed during cleanup.
